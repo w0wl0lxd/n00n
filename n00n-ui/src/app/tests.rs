@@ -123,7 +123,7 @@ fn subagent_info_with_channels(
     _parent_id: &str,
     name: &str,
     answer_tx: Option<flume::Sender<String>>,
-    prompt_tx: Option<flume::Sender<String>>,
+    prompt_tx: Option<flume::Sender<SubagentPrompt>>,
 ) -> SubagentInfo {
     SubagentInfo {
         parent_tool_use_id: session_id.into(),
@@ -315,7 +315,7 @@ fn background_persistence_failure_is_terminal_without_composer_restore() {
 fn escape_before_dispatch_restores_text_and_exact_images_once() {
     let mut app = test_app();
     install_manual_submission_clock(&mut app);
-    app.input_box.set_input("describe".into());
+    app.input_box.set_input("describe");
     with_image(&mut app);
 
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
@@ -631,9 +631,9 @@ fn busy_enter_queues_steering_and_second_chord_promotes_latest() {
     let mut app = test_app();
     type_and_submit(&mut app, "first");
 
-    app.input_box.set_input("steer one".into());
+    app.input_box.set_input("steer one");
     assert!(app.update(Msg::Key(key(KeyCode::Enter))).is_empty());
-    app.input_box.set_input("steer two".into());
+    app.input_box.set_input("steer two");
     assert!(app.update(Msg::Key(key(KeyCode::Enter))).is_empty());
     assert_eq!(app.queue.len(), 2);
     assert_eq!(app.queue.panel_entries()[0].text, "↪ steer one");
@@ -651,7 +651,7 @@ fn busy_tab_queues_multiple_turn_end_messages_without_toggling_mode() {
     let mode = app.state.mode;
 
     for text in ["later one", "later two"] {
-        app.input_box.set_input(text.into());
+        app.input_box.set_input(text);
         app.update(Msg::Key(key(KeyCode::Tab)));
     }
 
@@ -2073,7 +2073,7 @@ fn queue_enter_edits_selected_in_place_without_duplication() {
     app.update(Msg::Key(key(KeyCode::Enter)));
     assert_eq!(app.queue.text_messages(), ["second"]);
     assert_eq!(app.input_box.buffer.value(), "queued");
-    app.input_box.set_input("edited".into());
+    app.input_box.set_input("edited");
     app.update(Msg::Key(key(KeyCode::Tab)));
 
     assert_eq!(app.queue.text_messages(), ["edited", "second"]);
@@ -2403,7 +2403,7 @@ fn rewind_snapshot_survives_crash_restore() {
     ];
     let id = app.state.session.id;
     let before = app.state.session.meta.revision;
-    app.rewind_to(crate::components::rewind_picker::RewindEntry {
+    app.rewind_to(&crate::components::rewind_picker::RewindEntry {
         turn_index: 2,
         prompt_preview: "2: second".into(),
         prompt_text: "second".into(),
@@ -2447,7 +2447,7 @@ fn draw_failure_pending_submission_restores_fifo_and_images_after_restart() {
     let (shared, receiver) = shared_queue::queue();
     app.queue.set_shared(shared);
 
-    app.input_box.set_input("first with image".into());
+    app.input_box.set_input("first with image");
     with_image(&mut app);
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
     let Action::SendMessage(dispatch) = actions.into_iter().next().unwrap() else {
@@ -2474,7 +2474,7 @@ fn draw_failure_pending_submission_restores_fifo_and_images_after_restart() {
         .expect("test owns the storage writer")
         .shutdown(WRITER_DRAIN_TIMEOUT);
 
-    let writer = Arc::new(StorageWriter::new(dir.clone()));
+    let writer = Arc::new(StorageWriter::new(dir.clone()).unwrap());
     let mut restarted = build_app(dir.clone(), Arc::clone(&writer));
     let (shared, receiver) = shared_queue::queue();
     restarted.queue.set_shared(shared);
@@ -2562,7 +2562,7 @@ fn mcp_prompt_draw_failure_survives_restart_without_text_fallback() {
         .expect("test owns the storage writer")
         .shutdown(WRITER_DRAIN_TIMEOUT);
 
-    let writer = Arc::new(StorageWriter::new(dir.clone()));
+    let writer = Arc::new(StorageWriter::new(dir.clone()).unwrap());
     let mut restarted = build_app_with_mcp(dir.clone(), Arc::clone(&writer), mcp_reader);
     let (shared, receiver) = shared_queue::queue();
     restarted.queue.set_shared(shared);
@@ -2744,7 +2744,7 @@ fn rewind_to_middle_truncates_and_populates_input() {
         prompt_preview: "2: second".into(),
         prompt_text: "second prompt".into(),
     };
-    let actions = app.rewind_to(entry);
+    let actions = app.rewind_to(&entry);
 
     assert_eq!(app.state.session.messages.len(), 2);
     assert!(app.state.session.tool_outputs.contains_key("tool-1"));
@@ -2796,7 +2796,7 @@ fn rewind_truncates_active_tail_inside_recursive_transcript() {
         TranscriptEntry::Message(removed_reply),
     ];
 
-    let actions = app.rewind_to(crate::components::rewind_picker::RewindEntry {
+    let actions = app.rewind_to(&crate::components::rewind_picker::RewindEntry {
         turn_index: 4,
         prompt_preview: "remove".into(),
         prompt_text: "remove".into(),
@@ -2837,7 +2837,7 @@ fn rewind_to_first_turn_clears_everything() {
         prompt_preview: "1: first".into(),
         prompt_text: "first prompt".into(),
     };
-    let actions = app.rewind_to(entry);
+    let actions = app.rewind_to(&entry);
 
     assert!(app.state.session.messages.is_empty());
     assert!(!app.state.session.tool_outputs.contains_key("tool-1"));
@@ -2950,7 +2950,8 @@ fn typing_in_running_subagent_routes_prompt_to_that_agent() {
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
 
     assert!(actions.is_empty());
-    assert_eq!(prompt_rx.try_recv().unwrap(), "hi");
+    let prompt = prompt_rx.try_recv().unwrap();
+    assert_eq!(prompt.text, "hi");
     assert_eq!(app.chats[1].last_message_text(), "hi");
     assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::User));
 }
@@ -2961,10 +2962,7 @@ fn typing_in_read_only_subagent_flashes_explanation() {
     app.update(Msg::Key(key(KeyCode::Char('h'))));
     app.update(Msg::Key(key(KeyCode::Enter)));
 
-    assert_eq!(
-        app.status_bar.flash_text(),
-        Some("This agent cannot receive follow-up messages")
-    );
+    assert_eq!(app.status_bar.flash_text(), Some(STEERING_UNAVAILABLE_MSG));
 }
 
 fn app_with_subagent_tx(id: &str) -> (App, flume::Receiver<String>, flume::Receiver<String>) {
@@ -2982,7 +2980,7 @@ fn app_with_subagent_tx(id: &str) -> (App, flume::Receiver<String>, flume::Recei
     (app, sub_rx, main_rx)
 }
 
-fn app_with_steerable_subagent(id: &str) -> (App, flume::Receiver<String>) {
+fn app_with_steerable_subagent(id: &str) -> (App, flume::Receiver<SubagentPrompt>) {
     let (prompt_tx, prompt_rx) = flume::bounded(2);
     let mut app = test_app();
     app.status = Status::Streaming;
@@ -3058,7 +3056,8 @@ fn expanded_subagent_chat_sends_typed_steering() {
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
 
     assert!(actions.is_empty());
-    assert_eq!(prompt_rx.try_recv().unwrap(), "expand");
+    let prompt = prompt_rx.try_recv().unwrap();
+    assert_eq!(prompt.text, "expand");
     assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::User));
     assert_eq!(app.chats[1].last_message_text(), "expand");
 }
@@ -3083,7 +3082,8 @@ fn expanded_subagent_chat_sends_pasted_steering() {
 
     app.update(Msg::Key(key(KeyCode::Enter)));
 
-    assert_eq!(prompt_rx.try_recv().unwrap(), "pasted steering");
+    let prompt = prompt_rx.try_recv().unwrap();
+    assert_eq!(prompt.text, "pasted steering");
     assert_eq!(app.chats[1].last_message_text(), "pasted steering");
 }
 
@@ -3178,7 +3178,7 @@ fn stale_auth_required_after_cancel_is_dropped() {
 }
 
 #[test]
-fn send_to_agent_unknown_subagent_falls_back_to_main() {
+fn send_to_agent_unknown_subagent_does_not_fallback_to_main() {
     let (main_tx, main_rx) = flume::unbounded();
     let mut app = test_app();
     app.status = Status::Streaming;
@@ -3190,7 +3190,7 @@ fn send_to_agent_unknown_subagent_falls_back_to_main() {
     };
     app.update(Msg::Key(key(KeyCode::Enter)));
 
-    assert_eq!(main_rx.try_recv().unwrap(), "");
+    assert!(main_rx.try_recv().is_err());
     assert_eq!(app.pending_input, PendingInput::None);
 }
 
@@ -3868,7 +3868,7 @@ fn ctrl_c_closes_overlay_instead_of_quitting() {
 fn bash_prefix_overrides_mode() {
     let mut app = test_app();
 
-    app.input_box.set_input("! ls".into());
+    app.input_box.set_input("! ls");
     assert_eq!(&*app.mode_label().0, "[BASH]");
 
     app.update(Msg::Key(key(KeyCode::Tab)));
@@ -3878,7 +3878,7 @@ fn bash_prefix_overrides_mode() {
         "tab must not toggle while bash prefix present"
     );
 
-    app.input_box.set_input("ls".into());
+    app.input_box.set_input("ls");
     assert_eq!(&*app.mode_label().0, "[BUILD]");
 }
 
@@ -4095,7 +4095,6 @@ fn error_event_adds_copyable_message_to_main_chat() {
 fn ctrl_c_denies_permission_prompt() {
     let mut app = test_app();
     app.permission_prompt.open(
-        "id".into(),
         n00n_config::ToolKey::native("bash"),
         vec!["execute".into()],
         None,
@@ -4227,7 +4226,6 @@ fn permission_prompt_takes_bottom_precedence_over_below_split() {
     open_split_window(&mut app, n00n_lua::Split::Left);
     open_split_window(&mut app, n00n_lua::Split::Above);
     app.permission_prompt.open(
-        "perm-1".into(),
         n00n_config::ToolKey::native("bash"),
         vec!["ls".into()],
         None,

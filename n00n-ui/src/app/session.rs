@@ -134,9 +134,9 @@ impl App {
 
     pub(crate) fn session_snapshot(&mut self) -> AppSession {
         self.state.sync_session(
-            &self.shared_history,
-            &self.shared_transcript,
-            &self.shared_tool_outputs,
+            self.shared_history.as_ref(),
+            self.shared_transcript.as_ref(),
+            self.shared_tool_outputs.as_ref(),
             &self.permissions,
         );
         self.sync_ephemeral_state();
@@ -220,7 +220,7 @@ impl App {
         self.main_chat().token_usage = self.state.token_usage;
         self.main_chat().context_size = self.state.context_size;
         if let Some(draft) = self.state.session.meta.input_draft.take() {
-            self.input_box.set_input(draft);
+            self.input_box.set_input(&draft);
             self.input_box.buffer.move_to_end();
         }
 
@@ -322,7 +322,7 @@ impl App {
         }
     }
 
-    pub(super) fn rewind_to(&mut self, entry: RewindEntry) -> Vec<Action> {
+    pub(super) fn rewind_to(&mut self, entry: &RewindEntry) -> Vec<Action> {
         self.run_id += 1;
 
         self.state.session.messages.truncate(entry.turn_index);
@@ -339,7 +339,7 @@ impl App {
         self.reset_ui_chrome();
         self.restore_display();
 
-        self.input_box.set_input(entry.prompt_text);
+        self.input_box.set_input(&entry.prompt_text);
         self.input_box.buffer.move_to_end();
 
         self.state.session.update_title_if_default();

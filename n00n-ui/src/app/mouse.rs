@@ -69,7 +69,8 @@ impl App {
                 self.handle_drag(event.row, event.column);
             }
             MouseEventKind::Moved => {
-                self.chats[self.active_chat].on_mouse(event.column, event.row);
+                let chat_idx = self.resolve_render_chat();
+                self.chats[chat_idx].on_mouse(event.column, event.row);
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 if let Some(SelectionState::Dragging { sel, .. }) = self.selection_state {
@@ -79,15 +80,13 @@ impl App {
                         if zone == SelectionZone::Messages {
                             let area = self.msg_area();
                             let render_chat = self.resolve_render_chat();
-                            if event.modifiers.contains(KeyModifiers::CONTROL) {
-                                if let Some(tool_id) =
+                            if event.modifiers.contains(KeyModifiers::CONTROL)
+                                && let Some(tool_id) =
                                     self.chats[render_chat].tool_id_at(event.row, area)
-                                {
-                                    if let Some(&idx) = self.chat_index.get(tool_id) {
-                                        self.active_chat = idx;
-                                        return;
-                                    }
-                                }
+                                && let Some(&idx) = self.chat_index.get(tool_id)
+                            {
+                                self.active_chat = idx;
+                                return;
                             }
                             if let Some((text, label)) =
                                 self.chats[render_chat].copy_at(event.row, event.column, area)

@@ -106,7 +106,11 @@ pub enum ParamSchema {
 pub fn to_json_schema(s: &ParamSchema) -> Value {
     match s {
         ParamSchema::Primitive { kind, description } => {
-            json!({ "type": kind.to_string(), "description": description })
+            if description.is_empty() {
+                json!({ "type": kind.to_string() })
+            } else {
+                json!({ "type": kind.to_string(), "description": description })
+            }
         }
         ParamSchema::Enum {
             variants,
@@ -118,11 +122,16 @@ pub fn to_json_schema(s: &ParamSchema) -> Value {
             }
             v
         }
-        ParamSchema::Array { items, description } => json!({
-            "type": "array",
-            "description": description,
-            "items": to_json_schema(items),
-        }),
+        ParamSchema::Array { items, description } => {
+            let mut v = json!({
+                "type": "array",
+                "items": to_json_schema(items),
+            });
+            if !description.is_empty() {
+                v["description"] = json!(description);
+            }
+            v
+        }
         ParamSchema::Object {
             properties,
             description,
@@ -138,7 +147,6 @@ pub fn to_json_schema(s: &ParamSchema) -> Value {
             let mut v = json!({
                 "type": "object",
                 "properties": props,
-                "additionalProperties": false,
             });
             if !required.is_empty() {
                 v["required"] = json!(required);
@@ -493,8 +501,15 @@ fn walk(schema: &ParamSchema, value: Value, path: &mut JsonPath) -> Result<Value
                     Err(_) => {}
                 }
             }
-            #[allow(clippy::expect_used)]
-            Err(first_error.expect("union variants are checked as non-empty while parsing"))
+            match first_error {
+                Some(error) => Err(error),
+                None => Err(ToolInputError::at(
+                    path,
+                    ToolInputErrorKind::InternalBug {
+                        detail: "union validation failed with no error details".to_string(),
+                    },
+                )),
+            }
         }
     }
 }
@@ -975,10 +990,13 @@ mod tests {
     }
 
     #[test]
-    fn to_json_schema_object_is_closed_with_required_and_nested_items() {
+    fn to_json_schema_object_has_required_and_nested_items() {
         let v = to_json_schema(&MULTIEDIT_LIKE);
         assert_eq!(v["type"], "object");
-        assert_eq!(v["additionalProperties"], false);
+        assert!(
+            v.get("additionalProperties").is_none(),
+            "additionalProperties is enforced by schema::validate, not the wire schema"
+        );
         let req: Vec<&str> = v["required"]
             .as_array()
             .unwrap()
@@ -988,9 +1006,11 @@ mod tests {
         assert_eq!(req, vec!["path", "edits"]);
         assert_eq!(v["properties"]["edits"]["type"], "array");
         assert_eq!(v["properties"]["edits"]["items"]["type"], "object");
-        assert_eq!(
-            v["properties"]["edits"]["items"]["additionalProperties"],
-            false
+        assert!(
+            v["properties"]["edits"]["items"]
+                .get("additionalProperties")
+                .is_none(),
+            "additionalProperties is enforced by schema::validate, not the wire schema"
         );
     }
 
@@ -1356,5 +1376,193 @@ mod tests {
         });
         let result = sanitize_tool_input_schema(input);
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn to_json_schema_never_emits_additional_properties_for_object() {
+        const OBJ_SCHEMA: ParamSchema = ParamSchema::Object {
+            properties: &[("name", &STR_PRIM, true, &[])],
+            description: "",
+        };
+        let v = to_json_schema(&OBJ_SCHEMA);
+        assert!(
+            v.get("additionalProperties").is_none(),
+            "object schema should not emit additionalProperties"
+        );
+    }
+
+    #[test]
+    fn to_json_schema_never_emits_additional_properties_for_array() {
+        const ARR_SCHEMA: ParamSchema = ParamSchema::Array {
+            items: &STR_PRIM,
+            description: "",
+        };
+        let v = to_json_schema(&ARR_SCHEMA);
+        assert!(
+            v.get("additionalProperties").is_none(),
+            "array schema should not emit additionalProperties"
+        );
+    }
+
+    #[test]
+    fn to_json_schema_never_emits_additional_properties_for_any() {
+        const ANY_SCHEMA: ParamSchema = ParamSchema::Any { description: "" };
+        let v = to_json_schema(&ANY_SCHEMA);
+        assert!(
+            v.get("additionalProperties").is_none(),
+            "any schema should not emit additionalProperties"
+        );
+    }
+
+    #[test]
+    fn to_json_schema_never_emits_additional_properties_for_union() {
+        const UNION_SCHEMA: ParamSchema = ParamSchema::Union {
+            variants: &[&STR_PRIM, &BOOL_PRIM],
+            description: "",
+        };
+        let v = to_json_schema(&UNION_SCHEMA);
+        assert!(
+            v.get("additionalProperties").is_none(),
+            "union schema should not emit additionalProperties"
+        );
+        for variant in v["anyOf"].as_array().unwrap() {
+            assert!(
+                variant.get("additionalProperties").is_none(),
+                "union variant should not emit additionalProperties"
+            );
+        }
+    }
+
+    #[test]
+    fn to_json_schema_never_emits_additional_properties_for_nested_object() {
+        const NESTED_OBJ: ParamSchema = ParamSchema::Object {
+            properties: &[("inner", &MULTIEDIT_LIKE, true, &[])],
+            description: "",
+        };
+        let v = to_json_schema(&NESTED_OBJ);
+        assert!(
+            v.get("additionalProperties").is_none(),
+            "nested object schema should not emit additionalProperties"
+        );
+        assert!(
+            v["properties"]["inner"]
+                .get("additionalProperties")
+                .is_none(),
+            "nested object property should not emit additionalProperties"
+        );
+    }
+
+    #[test]
+    fn try_from_json_ignores_additional_properties_on_object() {
+        let schema_json = json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"}
+            },
+            "additionalProperties": false
+        });
+        let schema = try_from_json(&schema_json);
+        assert!(
+            schema.is_ok(),
+            "try_from_json should accept additionalProperties"
+        );
+    }
+
+    #[test]
+    fn validate_drops_unknown_keys_at_top_level() {
+        const SCHEMA: ParamSchema = ParamSchema::Object {
+            properties: &[("name", &STR_PRIM, true, &[])],
+            description: "",
+        };
+        let out = validate(&SCHEMA, json!({"name": "x", "unknown": 42})).unwrap();
+        assert!(out.get("unknown").is_none());
+    }
+
+    #[test]
+    fn validate_drops_unknown_keys_nested() {
+        const SCHEMA: ParamSchema = ParamSchema::Object {
+            properties: &[("inner", &MULTIEDIT_LIKE, true, &[])],
+            description: "",
+        };
+        let out = validate(
+            &SCHEMA,
+            json!({"inner": {"path": "/x", "edits": [], "unknown": 42}}),
+        )
+        .unwrap();
+        assert!(out["inner"].get("unknown").is_none());
+    }
+
+    #[test]
+    fn validate_drops_unknown_keys_in_recovered_schema() {
+        let schema_json = json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"}
+            }
+        });
+        let schema = try_from_json(&schema_json).unwrap();
+        let out = validate(schema, json!({"name": "x", "unknown": 42})).unwrap();
+        assert!(out.get("unknown").is_none());
+    }
+
+    #[test]
+    fn validate_drops_unknown_keys_in_union_variant() {
+        const UNION_SCHEMA: ParamSchema = ParamSchema::Union {
+            variants: &[&MULTIEDIT_LIKE],
+            description: "",
+        };
+        let out = validate(
+            &UNION_SCHEMA,
+            json!({"path": "/x", "edits": [], "unknown": 42}),
+        )
+        .unwrap();
+        assert!(out.get("unknown").is_none());
+    }
+
+    #[test]
+    fn validate_preserves_required_fields() {
+        const SCHEMA: ParamSchema = ParamSchema::Object {
+            properties: &[("name", &STR_PRIM, true, &[])],
+            description: "",
+        };
+        let out = validate(&SCHEMA, json!({"name": "x"})).unwrap();
+        assert_eq!(out["name"], "x");
+    }
+
+    #[test]
+    fn validate_rejects_missing_required_with_correct_path() {
+        const SCHEMA: ParamSchema = ParamSchema::Object {
+            properties: &[("name", &STR_PRIM, true, &[])],
+            description: "",
+        };
+        let err = validate(&SCHEMA, json!({})).unwrap_err();
+        assert_eq!(err.path.to_string(), "name");
+        assert!(matches!(err.kind, ToolInputErrorKind::Missing { .. }));
+    }
+
+    #[test]
+    fn roundtrip_validates_same_good_inputs() {
+        const SCHEMA: ParamSchema = ParamSchema::Object {
+            properties: &[("name", &STR_PRIM, true, &[])],
+            description: "",
+        };
+        let good_input = json!({"name": "x"});
+        let json_schema = to_json_schema(&SCHEMA);
+        let recovered = try_from_json(&json_schema).unwrap();
+        assert!(validate(&SCHEMA, good_input.clone()).is_ok());
+        assert!(validate(recovered, good_input).is_ok());
+    }
+
+    #[test]
+    fn roundtrip_validates_same_bad_inputs() {
+        const SCHEMA: ParamSchema = ParamSchema::Object {
+            properties: &[("name", &STR_PRIM, true, &[])],
+            description: "",
+        };
+        let bad_input = json!({});
+        let json_schema = to_json_schema(&SCHEMA);
+        let recovered = try_from_json(&json_schema).unwrap();
+        assert!(validate(&SCHEMA, bad_input.clone()).is_err());
+        assert!(validate(recovered, bad_input).is_err());
     }
 }

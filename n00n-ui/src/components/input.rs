@@ -170,7 +170,7 @@ impl InputBox {
 
     pub fn new(history: InputHistory) -> Self {
         Self {
-            buffer: TextBuffer::new(String::new()),
+            buffer: TextBuffer::new(""),
             history,
             history_index: None,
             draft: String::new(),
@@ -285,12 +285,12 @@ impl InputBox {
         self.pending_images.push(source);
     }
 
-    pub fn set_input(&mut self, s: String) {
+    pub fn set_input(&mut self, s: &str) {
         self.buffer = TextBuffer::new(s);
     }
 
     pub fn set_submission(&mut self, sub: Submission) {
-        self.buffer = TextBuffer::new(sub.text);
+        self.buffer = TextBuffer::new(&sub.text);
         self.pending_images = sub.images;
     }
 
@@ -308,7 +308,8 @@ impl InputBox {
         };
         self.history_index = Some(new_index);
         if let Some(entry) = self.history.get(new_index) {
-            self.set_input(entry.to_string());
+            let text = entry.to_string();
+            self.set_input(&text);
         }
         self.buffer.move_to_end();
     }
@@ -320,12 +321,13 @@ impl InputBox {
         if i + 1 < self.history.len() {
             self.history_index = Some(i + 1);
             if let Some(entry) = self.history.get(i + 1) {
-                self.set_input(entry.to_string());
+                let text = entry.to_string();
+                self.set_input(&text);
             }
         } else {
             self.history_index = None;
             let draft = mem::take(&mut self.draft);
-            self.set_input(draft);
+            self.set_input(&draft);
         }
     }
 
@@ -799,9 +801,9 @@ mod tests {
         input.history_down();
         assert_eq!(input.buffer.value(), "");
 
-        input.set_input("alpha\nbeta".into());
+        input.set_input("alpha\nbeta");
         input.submit();
-        input.set_input("gamma\ndelta".into());
+        input.set_input("gamma\ndelta");
         input.submit();
 
         input.history_up();
@@ -897,7 +899,7 @@ mod tests {
         let scroll_before = input.scroll_y;
         assert!(scroll_before > 0);
 
-        input.buffer = TextBuffer::new("short".into());
+        input.buffer = TextBuffer::new("short");
         let _ = render_input(&mut input, 40, area_height);
         assert_eq!(input.scroll_y, 0);
     }

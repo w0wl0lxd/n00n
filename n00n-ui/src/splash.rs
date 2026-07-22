@@ -82,12 +82,13 @@ impl ColorTransition {
     #[allow(clippy::unwrap_used, clippy::missing_panics_doc)]
     pub fn new(color: Color) -> Self {
         let rgb = extract_rgb(color, (100, 140, 255));
+        let start = Instant::now()
+            .checked_sub(std::time::Duration::from_secs_f32(COLOR_TRANSITION_SECS))
+            .unwrap_or_else(Instant::now);
         Self {
             from: rgb,
             to: rgb,
-            start: Instant::now()
-                .checked_sub(std::time::Duration::from_secs_f32(COLOR_TRANSITION_SECS))
-                .unwrap(),
+            start,
         }
     }
 
@@ -103,9 +104,11 @@ impl ColorTransition {
     }
 
     #[must_use]
-    #[allow(clippy::disallowed_methods)]
     pub fn is_animating(&self) -> bool {
-        Instant::now().duration_since(self.start).as_secs_f32() < COLOR_TRANSITION_SECS
+        Instant::now()
+            .saturating_duration_since(self.start)
+            .as_secs_f32()
+            < COLOR_TRANSITION_SECS
     }
 
     #[must_use]
@@ -114,9 +117,9 @@ impl ColorTransition {
         Color::Rgb(r, g, b)
     }
 
-    #[allow(clippy::disallowed_methods)]
     fn resolve_rgb(&self, now: Instant) -> (u8, u8, u8) {
-        let t = (now.duration_since(self.start).as_secs_f32() / COLOR_TRANSITION_SECS).min(1.0);
+        let t = (now.saturating_duration_since(self.start).as_secs_f32() / COLOR_TRANSITION_SECS)
+            .min(1.0);
         let p = ease_out_cubic(t);
         (
             lerp_u8(self.from.0, self.to.0, p),

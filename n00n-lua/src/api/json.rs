@@ -78,11 +78,11 @@ impl UserData for LuaSchemaValidator {
 fn encode(lua: &Lua, value: Value) -> LuaResult<(Value, Value)> {
     let serde_val: serde_json::Value = match lua.from_value(value) {
         Ok(v) => v,
-        Err(e) => return err_pair(lua, e),
+        Err(e) => return err_pair(lua, &e),
     };
     match serde_json::to_string(&serde_val) {
         Ok(s) => Ok((Value::String(lua.create_string(&s)?), Value::Nil)),
-        Err(e) => err_pair(lua, e),
+        Err(e) => err_pair(lua, &e),
     }
 }
 
@@ -98,7 +98,7 @@ fn encode(lua: &Lua, value: Value) -> LuaResult<(Value, Value)> {
 fn decode(lua: &Lua, str: String) -> LuaResult<(Value, Value)> {
     match serde_json::from_str::<serde_json::Value>(&str) {
         Ok(v) => Ok((json_to_lua(lua, &v)?, Value::Nil)),
-        Err(e) => err_pair(lua, e),
+        Err(e) => err_pair(lua, &e),
     }
 }
 
@@ -120,14 +120,14 @@ fn decode(lua: &Lua, str: String) -> LuaResult<(Value, Value)> {
 fn schema_validator(lua: &Lua, schema: Value) -> LuaResult<(Value, Value)> {
     let schema_json = match lua_to_json(lua, &schema) {
         Ok(v) => v,
-        Err(e) => return err_pair(lua, e),
+        Err(e) => return err_pair(lua, &e),
     };
     match jsonschema::validator_for(&schema_json) {
         Ok(validator) => Ok((
             Value::UserData(lua.create_userdata(LuaSchemaValidator { validator })?),
             Value::Nil,
         )),
-        Err(e) => err_pair(lua, e),
+        Err(e) => err_pair(lua, &e),
     }
 }
 
@@ -143,11 +143,11 @@ fn schema_validator(lua: &Lua, schema: Value) -> LuaResult<(Value, Value)> {
 fn to_toon(lua: &Lua, value: Value) -> LuaResult<(Value, Value)> {
     let serde_val: serde_json::Value = match lua.from_value(value) {
         Ok(v) => v,
-        Err(e) => return err_pair(lua, e),
+        Err(e) => return err_pair(lua, &e),
     };
     match toon_format::encode_default(&serde_val) {
         Ok(s) => Ok((Value::String(lua.create_string(&s)?), Value::Nil)),
-        Err(e) => err_pair(lua, e),
+        Err(e) => err_pair(lua, &e),
     }
 }
 
@@ -161,7 +161,7 @@ fn to_toon(lua: &Lua, value: Value) -> LuaResult<(Value, Value)> {
 fn from_toon(lua: &Lua, str: String) -> LuaResult<(Value, Value)> {
     match toon_format::decode_default::<serde_json::Value>(&str) {
         Ok(v) => Ok((json_to_lua(lua, &v)?, Value::Nil)),
-        Err(e) => err_pair(lua, e),
+        Err(e) => err_pair(lua, &e),
     }
 }
 
@@ -221,15 +221,15 @@ fn record_toon_stats(json_len: usize, toon_len: usize, used_toon: bool) {
 fn tooned(lua: &Lua, value: Value) -> LuaResult<(Value, Value)> {
     let serde_val: serde_json::Value = match lua.from_value(value) {
         Ok(v) => v,
-        Err(e) => return err_pair(lua, e),
+        Err(e) => return err_pair(lua, &e),
     };
     let json = match serde_json::to_string(&serde_val) {
         Ok(s) => s,
-        Err(e) => return err_pair(lua, e),
+        Err(e) => return err_pair(lua, &e),
     };
     let toon = match toon_format::encode_default(&serde_val) {
         Ok(s) => s,
-        Err(e) => return err_pair(lua, e),
+        Err(e) => return err_pair(lua, &e),
     };
     let use_toon = toon.len() < json.len()
         && toon_format::decode_default::<serde_json::Value>(&toon)

@@ -798,25 +798,24 @@ mod tests {
         }
     }
 
-    #[test_case(ThinkingConfig::Off, "claude-opus-4-5", json!({}) ; "off")]
-    #[test_case(ThinkingConfig::Adaptive, "claude-opus-4-5", json!({"thinking": {"type": "adaptive"}}) ; "adaptive")]
-    #[test_case(ThinkingConfig::Budget(2048), "claude-opus-4-5", json!({"thinking": {"type": "enabled", "budget_tokens": 2048}}) ; "budget_legacy_in_range")]
-    #[test_case(ThinkingConfig::Budget(10000), "claude-opus-4-5", json!({"thinking": {"type": "enabled", "budget_tokens": 4096}}) ; "budget_legacy_clamped_to_max")]
-    #[test_case(ThinkingConfig::Budget(10000), "claude-sonnet-4-6", json!({"thinking": {"type": "enabled", "budget_tokens": 4096}}) ; "budget_legacy_sonnet")]
-    #[test_case(ThinkingConfig::Budget(10000), "claude-opus-4-6", json!({"thinking": {"type": "enabled", "budget_tokens": 4096}}) ; "budget_legacy_opus_4_6")]
-    #[test_case(ThinkingConfig::Off, "claude-opus-4-7", json!({}) ; "off_adaptive_model")]
-    #[test_case(ThinkingConfig::Adaptive, "claude-opus-4-7", json!({"thinking": {"type": "adaptive"}}) ; "adaptive_adaptive_model")]
-    #[test_case(ThinkingConfig::Budget(10000), "claude-opus-4-7", json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}) ; "budget_adaptive_opus_4_7")]
-    #[test_case(ThinkingConfig::Effort(Low), "claude-opus-4-7", json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "low"}}) ; "effort_low_passthrough")]
-    #[test_case(ThinkingConfig::Budget(10000), "claude-opus-4-8-1m", json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}) ; "budget_adaptive_opus_4_8_long_context")]
-    #[test_case(ThinkingConfig::Budget(10000), "claude-opus-5-0", json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}) ; "budget_adaptive_future_opus_5")]
-    #[test_case(ThinkingConfig::Budget(10000), "claude-opus-4.7", json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}) ; "budget_adaptive_copilot_dotted_id")]
-    #[test_case(ThinkingConfig::Budget(10000), "claude-opus-4.6", json!({"thinking": {"type": "enabled", "budget_tokens": 4096}}) ; "budget_legacy_copilot_dotted_4_6")]
-    #[allow(clippy::needless_pass_by_value)]
-    fn thinking_apply_to_body(config: ThinkingConfig, model_id: &str, expected: Value) {
+    #[test_case(ThinkingConfig::Off, "claude-opus-4-5", &json!({}) ; "off")]
+    #[test_case(ThinkingConfig::Adaptive, "claude-opus-4-5", &json!({"thinking": {"type": "adaptive"}}) ; "adaptive")]
+    #[test_case(ThinkingConfig::Budget(2048), "claude-opus-4-5", &json!({"thinking": {"type": "enabled", "budget_tokens": 2048}}) ; "budget_legacy_in_range")]
+    #[test_case(ThinkingConfig::Budget(10000), "claude-opus-4-5", &json!({"thinking": {"type": "enabled", "budget_tokens": 4096}}) ; "budget_legacy_clamped_to_max")]
+    #[test_case(ThinkingConfig::Budget(10000), "claude-sonnet-4-6", &json!({"thinking": {"type": "enabled", "budget_tokens": 4096}}) ; "budget_legacy_sonnet")]
+    #[test_case(ThinkingConfig::Budget(10000), "claude-opus-4-6", &json!({"thinking": {"type": "enabled", "budget_tokens": 4096}}) ; "budget_legacy_opus_4_6")]
+    #[test_case(ThinkingConfig::Off, "claude-opus-4-7", &json!({}) ; "off_adaptive_model")]
+    #[test_case(ThinkingConfig::Adaptive, "claude-opus-4-7", &json!({"thinking": {"type": "adaptive"}}) ; "adaptive_adaptive_model")]
+    #[test_case(ThinkingConfig::Budget(10000), "claude-opus-4-7", &json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}) ; "budget_adaptive_opus_4_7")]
+    #[test_case(ThinkingConfig::Effort(Low), "claude-opus-4-7", &json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "low"}}) ; "effort_low_passthrough")]
+    #[test_case(ThinkingConfig::Budget(10000), "claude-opus-4-8-1m", &json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}) ; "budget_adaptive_opus_4_8_long_context")]
+    #[test_case(ThinkingConfig::Budget(10000), "claude-opus-5-0", &json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}) ; "budget_adaptive_future_opus_5")]
+    #[test_case(ThinkingConfig::Budget(10000), "claude-opus-4.7", &json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}) ; "budget_adaptive_copilot_dotted_id")]
+    #[test_case(ThinkingConfig::Budget(10000), "claude-opus-4.6", &json!({"thinking": {"type": "enabled", "budget_tokens": 4096}}) ; "budget_legacy_copilot_dotted_4_6")]
+    fn thinking_apply_to_body(config: ThinkingConfig, model_id: &str, expected: &Value) {
         let mut body = json!({});
         config.apply_to_body(&mut body, &thinking_model(model_id));
-        assert_eq!(body, expected);
+        assert_eq!(body, *expected);
     }
 
     #[test_case(&dialect::STANDARD, ThinkingConfig::Off,             None            ; "standard_off_noop")]
@@ -863,15 +862,14 @@ mod tests {
         assert_eq!(config.budget(max), expected);
     }
 
-    #[test_case(ThinkingConfig::Off,          json!({})                                                                  ; "off")]
-    #[test_case(ThinkingConfig::Adaptive,     json!({"generationConfig": {"thinkingConfig": {"includeThoughts": true}}}) ; "adaptive")]
-    #[test_case(ThinkingConfig::Budget(4096), json!({"generationConfig": {"thinkingConfig": {"thinkingBudget": 4096}}}) ; "budget")]
-    #[test_case(ThinkingConfig::Budget(10000), json!({"generationConfig": {"thinkingConfig": {"thinkingBudget": 8192}}}) ; "budget_clamped")]
-    #[allow(clippy::needless_pass_by_value)]
-    fn thinking_apply_google_thinking(config: ThinkingConfig, expected: Value) {
+    #[test_case(ThinkingConfig::Off,          &json!({})                                                                  ; "off")]
+    #[test_case(ThinkingConfig::Adaptive,     &json!({"generationConfig": {"thinkingConfig": {"includeThoughts": true}}}) ; "adaptive")]
+    #[test_case(ThinkingConfig::Budget(4096), &json!({"generationConfig": {"thinkingConfig": {"thinkingBudget": 4096}}}) ; "budget")]
+    #[test_case(ThinkingConfig::Budget(10000), &json!({"generationConfig": {"thinkingConfig": {"thinkingBudget": 8192}}}) ; "budget_clamped")]
+    fn thinking_apply_google_thinking(config: ThinkingConfig, expected: &Value) {
         let mut body = json!({});
         config.apply_google_thinking(&mut body, 8192);
-        assert_eq!(body, expected);
+        assert_eq!(body, *expected);
     }
 
     #[test_case(ThinkingConfig::Off,            0    ; "off")]

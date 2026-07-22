@@ -92,7 +92,7 @@ impl<T: PickerItem> State<T> {
             items,
             filtered,
             selected: 0,
-            search: TextBuffer::new(String::new()),
+            search: TextBuffer::new(""),
             scroll_offset: 0,
             viewport_height: 20,
             inner_area: Rect::default(),
@@ -319,12 +319,10 @@ impl<T: PickerItem> ListPicker<T> {
         self.handle_ready_key(key)
     }
 
-    #[allow(clippy::expect_used)]
     fn handle_ready_key(&mut self, key: KeyEvent) -> PickerAction<T> {
-        let s = self
-            .state
-            .as_mut()
-            .expect("handle_ready_key called without state");
+        let Some(s) = self.state.as_mut() else {
+            return PickerAction::Consumed;
+        };
 
         if key::QUIT.matches(key) {
             self.state = None;
@@ -374,10 +372,11 @@ impl<T: PickerItem> ListPicker<T> {
                 }
                 match idx {
                     Some(idx) => {
-                        #[allow(clippy::unwrap_used, clippy::disallowed_methods)]
-                        let mut state = self.state.take().unwrap();
-                        #[allow(clippy::disallowed_methods)]
-                        PickerAction::Select(idx, state.items.swap_remove(idx))
+                        if let Some(mut state) = self.state.take() {
+                            #[allow(clippy::disallowed_methods)]
+                            return PickerAction::Select(idx, state.items.swap_remove(idx));
+                        }
+                        PickerAction::Consumed
                     }
                     None => PickerAction::Consumed,
                 }

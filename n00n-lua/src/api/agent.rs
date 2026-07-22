@@ -554,15 +554,27 @@ async fn session(
         let _ = sink.send(ToolLive::Annotation(model.spec()));
     }
 
-    let mut tools_json: JsonValue = match tools_val {
-        Some(val) => {
-            let tools = lua_to_json(&lua, &val)?;
-            if !tools.is_array() {
-                return Err(mlua::Error::runtime("tools must be an array"));
-            }
-            tools
+    let (mut tools_json, tool_filter) = if let Some(val) = tools_val {
+        let tools = lua_to_json(&lua, &val)?;
+        if !tools.is_array() {
+            return Err(mlua::Error::runtime("tools must be an array"));
         }
-        None => JsonValue::Array(vec![]),
+        (tools, ToolFilter::All)
+    } else {
+        let vars = n00n_agent::template::Vars::new();
+        let filter = ToolFilter::from_config(&agent_ctx.config, &model, &[]);
+        let ctx = DescriptionContext {
+            filter: &filter,
+            audience,
+            workflow: false,
+        };
+        let tools = n00n_agent::tools::ToolRegistry::global().definitions_active(
+            &vars,
+            &ctx,
+            model.supports_tool_examples(),
+            &n00n_agent::tools::ActiveTools::default(),
+        );
+        (tools, filter)
     };
 
     let mut local_map: HashMap<String, LocalToolFn> = HashMap::new();
@@ -687,6 +699,7 @@ async fn session(
         },
         system: system.unwrap_or_else(String::new),
         tools: tools_json,
+        tool_filter,
         thinking,
         fast,
         mcp: agent_ctx.mcp.clone(),
@@ -974,26 +987,9 @@ struct Progress {
     barrier_rx: flume::Receiver<()>,
 }
 
-fn sanitize_activity_value(value: &str, max_bytes: usize, fallback: &str) -> String {
-    let mut out = String::with_capacity(value.len().min(max_bytes));
-    for byte in value.bytes() {
-        if out.len() >= max_bytes {
-            break;
-        }
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b':' | b'/' | b'-') {
-            out.push(char::from(byte));
-        }
-    }
-    if out.is_empty() {
-        fallback.to_owned()
-    } else {
-        out
-    }
-}
-
 impl Progress {
     fn new(start: Instant, session_id: String) -> Self {
-        let (tx, rx) = flume::unbounded();
+        let (tx, rx) = flume::bounded(1);
         let (barrier_tx, barrier_rx) = flume::bounded(1);
         Self {
             session_id,
@@ -1202,6 +1198,7 @@ struct SessionState {
     params: AgentParams,
     system: String,
     tools: JsonValue,
+    tool_filter: ToolFilter,
     thinking: ThinkingConfig,
     fast: bool,
     mcp: Option<n00n_agent::mcp::McpHandle>,
@@ -1323,6 +1320,7 @@ impl Drop for LuaSession {
 /// if err then error(err) end
 /// print(r.text)
 /// print(r.input_tokens .. " input, " .. r.output_tokens .. " output tokens")
+#[allow(clippy::too_many_lines)]
 #[lua_fn]
 #[allow(clippy::cast_possible_truncation)]
 async fn prompt(
@@ -1361,6 +1359,7 @@ async fn prompt(
                 system: s.system.clone(),
                 event_tx: s.sub_event_tx.clone(),
                 tools: s.tools.clone(),
+                tool_filter: s.tool_filter.clone(),
             },
         )
         .with_user_response_rx(Arc::clone(&s.answer_rx))
@@ -1580,7 +1579,7 @@ mod tests {
 
     #[test]
     fn progress_updates_start_in_place_and_retains_status() {
-        let progress = Progress::new(Instant::now());
+        let progress = Progress::new(Instant::now(), String::new());
         progress.record_start(&progress_start("one", "cargo test"));
         progress.record_done(&progress_done("one", true));
         progress.record_done(&progress_done("one", true));
@@ -1598,7 +1597,7 @@ mod tests {
 
     #[test]
     fn progress_tracks_reused_activity_ids_in_order() {
-        let progress = Progress::new(Instant::now());
+        let progress = Progress::new(Instant::now(), String::new());
         progress.record_start(&progress_start("call_read", "first"));
         progress.record_start(&progress_start("call_read", "second"));
         progress.record_done(&progress_done("call_read", false));
@@ -1619,7 +1618,7 @@ mod tests {
 
     #[test]
     fn progress_keeps_latest_five_activity_rows() {
-        let progress = Progress::new(Instant::now());
+        let progress = Progress::new(Instant::now(), String::new());
         for i in 0..7 {
             let id = i.to_string();
             progress.record_start(&progress_start(&id, &format!("message {i}")));
@@ -1643,7 +1642,7 @@ mod tests {
 
     #[test]
     fn progress_activity_message_is_sanitized_and_truncated() {
-        let progress = Progress::new(Instant::now());
+        let progress = Progress::new(Instant::now(), String::new());
         let long_secret = format!("API_KEY=super-secret\n{}", "é".repeat(100));
         progress.record_start(&progress_start("secret", &long_secret));
 
@@ -1660,7 +1659,7 @@ mod tests {
 
     #[test]
     fn progress_counts_done_events_for_evicted_activity_rows() {
-        let progress = Progress::new(Instant::now());
+        let progress = Progress::new(Instant::now(), String::new());
         for i in 0..7 {
             progress.record_start(&progress_start(&i.to_string(), "running"));
         }
@@ -1685,7 +1684,7 @@ mod tests {
     #[test]
     fn forwarder_barrier_observes_prior_tool_done() {
         smol::block_on(async {
-            let progress = Arc::new(Progress::new(Instant::now()));
+            let progress = Arc::new(Progress::new(Instant::now(), String::new()));
             progress.record_start(&progress_start("one", "reading"));
             let target = progress.next_forwarder_barrier();
             let forwarded = Arc::clone(&progress);
@@ -1731,7 +1730,7 @@ mod tests {
 
     #[test]
     fn progress_notifications_are_coalesced() {
-        let progress = Progress::new(Instant::now());
+        let progress = Progress::new(Instant::now(), String::new());
         for _ in 0..100 {
             progress.notify();
             progress.record_forwarder_barrier();
@@ -1754,7 +1753,7 @@ mod tests {
 
     #[test]
     fn progress_done_is_turn_safe() {
-        let progress = Progress::new(Instant::now());
+        let progress = Progress::new(Instant::now(), String::new());
         let first = progress.begin_turn();
         let second = progress.begin_turn();
         progress.set_done(first);
@@ -1972,5 +1971,62 @@ mod tests {
         assert!(input.images.is_empty());
         assert!(matches!(input.thinking, ThinkingConfig::Budget(1234)));
         assert!(input.fast);
+    }
+
+    #[test]
+    fn progress_tracks_current_tool_recent_tools_and_completed_count() {
+        let progress = Progress::new(Instant::now(), String::new());
+
+        progress.record_start(&progress_start("a", "first"));
+        progress.record_start(&progress_start("b", "second"));
+
+        {
+            let state = progress
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert_eq!(state.current.as_deref(), Some("read"));
+            assert_eq!(state.completed_count, 0);
+            assert!(state.recent.is_empty());
+        }
+
+        progress.record_done(&progress_done("a", false));
+
+        {
+            let state = progress
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert_eq!(state.current.as_deref(), Some("read"));
+            assert_eq!(state.completed_count, 1);
+            assert_eq!(state.recent, ["read"]);
+            assert_eq!(state.activities[0].status, ActivityStatus::Success);
+            assert_eq!(state.activities[1].status, ActivityStatus::Running);
+        }
+
+        progress.record_done(&progress_done("b", true));
+
+        let state = progress
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(state.current.is_none());
+        assert_eq!(state.completed_count, 2);
+        assert_eq!(state.recent, ["read", "read"]);
+        assert_eq!(state.activities[0].status, ActivityStatus::Success);
+        assert_eq!(state.activities[1].status, ActivityStatus::Error);
+    }
+
+    #[test]
+    fn progress_notifies_waiters_on_each_start_and_done() {
+        let progress = Progress::new(Instant::now(), String::new());
+
+        progress.record_start(&progress_start("a", "first"));
+        assert!(progress.rx.try_recv().is_ok());
+        assert!(progress.rx.try_recv().is_err());
+
+        progress.record_done(&progress_done("a", false));
+        assert!(progress.rx.try_recv().is_ok());
+        assert!(progress.rx.try_recv().is_err());
     }
 }

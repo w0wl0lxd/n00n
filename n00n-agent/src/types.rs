@@ -710,14 +710,67 @@ impl ToolDoneEvent {
     }
 }
 
+/// Filters tool result text to remove boilerplate while preserving errors and actionable output.
+/// Inspired by Perplexity's approach: drop repeated headers, excessive blank lines, and progress bars.
+fn filter_tool_result(content: &str, is_error: bool) -> String {
+    if is_error {
+        return content.to_string();
+    }
+
+    let lines: Vec<&str> = content.lines().collect();
+    let mut filtered = Vec::with_capacity(lines.len());
+    let mut last_was_blank = false;
+    let mut seen_headers = std::collections::HashSet::new();
+
+    for line in &lines {
+        let trimmed = line.trim();
+        let is_blank = trimmed.is_empty();
+
+        if is_blank {
+            if !last_was_blank {
+                filtered.push(*line);
+                last_was_blank = true;
+            }
+            continue;
+        }
+
+        last_was_blank = false;
+
+        if trimmed.starts_with("===")
+            || trimmed.starts_with("---")
+            || trimmed.starts_with("...")
+            || trimmed.starts_with("Progress:")
+            || trimmed.starts_with("Downloading:")
+            || trimmed.starts_with("Installing:")
+            || trimmed.starts_with("Building:")
+            || trimmed.starts_with("Compiling:")
+        {
+            continue;
+        }
+
+        if trimmed.len() < 50 && seen_headers.contains(trimmed) {
+            continue;
+        }
+
+        if trimmed.len() < 50 {
+            seen_headers.insert(trimmed);
+        }
+
+        filtered.push(*line);
+    }
+
+    filtered.join("\n")
+}
+
 #[must_use]
 pub fn tool_results(results: Vec<ToolDoneEvent>) -> Message {
     let mut content = Vec::with_capacity(results.len());
     let mut images = Vec::new();
     for r in results {
+        let filtered_content = filter_tool_result(&r.output.as_text(), r.is_error);
         content.push(ContentBlock::ToolResult {
             tool_use_id: r.id,
-            content: r.output.as_text(),
+            content: filtered_content,
             is_error: r.is_error,
         });
         if let ToolOutput::Image { source, .. } = &r.output {
@@ -1710,6 +1763,47 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn filter_tool_result_preserves_errors() {
+        let error = "error: file not found";
+        assert_eq!(filter_tool_result(error, true), error);
+    }
+
+    #[test]
+    fn filter_tool_result_preserves_short_content() {
+        let short = "short text";
+        assert_eq!(filter_tool_result(short, false), short);
+    }
+
+    #[test]
+    fn filter_tool_result_drops_excessive_blank_lines() {
+        let input = "line1\n\n\n\nline2\n\nmore content here to make it long enough for filtering";
+        let expected = "line1\n\nline2\n\nmore content here to make it long enough for filtering";
+        assert_eq!(filter_tool_result(input, false), expected);
+    }
+
+    #[test]
+    fn filter_tool_result_drops_progress_bars() {
+        let input = "Progress: 50%\nDownloading: file.tar.gz\nInstalling: package\nactual content\nmore content to ensure length";
+        let expected = "actual content\nmore content to ensure length";
+        assert_eq!(filter_tool_result(input, false), expected);
+    }
+
+    #[test]
+    fn filter_tool_result_drops_repeated_headers() {
+        let input =
+            "Header\ncontent\nHeader\nmore content\nadditional content to make it long enough";
+        let expected = "Header\ncontent\nmore content\nadditional content to make it long enough";
+        assert_eq!(filter_tool_result(input, false), expected);
+    }
+
+    #[test]
+    fn filter_tool_result_preserves_long_unique_lines() {
+        let input = "This is a long line that should be preserved\nAnother long line\nShort line";
+        let expected = input;
+        assert_eq!(filter_tool_result(input, false), expected);
     }
 
     #[test_case(

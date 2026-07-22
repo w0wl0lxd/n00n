@@ -64,16 +64,13 @@ fn parse_doc(lines: &[String], span: proc_macro2::Span) -> syn::Result<ParsedDoc
     for line in lines {
         if let Some(rest) = line.strip_prefix("@param ") {
             let mut it = rest.splitn(3, ' ');
-            #[allow(clippy::disallowed_methods)]
             let name = it
                 .next()
                 .ok_or_else(|| syn::Error::new(span, format!("malformed @param line: `{line}`")))?;
-            #[allow(clippy::disallowed_methods)]
             let ty = it
                 .next()
                 .ok_or_else(|| syn::Error::new(span, format!("malformed @param line: `{line}`")))?;
-            #[allow(clippy::disallowed_methods)]
-            let d = it.next().unwrap_or_default();
+            let d = it.next().unwrap_or_else(|| "");
             if name.is_empty() || ty.is_empty() {
                 return Err(syn::Error::new(
                     span,
@@ -92,14 +89,11 @@ fn parse_doc(lines: &[String], span: proc_macro2::Span) -> syn::Result<ParsedDoc
         } else {
             let dst = match section {
                 Section::Desc => &mut doc.desc,
-                Section::Param =>
-                {
-                    #[allow(clippy::unwrap_used)]
-                    if let Some(last) = doc.params.last_mut() {
-                        &mut last.2
-                    } else {
+                Section::Param => {
+                    let Some(last) = doc.params.last_mut() else {
                         continue;
-                    }
+                    };
+                    &mut last.2
                 }
                 Section::Return => &mut doc.returns,
                 Section::Example => &mut doc.example,
@@ -368,6 +362,7 @@ fn generate_doc_const(
     }
 }
 
+#[derive(Clone, Copy)]
 struct MethodImplArgs<'a> {
     func: &'a ItemFn,
     doc_const: &'a TokenStream2,
@@ -383,7 +378,6 @@ struct MethodImplArgs<'a> {
     ctx: &'a [(Ident, Type)],
 }
 
-#[allow(clippy::needless_pass_by_value)]
 fn generate_method_impl(args: MethodImplArgs<'_>) -> syn::Result<TokenStream2> {
     let MethodImplArgs {
         func,

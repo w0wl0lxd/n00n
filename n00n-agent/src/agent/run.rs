@@ -17,10 +17,12 @@ use super::tool_dispatch::{self, RecentCalls};
 use crate::cancel::{CancelMap, CancelToken, PreDispatchGate};
 use crate::mcp::McpHandle;
 use crate::permissions::PermissionManager;
-use crate::tools::{Deadline, FileReadTracker, LocalTools, ToolAudience, ToolContext};
+use crate::tools::{
+    ActiveTools, Deadline, FileReadTracker, LocalTools, ToolAudience, ToolContext, ToolFilter,
+};
 use crate::{
     AgentConfig, AgentError, AgentEvent, AgentInput, AgentMode, EventSender, ExtractedCommand,
-    InterruptPoint, InterruptSource, TurnCompleteEvent,
+    InterruptPoint, InterruptSource, ToolDoneEvent, TurnCompleteEvent,
 };
 use n00n_config::ToolOutputLines;
 use n00n_storage::id::SessionRef;
@@ -83,6 +85,7 @@ pub struct AgentRunParams<'h> {
     pub system: String,
     pub event_tx: EventSender,
     pub tools: Value,
+    pub tool_filter: ToolFilter,
 }
 
 pub struct Agent<'h> {
@@ -123,12 +126,16 @@ pub struct Agent<'h> {
     audience: ToolAudience,
     workflow: bool,
     local_tools: LocalTools,
+    tool_filter: ToolFilter,
+    active_tools: ActiveTools,
+    supports_tool_examples: bool,
 }
 
 impl<'h> Agent<'h> {
     #[must_use]
     pub fn new(params: AgentParams, run: AgentRunParams<'h>) -> Self {
-        Self {
+        let supports_tool_examples = params.model.supports_tool_examples();
+        let mut agent = Self {
             provider: params.provider,
             model: Arc::new(params.model),
             config: params.config,
@@ -166,7 +173,12 @@ impl<'h> Agent<'h> {
             audience: params.audience,
             workflow: false,
             local_tools: LocalTools::default(),
-        }
+            tool_filter: run.tool_filter,
+            active_tools: ActiveTools::default(),
+            supports_tool_examples,
+        };
+        agent.warm_active_tools();
+        agent
     }
 
     #[must_use]
@@ -243,8 +255,8 @@ impl<'h> Agent<'h> {
             .unwrap_or_else(|| rollback_len);
         let msg = Message::user_with_images(input.message.clone(), input.images);
         self.history.push(msg);
-        self.context_size =
-            estimate_message_tokens(self.history.as_slice()) + estimate_tool_tokens(&self.tools);
+        self.context_size = estimate_message_tokens(self.history.as_slice())
+            .saturating_add(estimate_tool_tokens(&self.tools));
         self.mode = input.mode;
         self.workflow = input.workflow;
         self.opts = RequestOptions {
@@ -335,7 +347,10 @@ impl<'h> Agent<'h> {
             }
         };
         self.num_turns += 1;
+        self.finish_turn(response).await
+    }
 
+    async fn finish_turn(&mut self, response: StreamResponse) -> Result<TurnOutcome, AgentError> {
         let has_tools = response.message.has_tool_calls();
         let stop_reason = response.stop_reason;
         info!(
@@ -358,10 +373,14 @@ impl<'h> Agent<'h> {
 
         if has_tools {
             let history_len_before = self.history.len();
-            self.process_tool_calls(response).await?;
+            let tool_results = self.process_tool_calls(response).await?;
+            if self.apply_tool_search_results(&tool_results) {
+                self.rebuild_tools();
+            }
             let tool_results_start = history_len_before.saturating_add(1);
-            self.context_size +=
-                estimate_message_tokens(&self.history.as_slice()[tool_results_start..]);
+            self.context_size = self.context_size.saturating_add(estimate_message_tokens(
+                &self.history.as_slice()[tool_results_start..],
+            ));
         } else {
             let is_empty = response.message.content.is_empty();
 
@@ -384,9 +403,9 @@ impl<'h> Agent<'h> {
                 );
                 self.history
                     .push(Message::synthetic(MAX_TOKENS_CONTINUE_PROMPT.into()));
-                self.context_size += estimate_message_tokens(
+                self.context_size = self.context_size.saturating_add(estimate_message_tokens(
                     &self.history.as_slice()[self.history.len().saturating_sub(1)..],
-                );
+                ));
                 self.try_auto_compact().await?;
                 return Ok(TurnOutcome::Continue);
             }
@@ -467,7 +486,10 @@ impl<'h> Agent<'h> {
         })
     }
 
-    async fn process_tool_calls(&mut self, response: StreamResponse) -> Result<(), AgentError> {
+    async fn process_tool_calls(
+        &mut self,
+        response: StreamResponse,
+    ) -> Result<Vec<ToolDoneEvent>, AgentError> {
         self.post_tool_empty_retried = false;
         let ctx = self.tool_context();
         tool_dispatch::process_tool_calls(
@@ -508,6 +530,71 @@ impl<'h> Agent<'h> {
             local_tools: Arc::clone(&self.local_tools),
             live_sink: None,
         }
+    }
+
+    fn rebuild_tools(&mut self) {
+        let vars = crate::template::env_vars();
+        let ctx = crate::tools::DescriptionContext {
+            filter: &self.tool_filter,
+            audience: self.audience,
+            workflow: self.workflow,
+        };
+        let mut tools = self.registry.definitions_active(
+            &vars,
+            &ctx,
+            self.supports_tool_examples,
+            &self.active_tools,
+        );
+        if let Some(mcp) = &self.mcp {
+            mcp.extend_tools(&mut tools);
+        }
+        self.tools = tools;
+    }
+
+    fn warm_active_tools(&mut self) {
+        let Some(arr) = self.tools.as_array() else {
+            return;
+        };
+        for def in arr {
+            let Some(name) = def.get("name").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if let Some(entry) = self.registry.get(name)
+                && entry.defer_loading
+            {
+                self.active_tools.names.insert(name.to_owned());
+            }
+        }
+    }
+
+    fn apply_tool_search_results(&mut self, results: &[ToolDoneEvent]) -> bool {
+        let mut dirty = false;
+        for done in results {
+            match done.tool.as_ref() {
+                "tool_search" => {
+                    let text = done.output.as_text();
+                    if let Ok(Value::Array(items)) = serde_json::from_str::<Value>(&text) {
+                        for item in items {
+                            if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
+                                self.active_tools.names.insert(name.to_owned());
+                                dirty = true;
+                            }
+                        }
+                    }
+                }
+                "load_namespace" => {
+                    let text = done.output.as_text();
+                    if let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(&text)
+                        && let Some(ns) = obj.get("namespace").and_then(|v| v.as_str())
+                    {
+                        self.active_tools.namespaces.insert(ns.to_owned());
+                        dirty = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        dirty
     }
 
     async fn try_auto_compact(&mut self) -> Result<bool, AgentError> {
@@ -553,8 +640,8 @@ impl<'h> Agent<'h> {
         self.event_tx.send(AgentEvent::CompactionDone)?;
         self.history
             .push(Message::synthetic(CONTINUE_AFTER_COMPACT.into()));
-        self.context_size =
-            estimate_message_tokens(self.history.as_slice()) + estimate_tool_tokens(&self.tools);
+        self.context_size = estimate_message_tokens(self.history.as_slice())
+            .saturating_add(estimate_tool_tokens(&self.tools));
         Ok(())
     }
 
@@ -592,11 +679,12 @@ impl<'h> Agent<'h> {
 }
 
 #[must_use]
-#[allow(clippy::manual_unwrap_or)]
-fn u32_from_usize(value: usize) -> u32 {
-    match u32::try_from(value) {
-        Ok(n) => n,
-        Err(_) => u32::MAX,
+fn u32_from_usize_saturating(value: usize) -> u32 {
+    if let Ok(n) = u32::try_from(value) {
+        n
+    } else {
+        warn!(value, "token count exceeded u32 range; saturating");
+        u32::MAX
     }
 }
 
@@ -620,12 +708,12 @@ pub fn estimate_message_tokens(messages: &[Message]) -> u32 {
             ContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE,
         })
         .sum();
-    u32_from_usize(total)
+    u32_from_usize_saturating(total)
 }
 
 #[must_use]
 pub fn estimate_tool_tokens(tools: &Value) -> u32 {
-    u32_from_usize(count_json(tools))
+    u32_from_usize_saturating(count_json(tools))
 }
 
 #[cfg(test)]
@@ -648,6 +736,12 @@ mod tests {
     use super::*;
     use crate::Envelope;
     use crate::permissions::PermissionManager;
+    use serde_json::json;
+
+    #[test]
+    fn estimate_message_tokens_empty_is_zero() {
+        assert_eq!(estimate_message_tokens(&[]), 0);
+    }
 
     const COST_EPSILON: f64 = 1e-12;
 
@@ -655,7 +749,10 @@ mod tests {
     fn estimate_message_tokens_counts_content_blocks() {
         let messages = vec![Message::user("hello world".into())];
         let tokens = estimate_message_tokens(&messages);
-        assert!(tokens > 0, "expected positive token count for messages");
+        assert!(
+            tokens >= 2,
+            "expected at least two tokens for two words, got {tokens}"
+        );
     }
 
     #[test]
@@ -666,8 +763,18 @@ mod tests {
     }
 
     #[test]
-    fn estimate_message_tokens_empty_is_zero() {
-        assert_eq!(estimate_message_tokens(&[]), 0);
+    fn estimate_tool_tokens_empty_array_is_nonzero() {
+        let tools = json!([]);
+        let tokens = estimate_tool_tokens(&tools);
+        assert!(tokens > 0, "empty array JSON still has token count");
+    }
+
+    #[test]
+    fn context_size_additions_use_saturating_add() {
+        let context_size: u32 = u32::MAX - 100;
+        let additional: u32 = 200;
+        let result = context_size.saturating_add(additional);
+        assert_eq!(result, u32::MAX);
     }
 
     #[test]
@@ -687,7 +794,7 @@ mod tests {
         }];
         let tokens = estimate_message_tokens(&messages);
         assert!(
-            tokens >= u32_from_usize(IMAGE_TOKEN_ESTIMATE),
+            tokens >= u32_from_usize_saturating(IMAGE_TOKEN_ESTIMATE),
             "image blocks should add {IMAGE_TOKEN_ESTIMATE} tokens"
         );
     }
@@ -883,6 +990,7 @@ mod tests {
                 system: "system".into(),
                 event_tx: EventSender::new(raw_tx, 0),
                 tools: serde_json::json!([]),
+                tool_filter: ToolFilter::All,
             },
         );
         (agent, event_rx)
@@ -1265,6 +1373,7 @@ mod tests {
                     system: "system".into(),
                     event_tx: EventSender::new(raw_tx, 0),
                     tools: serde_json::json!([]),
+                    tool_filter: ToolFilter::All,
                 },
             )
             .with_cancel(cancel);

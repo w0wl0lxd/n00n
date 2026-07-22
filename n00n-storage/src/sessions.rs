@@ -327,24 +327,30 @@ impl Effort {
     /// `percent` of `max`, clamped to `[MIN_THINKING_BUDGET, max]`.
     /// A `max` below the floor is raised to it.
     #[must_use]
-    #[allow(clippy::disallowed_methods)]
     pub fn budget(self, max: u32) -> u32 {
         let max = max.max(MIN_THINKING_BUDGET);
-        let tokens =
-            u32::try_from(u64::from(max) * u64::from(self.percent()) / 100).unwrap_or(u32::MAX);
+        let computed = u64::from(max) * u64::from(self.percent()) / 100;
+        let tokens = if let Ok(t) = u32::try_from(computed) {
+            t
+        } else {
+            eprintln!("Warning: thinking budget overflow, using max");
+            max
+        };
         tokens.clamp(MIN_THINKING_BUDGET, max)
     }
 
     /// Inverse of [`Self::budget`]: the lowest level whose percentage covers
     /// `n` tokens out of `max`. Budgets at or above `max` map to `Max`.
     #[must_use]
-    #[allow(clippy::disallowed_methods)]
     pub fn from_budget(n: u32, max: u32) -> Self {
         let pct = u64::from(n).saturating_mul(100) / u64::from(max.max(1));
         Self::ALL
             .into_iter()
             .find(|e| u64::from(e.percent()) >= pct)
-            .unwrap_or(Self::Max)
+            .unwrap_or_else(|| {
+                eprintln!("Warning: no thinking level matches budget, using Max");
+                Self::Max
+            })
     }
 
     /// Nearest level a provider accepts: exact match keeps `self`, otherwise
@@ -352,17 +358,16 @@ impl Effort {
     /// An empty `supported` list returns `self` unchanged (dynamic model
     /// listings may not declare supported efforts).
     #[must_use]
-    #[allow(clippy::disallowed_methods)]
     pub fn snap(self, supported: &[Self]) -> Self {
         if supported.is_empty() || supported.contains(&self) {
             return self;
         }
-        supported
-            .iter()
-            .rev()
-            .find(|&&e| e < self)
-            .copied()
-            .unwrap_or(supported[0])
+        if let Some(level) = supported.iter().rev().find(|&&e| e < self).copied() {
+            level
+        } else {
+            eprintln!("Warning: no lower thinking level found, using lowest supported");
+            supported[0]
+        }
     }
 }
 
@@ -663,23 +668,8 @@ impl SessionLog {
             }
         }
 
-        let mut new_sub_counts: Vec<(String, usize)> = Vec::new();
-        for (sub_id, msgs) in &session.subagent_messages {
-            #[allow(clippy::disallowed_methods)]
-            let saved = self.saved_sub_msg_counts.get(sub_id).copied().unwrap_or(0);
-            for msg in &msgs[saved..] {
-                append_record(
-                    &mut buf,
-                    &LogRecord::<&M, &U, &T>::SubMsg {
-                        sub: sub_id.clone(),
-                        d: msg,
-                    },
-                )?;
-            }
-            if msgs.len() > saved {
-                new_sub_counts.push((sub_id.clone(), msgs.len()));
-            }
-        }
+        let new_sub_counts =
+            self.append_subagent_records::<M, U, T>(&mut buf, &session.subagent_messages)?;
 
         for entry in &session.transcript[self.saved_transcript.len()..] {
             append_record(
@@ -727,6 +717,39 @@ impl SessionLog {
         self.saved_title.clone_from(&session.title);
 
         Ok(())
+    }
+
+    fn append_subagent_records<M, U, T>(
+        &self,
+        buf: &mut Vec<u8>,
+        subagent_messages: &HashMap<String, Vec<M>>,
+    ) -> Result<Vec<(String, usize)>, SessionError>
+    where
+        M: Serialize,
+        U: Serialize,
+        T: Serialize,
+    {
+        let mut new_sub_counts = Vec::new();
+        for (sub_id, msgs) in subagent_messages {
+            let saved = self
+                .saved_sub_msg_counts
+                .get(sub_id)
+                .copied()
+                .unwrap_or_else(|| 0);
+            for msg in &msgs[saved..] {
+                append_record(
+                    buf,
+                    &LogRecord::<&M, &U, &T>::SubMsg {
+                        sub: sub_id.clone(),
+                        d: msg,
+                    },
+                )?;
+            }
+            if msgs.len() > saved {
+                new_sub_counts.push((sub_id.clone(), msgs.len()));
+            }
+        }
+        Ok(new_sub_counts)
     }
 
     /// # Errors
@@ -1157,7 +1180,6 @@ fn visit_zstd_lines(
 
 // -- CWD index --
 
-#[allow(clippy::disallowed_methods, clippy::unwrap_or_default)]
 fn load_cwd_index(dir: &Path) -> HashMap<String, String> {
     fs::read(dir.join(CWD_INDEX_FILE))
         .ok()
@@ -1415,7 +1437,6 @@ struct ScanCacheEntry {
 
 type ScanCache = HashMap<String, ScanCacheEntry>;
 
-#[allow(clippy::disallowed_methods, clippy::unwrap_or_default)]
 fn load_scan_cache(dir: &Path) -> ScanCache {
     fs::read(dir.join(SCAN_CACHE_FILE))
         .ok()
@@ -1480,7 +1501,6 @@ fn scan_headers(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, StorageErr
     Ok(summaries)
 }
 
-#[allow(clippy::disallowed_methods)]
 fn scan_zst_header(path: &Path) -> Option<ScannedHeader> {
     let mut header = None;
     let mut meta_title = String::new();
@@ -1523,7 +1543,10 @@ fn scan_zst_header(path: &Path) -> Option<ScannedHeader> {
         id: header.id,
         cwd: header.cwd,
         title: if meta_title.is_empty() {
-            header.title.unwrap_or(DEFAULT_TITLE.to_string())
+            match header.title {
+                Some(t) => t,
+                None => DEFAULT_TITLE.to_string(),
+            }
         } else {
             meta_title
         },
@@ -2986,16 +3009,15 @@ mod tests {
         assert_eq!(parsed, variant);
     }
 
-    #[test_case("off", Ok(StoredThinking::Off) ; "off")]
-    #[test_case("adaptive", Ok(StoredThinking::Adaptive) ; "adaptive")]
-    #[test_case(" adaptive ", Ok(StoredThinking::Adaptive) ; "trims_whitespace")]
-    #[test_case("4096", Ok(StoredThinking::Budget { tokens: 4096 }) ; "valid_budget")]
-    #[test_case("1", Ok(StoredThinking::Budget { tokens: 1 }) ; "minimum_budget")]
-    #[test_case("0", Err(ThinkingParseError::BudgetZero) ; "budget_zero")]
-    #[test_case("fast", Err(ThinkingParseError::Unknown("fast".into())) ; "garbage")]
-    #[allow(clippy::needless_pass_by_value)]
-    fn parse_setting(input: &str, expected: Result<StoredThinking, ThinkingParseError>) {
-        assert_eq!(StoredThinking::parse_setting(input), expected);
+    #[test_case("off", &Ok(StoredThinking::Off) ; "off")]
+    #[test_case("adaptive", &Ok(StoredThinking::Adaptive) ; "adaptive")]
+    #[test_case(" adaptive ", &Ok(StoredThinking::Adaptive) ; "trims_whitespace")]
+    #[test_case("4096", &Ok(StoredThinking::Budget { tokens: 4096 }) ; "valid_budget")]
+    #[test_case("1", &Ok(StoredThinking::Budget { tokens: 1 }) ; "minimum_budget")]
+    #[test_case("0", &Err(ThinkingParseError::BudgetZero) ; "budget_zero")]
+    #[test_case("fast", &Err(ThinkingParseError::Unknown("fast".into())) ; "garbage")]
+    fn parse_setting(input: &str, expected: &Result<StoredThinking, ThinkingParseError>) {
+        assert_eq!(StoredThinking::parse_setting(input), *expected);
     }
 
     #[test]

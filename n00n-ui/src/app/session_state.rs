@@ -94,12 +94,11 @@ impl SessionState {
         }
     }
 
-    #[allow(clippy::ref_option)]
     pub fn sync_session(
         &mut self,
-        shared_history: &Option<Arc<ArcSwap<Vec<Message>>>>,
-        shared_transcript: &Option<n00n_agent::SharedTranscript>,
-        shared_tool_outputs: &Option<Arc<Mutex<HashMap<String, ToolOutput>>>>,
+        shared_history: Option<&Arc<ArcSwap<Vec<Message>>>>,
+        shared_transcript: Option<&n00n_agent::SharedTranscript>,
+        shared_tool_outputs: Option<&Arc<Mutex<HashMap<String, ToolOutput>>>>,
         permissions: &Arc<PermissionManager>,
     ) {
         if let Some(history) = shared_history {
@@ -113,7 +112,7 @@ impl SessionState {
                 .is_none_or(|saved| !Arc::ptr_eq(saved, &snapshot));
             if changed {
                 self.transcript_revision = self.transcript_revision.saturating_add(1);
-                self.session.transcript = Vec::clone(&snapshot);
+                Clone::clone_from(&mut self.session.transcript, &snapshot);
                 self.shared_transcript_snapshot = Some(snapshot);
             }
             self.session
@@ -206,14 +205,11 @@ fn migrate_stored_tool_key(s: &str) -> Option<n00n_config::ToolKey> {
     }
 }
 
-#[allow(clippy::assigning_clones, clippy::manual_let_else)]
 pub(crate) fn stored_to_rules(stored: &[StoredRule]) -> Vec<n00n_config::PermissionRule> {
     stored
         .iter()
         .filter_map(|r| {
-            let tool = if let Some(t) = migrate_stored_tool_key(&r.tool) {
-                t
-            } else {
+            let Some(tool) = migrate_stored_tool_key(&r.tool) else {
                 if matches!(r.effect, StoredEffect::Deny) {
                     tracing::error!(
                         key = %r.tool,

@@ -374,7 +374,7 @@ pub(super) async fn process_tool_calls(
     history: &mut super::history::History,
     event_tx: &crate::EventSender,
     ctx: &ToolContext,
-) -> Result<(), AgentError> {
+) -> Result<Vec<ToolDoneEvent>, AgentError> {
     let tool_uses: Vec<(String, String, Value)> = response
         .message
         .tool_uses()
@@ -448,12 +448,13 @@ pub(super) async fn process_tool_calls(
 
     let mut all_results = results;
     all_results.extend(immediate_errors);
-    let tool_msg = crate::types::tool_results(all_results);
+
+    let tool_msg = crate::types::tool_results(all_results.clone());
     event_tx.send(AgentEvent::ToolResultsSubmitted {
         message: Box::new(tool_msg.clone()),
     })?;
     history.push(tool_msg);
-    Ok(())
+    Ok(all_results)
 }
 
 /// Test-only entry that skips native lookup, letting plan-mode and MCP tests
@@ -611,6 +612,46 @@ mod tests {
             let text = done.output.as_text();
             assert!(text.starts_with(UNKNOWN_TOOL_PREFIX));
             assert!(text.contains("nonexistent.tool"));
+        });
+    }
+
+    #[test]
+    fn local_tool_progress_keywords_returned_unchanged() {
+        smol::block_on(async {
+            const PROGRESS_TEXT: &str = "Building module... 100% complete ==> done";
+            let ctx = local_ctx("progress", |_| Ok(PROGRESS_TEXT.to_string()));
+            let done = run(
+                ToolRegistry::global(),
+                None,
+                "t1".into(),
+                "progress",
+                &serde_json::json!({}),
+                &ctx,
+                Emit::Silent,
+            )
+            .await;
+            assert!(!done.is_error);
+            assert_eq!(done.output.as_text(), PROGRESS_TEXT);
+        });
+    }
+
+    #[test]
+    fn local_tool_error_with_progress_keyword_preserves_message() {
+        smol::block_on(async {
+            const ERROR_MSG: &str = "100% failed";
+            let ctx = local_ctx("fail", |_| Err(ERROR_MSG.to_string()));
+            let done = run(
+                ToolRegistry::global(),
+                None,
+                "t1".into(),
+                "fail",
+                &serde_json::json!({}),
+                &ctx,
+                Emit::Silent,
+            )
+            .await;
+            assert!(done.is_error);
+            assert_eq!(done.output.as_text(), ERROR_MSG);
         });
     }
 

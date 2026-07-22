@@ -12,7 +12,8 @@ use std::time::Duration;
 
 use n00n_agent::template::env_vars;
 use n00n_agent::tools::{
-    DescriptionContext, ToolAudience, ToolFilter, ToolRegistry, ToolSource, timeout_annotation,
+    ActiveTools, DescriptionContext, ToolAudience, ToolFilter, ToolRegistry, ToolSource,
+    timeout_annotation,
 };
 use n00n_config::{AlwaysThinking, PluginsConfig, ToolOutputLines};
 use n00n_lua::{PluginError, PluginHost, WARM_TOOL_CAP};
@@ -80,7 +81,7 @@ fn builtins_host() -> (Arc<ToolRegistry>, PluginHost) {
 #[test]
 fn builtin_main_tool_definitions_stay_within_prompt_budget() {
     let (registry, _host) = builtins_host();
-    let definitions = registry.definitions(
+    let definitions = registry.definitions_active(
         &env_vars(),
         &DescriptionContext {
             filter: &ToolFilter::All,
@@ -88,6 +89,7 @@ fn builtin_main_tool_definitions_stay_within_prompt_budget() {
             workflow: false,
         },
         true,
+        &ActiveTools::default(),
     );
     let bytes = serde_json::to_vec_pretty(&definitions).unwrap().len() + 1;
 
@@ -1051,7 +1053,9 @@ greet.setup()
     host.load_plugin_file(&init_path).unwrap();
 
     assert!(reg.has("greet"));
-    assert_eq!(reg.names().len(), 1);
+    assert!(reg.has("tool_search"));
+    assert!(reg.has("load_namespace"));
+    assert_eq!(reg.names().len(), 3);
 }
 
 #[test]
@@ -3542,36 +3546,7 @@ fn lua_sessions_under_one_parent_use_unique_identity_everywhere() {
     );
 }
 
-#[test_case::test_case(
-    "task",
-    include_str!("../../plugins/task/init.lua")
-    ; "task"
-)]
-#[test_case::test_case(
-    "team",
-    include_str!("../../plugins/team/init.lua")
-    ; "team"
-)]
-#[test_case::test_case(
-    "workflow",
-    include_str!("../../plugins/workflow/init.lua")
-    ; "workflow"
-)]
-#[ignore]
-fn subagent_plugins_use_shared_live_privacy_safe_activity(plugin: &str, source: &str) {
-    assert!(
-        source.contains("require(\"n00n.session_activity\")"),
-        "{plugin} must use the shared session activity renderer"
-    );
-    assert!(
-        source.contains("SessionActivity.new"),
-        "{plugin} must construct the shared activity card for its subagent sessions"
-    );
-    assert!(
-        !source.contains("raw_input") && !source.contains("progress.log("),
-        "{plugin} activity path must not transport raw input or workflow logs"
-    );
-=======
+#[test]
 fn lua_subagent_keeps_generated_session_ref_when_provider_reaches_network() {
     smol::block_on(async {
         let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3614,7 +3589,6 @@ fn lua_subagent_keeps_generated_session_ref_when_provider_reaches_network() {
         assert_eq!(output.text, "network reached");
         assert!(session_id.is_some());
     });
->>>>>>> origin/main
 }
 
 #[test_case::test_case("{ audience = 'wurkflow' }", "unknown audience: wurkflow" ; "unknown_audience")]

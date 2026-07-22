@@ -170,11 +170,10 @@ fn build_stack(
             warnings.push(format!("{MODEL_FALLBACK_WARNING}: {e:#}"));
             (last_model, false)
         }
-        (Err(_e), None) if !cli.print => {
-            #[allow(clippy::expect_used)]
-            let placeholder = Model::from_spec(FALLBACK_MODEL_SPEC).unwrap_or_else(|_| {
-                Model::from_spec("anthropic/claude-sonnet-4-20250514").expect("fallback model")
-            });
+        (Err(e), None) if !cli.print => {
+            let placeholder = Model::from_spec(FALLBACK_MODEL_SPEC)
+                .or_else(|_| Model::from_spec("anthropic/claude-sonnet-4-20250514"))
+                .map_err(|_| e)?;
             (placeholder, true)
         }
         (Err(e), None) => return Err(e),

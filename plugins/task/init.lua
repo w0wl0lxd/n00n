@@ -51,8 +51,8 @@ local function schema_within_depth(value, depth)
   return true
 end
 
-local description = [[Launch one isolated agent; combine independent calls with batch.
-research (default) is read-only; general can edit. Each call starts fresh, so include context and ask for concise file:line results. Summarize returned results for the user. auto_tier is opt-in. background returns an agent_id for agent_control.]]
+local description =
+  [[Launch one isolated agent; combine independent calls with batch. research (default) is read-only; general can edit. Each call starts fresh, so include context and ask for concise file:line results. Summarize returned results. auto_tier is opt-in. background returns agent_id.]]
 
 local schema = {
   type = "object",
@@ -61,7 +61,7 @@ local schema = {
   properties = {
     description = {
       type = "string",
-      description = "Short (3-5 words) description of the task",
+      description = "Short (3-5 words) task description",
     },
     prompt = {
       type = "string",
@@ -69,30 +69,30 @@ local schema = {
     },
     subagent_type = {
       type = "string",
-      description = 'Subagent type: "research" (read-only, default) or "general" (can modify files)',
+      description = '"research" (read-only, default) or "general" (can edit)',
     },
     model = {
       type = "string",
-      description = "Exact model spec (optional, e.g. openai/gpt-5.6-luna). Overrides model_tier.",
+      description = "Exact model spec (optional). Overrides model_tier.",
     },
     model_tier = {
       type = "string",
-      description = 'Optional capped tier: "weak" for simple work, "medium" for normal changes, or "strong" for complex/critical work.',
+      description = 'Capped tier: "weak", "medium", or "strong"',
     },
     thinking = {
       type = { "string", "integer" },
-      description = 'Thinking mode: "off", "adaptive", "minimal", "low", "medium", "high", "xhigh", "max", or a token budget. Omit to inherit the user setting.',
+      description = 'Thinking mode: "off", "adaptive", effort level, or token budget. Omit to inherit user setting.',
     },
     auto_tier = {
       type = "boolean",
-      description = "Pick model_tier from the prompt automatically (opt-in). Overrides model_tier when set.",
+      description = "Pick model_tier from prompt automatically (opt-in). Overrides model_tier when set.",
     },
     background = {
       type = "boolean",
-      description = "Start this task in a separate background session and return its agent_id immediately.",
+      description = "Start in background session; return agent_id immediately.",
     },
     output_schema = {
-      description = "JSON Schema (object) the subagent's final result must match. When set, the result is returned as a validated JSON string.",
+      description = "JSON Schema (object) subagent result must match. Result returned as validated JSON string.",
     },
   },
 }

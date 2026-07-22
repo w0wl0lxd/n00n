@@ -343,7 +343,7 @@ mod tests {
     #[test]
     fn persist_reports_success_after_writing_snapshot() {
         let (_tmp, dir) = state_dir();
-        let writer = StorageWriter::new(dir.clone());
+        let writer = StorageWriter::new(dir.clone()).unwrap();
         let session = AppSession::new("test-model", "/tmp/persist");
         let id = session.id;
         let (done_tx, done_rx) = flume::bounded(1);
@@ -359,7 +359,7 @@ mod tests {
     #[test]
     fn equal_revision_different_snapshot_is_not_dropped() {
         let (_tmp, dir) = state_dir();
-        let writer = StorageWriter::new(dir.clone());
+        let writer = StorageWriter::new(dir.clone()).unwrap();
         let first = AppSession::new("test-model", "/tmp/equal");
         let id = first.id;
         let (done_tx, done_rx) = flume::bounded(1);
@@ -382,7 +382,7 @@ mod tests {
     #[test]
     fn persist_cannot_overwrite_newer_periodic_snapshot() {
         let (_tmp, dir) = state_dir();
-        let writer = StorageWriter::new(dir.clone());
+        let writer = StorageWriter::new(dir.clone()).unwrap();
         let mut older = AppSession::new("test-model", "/tmp/race");
         older.meta.revision = 1;
         older.title = "submission".into();
