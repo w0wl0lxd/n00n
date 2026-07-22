@@ -48,25 +48,24 @@ pub(crate) const EPHEMERAL: CacheControl = CacheControl {
 };
 
 #[derive(Deserialize)]
-#[allow(clippy::struct_field_names)]
 struct Usage {
-    #[serde(default)]
-    input_tokens: u32,
-    #[serde(default)]
-    output_tokens: u32,
-    #[serde(default)]
-    cache_creation_input_tokens: u32,
-    #[serde(default)]
-    cache_read_input_tokens: u32,
+    #[serde(default, rename = "input_tokens")]
+    input: u32,
+    #[serde(default, rename = "output_tokens")]
+    output: u32,
+    #[serde(default, rename = "cache_creation_input_tokens")]
+    cache_creation: u32,
+    #[serde(default, rename = "cache_read_input_tokens")]
+    cache_read: u32,
 }
 
 impl From<Usage> for TokenUsage {
     fn from(u: Usage) -> Self {
         Self {
-            input: u.input_tokens,
-            output: u.output_tokens,
-            cache_creation: u.cache_creation_input_tokens,
-            cache_read: u.cache_read_input_tokens,
+            input: u.input,
+            output: u.output,
+            cache_creation: u.cache_creation,
+            cache_read: u.cache_read,
         }
     }
 }
@@ -388,7 +387,7 @@ impl EventParser {
     fn handle_message_delta(&mut self, data: &str) {
         if let Ok(ev) = serde_json::from_str::<MessageDeltaEvent>(data) {
             if let Some(u) = ev.usage {
-                self.usage.output = u.output_tokens;
+                self.usage.output = u.output;
             }
             if let Some(d) = ev.delta {
                 self.stop_reason = d
