@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784749214458,
+  "lastUpdate": 1784750051614,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -1619,6 +1619,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 177555,
             "range": "± 12259",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a4162d0748eb7601c233da6fd51e1200fe4e5b01",
+          "message": "fix(docgen): close commands frontmatter with +++ (#73)",
+          "timestamp": "2026-07-22T15:48:36-04:00",
+          "tree_id": "c529d7171bb9c9d5b90cea70becad0f349c1c4e7",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/a4162d0748eb7601c233da6fd51e1200fe4e5b01"
+        },
+        "date": 1784750051239,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6708382,
+            "range": "± 434325",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2219502,
+            "range": "± 5999",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2223896,
+            "range": "± 14574",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 9472481,
+            "range": "± 33532",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4368138,
+            "range": "± 108888",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4288445,
+            "range": "± 32261",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 584487,
+            "range": "± 7221",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191237,
+            "range": "± 430",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191405,
+            "range": "± 1880",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1028216,
+            "range": "± 32475",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 563741,
+            "range": "± 10459",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 563354,
+            "range": "± 4798",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 49222,
+            "range": "± 1987",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 191962,
+            "range": "± 1958",
             "unit": "ns/iter"
           }
         ]
