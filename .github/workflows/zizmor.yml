@@ -28,4 +28,4 @@ jobs:
           persist-credentials: false
       - uses: zizmorcore/zizmor-action@v0.6.0
         with:
-          comment: true
+          online-audits: false
