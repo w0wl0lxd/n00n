@@ -6,34 +6,35 @@ use n00n_storage::auth::{OAuthTokens, now_millis};
 
 use super::OAuthError;
 
+pub struct OAuthCodeExchange<'a> {
+    pub client: &'a HttpClient,
+    pub token_endpoint: &'a str,
+    pub code: &'a str,
+    pub redirect_uri: &'a str,
+    pub code_verifier: &'a str,
+    pub client_id: &'a str,
+    pub client_secret: Option<&'a str>,
+    pub resource: &'a str,
+}
+
 /// Exchange an authorization code for access/refresh tokens.
 ///
 /// # Errors
 ///
 /// Returns an error if the token request fails or the response is invalid.
-#[allow(clippy::too_many_arguments)]
-pub async fn exchange_code(
-    client: &HttpClient,
-    token_endpoint: &str,
-    code: &str,
-    redirect_uri: &str,
-    code_verifier: &str,
-    client_id: &str,
-    client_secret: Option<&str>,
-    resource: &str,
-) -> Result<OAuthTokens, OAuthError> {
+pub async fn exchange_code(ctx: OAuthCodeExchange<'_>) -> Result<OAuthTokens, OAuthError> {
     let mut params = vec![
         ("grant_type", "authorization_code"),
-        ("code", code),
-        ("redirect_uri", redirect_uri),
-        ("code_verifier", code_verifier),
-        ("client_id", client_id),
-        ("resource", resource),
+        ("code", ctx.code),
+        ("redirect_uri", ctx.redirect_uri),
+        ("code_verifier", ctx.code_verifier),
+        ("client_id", ctx.client_id),
+        ("resource", ctx.resource),
     ];
-    if let Some(secret) = client_secret {
+    if let Some(secret) = ctx.client_secret {
         params.push(("client_secret", secret));
     }
-    token_request(client, token_endpoint, &params).await
+    token_request(ctx.client, ctx.token_endpoint, &params).await
 }
 
 /// Refresh OAuth tokens using a refresh token.

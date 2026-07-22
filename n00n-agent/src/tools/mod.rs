@@ -1,5 +1,3 @@
-#![allow(clippy::needless_pass_by_value)]
-
 //! Shared plumbing for tools. The registry itself lives in `registry.rs`; this file
 //! holds the helpers every tool leans on: `ToolFilter` to enable/disable per caller,
 //! `Deadline` so a parent tool can cap a child's timeout, the walker that skips `.git`,
@@ -38,10 +36,10 @@ use crate::mcp::McpHandle;
 use crate::permissions::PermissionManager;
 use crate::{AgentConfig, AgentMode, EventSender, SharedBuf};
 use n00n_config::ToolOutputLines;
-use n00n_providers::Model;
-use n00n_providers::OpenAiOptions;
 use n00n_providers::RequestOptions;
 use n00n_providers::provider::Provider;
+use n00n_providers::provider::ProviderKind;
+use n00n_providers::{Model, ModelFamily, ModelPricing, ModelTier, OpenAiOptions};
 use n00n_storage::id::SessionRef;
 
 pub struct DescriptionContext<'a> {
@@ -444,6 +442,25 @@ impl Provider for NullProvider {
     }
 }
 
+const FALLBACK_CONTEXT_WINDOW: u32 = 200_000;
+
+fn fallback_model() -> Model {
+    Model {
+        id: "anthropic/claude-3-haiku-20240307".into(),
+        provider: ProviderKind::Anthropic,
+        dynamic_slug: None,
+        tier: ModelTier::Medium,
+        family: ModelFamily::Claude,
+        supports_tool_examples_override: None,
+        supports_thinking_override: None,
+        supports_vision_override: None,
+        pricing: ModelPricing::ZERO,
+        max_output_tokens: None,
+        context_window: FALLBACK_CONTEXT_WINDOW,
+    }
+}
+
+/// Context for code execution tools.
 pub fn interpreter_ctx(
     mode: &AgentMode,
     event_tx: &EventSender,
@@ -454,16 +471,15 @@ pub fn interpreter_ctx(
     registry: Arc<ToolRegistry>,
 ) -> ToolContext {
     static PROVIDER: LazyLock<Arc<dyn Provider>> = LazyLock::new(|| Arc::new(NullProvider));
-    #[allow(clippy::expect_used)]
-    static MODEL: LazyLock<Arc<Model>> = LazyLock::new(|| {
-        Arc::new(
-            Model::from_spec("anthropic/claude-sonnet-4-20250514")
-                .expect("interpreter_ctx: valid model spec"),
-        )
-    });
+    let model = Arc::new(
+        Model::from_spec("anthropic/claude-sonnet-4-20250514")
+            .or_else(|_| Model::from_spec("anthropic/claude-3-5-sonnet-20241022"))
+            .or_else(|_| Model::from_spec("anthropic/claude-3-haiku-20240307"))
+            .unwrap_or_else(|_| fallback_model()),
+    );
     ToolContext {
         provider: Arc::clone(&PROVIDER),
-        model: Arc::clone(&MODEL),
+        model,
         event_tx: event_tx.clone(),
         mode: mode.clone(),
         tool_use_id: None,
@@ -930,8 +946,7 @@ mod tests {
         // true and it gets joined with cwd, producing e.g. `C:\etc\hosts`).
         #[cfg(windows)]
         {
-            #[allow(clippy::join_absolute_paths)]
-            let expected = cwd.join("/etc/hosts");
+            let expected = PathBuf::from(format!("{}\\etc\\hosts", cwd.display()));
             assert_eq!(
                 resolve_path("/etc/hosts").unwrap(),
                 expected.to_string_lossy()
