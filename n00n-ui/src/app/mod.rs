@@ -55,7 +55,7 @@ use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use n00n_agent::permissions::PermissionManager;
 use n00n_agent::{
     AgentEvent, Envelope, ImageSource, McpConfigErrors, McpPromptInfo, McpSnapshotReader,
-    PreDispatchGate, SubagentInfo, ToolOutput,
+    PreDispatchGate, SubagentInfo, SubagentPrompt, ToolOutput,
 };
 use n00n_config::UiConfig;
 use n00n_lua::{EventHandle, HintReader, KeymapReader, LuaCommandReader};
@@ -99,8 +99,15 @@ const TASK_DONE_DETAIL: &str = "✓ done";
 const TASK_ERROR_DETAIL: &str = "✗ error";
 const TASK_RUNNING_DETAIL: &str = "◈ running";
 const STEERING_UNAVAILABLE_MSG: &str = "This agent is no longer accepting messages";
+const STEERING_BUSY_MSG: &str = "This agent is busy; try again in a moment";
 const TASK_PANEL_FOOTER: &[(&str, &str)] =
     &[("enter", "open"), ("ctrl+x", "toggle"), ("esc", "close")];
+
+enum SubagentPromptError {
+    Finished,
+    Disconnected,
+    Full(Submission),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TaskStatus {
@@ -239,7 +246,7 @@ pub struct App {
     pub(crate) restore_event_tx: Option<n00n_agent::EventSender>,
     pub(super) restoring: Arc<AtomicBool>,
     subagent_answers: HashMap<String, flume::Sender<String>>,
-    subagent_prompts: HashMap<String, flume::Sender<String>>,
+    subagent_prompts: HashMap<String, flume::Sender<SubagentPrompt>>,
 }
 
 impl App {
@@ -470,23 +477,60 @@ impl App {
     }
 
     fn send_to_agent(&self, subagent_id: Option<&str>, answer: String) {
-        let routed = subagent_id.and_then(|id| self.subagent_answers.get(id));
-        if let Some(tx) = routed {
-            let _ = tx.try_send(answer);
-        } else {
-            self.send_answer(answer);
+        if let Some(id) = subagent_id {
+            if let Some(tx) = self.subagent_answers.get(id) {
+                let _ = tx.try_send(answer);
+            }
+            // If the target subagent has finished, its answer channel is gone;
+            // do not fall back to the main agent's answer channel.
+            return;
+        }
+        self.send_answer(answer);
+    }
+
+    fn send_subagent_prompt(
+        &mut self,
+        subagent_id: &str,
+        sub: Submission,
+    ) -> Result<(), SubagentPromptError> {
+        let Some(&idx) = self.chat_index.get(subagent_id) else {
+            return Err(SubagentPromptError::Disconnected);
+        };
+        if self.chats[idx].is_finished() {
+            self.subagent_prompts.remove(subagent_id);
+            return Err(SubagentPromptError::Finished);
+        }
+        let Some(tx) = self.subagent_prompts.get(subagent_id) else {
+            return Err(SubagentPromptError::Disconnected);
+        };
+        let prompt = SubagentPrompt {
+            text: sub.text.clone(),
+            images: sub.images.clone(),
+        };
+        match tx.try_send(prompt) {
+            Ok(()) => {
+                self.chats[idx].show_user_message_with_images(sub.text.clone(), sub.images.clone());
+                Ok(())
+            }
+            Err(flume::TrySendError::Full(_)) => Err(SubagentPromptError::Full(sub)),
+            Err(flume::TrySendError::Disconnected(_)) => {
+                self.subagent_prompts.remove(subagent_id);
+                Err(SubagentPromptError::Disconnected)
+            }
         }
     }
 
-    fn send_subagent_prompt(&mut self, subagent_id: &str, message: String) -> bool {
-        let sent = self
-            .subagent_prompts
-            .get(subagent_id)
-            .is_some_and(|tx| tx.try_send(message.clone()).is_ok());
-        if sent && let Some(&idx) = self.chat_index.get(subagent_id) {
-            self.chats[idx].show_user_message(message);
+    fn handle_subagent_prompt_result(&mut self, subagent_id: String, sub: Submission) {
+        match self.send_subagent_prompt(&subagent_id, sub) {
+            Ok(()) => {}
+            Err(SubagentPromptError::Full(sub)) => {
+                self.flash(STEERING_BUSY_MSG.into());
+                self.input_box.set_submission(sub);
+            }
+            Err(SubagentPromptError::Finished) | Err(SubagentPromptError::Disconnected) => {
+                self.flash(STEERING_UNAVAILABLE_MSG.into());
+            }
         }
-        sent
     }
 
     fn handle_scroll(&mut self, column: u16, row: u16, delta: i32) {
@@ -1053,9 +1097,7 @@ impl App {
                 return vec![];
             }
             PendingInput::SubagentFollowUp { subagent_id } => {
-                if !self.send_subagent_prompt(&subagent_id, sub.text) {
-                    self.flash(STEERING_UNAVAILABLE_MSG.into());
-                }
+                self.handle_subagent_prompt_result(subagent_id, sub);
                 return vec![];
             }
             PendingInput::None => {}
@@ -1067,11 +1109,7 @@ impl App {
             let Some(tool_use_id) = self.chats[self.active_chat].tool_use_id.clone() else {
                 return vec![];
             };
-            if self.subagent_prompts.contains_key(&tool_use_id) {
-                self.send_subagent_prompt(&tool_use_id, sub.text);
-            } else {
-                self.flash("This agent cannot receive follow-up messages".into());
-            }
+            self.handle_subagent_prompt_result(tool_use_id, sub);
             return vec![];
         }
         if sub.is_empty() {
@@ -1300,13 +1338,7 @@ impl App {
     }
 
     fn handle_subagent_cancel(&mut self) -> Vec<Action> {
-        let tool_use_id = self
-            .chat_index
-            .iter()
-            .find(|&(_, &idx)| idx == self.active_chat)
-            .map(|(id, _)| id.clone());
-
-        let Some(tool_use_id) = tool_use_id else {
+        let Some(tool_use_id) = self.chats[self.active_chat].tool_use_id.clone() else {
             return vec![];
         };
 
@@ -1467,6 +1499,8 @@ impl App {
                     (DisplayRole::Done, DONE_TEXT)
                 };
                 self.chats[sub_idx].mark_finished(role, text);
+                self.subagent_answers.remove(&e.id);
+                self.subagent_prompts.remove(&e.id);
             }
         }
 

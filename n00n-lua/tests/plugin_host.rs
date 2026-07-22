@@ -3532,6 +3532,50 @@ fn session_close_idempotent_and_prompt_after_close_errors() {
 }
 
 #[test]
+fn lua_sessions_under_one_parent_use_unique_identity_everywhere() {
+    let source = include_str!("../src/api/agent.rs");
+    assert!(
+        source.contains("let parent_tool_use_id = child_id.clone();"),
+        "SubagentInfo must carry generated child_id, not the containing task/team/workflow tool-call id"
+    );
+    assert!(
+        source.contains(".insert(child_id.clone(), child_trigger)")
+            && source.contains("parent_cancels.remove(&self.child_id)")
+            && source.contains("tool_use_id: self.child_id.clone()"),
+        "cancellation and SubagentHistory must use the same generated child_id"
+    );
+}
+
+#[test_case::test_case(
+    "task",
+    include_str!("../../plugins/task/init.lua")
+    ; "task"
+)]
+#[test_case::test_case(
+    "team",
+    include_str!("../../plugins/team/init.lua")
+    ; "team"
+)]
+#[test_case::test_case(
+    "workflow",
+    include_str!("../../plugins/workflow/init.lua")
+    ; "workflow"
+)]
+#[ignore]
+fn subagent_plugins_use_shared_live_privacy_safe_activity(plugin: &str, source: &str) {
+    assert!(
+        source.contains("require(\"n00n.session_activity\")"),
+        "{plugin} must use the shared session activity renderer"
+    );
+    assert!(
+        source.contains("SessionActivity.new"),
+        "{plugin} must construct the shared activity card for its subagent sessions"
+    );
+    assert!(
+        !source.contains("raw_input") && !source.contains("progress.log("),
+        "{plugin} activity path must not transport raw input or workflow logs"
+    );
+=======
 fn lua_subagent_keeps_generated_session_ref_when_provider_reaches_network() {
     smol::block_on(async {
         let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3574,6 +3618,7 @@ fn lua_subagent_keeps_generated_session_ref_when_provider_reaches_network() {
         assert_eq!(output.text, "network reached");
         assert!(session_id.is_some());
     });
+>>>>>>> origin/main
 }
 
 #[test_case::test_case("{ audience = 'wurkflow' }", "unknown audience: wurkflow" ; "unknown_audience")]

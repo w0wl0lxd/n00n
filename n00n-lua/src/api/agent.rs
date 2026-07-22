@@ -21,7 +21,7 @@ use n00n_agent::tools::{
 };
 use n00n_agent::{
     Agent, AgentEvent, AgentInput, AgentMode, AgentParams, AgentRunParams, Envelope, EventSender,
-    History, SubagentInfo, ToolDoneEvent, ToolStartEvent,
+    History, SubagentInfo, SubagentPrompt, ToolDoneEvent, ToolStartEvent,
 };
 use n00n_lua_macro::{lua_class, lua_fn, lua_table};
 use n00n_providers::model::ModelTier;
@@ -630,17 +630,14 @@ async fn session(
 
     let session_id = N00nId::generate();
     let child_id = session_id.to_string();
-    let parent_tool_use_id = agent_ctx
-        .tool_use_id
-        .clone()
-        .unwrap_or_else(|| format!("session-{child_id}"));
+    let parent_tool_use_id = child_id.clone();
     let start = Instant::now();
     let (sub_tx, sub_rx) = flume::unbounded::<Envelope>();
     let sub_event_tx = EventSender::new(sub_tx, agent_ctx.event_tx.run_id());
     let parent_tx = agent_ctx.event_tx.clone();
     let (answer_tx, answer_rx) = flume::unbounded::<String>();
-    let (prompt_tx, prompt_rx) = flume::bounded::<String>(STEERING_QUEUE_CAPACITY);
-    let progress = Arc::new(Progress::new(start));
+    let (prompt_tx, prompt_rx) = flume::bounded::<SubagentPrompt>(STEERING_QUEUE_CAPACITY);
+    let progress = Arc::new(Progress::new(start, child_id.clone()));
 
     let subagent_info: Arc<OnceLock<SubagentInfo>> = Arc::new(OnceLock::new());
     let usage = TokenUsage::default();
@@ -981,6 +978,7 @@ struct ProgressState {
 }
 
 struct Progress {
+    session_id: String,
     start: Instant,
     state: Mutex<ProgressState>,
     tx: flume::Sender<()>,
@@ -989,11 +987,29 @@ struct Progress {
     barrier_rx: flume::Receiver<()>,
 }
 
+fn sanitize_activity_value(value: &str, max_bytes: usize, fallback: &str) -> String {
+    let mut out = String::with_capacity(value.len().min(max_bytes));
+    for byte in value.bytes() {
+        if out.len() >= max_bytes {
+            break;
+        }
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b':' | b'/' | b'-') {
+            out.push(char::from(byte));
+        }
+    }
+    if out.is_empty() {
+        fallback.to_owned()
+    } else {
+        out
+    }
+}
+
 impl Progress {
-    fn new(start: Instant) -> Self {
-        let (tx, rx) = flume::bounded(1);
+    fn new(start: Instant, session_id: String) -> Self {
+        let (tx, rx) = flume::unbounded();
         let (barrier_tx, barrier_rx) = flume::bounded(1);
         Self {
+            session_id,
             start,
             state: Mutex::new(ProgressState {
                 current: None,
@@ -1208,8 +1224,8 @@ struct SessionState {
     child_cancel: n00n_agent::cancel::CancelToken,
     answer_rx: Arc<AsyncMutex<flume::Receiver<String>>>,
     answer_tx: Option<flume::Sender<String>>,
-    prompt_rx: flume::Receiver<String>,
-    prompt_tx: Option<flume::Sender<String>>,
+    prompt_rx: flume::Receiver<SubagentPrompt>,
+    prompt_tx: Option<flume::Sender<SubagentPrompt>>,
     parent_cancels: Arc<CancelMap<String>>,
     child_id: String,
     parent_tool_use_id: String,
@@ -1256,20 +1272,21 @@ impl SessionState {
 }
 
 struct PromptInterruptSource {
-    rx: flume::Receiver<String>,
+    rx: flume::Receiver<SubagentPrompt>,
+    thinking: ThinkingConfig,
     fast: bool,
 }
 
 impl n00n_agent::InterruptSource for PromptInterruptSource {
     fn poll(&self, _: n00n_agent::InterruptPoint) -> Option<n00n_agent::ExtractedCommand> {
-        self.rx.try_recv().ok().map(|message| {
+        self.rx.try_recv().ok().map(|prompt| {
             n00n_agent::ExtractedCommand::Interrupt(
                 AgentInput {
-                    message,
+                    message: prompt.text,
                     mode: AgentMode::Build,
-                    images: Vec::new(),
+                    images: prompt.images,
                     preamble: Vec::new(),
-                    thinking: ThinkingConfig::default(),
+                    thinking: self.thinking,
                     fast: self.fast,
                     workflow: false,
                     prompt: None,
@@ -1346,7 +1363,10 @@ async fn prompt(
         });
     }
 
-    let mut next_message = Some(message);
+    let mut next_message = Some(SubagentPrompt {
+        text: message,
+        images: Vec::new(),
+    });
     while let Some(message) = next_message.take() {
         let mut agent = Agent::new(
             s.params.clone(),
@@ -1368,9 +1388,9 @@ async fn prompt(
         .with_local_tools(Arc::clone(&s.local_tools));
 
         let input = AgentInput {
-            message,
+            message: message.text,
             mode: AgentMode::Build,
-            images: Vec::new(),
+            images: message.images,
             preamble: Vec::new(),
             thinking: s.thinking,
             fast: s.fast,
@@ -1459,6 +1479,7 @@ async fn get_progress(lua: Lua, this: mlua::UserDataRef<LuaSession>) -> LuaResul
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let elapsed = progress.start.elapsed().as_millis() as u64;
     let tbl = lua.create_table()?;
+    tbl.set("session_id", progress.session_id.as_str())?;
     tbl.set("elapsed_ms", elapsed)?;
     tbl.set("current_tool", state.current.as_deref())?;
     tbl.set("done", state.done)?;
@@ -1539,6 +1560,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use n00n_agent::{ExtractedCommand, InterruptPoint, InterruptSource};
 
     fn call(src: &str, input: &JsonValue) -> Result<String, String> {
         let lua = Lua::new();
@@ -1940,5 +1962,29 @@ mod tests {
         assert!(raised.contains("boom"), "got: {raised}");
         let wrong = call("function() return 42 end", &input).unwrap_err();
         assert!(wrong.contains("expected string"), "got: {wrong}");
+    }
+
+    #[test]
+    fn prompt_interrupt_source_preserves_session_thinking_and_fast() {
+        let (tx, rx) = flume::unbounded();
+        let source = PromptInterruptSource {
+            rx,
+            thinking: ThinkingConfig::Budget(1234),
+            fast: true,
+        };
+        tx.send(SubagentPrompt {
+            text: "steer".into(),
+            images: Vec::new(),
+        })
+        .unwrap();
+
+        let Some(ExtractedCommand::Interrupt(input, _)) = source.poll(InterruptPoint::Safe) else {
+            panic!("expected an interrupt command");
+        };
+
+        assert_eq!(input.message, "steer");
+        assert!(input.images.is_empty());
+        assert!(matches!(input.thinking, ThinkingConfig::Budget(1234)));
+        assert!(input.fast);
     }
 }
