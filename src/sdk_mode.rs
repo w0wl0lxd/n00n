@@ -57,9 +57,9 @@ const TOOL_NAME_MAP: &[(&str, &str)] = &[
 
 /// Emits a hyphenated-hex `UUIDv7` string for Claude Code SDK wire ids
 /// (message.id, assistant message.id).
-#[allow(clippy::disallowed_methods)]
 fn wire_uuid() -> String {
-    uuid::Uuid::now_v7().to_string()
+    let id = n00n_storage::id::N00nId::generate();
+    uuid::Uuid::from_bytes(*id.as_bytes()).to_string()
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]

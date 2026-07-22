@@ -76,33 +76,31 @@ mod tests {
     use serde_json::json;
     use test_case::test_case;
 
-    #[test_case(json!(null),    MontyObject::None            ; "null_to_none")]
-    #[test_case(json!(true),    MontyObject::Bool(true)      ; "bool_true")]
-    #[test_case(json!(false),   MontyObject::Bool(false)     ; "bool_false")]
-    #[test_case(json!(42),      MontyObject::Int(42)         ; "integer")]
-    #[test_case(json!(-1),      MontyObject::Int(-1)         ; "negative_int")]
-    #[test_case(json!(2.5),     MontyObject::Float(2.5)      ; "float")]
-    #[test_case(json!("hello"), MontyObject::String("hello".into()) ; "string")]
-    #[allow(clippy::needless_pass_by_value)]
-    fn json_to_monty_scalars(input: Value, expected: MontyObject) {
-        assert_eq!(json_to_monty(input), expected);
+    #[test_case(&json!(null),    &MontyObject::None            ; "null_to_none")]
+    #[test_case(&json!(true),    &MontyObject::Bool(true)      ; "bool_true")]
+    #[test_case(&json!(false),   &MontyObject::Bool(false)     ; "bool_false")]
+    #[test_case(&json!(42),      &MontyObject::Int(42)         ; "integer")]
+    #[test_case(&json!(-1),      &MontyObject::Int(-1)         ; "negative_int")]
+    #[test_case(&json!(2.5),     &MontyObject::Float(2.5)      ; "float")]
+    #[test_case(&json!("hello"), &MontyObject::String("hello".into()) ; "string")]
+    fn json_to_monty_scalars(input: &Value, expected: &MontyObject) {
+        assert_eq!(json_to_monty(input.clone()), *expected);
     }
 
-    #[test_case(json!(null)                       ; "null")]
-    #[test_case(json!(true)                       ; "bool")]
-    #[test_case(json!(42)                         ; "int")]
-    #[test_case(json!(2.5)                        ; "float")]
-    #[test_case(json!("text")                     ; "string")]
-    #[test_case(json!([1, 2, 3])                  ; "array")]
-    #[test_case(json!({"a": 1, "b": [true, null]}); "nested_object")]
-    #[test_case(json!([])                         ; "empty_array")]
-    #[test_case(json!({})                         ; "empty_object")]
-    #[test_case(json!({"key": [1, "two", null]})  ; "mixed_nested")]
-    #[test_case(json!(i64::MAX)                   ; "large_i64")]
-    #[allow(clippy::needless_pass_by_value)]
-    fn roundtrip_preserves_value(input: Value) {
+    #[test_case(&json!(null)                       ; "null")]
+    #[test_case(&json!(true)                       ; "bool")]
+    #[test_case(&json!(42)                         ; "int")]
+    #[test_case(&json!(2.5)                        ; "float")]
+    #[test_case(&json!("text")                     ; "string")]
+    #[test_case(&json!([1, 2, 3])                  ; "array")]
+    #[test_case(&json!({"a": 1, "b": [true, null]}); "nested_object")]
+    #[test_case(&json!([])                         ; "empty_array")]
+    #[test_case(&json!({})                         ; "empty_object")]
+    #[test_case(&json!({"key": [1, "two", null]})  ; "mixed_nested")]
+    #[test_case(&json!(i64::MAX)                   ; "large_i64")]
+    fn roundtrip_preserves_value(input: &Value) {
         let back = monty_to_json(&json_to_monty(input.clone()));
-        assert_eq!(back, input);
+        assert_eq!(back, *input);
     }
 
     #[test]

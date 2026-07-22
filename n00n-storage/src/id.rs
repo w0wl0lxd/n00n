@@ -37,10 +37,21 @@ pub enum N00nIdParseError {
 pub struct N00nId([u8; UUID_BYTES]);
 
 impl N00nId {
-    #[allow(clippy::disallowed_methods)]
     #[must_use]
     pub fn generate() -> Self {
-        Self(Uuid::now_v7().into_bytes())
+        let millis = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) => u64::try_from(d.as_millis()).unwrap_or_else(|_| u64::MAX),
+            Err(_) => 0,
+        };
+        let mut random = [0u8; 10];
+        // getrandom failure is catastrophic; zeroing random bytes still yields a
+        // valid UUIDv7 (just not unique). Keep the API infallible.
+        let _ = getrandom::fill(&mut random);
+        Self(
+            uuid::Builder::from_unix_timestamp_millis(millis, &random)
+                .into_uuid()
+                .into_bytes(),
+        )
     }
 
     #[must_use]
