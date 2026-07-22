@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use crate::AppSession;
 use crate::chat::Chat;
-use crate::chat::{CANCELLED_TEXT, ChatEventResult, DONE_TEXT, ERROR_TEXT};
+use crate::chat::{CANCELLED_TEXT, ChatEventResult, DONE_TEXT, ERROR_TEXT, transcript_to_display};
 use crate::clipboard::ClipboardState;
 use crate::components::btw_modal::BtwModal;
 use crate::components::command::{CommandAction, CommandPalette, ParsedCommand};
@@ -45,7 +45,8 @@ use crate::components::theme_picker::{ThemePicker, ThemePickerAction};
 use crate::components::tool_display::format_turn_usage;
 use crate::components::usage_modal::{UsageFetchState, UsageModal};
 use crate::components::{
-    Action, DisplayMessage, DisplayRole, ExitRequest, Overlay, RetryInfo, Status, is_ctrl,
+    Action, DisplayMessage, DisplayRole, ExitRequest, Overlay, RetryInfo, Status,
+    SubmissionDispatch, is_ctrl,
 };
 use crate::image;
 use crate::selection::{SelectionState, SelectionZone, ZoneRegistry};
@@ -54,7 +55,7 @@ use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use n00n_agent::permissions::PermissionManager;
 use n00n_agent::{
     AgentEvent, Envelope, ImageSource, McpConfigErrors, McpPromptInfo, McpSnapshotReader,
-    SubagentInfo, SubagentPrompt, ToolOutput,
+    PreDispatchGate, SubagentInfo, SubagentPrompt, ToolOutput,
 };
 use n00n_config::UiConfig;
 use n00n_lua::{EventHandle, HintReader, KeymapReader, LuaCommandReader};
@@ -76,6 +77,8 @@ pub(crate) use session::session_has_content;
 use session_state::SessionState;
 
 const CANCEL_MSG: &str = "Cancelled.";
+const PERSISTENCE_FAILURE_MSG: &str = "Could not save the session. Your message was restored.";
+pub(super) const SUBMISSION_ESCAPE_WINDOW: Duration = Duration::from_millis(2_500);
 /// Bypasses the per-run staleness filter because re-bake replies
 /// don't belong to any real agent run.
 pub(crate) const RESTORE_RUN_ID: u64 = u64::MAX;
@@ -153,6 +156,28 @@ pub(super) enum PendingInput {
     },
 }
 
+trait SubmissionClock: Send + Sync {
+    fn now(&self) -> Instant;
+}
+
+struct SystemSubmissionClock;
+
+impl SubmissionClock for SystemSubmissionClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+}
+
+struct PendingSubmission {
+    submission_id: u64,
+    run_id: u64,
+    submitted_at: Instant,
+    message: QueuedMessage,
+    gate: Arc<PreDispatchGate>,
+    preamble: Vec<Message>,
+    display_len_before: usize,
+}
+
 pub enum Msg {
     Key(KeyEvent),
     Paste(String),
@@ -193,6 +218,9 @@ pub struct App {
     pub(crate) cmd_tx: Option<flume::Sender<super::AgentCommand>>,
     pub(super) pending_input: PendingInput,
     pub(crate) run_id: u64,
+    next_submission_id: u64,
+    pending_submission: Option<PendingSubmission>,
+    submission_clock: Arc<dyn SubmissionClock>,
     pub(super) retry_info: Option<RetryInfo>,
     pub(super) zones: ZoneRegistry,
     pub(super) selection_state: Option<SelectionState>,
@@ -281,6 +309,9 @@ impl App {
             cmd_tx: None,
             pending_input: PendingInput::None,
             run_id: 0,
+            next_submission_id: 0,
+            pending_submission: None,
+            submission_clock: Arc::new(SystemSubmissionClock),
             retry_info: None,
             zones: ZoneRegistry::new(),
             selection_state: None,
@@ -335,12 +366,11 @@ impl App {
 
     pub(crate) fn pick_model_for_lua(
         &mut self,
-        current: Option<String>,
+        current: Option<&str>,
         reply: flume::Sender<Option<String>>,
     ) {
         self.model_picker_reply = Some(reply);
-        self.model_picker
-            .open(current.as_deref().unwrap_or_default());
+        self.model_picker.open(current.unwrap_or_else(|| ""));
     }
 
     pub(crate) fn flash(&mut self, msg: String) {
@@ -373,7 +403,7 @@ impl App {
         if !self
             .selection_state
             .as_ref()
-            .is_some_and(|s| s.is_pending_copy())
+            .is_some_and(super::selection::SelectionState::is_pending_copy)
         {
             self.selection_state = None;
         }
@@ -415,7 +445,7 @@ impl App {
             Msg::Scroll { column, row, delta } => {
                 let drag_zone = self.selection_state.as_ref().and_then(|s| match s {
                     SelectionState::Dragging { sel, .. } => Some(sel.zone),
-                    _ => None,
+                    SelectionState::PendingCopy { .. } => None,
                 });
                 self.handle_scroll(column, row, delta);
                 if let Some(zone) = self.zone_at(row, column) {
@@ -557,7 +587,7 @@ impl App {
                 let usage = if i == 0 {
                     Some("main session".to_owned())
                 } else {
-                    let model = c.model_id.as_deref().unwrap_or("model pending");
+                    let model = c.model_id.as_deref().unwrap_or_else(|| "model pending");
                     let tokens = c.token_usage.total_input() + c.token_usage.output;
                     Some(if tokens > 0 {
                         format!("{model} · {tokens} tokens")
@@ -642,6 +672,7 @@ impl App {
         None
     }
 
+    #[allow(clippy::too_many_lines)]
     fn dispatch_overlay(&mut self, key: KeyEvent) -> Option<Vec<Action>> {
         if self.permission_prompt.is_open() {
             if let Some(answer) = self.permission_prompt.handle_key(key) {
@@ -772,7 +803,7 @@ impl App {
                     vec![]
                 }
                 PickerAction::Close => {
-                    self.active_chat = self.task_picker_original.take().unwrap_or(0);
+                    self.active_chat = self.task_picker_original.take().unwrap_or_else(|| 0);
                     vec![]
                 }
             });
@@ -780,16 +811,14 @@ impl App {
 
         if self.rewind_picker.is_open() {
             return Some(match self.rewind_picker.handle_key(key) {
-                RewindPickerAction::Consumed => vec![],
+                RewindPickerAction::Consumed | RewindPickerAction::Close => vec![],
                 RewindPickerAction::Select(entry) => self.rewind_to(entry),
-                RewindPickerAction::Close => vec![],
             });
         }
 
         if self.theme_picker.is_open() {
             return Some(match self.theme_picker.handle_key(key) {
-                ThemePickerAction::Consumed => vec![],
-                ThemePickerAction::Closed => vec![],
+                ThemePickerAction::Consumed | ThemePickerAction::Closed => vec![],
             });
         }
 
@@ -821,8 +850,7 @@ impl App {
 
         if self.login_picker.is_open() {
             return Some(match self.login_picker.handle_key(key) {
-                LoginPickerAction::Consumed => vec![],
-                LoginPickerAction::Close => vec![],
+                LoginPickerAction::Consumed | LoginPickerAction::Close => vec![],
                 LoginPickerAction::Authenticated { model_spec } => {
                     vec![Action::ChangeModel(model_spec), Action::RefreshModels]
                 }
@@ -834,14 +862,13 @@ impl App {
 
         if self.mcp_picker.is_open() {
             return Some(match self.mcp_picker.handle_key(key) {
-                McpPickerAction::Consumed => vec![],
+                McpPickerAction::Consumed | McpPickerAction::Close => vec![],
                 McpPickerAction::Toggle {
                     server_name,
                     enabled,
                 } => {
                     vec![Action::ToggleMcp(server_name, enabled)]
                 }
-                McpPickerAction::Close => vec![],
             });
         }
 
@@ -918,12 +945,15 @@ impl App {
                     vec![]
                 }
             }
-            InputAction::Passthrough(_) | InputAction::ContinueLine | InputAction::None => vec![],
-            InputAction::OpenFilePicker => vec![],
-            InputAction::PaletteSync(_) => vec![],
+            InputAction::Passthrough(_)
+            | InputAction::ContinueLine
+            | InputAction::None
+            | InputAction::OpenFilePicker
+            | InputAction::PaletteSync(_) => vec![],
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn handle_main_chat_key(&mut self, key: KeyEvent) -> Vec<Action> {
         if key::TRANSCRIPT_DETAILS.matches(key) {
             let visible = self.active_chat().toggle_transcript_details();
@@ -944,12 +974,11 @@ impl App {
             if key::POP_QUEUE.matches(key) {
                 self.queue.remove(0);
             } else if key::OPEN_EDITOR.matches(key) {
-                return match self.state.plan.path() {
-                    Some(p) => vec![Action::OpenEditor(p.to_path_buf())],
-                    None => {
-                        self.flash(FLASH_NO_PLAN.into());
-                        vec![]
-                    }
+                return if let Some(p) = self.state.plan.path() {
+                    vec![Action::OpenEditor(p.to_path_buf())]
+                } else {
+                    self.flash(FLASH_NO_PLAN.into());
+                    vec![]
                 };
             } else if key::SEARCH.matches(key) {
                 let top = self.chats[self.active_chat].scroll_top();
@@ -1019,6 +1048,9 @@ impl App {
                     }
                     KeyCode::Tab if !self.is_bash_input() => self.toggle_mode(),
                     KeyCode::Esc => {
+                        if self.try_restore_pending_submission() {
+                            return vec![];
+                        }
                         if let Some(t) = self.last_esc.take()
                             && t.elapsed() < self.status_bar.flash_duration
                         {
@@ -1086,6 +1118,19 @@ impl App {
             }
             return vec![];
         }
+        if !self.is_main_chat() {
+            let subagent_id = self
+                .chat_index
+                .iter()
+                .find(|&(_, &idx)| idx == self.active_chat)
+                .map(|(id, _)| id.clone());
+            if let Some(subagent_id) = subagent_id
+                && !self.send_subagent_prompt(&subagent_id, sub.text)
+            {
+                self.flash(STEERING_UNAVAILABLE_MSG.into());
+            }
+            return vec![];
+        }
         if sub.text.trim() == "exit" {
             return self.quit();
         }
@@ -1117,17 +1162,165 @@ impl App {
         self.submit_or_queue(sub.into())
     }
 
+    fn try_restore_pending_submission(&mut self) -> bool {
+        if !matches!(self.status, Status::Streaming | Status::Error { .. }) {
+            return false;
+        }
+        let Some(pending) = self.pending_submission.as_ref() else {
+            return false;
+        };
+        let failed_before_dispatch =
+            matches!(self.status, Status::Error { .. }) && !pending.gate.is_committed();
+        if pending.run_id != self.run_id
+            || (!failed_before_dispatch
+                && self
+                    .submission_clock
+                    .now()
+                    .saturating_duration_since(pending.submitted_at)
+                    > SUBMISSION_ESCAPE_WINDOW)
+            || !self.input_box.is_empty()
+        {
+            return false;
+        }
+        if !pending.gate.try_cancel() {
+            self.pending_submission = None;
+            return false;
+        }
+        let submission_id = pending.submission_id;
+        self.restore_pending_submission(submission_id, pending.run_id)
+    }
+
+    fn restore_pending_submission(&mut self, submission_id: u64, run_id: u64) -> bool {
+        let Some(pending) = self.pending_submission.take() else {
+            return false;
+        };
+        if pending.submission_id != submission_id
+            || pending.run_id != run_id
+            || self.run_id != run_id
+        {
+            self.pending_submission = Some(pending);
+            return false;
+        }
+
+        self.queue.remove_submission(submission_id);
+        self.shell.restore_results(pending.preamble);
+        self.main_chat()
+            .truncate_messages(pending.display_len_before);
+        self.input_box.set_submission(Submission {
+            text: pending.message.text,
+            images: pending.message.images,
+        });
+        self.run_id += 1;
+        self.status = Status::Idle;
+        self.retry_info = None;
+        self.last_esc = None;
+        self.status_bar.clear_flash();
+        true
+    }
+
+    pub(crate) fn handle_submission_persistence_failure(&mut self, dispatch: &SubmissionDispatch) {
+        self.queue.remove_submission(dispatch.submission_id);
+        if dispatch.paint_required {
+            let Some(pending) = self.pending_submission.as_ref() else {
+                return;
+            };
+            if pending.submission_id != dispatch.submission_id
+                || pending.run_id != dispatch.run_id
+                || !dispatch.gate.try_cancel()
+            {
+                return;
+            }
+            if self.restore_pending_submission(dispatch.submission_id, dispatch.run_id) {
+                self.flash(PERSISTENCE_FAILURE_MSG.into());
+            }
+            return;
+        }
+
+        let relevant_run = dispatch.run_id == self.run_id;
+        let _ = dispatch.gate.try_cancel();
+        if relevant_run && self.status == Status::Streaming {
+            self.status = Status::error(PERSISTENCE_FAILURE_MSG.into());
+            self.main_chat().push(DisplayMessage::new(
+                DisplayRole::Error,
+                PERSISTENCE_FAILURE_MSG.into(),
+            ));
+            self.fire_session_autocmd(
+                "TurnError",
+                serde_json::json!({ "message": PERSISTENCE_FAILURE_MSG }),
+            );
+        }
+    }
+    pub(crate) fn preserve_submission_for_shutdown(&mut self, dispatch: SubmissionDispatch) {
+        if !dispatch.paint_required {
+            return;
+        }
+        let Some(pending) = self.pending_submission.as_ref() else {
+            return;
+        };
+        if pending.submission_id != dispatch.submission_id
+            || pending.run_id != dispatch.run_id
+            || !Arc::ptr_eq(&pending.gate, &dispatch.gate)
+        {
+            return;
+        }
+        self.queue.preserve_submission(dispatch);
+    }
+
+    pub(crate) fn stage_submission_preamble(&mut self, dispatch: &mut SubmissionDispatch) -> bool {
+        if !dispatch.paint_required {
+            if dispatch.gate.is_cancelled() {
+                return false;
+            }
+            dispatch.input.preamble = self.shell.drain_results();
+            return true;
+        }
+        let Some(pending) = self.pending_submission.as_mut() else {
+            return false;
+        };
+        if pending.submission_id != dispatch.submission_id
+            || pending.run_id != dispatch.run_id
+            || self.run_id != dispatch.run_id
+            || !Arc::ptr_eq(&pending.gate, &dispatch.gate)
+            || dispatch.gate.is_cancelled()
+        {
+            return false;
+        }
+        let preamble = self.shell.drain_results();
+        dispatch.input.preamble.clone_from(&preamble);
+        pending.preamble = preamble;
+        true
+    }
+
+    pub(crate) fn accepts_submission_persistence(&self, dispatch: &SubmissionDispatch) -> bool {
+        if dispatch.run_id != self.run_id || dispatch.gate.is_cancelled() {
+            return false;
+        }
+        if !dispatch.paint_required {
+            return true;
+        }
+        self.pending_submission.as_ref().is_some_and(|pending| {
+            pending.submission_id == dispatch.submission_id
+                && pending.run_id == dispatch.run_id
+                && Arc::ptr_eq(&pending.gate, &dispatch.gate)
+        })
+    }
+
     pub(crate) fn cancel_current_run(&mut self) -> Vec<Action> {
         self.handle_cancel()
     }
 
     fn handle_cancel(&mut self) -> Vec<Action> {
+        if let Some(pending) = self.pending_submission.take()
+            && pending.gate.try_cancel()
+        {
+            self.shell.restore_results(pending.preamble);
+        }
         let cancelled_run = self.run_id;
         self.run_id += 1;
         self.retry_info = None;
         self.close_all_overlays();
         self.pending_input = PendingInput::None;
-        self.finish_subagents(DisplayRole::Error, CANCELLED_TEXT);
+        self.finish_subagents(&DisplayRole::Error, CANCELLED_TEXT);
         self.subagent_answers.clear();
         self.subagent_prompts.clear();
         self.shell.cancel_all();
@@ -1160,10 +1353,10 @@ impl App {
         ) {
             self.pending_input = PendingInput::None;
         }
-
         vec![Action::CancelSubagent { tool_use_id }]
     }
 
+    #[allow(clippy::too_many_lines)]
     fn handle_agent_event(&mut self, envelope: Envelope) -> Vec<Action> {
         if envelope.run_id == RESTORE_RUN_ID {
             let (id, snapshot, theme_gen, is_header) = match envelope.event {
@@ -1244,6 +1437,28 @@ impl App {
             None => 0,
         };
 
+        if matches!(envelope.event, AgentEvent::CompactionDone) && chat_idx == 0 {
+            self.chats[chat_idx].flush();
+            if let Some(shared_transcript) = &self.shared_transcript {
+                let transcript = shared_transcript.load();
+                let tool_outputs = self.shared_tool_outputs.as_ref().map_or_else(
+                    || self.state.session.tool_outputs.clone(),
+                    |outputs| {
+                        outputs
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .clone()
+                    },
+                );
+                let (display, _) = transcript_to_display(
+                    &transcript,
+                    &tool_outputs,
+                    &self.ui_config.tool_output_lines,
+                );
+                self.chats[chat_idx].load_messages(display);
+            }
+        }
+
         if let AgentEvent::ToolStart(ref e) = envelope.event {
             self.fire_session_autocmd(
                 "ToolStart",
@@ -1269,12 +1484,12 @@ impl App {
             if self.state.mode == Mode::Plan
                 && self.state.plan.path().is_some_and(|pp| e.wrote_to(pp))
             {
-                self.transition_plan(PlanTrigger::WriteDone);
+                self.transition_plan(&PlanTrigger::WriteDone);
             }
             if let Some(ref outputs) = self.shared_tool_outputs {
                 outputs
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .insert(e.id.clone(), e.output.clone());
             }
             if let Some(&sub_idx) = self.chat_index.get(&e.id) {
@@ -1401,11 +1616,11 @@ impl App {
                     self.queue.clear();
                     self.subagent_answers.clear();
                     self.subagent_prompts.clear();
-                    self.finish_subagents(DisplayRole::Error, ERROR_TEXT);
+                    self.finish_subagents(&DisplayRole::Error, ERROR_TEXT);
                     self.chats[chat_idx]
                         .push(DisplayMessage::new(DisplayRole::Error, message.clone()));
                     for chat in &mut self.chats {
-                        chat.fail_in_progress_with_message(message.clone());
+                        chat.fail_in_progress_with_message(message.as_str());
                     }
                     self.fire_session_autocmd(
                         "TurnError",
@@ -1449,7 +1664,7 @@ impl App {
         );
         chat.set_restore_channel(self.lua_event_handle.clone(), self.restore_event_tx.clone());
         chat.tool_use_id = Some(id.clone());
-        chat.model_id = subagent.model.clone();
+        chat.model_id.clone_from(&subagent.model);
         if let Some(ref prompt) = subagent.prompt {
             chat.push_user_message(prompt);
         }
@@ -1457,6 +1672,7 @@ impl App {
         idx
     }
 
+    #[allow(clippy::too_many_lines)]
     fn execute_command(&mut self, cmd: ParsedCommand) -> Vec<Action> {
         self.input_box.discard();
         match cmd.name.as_str() {
@@ -1595,7 +1811,10 @@ impl App {
     }
 
     fn execute_mcp_prompt(&mut self, name: &str, args: &str) -> Vec<Action> {
-        let prompt = self.command_palette.find_mcp_prompt(name).unwrap().clone();
+        let Some(prompt) = self.command_palette.find_mcp_prompt(name) else {
+            return Vec::new();
+        };
+        let prompt = prompt.clone();
 
         let arguments = Self::parse_prompt_args(&prompt, args);
         let missing: Vec<_> = prompt
@@ -1610,7 +1829,7 @@ impl App {
         }
 
         let prompt_ref = n00n_agent::McpPromptRef {
-            qualified_name: prompt.qualified_name.clone(),
+            qualified_name: prompt.qualified_name,
             arguments,
         };
         let display_text = if args.trim().is_empty() {
@@ -1629,9 +1848,14 @@ impl App {
             vec![]
         } else {
             self.run_id += 1;
-            self.status = Status::Streaming;
-            self.main_chat().show_user_message(display_text);
-            vec![Action::SendMessage(Box::new(input))]
+            self.start_submission(
+                &QueuedMessage {
+                    text: display_text,
+                    images: Vec::new(),
+                },
+                input,
+                true,
+            )
         }
     }
 
@@ -1672,11 +1896,11 @@ impl App {
 
     fn cmd_cd(&mut self, args: &str) -> Vec<Action> {
         let path = if args.is_empty() {
-            n00n_storage::paths::home().unwrap_or_default()
+            n00n_storage::paths::home().unwrap_or_else(Default::default)
         } else {
             match args.strip_prefix('~') {
                 Some(rest) => {
-                    let home = n00n_storage::paths::home().unwrap_or_default();
+                    let home = n00n_storage::paths::home().unwrap_or_else(Default::default);
                     if rest.is_empty() {
                         home
                     } else {
@@ -1692,7 +1916,7 @@ impl App {
                     self.state.session.cwd = canonical.to_string_lossy().into_owned();
                 }
                 self.status_bar.refresh_cwd();
-                self.flash(format!("cd {}", path.display()))
+                self.flash(format!("cd {}", path.display()));
             }
             Err(e) => self.flash(format!("cd: {e}")),
         }
@@ -1735,6 +1959,7 @@ impl App {
         ]
     }
 
+    #[must_use]
     pub fn any_overlay_open(&self) -> bool {
         self.overlays().iter().any(|o| o.is_open())
     }
@@ -1745,6 +1970,7 @@ impl App {
         self.permission_prompt.is_open() || self.pending_input != PendingInput::None
     }
 
+    #[must_use]
     pub fn has_modal_overlay(&self) -> bool {
         self.overlays().iter().any(|o| o.is_open() && o.is_modal())
     }
@@ -1753,6 +1979,7 @@ impl App {
         self.overlays_mut().iter_mut().for_each(|o| o.close());
     }
 
+    #[must_use]
     pub fn is_animating(&self) -> bool {
         !self.image_paste_rx.is_empty()
             || self.btw_modal.is_animating()
@@ -1761,12 +1988,12 @@ impl App {
             || self
                 .selection_state
                 .as_ref()
-                .is_some_and(|s| s.is_edge_scrolling())
+                .is_some_and(super::selection::SelectionState::is_edge_scrolling)
             || self.restoring.load(Ordering::Relaxed)
-            || self.chats.iter().any(|c| c.is_animating())
+            || self.chats.iter().any(super::chat::Chat::is_animating)
     }
 
-    fn finish_subagents(&mut self, role: DisplayRole, text: &str) {
+    fn finish_subagents(&mut self, role: &DisplayRole, text: &str) {
         for &sub_idx in self.chat_index.values() {
             self.chats[sub_idx].mark_finished(role.clone(), text);
         }
@@ -1827,13 +2054,14 @@ impl App {
                 self.plan_form.hide();
                 vec![]
             }
-            PlanFormAction::OpenEditor => match self.state.plan.path() {
-                Some(p) => vec![Action::OpenEditor(p.to_path_buf())],
-                None => {
+            PlanFormAction::OpenEditor => {
+                if let Some(p) = self.state.plan.path() {
+                    vec![Action::OpenEditor(p.to_path_buf())]
+                } else {
                     self.flash(FLASH_NO_PLAN.into());
                     vec![]
                 }
-            },
+            }
             PlanFormAction::Implement => self.implement_plan(false),
             PlanFormAction::ClearAndImplement => self.implement_plan(true),
         }
@@ -1844,7 +2072,7 @@ impl App {
         self.plan_form.reset();
         let plan_snapshot = match std::mem::take(&mut self.state.plan) {
             PlanState::Ready(p) => Some((
-                std::fs::read_to_string(&p).unwrap_or_default(),
+                std::fs::read_to_string(&p).unwrap_or_else(|_| String::default()),
                 p.display().to_string(),
             )),
             _ => None,
@@ -1868,7 +2096,7 @@ impl App {
                 .push(DisplayMessage::plan(content, path_str));
             text
         } else {
-            format!("{}.", IMPLEMENT_MSG_PREFIX)
+            format!("{IMPLEMENT_MSG_PREFIX}.")
         };
         self.run_id += 1;
         let msg = QueuedMessage {

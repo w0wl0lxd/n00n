@@ -7,7 +7,7 @@ group = "Reference"
 
 # Lua API
 
-N00n plugins are plain Lua files. Everything a plugin can touch lives under
+n00n plugins are plain Lua files. Everything a plugin can touch lives under
 one global table: `n00n`. This reference documents every module, function,
 and method. It is generated straight from the source code by `n00n-docgen`.
 
@@ -66,7 +66,7 @@ a string belongs.
 | [`n00n.fn`](#n00n-fn) | Process and environment helpers, modeled after Neovim's `vim.fn` job |
 | [`n00n.fs`](#n00n-fs) | File-system utilities, modelled after `vim.fs` and `vim.uv`. |
 | [`n00n.image`](#n00n-image) | Small building blocks for working with images: probe metadata, decode |
-| [`n00n.image.Image`](#n00n-image-Image) | A decoded image you can inspect, resize, and re-encode. |
+| [`n00n.image.Image`](#n00n-image-Image) | A decoded image you can inspect, resize, crop, and re-encode. |
 | [`n00n.interpreter`](#n00n-interpreter) | Run Python code in a memory-safe, time-limited sandbox. |
 | [`n00n.json`](#n00n-json) | JSON encoding, decoding, schema validation, and TOON round-trip. |
 | [`n00n.json.SchemaValidator`](#n00n-json-SchemaValidator) | A compiled JSON Schema validator. |
@@ -86,6 +86,7 @@ a string belongs.
 | [`n00n.ui.Win`](#n00n-ui-Win) | Handle to a floating or split window. |
 | [`n00n.ui.Buf`](#n00n-ui-Buf) | A content buffer that holds styled lines of text. |
 | [`n00n.uv`](#n00n-uv) | System and environment utilities, modelled after `vim.uv`. |
+| [`n00n.arbor`](#n00n-arbor) | Graph-based code analysis via Arbor CLI. |
 | [`n00n.workflow`](#n00n-workflow) | Sandboxed workflow script compilation. |
 | [`n00n.yaml`](#n00n-yaml) | YAML encoding and decoding. |
 
@@ -178,6 +179,12 @@ to decide when to use the tool), a JSON Schema for the input, and a handler
 function. The handler receives `(input, ctx)` and returns either a plain
 string or a table with richer output fields.
 
+`cost` and `usage` are accounting metadata. n00n exposes only a finite,
+non-negative cost and the allowlisted numeric token counts. If
+`is_error = true` after usage was charged, this sanitized metadata is
+returned alongside the error; provider payloads and extra usage fields are
+discarded.
+
 **Parameters:**
 
 - `{spec}` (`table`) Tool specification:
@@ -200,6 +207,8 @@ string or a table with richer output fields.
     - `image` (`table`) { media_type: string, data: string } base64 image.
     - `instructions` (`table`) Array of { path, content } blocks injected as context.
     - `state` (`any`) Serializable state forwarded to restore.
+    - `cost` (`number`) Non-negative estimated cost attached as sanitized tool telemetry.
+    - `usage` (`table`) Token counts: fresh_input_tokens, cache_read_tokens, cache_write_tokens, input_tokens, output_tokens.
   - `audiences` (`string[]`) Which model audiences see the tool. Values: "main", "sub", "all". Default: all audiences.
   - `kind` (`string`) Optional grouping label (e.g. "filesystem").
   - `timeout` (`number`) Execution timeout in seconds. 0 or false disables. Default: inherits agent deadline.
@@ -818,26 +827,36 @@ sess:close()
 ### `n00n.agent.usage_cost()` {#n00n-agent-usage_cost}
 
 ```lua
-n00n.agent.usage_cost({spec}, {input_tokens}, {output_tokens})
+n00n.agent.usage_cost({spec}, {input_tokens}, {output_tokens}, {breakdown?})
 ```
 
 Estimate the dollar cost of a completion from its model spec and token
-counts. Uses the provider's published pricing (input/output/cache write/
-read), so orchestrators like Team can report cost without bundling a
-price table.
+counts. Uses the provider's published pricing for fresh input, cache reads,
+cache writes, and output. Without {breakdown}, input and fast-tier pricing
+retain the legacy three-argument behavior.
 
 **Parameters:**
 
 - `{spec}` (`string`) Model spec, e.g. `"anthropic/claude-haiku-4-5"`.
-- `{input_tokens}` (`integer`) Prompt tokens.
+- `{input_tokens}` (`integer`) Total prompt tokens across all input categories.
 - `{output_tokens}` (`integer`) Completion tokens.
+- `{breakdown?}` (`table?`) Optional input categories. Fields:
+  - `fresh_input_tokens` (`integer?`) non-cached input; when present, it must
+    conserve `input_tokens` together with the cache categories.
+  - `cache_read_tokens` (`integer?`) input tokens read from cache; default 0.
+  - `cache_write_tokens` (`integer?`) input tokens written to cache; default 0.
+  - `fast` (`boolean?`) whether this completion used fast-tier pricing; default false.
 
 **Returns:** (`number?`, `string?`) Estimated USD cost, or `(nil, err)` on failure.
 
 **Example:**
 
 ```lua
-local cost, err = n00n.agent.usage_cost("anthropic/claude-haiku-4-5", 1200, 300)
+local cost, err = n00n.agent.usage_cost("anthropic/claude-haiku-4-5", 1200, 300, {
+  fresh_input_tokens = 900,
+  cache_read_tokens = 200,
+  cache_write_tokens = 100,
+})
 if err then error(err) end
 print(string.format("$%.4f", cost))
 ```
@@ -864,14 +883,22 @@ Send a message to the subagent and wait for its full response. The agent
 loop runs to completion, calling tools as needed. Conversation history is
 kept across calls, so you can have a multi-turn conversation.
 
-The returned table has fields: `text` (string), `duration_ms` (integer),
-`input_tokens` (integer), `output_tokens` (integer).
+The success table has fields: `text` (string), `duration_ms` (integer),
+`input_tokens` (integer), `fresh_input_tokens` (integer),
+`cache_read_tokens` (integer), `cache_write_tokens` (integer),
+`output_tokens` (integer), actual `fast` state (boolean), and aggregate
+`cost` (number). The cost is summed
+per request using that request's model and fast tier, including compaction.
+If execution fails after incurring usage, the
+result table omits `text` and contains only `duration_ms` plus these
+sanitized numeric usage fields. Check `err` before reading `text`.
 
 **Parameters:**
 
 - `{message}` (`string`) User message to send.
 
-**Returns:** (`table?`, `string?`) Result table on success, or `(nil, err)` on failure.
+**Returns:** (`table?`, `string?`) `(result, nil)` on success; charged failures return
+  `(sanitized_usage, err)`. Session-state failures can return `(nil, err)`.
 
 **Example:**
 
@@ -908,11 +935,24 @@ Returns a table with:
   `elapsed_ms` (integer): time since the session was created.
   `current_tool` (string?): name of the tool currently running, if any.
   `recent_tools` (table): names of the last few finished tools, oldest first.
+  `activities` (table): up to five safe rendered tool summaries, oldest first.
   `completed_count` (integer): total number of finished tools so far.
-  `done` (bool): true once the prompt has completed.
+  `turn_id` (integer): increases before each `prompt` call.
+  `done` (bool): true once the current prompt call has completed.
 
 The call returns at most every `PROGRESS_TIMEOUT_MS` milliseconds, or
 immediately when a tool starts or finishes.
+
+---
+
+### `Session:cancel()` {#Session-cancel}
+
+```lua
+Session:cancel()
+```
+
+Cancel the current turn in this session without closing it. The agent will
+stop at the next cancellation point and return an error from `:prompt()`.
 
 
 ## n00n.async {#n00n-async}
@@ -1465,6 +1505,33 @@ local encoded = n00n.base64.encode(buf)
 
 ---
 
+### `n00n.fs.read_bytes_limited()` {#n00n-fs-read_bytes_limited}
+
+```lua
+n00n.fs.read_bytes_limited({path}, {max_bytes})
+```
+
+Read at most {max_bytes} raw bytes from a regular file at {path}.
+The opened handle is checked before reading, so devices, FIFOs, and directories
+are rejected. Reads one byte beyond the limit to report oversized files without
+allocating their full contents.
+
+**Parameters:**
+
+- `{path}` (`string`) Absolute or relative file path. `~/` is expanded to the home directory.
+- `{max_bytes}` (`integer`) Maximum file size in bytes.
+
+**Returns:** (`buffer?`, `string?`) File bytes, or nil plus a sanitized error message.
+
+**Example:**
+
+```lua
+local bytes, err = n00n.fs.read_bytes_limited("image.png", 50 * 1024 * 1024)
+if err then return end
+```
+
+---
+
 ### `n00n.fs.metadata()` {#n00n-fs-metadata}
 
 ```lua
@@ -1888,7 +1955,8 @@ decoding the pixels. Much faster than `decode` when you only need to
 check the size or format.
 
 Returns a table with `format` (string), `width` (integer), `height`
-(integer), or `(nil, err)` if the bytes are not a recognized image.
+(integer), and `animated` (boolean; GIF/WebP streams with multiple frames),
+or `(nil, err)` if the bytes are not a recognized image.
 
 **Parameters:**
 
@@ -1932,7 +2000,7 @@ print(img:width() .. "x" .. img:height())
 
 ## n00n.image.Image {#n00n-image-Image}
 
-A decoded image you can inspect, resize, and re-encode.
+A decoded image you can inspect, resize, crop, and re-encode.
 
 Get one from `n00n.image.decode()`. The image data lives in memory
 until the handle is garbage collected.
@@ -1989,6 +2057,33 @@ local encoded = small:encode("jpeg")
 
 ---
 
+### `Image:crop()` {#Image-crop}
+
+```lua
+Image:crop({x}, {y}, {width}, {height})
+```
+
+Copy a rectangular pixel region without resizing it. Coordinates are
+zero-based source pixels. The original image is unchanged.
+
+**Parameters:**
+
+- `{x}` (`integer`) Left edge in source pixels.
+- `{y}` (`integer`) Top edge in source pixels.
+- `{width}` (`integer`) Crop width in pixels. Must be positive.
+- `{height}` (`integer`) Crop height in pixels. Must be positive.
+
+**Returns:** ([`n00n.image.Image`](#n00n-image-Image)) A new image handle containing the crop.
+
+**Example:**
+
+```lua
+local tile = img:crop(0, 2000, 1440, 2000)
+local png = tile:encode("png")
+```
+
+---
+
 ### `Image:encode()` {#Image-encode}
 
 ```lua
@@ -2010,6 +2105,24 @@ images for sending over the network or writing to disk.
 local bytes = img:encode("png")
 -- bytes is a Lua string containing the raw PNG data
 ```
+
+---
+
+### `Image:encode_limited()` {#Image-encode_limited}
+
+```lua
+Image:encode_limited({format}, {max_bytes})
+```
+
+Encode with a strict output-byte limit. Use this for untrusted or
+transport-bound image output so encoding cannot grow a `Vec` without bound.
+
+**Parameters:**
+
+- `{format}` (`string`) Output format: `"png"`, `"jpeg"`, or `"jpg"`.
+- `{max_bytes}` (`integer`) Maximum encoded bytes, up to 3,750,000.
+
+**Returns:** (`string?`, `string?`) Encoded bytes, or nil plus an error when the limit is exceeded.
 
 
 ## n00n.interpreter {#n00n-interpreter}
@@ -2211,6 +2324,48 @@ Decode a TOON string back into a Lua value. Inverse of `to_toon`.
 
 ```lua
 local t, err = n00n.json.from_toon(s)
+```
+
+---
+
+### `n00n.json.tooned()` {#n00n-json-tooned}
+
+```lua
+n00n.json.tooned({value})
+```
+
+Lossless JSON/TOON passthrough. Encodes the value as JSON and TOON and
+returns whichever representation is smaller. If TOON does not shrink the
+payload, the original JSON string is returned unchanged.
+
+**Parameters:**
+
+- `{value}` (`any`) Lua value to encode.
+
+**Returns:** (`string?`, `string?`) Encoded string (JSON or TOON) and its format ("json" or "toon"), or nil plus an error.
+
+**Example:**
+
+```lua
+local s, fmt = n00n.json.tooned({ users = { { id = 1, name = "Alice" } } })
+```
+
+---
+
+### `n00n.json.toon_stats()` {#n00n-json-toon_stats}
+
+```lua
+n00n.json.toon_stats()
+```
+
+Return historical TOON passthrough statistics.
+
+**Returns:** (`table?`, `string?`) Stats table with calls, json_bytes, toon_bytes, toon_wins, saved_bytes, or nil plus an error.
+
+**Example:**
+
+```lua
+local stats, err = n00n.json.toon_stats()
 ```
 
 
@@ -4119,6 +4274,30 @@ end
 
 ---
 
+### `n00n.ui.pick_model()` {#n00n-ui-pick_model}
+
+```lua
+n00n.ui.pick_model({current?})
+```
+
+Opens n00n's native model discovery picker and waits for a selection.
+Returns nil when the picker is cancelled or the UI is unavailable.
+
+**Parameters:**
+
+- `{current?}` (`string?`) Model spec to preselect. Omit for no preselection.
+
+**Returns:** (`string?`) Selected model spec, or nil when cancelled.
+
+**Example:**
+
+```lua
+local model = n00n.ui.pick_model(current_model)
+if model then current_model = model end
+```
+
+---
+
 ### `n00n.ui.open_win()` {#n00n-ui-open_win}
 
 ```lua
@@ -4683,6 +4862,151 @@ local editor = n00n.uv.os_getenv("EDITOR") or "vi"
 ```
 
 
+## n00n.arbor {#n00n-arbor}
+
+Graph-based code analysis via Arbor CLI. Wraps `arbor callers`, `arbor callees`, `arbor map`, `arbor diff`, `arbor query`, and `arbor status`. Each method shells out to the `arbor` binary (Anandb71/arbor, `cargo install arbor-graph-cli`) and parses its JSON output into Lua tables.
+
+---
+
+### `n00n.arbor.check_binary()` {#n00n-arbor-check_binary}
+
+```lua
+n00n.arbor.check_binary()
+```
+
+Check that the `arbor` CLI is installed and working.
+
+**Returns:** (`nil|string`) nil on success, or an error message string.
+
+---
+
+### `n00n.arbor.available()` {#n00n-arbor-available}
+
+```lua
+n00n.arbor.available()
+```
+
+Returns true if the `arbor` CLI is on PATH.
+
+**Returns:** (`boolean`) true when arbor is available.
+
+---
+
+### `n00n.arbor.callers()` {#n00n-arbor-callers}
+
+```lua
+n00n.arbor.callers({symbol}, {project})
+```
+
+Show who calls a symbol.
+
+**Parameters:**
+
+- `{symbol}` (`string`) Symbol name (function, class, etc.)
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`table`) Array of caller objects with `name`, `path`, `kind`, `line` fields.
+
+---
+
+### `n00n.arbor.callees()` {#n00n-arbor-callees}
+
+```lua
+n00n.arbor.callees({symbol}, {project})
+```
+
+Show what a symbol calls.
+
+**Parameters:**
+
+- `{symbol}` (`string`) Symbol name.
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`table`) Array of callee objects with `name`, `path`, `kind`, `line` fields.
+
+---
+
+### `n00n.arbor.map()` {#n00n-arbor-map}
+
+```lua
+n00n.arbor.map({project}, {token_budget?})
+```
+
+Ranked project skeleton with symbols.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+- `{token_budget}` (`integer`) Optional token budget (default 1024).
+
+**Returns:** (`table`) Array of map entries with `file`, `symbols` (each with `name`, `kind`, `line`, `centrality`, `callers`).
+
+---
+
+### `n00n.arbor.diff()` {#n00n-arbor-diff}
+
+```lua
+n00n.arbor.diff({project})
+```
+
+Blast radius of unpushed git changes.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`table`) Impact object with `direct_callers`, `indirect_callers`, `blast_radius_nodes`, `api_entrypoints_affected`, `files_likely_require_updates`.
+
+---
+
+### `n00n.arbor.query()` {#n00n-arbor-query}
+
+```lua
+n00n.arbor.query({query}, {project})
+```
+
+Free-text search of the code graph.
+
+**Parameters:**
+
+- `{query}` (`string`) Search query text.
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`string`) Raw query results as text.
+
+---
+
+### `n00n.arbor.status()` {#n00n-arbor-status}
+
+```lua
+n00n.arbor.status({project})
+```
+
+Show Arbor index status for a project.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`string`) Status text.
+
+---
+
+### `n00n.arbor.ensure_indexed()` {#n00n-arbor-ensure_indexed}
+
+```lua
+n00n.arbor.ensure_indexed({project})
+```
+
+Run `arbor index` if the project is not yet indexed.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`nil`) nil on success, or error on failure.
+
+
 ## n00n.workflow {#n00n-workflow}
 
 Sandboxed workflow script compilation.
@@ -4812,6 +5136,16 @@ print(t.name) -- n00n
 These ship inside n00n; `require` them from any plugin. Small modules are
 shown as full source, larger ones as their public interface.
 
+### `require("n00n.activity_preview")`
+
+```lua
+function ActivityPreview.new(ctx, description, opts)
+function ActivityPreview:render()
+function ActivityPreview:set_row(key, label, message, status)
+function ActivityPreview:update(progress, label, session_key)
+function ActivityPreview:prompt(sess, message, label)
+```
+
 ### `require("n00n.color")`
 
 ```lua
@@ -4837,6 +5171,16 @@ function M.dim(color, factor)
 end
 
 return M
+```
+
+### `require("n00n.explore_result")`
+
+```lua
+function Card:update(output)
+function ExploreResult.new(opts)
+function ExploreResult.live(ctx, opts)
+function ExploreResult.header(label, project)
+function ExploreResult.restore(output, ctx, opts)
 ```
 
 ### `require("n00n.fuzzy_replace")`
@@ -5016,12 +5360,18 @@ function TextInput:render(prefix, prefix_width, width)
 
 -- opts: max_lines (default 80) shown while collapsed, keep "head"|"tail"
 -- (default "tail"), max_expand_lines (default 2000) kept for expansion,
--- max_line_bytes (optional) per-line byte cap applied at render time.
+-- max_line_bytes and max_width (optional) cap each complete rendered row,
+-- and hide_collapsed (default false) reveals body lines only after a click.
 function ToolView.new(buf, opts)
 function ToolView:set_header(lines)
 function ToolView:clear()
 function ToolView:append(line)
 function ToolView:append_text(text)
+
+-- Replace the logical result in one publication. Expansion is view state,
+-- so it survives live-result updates while readers never observe a partial card.
+function ToolView:replace_lines(lines)
+function ToolView:replace_text(text)
 
 -- Append {content} with line numbers, then syntax-highlight it for {ext}
 -- asynchronously. Returns false when {content} is empty.
@@ -5075,5 +5425,13 @@ local function truncate(text, max_lines, max_bytes)
 end
 
 return truncate
+```
+
+### `require("n00n.usage")`
+
+```lua
+function M.normalize(result)
+function M.add(total, value)
+function M.price(model_spec, result)
 ```
 

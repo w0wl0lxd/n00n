@@ -26,6 +26,7 @@ pub(crate) fn bytes_arg(val: &LuaValue, what: &str) -> LuaResult<Vec<u8>> {
 /// @example
 /// n00n.base64.encode("hello") -- "aGVsbG8="
 #[lua_fn]
+#[allow(clippy::needless_pass_by_value)]
 fn encode(_lua: &Lua, data: LuaValue) -> LuaResult<String> {
     let bytes = bytes_arg(&data, "base64.encode")?;
     Ok(BASE64.encode(bytes))
@@ -39,6 +40,7 @@ fn encode(_lua: &Lua, data: LuaValue) -> LuaResult<String> {
 /// @example
 /// n00n.base64.decode("aGVsbG8=") -- "hello"
 #[lua_fn]
+#[allow(clippy::needless_pass_by_value)]
 fn decode(lua: &Lua, str: LuaValue) -> LuaResult<mlua::String> {
     let encoded = bytes_arg(&str, "base64.decode")?;
     let decoded = BASE64

@@ -1,0 +1,1 @@
+Fixed Codex task-agent disconnects and token amplification by reusing Responses WebSockets safely, preventing post-send request replays, capping Coding Plan context correctly, and bounding orchestration fan-out.

@@ -10,15 +10,37 @@ use super::tree::LuaTree;
 #[derive(Clone)]
 pub(crate) struct LuaNode {
     pub(crate) tree: Arc<Tree>,
-    pub(crate) node: Node<'static>,
+    id: usize,
 }
 
 impl LuaNode {
     pub(crate) fn new(node: Node<'_>, tree: Arc<Tree>) -> Self {
-        // SAFETY: Node borrows from Tree. We keep Tree alive via Arc,
-        // so the borrow can never dangle.
-        let node: Node<'static> = unsafe { std::mem::transmute(node) };
-        Self { tree, node }
+        Self {
+            tree,
+            id: node.id(),
+        }
+    }
+
+    pub(crate) fn ts_node(&self) -> LuaResult<Node<'_>> {
+        let root = self.tree.root_node();
+        let mut cursor = root.walk();
+        loop {
+            let n = cursor.node();
+            if n.id() == self.id {
+                return Ok(n);
+            }
+            if cursor.goto_first_child() {
+                continue;
+            }
+            loop {
+                if cursor.goto_next_sibling() {
+                    break;
+                }
+                if !cursor.goto_parent() {
+                    return Err(mlua::Error::runtime("node not found in tree"));
+                }
+            }
+        }
     }
 
     fn wrap(&self, node: Node) -> Self {
@@ -35,7 +57,7 @@ impl LuaNode {
 /// @return (string) Grammar type name.
 #[lua_fn]
 fn r#type(_lua: &Lua, this: &LuaNode) -> LuaResult<String> {
-    Ok(this.node.kind().to_owned())
+    Ok(this.ts_node()?.kind().to_owned())
 }
 
 /// Returns the numeric symbol id for this node's grammar type.
@@ -44,7 +66,7 @@ fn r#type(_lua: &Lua, this: &LuaNode) -> LuaResult<String> {
 /// @return (integer) Symbol id.
 #[lua_fn]
 fn symbol(_lua: &Lua, this: &LuaNode) -> LuaResult<i64> {
-    Ok(this.node.kind_id() as i64)
+    Ok(i64::from(this.ts_node()?.kind_id()))
 }
 
 /// Returns a unique string identifier for this specific node in the tree.
@@ -53,7 +75,7 @@ fn symbol(_lua: &Lua, this: &LuaNode) -> LuaResult<i64> {
 /// @return (string) Node identity string.
 #[lua_fn]
 fn id(_lua: &Lua, this: &LuaNode) -> LuaResult<String> {
-    Ok(format!("{}", this.node.id()))
+    Ok(format!("{}", this.ts_node()?.id()))
 }
 
 /// Returns the range of this node as multiple return values.
@@ -66,17 +88,18 @@ fn id(_lua: &Lua, this: &LuaNode) -> LuaResult<String> {
 /// local sr, sc, er, ec = node:range()
 /// local sr, sc, sb, er, ec, eb = node:range(true)
 #[lua_fn]
+#[allow(clippy::cast_possible_wrap)]
 fn range(_lua: &Lua, this: &LuaNode, include_bytes: Option<bool>) -> LuaResult<MultiValue> {
-    let sp = this.node.start_position();
-    let ep = this.node.end_position();
-    if include_bytes.unwrap_or(false) {
+    let sp = this.ts_node()?.start_position();
+    let ep = this.ts_node()?.end_position();
+    if include_bytes.unwrap_or_else(|| false) {
         Ok(MultiValue::from_iter([
             Value::Integer(sp.row as i64),
             Value::Integer(sp.column as i64),
-            Value::Integer(this.node.start_byte() as i64),
+            Value::Integer(this.ts_node()?.start_byte() as i64),
             Value::Integer(ep.row as i64),
             Value::Integer(ep.column as i64),
-            Value::Integer(this.node.end_byte() as i64),
+            Value::Integer(this.ts_node()?.end_byte() as i64),
         ]))
     } else {
         Ok(MultiValue::from_iter([
@@ -92,12 +115,13 @@ fn range(_lua: &Lua, this: &LuaNode, include_bytes: Option<bool>) -> LuaResult<M
 ///
 /// @return (integer, integer, integer) start_row, start_col, start_byte.
 #[lua_fn]
+#[allow(clippy::cast_possible_wrap)]
 fn start(_lua: &Lua, this: &LuaNode) -> LuaResult<(i64, i64, i64)> {
-    let sp = this.node.start_position();
+    let sp = this.ts_node()?.start_position();
     Ok((
         sp.row as i64,
         sp.column as i64,
-        this.node.start_byte() as i64,
+        this.ts_node()?.start_byte() as i64,
     ))
 }
 
@@ -105,17 +129,23 @@ fn start(_lua: &Lua, this: &LuaNode) -> LuaResult<(i64, i64, i64)> {
 ///
 /// @return (integer, integer, integer) end_row, end_col, end_byte.
 #[lua_fn]
+#[allow(clippy::cast_possible_wrap)]
 fn end_(_lua: &Lua, this: &LuaNode) -> LuaResult<(i64, i64, i64)> {
-    let ep = this.node.end_position();
-    Ok((ep.row as i64, ep.column as i64, this.node.end_byte() as i64))
+    let ep = this.ts_node()?.end_position();
+    Ok((
+        ep.row as i64,
+        ep.column as i64,
+        this.ts_node()?.end_byte() as i64,
+    ))
 }
 
 /// Returns how many bytes this node spans in the source text.
 ///
 /// @return (integer) Byte length.
 #[lua_fn]
+#[allow(clippy::cast_possible_wrap)]
 fn byte_length(_lua: &Lua, this: &LuaNode) -> LuaResult<i64> {
-    Ok((this.node.end_byte() - this.node.start_byte()) as i64)
+    Ok((this.ts_node()?.end_byte() - this.ts_node()?.start_byte()) as i64)
 }
 
 /// Returns the child at position {index} (0-based), including anonymous nodes like punctuation.
@@ -125,7 +155,7 @@ fn byte_length(_lua: &Lua, this: &LuaNode) -> LuaResult<i64> {
 /// @return (Node|nil) Child node, or nil.
 #[lua_fn]
 fn child(_lua: &Lua, this: &LuaNode, index: u32) -> LuaResult<Option<LuaNode>> {
-    Ok(this.wrap_opt(this.node.child(index)))
+    Ok(this.wrap_opt(this.ts_node()?.child(index)))
 }
 
 /// Returns the named child at position {index} (0-based), skipping anonymous nodes.
@@ -135,23 +165,25 @@ fn child(_lua: &Lua, this: &LuaNode, index: u32) -> LuaResult<Option<LuaNode>> {
 /// @return (Node|nil) Named child node, or nil.
 #[lua_fn]
 fn named_child(_lua: &Lua, this: &LuaNode, index: u32) -> LuaResult<Option<LuaNode>> {
-    Ok(this.wrap_opt(this.node.named_child(index)))
+    Ok(this.wrap_opt(this.ts_node()?.named_child(index)))
 }
 
 /// Returns the total number of children, including anonymous nodes.
 ///
 /// @return (integer) Child count.
 #[lua_fn]
+#[allow(clippy::cast_possible_wrap)]
 fn child_count(_lua: &Lua, this: &LuaNode) -> LuaResult<i64> {
-    Ok(this.node.child_count() as i64)
+    Ok(this.ts_node()?.child_count() as i64)
 }
 
 /// Returns the number of named children (skipping anonymous punctuation nodes).
 ///
 /// @return (integer) Named child count.
 #[lua_fn]
+#[allow(clippy::cast_possible_wrap)]
 fn named_child_count(_lua: &Lua, this: &LuaNode) -> LuaResult<i64> {
-    Ok(this.node.named_child_count() as i64)
+    Ok(this.ts_node()?.named_child_count() as i64)
 }
 
 /// Returns all children (named and anonymous) as a Lua table.
@@ -164,8 +196,9 @@ fn named_child_count(_lua: &Lua, this: &LuaNode) -> LuaResult<i64> {
 #[lua_fn]
 fn children(lua: &Lua, this: &LuaNode) -> LuaResult<mlua::Table> {
     let tbl = lua.create_table()?;
-    let mut cursor = this.node.walk();
-    for (i, child) in this.node.children(&mut cursor).enumerate() {
+    let node = this.ts_node()?;
+    let mut cursor = node.walk();
+    for (i, child) in node.children(&mut cursor).enumerate() {
         tbl.raw_set(i + 1, this.wrap(child))?;
     }
     Ok(tbl)
@@ -177,8 +210,9 @@ fn children(lua: &Lua, this: &LuaNode) -> LuaResult<mlua::Table> {
 #[lua_fn]
 fn named_children(lua: &Lua, this: &LuaNode) -> LuaResult<mlua::Table> {
     let tbl = lua.create_table()?;
-    let mut cursor = this.node.walk();
-    for (i, child) in this.node.named_children(&mut cursor).enumerate() {
+    let node = this.ts_node()?;
+    let mut cursor = node.walk();
+    for (i, child) in node.named_children(&mut cursor).enumerate() {
         tbl.raw_set(i + 1, this.wrap(child))?;
     }
     Ok(tbl)
@@ -193,12 +227,14 @@ fn named_children(lua: &Lua, this: &LuaNode) -> LuaResult<mlua::Table> {
 ///   if field then print(field .. ": " .. child:type()) end
 /// end
 #[lua_fn]
+#[allow(clippy::cast_possible_truncation)]
 fn iter_children(lua: &Lua, this: &LuaNode) -> LuaResult<Function> {
-    let count = this.node.child_count() as u32;
+    let node = this.ts_node()?;
+    let count = node.child_count() as u32;
     let mut entries: Vec<(LuaNode, Option<String>)> = Vec::with_capacity(count as usize);
     for i in 0..count {
-        if let Some(child) = this.node.child(i) {
-            let field = this.node.field_name_for_child(i).map(str::to_owned);
+        if let Some(child) = node.child(i) {
+            let field = node.field_name_for_child(i).map(str::to_owned);
             entries.push((this.wrap(child), field));
         }
     }
@@ -231,12 +267,9 @@ fn iter_children(lua: &Lua, this: &LuaNode) -> LuaResult<Function> {
 #[lua_fn]
 fn field(lua: &Lua, this: &LuaNode, name: String) -> LuaResult<mlua::Table> {
     let tbl = lua.create_table()?;
-    let mut cursor = this.node.walk();
-    for (i, child) in this
-        .node
-        .children_by_field_name(&name, &mut cursor)
-        .enumerate()
-    {
+    let node = this.ts_node()?;
+    let mut cursor = node.walk();
+    for (i, child) in node.children_by_field_name(&name, &mut cursor).enumerate() {
         tbl.raw_set(i + 1, this.wrap(child))?;
     }
     Ok(tbl)
@@ -247,7 +280,7 @@ fn field(lua: &Lua, this: &LuaNode, name: String) -> LuaResult<mlua::Table> {
 /// @return (Node|nil) Parent node.
 #[lua_fn]
 fn parent(_lua: &Lua, this: &LuaNode) -> LuaResult<Option<LuaNode>> {
-    Ok(this.wrap_opt(this.node.parent()))
+    Ok(this.wrap_opt(this.ts_node()?.parent()))
 }
 
 /// Returns the next sibling (named or anonymous), or nil if this is the last child.
@@ -255,7 +288,7 @@ fn parent(_lua: &Lua, this: &LuaNode) -> LuaResult<Option<LuaNode>> {
 /// @return (Node|nil) Next sibling.
 #[lua_fn]
 fn next_sibling(_lua: &Lua, this: &LuaNode) -> LuaResult<Option<LuaNode>> {
-    Ok(this.wrap_opt(this.node.next_sibling()))
+    Ok(this.wrap_opt(this.ts_node()?.next_sibling()))
 }
 
 /// Returns the previous sibling (named or anonymous), or nil if this is the first child.
@@ -263,7 +296,7 @@ fn next_sibling(_lua: &Lua, this: &LuaNode) -> LuaResult<Option<LuaNode>> {
 /// @return (Node|nil) Previous sibling.
 #[lua_fn]
 fn prev_sibling(_lua: &Lua, this: &LuaNode) -> LuaResult<Option<LuaNode>> {
-    Ok(this.wrap_opt(this.node.prev_sibling()))
+    Ok(this.wrap_opt(this.ts_node()?.prev_sibling()))
 }
 
 /// Returns the next named sibling, skipping anonymous nodes. Returns nil at the end.
@@ -271,7 +304,7 @@ fn prev_sibling(_lua: &Lua, this: &LuaNode) -> LuaResult<Option<LuaNode>> {
 /// @return (Node|nil) Next named sibling.
 #[lua_fn]
 fn next_named_sibling(_lua: &Lua, this: &LuaNode) -> LuaResult<Option<LuaNode>> {
-    Ok(this.wrap_opt(this.node.next_named_sibling()))
+    Ok(this.wrap_opt(this.ts_node()?.next_named_sibling()))
 }
 
 /// Returns the previous named sibling, skipping anonymous nodes. Returns nil at the start.
@@ -279,7 +312,7 @@ fn next_named_sibling(_lua: &Lua, this: &LuaNode) -> LuaResult<Option<LuaNode>> 
 /// @return (Node|nil) Previous named sibling.
 #[lua_fn]
 fn prev_named_sibling(_lua: &Lua, this: &LuaNode) -> LuaResult<Option<LuaNode>> {
-    Ok(this.wrap_opt(this.node.prev_named_sibling()))
+    Ok(this.wrap_opt(this.ts_node()?.prev_named_sibling()))
 }
 
 /// Finds the direct child of this node that contains {descendant}.
@@ -294,7 +327,7 @@ fn child_with_descendant(
     descendant: AnyUserData,
 ) -> LuaResult<Option<LuaNode>> {
     let desc = descendant.borrow::<LuaNode>()?;
-    Ok(this.wrap_opt(this.node.child_with_descendant(desc.node)))
+    Ok(this.wrap_opt(this.ts_node()?.child_with_descendant(desc.ts_node()?)))
 }
 
 /// Finds the smallest node inside this node that spans the given point range.
@@ -316,7 +349,7 @@ fn descendant_for_range(
 ) -> LuaResult<Option<LuaNode>> {
     let start = Point::new(start_row, start_col);
     let end = Point::new(end_row, end_col);
-    Ok(this.wrap_opt(this.node.descendant_for_point_range(start, end)))
+    Ok(this.wrap_opt(this.ts_node()?.descendant_for_point_range(start, end)))
 }
 
 /// Like `descendant_for_range`, but only considers named nodes.
@@ -337,7 +370,7 @@ fn named_descendant_for_range(
 ) -> LuaResult<Option<LuaNode>> {
     let start = Point::new(start_row, start_col);
     let end = Point::new(end_row, end_col);
-    Ok(this.wrap_opt(this.node.named_descendant_for_point_range(start, end)))
+    Ok(this.wrap_opt(this.ts_node()?.named_descendant_for_point_range(start, end)))
 }
 
 /// Returns true if this is a named node (not anonymous punctuation like `,` or `(`).
@@ -345,7 +378,7 @@ fn named_descendant_for_range(
 /// @return (boolean)
 #[lua_fn]
 fn named(_lua: &Lua, this: &LuaNode) -> LuaResult<bool> {
-    Ok(this.node.is_named())
+    Ok(this.ts_node()?.is_named())
 }
 
 /// Returns true if this node is an "extra" (like a comment) that can appear anywhere in the grammar.
@@ -353,7 +386,7 @@ fn named(_lua: &Lua, this: &LuaNode) -> LuaResult<bool> {
 /// @return (boolean)
 #[lua_fn]
 fn extra(_lua: &Lua, this: &LuaNode) -> LuaResult<bool> {
-    Ok(this.node.is_extra())
+    Ok(this.ts_node()?.is_extra())
 }
 
 /// Returns true if this node is "missing", meaning it was inserted by the parser during error recovery.
@@ -361,7 +394,7 @@ fn extra(_lua: &Lua, this: &LuaNode) -> LuaResult<bool> {
 /// @return (boolean)
 #[lua_fn]
 fn missing(_lua: &Lua, this: &LuaNode) -> LuaResult<bool> {
-    Ok(this.node.is_missing())
+    Ok(this.ts_node()?.is_missing())
 }
 
 /// Returns true if this node or any of its descendants contain a syntax error.
@@ -369,7 +402,7 @@ fn missing(_lua: &Lua, this: &LuaNode) -> LuaResult<bool> {
 /// @return (boolean)
 #[lua_fn]
 fn has_error(_lua: &Lua, this: &LuaNode) -> LuaResult<bool> {
-    Ok(this.node.has_error())
+    Ok(this.ts_node()?.has_error())
 }
 
 /// Returns true if this node has been marked as changed since the last parse.
@@ -377,7 +410,7 @@ fn has_error(_lua: &Lua, this: &LuaNode) -> LuaResult<bool> {
 /// @return (boolean)
 #[lua_fn]
 fn has_changes(_lua: &Lua, this: &LuaNode) -> LuaResult<bool> {
-    Ok(this.node.has_changes())
+    Ok(this.ts_node()?.has_changes())
 }
 
 /// Returns true if this node and {other} are the same node in the tree.
@@ -387,7 +420,7 @@ fn has_changes(_lua: &Lua, this: &LuaNode) -> LuaResult<bool> {
 #[lua_fn]
 fn equal(_lua: &Lua, this: &LuaNode, other: AnyUserData) -> LuaResult<bool> {
     let other = other.borrow::<LuaNode>()?;
-    Ok(this.node.id() == other.node.id())
+    Ok(this.id == other.id)
 }
 
 /// Returns the S-expression (lisp-like) string for this node and its children.
@@ -398,7 +431,7 @@ fn equal(_lua: &Lua, this: &LuaNode, other: AnyUserData) -> LuaResult<bool> {
 /// print(node:sexpr()) -- e.g. "(identifier)"
 #[lua_fn]
 fn sexpr(_lua: &Lua, this: &LuaNode) -> LuaResult<String> {
-    Ok(this.node.to_sexp())
+    Ok(this.ts_node()?.to_sexp())
 }
 
 /// Returns the Tree that this node belongs to.

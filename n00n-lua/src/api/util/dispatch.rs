@@ -28,7 +28,7 @@ impl DepthGuard {
         }
         let mut store = lua
             .app_data_mut::<DepthStore>()
-            .expect("DepthStore just ensured");
+            .unwrap_or_else(|| unreachable!("DepthStore just ensured"));
         let depth = store.depths.entry((kind, name.to_owned())).or_insert(0);
         if *depth >= MAX_HOOK_DEPTH {
             return Err(DepthExceeded);

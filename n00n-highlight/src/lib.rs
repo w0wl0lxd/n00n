@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fmt::Write;
+use std::hash::BuildHasher;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use syntect::highlighting::{
@@ -35,13 +36,16 @@ pub fn is_ready() -> bool {
 }
 
 pub fn set_theme(theme: Theme) {
-    *theme_lock().write().unwrap_or_else(|e| e.into_inner()) = Arc::new(theme);
+    *theme_lock()
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(theme);
 }
 
+#[must_use]
 pub fn theme() -> Arc<Theme> {
     theme_lock()
         .read()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone()
 }
 
@@ -49,14 +53,17 @@ fn ui_colors_lock() -> &'static RwLock<HashMap<String, Rgb>> {
     UI_COLORS.get_or_init(RwLock::default)
 }
 
-pub fn set_ui_colors(colors: HashMap<String, Rgb>) {
-    *ui_colors_lock().write().unwrap_or_else(|e| e.into_inner()) = colors;
+pub fn set_ui_colors<S: BuildHasher>(colors: HashMap<String, Rgb, S>) {
+    *ui_colors_lock()
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = colors.into_iter().collect();
 }
 
+#[must_use]
 pub fn theme_color(name: &str) -> Option<Rgb> {
     if let Some(&c) = ui_colors_lock()
         .read()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(name)
     {
         return Some(c);
@@ -66,9 +73,9 @@ pub fn theme_color(name: &str) -> Option<Rgb> {
     let obj = map.as_object()?;
     let val = obj.get(name)?;
     let obj = val.as_object()?;
-    let r = obj.get("r")?.as_u64()? as u8;
-    let g = obj.get("g")?.as_u64()? as u8;
-    let b = obj.get("b")?.as_u64()? as u8;
+    let r = u8::try_from(obj.get("r")?.as_u64()?).ok()?;
+    let g = u8::try_from(obj.get("g")?.as_u64()?).ok()?;
+    let b = u8::try_from(obj.get("b")?.as_u64()?).ok()?;
     Some((r, g, b))
 }
 
@@ -76,21 +83,24 @@ pub fn syntax_set() -> &'static SyntaxSet {
     SYNTAX_SET.get_or_init(two_face::syntax::extra_newlines)
 }
 
+#[must_use]
 pub fn normalize_text(text: &str) -> String {
     text.trim_end_matches('\n').replace('\t', TAB_SPACES)
 }
 
+#[must_use]
 pub fn syntax_for_path(path: &str) -> &'static SyntaxReference {
     syntax_set()
         .find_syntax_for_file(path)
         .ok()
         .flatten()
         .unwrap_or_else(|| {
-            let ext = path.rsplit('.').next().unwrap_or(path);
+            let ext = path.rsplit('.').next().map_or(path, |ext| ext);
             syntax_for_token(ext)
         })
 }
 
+#[must_use]
 pub fn syntax_for_token(lang: &str) -> &'static SyntaxReference {
     let ss = syntax_set();
     ss.find_syntax_by_token(lang)
@@ -126,11 +136,12 @@ impl Highlighter {
     ) -> Self {
         Self {
             theme,
-            highlight_state,
             parse_state,
+            highlight_state,
         }
     }
 
+    #[must_use]
     pub fn for_path(path: &str) -> Self {
         Self::new(syntax_for_path(path), theme())
     }
@@ -139,6 +150,7 @@ impl Highlighter {
         Self::new(syntax, theme())
     }
 
+    #[must_use]
     pub fn for_token(lang: &str) -> Self {
         Self::new(syntax_for_token(lang), theme())
     }
@@ -167,6 +179,7 @@ impl Highlighter {
         let _ = self.raw_highlight_line(text);
     }
 
+    #[must_use]
     pub fn state(self) -> (HighlightState, ParseState) {
         (self.highlight_state, self.parse_state)
     }
@@ -204,6 +217,7 @@ impl StyledSegment {
     }
 }
 
+#[must_use]
 pub fn highlight_code(lang: &str, code: &str, prefix: &str) -> Vec<Vec<StyledSegment>> {
     let mut hl = Highlighter::for_token(lang);
     if !prefix.is_empty() {
@@ -216,6 +230,7 @@ pub fn highlight_code(lang: &str, code: &str, prefix: &str) -> Vec<Vec<StyledSeg
         .collect()
 }
 
+#[must_use]
 pub fn highlight_lines_independent(lang: &str, code: &str) -> Vec<Vec<StyledSegment>> {
     let syntax = syntax_for_token(lang);
     LinesWithEndings::from(code)
@@ -223,6 +238,7 @@ pub fn highlight_lines_independent(lang: &str, code: &str) -> Vec<Vec<StyledSegm
         .collect()
 }
 
+#[must_use]
 pub fn highlight_ansi(lang: &str, code: &str, bg: (u8, u8, u8)) -> String {
     let bg_code = format!("\x1b[48;2;{};{};{}m", bg.0, bg.1, bg.2);
     let mut hl = Highlighter::for_token(lang);
@@ -249,7 +265,17 @@ pub struct CodeHighlighter {
     cached_segments: Vec<Vec<StyledSegment>>,
 }
 
+impl std::fmt::Debug for CodeHighlighter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CodeHighlighter")
+            .field("completed_lines", &self.completed_lines)
+            .field("cached_segments", &self.cached_segments)
+            .finish_non_exhaustive()
+    }
+}
+
 impl CodeHighlighter {
+    #[must_use]
     pub fn new(lang: &str) -> Self {
         let syntax = syntax_for_token(lang);
         let t = theme();
@@ -442,7 +468,7 @@ mod tests {
     #[test_case("Makefile" => "Makefile"; "makefile_no_ext")]
     fn syntax_for_path_resolves(path: &str) -> String {
         warmup();
-        syntax_for_path(path).name.to_string()
+        syntax_for_path(path).name.clone()
     }
 
     #[test]

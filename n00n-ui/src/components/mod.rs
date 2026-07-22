@@ -32,9 +32,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use n00n_agent::AgentInput;
+use n00n_agent::{AgentInput, PreDispatchGate};
 use n00n_agent::{BufferSnapshot, ImageSource, ToolInput, ToolOutput};
 use n00n_providers::{Message, ModelTier};
+use n00n_storage::sessions::TranscriptEntry;
 use ratatui::text::{Line, Span};
 
 pub(crate) const CHEVRON: &str = "❯ ";
@@ -77,9 +78,9 @@ pub(crate) fn visual_line_count(text_len: usize, width: usize) -> usize {
 
 pub(crate) fn apply_scroll_delta(offset: u16, delta: i32) -> u16 {
     if delta > 0 {
-        offset.saturating_sub(delta as u16)
+        offset.saturating_sub(u16::try_from(delta).unwrap_or_else(|_| u16::MAX))
     } else {
-        offset.saturating_add(delta.unsigned_abs() as u16)
+        offset.saturating_add(u16::try_from(delta.unsigned_abs()).unwrap_or_else(|_| u16::MAX))
     }
 }
 
@@ -163,7 +164,7 @@ impl ModalScroll {
     }
 
     fn half_page(&self) -> i32 {
-        (self.viewport_h / 2).max(1) as i32
+        i32::from((self.viewport_h / 2).max(1))
     }
 
     fn clamp(&mut self) {
@@ -173,14 +174,25 @@ impl ModalScroll {
 
 pub struct LoadedSession {
     pub messages: Vec<Message>,
+    pub transcript: Vec<TranscriptEntry<Message>>,
     pub tool_outputs: HashMap<String, ToolOutput>,
     pub model_spec: String,
 }
 
 use std::path::PathBuf;
 
+pub struct SubmissionDispatch {
+    pub input: AgentInput,
+    pub submission_id: u64,
+    pub run_id: u64,
+    pub gate: Arc<PreDispatchGate>,
+    /// User-composer submissions wait for the exact session bubble to paint.
+    /// Background API submissions explicitly skip that UI-only gate.
+    pub paint_required: bool,
+}
+
 pub enum Action {
-    SendMessage(Box<AgentInput>),
+    SendMessage(Box<SubmissionDispatch>),
     ShellCommand {
         id: String,
         command: String,
@@ -222,7 +234,7 @@ pub enum ExitRequest {
 }
 
 impl ExitRequest {
-    pub fn code(&self) -> i32 {
+    pub fn code(self) -> i32 {
         match self {
             Self::None | Self::Success | Self::Reload => 0,
             Self::Error => 1,
@@ -275,9 +287,25 @@ pub enum ToolStatus {
 }
 
 #[derive(Debug, Clone)]
+pub struct CompactionDisplay {
+    pub id: String,
+    pub depth: usize,
+    pub message_count: usize,
+    pub summary: Option<String>,
+    pub entries: Vec<DisplayMessage>,
+}
+
+#[derive(Debug, Clone)]
+pub enum DisplayMetadata {
+    Compaction(CompactionDisplay),
+    CompactionPending,
+}
+
+#[derive(Debug, Clone)]
 pub struct DisplayMessage {
     pub role: DisplayRole,
     pub text: String,
+    pub metadata: Option<DisplayMetadata>,
     pub images: Vec<ImageSource>,
     pub tool_input: Option<Arc<ToolInput>>,
     pub tool_raw_input: Option<Arc<serde_json::Value>>,
@@ -299,6 +327,7 @@ impl DisplayMessage {
         Self {
             role,
             text,
+            metadata: None,
             images: Vec::new(),
             tool_input: None,
             tool_raw_input: None,
@@ -320,6 +349,7 @@ impl DisplayMessage {
         Self {
             role,
             text,
+            metadata: None,
             images,
             tool_input: None,
             tool_raw_input: None,
@@ -341,6 +371,7 @@ impl DisplayMessage {
         Self {
             role: DisplayRole::Assistant,
             text,
+            metadata: None,
             images: Vec::new(),
             tool_input: None,
             tool_raw_input: None,
@@ -356,6 +387,21 @@ impl DisplayMessage {
             snapshot_theme_gen: 0,
             thinking_collapsed: false,
         }
+    }
+
+    pub fn compaction(compaction: CompactionDisplay) -> Self {
+        let mut message = Self::new(DisplayRole::Assistant, String::new());
+        message.metadata = Some(DisplayMetadata::Compaction(compaction));
+        message
+    }
+
+    pub fn compaction_pending() -> Self {
+        let mut message = Self::new(
+            DisplayRole::Assistant,
+            "Auto-compacting conversation...".into(),
+        );
+        message.metadata = Some(DisplayMetadata::CompactionPending);
+        message
     }
 
     pub fn snapshot_is_stale(&self, current_gen: u64) -> bool {

@@ -116,6 +116,7 @@ pub fn render(text: &str, width: u16) -> Vec<Line> {
 /// Reuses highlighter and table-width caches across calls so streaming
 /// (successive prefixes of a growing message) doesn't re-highlight completed
 /// code lines. Bump `theme_gen` to flush caches after a theme change.
+#[derive(Debug)]
 pub struct Renderer {
     highlighters: Vec<CodeHighlighter>,
     table_col_widths: Vec<Vec<usize>>,
@@ -328,7 +329,10 @@ fn render_line_block(lb: &LineBlock, lines: &mut Vec<Line>, ctx: &RenderCtx) {
     // Otherwise it shares row 1 and continuations indent to align.
     let (first_row_marker, cont_indent, content_width) = if marker_width >= width {
         if let Some(mut mk) = marker {
-            mk.text = mk.text.trim_start_matches(' ').to_owned();
+            #[allow(clippy::assigning_clones)]
+            {
+                mk.text = mk.text.trim_start_matches(' ').to_owned();
+            }
             lines.push(Line {
                 kind: kind.clone(),
                 spans: vec![mk],
@@ -401,7 +405,7 @@ fn ensure_blank_line(lines: &mut Vec<Line>) {
 fn fit_width(text: &str, max_width: usize) -> usize {
     let mut width = 0;
     for (i, ch) in text.char_indices() {
-        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+        let cw = UnicodeWidthChar::width(ch).map_or(0, |w| w);
         if width + cw > max_width {
             return i;
         }
@@ -513,7 +517,7 @@ fn constrain_col_widths(col_widths: &mut [usize], available: usize) {
     }
     let mut excess = col_widths.iter().sum::<usize>().saturating_sub(available);
     while excess > 0 {
-        let max_w = col_widths.iter().copied().max().unwrap_or(0);
+        let max_w = col_widths.iter().copied().max().map_or(0, |w| w);
         if max_w <= MIN_COL_WIDTH {
             break;
         }
@@ -557,7 +561,7 @@ fn wrap_spans(spans: Vec<Span>, max_width: usize) -> Vec<Vec<Span>> {
                 }
                 result.push(mem::take(&mut current));
                 remaining = max_width;
-                text = text.strip_prefix(' ').unwrap_or(text);
+                text = text.strip_prefix(' ').map_or(text, |s| s);
                 continue;
             }
             let (take, skip) = if fits < text.len() {
@@ -621,7 +625,11 @@ fn render_table(
     width: u16,
     persistent_widths: &mut Vec<usize>,
 ) -> Vec<Line> {
-    let col_count = rows.iter().map(std::vec::Vec::len).max().unwrap_or(0);
+    let col_count = rows
+        .iter()
+        .map(std::vec::Vec::len)
+        .max()
+        .map_or(0, |len| len);
     if col_count == 0 {
         return Vec::new();
     }
@@ -682,7 +690,7 @@ fn render_table(
             .iter()
             .map(std::vec::Vec::len)
             .max()
-            .unwrap_or(1);
+            .map_or(1, |len| len);
         let row_emphasis = if header {
             Emphasis::BOLD
         } else {

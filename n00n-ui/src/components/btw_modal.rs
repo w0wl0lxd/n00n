@@ -1,3 +1,4 @@
+use crate::cast;
 use crate::components::ModalScroll;
 use crate::components::Overlay;
 use crate::components::modal::Modal;
@@ -113,8 +114,10 @@ impl BtwModal {
 
         let theme = theme::current();
         let border_chrome: u16 = 2;
-        let padded_width = (area.width as u32 * WIDTH_PERCENT as u32 / 100)
-            .saturating_sub((border_chrome + H_PAD * 2) as u32) as u16;
+        let padded_width = cast::u32_to_u16(
+            (u32::from(area.width) * u32::from(WIDTH_PERCENT) / 100)
+                .saturating_sub(u32::from(border_chrome + H_PAD * 2)),
+        );
 
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(Span::styled(
@@ -126,9 +129,11 @@ impl BtwModal {
         let md_lines = self.answer.render_lines(padded_width);
         lines.extend_from_slice(md_lines);
 
-        let total = Paragraph::new(lines.clone())
-            .wrap(Wrap { trim: false })
-            .line_count(padded_width) as u16;
+        let total = cast::usize_to_u16(
+            Paragraph::new(lines.clone())
+                .wrap(Wrap { trim: false })
+                .line_count(padded_width),
+        );
         let modal = Modal {
             title: TITLE,
             width_percent: WIDTH_PERCENT,
@@ -168,7 +173,7 @@ impl Overlay for BtwModal {
     }
 
     fn close(&mut self) {
-        self.close()
+        self.close();
     }
 }
 

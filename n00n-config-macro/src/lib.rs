@@ -3,6 +3,7 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
+use syn::spanned::Spanned;
 use syn::{DeriveInput, Expr, Fields, Ident, LitStr, Token, Type, parse_macro_input, parse_str};
 
 struct ConfigAttr {
@@ -167,18 +168,31 @@ fn parse_field_attrs(field: &syn::Field) -> syn::Result<FieldAttrs> {
     Ok(attrs)
 }
 
-fn config_value_expr(ty_name: &str, default: &Option<Expr>) -> TokenStream2 {
+fn config_value_expr(ty_name: &str, default: Option<&Expr>) -> syn::Result<TokenStream2> {
     match ty_name {
         "bool" => {
-            let val = default.as_ref().expect("bool field requires default");
-            quote! { ConfigValue::Bool(#val) }
+            let val = default.ok_or_else(|| {
+                syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    "bool field requires default",
+                )
+            })?;
+            Ok(quote! { ConfigValue::Bool(#val) })
         }
         "u32" | "u64" | "usize" => {
-            let val = default.as_ref().expect("numeric field requires default");
-            quote! { ConfigValue::U64(#val as u64) }
+            let val = default.ok_or_else(|| {
+                syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    "numeric field requires default",
+                )
+            })?;
+            Ok(quote! { ConfigValue::U64(#val as u64) })
         }
-        "String" => quote! { ConfigValue::Str("none") },
-        other => panic!("unsupported config type: {other}"),
+        "String" => Ok(quote! { ConfigValue::Str("none") }),
+        other => Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            format!("unsupported config type: {other}"),
+        )),
     }
 }
 
@@ -207,63 +221,10 @@ fn derive_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         _ => return Err(syn::Error::new(name.span(), "only structs supported")),
     };
 
-    let mut field_data = Vec::new();
-    for field in fields {
-        let ident = field.ident.as_ref().unwrap();
-        let attrs = parse_field_attrs(field)?;
-        let ty = &field.ty;
-        field_data.push((ident.clone(), attrs, ty.clone()));
-    }
-
+    let field_data = collect_field_data(fields)?;
     let section = &struct_attrs.section;
 
-    let mut fields_entries = Vec::new();
-    let mut validate_checks = Vec::new();
-
-    for (ident, attrs, ty) in &field_data {
-        if attrs.skip {
-            continue;
-        }
-
-        let ident_string = ident.to_string();
-        let field_name = attrs.key.as_deref().unwrap_or(&ident_string);
-        let ty_string = type_to_name(ty);
-        let ty_name = attrs.ty_override.as_deref().unwrap_or(&ty_string);
-        let desc = attrs.desc.as_deref().unwrap_or("");
-        let default_expr = match &attrs.default_doc {
-            Some(doc) => quote! { ConfigValue::Str(#doc) },
-            None => config_value_expr(ty_name, &attrs.default),
-        };
-        let min_expr = match &attrs.min {
-            Some(m) => quote! { Some(#m as u64) },
-            None => quote! { None },
-        };
-
-        fields_entries.push(quote! {
-            ConfigField {
-                name: #field_name,
-                ty: #ty_name,
-                default: #default_expr,
-                min: #min_expr,
-                description: #desc,
-            }
-        });
-
-        if let Some(min) = &attrs.min {
-            let val_expr: TokenStream2 = if let Some(val_str) = &attrs.val {
-                val_str.parse().map_err(|e| {
-                    syn::Error::new(ident.span(), format!("invalid val expression: {e}"))
-                })?
-            } else {
-                quote! { self.#ident }
-            };
-            let ident_str = ident.to_string();
-            let field_name_for_check = attrs.key.as_deref().unwrap_or(&ident_str);
-            validate_checks.push(quote! {
-                check(#section, #field_name_for_check, #val_expr as u64, #min as u64)?;
-            });
-        }
-    }
+    let (fields_entries, validate_checks) = generate_field_entries(&field_data, section)?;
 
     let fields_const = quote! {
         pub const FIELDS: &[ConfigField] = &[
@@ -286,13 +247,7 @@ fn derive_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
             }
         })
     } else {
-        let mut default_fields = Vec::new();
-        for (ident, attrs, _ty) in &field_data {
-            let default = attrs.default.as_ref().unwrap_or_else(|| {
-                panic!("field `{}` requires a default value in full mode", ident)
-            });
-            default_fields.push(quote! { #ident: #default });
-        }
+        let default_fields = generate_default_fields(&field_data)?;
 
         Ok(quote! {
             impl Default for #name {
@@ -309,4 +264,98 @@ fn derive_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
             }
         })
     }
+}
+
+fn collect_field_data(
+    fields: &syn::punctuated::Punctuated<syn::Field, syn::token::Comma>,
+) -> syn::Result<Vec<(Ident, FieldAttrs, Type)>> {
+    let mut field_data = Vec::new();
+    for field in fields {
+        let ident = field
+            .ident
+            .as_ref()
+            .ok_or_else(|| syn::Error::new(field.span(), "field must have an identifier"))?;
+        let attrs = parse_field_attrs(field)?;
+        let ty = &field.ty;
+        field_data.push((ident.clone(), attrs, ty.clone()));
+    }
+    Ok(field_data)
+}
+
+fn generate_field_entries(
+    field_data: &[(Ident, FieldAttrs, Type)],
+    section: &str,
+) -> syn::Result<(Vec<TokenStream2>, Vec<TokenStream2>)> {
+    let mut fields_entries = Vec::new();
+    let mut validate_checks = Vec::new();
+
+    for (ident, attrs, ty) in field_data {
+        if attrs.skip {
+            continue;
+        }
+
+        let ident_string = ident.to_string();
+        let field_name = attrs
+            .key
+            .as_deref()
+            .unwrap_or_else(|| ident_string.as_str());
+        let ty_string = type_to_name(ty);
+        let ty_name = attrs
+            .ty_override
+            .as_deref()
+            .unwrap_or_else(|| ty_string.as_str());
+        let desc = attrs.desc.as_deref().unwrap_or_else(|| "");
+        let default_expr = match &attrs.default_doc {
+            Some(doc) => quote! { ConfigValue::Str(#doc) },
+            None => config_value_expr(ty_name, attrs.default.as_ref())?,
+        };
+        let min_expr = if let Some(m) = &attrs.min {
+            quote! { Some(#m as u64) }
+        } else {
+            quote! { None }
+        };
+
+        fields_entries.push(quote! {
+            ConfigField {
+                name: #field_name,
+                ty: #ty_name,
+                default: #default_expr,
+                min: #min_expr,
+                description: #desc,
+            }
+        });
+
+        if let Some(min) = &attrs.min {
+            let val_expr: TokenStream2 = if let Some(val_str) = &attrs.val {
+                val_str.parse().map_err(|e| {
+                    syn::Error::new(ident.span(), format!("invalid val expression: {e}"))
+                })?
+            } else {
+                quote! { self.#ident }
+            };
+            let ident_str = ident.to_string();
+            let field_name_for_check = attrs.key.as_deref().unwrap_or_else(|| ident_str.as_str());
+            validate_checks.push(quote! {
+                check(#section, #field_name_for_check, #val_expr as u64, #min as u64)?;
+            });
+        }
+    }
+
+    Ok((fields_entries, validate_checks))
+}
+
+fn generate_default_fields(
+    field_data: &[(Ident, FieldAttrs, Type)],
+) -> syn::Result<Vec<TokenStream2>> {
+    let mut default_fields = Vec::new();
+    for (ident, attrs, _ty) in field_data {
+        let default = attrs.default.as_ref().ok_or_else(|| {
+            syn::Error::new(
+                ident.span(),
+                format!("field `{ident}` requires a default value in full mode"),
+            )
+        })?;
+        default_fields.push(quote! { #ident: #default });
+    }
+    Ok(default_fields)
 }

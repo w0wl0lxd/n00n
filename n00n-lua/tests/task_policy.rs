@@ -1,12 +1,20 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::needless_pass_by_value
+)]
+
 //! Tests the task plugin's structured-output policy end-to-end: real plugin
 //! source, real `n00n.json` / `n00n.async`, with model I/O replaced by
 //! scriptable Lua stubs.
 
 use std::sync::Arc;
 
-use n00n_agent::tools::ToolRegistry;
+use n00n_agent::agent::tool_dispatch::{self, Emit};
 use n00n_agent::tools::test_support::stub_ctx;
-use n00n_agent::{AgentMode, ToolOutput};
+use n00n_agent::tools::{ToolExecResult, ToolRegistry};
+use n00n_agent::{AgentMode, ToolDoneEvent, ToolOutput};
 use n00n_lua::PluginHost;
 use serde_json::{Value, json};
 
@@ -15,8 +23,12 @@ const TASK_PLUGIN_SRC: &str = include_str!("../../plugins/task/init.lua");
 // Mirrors of the plugin's error contracts and policy numbers.
 const STRUCTURED_OUTPUT_TOOL: &str = "structured_output";
 const MAX_SCHEMA_ERRORS: usize = 3;
+const OVERSIZED_SCHEMA_DESCRIPTION_BYTES: usize = 33_000;
+const OVERDEEP_SCHEMA_LEVELS: usize = 20;
 const SCHEMA_COMPILE_ERROR: &str = "invalid output_schema";
 const SCHEMA_ROOT_ERROR: &str = "output_schema must have type object";
+const SCHEMA_SIZE_ERROR: &str = "output_schema exceeds 32768-byte limit";
+const SCHEMA_DEPTH_ERROR: &str = "output_schema exceeds maximum depth of 16";
 const STRUCTURED_MISSING_ERROR: &str = "subagent finished without calling structured_output";
 const STRUCTURED_INVALID_ERROR: &str = "subagent result does not match output_schema";
 const UNKNOWN_SUBAGENT_ERR: &str = "unknown subagent type: bogus";
@@ -29,7 +41,7 @@ const PLAIN_TEXT: &str = "plain text result";
 const PROMPT_ERR_MSG: &str = "model exploded";
 const RAISE_MSG: &str = "stub prompt kaboom";
 /// Mirrors the task plugin's `max_concurrent` default.
-const TASK_DEFAULT_MAX_CONCURRENT: u64 = 8;
+const TASK_DEFAULT_MAX_CONCURRENT: u64 = 4;
 
 const SCENARIO_PLAIN: &str = "plain";
 const SCENARIO_HAPPY: &str = "happy";
@@ -73,6 +85,11 @@ n00n.agent.system_prompt = function(ctx, opts)
   return "sys"
 end
 
+n00n.agent.usage_cost = function(spec, input_tokens, output_tokens, breakdown)
+  recorder.usage_fast = breakdown and breakdown.fast
+  return 0.01, nil
+end
+
 n00n.agent.tools = function(ctx, opts)
   return {}
 end
@@ -80,7 +97,16 @@ end
 local behaviors = {}
 
 behaviors.plain = function(sess, msg)
-  return { text = "@PLAIN_TEXT@" }
+  return {
+    text = "@PLAIN_TEXT@",
+    input_tokens = 100,
+    output_tokens = 20,
+    fresh_input_tokens = 50,
+    cache_read_tokens = 30,
+    cache_write_tokens = 20,
+    fast = true,
+    raw_prompt = "PRIVATE_TASK_PROMPT",
+  }
 end
 
 behaviors.happy = function(sess, msg)
@@ -107,7 +133,14 @@ behaviors.invalid_only = function(sess, msg)
 end
 
 behaviors.prompt_error = function(sess, msg)
-  return nil, "@PROMPT_ERR@"
+  return {
+    input_tokens = 30,
+    output_tokens = 5,
+    fresh_input_tokens = 20,
+    cache_read_tokens = 7,
+    cache_write_tokens = 3,
+    raw_prompt = "PRIVATE_ERROR_PROMPT",
+  }, "@PROMPT_ERR@"
 end
 
 behaviors.raise = function(sess, msg)
@@ -134,13 +167,14 @@ n00n.agent.session = function(ctx, opts)
   recorder.sessions = recorder.sessions + 1
   recorder.has_local_tools = opts.local_tools ~= nil
   recorder.structured_output_schema = opts.local_tools and opts.local_tools.structured_output and opts.local_tools.structured_output.input_schema
-  local sess = { opts = opts, ctx = ctx }
+  local sess = { opts = opts, ctx = ctx, turn = 0 }
   function sess:prompt(msg)
+    self.turn = self.turn + 1
     recorder.prompts[#recorder.prompts + 1] = msg
     return behaviors[opts.name](self, msg)
   end
   function sess:get_progress()
-    return { completed_count = 0, recent_tools = {}, elapsed_ms = 0, done = true }
+    return { turn_id = self.turn, completed_count = 0, recent_tools = {}, activities = {}, elapsed_ms = 0, done = true }
   end
   function sess:close()
     recorder.closed = recorder.closed + 1
@@ -170,6 +204,7 @@ n00n.api.register_tool({
       acquired = recorder.acquired,
       released = recorder.released,
       sem_size = recorder.sem_size,
+      usage_fast = recorder.usage_fast,
     }
     if #recorder.prompts > 0 then
       snap.prompts = recorder.prompts
@@ -199,7 +234,7 @@ fn load_task_host() -> (Arc<ToolRegistry>, PluginHost) {
     (reg, host)
 }
 
-fn exec_tool(reg: &Arc<ToolRegistry>, name: &str, input: Value) -> Result<String, String> {
+fn exec_tool_result(reg: &Arc<ToolRegistry>, name: &str, input: Value) -> ToolExecResult {
     let entry = reg
         .get(name)
         .unwrap_or_else(|| panic!("tool {name} not registered"));
@@ -207,11 +242,35 @@ fn exec_tool(reg: &Arc<ToolRegistry>, name: &str, input: Value) -> Result<String
     let mut ctx = stub_ctx(&AgentMode::Build);
     ctx.registry = Arc::clone(reg);
     smol::block_on(async { inv.execute(&ctx).await })
-        .output
-        .map(|out| match out {
-            ToolOutput::Plain(s) | ToolOutput::Markdown(s) => s.text,
-            other => panic!("unexpected output: {other:?}"),
-        })
+}
+
+fn exec_tool_output(
+    reg: &Arc<ToolRegistry>,
+    name: &str,
+    input: Value,
+) -> Result<ToolOutput, String> {
+    exec_tool_result(reg, name, input).output
+}
+
+fn exec_tool(reg: &Arc<ToolRegistry>, name: &str, input: Value) -> Result<String, String> {
+    exec_tool_output(reg, name, input).map(|out| match out {
+        ToolOutput::Plain(s) | ToolOutput::Markdown(s) => s.text,
+        other => panic!("unexpected output: {other:?}"),
+    })
+}
+
+fn dispatch_tool(reg: &Arc<ToolRegistry>, name: &str, input: Value) -> ToolDoneEvent {
+    let mut ctx = stub_ctx(&AgentMode::Build);
+    ctx.registry = Arc::clone(reg);
+    smol::block_on(tool_dispatch::run(
+        reg,
+        None,
+        "test-call".to_owned(),
+        name,
+        &input,
+        &ctx,
+        Emit::Silent,
+    ))
 }
 
 fn probe(reg: &Arc<ToolRegistry>) -> Value {
@@ -236,7 +295,7 @@ fn answer_schema() -> Value {
     })
 }
 
-/// Four wrong-typed properties, one more than MAX_SCHEMA_ERRORS, so
+/// Four wrong-typed properties, one more than `MAX_SCHEMA_ERRORS`, so
 /// truncation in `bounded_errors` is observable.
 fn multi_error_schema() -> Value {
     json!({
@@ -266,6 +325,38 @@ fn bad_input_errors_before_any_session(extra: Value, expected_prefix: &str) {
     let snap = probe(&reg);
     assert_eq!(snap["sessions"], json!(0));
     assert_eq!(snap["prompt_count"], json!(0));
+}
+
+#[test]
+fn oversized_schema_errors_before_any_session() {
+    let (reg, _host) = load_task_host();
+    let schema = json!({
+        "type": "object",
+        "description": "x".repeat(OVERSIZED_SCHEMA_DESCRIPTION_BYTES),
+    });
+    let err = exec_tool(&reg, TASK_TOOL, task_input(SCENARIO_PLAIN, Some(schema))).unwrap_err();
+
+    assert_eq!(err, SCHEMA_SIZE_ERROR);
+    let snap = probe(&reg);
+    assert_eq!(snap["sessions"], json!(0));
+    assert_eq!(snap["prompt_count"], json!(0));
+}
+
+#[test]
+fn deeply_nested_schema_errors_before_any_session() {
+    let (reg, _host) = load_task_host();
+    let mut schema = json!({ "type": "string" });
+    for _ in 0..OVERDEEP_SCHEMA_LEVELS {
+        schema = json!({
+            "type": "object",
+            "properties": { "nested": schema },
+        });
+    }
+    let err = exec_tool(&reg, TASK_TOOL, task_input(SCENARIO_PLAIN, Some(schema))).unwrap_err();
+
+    assert_eq!(err, SCHEMA_DEPTH_ERROR);
+    let snap = probe(&reg);
+    assert_eq!(snap["sessions"], json!(0));
 }
 
 #[test]
@@ -332,7 +423,7 @@ fn missing_structured_output_errors_after_bounded_nudges() {
     assert_eq!(err, STRUCTURED_MISSING_ERROR);
 
     let snap = probe(&reg);
-    assert_eq!(snap["prompt_count"], json!(3));
+    assert_eq!(snap["prompt_count"], json!(2));
     assert_eq!(snap["closed"], json!(1));
 }
 
@@ -349,7 +440,7 @@ fn invalid_only_errors_with_bounded_schema_errors() {
     assert_eq!(err.lines().count(), 1 + MAX_SCHEMA_ERRORS, "got: {err}");
 
     let snap = probe(&reg);
-    assert_eq!(snap["prompt_count"], json!(3));
+    assert_eq!(snap["prompt_count"], json!(2));
     let first_err = snap["first_err"].as_str().expect("first_err missing");
     assert_eq!(
         first_err.lines().count(),
@@ -359,23 +450,64 @@ fn invalid_only_errors_with_bounded_schema_errors() {
 }
 
 #[test]
-fn prompt_error_maps_to_sub_agent_error() {
+fn prompt_error_maps_to_sub_agent_error_with_charged_telemetry() {
     let (reg, _host) = load_task_host();
-    let err = exec_tool(&reg, TASK_TOOL, task_input(SCENARIO_PROMPT_ERROR, None)).unwrap_err();
-    assert_eq!(err, format!("{SUB_AGENT_ERROR_PREFIX}{PROMPT_ERR_MSG}"));
+    let result = dispatch_tool(&reg, TASK_TOOL, task_input(SCENARIO_PROMPT_ERROR, None));
+    assert!(result.is_error);
+    assert_eq!(
+        result.output.as_text(),
+        format!("{SUB_AGENT_ERROR_PREFIX}{PROMPT_ERR_MSG}")
+    );
+    let telemetry = result
+        .output
+        .telemetry()
+        .expect("charged telemetry missing");
+    let usage = telemetry.usage.as_ref().expect("charged usage missing");
+    assert_eq!(usage.fresh_input_tokens, 20);
+    assert_eq!(usage.cache_read_tokens, 7);
+    assert_eq!(usage.cache_write_tokens, 3);
+    assert_eq!(usage.input_tokens, 30);
+    assert_eq!(usage.output_tokens, 5);
+    assert!(
+        !serde_json::to_string(telemetry)
+            .unwrap()
+            .contains("PRIVATE_")
+    );
     let snap = probe(&reg);
     assert_eq!(snap["closed"], json!(1));
 }
 
 #[test]
-fn plain_path_returns_text_without_local_tools() {
+fn plain_path_returns_text_and_sanitized_usage_without_local_tools() {
     let (reg, _host) = load_task_host();
-    let out = exec_tool(&reg, TASK_TOOL, task_input(SCENARIO_PLAIN, None)).unwrap();
-    assert_eq!(out, PLAIN_TEXT);
+    let output = exec_tool_output(&reg, TASK_TOOL, task_input(SCENARIO_PLAIN, None)).unwrap();
+    assert_eq!(output.as_text(), PLAIN_TEXT);
+    assert_eq!(
+        serde_json::to_value(
+            output
+                .telemetry()
+                .and_then(|telemetry| telemetry.usage.as_ref())
+        )
+        .unwrap(),
+        json!({
+            "fresh_input_tokens": 50,
+            "cache_read_tokens": 30,
+            "cache_write_tokens": 20,
+            "input_tokens": 100,
+            "output_tokens": 20,
+        })
+    );
+    assert_eq!(output.state(), None);
+    assert!(
+        !serde_json::to_string(output.telemetry().expect("telemetry missing"))
+            .unwrap()
+            .contains("PRIVATE_")
+    );
 
     let snap = probe(&reg);
     assert_eq!(snap["has_local_tools"], json!(false));
     assert_eq!(snap["structured_output_schema"], Value::Null);
+    assert_eq!(snap["usage_fast"], json!(true));
     assert_eq!(snap["prompt_count"], json!(1));
     let prompt = snap["prompts"][0].as_str().expect("prompt missing");
     assert_eq!(prompt, TASK_PROMPT, "got: {prompt}");

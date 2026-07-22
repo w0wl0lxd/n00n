@@ -7,7 +7,7 @@ static LATEST: OnceLock<String> = OnceLock::new();
 pub use version::{CURRENT, is_newer};
 
 pub fn latest_version() -> Option<&'static str> {
-    LATEST.get().map(|s| s.as_str())
+    LATEST.get().map(std::string::String::as_str)
 }
 
 pub fn spawn_check() {

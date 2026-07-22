@@ -1,11 +1,8 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::ffi::c_int;
-use std::panic::catch_unwind;
 use std::path::PathBuf;
-use std::ptr;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -13,7 +10,7 @@ use std::time::{Duration, Instant};
 use event_listener::Event;
 
 use include_dir::Dir;
-use mlua::{Compiler, Function, Lua, RegistryKey, Value as LuaValue, ffi};
+use mlua::{Compiler, Function, Lua, RegistryKey, Value as LuaValue, VmState};
 use n00n_agent::cancel::CancelToken;
 use n00n_agent::prompt::{PromptId, ResolvedSlots, Slot, SlotEntry};
 use n00n_agent::tools::{
@@ -61,7 +58,7 @@ const WATCHDOG_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const OPT_LEVEL_JIT: u8 = 2;
 const OPT_LEVEL_DEBUGGABLE: u8 = 1;
 const DEBUG_INFO_FULL: u8 = 2;
-const ASYNC_RUN_MIN_DEADLINE: Duration = Duration::from_secs(60);
+const ASYNC_RUN_MIN_DEADLINE: Duration = Duration::from_mins(1);
 /// Async tasks spawned during restore may spawn further tasks; cap the rounds.
 const RESTORE_SPAWN_ROUNDS: usize = 8;
 /// Keeps a buggy plugin's restore task from freezing the lua loop.
@@ -72,7 +69,7 @@ const RESTORE_ASYNC_DEADLINE: Duration = Duration::from_secs(10);
 /// Generous on purpose: legit restores of heavy items take double-digit
 /// seconds on a loaded debug build, and a wrongly killed restore loses the
 /// tool's rendered output.
-const RESTORE_ITEM_TIMEOUT: Duration = Duration::from_secs(60);
+const RESTORE_ITEM_TIMEOUT: Duration = Duration::from_mins(1);
 const TURN_END_EVENT: &str = "TurnEnd";
 /// Without a cap, a runaway plugin OOM-kills the whole process.
 /// With one, it hits a catchable Lua error instead.
@@ -317,7 +314,9 @@ struct WarmTool {
 }
 
 pub(crate) fn lock_cell(handle: &TaskHandle) -> std::sync::MutexGuard<'_, TaskCell> {
-    handle.lock().unwrap_or_else(|e| e.into_inner())
+    handle
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// The buf whose click handler owns this task's clicks: the explicit root
@@ -345,54 +344,31 @@ fn apply_jit(lua: &Lua, enabled: bool) {
     lua.set_compiler(compiler);
 }
 
-type InterruptFn = unsafe extern "C-unwind" fn(*mut ffi::lua_State, c_int);
-
-/// The poker thread and the VM thread race on this field, so the write
-/// must be atomic to stay defined behavior on the Rust side.
-fn store_interrupt(state: *mut ffi::lua_State, cb: Option<InterruptFn>) {
-    let raw = cb.map_or(ptr::null_mut(), |f| f as *mut ());
-    unsafe {
-        let slot = &raw mut (*ffi::lua_callbacks(state)).interrupt;
-        AtomicPtr::from_ptr(slot.cast::<*mut ()>()).store(raw, Ordering::Release);
-    }
-}
-
 /// Shutdown flag mirrored into app data so the watchdog interrupt can
 /// re-check it on the Lua thread.
 struct ShutdownFlag(Arc<AtomicBool>);
 
-/// Cancellation watchdog. A resident mlua interrupt fires at every
-/// safepoint and costs ~100ns a pop, which ate most of the codegen win
-/// (see `benches/luau_perf.rs`). So the VM runs with no interrupt at
-/// all, and this thread arms a one-shot native one every poll tick.
-/// Luau documents `lua_callbacks(L)->interrupt` as safe to assign from
-/// another thread, and the VM only pays a null check per safepoint.
-/// The callback re-checks shutdown/cancel/deadline on the Lua thread
-/// before raising, so a stale poke never kills the wrong task.
+/// Cancellation watchdog. The poker thread arms an atomic flag every
+/// poll tick; a resident `mlua` interrupt checks it at VM safepoints.
+/// When armed, the callback re-checks shutdown/cancel/deadline on the
+/// Lua thread before raising, so a stale poke never kills the wrong task.
 struct Watchdog {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl Watchdog {
-    fn spawn(lua: &Lua, shutdown: Arc<AtomicBool>) -> Self {
-        lua.set_app_data(ShutdownFlag(shutdown));
-        let main_state =
-            lua.exec_raw_lua(|raw| unsafe { ffi::lua_mainthread(raw.state()) }) as usize;
+    fn spawn(armed: Arc<AtomicBool>) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let thread = thread::spawn({
             let stop = Arc::clone(&stop);
-            // Keeps the VM alive while this thread can still write to it,
-            // even if a refactor reorders drops.
-            let keep_alive = lua.clone();
             move || {
-                let _keep_alive = keep_alive;
                 loop {
                     thread::park_timeout(WATCHDOG_POLL_INTERVAL);
                     if stop.load(Ordering::Relaxed) {
                         return;
                     }
-                    store_interrupt(main_state as *mut ffi::lua_State, Some(watchdog_interrupt));
+                    armed.store(true, Ordering::Release);
                 }
             }
         });
@@ -413,34 +389,24 @@ impl Drop for Watchdog {
     }
 }
 
-/// One-shot interrupt armed by [`Watchdog`]: disarms itself, re-checks the
-/// kill conditions, and raises a plain string error that unwinds like any
-/// Lua error. Must not raise during GC (`gc >= 0`), same rule mlua follows.
-unsafe extern "C-unwind" fn watchdog_interrupt(state: *mut ffi::lua_State, gc: c_int) {
-    if gc >= 0 {
-        return;
-    }
-    store_interrupt(state, None);
-    // A Rust panic must not unwind into the VM; treat it as "no kill".
-    let msg = catch_unwind(|| interrupt_reason(state)).unwrap_or(None);
-    if let Some(msg) = msg {
-        unsafe {
-            // A safepoint frame may have zero free slots; grow before pushing
-            // (raw pushes assert a free slot). On failure the next poke retries.
-            if ffi::lua_checkstack(state, 1) == 0 {
-                return;
-            }
-            ffi::lua_pushlstring(state, msg.as_ptr().cast(), msg.len());
-            ffi::lua_error(state);
+/// Install the one-shot interrupt that the watchdog arms every poll tick.
+fn install_interrupt(lua: &Lua, armed: Arc<AtomicBool>) {
+    lua.set_interrupt(move |lua| {
+        if !armed.swap(false, Ordering::AcqRel) {
+            return Ok(VmState::Continue);
         }
-    }
+        if let Some(msg) = interrupt_reason(lua) {
+            Err(mlua::Error::RuntimeError(msg.to_owned()))
+        } else {
+            Ok(VmState::Continue)
+        }
+    });
 }
 
-fn interrupt_reason(state: *mut ffi::lua_State) -> Option<&'static str> {
-    let lua = unsafe { Lua::get_or_init_from_ptr(state) };
+fn interrupt_reason(lua: &Lua) -> Option<&'static str> {
     if lua
         .app_data_ref::<ShutdownFlag>()
-        .is_some_and(|f| f.0.load(Ordering::Relaxed))
+        .is_some_and(|f| f.0.load(Ordering::Acquire))
     {
         return Some(INTERRUPT_SHUTDOWN_MSG);
     }
@@ -552,12 +518,15 @@ impl Drop for TaskScope {
     }
 }
 
-/// Re-publishes the task handle on every `poll` so concurrent tasks
-/// on the shared Lua each see their own `TaskCell`.
-pub(crate) struct ScopedFuture<F> {
-    lua: Lua,
-    handle: TaskHandle,
-    inner: F,
+pin_project_lite::pin_project! {
+    /// Re-publishes the task handle on every `poll` so concurrent tasks
+    /// on the shared Lua each see their own `TaskCell`.
+    pub(crate) struct ScopedFuture<F> {
+        lua: Lua,
+        handle: TaskHandle,
+        #[pin]
+        inner: F,
+    }
 }
 
 impl<F: std::future::Future> std::future::Future for ScopedFuture<F> {
@@ -566,13 +535,11 @@ impl<F: std::future::Future> std::future::Future for ScopedFuture<F> {
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
-        // SAFETY: `inner` is structurally pinned; `lua`/`handle` are
-        // never moved out.
-        let this = unsafe { self.get_unchecked_mut() };
+        let this = self.project();
         let prev = this
             .lua
-            .set_app_data::<TaskHandle>(Arc::clone(&this.handle));
-        let result = unsafe { std::pin::Pin::new_unchecked(&mut this.inner) }.poll(cx);
+            .set_app_data::<TaskHandle>(Arc::clone(&*this.handle));
+        let result = this.inner.poll(cx);
         match prev {
             Some(p) => {
                 this.lua.set_app_data(p);
@@ -586,9 +553,10 @@ impl<F: std::future::Future> std::future::Future for ScopedFuture<F> {
 }
 
 pub(crate) fn active_task(lua: &Lua) -> TaskHandle {
-    lua.app_data_ref::<TaskHandle>()
-        .map(|r| Arc::clone(&*r))
-        .expect("task accessor called outside a task scope")
+    lua.app_data_ref::<TaskHandle>().map_or_else(
+        || unreachable!("task accessor called outside a task scope"),
+        |r| Arc::clone(&*r),
+    )
 }
 
 pub(crate) fn with_task_jobs<R>(lua: &Lua, f: impl FnOnce(&mut JobStore) -> R) -> R {
@@ -636,7 +604,7 @@ pub(crate) fn enqueue_async_task(lua: &Lua, work_fn: RegistryKey) -> Result<(), 
             return Ok(());
         }
         task.owner = cell.bufs_claim.upgrade();
-        task.parent = parent.clone();
+        task.parent.clone_from(&parent);
     }
 
     let queue = lua
@@ -952,8 +920,8 @@ struct ToolKeys {
 type PluginMap = Rc<RefCell<HashMap<Arc<str>, HashMap<Arc<str>, ToolKeys>>>>;
 
 struct LuaRuntime {
-    /// Held for its Drop (joins the poker thread). Field order doesn't
-    /// matter: the thread keeps its own `Lua` clone alive.
+    /// Held for its Drop (joins the poker thread). Field order matters:
+    /// the watchdog must join before the Lua VM is dropped.
     _watchdog: Watchdog,
     lua: Lua,
     pending: PendingTools,
@@ -989,7 +957,10 @@ impl LuaRuntime {
             })?;
         let pending: PendingTools = Arc::new(Mutex::new(Vec::new()));
 
-        let watchdog = Watchdog::spawn(&lua, Arc::clone(&shutdown));
+        lua.set_app_data(ShutdownFlag(Arc::clone(&shutdown)));
+        let armed = Arc::new(AtomicBool::new(false));
+        let watchdog = Watchdog::spawn(Arc::clone(&armed));
+        install_interrupt(&lua, armed);
 
         let globals = lua.globals();
         for name in &["require", "io", "package"] {
@@ -1190,7 +1161,7 @@ impl LuaRuntime {
             };
             let Some(content) = content else { continue };
             let explicit = item.prompts.is_some();
-            for &pid in item.prompts.as_deref().unwrap_or(PromptId::ALL) {
+            for &pid in item.prompts.as_deref().unwrap_or_else(|| PromptId::ALL) {
                 if !pid.has_slot(item.slot) {
                     if explicit {
                         tracing::warn!(
@@ -1218,7 +1189,7 @@ impl LuaRuntime {
     fn drain_pending(&self) -> Vec<PendingTool> {
         self.pending
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .drain(..)
             .collect()
     }
@@ -1273,7 +1244,8 @@ impl LuaRuntime {
         env: &mlua::Table,
         require_root: Option<PathBuf>,
     ) -> Result<Function, mlua::Error> {
-        let lua_dir = require_root.map(|r| r.canonicalize().unwrap_or(r));
+        const NOT_LOADING: bool = false;
+        let lua_dir = require_root.map(|r| r.canonicalize().unwrap_or_else(|_| r));
         let loaded = self.lua.create_table()?;
         let loading = self.lua.create_table()?;
         let env_clone = env.clone();
@@ -1292,7 +1264,10 @@ impl LuaRuntime {
                 return Ok(cached);
             }
 
-            if loading.get::<bool>(modname.as_str()).unwrap_or(false) {
+            if loading
+                .get::<bool>(modname.as_str())
+                .unwrap_or_else(|_| NOT_LOADING)
+            {
                 return Ok(LuaValue::Boolean(true));
             }
 
@@ -1389,6 +1364,7 @@ impl LuaRuntime {
         )))
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn load_source(
         &mut self,
         name: Arc<str>,
@@ -1481,7 +1457,7 @@ impl LuaRuntime {
             })
             .collect();
 
-        if let Err(e) = self.registry.replace_plugin(&name, registry_entries) {
+        if let Err(e) = self.registry.replace_plugin(&name, &registry_entries) {
             self.discard_pending(pending);
             return Err(match e {
                 RegistryError::NameConflict { name: n, .. } => PluginError::NameConflict {
@@ -1565,9 +1541,8 @@ impl LuaRuntime {
                 return None;
             }
         };
-        let table = match result {
-            LuaValue::Table(t) => t,
-            _ => return None,
+        let LuaValue::Table(table) = result else {
+            return None;
         };
         let scopes_table: mlua::Table = table.get("scopes").ok()?;
         let mut scopes = Vec::new();
@@ -1577,7 +1552,7 @@ impl LuaRuntime {
         if scopes.is_empty() {
             return None;
         }
-        let force_prompt: bool = table.get("force_prompt").unwrap_or(false);
+        let force_prompt: bool = table.get("force_prompt").unwrap_or_else(|_| false);
         Some(PermissionScopes {
             scopes,
             force_prompt,
@@ -1601,7 +1576,13 @@ impl LuaRuntime {
             Some(&config_store),
         )
         .await?;
-        Ok(config_store.lock().unwrap().take())
+        Ok(config_store
+            .lock()
+            .map_err(|e| PluginError::Lua {
+                plugin: source_name.to_string(),
+                source: mlua::Error::runtime(format!("config store poisoned: {e}")),
+            })?
+            .take())
     }
 }
 
@@ -1681,7 +1662,7 @@ async fn restore_item(lua: &Lua, plugins: &PluginMap, item: RestoreItem) -> Opti
         let plugins = plugins.borrow();
         let (pname, tk) = plugins
             .iter()
-            .find_map(|(pname, tools)| tools.get(&*item.tool).map(|tk| (pname.clone(), tk)))?;
+            .find_map(|(pname, tools)| tools.get(&*item.tool).map(|tk| (Arc::clone(pname), tk)))?;
         let key = tk.restore.as_ref()?;
         (lua.registry_value::<Function>(key).ok()?, pname)
     };
@@ -1913,7 +1894,7 @@ fn strip_traceback(err: &mlua::Error) -> String {
 /// The error message format is load-bearing: the bash plugin's `restore`
 /// parses it to re-render the timeout sentinel on session reload.
 fn timeout_reply(handle: &TaskHandle, plugin: &str, tool: &str) -> ToolCallReply {
-    let secs = lock_cell(handle).deadline_secs.get().unwrap_or(0);
+    let secs = lock_cell(handle).deadline_secs.get().unwrap_or_else(|| 0);
     let live_buf = resolve_root_buf(handle);
     let qualified = if plugin == tool || plugin.is_empty() {
         tool.to_owned()
@@ -1992,6 +1973,7 @@ async fn run_tool_start(
 /// Two layers of deadline enforcement: the watchdog interrupt catches
 /// tight CPU loops, the dispatch loop catches I/O waits.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 async fn run_tool_call(
     lua: Lua,
     plugin: Arc<str>,
@@ -2144,6 +2126,7 @@ pub(crate) struct LuaThread {
 
 /// Lua lives on its own OS thread (no Send needed). `smol::block_on`
 /// drives async, load/clear requests wait for in-flight tools.
+#[allow(clippy::too_many_lines)]
 pub fn spawn(
     registry: Arc<ToolRegistry>,
     bundled_dirs: &'static [&'static Dir<'static>],
@@ -2190,7 +2173,7 @@ pub fn spawn(
             let spawn_rx = rt
                 .lua
                 .app_data_ref::<SpawnQueue>()
-                .expect("spawn queue installed at init")
+                .unwrap_or_else(|| unreachable!("spawn queue installed at init"))
                 .rx
                 .clone();
 
@@ -2416,7 +2399,7 @@ pub fn spawn(
                             }
                         }
                         Request::FireAutocmd { event, data } => {
-                            let data = json_to_lua(&rt.lua, &data).unwrap_or(LuaValue::Nil);
+                            let data = json_to_lua(&rt.lua, &data).unwrap_or_else(|_| LuaValue::Nil);
                             crate::api::autocmd::dispatch(&rt.lua, &event, None, data);
                             if event == TURN_END_EVENT {
                                 rt.lua.gc_collect().ok();
@@ -2579,7 +2562,7 @@ mod tests {
     fn task_scope_drop_clears_buf_handler_slots() {
         let lua = Lua::new();
         let scope = TaskScope::new(&lua, task_cell(None));
-        let handle = with_task_bufs(&lua, |store| store.create());
+        let handle = with_task_bufs(&lua, super::super::api::ui::buf::BufferStore::create);
         let shared = Arc::clone(&handle.buf);
         lua.globals()
             .set("buf", lua.create_userdata(handle.clone()).unwrap())
@@ -2668,7 +2651,7 @@ mod tests {
         smol::block_on(ex.run(async {
             let g = Rc::new(gate());
             let (release_tx, release_rx) = flume::unbounded::<()>();
-            let tasks: Vec<_> = (0..MAX_INFLIGHT_TOOLS + 1)
+            let tasks: Vec<_> = (0..=MAX_INFLIGHT_TOOLS)
                 .map(|_| {
                     let g = Rc::clone(&g);
                     let release_rx = release_rx.clone();
@@ -2724,7 +2707,7 @@ mod tests {
     }
 
     fn enqueue_dummy(lua: &Lua) -> RegistryKey {
-        let func = lua.create_function(|_, _: ()| Ok(())).unwrap();
+        let func = lua.create_function(|_, (): ()| Ok(())).unwrap();
         lua.create_registry_value(func).unwrap()
     }
 
@@ -2748,7 +2731,7 @@ mod tests {
     fn enqueue_async_task_missing_spawn_queue_errors() {
         let lua = Lua::new();
         let key = lua
-            .create_registry_value(lua.create_function(|_, _: ()| Ok(())).unwrap())
+            .create_registry_value(lua.create_function(|_, (): ()| Ok(())).unwrap())
             .unwrap();
         let err = enqueue_async_task(&lua, key).unwrap_err();
         assert!(err.to_string().contains(SPAWN_QUEUE_NOT_INIT));
@@ -2801,7 +2784,7 @@ mod tests {
     #[test]
     fn enqueue_async_task_extends_expired_parent_to_minimum_deadline() {
         let lua = enqueue_test_lua();
-        let parent_deadline = Instant::now() - Duration::from_secs(10);
+        let parent_deadline = Instant::now().checked_sub(Duration::from_secs(10)).unwrap();
         let _h = set_active(
             &lua,
             TaskCell::new(CancelToken::none(), Some(parent_deadline), None),
@@ -2821,7 +2804,7 @@ mod tests {
     #[test]
     fn enqueue_async_task_preserves_longer_parent_deadline() {
         let lua = enqueue_test_lua();
-        let parent_deadline = Instant::now() + Duration::from_secs(600);
+        let parent_deadline = Instant::now() + Duration::from_mins(10);
         let _h = set_active(
             &lua,
             TaskCell::new(CancelToken::none(), Some(parent_deadline), None),
@@ -2912,7 +2895,10 @@ mod tests {
 
     fn watchdog_lua(shutdown: bool) -> (Lua, Watchdog) {
         let lua = Lua::new();
-        let watchdog = Watchdog::spawn(&lua, Arc::new(AtomicBool::new(shutdown)));
+        lua.set_app_data(ShutdownFlag(Arc::new(AtomicBool::new(shutdown))));
+        let armed = Arc::new(AtomicBool::new(false));
+        let watchdog = Watchdog::spawn(Arc::clone(&armed));
+        install_interrupt(&lua, armed);
         (lua, watchdog)
     }
 

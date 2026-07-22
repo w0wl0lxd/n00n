@@ -9,7 +9,7 @@ use n00n_config::ToolKey;
 use n00n_providers::{
     AgentError, ContentBlock, ImageSource, Message, Role, StopReason, TokenUsage,
 };
-use serde::de::Deserializer;
+use serde::de::{Deserializer, Error as DeError, MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
 
 pub const NO_FILES_FOUND: &str = "No files found";
@@ -57,14 +57,16 @@ impl GrepMatchGroup {
         }
     }
 
+    #[must_use]
     pub fn match_count(&self) -> usize {
         self.lines.iter().filter(|l| l.is_match).count()
     }
 }
 
 impl GrepFileEntry {
+    #[must_use]
     pub fn match_count(&self) -> usize {
-        self.groups.iter().map(|g| g.match_count()).sum()
+        self.groups.iter().map(GrepMatchGroup::match_count).sum()
     }
 }
 
@@ -86,6 +88,7 @@ pub enum TodoStatus {
 }
 
 impl TodoStatus {
+    #[must_use]
     pub fn marker(self) -> &'static str {
         match self {
             Self::Completed => "[✓]",
@@ -135,6 +138,115 @@ fn append_instructions(out: &mut String, blocks: &[InstructionBlock]) {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ToolUsage {
+    pub fresh_input_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+impl ToolUsage {
+    /// Builds a usage breakdown only when its input categories conserve the total.
+    ///
+    /// # Errors
+    /// Returns an error when the category sum overflows or differs from `input_tokens`.
+    pub fn try_new(
+        fresh_input_tokens: u64,
+        cache_read_tokens: u64,
+        cache_write_tokens: u64,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> Result<Self, String> {
+        let category_total = fresh_input_tokens
+            .checked_add(cache_read_tokens)
+            .and_then(|total| total.checked_add(cache_write_tokens))
+            .ok_or_else(|| "tool usage input token categories overflow".to_owned())?;
+        if category_total != input_tokens {
+            return Err(format!(
+                "tool usage input token categories do not conserve total: \
+                 fresh_input_tokens ({fresh_input_tokens}) + cache_read_tokens \
+                 ({cache_read_tokens}) + cache_write_tokens ({cache_write_tokens}) != \
+                 input_tokens ({input_tokens})"
+            ));
+        }
+        Ok(Self {
+            fresh_input_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+            input_tokens,
+            output_tokens,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for ToolUsage {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct RawToolUsage {
+            #[serde(rename = "fresh_input_tokens")]
+            fresh_input: u64,
+            #[serde(rename = "cache_read_tokens")]
+            cache_read: u64,
+            #[serde(rename = "cache_write_tokens")]
+            cache_write: u64,
+            #[serde(rename = "input_tokens")]
+            input: u64,
+            #[serde(rename = "output_tokens")]
+            output: u64,
+        }
+
+        let raw = RawToolUsage::deserialize(deserializer)?;
+        Self::try_new(
+            raw.fresh_input,
+            raw.cache_read,
+            raw.cache_write,
+            raw.input,
+            raw.output,
+        )
+        .map_err(D::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ToolTelemetry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<ToolUsage>,
+}
+
+impl<'de> Deserialize<'de> for ToolTelemetry {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct RawToolTelemetry {
+            #[serde(default)]
+            cost: Option<f64>,
+            #[serde(default)]
+            usage: Option<ToolUsage>,
+        }
+
+        let raw = RawToolTelemetry::deserialize(deserializer)?;
+        Self::try_new(raw.cost, raw.usage)
+            .map_err(D::Error::custom)?
+            .ok_or_else(|| D::Error::custom("tool telemetry must contain cost or usage"))
+    }
+}
+
+impl ToolTelemetry {
+    /// Builds sanitized telemetry, rejecting non-finite or negative costs.
+    ///
+    /// # Errors
+    /// Returns an error when `cost` is not a finite nonnegative number.
+    pub fn try_new(cost: Option<f64>, usage: Option<ToolUsage>) -> Result<Option<Self>, String> {
+        if cost.is_some_and(|value| !value.is_finite() || value < 0.0) {
+            return Err("tool telemetry cost must be a finite nonnegative number".to_owned());
+        }
+        Ok((cost.is_some() || usage.is_some()).then_some(Self { cost, usage }))
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct TextOutput {
     pub text: String,
@@ -144,6 +256,8 @@ pub struct TextOutput {
     /// has to re-parse its own llm output.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<ToolTelemetry>,
 }
 
 impl From<String> for TextOutput {
@@ -152,6 +266,7 @@ impl From<String> for TextOutput {
             text,
             instructions: None,
             state: None,
+            telemetry: None,
         }
     }
 }
@@ -162,36 +277,82 @@ impl From<&str> for TextOutput {
             text: text.to_owned(),
             instructions: None,
             state: None,
+            telemetry: None,
         }
     }
 }
 
 impl<'de> Deserialize<'de> for TextOutput {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Raw {
-            Legacy(String),
-            Full {
-                text: String,
-                #[serde(default)]
-                instructions: Option<Vec<InstructionBlock>>,
-                #[serde(default)]
-                state: Option<serde_json::Value>,
-            },
+        struct TextOutputVisitor;
+
+        impl<'de> Visitor<'de> for TextOutputVisitor {
+            type Value = TextOutput;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a legacy text string or a structured text output")
+            }
+
+            fn visit_str<E: DeError>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(value.into())
+            }
+
+            fn visit_string<E: DeError>(self, value: String) -> Result<Self::Value, E> {
+                Ok(value.into())
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut text = None;
+                let mut instructions = None;
+                let mut state = None;
+                let mut telemetry = None;
+                let mut seen_instructions = false;
+                let mut seen_state = false;
+                let mut seen_telemetry = false;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "text" => {
+                            if text.is_some() {
+                                return Err(A::Error::duplicate_field("text"));
+                            }
+                            text = Some(map.next_value()?);
+                        }
+                        "instructions" => {
+                            if seen_instructions {
+                                return Err(A::Error::duplicate_field("instructions"));
+                            }
+                            seen_instructions = true;
+                            instructions = map.next_value()?;
+                        }
+                        "state" => {
+                            if seen_state {
+                                return Err(A::Error::duplicate_field("state"));
+                            }
+                            seen_state = true;
+                            state = map.next_value()?;
+                        }
+                        "telemetry" => {
+                            if seen_telemetry {
+                                return Err(A::Error::duplicate_field("telemetry"));
+                            }
+                            seen_telemetry = true;
+                            telemetry = map.next_value()?;
+                        }
+                        _ => {
+                            map.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(TextOutput {
+                    text: text.ok_or_else(|| A::Error::missing_field("text"))?,
+                    instructions,
+                    state,
+                    telemetry,
+                })
+            }
         }
-        match Raw::deserialize(deserializer)? {
-            Raw::Legacy(text) => Ok(text.into()),
-            Raw::Full {
-                text,
-                instructions,
-                state,
-            } => Ok(Self {
-                text,
-                instructions,
-                state,
-            }),
-        }
+
+        deserializer.deserialize_any(TextOutputVisitor)
     }
 }
 
@@ -214,6 +375,8 @@ pub enum ToolOutput {
         before: String,
         after: String,
         summary: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        telemetry: Option<ToolTelemetry>,
     },
     TodoList(Vec<TodoItem>),
     WriteCode {
@@ -236,9 +399,11 @@ pub enum ToolOutput {
     },
     Image {
         source: n00n_providers::ImageSource,
-        /// Caption for the tool_result block, e.g. "[image: slack.jpeg 222KB]";
+        /// Caption for the `tool_result` block, e.g. "[image: slack.jpeg 222KB]";
         /// the pixels ride separately as a `ContentBlock::Image`.
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        telemetry: Option<ToolTelemetry>,
     },
 }
 
@@ -252,6 +417,7 @@ impl ToolOutput {
     /// Short header suffix summarizing the output, e.g. `12 lines`.
     /// The UI uses it on tool completion, and `n00n.agent.call_tool` falls
     /// back to it when the tool's reply has no annotation of its own.
+    #[must_use]
     pub fn annotation(&self) -> Option<String> {
         match self {
             Self::ReadCode {
@@ -266,7 +432,7 @@ impl ToolOutput {
             }
             Self::WriteCode { byte_count, .. } => Some(format!("{byte_count} bytes")),
             Self::GrepResult { entries } => {
-                let matches: usize = entries.iter().map(|e| e.match_count()).sum();
+                let matches: usize = entries.iter().map(GrepFileEntry::match_count).sum();
                 let files = entries.len();
                 let f = if files == 1 { "file" } else { "files" };
                 Some(format!("{matches} matches in {files} {f}"))
@@ -282,8 +448,7 @@ impl ToolOutput {
             Self::Image { text, .. } => Some(
                 text.strip_prefix("[image: ")
                     .and_then(|t| t.strip_suffix(']'))
-                    .unwrap_or(text)
-                    .to_string(),
+                    .map_or_else(|| text.clone(), std::string::ToString::to_string),
             ),
             _ => None,
         }
@@ -291,6 +456,7 @@ impl ToolOutput {
 
     /// Only here for old persisted sessions that still have `WriteCode`/`Diff` variants.
     /// New code should use `ToolDoneEvent::written_path` instead.
+    #[must_use]
     pub fn written_path(&self) -> Option<&str> {
         match self {
             Self::WriteCode { path, .. } | Self::Diff { path, .. } => Some(path),
@@ -298,6 +464,7 @@ impl ToolOutput {
         }
     }
 
+    #[must_use]
     pub fn instructions(&self) -> Option<&[InstructionBlock]> {
         match self {
             Self::Plain(t) | Self::Markdown(t) | Self::ReadDir(t) => t.instructions.as_deref(),
@@ -309,13 +476,15 @@ impl ToolOutput {
     pub fn owned_instructions(&self) -> Option<Vec<InstructionBlock>> {
         self.instructions()
             .filter(|b| !b.is_empty())
-            .map(|b| b.to_vec())
+            .map(<[InstructionBlock]>::to_vec)
     }
 
+    #[must_use]
     pub fn is_markdown(&self) -> bool {
         matches!(self, Self::Markdown(_))
     }
 
+    #[must_use]
     pub fn state(&self) -> Option<&serde_json::Value> {
         match self {
             Self::Plain(t) | Self::Markdown(t) | Self::ReadDir(t) => t.state.as_ref(),
@@ -323,6 +492,38 @@ impl ToolOutput {
         }
     }
 
+    #[must_use]
+    pub fn telemetry(&self) -> Option<&ToolTelemetry> {
+        match self {
+            Self::Plain(text) | Self::Markdown(text) | Self::ReadDir(text) => {
+                text.telemetry.as_ref()
+            }
+            Self::Diff { telemetry, .. } | Self::Image { telemetry, .. } => telemetry.as_ref(),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_telemetry(mut self, telemetry: Option<ToolTelemetry>) -> Self {
+        let Some(telemetry) = telemetry else {
+            return self;
+        };
+        match &mut self {
+            Self::Plain(text) | Self::Markdown(text) | Self::ReadDir(text) => {
+                text.telemetry = Some(telemetry);
+            }
+            Self::Diff {
+                telemetry: current, ..
+            }
+            | Self::Image {
+                telemetry: current, ..
+            } => *current = Some(telemetry),
+            _ => {}
+        }
+        self
+    }
+
+    #[must_use]
     pub fn structured_display_text(&self) -> Option<String> {
         match self {
             Self::Diff { .. }
@@ -335,6 +536,7 @@ impl ToolOutput {
         }
     }
 
+    #[must_use]
     pub fn is_empty_result(&self) -> bool {
         match self {
             Self::GrepResult { entries } => entries.is_empty(),
@@ -343,6 +545,7 @@ impl ToolOutput {
         }
     }
 
+    #[must_use]
     pub fn as_text(&self) -> String {
         match self {
             Self::Diff { summary, .. } => summary.clone(),
@@ -365,6 +568,7 @@ impl ToolOutput {
         }
     }
 
+    #[must_use]
     pub fn as_display_text(&self) -> String {
         match self {
             Self::Plain(t) | Self::Markdown(t) | Self::ReadDir(t) => t.text.clone(),
@@ -382,12 +586,14 @@ impl ToolOutput {
                     .join("\n");
                 let remaining = lines_remaining_after(*total_lines, *start_line, lines.len());
                 if remaining > 0 {
-                    out.push_str(&format!(
+                    use std::fmt::Write;
+                    let _ = write!(
+                        out,
                         "\n\n...\n\nTruncated lines: {}-{}. Use offset={} to read further.",
                         start_line + lines.len(),
                         total_lines,
                         start_line + lines.len(),
-                    ));
+                    );
                 }
                 out
             }
@@ -396,6 +602,7 @@ impl ToolOutput {
                 before,
                 after,
                 summary,
+                ..
             } => crate::diff::unified_text(
                 before,
                 after,
@@ -486,6 +693,7 @@ impl ToolDoneEvent {
         }
     }
 
+    #[must_use]
     pub fn written_path(&self) -> Option<&str> {
         if self.is_error {
             return None;
@@ -495,12 +703,14 @@ impl ToolDoneEvent {
             .or_else(|| self.output.written_path())
     }
 
+    #[must_use]
     pub fn wrote_to(&self, plan_path: &Path) -> bool {
         self.written_path()
             .is_some_and(|wp| Path::new(wp) == plan_path)
     }
 }
 
+#[must_use]
 pub fn tool_results(results: Vec<ToolDoneEvent>) -> Message {
     let mut content = Vec::with_capacity(results.len());
     let mut images = Vec::new();
@@ -624,6 +834,7 @@ pub struct SharedBuf {
 }
 
 impl SharedBuf {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             committed: Mutex::new(Arc::new(Vec::new())),
@@ -635,15 +846,24 @@ impl SharedBuf {
     }
 
     pub fn set_click(&self, f: Arc<dyn Any + Send + Sync>) {
-        *self.click.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+        *self
+            .click
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(f);
     }
 
     pub fn click(&self) -> Option<Arc<dyn Any + Send + Sync>> {
-        self.click.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.click
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     pub fn clear_click(&self) {
-        *self.click.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self
+            .click
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
     /// Fires synchronously after every `append`/`set_lines`, on the
@@ -651,13 +871,19 @@ impl SharedBuf {
     /// notifications are silently dropped. One slot only: a second call
     /// replaces the previous watcher.
     pub fn set_on_change(&self, f: impl Fn() + Send + Sync + 'static) {
-        *self.on_change.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(f));
+        *self
+            .on_change
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(f));
     }
 
     /// A watcher keeps everything it captured alive for as long as it is
     /// installed, so owners must clear it once the watching task retires.
     pub fn clear_on_change(&self) {
-        *self.on_change.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self
+            .on_change
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
     fn notify_change(&self) {
@@ -667,7 +893,7 @@ impl SharedBuf {
         let cb = self
             .on_change
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         if let Some(cb) = cb {
             cb();
@@ -676,7 +902,10 @@ impl SharedBuf {
     }
 
     pub fn append(&self, line: SnapshotLine) {
-        let mut guard = self.committed.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self
+            .committed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Arc::make_mut(&mut guard).push(line);
         drop(guard);
         self.dirty.store(true, Ordering::Release);
@@ -684,7 +913,10 @@ impl SharedBuf {
     }
 
     pub fn set_lines(&self, lines: Vec<SnapshotLine>) {
-        let mut guard = self.committed.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self
+            .committed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *guard = Arc::new(lines);
         drop(guard);
         self.dirty.store(true, Ordering::Release);
@@ -694,7 +926,7 @@ impl SharedBuf {
     pub fn len(&self) -> usize {
         self.committed
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .len()
     }
 
@@ -703,7 +935,10 @@ impl SharedBuf {
     }
 
     pub fn read(&self) -> Arc<Vec<SnapshotLine>> {
-        let guard = self.committed.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = self
+            .committed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Arc::clone(&guard)
     }
 
@@ -711,13 +946,19 @@ impl SharedBuf {
         if !self.dirty.swap(false, Ordering::AcqRel) {
             return None;
         }
-        let guard = self.committed.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = self
+            .committed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Some(Arc::clone(&guard))
     }
 
     pub fn take(&self) -> BufferSnapshot {
         self.dirty.store(false, Ordering::Release);
-        let guard = self.committed.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = self
+            .committed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         BufferSnapshot::from_arc(Arc::clone(&guard))
     }
 }
@@ -746,23 +987,26 @@ pub struct BufferSnapshot {
 }
 
 impl BufferSnapshot {
+    #[must_use]
     pub fn from_arc(lines: Arc<Vec<SnapshotLine>>) -> Self {
         Self { lines }
     }
 
+    #[must_use]
     pub fn plain_text(text: String) -> Self {
         Self::from_arc(Arc::new(vec![SnapshotLine::plain(text)]))
     }
 
+    #[must_use]
     pub fn first_line_text(&self) -> String {
-        self.lines
-            .first()
-            .map(|l| l.spans.iter().map(|s| s.text.as_str()).collect())
-            .unwrap_or_default()
+        self.lines.first().map_or_else(String::new, |l| {
+            l.spans.iter().map(|s| s.text.as_str()).collect()
+        })
     }
 
     /// Search matches against this, so it must mirror exactly what the UI
     /// renders.
+    #[must_use]
     pub fn text(&self) -> String {
         let mut out = String::new();
         for (i, line) in self.lines.iter().enumerate() {
@@ -783,6 +1027,7 @@ pub struct SnapshotLine {
 }
 
 impl SnapshotLine {
+    #[must_use]
     pub fn plain(text: String) -> Self {
         Self {
             spans: vec![SnapshotSpan {
@@ -808,6 +1053,7 @@ pub enum SpanStyle {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct InlineStyle {
     pub fg: Option<(u8, u8, u8)>,
     pub bg: Option<(u8, u8, u8)>,
@@ -856,10 +1102,16 @@ pub struct EventSender {
 }
 
 impl EventSender {
+    #[must_use]
     pub fn new(tx: Sender<Envelope>, run_id: u64) -> Self {
         Self { tx, run_id }
     }
 
+    /// Sends an agent event.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AgentError` if the channel is full or closed.
     pub fn send(&self, event: impl Into<AgentEvent>) -> Result<(), AgentError> {
         self.tx
             .try_send(Envelope {
@@ -870,6 +1122,11 @@ impl EventSender {
             .map_err(|_| AgentError::Channel)
     }
 
+    /// Sends an envelope directly.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AgentError` if the channel is full or closed.
     pub fn send_envelope(&self, envelope: Envelope) -> Result<(), AgentError> {
         self.tx.try_send(envelope).map_err(|_| AgentError::Channel)
     }
@@ -882,10 +1139,12 @@ impl EventSender {
         });
     }
 
+    #[must_use]
     pub fn run_id(&self) -> u64 {
         self.run_id
     }
 
+    #[must_use]
     pub fn raw_tx(&self) -> &Sender<Envelope> {
         &self.tx
     }
@@ -905,15 +1164,16 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
-    #[test_case(ToolOutput::Plain("ok".into()),                      Some("1 lines")     ; "plain_short_annotates")]
-    #[test_case(ToolOutput::Plain((0..20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n").into()), Some("20 lines") ; "plain_long_annotates")]
-    #[test_case(ToolOutput::Plain(String::new().into()),             None                ; "plain_empty_no_annotation")]
-    #[test_case(ToolOutput::ReadCode { path: "a.rs".into(), start_line: 1, lines: vec!["x".into(); 5], total_lines: 5, instructions: None }, Some("5 lines") ; "read_code_full_file")]
-    #[test_case(ToolOutput::ReadCode { path: "a.rs".into(), start_line: 10, lines: vec!["x".into(); 5], total_lines: 100, instructions: None }, Some("5 of 100 lines") ; "read_code_partial")]
-    #[test_case(ToolOutput::WriteCode { path: "a.rs".into(), byte_count: 99, lines: vec![] }, Some("99 bytes") ; "write_code_bytes")]
-    #[test_case(ToolOutput::GrepResult { entries: vec![GrepFileEntry { path: "a.rs".into(), groups: vec![GrepMatchGroup::single(1, "hit")] }] }, Some("1 matches in 1 file") ; "grep_file_count")]
-    #[test_case(ToolOutput::Diff { path: "a.rs".into(), before: String::new(), after: String::new(), summary: "ok".into() }, None ; "diff_no_annotation")]
-    fn annotation_cases(output: ToolOutput, expected: Option<&str>) {
+    #[test_case(&ToolOutput::Plain("ok".into()),                      Some("1 lines")     ; "plain_short_annotates")]
+    #[test_case(&ToolOutput::Plain((0..20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n").into()), Some("20 lines") ; "plain_long_annotates")]
+    #[test_case(&ToolOutput::Plain(String::new().into()),             None                ; "plain_empty_no_annotation")]
+    #[test_case(&ToolOutput::ReadCode { path: "a.rs".into(), start_line: 1, lines: vec!["x".into(); 5], total_lines: 5, instructions: None }, Some("5 lines") ; "read_code_full_file")]
+    #[test_case(&ToolOutput::ReadCode { path: "a.rs".into(), start_line: 10, lines: vec!["x".into(); 5], total_lines: 100, instructions: None }, Some("5 of 100 lines") ; "read_code_partial")]
+    #[test_case(&ToolOutput::WriteCode { path: "a.rs".into(), byte_count: 99, lines: vec![] }, Some("99 bytes") ; "write_code_bytes")]
+    #[test_case(&ToolOutput::GrepResult { entries: vec![GrepFileEntry { path: "a.rs".into(), groups: vec![GrepMatchGroup::single(1, "hit")] }] }, Some("1 matches in 1 file") ; "grep_file_count")]
+    #[test_case(&ToolOutput::Diff { path: "a.rs".into(), before: String::new(), after: String::new(), summary: "ok".into(), telemetry: None }, None ; "diff_no_annotation")]
+    #[allow(clippy::needless_pass_by_value)]
+    fn annotation_cases(output: &ToolOutput, expected: Option<&str>) {
         assert_eq!(output.annotation().as_deref(), expected);
     }
 
@@ -972,6 +1232,7 @@ mod tests {
             before: "keep\nold\n".into(),
             after: "keep\nnew\n".into(),
             summary: "Updated value".into(),
+            telemetry: None,
         };
         let display = output.as_display_text();
         assert!(display.starts_with("Updated value"));
@@ -1033,10 +1294,11 @@ mod tests {
         assert!(text.contains("20: fn bar()"), "second group: {text}");
     }
 
-    #[test_case(ToolOutput::WriteCode { path: "src/lib.rs".into(), byte_count: 10, lines: vec![] }, Some("src/lib.rs") ; "write_code")]
-    #[test_case(ToolOutput::Diff { path: "src/lib.rs".into(), before: String::new(), after: String::new(), summary: String::new() }, Some("src/lib.rs") ; "diff")]
-    #[test_case(ToolOutput::Plain("ok".into()), None ; "non_write_variant")]
-    fn output_written_path(output: ToolOutput, expected: Option<&str>) {
+    #[test_case(&ToolOutput::WriteCode { path: "src/lib.rs".into(), byte_count: 10, lines: vec![] }, Some("src/lib.rs") ; "write_code")]
+    #[test_case(&ToolOutput::Diff { path: "src/lib.rs".into(), before: String::new(), after: String::new(), summary: String::new(), telemetry: None }, Some("src/lib.rs") ; "diff")]
+    #[test_case(&ToolOutput::Plain("ok".into()), None ; "non_write_variant")]
+    #[allow(clippy::needless_pass_by_value)]
+    fn output_written_path(output: &ToolOutput, expected: Option<&str>) {
         assert_eq!(output.written_path(), expected);
     }
 
@@ -1078,6 +1340,7 @@ mod tests {
                 Arc::from(data),
             ),
             text: "[image: pic.png 1KB]".into(),
+            telemetry: None,
         };
         let done = |id: &str, output: ToolOutput| ToolDoneEvent {
             id: id.into(),
@@ -1319,6 +1582,15 @@ mod tests {
         const OMIT_MSG: &str = "theme_gen: None must not appear in serialized JSON";
         const COMPAT_MSG: &str = "missing theme_gen must deserialize as None (backwards compat)";
 
+        #[derive(Deserialize)]
+        #[allow(clippy::items_after_statements)]
+        struct ToolSnapshotFields {
+            #[allow(dead_code)]
+            id: String,
+            #[serde(default)]
+            theme_gen: Option<u64>,
+        }
+
         let event = AgentEvent::ToolSnapshot {
             id: "t1".into(),
             snapshot: BufferSnapshot {
@@ -1329,16 +1601,74 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(!json.contains("theme_gen"), "{OMIT_MSG}");
 
-        #[derive(Deserialize)]
-        struct ToolSnapshotFields {
-            #[allow(dead_code)]
-            id: String,
-            #[serde(default)]
-            theme_gen: Option<u64>,
-        }
         let json_without = r#"{"id":"t1"}"#;
         let parsed: ToolSnapshotFields = serde_json::from_str(json_without).unwrap();
         assert_eq!(parsed.theme_gen, None, "{COMPAT_MSG}");
+    }
+
+    #[test]
+    fn tool_usage_rejects_nonconserving_categories() {
+        let error = ToolUsage::try_new(5, 7, 11, 24, 13).unwrap_err();
+        assert!(error.contains("do not conserve"));
+    }
+
+    #[test]
+    fn absent_sidecar_telemetry_does_not_erase_embedded_telemetry() {
+        let telemetry = ToolTelemetry::try_new(Some(0.25), None)
+            .unwrap()
+            .expect("cost must produce telemetry");
+        let output = ToolOutput::Plain(TextOutput {
+            text: "done".to_owned(),
+            instructions: None,
+            state: None,
+            telemetry: Some(telemetry.clone()),
+        });
+
+        assert_eq!(output.with_telemetry(None).telemetry(), Some(&telemetry));
+    }
+
+    #[test]
+    fn telemetry_deserialization_validates_cost_and_conservation() {
+        let nonconserving = r#"{"cost":0.5,"usage":{"fresh_input_tokens":5,"cache_read_tokens":7,"cache_write_tokens":11,"input_tokens":24,"output_tokens":13}}"#;
+        let negative_cost = r#"{"cost":-0.5}"#;
+
+        assert!(serde_json::from_str::<ToolTelemetry>(nonconserving).is_err());
+        assert!(serde_json::from_str::<ToolTelemetry>(negative_cost).is_err());
+    }
+
+    #[test]
+    fn text_output_rejects_duplicate_structured_fields() {
+        let duplicate_text = r#"{"Plain":{"text":"first","text":"second"}}"#;
+        let duplicate_null_telemetry =
+            r#"{"Plain":{"text":"ok","telemetry":null,"telemetry":null}}"#;
+
+        assert!(serde_json::from_str::<ToolOutput>(duplicate_text).is_err());
+        assert!(serde_json::from_str::<ToolOutput>(duplicate_null_telemetry).is_err());
+    }
+
+    #[test]
+    fn telemetry_variants_keep_legacy_serde_compatible() {
+        let diff_json =
+            r#"{"Diff":{"path":"a.rs","before":"old","after":"new","summary":"changed"}}"#;
+        let image_json =
+            r#"{"Image":{"source":{"media_type":"image/png","data":"aGVsbG8="},"text":"caption"}}"#;
+        let diff: ToolOutput = serde_json::from_str(diff_json).unwrap();
+        let image: ToolOutput = serde_json::from_str(image_json).unwrap();
+
+        assert!(matches!(
+            diff,
+            ToolOutput::Diff {
+                telemetry: None,
+                ..
+            }
+        ));
+        assert!(matches!(
+            image,
+            ToolOutput::Image {
+                telemetry: None,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1366,6 +1696,7 @@ mod tests {
             text: "file contents".into(),
             instructions: Some(blocks),
             state: None,
+            telemetry: None,
         });
         let json = serde_json::to_string(&output).unwrap();
         let parsed: ToolOutput = serde_json::from_str(&json).unwrap();
@@ -1387,7 +1718,7 @@ mod tests {
         ; "prefers_field_over_output"
     )]
     #[test_case(
-        ToolOutput::Diff { path: "/diff/path".into(), before: String::new(), after: String::new(), summary: String::new() },
+        ToolOutput::Diff { path: "/diff/path".into(), before: String::new(), after: String::new(), summary: String::new(), telemetry: None },
         None, false, Some("/diff/path")
         ; "falls_back_to_output"
     )]
@@ -1423,6 +1754,7 @@ mod tests {
                 content: "do stuff".into(),
             }]),
             state: None,
+            telemetry: None,
         });
         let text = output.as_text();
         assert!(text.contains("fn main()"), "{INCLUDES_MSG}");

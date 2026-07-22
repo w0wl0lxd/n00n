@@ -254,7 +254,7 @@ impl LoginPicker {
             section: None,
         });
 
-        self.provider_items = items.clone();
+        self.provider_items.clone_from(&items);
         let mut picker = ListPicker::new();
         picker.open(items, TITLE);
         self.storage = Some(storage);
@@ -273,7 +273,7 @@ impl LoginPicker {
             _ => false,
         }
     }
-
+    #[allow(clippy::too_many_lines)]
     pub fn handle_key(&mut self, key: KeyEvent) -> LoginPickerAction {
         let action = match &mut self.step {
             Step::Closed => return LoginPickerAction::Consumed,
@@ -297,7 +297,7 @@ impl LoginPicker {
                                 if providers::builtin_provider(&slug).is_some() || def.is_some() {
                                     providers::resolve_display_name(&slug, def)
                                 } else {
-                                    item.display_name.clone()
+                                    item.display_name
                                 };
                             let needs_url =
                                 providers::builtin_provider(&slug).is_some_and(|b| b.needs_url);
@@ -326,7 +326,7 @@ impl LoginPicker {
                     let config = providers::ProvidersConfig::load();
                     StepAction::GoEnterKey {
                         slug: slug.clone(),
-                        plan: Some(item.key.clone()),
+                        plan: Some(item.key),
                         display_name: providers::resolve_display_name(slug, config.get(slug)),
                         custom: None,
                         builtin_url: None,
@@ -376,7 +376,7 @@ impl LoginPicker {
                     StepAction::GoEnterKey {
                         slug: slug.clone(),
                         plan: None,
-                        display_name: format!("Custom ({})", slug),
+                        display_name: format!("Custom ({slug})"),
                         custom: Some(CustomInfo {
                             base_url,
                             protocol: protocol.clone(),
@@ -441,7 +441,7 @@ impl LoginPicker {
                             protocol: Some(
                                 info.protocol
                                     .parse::<Protocol>()
-                                    .unwrap_or(Protocol::Openai),
+                                    .unwrap_or_else(|_| Protocol::Openai),
                             ),
                             base_url: Some(info.base_url.clone()),
                             api_key_env: Some(api_key_env),
@@ -453,15 +453,18 @@ impl LoginPicker {
                             return self.transition(StepAction::GoDone {
                                 message: format!("Error saving config: {e}"),
                                 model_spec: None,
-                                slug: slug_c.clone(),
+                                slug: slug_c,
                             });
                         }
                     } else {
                         let needs_url =
                             providers::builtin_provider(&slug_c).is_some_and(|b| b.needs_url);
                         if plan_c.is_some() || builtin_url_c.is_some() || needs_url {
-                            let mut def = config.get(&slug_c).cloned().unwrap_or_default();
-                            def.plan = plan_c.clone();
+                            let mut def = config
+                                .get(&slug_c)
+                                .cloned()
+                                .unwrap_or_else(Default::default);
+                            def.plan.clone_from(&plan_c);
                             if let Some(url) = builtin_url_c {
                                 def.base_url = Some(url);
                             }
@@ -470,7 +473,7 @@ impl LoginPicker {
                                 return self.transition(StepAction::GoDone {
                                     message: format!("Error saving config: {e}"),
                                     model_spec: None,
-                                    slug: slug_c.clone(),
+                                    slug: slug_c,
                                 });
                             }
                         }
@@ -498,13 +501,12 @@ impl LoginPicker {
                         dn_c,
                         plan_c
                             .as_deref()
-                            .map(|p| format!(" ({p})"))
-                            .unwrap_or_default()
+                            .map_or_else(Default::default, |p| format!(" ({p})"))
                     );
                     StepAction::GoDone {
                         message: msg,
                         model_spec: default_model,
-                        slug: slug_c.clone(),
+                        slug: slug_c,
                     }
                 }
                 KeyCode::Esc => StepAction::Back,
@@ -521,7 +523,8 @@ impl LoginPicker {
                 KeyCode::Enter => {
                     let mut base_url = input.value().trim().to_string();
                     if base_url.is_empty() {
-                        base_url = providers::resolve_base_url(slug, None).unwrap_or_default();
+                        base_url = providers::resolve_base_url(slug, None)
+                            .unwrap_or_else(Default::default);
                     }
                     StepAction::GoEnterKey {
                         slug: slug.clone(),
@@ -549,7 +552,7 @@ impl LoginPicker {
 
         self.transition(action)
     }
-
+    #[allow(clippy::too_many_lines)]
     fn transition(&mut self, action: StepAction) -> LoginPickerAction {
         match action {
             StepAction::None => LoginPickerAction::Consumed,
@@ -580,8 +583,8 @@ impl LoginPicker {
             }
             StepAction::GoBuiltinUrl { slug, display_name } => {
                 let config = providers::ProvidersConfig::load();
-                let default =
-                    providers::resolve_base_url(&slug, config.get(&slug)).unwrap_or_default();
+                let default = providers::resolve_base_url(&slug, config.get(&slug))
+                    .unwrap_or_else(Default::default);
                 self.step = Step::BuiltinUrl {
                     input: TextBuffer::new(default),
                     slug,
@@ -591,7 +594,7 @@ impl LoginPicker {
             }
             StepAction::GoPickPlan { slug } => {
                 let builtin = providers::builtin_provider(&slug);
-                let plans = builtin.and_then(|b| b.plans).unwrap_or(&[]);
+                let plans = builtin.and_then(|b| b.plans).unwrap_or_else(|| &[]);
                 let plan_items: Vec<PlanItem> = plans
                     .iter()
                     .map(|(key, plan)| PlanItem {
@@ -657,7 +660,7 @@ impl LoginPicker {
             }
         }
     }
-
+    #[allow(clippy::too_many_lines)]
     pub fn view(&mut self, frame: &mut Frame, area: Rect) -> Rect {
         match &mut self.step {
             Step::Closed => Rect::default(),
@@ -784,7 +787,7 @@ fn input_line_with_cursor(input: &TextBuffer) -> Line<'static> {
     let cursor_byte = TextBuffer::char_to_byte(&value, input.x());
     let (before, rest) = value.split_at(cursor_byte);
     let mut chars = rest.chars();
-    let cursor_char = chars.next().unwrap_or(' ');
+    let cursor_char = chars.next().unwrap_or_else(|| ' ');
     let after = chars.as_str();
     Line::from(vec![
         super::chevron_span(),

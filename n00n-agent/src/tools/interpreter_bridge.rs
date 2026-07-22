@@ -7,6 +7,11 @@ use super::ToolContext;
 pub const IMAGE_NOT_VISIBLE_NOTE: &str =
     "image pixels are not visible from here; call the view_image tool directly";
 
+/// Dispatch a tool call and return its text output.
+///
+/// # Errors
+///
+/// Returns an error if the tool call fails or the deadline is exceeded.
 pub async fn dispatch(ctx: &ToolContext, name: &str, input: &Value) -> Result<String, String> {
     ctx.deadline.check()?;
     let done = tool_dispatch::run(
@@ -25,6 +30,10 @@ pub async fn dispatch(ctx: &ToolContext, name: &str, input: &Value) -> Result<St
 /// The one place a `ToolDoneEvent` becomes text a caller can read.
 /// Both the interpreter and `n00n.agent.call_tool` come through here,
 /// so the two can never drift apart.
+///
+/// # Errors
+///
+/// Returns the tool output as an error if the tool reported an error.
 pub fn flatten(done: &crate::ToolDoneEvent) -> Result<String, String> {
     let text = match &done.output {
         // The pixels are dropped here; say so instead of implying they were seen.
@@ -36,6 +45,11 @@ pub fn flatten(done: &crate::ToolDoneEvent) -> Result<String, String> {
     if done.is_error { Err(text) } else { Ok(text) }
 }
 
+/// Build a `serde_json::Value` tool input from positional and keyword arguments.
+///
+/// # Errors
+///
+/// Returns an error if the arguments cannot be combined into a valid object.
 pub fn build_tool_input(args: &[Value], kwargs: &[(String, Value)]) -> Result<Value, String> {
     if let Some(first) = args.first()
         && first.is_object()
@@ -67,14 +81,14 @@ mod tests {
 
     const EXPECTED_ERR: &str = "pass arguments as keyword arguments (e.g. read(path='/file'))";
 
-    #[test_case(&[], &[("path".into(), json!("/foo"))],                              json!({"path": "/foo"})          ; "kwargs")]
-    #[test_case(&[json!({"path": "/foo"})], &[],                                     json!({"path": "/foo"})          ; "dict_passthrough")]
-    #[test_case(&[], &[],                                                            json!({})                        ; "no_args")]
-    #[test_case(&[json!({"a": 1}), json!({"b": 2})], &[],                           json!({"a": 1})                  ; "first_object_ignores_rest")]
-    #[test_case(&[json!({"a": 1})], &[("b".into(), json!(2))],                      json!({"a": 1})                  ; "first_object_ignores_kwargs")]
-    #[test_case(&[], &[("a".into(), json!(1)), ("b".into(), json!(2))],              json!({"a": 1, "b": 2})         ; "multiple_kwargs_all_included")]
-    fn build_tool_input_cases(args: &[Value], kwargs: &[(String, Value)], expected: Value) {
-        assert_eq!(build_tool_input(args, kwargs).unwrap(), expected);
+    #[test_case(&[], &[("path".into(), json!("/foo"))],                              &json!({"path": "/foo"})          ; "kwargs")]
+    #[test_case(&[json!({"path": "/foo"})], &[],                                     &json!({"path": "/foo"})          ; "dict_passthrough")]
+    #[test_case(&[], &[],                                                            &json!({})                        ; "no_args")]
+    #[test_case(&[json!({"a": 1}), json!({"b": 2})], &[],                           &json!({"a": 1})                  ; "first_object_ignores_rest")]
+    #[test_case(&[json!({"a": 1})], &[("b".into(), json!(2))],                      &json!({"a": 1})                  ; "first_object_ignores_kwargs")]
+    #[test_case(&[], &[("a".into(), json!(1)), ("b".into(), json!(2))],              &json!({"a": 1, "b": 2})         ; "multiple_kwargs_all_included")]
+    fn build_tool_input_cases(args: &[Value], kwargs: &[(String, Value)], expected: &Value) {
+        assert_eq!(build_tool_input(args, kwargs).unwrap(), *expected);
     }
 
     #[test_case(&[json!("hello")], &[]          ; "positional_string")]

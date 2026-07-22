@@ -4,6 +4,7 @@
 local M = {}
 
 local route_tier = require("n00n.route_tier").route_tier
+local usage = require("n00n.usage")
 
 -- Role -> { tier, system }. Tiers follow the the three-Cs cost-effectiveness:
 -- routine clarifying work is cheap, implementation of hard parts is strong.
@@ -11,6 +12,10 @@ M.ROLES = {
   product_manager = {
     tier = "weak",
     system = "You are a product manager. Clarify scope, acceptance criteria, and risks. Be concise; output a short bullet list.",
+  },
+  sprint = {
+    tier = "weak",
+    system = "You are a Sprint Agent. Refine the goal into a concrete scope, acceptance criteria, and an effort estimate. Keep output short and actionable.",
   },
   planner = {
     tier = "medium",
@@ -30,13 +35,37 @@ M.ROLES = {
   },
 }
 
--- Run one role as a subagent session. Returns {ok, text?, cost, model?, error?}.
+function M.usage(value)
+  local measured, err = usage.normalize(value)
+  if err then
+    error(err, 2)
+  end
+  return measured
+end
+
+function M.add_usage(total, value)
+  local measured, err = usage.add(total, value)
+  if err then
+    error(err, 2)
+  end
+  return measured
+end
+
+M.metrics = usage.price
+
+-- Run one role as a subagent session. Returns {ok, text?, cost, model?, usage?, error?}.
 -- @param ctx AgentContext
 -- @param role string Key into M.ROLES.
 -- @param prompt string Step prompt (already retrieval-augmented by caller).
 -- @param opts table { model?, model_tier?, auto_tier?, thinking? }
 function M.run(ctx, role, prompt, opts)
   opts = opts or {}
+  if opts.budget then
+    local budget_ok, budget_err = opts.budget:consume()
+    if not budget_ok then
+      return { ok = false, error = budget_err }
+    end
+  end
   local r = M.ROLES[role] or M.ROLES.developer
   local tier = (opts.auto_tier and route_tier(prompt)) or opts.model_tier or r.tier
   local spec = opts.model
@@ -62,24 +91,32 @@ function M.run(ctx, role, prompt, opts)
     return { ok = false, error = serr }
   end
 
-  local res, rerr = sess:prompt(prompt)
+  local res, rerr
+  if opts.preview then
+    res, rerr = opts.preview:prompt(sess, prompt, opts.activity_label or role)
+  else
+    res, rerr = sess:prompt(prompt)
+  end
   sess:close()
+  local measured_usage, cost, metrics_err = M.metrics(model.spec, res)
+  if metrics_err then
+    return {
+      ok = false,
+      error = "usage pricing failed: " .. metrics_err,
+      model = model.spec,
+      usage = measured_usage,
+    }
+  end
   if rerr then
-    return { ok = false, error = rerr }
+    return { ok = false, error = rerr, cost = cost, model = model.spec, usage = measured_usage }
   end
 
-  local cost = 0.0
-  if res then
-    local c, cerr = n00n.agent.usage_cost(model.spec, res.input_tokens or 0, res.output_tokens or 0)
-    if not cerr then
-      cost = c
-    end
-  end
   return {
     ok = true,
     text = res and res.text,
     cost = cost,
     model = model.spec,
+    usage = measured_usage,
   }
 end
 

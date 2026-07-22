@@ -20,9 +20,10 @@ local function line_nr_fmt(count)
   return "%" .. w .. "d "
 end
 
--- Truncate a UTF-8 string at a byte boundary that is also a codepoint
--- boundary, appending an ellipsis if truncation happened.
-local function utf8_truncate_bytes(s, max_bytes)
+local ELLIPSIS = "…"
+local ELLIPSIS_BYTES = #ELLIPSIS
+
+local function utf8_prefix_bytes(s, max_bytes)
   if #s <= max_bytes then
     return s
   end
@@ -37,67 +38,72 @@ local function utf8_truncate_bytes(s, max_bytes)
     end
     i = i - 1
   end
-  if i <= 0 then
-    return "…"
-  end
-  return s:sub(1, i) .. "…"
+  return s:sub(1, i)
 end
 
-local function line_text_bytes(line)
+local function line_metrics(line)
   if type(line) == "string" then
-    return #line
+    return #line, n00n.ui.display_width(line)
   end
-  local n = 0
+  local bytes, width = 0, 0
   for _, span in ipairs(line) do
-    if type(span) == "string" then
-      n = n + #span
-    else
-      n = n + #(span[1] or "")
-    end
+    local text = type(span) == "string" and span or (span[1] or "")
+    bytes = bytes + #text
+    width = width + n00n.ui.display_width(text)
   end
-  return n
+  return bytes, width
 end
 
-local function truncate_line(line, max_bytes)
-  if not max_bytes or max_bytes <= 0 then
+local function clip_text(text, max_bytes, max_width)
+  local clipped = utf8_prefix_bytes(text, max_bytes)
+  if n00n.ui.display_width(clipped) > max_width then
+    clipped = n00n.ui.truncate_text(clipped, max_width).head
+  end
+  return clipped
+end
+
+local function truncate_line(line, max_bytes, max_width)
+  local byte_limit = max_bytes and math.max(max_bytes, 0) or math.huge
+  local width_limit = max_width and math.max(max_width, 0) or math.huge
+  local bytes, width = line_metrics(line)
+  if bytes <= byte_limit and width <= width_limit then
     return line
   end
+
+  local add_ellipsis = byte_limit >= ELLIPSIS_BYTES and width_limit >= 1
+  local byte_budget = byte_limit - (add_ellipsis and ELLIPSIS_BYTES or 0)
+  local width_budget = width_limit - (add_ellipsis and 1 or 0)
+  local used_bytes, used_width = 0, 0
+
   if type(line) == "string" then
-    return utf8_truncate_bytes(line, max_bytes)
+    local head = clip_text(line, byte_budget, width_budget)
+    return head .. (add_ellipsis and ELLIPSIS or "")
   end
-  if line_text_bytes(line) <= max_bytes then
-    return line
-  end
+
   local out = {}
-  local used = 0
   for _, span in ipairs(line) do
-    if used >= max_bytes then
+    if used_bytes >= byte_budget or used_width >= width_budget then
       break
     end
-    local text, style
-    if type(span) == "string" then
-      text = span
-    else
-      text = span[1] or ""
-      style = span[2]
+    local text = type(span) == "string" and span or (span[1] or "")
+    local style = type(span) == "table" and span[2] or nil
+    text = clip_text(text, byte_budget - used_bytes, width_budget - used_width)
+    if text ~= "" then
+      out[#out + 1] = style and { text, style } or text
+      used_bytes = used_bytes + #text
+      used_width = used_width + n00n.ui.display_width(text)
     end
-    local remaining = max_bytes - used
-    if #text > remaining then
-      text = utf8_truncate_bytes(text, remaining)
-    end
-    if style then
-      out[#out + 1] = { text, style }
-    else
-      out[#out + 1] = text
-    end
-    used = used + #text
+  end
+  if add_ellipsis then
+    out[#out + 1] = { ELLIPSIS, "dim" }
   end
   return out
 end
 
 -- opts: max_lines (default 80) shown while collapsed, keep "head"|"tail"
 -- (default "tail"), max_expand_lines (default 2000) kept for expansion,
--- max_line_bytes (optional) per-line byte cap applied at render time.
+-- max_line_bytes and max_width (optional) cap each complete rendered row,
+-- and hide_collapsed (default false) reveals body lines only after a click.
 function ToolView.new(buf, opts)
   local self = setmetatable({}, ToolView)
   self.buf = buf
@@ -105,6 +111,8 @@ function ToolView.new(buf, opts)
   self.keep = (opts and opts.keep) or "tail"
   self.max_expand_lines = (opts and opts.max_expand_lines) or 2000
   self.max_line_bytes = (opts and opts.max_line_bytes) or nil
+  self.max_width = (opts and opts.max_width) or nil
+  self.hide_collapsed = (opts and opts.hide_collapsed) or false
   self.header = {}
   self.ring = {}
   self.ring_start = 1
@@ -120,13 +128,13 @@ end
 function ToolView:set_header(lines)
   local capped = {}
   for i = 1, #lines do
-    capped[i] = truncate_line(lines[i], self.max_line_bytes)
+    capped[i] = truncate_line(lines[i], self.max_line_bytes, self.max_width)
   end
   self.header = capped
   self:flush()
 end
 
-function ToolView:clear()
+local function reset_content(self)
   self.ring = {}
   self.ring_start = 1
   self.ring_count = 0
@@ -134,11 +142,15 @@ function ToolView:clear()
   self.all_lines = {}
   self.all_skipped = 0
   self.ring_map = {}
+end
+
+function ToolView:clear()
+  reset_content(self)
   self:flush()
 end
 
-function ToolView:append(line)
-  line = truncate_line(line, self.max_line_bytes)
+local function append_line(self, line, publish)
+  line = truncate_line(line, self.max_line_bytes, self.max_width)
   local all_idx
   if #self.all_lines < self.max_expand_lines then
     self.all_lines[#self.all_lines + 1] = line
@@ -154,7 +166,9 @@ function ToolView:append(line)
       if all_idx then
         self.ring_map[self.ring_count] = all_idx
       end
-      self:flush()
+      if publish then
+        self:flush()
+      end
     else
       self.skipped = self.skipped + 1
     end
@@ -173,13 +187,37 @@ function ToolView:append(line)
       self.ring_start = (self.ring_start % self.max) + 1
       self.skipped = self.skipped + 1
     end
-    self:flush()
+    if publish then
+      self:flush()
+    end
   end
+end
+
+function ToolView:append(line)
+  append_line(self, line, true)
 end
 
 function ToolView:append_text(text)
   for _, line in ipairs(n00n.split(text, "\n")) do
-    self:append(line)
+    append_line(self, line, true)
+  end
+end
+
+-- Replace the logical result in one publication. Expansion is view state,
+-- so it survives live-result updates while readers never observe a partial card.
+function ToolView:replace_lines(lines)
+  reset_content(self)
+  for _, line in ipairs(lines) do
+    append_line(self, line, false)
+  end
+  self:flush()
+end
+
+function ToolView:replace_text(text)
+  if text == "" then
+    self:replace_lines({})
+  else
+    self:replace_lines(n00n.split(text, "\n"))
   end
 end
 
@@ -240,7 +278,7 @@ function ToolView:flush()
     if self.all_skipped > 0 then
       lines[#lines + 1] = { { self.all_skipped .. " lines omitted", "dim" } }
     end
-  else
+  elseif not self.hide_collapsed then
     local hidden = self.skipped
     local notice = hidden >= 2 and { { "... (" .. hidden .. " lines) (click to expand)", "dim" } }
       or hidden == 1 and self.all_lines[self.keep == "tail" and 1 or self.ring_count + 1]
@@ -262,11 +300,14 @@ function ToolView:flush()
     end
   end
 
+  for i = 1, #lines do
+    lines[i] = truncate_line(lines[i], self.max_line_bytes, self.max_width)
+  end
   self.buf:set_lines(lines)
 end
 
 function ToolView:update_line(all_idx, line)
-  line = truncate_line(line, self.max_line_bytes)
+  line = truncate_line(line, self.max_line_bytes, self.max_width)
   self.all_lines[all_idx] = line
   for ri = 1, self.ring_count do
     if self.ring_map[ri] == all_idx then

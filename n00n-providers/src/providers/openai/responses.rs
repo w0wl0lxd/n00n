@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::io::{Error as IoError, ErrorKind};
 use std::time::{Duration, Instant};
 
 use flume::Sender;
@@ -9,10 +10,19 @@ use tracing::{debug, warn};
 
 use crate::providers::ResolvedAuth;
 use crate::{
-    AgentError, ContentBlock, Message, ProviderEvent, Role, StopReason, StreamResponse, TokenUsage,
+    AgentError, ContentBlock, Message, ProviderEvent, RequestDeliveryMetadata,
+    RequestDeliveryPhase, Role, StopReason, StreamResponse, TokenUsage,
 };
 
 const RESPONSES_PATH: &str = "/responses";
+const RESPONSE_IN_FLIGHT_TIMEOUT_MULTIPLIER: u32 = 6;
+const MAX_RESPONSE_IN_FLIGHT_TIMEOUT: Duration = Duration::from_mins(30);
+
+pub(crate) fn response_in_flight_timeout(stream_timeout: Duration) -> Duration {
+    stream_timeout
+        .saturating_mul(RESPONSE_IN_FLIGHT_TIMEOUT_MULTIPLIER)
+        .min(MAX_RESPONSE_IN_FLIGHT_TIMEOUT)
+}
 
 pub(crate) fn build_body(
     model: &crate::model::Model,
@@ -21,6 +31,7 @@ pub(crate) fn build_body(
     tools: &Value,
     previous_response_id: Option<&str>,
     prompt_cache_key: Option<&str>,
+    store: bool,
 ) -> Value {
     let input = convert_input(messages);
     let wire_tools = convert_tools(tools);
@@ -30,7 +41,7 @@ pub(crate) fn build_body(
         "instructions": system,
         "input": input,
         "stream": true,
-        "store": false,
+        "store": store,
         "include": ["reasoning.encrypted_content"],
         "reasoning": {"summary": "auto"},
     });
@@ -124,6 +135,84 @@ pub(crate) fn convert_input(messages: &[Message]) -> Value {
     Value::Array(input)
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct RequestDiagnostics {
+    pub(crate) input_items: usize,
+    pub(crate) request_bytes: usize,
+    pub(crate) text_items: usize,
+    pub(crate) text_bytes: usize,
+    pub(crate) tool_items: usize,
+    pub(crate) tool_bytes: usize,
+    pub(crate) image_items: usize,
+    pub(crate) image_bytes: usize,
+    pub(crate) reasoning_items: usize,
+    pub(crate) reasoning_bytes: usize,
+}
+
+impl RequestDiagnostics {
+    fn add_text(&mut self, value: &Value) {
+        self.text_items += 1;
+        self.text_bytes += serialized_len(value);
+    }
+
+    fn add_tool(&mut self, value: &Value) {
+        self.tool_items += 1;
+        self.tool_bytes += serialized_len(value);
+    }
+
+    fn add_image(&mut self, value: &Value) {
+        self.image_items += 1;
+        self.image_bytes += serialized_len(value);
+    }
+
+    fn add_reasoning(&mut self, value: &Value) {
+        self.reasoning_items += 1;
+        self.reasoning_bytes += serialized_len(value);
+    }
+}
+
+fn serialized_len(value: &Value) -> usize {
+    serde_json::to_vec(value).map_or(0, |bytes| bytes.len())
+}
+
+pub(crate) fn request_diagnostics(body: &Value) -> RequestDiagnostics {
+    let mut diagnostics = RequestDiagnostics {
+        request_bytes: serialized_len(body),
+        ..Default::default()
+    };
+    if let Some(instructions) = body.get("instructions") {
+        diagnostics.add_text(instructions);
+    }
+    if let Some(tools) = body.get("tools").and_then(Value::as_array) {
+        for tool in tools {
+            diagnostics.add_tool(tool);
+        }
+    }
+    let Some(input) = body.get("input").and_then(Value::as_array) else {
+        return diagnostics;
+    };
+    diagnostics.input_items = input.len();
+    for item in input {
+        match item.get("type").and_then(Value::as_str) {
+            Some("function_call" | "function_call_output") => diagnostics.add_tool(item),
+            Some("reasoning") => diagnostics.add_reasoning(item),
+            Some("message") => {
+                if let Some(content) = item.get("content").and_then(Value::as_array) {
+                    for block in content {
+                        if block.get("type").and_then(Value::as_str) == Some("input_image") {
+                            diagnostics.add_image(block);
+                        } else {
+                            diagnostics.add_text(block);
+                        }
+                    }
+                }
+            }
+            _ => diagnostics.add_text(item),
+        }
+    }
+    diagnostics
+}
+
 pub(crate) fn convert_tools(anthropic_tools: &Value) -> Value {
     let Some(tools) = anthropic_tools.as_array() else {
         return json!([]);
@@ -143,6 +232,17 @@ pub(crate) fn convert_tools(anthropic_tools: &Value) -> Value {
             })
             .collect(),
     )
+}
+
+fn suppress_retry_after_response(error: AgentError) -> AgentError {
+    if error.is_retryable() {
+        AgentError::RequestSent {
+            message: error.to_string(),
+            metadata: None,
+        }
+    } else {
+        error
+    }
 }
 
 pub(crate) async fn do_stream(
@@ -184,8 +284,22 @@ pub(crate) async fn do_stream(
             stream_timeout,
         )
         .await
+        .map_err(suppress_retry_after_response)
     } else {
-        Err(AgentError::from_response(response).await)
+        let retry_after = super::websocket::retry_after(
+            response
+                .headers()
+                .get("retry-after")
+                .map(isahc::http::HeaderValue::as_bytes),
+        );
+        let error = AgentError::from_response(response).await;
+        if auth.base_url.as_deref() == Some(super::auth::CODING_PLAN_BASE_URL)
+            && matches!(&error, AgentError::Api { status: 403, message } if message.trim().is_empty())
+        {
+            Err(AgentError::CodingPlanAdmission { retry_after })
+        } else {
+            Err(error)
+        }
     }
 }
 
@@ -200,11 +314,38 @@ pub(crate) struct ResponseAccumulator {
     text: String,
     reasoning_summary_text: String,
     response_id: Option<String>,
+    accepted: bool,
     reasoning_items: Vec<(u64, Value)>,
     tool_accumulators: Vec<ToolAccumulator>,
     usage: TokenUsage,
     stop_reason: Option<StopReason>,
     is_first_content: bool,
+    emitted_event: bool,
+}
+
+pub(crate) fn is_semantic_progress_event(event_type: &str, data: &Value) -> bool {
+    match event_type {
+        "response.created" => data.get("response").is_some_and(Value::is_object),
+        "response.in_progress" => {
+            data.get("response").is_some_and(Value::is_object)
+                || data.get("prompt_progress").is_some_and(Value::is_object)
+        }
+        "response.output_text.delta"
+        | "response.reasoning_summary_text.delta"
+        | "response.reasoning_text.delta" => data
+            .get("delta")
+            .and_then(Value::as_str)
+            .is_some_and(|delta| !delta.is_empty()),
+        "response.function_call_arguments.delta" => data.get("delta").is_some_and(|delta| {
+            delta.as_str().is_some_and(|delta| !delta.is_empty())
+                || delta.as_object().is_some_and(|delta| !delta.is_empty())
+        }),
+        "response.output_item.added" | "response.output_item.done" => {
+            data.get("item").is_some_and(Value::is_object)
+        }
+        "response.reasoning_summary_part.added" => data.get("part").is_some_and(Value::is_object),
+        _ => false,
+    }
 }
 
 impl ResponseAccumulator {
@@ -220,11 +361,13 @@ impl ResponseAccumulator {
             text: String::new(),
             reasoning_summary_text: String::new(),
             response_id: None,
+            accepted: false,
             reasoning_items: Vec::new(),
             tool_accumulators: Vec::new(),
             usage: TokenUsage::default(),
             stop_reason: None,
             is_first_content: true,
+            emitted_event: false,
         }
     }
 
@@ -232,14 +375,34 @@ impl ResponseAccumulator {
         self.response_id.as_deref()
     }
 
+    pub fn emitted_event(&self) -> bool {
+        self.emitted_event
+    }
+
+    pub fn delivery_metadata(&self) -> RequestDeliveryMetadata {
+        let phase = if self.accepted || self.response_id.is_some() {
+            RequestDeliveryPhase::Accepted
+        } else {
+            RequestDeliveryPhase::SentAwaitingAcceptance
+        };
+        let mut metadata = RequestDeliveryMetadata::new(phase);
+        metadata.response_id.clone_from(&self.response_id);
+        metadata
+    }
+
+    #[allow(clippy::too_many_lines)]
     pub async fn handle_event(
         &mut self,
         event_type: &str,
         data: &Value,
         event_tx: &Sender<ProviderEvent>,
     ) -> Result<bool, AgentError> {
+        if event_type == "response.created" {
+            self.accepted = true;
+        }
         if let Some(response_id) = data["response"]["id"].as_str() {
             self.response_id = Some(response_id.to_owned());
+            self.accepted = true;
         }
 
         match event_type {
@@ -255,6 +418,7 @@ impl ResponseAccumulator {
                     };
                     if !delta.is_empty() {
                         self.text.push_str(&delta);
+                        self.emitted_event = true;
                         event_tx
                             .send_async(ProviderEvent::TextDelta { text: delta })
                             .await?;
@@ -266,11 +430,16 @@ impl ResponseAccumulator {
                 let item = &data["item"];
                 let output_index = data["output_index"]
                     .as_u64()
-                    .unwrap_or(self.tool_accumulators.len() as u64);
+                    .unwrap_or_else(|| self.tool_accumulators.len() as u64);
                 if item["type"].as_str() == Some("function_call") {
-                    let call_id = item["call_id"].as_str().unwrap_or_default().to_string();
-                    let name = item["name"].as_str().unwrap_or_default().to_string();
+                    let call_id = item["call_id"]
+                        .as_str()
+                        .map_or_else(String::new, ToString::to_string);
+                    let name = item["name"]
+                        .as_str()
+                        .map_or_else(String::new, ToString::to_string);
                     if !name.is_empty() {
+                        self.emitted_event = true;
                         event_tx
                             .send_async(ProviderEvent::ToolUseStart {
                                 id: call_id.clone(),
@@ -291,7 +460,13 @@ impl ResponseAccumulator {
                 let delta: Cow<'_, str> = if let Some(s) = data["delta"].as_str() {
                     Cow::Borrowed(s)
                 } else if let Some(obj) = data["delta"].as_object() {
-                    Cow::Owned(serde_json::to_string(obj).unwrap_or_default())
+                    match serde_json::to_string(obj) {
+                        Ok(s) => Cow::Owned(s),
+                        Err(e) => {
+                            warn!(error = %e, "failed to serialize delta object, using empty string");
+                            Cow::Borrowed("")
+                        }
+                    }
                 } else {
                     Cow::Borrowed("")
                 };
@@ -317,9 +492,13 @@ impl ResponseAccumulator {
 
             "response.in_progress" => {
                 if let Some(pp) = data.get("prompt_progress") {
-                    let processed = pp["processed"].as_u64().unwrap_or(0) as u32;
-                    let total = pp["total"].as_u64().unwrap_or(0) as u32;
-                    let cache = pp["cache"].as_u64().unwrap_or(0) as u32;
+                    #[allow(clippy::cast_possible_truncation)]
+                    let processed = pp["processed"].as_u64().map_or(0, |v| v as u32);
+                    #[allow(clippy::cast_possible_truncation)]
+                    let total = pp["total"].as_u64().map_or(0, |v| v as u32);
+                    #[allow(clippy::cast_possible_truncation)]
+                    let cache = pp["cache"].as_u64().map_or(0, |v| v as u32);
+                    self.emitted_event = true;
                     event_tx
                         .send_async(ProviderEvent::PromptProgress {
                             processed,
@@ -350,12 +529,22 @@ impl ResponseAccumulator {
                         }
                     }
                 } else if item["type"].as_str() == Some("function_call") {
-                    let call_id = item["call_id"].as_str().unwrap_or_default().to_string();
-                    let name = item["name"].as_str().unwrap_or_default().to_string();
+                    let call_id = item["call_id"]
+                        .as_str()
+                        .map_or_else(String::new, ToString::to_string);
+                    let name = item["name"]
+                        .as_str()
+                        .map_or_else(String::new, ToString::to_string);
                     let arguments = if let Some(s) = item["arguments"].as_str() {
                         s.to_string()
                     } else if let Some(obj) = item["arguments"].as_object() {
-                        serde_json::to_string(obj).unwrap_or_default()
+                        match serde_json::to_string(obj) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                warn!(error = %e, "failed to serialize arguments, using empty string");
+                                String::new()
+                            }
+                        }
                     } else {
                         String::new()
                     };
@@ -369,15 +558,16 @@ impl ResponseAccumulator {
                     if let Some(acc) = acc {
                         let should_emit_start = acc.name.is_empty() && !name.is_empty();
                         if acc.call_id.is_empty() {
-                            acc.call_id = call_id.clone();
+                            acc.call_id.clone_from(&call_id);
                         }
                         if acc.name.is_empty() {
-                            acc.name = name.clone();
+                            acc.name.clone_from(&name);
                         }
                         if !arguments.is_empty() {
                             acc.arguments = arguments;
                         }
                         if should_emit_start {
+                            self.emitted_event = true;
                             event_tx
                                 .send_async(ProviderEvent::ToolUseStart {
                                     id: acc.call_id.clone(),
@@ -387,6 +577,7 @@ impl ResponseAccumulator {
                         }
                     } else {
                         if !name.is_empty() {
+                            self.emitted_event = true;
                             event_tx
                                 .send_async(ProviderEvent::ToolUseStart {
                                     id: call_id.clone(),
@@ -409,6 +600,7 @@ impl ResponseAccumulator {
                     && !delta.is_empty()
                 {
                     self.reasoning_summary_text.push_str(delta);
+                    self.emitted_event = true;
                     event_tx
                         .send_async(ProviderEvent::ThinkingDelta {
                             text: delta.to_string(),
@@ -449,7 +641,7 @@ impl ResponseAccumulator {
                     self.usage = parse_usage(u);
                 }
 
-                let status = resp["status"].as_str().unwrap_or("completed");
+                let status = resp["status"].as_str().unwrap_or_else(|| "completed");
                 self.stop_reason = Some(match status {
                     "completed" => {
                         if self.tool_accumulators.is_empty() {
@@ -476,14 +668,13 @@ impl ResponseAccumulator {
             "response.failed" => {
                 let resp = &data["response"];
                 let error = &resp["error"];
-                let message = error["message"]
-                    .as_str()
-                    .unwrap_or("response generation failed")
-                    .to_string();
-                let code = error["code"].as_str().unwrap_or("server_error");
+                let message = error["message"].as_str().map_or_else(
+                    || "response generation failed".to_string(),
+                    ToString::to_string,
+                );
+                let code = error["code"].as_str().unwrap_or_else(|| "server_error");
                 let status = match code {
                     "rate_limit_exceeded" => 429,
-                    "server_error" => 500,
                     _ => 500,
                 };
                 return Err(AgentError::Api { status, message });
@@ -510,11 +701,20 @@ impl ResponseAccumulator {
         for acc in self.tool_accumulators.drain(..) {
             let input: Value = match serde_json::from_str(&acc.arguments) {
                 Ok(v) => {
-                    debug!(tool = %acc.name, json = %acc.arguments, "tool input JSON");
+                    debug!(
+                        tool = %acc.name,
+                        argument_bytes = acc.arguments.len(),
+                        "parsed tool input JSON"
+                    );
                     v
                 }
                 Err(e) => {
-                    warn!(error = %e, tool = %acc.name, json = %acc.arguments, "malformed tool JSON, falling back to {{}}");
+                    warn!(
+                        error = %e,
+                        tool = %acc.name,
+                        argument_bytes = acc.arguments.len(),
+                        "malformed tool JSON, falling back to {{}}"
+                    );
                     Value::Object(Default::default())
                 }
             };
@@ -563,11 +763,23 @@ pub(crate) async fn parse_sse(
 
     let mut acc = ResponseAccumulator::new();
     let mut deadline = Instant::now() + stream_timeout;
+    let response_deadline = Instant::now() + response_in_flight_timeout(stream_timeout);
     let mut current_event = String::new();
 
-    while let Some(line) =
-        crate::providers::next_sse_line(&mut lines, &mut deadline, stream_timeout).await?
-    {
+    loop {
+        deadline = deadline.min(response_deadline);
+        let line = match crate::providers::next_sse_line(&mut lines, &mut deadline, stream_timeout)
+            .await
+        {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(error) => {
+                return Err(AgentError::RequestSent {
+                    message: error.to_string(),
+                    metadata: Some(acc.delivery_metadata()),
+                });
+            }
+        };
         if line.is_empty() {
             current_event.clear();
             continue;
@@ -585,14 +797,16 @@ pub(crate) async fn parse_sse(
 
         if current_event == "error" {
             if let Ok(ev) = serde_json::from_str::<crate::providers::SseErrorPayload>(data) {
-                warn!(error_type = %ev.error.r#type, message = %ev.error.message, "SSE error in stream");
+                warn!(error_type = %ev.error.r#type, "SSE error in stream");
                 return Err(ev.into_agent_error());
             }
-            let parsed: Value = serde_json::from_str(data).unwrap_or_default();
+            let parsed: Value = match serde_json::from_str(data) {
+                Ok(v) => v,
+                Err(_) => Value::Object(Default::default()),
+            };
             let message = parsed["message"]
                 .as_str()
-                .unwrap_or("unknown error")
-                .to_string();
+                .map_or_else(|| "unknown error".to_string(), ToString::to_string);
             return Err(AgentError::Api {
                 status: 500,
                 message,
@@ -603,7 +817,7 @@ pub(crate) async fn parse_sse(
             serde_json::from_str::<Value>(data)
                 .ok()
                 .and_then(|value| value["type"].as_str().map(ToOwned::to_owned))
-                .unwrap_or_default()
+                .unwrap_or_else(String::new)
         } else {
             current_event.clone()
         };
@@ -618,9 +832,13 @@ pub(crate) async fn parse_sse(
     }
 
     if acc.stop_reason.is_none() {
-        return Err(AgentError::Api {
-            status: 422,
-            message: "Responses API stream ended without a terminal event".into(),
+        let error = IoError::new(
+            ErrorKind::UnexpectedEof,
+            "Responses API stream ended without a terminal event",
+        );
+        return Err(AgentError::RequestSent {
+            message: error.to_string(),
+            metadata: Some(acc.delivery_metadata()),
         });
     }
 
@@ -628,21 +846,54 @@ pub(crate) async fn parse_sse(
     Ok((response_id, acc.into_stream_response()))
 }
 
+#[allow(clippy::manual_unwrap_or)]
 fn parse_usage(u: &Value) -> TokenUsage {
-    let input_tokens = u["input_tokens"].as_u64().unwrap_or(0) as u32;
-    let output_tokens = u["output_tokens"].as_u64().unwrap_or(0) as u32;
+    let input_tokens = u["input_tokens"].as_u64().map_or_else(
+        || 0,
+        |v| match u32::try_from(v) {
+            Ok(v) => v,
+            Err(_) => u32::MAX,
+        },
+    );
+    let output_tokens = u["output_tokens"].as_u64().map_or_else(
+        || 0,
+        |v| match u32::try_from(v) {
+            Ok(v) => v,
+            Err(_) => u32::MAX,
+        },
+    );
 
     let cached = u["input_tokens_details"]["cached_tokens"]
         .as_u64()
-        .unwrap_or(0) as u32;
+        .map_or_else(
+            || 0,
+            |v| match u32::try_from(v) {
+                Ok(v) => v,
+                Err(_) => u32::MAX,
+            },
+        );
     let cache_write = u["input_tokens_details"]["cache_write_tokens"]
         .as_u64()
-        .unwrap_or(0) as u32;
+        .map_or_else(
+            || 0,
+            |v| match u32::try_from(v) {
+                Ok(v) => v,
+                Err(_) => u32::MAX,
+            },
+        );
 
+    let fresh_input = input_tokens
+        .saturating_sub(cached)
+        .saturating_sub(cache_write);
+    debug!(
+        fresh_input_tokens = fresh_input,
+        cache_read_tokens = cached,
+        cache_write_tokens = cache_write,
+        output_tokens,
+        "OpenAI Responses token usage"
+    );
     TokenUsage {
-        input: input_tokens
-            .saturating_sub(cached)
-            .saturating_sub(cache_write),
+        input: fresh_input,
         output: output_tokens,
         cache_read: cached,
         cache_creation: cache_write,
@@ -652,10 +903,10 @@ fn parse_usage(u: &Value) -> TokenUsage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures_lite::io::Cursor;
+    use futures_lite::io::{AsyncReadExt, AsyncWriteExt, Cursor};
     use serde_json::json;
 
-    const TEST_STREAM_TIMEOUT: Duration = Duration::from_secs(300);
+    const TEST_STREAM_TIMEOUT: Duration = Duration::from_mins(5);
 
     async fn run_sse(
         sse: &str,
@@ -666,6 +917,18 @@ mod tests {
         let (tx, rx) = flume::unbounded();
         let result = parse_sse(Cursor::new(sse.as_bytes()), &tx, TEST_STREAM_TIMEOUT).await;
         (result, rx.drain().collect())
+    }
+
+    #[test]
+    fn opaque_reasoning_delta_counts_as_semantic_progress() {
+        assert!(is_semantic_progress_event(
+            "response.reasoning_text.delta",
+            &json!({"delta": "active reasoning"}),
+        ));
+        assert!(!is_semantic_progress_event(
+            "response.reasoning_text.delta",
+            &json!({"delta": ""}),
+        ));
     }
 
     #[test]
@@ -701,7 +964,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
                 })
                 .collect();
             assert_eq!(deltas, vec!["Hello", " world"]);
-        })
+        });
     }
 
     #[test]
@@ -743,7 +1006,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
                 })
                 .collect();
             assert_eq!(starts, vec![("c1", "bash"), ("c2", "read")]);
-        })
+        });
     }
 
     #[test]
@@ -762,7 +1025,7 @@ data: {\"error\":{\"message\":\"Server overloaded\",\"type\":\"overloaded_error\
                 }
                 other => panic!("expected Api error, got: {other:?}"),
             }
-        })
+        });
     }
 
     #[test]
@@ -781,7 +1044,7 @@ data: {\"response\":{\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"R
                 }
                 other => panic!("expected Api error, got: {other:?}"),
             }
-        })
+        });
     }
 
     #[test]
@@ -801,7 +1064,7 @@ data: {\"response\":{\"status\":\"incomplete\",\"usage\":{\"input_tokens\":10,\"
             assert!(
                 matches!(&resp.message.content[0], ContentBlock::Text { text } if text == "partial")
             );
-        })
+        });
     }
 
     #[test]
@@ -910,7 +1173,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
                 })
                 .collect();
             assert_eq!(text_deltas, vec!["Hello world"]);
-        })
+        });
     }
 
     #[test]
@@ -942,7 +1205,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"o
                 })
                 .collect();
             assert_eq!(thinking_deltas, vec!["Summary part"]);
-        })
+        });
     }
 
     #[test]
@@ -961,7 +1224,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"o
 
             assert!(resp.message.content.is_empty());
             assert_eq!(resp.usage.output, 5);
-        })
+        });
     }
 
     #[test]
@@ -984,7 +1247,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"ou
             assert_eq!(tools.len(), 1);
             assert_eq!(tools[0].1, "bash");
             assert_eq!(*tools[0].2, Value::Object(Default::default()));
-        })
+        });
     }
 
     // llama.cpp's /v1/responses endpoint omits output_index in SSE events
@@ -1013,7 +1276,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             assert_eq!(tools[0].1, "bash");
             assert_eq!(tools[0].2["command"], "ls");
             assert_eq!(resp.stop_reason, Some(StopReason::ToolUse));
-        })
+        });
     }
 
     #[test]
@@ -1052,7 +1315,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             assert_eq!(tools[0].2["command"], "ls");
             assert_eq!((tools[1].0, tools[1].1), ("c2", "read"));
             assert_eq!(tools[1].2["path"], "/tmp");
-        })
+        });
     }
 
     #[test]
@@ -1081,7 +1344,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             assert_eq!(tools[0].1, "glob");
             assert_eq!(tools[0].2["pattern"], "*.rs");
             assert_eq!(tools[0].2["path"], "src");
-        })
+        });
     }
 
     #[test]
@@ -1115,7 +1378,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
                 })
                 .collect();
             assert_eq!(progress, vec![(100, 1000, 50), (500, 1000, 50)]);
-        })
+        });
     }
 
     #[test]
@@ -1140,7 +1403,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             assert_eq!(tools.len(), 1);
             assert_eq!(tools[0].1, "read");
             assert_eq!(tools[0].2["path"], "/tmp/file.txt");
-        })
+        });
     }
 
     #[test]
@@ -1172,7 +1435,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"o
             assert!(
                 matches!(&resp.message.content[0], ContentBlock::Thinking { thinking, .. } if thinking == "First part\n\nSecond part")
             );
-        })
+        });
     }
 
     #[test]
@@ -1198,7 +1461,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             assert_eq!(tools[0].1, "grep");
             assert_eq!(tools[0].2["pattern"], "TODO");
             assert_eq!(tools[0].2["path"], "src");
-        })
+        });
     }
 
     #[test]
@@ -1225,7 +1488,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             assert_eq!(tools[0].2["path"], "foo.rs");
             assert_eq!(tools[0].2["old_string"], "a");
             assert_eq!(tools[0].2["new_string"], "b");
-        })
+        });
     }
 
     #[test]
@@ -1238,9 +1501,11 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             &json!([]),
             Some("resp_1"),
             Some("session_1"),
+            true,
         );
         assert_eq!(body["previous_response_id"], "resp_1");
         assert_eq!(body["prompt_cache_key"], "session_1");
+        assert_eq!(body["store"], true);
         assert_eq!(body["reasoning"], json!({"summary":"auto"}));
         assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
     }
@@ -1283,7 +1548,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
     #[test]
     fn parse_sse_preserves_reasoning_and_tool_order() {
         smol::block_on(async {
-            let sse = "event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"encrypted_content\":\"one\",\"summary\":[]}}\n\nevent: response.output_item.done\ndata: {\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"one\\\"}\"}}\n\nevent: response.output_item.done\ndata: {\"output_index\":2,\"item\":{\"id\":\"rs_2\",\"type\":\"reasoning\",\"encrypted_content\":\"two\",\"summary\":[]}}\n\n";
+            let sse = "event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"encrypted_content\":\"one\",\"summary\":[]}}\n\nevent: response.output_item.done\ndata: {\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"one\\\"}\"}}\n\nevent: response.output_item.done\ndata: {\"output_index\":2,\"item\":{\"id\":\"rs_2\",\"type\":\"reasoning\",\"encrypted_content\":\"two\",\"summary\":[]}}\n\nevent: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n";
             let (resp, _) = run_sse(sse).await;
             let (_, resp) = resp.unwrap();
             assert!(
@@ -1299,12 +1564,109 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
     }
 
     #[test]
+    fn post_response_api_error_is_not_retried() {
+        let error = AgentError::Api {
+            status: 500,
+            message: "provider rejected request".into(),
+        };
+
+        assert!(matches!(
+            suppress_retry_after_response(error),
+            AgentError::RequestSent { .. }
+        ));
+    }
+
+    #[test]
+    fn post_response_eof_is_non_retryable() {
+        let error = IoError::new(
+            ErrorKind::UnexpectedEof,
+            "Responses API stream ended without a terminal event",
+        )
+        .into();
+
+        assert!(matches!(
+            suppress_retry_after_response(error),
+            AgentError::RequestSent { .. }
+        ));
+    }
+
+    #[test]
     fn parse_sse_rejects_missing_terminal_event() {
         smol::block_on(async {
             let (resp, _) =
                 run_sse("event: response.output_text.delta\ndata: {\"delta\":\"partial\"}\n\n")
                     .await;
-            assert!(matches!(resp, Err(AgentError::Api { status: 422, .. })));
+            assert!(matches!(
+                resp,
+                Err(AgentError::RequestSent {
+                    metadata: Some(crate::RequestDeliveryMetadata {
+                        phase: crate::RequestDeliveryPhase::SentAwaitingAcceptance,
+                        ..
+                    }),
+                    ..
+                })
+            ));
+        });
+    }
+
+    #[test]
+    #[allow(clippy::large_futures)]
+    fn partial_sse_eof_preserves_response_id_without_a_second_post() {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = smol::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream.read(&mut chunk).await.unwrap();
+                    assert_ne!(read, 0);
+                    request.extend_from_slice(&chunk[..read]);
+                }
+                assert!(request.starts_with(b"POST /responses HTTP/1.1\r\n"));
+
+                let sse = "event: response.created\ndata: {\"response\":{\"id\":\"resp_partial\"}}\n\nevent: response.output_text.delta\ndata: {\"delta\":\"partial\"}\n\n";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{sse}",
+                    sse.len() + 16
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.flush().await.unwrap();
+            });
+            let client = HttpClient::new().unwrap();
+            let auth = ResolvedAuth {
+                base_url: Some(format!("http://{address}")),
+                headers: Vec::new(),
+            };
+            let model = crate::model::Model::from_spec("openai/gpt-5.6").unwrap();
+            let (event_tx, _event_rx) = flume::unbounded();
+            let error = do_stream(
+                &client,
+                &model,
+                &json!({"model":"gpt-5.6","input":[],"stream":true}),
+                &event_tx,
+                &auth,
+                Duration::from_secs(2),
+            )
+            .await
+            .unwrap_err();
+            server.await;
+
+            assert!(
+                matches!(
+                    &error,
+                    AgentError::RequestSent {
+                        metadata: Some(crate::RequestDeliveryMetadata {
+                            phase: crate::RequestDeliveryPhase::Accepted,
+                            response_id: Some(response_id),
+                            ..
+                        }),
+                        ..
+                    } if response_id == "resp_partial"
+                ),
+                "unexpected error: {error:?}"
+            );
         });
     }
 
@@ -1315,7 +1677,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             let (result, _) = run_sse(sse).await;
             let (response_id, _) = result.unwrap();
             assert_eq!(response_id.as_deref(), Some("resp_1"));
-        })
+        });
     }
 
     #[test]
@@ -1335,7 +1697,33 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
             assert_eq!(resp.usage.input, 60);
             assert_eq!(resp.usage.output, 10);
             assert_eq!(resp.usage.cache_read, 40);
-        })
+        });
+    }
+
+    #[test]
+    fn request_diagnostics_count_categories_without_contents() {
+        let body = json!({
+            "instructions": "system",
+            "input": [
+                {"type":"message","content":[{"type":"input_text","text":"hello"}]},
+                {"type":"message","content":[{"type":"input_image","image_url":"data:image/png;base64,secret"}]},
+                {"type":"function_call_output","call_id":"call","output":"tool result"},
+                {"type":"reasoning","encrypted_content":"secret reasoning"}
+            ],
+            "tools": [{"type":"function","name":"read","parameters":{}}]
+        });
+
+        let diagnostics = request_diagnostics(&body);
+
+        assert_eq!(diagnostics.input_items, 4);
+        assert_eq!(diagnostics.text_items, 2);
+        assert_eq!(diagnostics.image_items, 1);
+        assert_eq!(diagnostics.tool_items, 2);
+        assert_eq!(diagnostics.reasoning_items, 1);
+        assert!(diagnostics.request_bytes > diagnostics.text_bytes);
+        assert!(diagnostics.image_bytes > 0);
+        assert!(diagnostics.tool_bytes > 0);
+        assert!(diagnostics.reasoning_bytes > 0);
     }
 
     #[test]

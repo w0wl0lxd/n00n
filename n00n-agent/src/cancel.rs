@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use event_listener::Event;
@@ -27,7 +27,65 @@ pub struct CancelToken(Arc<Shared>);
 
 pub struct CancelTrigger(Arc<Shared>);
 
+const PRE_DISPATCH_PENDING: u8 = 0;
+const PRE_DISPATCH_COMMITTED: u8 = 1;
+const PRE_DISPATCH_CANCELLED: u8 = 2;
+
+/// One-shot atomic handoff between UI cancellation and provider dispatch.
+pub struct PreDispatchGate(AtomicU8);
+
+impl Default for PreDispatchGate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PreDispatchGate {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(AtomicU8::new(PRE_DISPATCH_PENDING))
+    }
+
+    /// Claims the submission before its first provider request can start.
+    #[must_use]
+    pub fn try_cancel(&self) -> bool {
+        self.0
+            .compare_exchange(
+                PRE_DISPATCH_PENDING,
+                PRE_DISPATCH_CANCELLED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    /// Commits provider dispatch. Repeated calls support safe provider retries.
+    #[must_use]
+    pub fn try_commit(&self) -> bool {
+        match self.0.compare_exchange(
+            PRE_DISPATCH_PENDING,
+            PRE_DISPATCH_COMMITTED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) | Err(PRE_DISPATCH_COMMITTED) => true,
+            Err(_) => false,
+        }
+    }
+
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire) == PRE_DISPATCH_CANCELLED
+    }
+
+    #[must_use]
+    pub fn is_committed(&self) -> bool {
+        self.0.load(Ordering::Acquire) == PRE_DISPATCH_COMMITTED
+    }
+}
+
 impl CancelToken {
+    #[must_use]
     pub fn new() -> (CancelTrigger, Self) {
         let shared = Arc::new(Shared {
             cancelled: AtomicBool::new(false),
@@ -36,6 +94,7 @@ impl CancelToken {
         (CancelTrigger(Arc::clone(&shared)), Self(shared))
     }
 
+    #[must_use]
     pub fn none() -> Self {
         Self(Arc::new(Shared {
             cancelled: AtomicBool::new(false),
@@ -43,10 +102,16 @@ impl CancelToken {
         }))
     }
 
+    #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.0.cancelled.load(Ordering::Acquire)
     }
 
+    /// Run `future` until it completes or the token is cancelled.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err("cancelled")` if the token is cancelled before `future` resolves.
     pub async fn race<T>(&self, future: impl Future<Output = T>) -> Result<T, String> {
         if self.is_cancelled() {
             return Err("cancelled".into());
@@ -71,6 +136,7 @@ impl CancelToken {
         }
     }
 
+    #[must_use]
     pub fn child(&self) -> (CancelTrigger, Self) {
         let (child_trigger, child_token) = Self::new();
         let parent = self.clone();
@@ -112,6 +178,7 @@ impl<K: Eq + std::hash::Hash> Default for CancelMap<K> {
 }
 
 impl<K: Eq + std::hash::Hash> CancelMap<K> {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             entries: Mutex::new(HashMap::new()),
@@ -119,7 +186,10 @@ impl<K: Eq + std::hash::Hash> CancelMap<K> {
     }
 
     pub fn insert(&self, id: K, trigger: CancelTrigger) {
-        let mut map = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match map.remove(&id) {
             Some(Entry::PreCancelled) => drop(trigger),
             _ => {
@@ -129,7 +199,10 @@ impl<K: Eq + std::hash::Hash> CancelMap<K> {
     }
 
     pub fn cancel_or_precancel(&self, id: K) {
-        let mut map = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match map.remove(&id) {
             Some(Entry::Live(_)) => {} // trigger dropped, fires cancel
             _ => {
@@ -141,14 +214,14 @@ impl<K: Eq + std::hash::Hash> CancelMap<K> {
     pub fn remove(&self, id: &K) {
         self.entries
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(id);
     }
 
     pub fn cancel_all(&self) {
         self.entries
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .drain();
     }
 }
@@ -298,5 +371,47 @@ mod tests {
         assert!(!tok2.is_cancelled(), "second trigger should remain live");
         map.cancel_or_precancel("x".to_owned());
         assert!(tok2.is_cancelled());
+    }
+
+    #[test]
+    fn pre_dispatch_cancel_and_commit_are_mutually_exclusive() {
+        let gate = Arc::new(PreDispatchGate::new());
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let cancel = {
+            let gate = Arc::clone(&gate);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                gate.try_cancel()
+            })
+        };
+        let commit = {
+            let gate = Arc::clone(&gate);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                gate.try_commit()
+            })
+        };
+        barrier.wait();
+
+        let cancel_won = cancel.join().unwrap();
+        let commit_won = commit.join().unwrap();
+        assert_ne!(cancel_won, commit_won);
+        assert_eq!(gate.is_cancelled(), cancel_won);
+        assert_eq!(gate.is_committed(), commit_won);
+    }
+
+    #[test]
+    fn pre_dispatch_lifecycle_is_monotonic() {
+        let cancelled = PreDispatchGate::new();
+        assert!(cancelled.try_cancel());
+        assert!(!cancelled.try_cancel());
+        assert!(!cancelled.try_commit());
+
+        let committed = PreDispatchGate::new();
+        assert!(committed.try_commit());
+        assert!(committed.try_commit());
+        assert!(!committed.try_cancel());
     }
 }

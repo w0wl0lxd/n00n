@@ -19,6 +19,17 @@ const STREAM_DONE: &str = "[DONE]";
 const GPT_5_6_BREAKPOINT_PREFIX: &str = "gpt-5.6-";
 const GPT_CODEX_MARKER: &str = "-codex";
 
+fn suppress_retry_after_response(error: AgentError) -> AgentError {
+    if error.is_retryable() {
+        AgentError::RequestSent {
+            message: error.to_string(),
+            metadata: None,
+        }
+    } else {
+        error
+    }
+}
+
 fn value_hash(value: &Value) -> u64 {
     /// Writes bytes directly into the underlying `Hasher`, avoiding the
     /// intermediate string allocations of the recursive implementation.
@@ -36,8 +47,9 @@ fn value_hash(value: &Value) -> u64 {
     }
 
     let mut hasher = DefaultHasher::new();
-    serde_json::to_writer(HashWriter(&mut hasher), value)
-        .expect("serde_json serialization of a Value is infallible");
+    if let Err(e) = serde_json::to_writer(HashWriter(&mut hasher), value) {
+        warn!(error = %e, "failed to hash value; using partial hash");
+    }
     hasher.finish()
 }
 
@@ -59,13 +71,16 @@ pub(crate) struct OpenAiCompatProvider {
 }
 
 impl OpenAiCompatProvider {
-    pub fn new(config: &'static OpenAiCompatConfig, timeouts: super::Timeouts) -> Self {
-        Self {
-            client: super::http_client(timeouts),
+    pub fn new(
+        config: &'static OpenAiCompatConfig,
+        timeouts: super::Timeouts,
+    ) -> Result<Self, AgentError> {
+        Ok(Self {
+            client: super::http_client(timeouts)?,
             config,
             stream_timeout: timeouts.stream,
             cached_tools: Mutex::new(None),
-        }
+        })
     }
 
     pub(crate) fn client(&self) -> &HttpClient {
@@ -125,13 +140,16 @@ impl OpenAiCompatProvider {
     }
 
     fn wire_tools(&self, tools: &Value) -> Value {
-        if tools.as_array().is_none_or(|a| a.is_empty()) {
+        if tools.as_array().is_none_or(std::vec::Vec::is_empty) {
             return json!([]);
         }
 
         let key = value_hash(tools);
         {
-            let guard = self.cached_tools.lock().unwrap();
+            let guard = self
+                .cached_tools
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some((cached_key, cached_tools)) = guard.as_ref()
                 && *cached_key == key
             {
@@ -140,7 +158,10 @@ impl OpenAiCompatProvider {
         }
 
         let converted = convert_tools(tools);
-        *self.cached_tools.lock().unwrap() = Some((key, converted.clone()));
+        *self
+            .cached_tools
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((key, converted.clone()));
         converted
     }
 
@@ -199,7 +220,10 @@ impl OpenAiCompatProvider {
         path: &str,
         auth: &ResolvedAuth,
     ) -> isahc::http::request::Builder {
-        let base = auth.base_url.as_deref().unwrap_or(self.config.base_url);
+        let base = auth
+            .base_url
+            .as_deref()
+            .unwrap_or_else(|| self.config.base_url);
         auth.configure_request(
             Request::builder()
                 .method(method)
@@ -242,6 +266,7 @@ impl OpenAiCompatProvider {
                 self.stream_timeout,
             )
             .await
+            .map_err(suppress_retry_after_response)
         } else {
             Err(AgentError::from_response(response).await)
         }
@@ -252,15 +277,19 @@ impl OpenAiCompatProvider {
         auth: &ResolvedAuth,
         parse_fn: impl Fn(&Value) -> Option<crate::model::ModelInfo>,
     ) -> Result<Vec<crate::model::ModelInfo>, AgentError> {
-        let base = auth.base_url.as_deref().unwrap_or(self.config.base_url);
+        let base = auth
+            .base_url
+            .as_deref()
+            .unwrap_or_else(|| self.config.base_url);
         let url = format!("{base}/models");
         let body_text = self.get_text(auth, &url).await?;
         let body: Value = serde_json::from_str(&body_text)?;
 
         let mut models: Vec<crate::model::ModelInfo> = body["data"]
             .as_array()
-            .map(|arr| arr.iter().filter_map(parse_fn).collect())
-            .unwrap_or_default();
+            .map_or_else(Default::default, |arr| {
+                arr.iter().filter_map(parse_fn).collect()
+            });
         models.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(models)
     }
@@ -284,17 +313,17 @@ impl OpenAiCompatProvider {
                         .as_str()?
                         .parse::<f64>()
                         .ok()
-                        .unwrap_or(0.0),
+                        .unwrap_or_else(|| 0.0),
                     cache_read: p
                         .get("cache_read")?
                         .as_str()?
                         .parse::<f64>()
                         .ok()
-                        .unwrap_or(0.0),
+                        .unwrap_or_else(|| 0.0),
                     fast: None,
                 })
             })
-            .unwrap_or_default();
+            .unwrap_or_else(Default::default);
         Some(crate::model::ModelInfo {
             id: id.to_string(),
             context_window,
@@ -524,6 +553,7 @@ struct ToolAccumulator {
     arguments: String,
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn parse_sse(
     reader: impl AsyncBufRead + Unpin,
     event_tx: &Sender<ProviderEvent>,
@@ -568,19 +598,17 @@ pub async fn parse_sse(
             let (cache_read, input) = if let Some(hit_tokens) = u.prompt_cache_hit_tokens {
                 let miss_tokens = u
                     .prompt_cache_miss_tokens
-                    .unwrap_or(u.prompt_tokens.saturating_sub(hit_tokens));
+                    .unwrap_or_else(|| u.prompt_tokens.saturating_sub(hit_tokens));
                 (hit_tokens, miss_tokens)
             } else {
                 let cached = u
                     .prompt_tokens_details
                     .as_ref()
-                    .map(|d| d.cached_tokens)
-                    .unwrap_or(0);
+                    .map_or(0, |d| d.cached_tokens);
                 let cache_write = u
                     .prompt_tokens_details
                     .as_ref()
-                    .map(|d| d.cache_write_tokens)
-                    .unwrap_or(0);
+                    .map_or(0, |d| d.cache_write_tokens);
                 (
                     cached,
                     u.prompt_tokens
@@ -591,8 +619,7 @@ pub async fn parse_sse(
             let cache_write = u
                 .prompt_tokens_details
                 .as_ref()
-                .map(|d| d.cache_write_tokens)
-                .unwrap_or(0);
+                .map_or(0, |d| d.cache_write_tokens);
             usage = TokenUsage {
                 input,
                 output: u.completion_tokens,
@@ -646,8 +673,8 @@ pub async fn parse_sse(
                                 let content = match thinking_block {
                                     ThinkingDelta::Block(ThinkingDeltaBlock::Text {
                                         text: content_str,
-                                    }) => content_str,
-                                    ThinkingDelta::String(content_str) => content_str,
+                                    })
+                                    | ThinkingDelta::String(content_str) => content_str,
                                 };
 
                                 if content.is_empty() {
@@ -736,7 +763,7 @@ pub async fn parse_sse(
             }
             Err(e) => {
                 warn!(error = %e, tool = %acc.name, json = %acc.arguments, "malformed tool JSON, falling back to {{}}");
-                Value::Object(Default::default())
+                Value::Object(serde_json::Map::default())
             }
         };
         let id = if acc.id.is_empty() {
@@ -770,7 +797,20 @@ mod tests {
     use super::*;
     use futures_lite::io::Cursor;
 
-    const TEST_STREAM_TIMEOUT: Duration = Duration::from_secs(300);
+    const TEST_STREAM_TIMEOUT: Duration = Duration::from_mins(5);
+
+    #[test]
+    fn post_response_transport_error_is_not_retried() {
+        let error = AgentError::Io(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "stream ended",
+        ));
+
+        assert!(matches!(
+            suppress_retry_after_response(error),
+            AgentError::RequestSent { .. }
+        ));
+    }
 
     #[test]
     fn parse_sse_text_and_usage() {
@@ -805,7 +845,7 @@ data: [DONE]\n";
                 }
             }
             assert_eq!(deltas, vec!["Hello", " world"]);
-        })
+        });
     }
 
     #[test]
@@ -827,7 +867,7 @@ data: [DONE]\n";
             assert_eq!(resp.usage.output, 10);
             assert_eq!(resp.usage.cache_read, 30);
             assert_eq!(resp.usage.cache_creation, 20);
-        })
+        });
     }
 
     #[test]
@@ -862,13 +902,12 @@ data: [DONE]\n";
                 match e {
                     ProviderEvent::ThinkingDelta { text } => thinking.push(text),
                     ProviderEvent::TextDelta { text } => text_deltas.push(text),
-                    ProviderEvent::ToolUseStart { .. } => {}
-                    ProviderEvent::PromptProgress { .. } => {}
+                    ProviderEvent::ToolUseStart { .. } | ProviderEvent::PromptProgress { .. } => {}
                 }
             }
             assert_eq!(thinking, vec!["Let me think", "..."]);
             assert_eq!(text_deltas, vec!["Hello"]);
-        })
+        });
     }
 
     #[test]
@@ -978,7 +1017,7 @@ data: [DONE]\n";
                 starts,
                 vec![("c1".into(), "bash".into()), ("c2".into(), "read".into()),]
             );
-        })
+        });
     }
 
     #[test]
@@ -999,7 +1038,7 @@ data: {\"error\":{\"message\":\"Server overloaded\",\"type\":\"overloaded_error\
                 }
                 other => panic!("expected Api error, got: {other:?}"),
             }
-        })
+        });
     }
 
     #[test]
@@ -1021,7 +1060,7 @@ data: [DONE]\n";
             assert_eq!(tools.len(), 1);
             assert!(!tools[0].0.is_empty(), "id must be non-empty for Bedrock");
             assert!(!tools[0].1.is_empty(), "name must be non-empty for Bedrock");
-        })
+        });
     }
 
     #[test]
@@ -1045,7 +1084,7 @@ data: [DONE]\n";
             assert_eq!(tools.len(), 1);
             assert_eq!(tools[0].1, "bash");
             assert_eq!(*tools[0].2, Value::Object(Default::default()));
-        })
+        });
     }
 
     #[test]
@@ -1151,7 +1190,7 @@ data: [DONE]\n";
             assert!(resp.message.content.is_empty());
             assert_eq!(resp.usage, TokenUsage::default());
             assert_eq!(resp.stop_reason, None);
-        })
+        });
     }
 
     #[test]
@@ -1193,7 +1232,7 @@ data: [DONE]\n";
 
             assert_eq!(text_deltas, vec!["Hello"]);
             assert_eq!(thinking_deltas, vec!["Let me think", "..."]);
-        })
+        });
     }
 
     #[test]
@@ -1208,7 +1247,7 @@ data: [DONE]\n";
             supports_prompt_cache_breakpoint: false,
         };
         let provider =
-            OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default());
+            OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
         let model = crate::model::Model::from_spec("openai/gpt-4o").unwrap();
         let messages = vec![Message::user("hello".to_string())];
         let tools = json!([]);
@@ -1236,7 +1275,7 @@ data: [DONE]\n";
             supports_prompt_cache_breakpoint: false,
         };
         let provider =
-            OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default());
+            OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
         let model = crate::model::Model::from_spec("openai/gpt-4o").unwrap();
         let messages = vec![Message::user("hello".to_string())];
         let tools = json!([]);
@@ -1258,7 +1297,7 @@ data: [DONE]\n";
             supports_prompt_cache_breakpoint: true,
         };
         let provider =
-            OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default());
+            OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
         let model = crate::model::Model::from_spec("openai/gpt-5.6-luna").unwrap();
         let messages = vec![Message::user("hello".to_string())];
         let tools = json!([]);

@@ -6,10 +6,12 @@ const SPINNER_FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '�
 const SPINNER_STRS: [&str; 10] = ["⠋ ", "⠙ ", "⠹ ", "⠸ ", "⠼ ", "⠴ ", "⠦ ", "⠧ ", "⠇ ", "⠏ "];
 const SPINNER_FRAME_MS: u128 = 80;
 
+#[must_use]
 pub fn spinner_frame(elapsed_ms: u128) -> char {
     SPINNER_FRAMES[(elapsed_ms / SPINNER_FRAME_MS) as usize % SPINNER_FRAMES.len()]
 }
 
+#[must_use]
 pub fn spinner_str(elapsed_ms: u128) -> &'static str {
     SPINNER_STRS[(elapsed_ms / SPINNER_FRAME_MS) as usize % SPINNER_STRS.len()]
 }
@@ -46,10 +48,12 @@ impl Default for Typewriter {
 }
 
 impl Typewriter {
+    #[must_use]
     pub fn new() -> Self {
         Self::with_speed(DEFAULT_MS_PER_CHAR)
     }
 
+    #[must_use]
     pub fn with_speed(ms_per_char: u64) -> Self {
         Self {
             buffer: String::new(),
@@ -94,38 +98,47 @@ impl Typewriter {
         let elapsed = self.anim_start_at.elapsed();
         let progress = (elapsed.as_secs_f64() / self.anim_duration.as_secs_f64()).min(1.0);
         let delta = self.anim_target - self.anim_start_visible;
-        let new_len = self.anim_start_visible + (delta as f64 * progress).round() as usize;
+        let new_len = self.anim_start_visible
+            + crate::cast::f64_to_usize((crate::cast::usize_to_f64(delta) * progress).round());
         self.advance_visible(new_len);
     }
 
+    #[must_use]
     pub fn visible(&self) -> &str {
         &self.buffer[..self.visible_byte_offset]
     }
 
+    #[must_use]
     pub fn is_animating(&self) -> bool {
         self.visible_len < self.anim_target
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.buffer.is_empty()
     }
 
+    #[must_use]
     pub fn generation(&self) -> u64 {
         self.generation
     }
 
+    #[must_use]
     pub fn visible_len(&self) -> usize {
         self.visible_len
     }
 
+    #[must_use]
     pub fn visible_byte_offset(&self) -> usize {
         self.visible_byte_offset
     }
 
+    #[must_use]
     pub fn char_count(&self) -> usize {
         self.char_count
     }
 
+    #[must_use]
     pub fn buffer_line_count(&self) -> usize {
         if self.buffer.is_empty() {
             0
@@ -157,7 +170,7 @@ impl Typewriter {
         self.newline_count = self.buffer.bytes().filter(|&b| b == b'\n').count();
         self.generation = text
             .bytes()
-            .fold(1u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64));
+            .fold(1u64, |h, b| h.wrapping_mul(31).wrapping_add(u64::from(b)));
         self.visible_len = self.char_count;
         self.visible_byte_offset = self.buffer.len();
         self.anim_start_visible = self.char_count;
@@ -195,7 +208,14 @@ impl std::fmt::Debug for Typewriter {
         f.debug_struct("Typewriter")
             .field("buffer", &self.buffer)
             .field("visible_len", &self.visible_len)
+            .field("visible_byte_offset", &self.visible_byte_offset)
+            .field("anim_start_visible", &self.anim_start_visible)
             .field("anim_target", &self.anim_target)
+            .field("anim_start_at", &self.anim_start_at)
+            .field("anim_duration", &self.anim_duration)
+            .field("ms_per_char", &self.ms_per_char)
+            .field("char_count", &self.char_count)
+            .field("newline_count", &self.newline_count)
             .field("generation", &self.generation)
             .finish()
     }

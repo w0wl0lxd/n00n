@@ -32,5 +32,6 @@ require("tests.lang.toml")
 require("tests.lang.typescript")
 require("tests.lang.yaml")
 require("tests.lang.zig")
+require("tests.lang.additional_formats")
 
 require("tests.helpers").report()

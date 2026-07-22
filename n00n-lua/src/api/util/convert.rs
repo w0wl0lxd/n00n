@@ -1,6 +1,9 @@
+#![allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+
 use mlua::{Lua, LuaSerdeExt, Result as LuaResult, Value};
 use serde_json::Value as JsonValue;
 
+#[allow(clippy::needless_pass_by_value)]
 pub(crate) fn err_pair(lua: &Lua, e: impl std::fmt::Display) -> LuaResult<(Value, Value)> {
     Ok((Value::Nil, Value::String(lua.create_string(e.to_string())?)))
 }
@@ -63,12 +66,11 @@ pub(crate) fn json_to_lua(lua: &Lua, value: &JsonValue) -> LuaResult<Value> {
 /// for the same `arbitrary_precision` reason documented above.
 pub(crate) fn lua_to_json(lua: &Lua, val: &Value) -> LuaResult<JsonValue> {
     Ok(match val {
-        Value::Nil => JsonValue::Null,
         Value::Boolean(b) => JsonValue::Bool(*b),
         Value::Integer(n) => JsonValue::Number((*n).into()),
-        Value::Number(n) => serde_json::Number::from_f64(*n)
-            .map(JsonValue::Number)
-            .unwrap_or(JsonValue::Null),
+        Value::Number(n) => {
+            serde_json::Number::from_f64(*n).map_or(JsonValue::Null, JsonValue::Number)
+        }
         Value::String(s) => JsonValue::String(s.to_str()?.to_owned()),
         Value::Table(tbl) => {
             let len = tbl.raw_len();
@@ -271,7 +273,7 @@ mod tests {
         r#""hello""#,
         "[1,2,3]",
         "[]",
-        r#"{}"#,
+        r"{}",
         r#"{"a":1,"b":[true,"x"]}"#,
     ];
 

@@ -1,4 +1,5 @@
 use n00n_ui::keybindings::{ALT_SEP, KEYBINDS, KeyLabel, KeybindContext, Platform, all_contexts};
+use std::fmt::Write;
 
 const FRONTMATTER: &str = "\
 +++
@@ -36,14 +37,14 @@ fn label_str(label: KeyLabel) -> String {
 }
 
 fn write_table_2col(out: &mut String, rows: &[(String, &str)]) {
-    out.push_str("| Key | Action |\n|-----|--------|\n");
+    let _ = write!(out, "| Key | Action |\n|-----|--------|\n");
     for (key, desc) in rows {
-        out.push_str(&format!("| {key} | {desc} |\n"));
+        let _ = writeln!(out, "| {key} | {desc} |");
     }
 }
 
 fn write_section(out: &mut String, ctx: KeybindContext) {
-    out.push_str(&format!("\n## {}\n\n", ctx.label()));
+    let _ = write!(out, "\n## {}\n\n", ctx.label());
 
     let all_rows: Vec<_> = KEYBINDS.iter().filter(|kb| kb.context == ctx).collect();
 
@@ -64,7 +65,7 @@ fn write_section(out: &mut String, ctx: KeybindContext) {
         .collect();
 
     if !mac_only.is_empty() {
-        out.push_str("\n### macOS-specific\n\n");
+        let _ = write!(out, "\n### macOS-specific\n\n");
         write_table_2col(out, &mac_only);
     }
 }
@@ -79,21 +80,28 @@ fn write_context_specific(out: &mut String) {
         return;
     }
 
-    out.push_str("\n## Context-Specific\n\n");
-    out.push_str("Some pickers add extra bindings on top of the defaults:\n\n");
-    out.push_str("| Context | Key | Action |\n|---------|-----|--------|\n");
+    let _ = write!(out, "\n## Context-Specific\n\n");
+    let _ = write!(
+        out,
+        "Some pickers add extra bindings on top of the defaults:\n\n"
+    );
+    let _ = write!(
+        out,
+        "| Context | Key | Action |\n|---------|-----|--------|\n"
+    );
 
     for kb in &child_binds {
         let key = label_str(kb.label);
-        out.push_str(&format!(
-            "| {} | {key} | {} |\n",
+        let _ = writeln!(
+            out,
+            "| {} | {key} | {} |",
             kb.context.label(),
             kb.description
-        ));
+        );
     }
 
     for (ctx, key, desc) in LUA_CONTEXT_BINDS {
-        out.push_str(&format!("| {ctx} | {key} | {desc} |\n"));
+        let _ = writeln!(out, "| {ctx} | {key} | {desc} |");
     }
 }
 
@@ -106,12 +114,17 @@ fn write_inheritance(out: &mut String) {
         return;
     }
 
-    out.push_str("\n## Context Inheritance\n\n");
-    out.push_str("Child contexts inherit their parent's bindings and add their own.\n\n");
+    let _ = write!(out, "\n## Context Inheritance\n\n");
+    let _ = write!(
+        out,
+        "Child contexts inherit their parent's bindings and add their own.\n\n"
+    );
 
     let mut by_parent: Vec<(KeybindContext, Vec<&str>)> = Vec::new();
     for child in &children {
-        let parent = child.parent().unwrap();
+        let Some(parent) = child.parent() else {
+            continue;
+        };
         if let Some(entry) = by_parent.iter_mut().find(|(p, _)| *p == parent) {
             entry.1.push(child.label());
         } else {
@@ -121,10 +134,7 @@ fn write_inheritance(out: &mut String) {
 
     for (parent, kids) in &by_parent {
         let list = kids.join(", ");
-        out.push_str(&format!(
-            "- **{}** is the base for: {list}\n",
-            parent.label()
-        ));
+        let _ = writeln!(out, "- **{}** is the base for: {list}", parent.label());
     }
 }
 
@@ -174,7 +184,7 @@ fn write_overrides(out: &mut String) {
     );
     out.push_str("### Recovering from a bad keymap\n\n");
     out.push_str(
-        "If an override leaves N00n stuck (a rebound `Ctrl+C`, a modal \
+        "If an override leaves n00n stuck (a rebound `Ctrl+C`, a modal \
          that won't close, a plugin that throws on load), boot without \
          plugins:\n\n",
     );

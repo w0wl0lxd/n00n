@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use mlua::{Lua, MultiValue, Value as LuaValue};
 use n00n_lua_macro::{lua_class, lua_fn, lua_table};
 use regex::Regex;
-use tree_sitter::{Node, Query, QueryCursor, QueryPredicateArg, StreamingIterator, Tree};
+use tree_sitter::{Query, QueryCursor, QueryPredicateArg, StreamingIterator};
 
 use crate::docs::{FnDoc, ParamDoc};
 use crate::language::Language;
@@ -93,13 +93,13 @@ fn query_fields<F: mlua::UserDataFields<LuaQuery>>(fields: &mut F) {
 fn query_methods<M: mlua::UserDataMethods<LuaQuery>>(methods: &mut M) {
     methods.add_method("iter_captures", |lua, this, args: MultiValue| {
         let parsed = IterArgs::parse(args, "iter_captures")?;
-        let results = collect_captures(&this.inner, &parsed);
+        let results = collect_captures(&this.inner, &parsed)?;
         stateful_iter(lua, results)
     });
 
     methods.add_method("iter_matches", |lua, this, args: MultiValue| {
         let parsed = IterArgs::parse(args, "iter_matches")?;
-        let results = collect_matches(&this.inner, &parsed);
+        let results = collect_matches(&this.inner, &parsed)?;
         stateful_iter(lua, results)
     });
 }
@@ -163,8 +163,7 @@ lua_table! {
 }
 
 struct IterArgs {
-    node: Node<'static>,
-    tree: Arc<Tree>,
+    lua_node: LuaNode,
     source: String,
     start_row: Option<usize>,
     stop_row: Option<usize>,
@@ -192,8 +191,7 @@ impl IterArgs {
         let stop_row = args_iter.next().and_then(lua_to_usize);
 
         Ok(Self {
-            node: lua_node.node,
-            tree: Arc::clone(&lua_node.tree),
+            lua_node: (*lua_node).clone(),
             source,
             start_row,
             stop_row,
@@ -218,7 +216,7 @@ impl IterEntry for CaptureEntry {
             meta_table.set(k.as_str(), v.as_str())?;
         }
         Ok(MultiValue::from_iter([
-            LuaValue::Integer((self.capture_index + 1) as i64),
+            LuaValue::Integer(i64::from(self.capture_index + 1)),
             lua.pack(self.node.clone())?,
             LuaValue::Table(meta_table),
             LuaValue::Table(lua.create_table()?),
@@ -241,14 +239,17 @@ impl IterEntry for MatchEntry {
             for (j, n) in nodes.iter().enumerate() {
                 nodes_table.raw_set(j + 1, n.clone())?;
             }
-            captures_table.raw_set((*cap_idx as i64) + 1, nodes_table)?;
+            captures_table.raw_set(i64::from(*cap_idx) + 1, nodes_table)?;
         }
         let meta_table = lua.create_table()?;
         for (k, v) in &self.metadata {
             meta_table.set(k.as_str(), v.as_str())?;
         }
         Ok(MultiValue::from_iter([
-            LuaValue::Integer((self.pattern_index + 1) as i64),
+            LuaValue::Integer(
+                i64::try_from(self.pattern_index + 1)
+                    .map_err(|e| mlua::Error::runtime(format!("pattern index overflow: {e}")))?,
+            ),
             LuaValue::Table(captures_table),
             LuaValue::Table(meta_table),
             LuaValue::Integer(1),
@@ -269,21 +270,23 @@ fn stateful_iter<E: IterEntry>(lua: &mlua::Lua, results: Vec<E>) -> mlua::Result
 }
 
 fn new_cursor(start_row: Option<usize>, stop_row: Option<usize>) -> QueryCursor {
+    const NO_LIMIT: usize = usize::MAX;
     let mut cursor = QueryCursor::new();
     if let Some(start) = start_row {
-        let end = stop_row.unwrap_or(usize::MAX);
+        let end = stop_row.unwrap_or_else(|| NO_LIMIT);
         cursor.set_point_range(tree_sitter::Point::new(start, 0)..tree_sitter::Point::new(end, 0));
     }
     cursor
 }
 
-fn collect_captures(query: &Query, args: &IterArgs) -> Vec<CaptureEntry> {
+fn collect_captures(query: &Query, args: &IterArgs) -> mlua::Result<Vec<CaptureEntry>> {
     let source_bytes = args.source.as_bytes();
     let mut cursor = new_cursor(args.start_row, args.stop_row);
     let mut regex_cache = HashMap::new();
     let mut results = Vec::new();
 
-    let mut captures = cursor.captures(query, args.node, source_bytes);
+    let node = args.lua_node.ts_node()?;
+    let mut captures = cursor.captures(query, node, source_bytes);
     while let Some((m, capture_idx)) = captures.next() {
         let mut metadata = HashMap::new();
         if !evaluate_predicates(
@@ -299,20 +302,21 @@ fn collect_captures(query: &Query, args: &IterArgs) -> Vec<CaptureEntry> {
         let capture = &m.captures[*capture_idx];
         results.push(CaptureEntry {
             capture_index: capture.index,
-            node: LuaNode::new(capture.node, Arc::clone(&args.tree)),
+            node: LuaNode::new(capture.node, Arc::clone(&args.lua_node.tree)),
             metadata,
         });
     }
-    results
+    Ok(results)
 }
 
-fn collect_matches(query: &Query, args: &IterArgs) -> Vec<MatchEntry> {
+fn collect_matches(query: &Query, args: &IterArgs) -> mlua::Result<Vec<MatchEntry>> {
     let source_bytes = args.source.as_bytes();
     let mut cursor = new_cursor(args.start_row, args.stop_row);
     let mut regex_cache = HashMap::new();
     let mut results = Vec::new();
 
-    let mut matches = cursor.matches(query, args.node, source_bytes);
+    let node = args.lua_node.ts_node()?;
+    let mut matches = cursor.matches(query, node, source_bytes);
     while let Some(m) = matches.next() {
         let mut metadata = HashMap::new();
         if !evaluate_predicates(
@@ -330,7 +334,7 @@ fn collect_matches(query: &Query, args: &IterArgs) -> Vec<MatchEntry> {
             captures_map
                 .entry(capture.index)
                 .or_default()
-                .push(LuaNode::new(capture.node, Arc::clone(&args.tree)));
+                .push(LuaNode::new(capture.node, Arc::clone(&args.lua_node.tree)));
         }
         results.push(MatchEntry {
             pattern_index: m.pattern_index,
@@ -338,7 +342,7 @@ fn collect_matches(query: &Query, args: &IterArgs) -> Vec<MatchEntry> {
             metadata,
         });
     }
-    results
+    Ok(results)
 }
 
 #[derive(Clone, Copy)]
@@ -348,14 +352,10 @@ struct PredicateModifiers {
 }
 
 fn parse_predicate_op(op: &str) -> (PredicateModifiers, &str) {
-    let (negated, rest) = op
-        .strip_prefix("not-")
-        .map(|r| (true, r))
-        .unwrap_or((false, op));
+    let (negated, rest) = op.strip_prefix("not-").map_or((false, op), |r| (true, r));
     let (any, base) = rest
         .strip_prefix("any-")
-        .map(|r| (true, r))
-        .unwrap_or((false, rest));
+        .map_or((false, rest), |r| (true, r));
     (PredicateModifiers { negated, any }, base)
 }
 
@@ -559,10 +559,11 @@ fn eval_set(args: &[QueryPredicateArg], metadata: &mut HashMap<String, String>) 
     metadata.insert(key.to_string(), value.to_string());
 }
 
+#[allow(clippy::cast_possible_truncation)]
 fn lua_to_usize(v: LuaValue) -> Option<usize> {
     match v {
-        LuaValue::Integer(n) => Some(n as usize),
-        LuaValue::Number(n) => Some(n as usize),
+        LuaValue::Integer(n) => usize::try_from(n).ok(),
+        LuaValue::Number(n) => usize::try_from(n as i64).ok(),
         _ => None,
     }
 }

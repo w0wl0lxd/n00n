@@ -17,21 +17,19 @@ fn fenced(text: &str) -> String {
         .split(|c: char| c != '`')
         .map(str::len)
         .max()
-        .unwrap_or(0);
+        .map_or(0, std::convert::identity);
     let fence = "`".repeat(MIN_FENCE_LEN.max(longest_backtick_run + 1));
     format!("{fence}\n{text}\n{fence}")
 }
 
 pub fn tool_kind(name: &str) -> ToolKind {
-    let entry = match ToolRegistry::global().get(name) {
-        Some(e) => e,
-        None => return ToolKind::Other,
+    let Some(entry) = ToolRegistry::global().get(name) else {
+        return ToolKind::Other;
     };
     entry
         .tool
         .tool_kind()
-        .map(parse_tool_kind)
-        .unwrap_or(ToolKind::Other)
+        .map_or(ToolKind::Other, parse_tool_kind)
 }
 
 fn parse_tool_kind(s: &str) -> ToolKind {
@@ -49,18 +47,21 @@ fn parse_tool_kind(s: &str) -> ToolKind {
     }
 }
 
+#[must_use]
 pub fn text_delta(text: &str) -> SessionUpdate {
     SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(TextContent::new(
         text.to_string(),
     ))))
 }
 
+#[must_use]
 pub fn thinking_delta(text: &str) -> SessionUpdate {
     SessionUpdate::AgentThoughtChunk(ContentChunk::new(ContentBlock::Text(TextContent::new(
         text.to_string(),
     ))))
 }
 
+#[must_use]
 pub fn tool_pending(id: &str, name: &str) -> SessionUpdate {
     let kind = tool_kind(name);
     SessionUpdate::ToolCall(
@@ -70,6 +71,7 @@ pub fn tool_pending(id: &str, name: &str) -> SessionUpdate {
     )
 }
 
+#[must_use]
 pub fn tool_start(event: &ToolStartEvent) -> SessionUpdate {
     let mut fields = ToolCallUpdateFields::new()
         .status(ToolCallStatus::InProgress)
@@ -102,6 +104,7 @@ fn input_path(raw_input: Option<&serde_json::Value>) -> Option<std::path::PathBu
         .map(std::path::PathBuf::from)
 }
 
+#[must_use]
 pub fn tool_output(id: &str, content: &str) -> SessionUpdate {
     let fields = ToolCallUpdateFields::new().content(vec![ToolCallContent::Content(Content::new(
         ContentBlock::Text(TextContent::new(fenced(content))),
@@ -112,6 +115,7 @@ pub fn tool_output(id: &str, content: &str) -> SessionUpdate {
     ))
 }
 
+#[must_use]
 pub fn tool_done(event: &ToolDoneEvent) -> SessionUpdate {
     let status = if event.is_error {
         ToolCallStatus::Failed
@@ -119,29 +123,27 @@ pub fn tool_done(event: &ToolDoneEvent) -> SessionUpdate {
         ToolCallStatus::Completed
     };
 
-    let content = match &event.output {
-        ToolOutput::Diff {
-            path,
-            before,
-            after,
-            ..
-        } => {
-            let diff = if before.is_empty() {
-                Diff::new(path.as_str(), after.clone())
-            } else {
-                Diff::new(path.as_str(), after.clone()).old_text(before.clone())
-            };
-            vec![ToolCallContent::Diff(diff)]
-        }
-        _ => {
-            let text = event.output.as_text();
-            if text.is_empty() {
-                vec![]
-            } else {
-                vec![ToolCallContent::Content(Content::new(ContentBlock::Text(
-                    TextContent::new(fenced(&text)),
-                )))]
-            }
+    let content = if let ToolOutput::Diff {
+        path,
+        before,
+        after,
+        ..
+    } = &event.output
+    {
+        let diff = if before.is_empty() {
+            Diff::new(path.as_str(), after.clone())
+        } else {
+            Diff::new(path.as_str(), after.clone()).old_text(before.clone())
+        };
+        vec![ToolCallContent::Diff(diff)]
+    } else {
+        let text = event.output.as_text();
+        if text.is_empty() {
+            vec![]
+        } else {
+            vec![ToolCallContent::Content(Content::new(ContentBlock::Text(
+                TextContent::new(fenced(&text)),
+            )))]
         }
     };
 
@@ -157,22 +159,21 @@ pub fn tool_done(event: &ToolDoneEvent) -> SessionUpdate {
     ))
 }
 
+#[must_use]
 pub fn map_stop_reason(
     sr: Option<n00n_providers::StopReason>,
 ) -> agent_client_protocol_schema::StopReason {
     match sr {
-        Some(n00n_providers::StopReason::EndTurn) | None => {
-            agent_client_protocol_schema::StopReason::EndTurn
-        }
         Some(n00n_providers::StopReason::MaxTokens) => {
             agent_client_protocol_schema::StopReason::MaxTokens
         }
-        Some(n00n_providers::StopReason::ToolUse) => {
+        Some(n00n_providers::StopReason::EndTurn | n00n_providers::StopReason::ToolUse) | None => {
             agent_client_protocol_schema::StopReason::EndTurn
         }
     }
 }
 
+#[must_use]
 pub fn replay_history(messages: &[Message]) -> Vec<SessionUpdate> {
     let mut updates = Vec::new();
     for msg in messages {
@@ -201,7 +202,7 @@ fn replay_user(msg: &Message, updates: &mut Vec<SessionUpdate>) {
                 updates.push(SessionUpdate::UserMessageChunk(ContentChunk::new(
                     ContentBlock::Image(ImageContent::new(
                         source.data.to_string(),
-                        mime_type(&source.media_type),
+                        mime_type(source.media_type),
                     )),
                 )));
             }
@@ -250,7 +251,7 @@ fn replay_tool_result(id: &str, content: &str, is_error: bool) -> SessionUpdate 
     ))
 }
 
-fn mime_type(media: &ImageMediaType) -> &'static str {
+fn mime_type(media: ImageMediaType) -> &'static str {
     match media {
         ImageMediaType::Png => "image/png",
         ImageMediaType::Jpeg => "image/jpeg",

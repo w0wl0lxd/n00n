@@ -4,6 +4,7 @@ use std::sync::Arc;
 use async_lock::Mutex;
 use flume::Receiver;
 use n00n_providers::Message;
+use n00n_providers::OpenAiOptions;
 use n00n_providers::Timeouts;
 use n00n_providers::TokenUsage;
 use n00n_providers::model::Model;
@@ -41,15 +42,14 @@ impl SessionStore {
     }
 
     fn open_in(dir: StateDir, session_id: N00nId, cwd: &str, model_spec: &str) -> Self {
-        match StoredSession::load(session_id, &dir) {
-            Ok(session) => Self { dir, session },
-            Err(_) => {
-                let mut session = StoredSession::new(model_spec, cwd);
-                session.id = session_id;
-                let mut store = Self { dir, session };
-                store.save();
-                store
-            }
+        if let Ok(session) = StoredSession::load(session_id, &dir) {
+            Self { dir, session }
+        } else {
+            let mut session = StoredSession::new(model_spec, cwd);
+            session.id = session_id;
+            let mut store = Self { dir, session };
+            store.save();
+            store
         }
     }
 
@@ -72,6 +72,7 @@ pub struct HeadlessParams {
     pub config: AgentConfig,
     pub permissions_config: PermissionsConfig,
     pub timeouts: Timeouts,
+    pub openai_options: OpenAiOptions,
     pub prompt: String,
     pub images: Vec<ImageSource>,
     pub prompt_slots: ResolvedSlots,
@@ -146,6 +147,8 @@ fn tool_definitions(
     tools
 }
 
+#[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
     let working_dir = params.initial_wd.to_string_lossy().into_owned();
     let mode = AgentMode::Build;
@@ -176,6 +179,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
     let session_id = N00nId::generate();
     let session_ref = SessionRef::from(session_id);
     let session_ref_clone = session_ref.clone();
+    let session_cwd = working_dir.clone();
     let fast = params.fast;
     let workflow = params.workflow;
     let task = smol::spawn({
@@ -184,19 +188,27 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
         async move {
             let event_tx = EventSender::new(raw_tx, 0);
             let mut model = params.model;
-            let provider: Arc<dyn Provider> =
-                match provider::from_model_async(&mut model, params.timeouts).await {
-                    Ok(p) => Arc::from(p),
-                    Err(e) => {
-                        error!(error = %e, "provider error");
-                        let _ = event_tx.send(AgentEvent::Error {
-                            message: e.user_message(),
-                        });
-                        return;
-                    }
-                };
+            let provider: Arc<dyn Provider> = match provider::from_model_async_with_openai_options(
+                &mut model,
+                params.timeouts,
+                params.openai_options,
+            )
+            .await
+            {
+                Ok(p) => Arc::from(p),
+                Err(e) => {
+                    error!(error = %e, "provider error");
+                    let _ = event_tx.send(AgentEvent::Error {
+                        message: e.user_message(),
+                    });
+                    return;
+                }
+            };
             let error_tx = event_tx.clone();
             let mut history = History::new(Vec::new());
+            let model_spec = model.spec();
+            let mut session_store =
+                SessionStore::open(session_ref_clone.id(), &session_cwd, &model_spec);
             let mut agent = Agent::new(
                 AgentParams {
                     provider,
@@ -209,6 +221,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                     )),
                     session_id: Some(session_ref_clone.clone()),
                     timeouts: params.timeouts,
+                    openai_options: params.openai_options,
                     file_tracker: FileReadTracker::fresh(),
                     prompt_slots: Arc::new(params.prompt_slots),
                     subagent_cancels: Arc::new(CancelMap::new()),
@@ -231,13 +244,17 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                     mode,
                     images: params.images,
                     preamble: Vec::new(),
-                    thinking: Default::default(),
+                    thinking: n00n_providers::ThinkingConfig::default(),
                     fast,
                     workflow,
                     prompt: None,
                 })
                 .await;
             drop(agent);
+
+            if let Some(store) = &mut session_store {
+                store.record_turn(history.as_slice(), model_spec);
+            }
 
             if let Err(e) = result {
                 error!(error = %e, "agent error");
@@ -266,6 +283,7 @@ pub struct InteractiveParams {
     pub config: AgentConfig,
     pub permissions_config: PermissionsConfig,
     pub timeouts: Timeouts,
+    pub openai_options: OpenAiOptions,
     pub prompt_slots: Arc<ResolvedSlots>,
     pub excluded_tools: Vec<&'static str>,
     pub mcp_handle: Option<McpHandle>,
@@ -290,6 +308,8 @@ pub struct InteractiveHandle {
     pub task: smol::Task<()>,
 }
 
+#[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
     let AgentSetup {
         vars,
@@ -311,12 +331,11 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
     let (cancel_tx, cancel_rx) = flume::bounded::<()>(1);
     let (model_tx, model_rx) = flume::unbounded::<Model>();
 
-    let (session_id, session_ref) = match params.session_id.clone() {
-        Some(w) => (w.id(), w),
-        None => {
-            let id = N00nId::generate();
-            (id, SessionRef::from(id))
-        }
+    let (session_id, session_ref) = if let Some(w) = params.session_id.clone() {
+        (w.id(), w)
+    } else {
+        let id = N00nId::generate();
+        (id, SessionRef::from(id))
     };
 
     let working_dir = params.initial_wd.to_string_lossy().into_owned();
@@ -337,7 +356,13 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
         async move {
             let mut model = params.model;
             let mut provider: Arc<dyn Provider> =
-                match provider::from_model_async(&mut model, params.timeouts).await {
+                match provider::from_model_async_with_openai_options(
+                    &mut model,
+                    params.timeouts,
+                    params.openai_options,
+                )
+                .await
+                {
                     Ok(p) => Arc::from(p),
                     Err(e) => {
                         error!(error = %e, "provider error");
@@ -359,7 +384,13 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                 if let Some(mut new_model) = model_rx.try_iter().last()
                     && new_model.spec() != model.spec()
                 {
-                    match provider::from_model_async(&mut new_model, params.timeouts).await {
+                    match provider::from_model_async_with_openai_options(
+                        &mut new_model,
+                        params.timeouts,
+                        params.openai_options,
+                    )
+                    .await
+                    {
                         Ok(p) => {
                             provider = Arc::from(p);
                             tools = tool_definitions(
@@ -419,6 +450,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                         permissions: Arc::clone(&permissions),
                         session_id: Some(session_ref_clone.clone()),
                         timeouts: params.timeouts,
+                        openai_options: params.openai_options,
                         file_tracker: Arc::clone(&file_tracker),
                         prompt_slots: Arc::clone(&params.prompt_slots),
                         subagent_cancels: Arc::new(CancelMap::new()),
@@ -474,14 +506,11 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
 }
 
 fn extract_tool_names(tools: &Value) -> Vec<String> {
-    tools
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|t| t["name"].as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default()
+    tools.as_array().map_or_else(Vec::new, |arr| {
+        arr.iter()
+            .filter_map(|t| t["name"].as_str().map(String::from))
+            .collect()
+    })
 }
 
 #[cfg(test)]

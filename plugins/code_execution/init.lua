@@ -13,7 +13,8 @@ local MAX_SCRIPT_LINES = 2000
 local NO_OUTPUT = "(no output)"
 local SEPARATOR = "──────"
 local PREAMBLE = "import re\nimport asyncio\nimport sys\nimport os\nimport json\n"
-local TOOLS_HEADER = "\n\nAvailable tools (called as Python functions with keyword arguments):\n"
+local TOOLS_HEADER =
+  "\n\nAvailable tools (called as Python functions with keyword arguments). Optional params are marked with '?'.\n"
 local WORKFLOW_TOOLS_NOTE =
   "\nWorkflow mode: orchestrate subagents from this script. Await every `task(...)` call and use `asyncio.gather` for parallel fan-out. Pass `output_schema` to task for machine-readable results (a JSON string, parse with `json.loads`). Raise this tool's `timeout` param: subagents outlive the default code_execution timeout.\n"
 local PY_TYPES = { string = "str", integer = "int", boolean = "bool", array = "list" }
@@ -108,6 +109,8 @@ local schema = {
     },
     timeout = {
       type = "integer",
+      minimum = 5,
+      maximum = 300,
       description = "Timeout in seconds (default 30, max 300)",
     },
   },
@@ -188,9 +191,10 @@ local function signature(t)
   local params = {}
   for _, pname in ipairs(names) do
     local ptype = PY_TYPES[schema_props[pname].type] or "any"
-    params[#params + 1] = required[pname] and (pname .. ": " .. ptype) or (pname .. ": " .. ptype .. " = None")
+    local suffix = required[pname] and (": " .. ptype) or ("?: " .. ptype)
+    params[#params + 1] = pname .. suffix
   end
-  return "- " .. t.name .. "(" .. table.concat(params, ", ") .. ") -> str"
+  return "- " .. t.name .. "(" .. table.concat(params, ", ") .. ")"
 end
 
 -- Keep cheap: runs on every request build. get_tools skips descriptions
@@ -222,6 +226,9 @@ end
 local function handler(input, ctx)
   local config = ctx:config()
   local timeout = input.timeout or opts.timeout_secs
+  if timeout < 5 or timeout > 300 then
+    error("timeout must be between 5 and 300 seconds")
+  end
 
   local buf, view, highlight = build_body(ctx, input.code)
   ctx:live_buf(buf)

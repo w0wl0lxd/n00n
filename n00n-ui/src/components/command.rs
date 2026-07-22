@@ -9,10 +9,11 @@ use nucleo::pattern::{CaseMatching, Normalization};
 use nucleo::{Config, Matcher, Nucleo, Utf32String};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
 
+use crate::cast;
 use crate::theme;
 
 pub struct BuiltinCommand {
@@ -199,7 +200,7 @@ impl CommandPalette {
         let nucleo = Nucleo::new(Config::DEFAULT, Arc::new(|| {}), None, 1);
         let injector = nucleo.injector();
 
-        for cmd in BUILTIN_COMMANDS.iter() {
+        for cmd in BUILTIN_COMMANDS {
             let item = CommandItem {
                 name: cmd.name.to_string(),
                 max_args: cmd.max_args,
@@ -301,9 +302,9 @@ impl CommandPalette {
         if mcp_snap.generation != self.mcp_generation || lua_snap.generation != self.lua_generation
         {
             self.mcp_generation = mcp_snap.generation;
-            self.mcp_prompts = mcp_snap.prompts.clone();
+            self.mcp_prompts.clone_from(&mcp_snap.prompts);
             self.lua_generation = lua_snap.generation;
-            self.lua_commands = lua_snap.commands.clone();
+            self.lua_commands.clone_from(&lua_snap.commands);
             self.nucleo = Self::build_nucleo(&self.custom, &self.mcp_prompts, &self.lua_commands);
         }
         let Some(stripped) = input.strip_prefix('/') else {
@@ -313,7 +314,7 @@ impl CommandPalette {
         };
 
         let parts: Vec<&str> = stripped.split_whitespace().collect();
-        let cmd_word = parts.first().copied().unwrap_or(stripped);
+        let cmd_word = parts.first().copied().map_or_else(|| stripped, |w| w);
         let trailing_space = stripped.ends_with(char::is_whitespace);
 
         self.current_arg_count = if trailing_space {
@@ -437,8 +438,7 @@ impl CommandPalette {
         let args = input
             .strip_prefix('/')
             .and_then(|s| s.split_once(char::is_whitespace))
-            .map(|(_, a)| a.trim())
-            .unwrap_or("");
+            .map_or("", |(_, a)| a.trim());
         Some(ParsedCommand {
             name,
             args: args.to_string(),
@@ -461,29 +461,30 @@ impl CommandPalette {
     }
 
     pub fn view(&self, frame: &mut Frame, input_area: Rect) -> Option<Rect> {
+        const GAP: usize = 2;
+        const PAD: usize = 1;
+
         let filtered = &self.filtered;
         if filtered.is_empty() {
             return None;
         }
 
-        let popup_height = (filtered.len() as u16).min(input_area.y);
+        let popup_height = cast::usize_to_u16(filtered.len()).min(input_area.y);
         if popup_height == 0 {
             return None;
         }
 
-        const GAP: usize = 2;
         let max_name = filtered
             .iter()
             .map(|item| self.item_name(item).len())
             .max()
-            .unwrap_or(0);
+            .map_or(0, |v| v);
         let max_desc = filtered
             .iter()
             .map(|item| self.item_description(item).len())
             .max()
-            .unwrap_or(0);
-        const PAD: usize = 1;
-        let popup_width = (PAD + max_name + GAP + max_desc + PAD) as u16;
+            .map_or(0, |v| v);
+        let popup_width = cast::usize_to_u16(PAD + max_name + GAP + max_desc + PAD);
 
         let popup = Rect {
             x: input_area.x,
@@ -504,7 +505,7 @@ impl CommandPalette {
 
                 if selected {
                     let s = t.item_selected;
-                    let highlighted_name = self.build_highlighted_spans(&name, &m.indices, s);
+                    let highlighted_name = Self::build_highlighted_spans(&name, &m.indices, s);
                     let mut spans = vec![Span::styled(" ".repeat(PAD), s)];
                     spans.extend(highlighted_name);
                     spans.push(Span::styled(" ".repeat(name_pad), s));
@@ -512,7 +513,7 @@ impl CommandPalette {
                     spans.push(Span::styled(" ".repeat(PAD), s));
                     Line::from(spans)
                 } else {
-                    let highlighted_name = self.build_highlighted_spans(&name, &m.indices, t.item);
+                    let highlighted_name = Self::build_highlighted_spans(&name, &m.indices, t.item);
                     let mut spans = vec![Span::raw(" ".repeat(PAD))];
                     spans.extend(highlighted_name);
                     spans.push(Span::raw(" ".repeat(name_pad)));
@@ -532,14 +533,14 @@ impl CommandPalette {
         Some(popup)
     }
 
-    fn build_highlighted_spans(&self, text: &str, indices: &[u32], base: Style) -> Vec<Span<'_>> {
+    fn build_highlighted_spans(text: &str, indices: &[u32], base: Style) -> Vec<Span<'static>> {
         if indices.is_empty() {
             return vec![Span::styled(text.to_string(), base)];
         }
 
         let t = theme::current();
         let highlight = base
-            .fg(t.accent.fg.unwrap_or_default())
+            .fg(t.accent.fg.or(base.fg).unwrap_or_else(|| Color::Reset))
             .add_modifier(Modifier::BOLD);
 
         let mut spans = Vec::new();
@@ -547,14 +548,14 @@ impl CommandPalette {
         let mut run = String::new();
 
         for (i, ch) in text.chars().enumerate() {
-            let is_match = indices.binary_search(&(i as u32)).is_ok();
-            if is_match != in_match && !run.is_empty() {
+            let matched = indices.binary_search(&cast::usize_to_u32(i)).is_ok();
+            if matched != in_match && !run.is_empty() {
                 spans.push(Span::styled(
                     mem::take(&mut run),
                     if in_match { highlight } else { base },
                 ));
             }
-            in_match = is_match;
+            in_match = matched;
             run.push(ch);
         }
 
@@ -874,13 +875,13 @@ mod tests {
     #[test_case("/tsk", "/tasks" ; "tasks_fuzzy")]
     fn nucleo_highlights_matching_indices(input: &str, expected_cmd: &str) {
         let p = synced(input);
-        assert!(p.is_active(), "Input '{}' should activate palette", input);
+        assert!(p.is_active(), "Input '{input}' should activate palette");
         // Find the expected match
         let matched = p
             .filtered
             .iter()
             .find(|m| p.item_name(m) == expected_cmd)
-            .unwrap_or_else(|| panic!("Should find {} for input {}", expected_cmd, input));
+            .unwrap_or_else(|| panic!("Should find {expected_cmd} for input {input}"));
         // Should have some highlight indices
         assert!(
             !matched.indices.is_empty(),

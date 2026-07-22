@@ -4,7 +4,7 @@
 //! orchestrators work without adaptation.
 //!
 //! Per-message wire ids (`uuid`, assistant `message.id`) use `uuid::Uuid::now_v7()` to emit the
-//! hyphenated-hex UUIDv7 shape that Claude Code SDK consumers expect, rather than n00n's base58
+//! hyphenated-hex `UUIDv7` shape that Claude Code SDK consumers expect, rather than n00n's base58
 //! `N00nId` canonical form.
 
 use std::collections::{HashMap, HashSet};
@@ -26,7 +26,7 @@ use n00n_agent::{
     AgentConfig, AgentEvent, AgentInput, AgentMode, Envelope, PermissionsConfig, ToolOutput,
 };
 use n00n_providers::model::Model;
-use n00n_providers::{ImageSource, Message, StopReason, Timeouts, TokenUsage};
+use n00n_providers::{ImageSource, Message, OpenAiOptions, StopReason, Timeouts, TokenUsage};
 use n00n_storage::StateDir;
 use n00n_storage::id::SessionRef;
 use n00n_storage::sessions::Session;
@@ -55,7 +55,7 @@ const TOOL_NAME_MAP: &[(&str, &str)] = &[
     ("skill", "Skill"),
 ];
 
-/// Emits a hyphenated-hex UUIDv7 string for Claude Code SDK wire ids
+/// Emits a hyphenated-hex `UUIDv7` string for Claude Code SDK wire ids
 /// (message.id, assistant message.id).
 #[allow(clippy::disallowed_methods)]
 fn wire_uuid() -> String {
@@ -395,8 +395,7 @@ fn n00n_to_claude_tool_name(name: &str) -> &str {
     TOOL_NAME_MAP
         .iter()
         .find(|(m, _)| *m == name)
-        .map(|(_, c)| *c)
-        .unwrap_or(name)
+        .map_or(name, |(_, c)| *c)
 }
 
 #[derive(Clone)]
@@ -444,6 +443,7 @@ pub struct SdkParams {
     pub config: AgentConfig,
     pub permissions_config: PermissionsConfig,
     pub timeouts: Timeouts,
+    pub openai_options: OpenAiOptions,
     pub prompt_slots: ResolvedSlots,
     pub fast: bool,
     pub workflow: bool,
@@ -456,6 +456,7 @@ struct Shared {
     pending: HashSet<String>,
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn run(params: SdkParams) -> Result<()> {
     let SdkParams {
         cli,
@@ -463,6 +464,7 @@ pub fn run(params: SdkParams) -> Result<()> {
         mut config,
         permissions_config,
         timeouts,
+        openai_options,
         prompt_slots,
         fast,
         workflow,
@@ -488,6 +490,7 @@ pub fn run(params: SdkParams) -> Result<()> {
         config,
         permissions_config,
         timeouts,
+        openai_options,
         prompt_slots: Arc::new(prompt_slots),
         excluded_tools: vec![QUESTION_TOOL_NAME],
         mcp_handle,
@@ -575,17 +578,22 @@ pub fn run(params: SdkParams) -> Result<()> {
                 let content = user.message.content;
                 let prompt = content_text(&content).unwrap_or_else(|| content.to_string());
                 let images = content_images(&content);
-                let mode = {
-                    let mut shared = shared.lock().unwrap();
-                    shared.turn_start = Instant::now();
-                    shared.permission_mode
+                let mode = match shared.lock() {
+                    Ok(mut shared) => {
+                        shared.turn_start = Instant::now();
+                        shared.permission_mode
+                    }
+                    Err(e) => {
+                        eprintln!("error: mutex poisoned: {e}");
+                        break;
+                    }
                 };
                 let input = AgentInput {
                     message: prompt,
                     mode: mode.agent_mode(&cwd),
                     images,
                     preamble: Vec::new(),
-                    thinking: Default::default(),
+                    thinking: n00n_providers::ThinkingConfig::default(),
                     fast,
                     workflow,
                     prompt: None,
@@ -610,7 +618,8 @@ pub fn run(params: SdkParams) -> Result<()> {
                 };
                 let data = cr.response;
                 if let Some(req_id) = data.get("request_id").and_then(Value::as_str)
-                    && shared.lock().unwrap().pending.remove(req_id)
+                    && let Ok(mut shared) = shared.lock()
+                    && shared.pending.remove(req_id)
                 {
                     let _ = handle
                         .answer_tx
@@ -624,7 +633,9 @@ pub fn run(params: SdkParams) -> Result<()> {
                 ) else {
                     continue;
                 };
-                if shared.lock().unwrap().pending.remove(&ccr.request_id) {
+                if let Ok(mut shared) = shared.lock()
+                    && shared.pending.remove(&ccr.request_id)
+                {
                     let _ = handle.answer_tx.send(PermissionAnswer::Deny.encode());
                 }
             }
@@ -726,7 +737,7 @@ fn handle_control_request(
     shared: &Mutex<Shared>,
     startup_model: &Model,
 ) -> Result<()> {
-    let ok = Some(Value::Object(Default::default()));
+    let ok = Some(Value::Object(serde_json::Map::default()));
     match cr.request.subtype.as_str() {
         "initialize" => {
             if let Some(extra) = cr.request.extra.as_object()
@@ -748,7 +759,9 @@ fn handle_control_request(
             let mode_str = cr.request.extra.get("mode").and_then(Value::as_str);
             match mode_str.and_then(PermissionMode::parse) {
                 Some(mode) => {
-                    shared.lock().unwrap().permission_mode = mode;
+                    if let Ok(mut shared) = shared.lock() {
+                        shared.permission_mode = mode;
+                    }
                     writer.emit_control_response(&cr.request_id, ok, None)
                 }
                 None => writer.emit_control_response(
@@ -756,7 +769,7 @@ fn handle_control_request(
                     None,
                     Some(format!(
                         "invalid permission mode: {}",
-                        mode_str.unwrap_or("<missing>")
+                        mode_str.unwrap_or_else(|| "<missing>")
                     )),
                 ),
             }
@@ -764,7 +777,9 @@ fn handle_control_request(
         "set_model" => {
             if let Some(model) = resolve_set_model(cr.request.extra.get("model"), startup_model) {
                 let _ = handle.model_tx.send(model.clone());
-                shared.lock().unwrap().model = model;
+                if let Ok(mut shared) = shared.lock() {
+                    shared.model = model;
+                }
             }
             writer.emit_control_response(&cr.request_id, ok, None)
         }
@@ -830,7 +845,7 @@ impl EventPump {
     fn spawn(mut self, event_rx: Receiver<Envelope>) -> smol::Task<()> {
         smol::spawn(async move {
             while let Ok(envelope) = event_rx.recv_async().await {
-                if let Err(e) = self.handle(envelope) {
+                if let Err(e) = self.handle(&envelope) {
                     warn!(error = %e, "sdk event pump stopped");
                     break;
                 }
@@ -839,7 +854,9 @@ impl EventPump {
     }
 
     fn model_id(&self) -> String {
-        self.shared.lock().unwrap().model.id.clone()
+        self.shared
+            .lock()
+            .map_or_else(|_| "unknown".to_string(), |shared| shared.model.id.clone())
     }
 
     fn emit_stream(&self, events: Vec<Value>) -> Result<()> {
@@ -853,7 +870,9 @@ impl EventPump {
         self.synth.reset();
         self.tool_inputs.clear();
         self.result_text.clear();
-        self.shared.lock().unwrap().pending.clear();
+        if let Ok(mut shared) = self.shared.lock() {
+            shared.pending.clear();
+        }
     }
 
     fn emit_turn_result(
@@ -864,7 +883,10 @@ impl EventPump {
         usage: TokenUsage,
     ) -> Result<()> {
         let (duration_ms, total_cost_usd) = {
-            let shared = self.shared.lock().unwrap();
+            let shared = self
+                .shared
+                .lock()
+                .map_err(|e| eyre!("mutex poisoned: {e}"))?;
             (
                 shared.turn_start.elapsed().as_millis(),
                 usage.cost(&shared.model.pricing, self.fast),
@@ -889,7 +911,8 @@ impl EventPump {
         Ok(())
     }
 
-    fn handle(&mut self, envelope: Envelope) -> Result<()> {
+    #[allow(clippy::too_many_lines)]
+    fn handle(&mut self, envelope: &Envelope) -> Result<()> {
         let parent_tool_use_id = envelope
             .subagent
             .as_ref()
@@ -912,7 +935,7 @@ impl EventPump {
             }
             AgentEvent::ToolStart(ts) => {
                 let name = ts.tool.to_string();
-                let input = ts.raw_input.clone().unwrap_or(Value::Null);
+                let input = ts.raw_input.clone().unwrap_or_else(|| Value::Null);
 
                 if self.include_partial_messages {
                     let model = self.model_id();
@@ -945,6 +968,7 @@ impl EventPump {
                 message,
                 delay_ms,
             } => {
+                self.synth.reset();
                 self.writer.emit_system(
                     "api_retry",
                     serde_json::json!({
@@ -962,7 +986,7 @@ impl EventPump {
 
                 let content_value = serde_json::to_value(&tc.message.content)?;
                 if parent_tool_use_id.is_none() {
-                    self.result_text = content_text(&content_value).unwrap_or_default();
+                    self.result_text = content_text(&content_value).unwrap_or_else(String::new);
                 }
                 self.writer.emit(WireInner::Assistant(AssistantPayload {
                     message: AssistantMessage {
@@ -986,8 +1010,10 @@ impl EventPump {
                 }))?;
             }
             AgentEvent::PermissionRequest { id, tool, .. } => {
-                if self.shared.lock().unwrap().permission_mode == PermissionMode::BypassPermissions
-                {
+                let bypass = self.shared.lock().is_ok_and(|shared| {
+                    shared.permission_mode == PermissionMode::BypassPermissions
+                });
+                if bypass {
                     let _ = self.answer_tx.send(PermissionAnswer::AllowSession.encode());
                     return Ok(());
                 }
@@ -1000,7 +1026,9 @@ impl EventPump {
 
                 self.request_counter += 1;
                 let req_id = format!("req_{}", self.request_counter);
-                self.shared.lock().unwrap().pending.insert(req_id.clone());
+                if let Ok(mut shared) = self.shared.lock() {
+                    shared.pending.insert(req_id.clone());
+                }
 
                 self.writer
                     .emit(WireInner::ControlRequest(ControlRequestPayload {
@@ -1060,8 +1088,7 @@ mod tests {
         TOOL_NAME_MAP
             .iter()
             .find(|(_, c)| *c == name)
-            .map(|(m, _)| *m)
-            .unwrap_or(name)
+            .map_or(name, |(m, _)| *m)
     }
 
     #[test_case("bash", "Bash")]
@@ -1093,7 +1120,10 @@ mod tests {
     const MODEL: &str = "test-model";
 
     fn types(events: &[Value]) -> Vec<&str> {
-        events.iter().map(|e| e["type"].as_str().unwrap()).collect()
+        events
+            .iter()
+            .map(|e| e["type"].as_str().expect("event has type field"))
+            .collect()
     }
 
     #[test]

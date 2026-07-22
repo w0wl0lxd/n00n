@@ -1,3 +1,9 @@
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
+
 use std::collections::HashSet;
 
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
@@ -15,7 +21,7 @@ use crate::theme;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -313,6 +319,7 @@ impl<T: PickerItem> ListPicker<T> {
         self.handle_ready_key(key)
     }
 
+    #[allow(clippy::expect_used)]
     fn handle_ready_key(&mut self, key: KeyEvent) -> PickerAction<T> {
         let s = self
             .state
@@ -367,7 +374,9 @@ impl<T: PickerItem> ListPicker<T> {
                 }
                 match idx {
                     Some(idx) => {
+                        #[allow(clippy::unwrap_used, clippy::disallowed_methods)]
                         let mut state = self.state.take().unwrap();
+                        #[allow(clippy::disallowed_methods)]
                         PickerAction::Select(idx, state.items.swap_remove(idx))
                     }
                     None => PickerAction::Consumed,
@@ -413,7 +422,7 @@ impl<T: PickerItem> ListPicker<T> {
     }
 
     pub fn selected_index(&self) -> Option<usize> {
-        self.state.as_ref().and_then(|s| s.selected_item_index())
+        self.state.as_ref().and_then(State::selected_item_index)
     }
 
     pub fn item(&self, idx: usize) -> Option<&T> {
@@ -469,7 +478,7 @@ impl<T: PickerItem> Overlay for ListPicker<T> {
     }
 
     fn close(&mut self) {
-        self.close()
+        self.close();
     }
 }
 
@@ -484,11 +493,7 @@ fn render_ready<T: PickerItem>(
     footer_hints: Option<&'static [(&'static str, &'static str)]>,
     error_text: Option<&str>,
 ) -> Rect {
-    let footer_rows = if footer.is_some() || footer_hints.is_some() {
-        1u16
-    } else {
-        0
-    };
+    let footer_rows = u16::from(footer.is_some() || footer_hints.is_some());
     let content_rows = if s.filtered.is_empty() {
         1
     } else {
@@ -498,7 +503,7 @@ fn render_ready<T: PickerItem>(
             None => rows,
         }
     };
-    let error_rows = error_text.is_some() as u16;
+    let error_rows = u16::from(error_text.is_some());
     let modal = Modal {
         title,
         width_percent: MIN_WIDTH_PERCENT,
@@ -516,7 +521,7 @@ fn render_ready<T: PickerItem>(
     s.ensure_visible();
 
     let mut constraints: Vec<Constraint> =
-        Vec::with_capacity(3 + footer.is_some() as usize + error_text.is_some() as usize);
+        Vec::with_capacity(3 + usize::from(footer.is_some()) + usize::from(error_text.is_some()));
     if error_text.is_some() {
         constraints.push(Constraint::Length(1)); // error line
     }
@@ -652,7 +657,7 @@ fn truncate_label(label: &str, max_width: usize) -> String {
     let mut width = 0;
     let mut result = String::with_capacity(label.len());
     for ch in label.chars() {
-        let cw = ch.width().unwrap_or(0);
+        let cw = ch.width().unwrap_or_else(|| 0);
         if width + cw > target {
             break;
         }
@@ -663,7 +668,7 @@ fn truncate_label(label: &str, max_width: usize) -> String {
     result
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn render_list<T: PickerItem>(
     frame: &mut Frame,
     area: Rect,
@@ -719,7 +724,9 @@ fn render_list<T: PickerItem>(
         let t = theme::current();
         let (style, detail_style) = match (i == selected, highlighted) {
             (true, true) => {
-                let s = t.item_selected.fg(t.accent.fg.unwrap_or_default());
+                let s = t
+                    .item_selected
+                    .fg(t.accent.fg.map_or(Color::default(), |c| c));
                 (s, theme::dim_style(s, 0.4))
             }
             (true, false) => (t.item_selected, t.item_selected),
@@ -745,43 +752,41 @@ fn render_list<T: PickerItem>(
             item.detail()
         };
         let suffix_gap = 2usize;
-        let suffix_w = suffix.map(|s| s.width()).unwrap_or(0);
+        let suffix_w = suffix.map_or(0, unicode_width::UnicodeWidthStr::width);
         let trailing_gap = suffix_w + if suffix_w > 0 { suffix_gap } else { 0 };
-        let line = match detail {
-            Some(detail) => {
-                let max_label = area.width.saturating_sub(
-                    detail.width() as u16 + trailing_gap as u16 + 1 + DETAIL_RIGHT_PAD,
-                ) as usize;
-                let label = truncate_label(&label, max_label);
-                let pad = (area.width as usize).saturating_sub(
-                    label.width() + trailing_gap + detail.width() + DETAIL_RIGHT_PAD as usize + 1,
-                );
-                let mut spans = Vec::with_capacity(7);
-                if let Some(cb) = checkbox {
-                    spans.push(cb);
-                }
-                spans.push(Span::styled(label, style));
-                if let Some(s) = suffix {
-                    spans.push(Span::styled(" ".repeat(suffix_gap), style));
-                    spans.push(Span::styled(s.to_string(), theme::dim_style(style, 0.4)));
-                }
-                spans.push(Span::styled(" ".repeat(pad), style));
-                spans.push(Span::styled(detail.to_string(), detail_style));
-                spans.push(Span::styled(" ".repeat(DETAIL_RIGHT_PAD as usize), style));
-                Line::from(spans)
+        let line = if let Some(detail) = detail {
+            let max_label = area
+                .width
+                .saturating_sub(detail.width() as u16 + trailing_gap as u16 + 1 + DETAIL_RIGHT_PAD)
+                as usize;
+            let label = truncate_label(&label, max_label);
+            let pad = (area.width as usize).saturating_sub(
+                label.width() + trailing_gap + detail.width() + DETAIL_RIGHT_PAD as usize + 1,
+            );
+            let mut spans = Vec::with_capacity(7);
+            if let Some(cb) = checkbox {
+                spans.push(cb);
             }
-            None => {
-                let mut spans: Vec<Span> = Vec::with_capacity(4);
-                if let Some(cb) = checkbox {
-                    spans.push(cb);
-                }
-                spans.push(Span::styled(label, style));
-                if let Some(s) = suffix {
-                    spans.push(Span::styled(" ".repeat(suffix_gap), style));
-                    spans.push(Span::styled(s.to_string(), theme::dim_style(style, 0.4)));
-                }
-                Line::from(spans)
+            spans.push(Span::styled(label, style));
+            if let Some(s) = suffix {
+                spans.push(Span::styled(" ".repeat(suffix_gap), style));
+                spans.push(Span::styled(s.to_string(), theme::dim_style(style, 0.4)));
             }
+            spans.push(Span::styled(" ".repeat(pad), style));
+            spans.push(Span::styled(detail.to_string(), detail_style));
+            spans.push(Span::styled(" ".repeat(DETAIL_RIGHT_PAD as usize), style));
+            Line::from(spans)
+        } else {
+            let mut spans: Vec<Span> = Vec::with_capacity(4);
+            if let Some(cb) = checkbox {
+                spans.push(cb);
+            }
+            spans.push(Span::styled(label, style));
+            if let Some(s) = suffix {
+                spans.push(Span::styled(" ".repeat(suffix_gap), style));
+                spans.push(Span::styled(s.to_string(), theme::dim_style(style, 0.4)));
+            }
+            Line::from(spans)
         };
         lines.push(line);
         i += 1;
@@ -795,7 +800,7 @@ fn render_search(frame: &mut Frame, area: Rect, search: &TextBuffer) {
     let cursor_x = search.x();
     let chars: Vec<char> = query.chars().collect();
     let before: String = chars[..cursor_x].iter().collect();
-    let cursor_char = chars.get(cursor_x).copied().unwrap_or(' ');
+    let cursor_char = chars.get(cursor_x).copied().unwrap_or_else(|| ' ');
     let after_start = cursor_x.saturating_add(1).min(chars.len());
     let after: String = chars[after_start..].iter().collect();
 

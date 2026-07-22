@@ -32,9 +32,8 @@ fn doc_lines(attrs: &[Attribute]) -> Vec<String> {
     attrs
         .iter()
         .filter_map(|a| match &a.meta {
-            Meta::NameValue(nv) if nv.path.is_ident("doc") => {
-                str_lit(&nv.value).map(|v| v.strip_prefix(' ').unwrap_or(&v).to_owned())
-            }
+            Meta::NameValue(nv) if nv.path.is_ident("doc") => str_lit(&nv.value)
+                .map(|v| v.strip_prefix(' ').unwrap_or_else(|| v.as_str()).to_owned()),
             _ => None,
         })
         .collect()
@@ -65,11 +64,16 @@ fn parse_doc(lines: &[String], span: proc_macro2::Span) -> syn::Result<ParsedDoc
     for line in lines {
         if let Some(rest) = line.strip_prefix("@param ") {
             let mut it = rest.splitn(3, ' ');
-            let (name, ty, d) = (
-                it.next().unwrap_or_default(),
-                it.next().unwrap_or_default(),
-                it.next().unwrap_or_default(),
-            );
+            #[allow(clippy::disallowed_methods)]
+            let name = it
+                .next()
+                .ok_or_else(|| syn::Error::new(span, format!("malformed @param line: `{line}`")))?;
+            #[allow(clippy::disallowed_methods)]
+            let ty = it
+                .next()
+                .ok_or_else(|| syn::Error::new(span, format!("malformed @param line: `{line}`")))?;
+            #[allow(clippy::disallowed_methods)]
+            let d = it.next().unwrap_or_default();
             if name.is_empty() || ty.is_empty() {
                 return Err(syn::Error::new(
                     span,
@@ -80,15 +84,23 @@ fn parse_doc(lines: &[String], span: proc_macro2::Span) -> syn::Result<ParsedDoc
                 .push((name.to_owned(), ty.to_owned(), d.to_owned()));
             section = Section::Param;
         } else if let Some(rest) = line.strip_prefix("@return") {
-            doc.returns = rest.trim_start().to_owned();
+            rest.trim_start().clone_into(&mut doc.returns);
             section = Section::Return;
         } else if let Some(rest) = line.strip_prefix("@example") {
-            doc.example = rest.trim_start().to_owned();
+            rest.trim_start().clone_into(&mut doc.example);
             section = Section::Example;
         } else {
             let dst = match section {
                 Section::Desc => &mut doc.desc,
-                Section::Param => &mut doc.params.last_mut().unwrap().2,
+                Section::Param =>
+                {
+                    #[allow(clippy::unwrap_used)]
+                    if let Some(last) = doc.params.last_mut() {
+                        &mut last.2
+                    } else {
+                        continue;
+                    }
+                }
                 Section::Return => &mut doc.returns,
                 Section::Example => &mut doc.example,
             };
@@ -239,93 +251,41 @@ fn expand_lua_fn(args: LuaFnArgs, func: &mut ItemFn) -> syn::Result<TokenStream2
     let doc = parse_doc(&doc_lines(&func.attrs), span)?;
     let FnParams { method, ctx, real } = classify_params(func)?;
 
-    let documented: Vec<&str> = doc.params.iter().map(|(n, _, _)| n.as_str()).collect();
-    let actual: Vec<String> = real.iter().map(|(i, _)| i.unraw().to_string()).collect();
-    if documented != actual.iter().map(String::as_str).collect::<Vec<_>>() {
-        return Err(syn::Error::new(
-            span,
-            format!(
-                "@param tags {documented:?} do not match parameters {actual:?} (same names, same order)"
-            ),
-        ));
-    }
+    validate_params(&doc, &real, span)?;
 
-    let rendered: Vec<String> = real
-        .iter()
-        .map(|(ident, ty)| {
-            let ident = ident.unraw();
-            if last_segment_is(ty, "Variadic") {
-                "{...}".to_owned()
-            } else if last_segment_is(ty, "Option") {
-                format!("{{{ident}?}}")
-            } else {
-                format!("{{{ident}}}")
-            }
-        })
-        .collect();
+    let rendered = render_args(&real);
     let args_str = rendered.join(", ");
     let lua_name = args.name.unwrap_or_else(|| fn_ident.unraw().to_string());
     let doc_ident = format_ident!("{fn_ident}__doc");
     let reg_ident = format_ident!("{fn_ident}__register");
 
-    let ParsedDoc {
-        desc,
-        returns,
-        example,
-        ..
-    } = &doc;
-    let param_docs =
-        doc.params.iter().zip(&rendered).map(
-            |((_, ty, d), name)| quote!(crate::docs::ParamDoc { name: #name, ty: #ty, desc: #d }),
-        );
-    let doc_const = quote! {
-        #[allow(non_upper_case_globals)]
-        pub(crate) const #doc_ident: crate::docs::FnDoc = crate::docs::FnDoc {
-            name: #lua_name,
-            args: #args_str,
-            desc: #desc,
-            params: &[#(#param_docs),*],
-            returns: #returns,
-            example: #example,
-        };
-    };
+    let doc_const = generate_doc_const(&doc, &lua_name, &args_str, &rendered, &doc_ident);
 
     let ctx_idents: Vec<&Ident> = ctx.iter().map(|(i, _)| i).collect();
     let ctx_tys: Vec<&Type> = ctx.iter().map(|(_, t)| t).collect();
-    // Fresh binding names so closure params can never shadow the target fn.
     let arg_idents: Vec<Ident> = (0..real.len()).map(|i| format_ident!("__arg{i}")).collect();
     let real_tys: Vec<&Type> = real.iter().map(|(_, t)| t).collect();
     let arg_pat = quote!((#(#arg_idents,)*): (#(#real_tys,)*));
 
     if let Some((self_ty, add_fn)) = method {
-        if args.guard.is_some() || !ctx.is_empty() {
-            return Err(syn::Error::new(
-                span,
-                "guard and #[ctx] are not supported on methods",
-            ));
-        }
-        let closure = quote!(move |lua, this, #arg_pat| #fn_ident(lua, this #(, #arg_idents)*));
-        return Ok(quote! {
-            #func
-            #doc_const
-            pub(crate) fn #reg_ident<M: mlua::UserDataMethods<#self_ty>>(methods: &mut M) {
-                methods.#add_fn(#lua_name, #closure);
-            }
+        return generate_method_impl(MethodImplArgs {
+            func,
+            doc_const: &doc_const,
+            reg_ident: &reg_ident,
+            lua_name: &lua_name,
+            self_ty: &self_ty,
+            add_fn: &add_fn,
+            arg_pat: &arg_pat,
+            fn_ident: &fn_ident,
+            arg_idents: &arg_idents,
+            span,
+            guard: args.guard.as_ref(),
+            ctx: &ctx,
         });
     }
 
-    let closure =
-        quote!(move |lua, #arg_pat| #fn_ident(lua #(, #ctx_idents.clone())* #(, #arg_idents)*));
-    let create = match (&args.guard, is_async) {
-        (Some(g), false) => {
-            quote!(perms.guard(crate::plugin_permissions::Permission::#g, lua, #closure)?)
-        }
-        (Some(g), true) => {
-            quote!(perms.guard_async(crate::plugin_permissions::Permission::#g, lua, #closure)?)
-        }
-        (None, false) => quote!(lua.create_function(#closure)?),
-        (None, true) => quote!(lua.create_async_function(#closure)?),
-    };
+    let closure = generate_closure(&fn_ident, &ctx_idents, &arg_pat, &arg_idents);
+    let create = generate_create(args.guard.as_ref(), is_async, &closure);
     let perms_param = args
         .guard
         .is_some()
@@ -345,6 +305,139 @@ fn expand_lua_fn(args: LuaFnArgs, func: &mut ItemFn) -> syn::Result<TokenStream2
     })
 }
 
+fn validate_params(
+    doc: &ParsedDoc,
+    real: &[(Ident, Type)],
+    span: proc_macro2::Span,
+) -> syn::Result<()> {
+    let documented: Vec<&str> = doc.params.iter().map(|(n, _, _)| n.as_str()).collect();
+    let actual: Vec<String> = real.iter().map(|(i, _)| i.unraw().to_string()).collect();
+    if documented != actual.iter().map(String::as_str).collect::<Vec<_>>() {
+        return Err(syn::Error::new(
+            span,
+            format!(
+                "@param tags {documented:?} do not match parameters {actual:?} (same names, same order)"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn render_args(real: &[(Ident, Type)]) -> Vec<String> {
+    real.iter()
+        .map(|(ident, ty)| {
+            let ident = ident.unraw();
+            if last_segment_is(ty, "Variadic") {
+                "{...}".to_owned()
+            } else if last_segment_is(ty, "Option") {
+                format!("{{{ident}?}}")
+            } else {
+                format!("{{{ident}}}")
+            }
+        })
+        .collect()
+}
+
+fn generate_doc_const(
+    doc: &ParsedDoc,
+    lua_name: &str,
+    args_str: &str,
+    rendered: &[String],
+    doc_ident: &Ident,
+) -> TokenStream2 {
+    let ParsedDoc {
+        desc,
+        returns,
+        example,
+        ..
+    } = doc;
+    let param_docs =
+        doc.params.iter().zip(rendered).map(
+            |((_, ty, d), name)| quote!(crate::docs::ParamDoc { name: #name, ty: #ty, desc: #d }),
+        );
+    quote! {
+        #[allow(non_upper_case_globals)]
+        pub(crate) const #doc_ident: crate::docs::FnDoc = crate::docs::FnDoc {
+            name: #lua_name,
+            args: #args_str,
+            desc: #desc,
+            params: &[#(#param_docs),*],
+            returns: #returns,
+            example: #example,
+        };
+    }
+}
+
+struct MethodImplArgs<'a> {
+    func: &'a ItemFn,
+    doc_const: &'a TokenStream2,
+    reg_ident: &'a Ident,
+    lua_name: &'a str,
+    self_ty: &'a Type,
+    add_fn: &'a Ident,
+    arg_pat: &'a TokenStream2,
+    fn_ident: &'a Ident,
+    arg_idents: &'a [Ident],
+    span: proc_macro2::Span,
+    guard: Option<&'a Path>,
+    ctx: &'a [(Ident, Type)],
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn generate_method_impl(args: MethodImplArgs<'_>) -> syn::Result<TokenStream2> {
+    let MethodImplArgs {
+        func,
+        doc_const,
+        reg_ident,
+        lua_name,
+        self_ty,
+        add_fn,
+        arg_pat,
+        fn_ident,
+        arg_idents,
+        span,
+        guard,
+        ctx,
+    } = args;
+
+    if guard.is_some() || !ctx.is_empty() {
+        return Err(syn::Error::new(
+            span,
+            "guard and #[ctx] are not supported on methods",
+        ));
+    }
+    let closure = quote!(move |lua, this, #arg_pat| #fn_ident(lua, this #(, #arg_idents)*));
+    Ok(quote! {
+        #func
+        #doc_const
+        pub(crate) fn #reg_ident<M: mlua::UserDataMethods<#self_ty>>(methods: &mut M) {
+            methods.#add_fn(#lua_name, #closure);
+        }
+    })
+}
+
+fn generate_closure(
+    fn_ident: &Ident,
+    ctx_idents: &[&Ident],
+    arg_pat: &TokenStream2,
+    arg_idents: &[Ident],
+) -> TokenStream2 {
+    quote!(move |lua, #arg_pat| #fn_ident(lua #(, #ctx_idents.clone())* #(, #arg_idents)*))
+}
+
+fn generate_create(guard: Option<&Path>, is_async: bool, closure: &TokenStream2) -> TokenStream2 {
+    match (guard, is_async) {
+        (Some(g), false) => {
+            quote!(perms.guard(crate::plugin_permissions::Permission::#g, lua, #closure)?)
+        }
+        (Some(g), true) => {
+            quote!(perms.guard_async(crate::plugin_permissions::Permission::#g, lua, #closure)?)
+        }
+        (None, false) => quote!(lua.create_function(#closure)?),
+        (None, true) => quote!(lua.create_async_function(#closure)?),
+    }
+}
+
 fn method_kind(ty: &Type, is_async: bool) -> syn::Result<(Type, Ident)> {
     let (self_ty, add_fn) = match ty {
         Type::Reference(r) if !is_async => (
@@ -356,7 +449,10 @@ fn method_kind(ty: &Type, is_async: bool) -> syn::Result<(Type, Ident)> {
             },
         ),
         Type::Path(p) if is_async => {
-            let seg = p.path.segments.last().unwrap();
+            let seg =
+                p.path.segments.last().ok_or_else(|| {
+                    syn::Error::new(ty.span(), "path must have at least one segment")
+                })?;
             let add_fn = match seg.ident.to_string().as_str() {
                 "UserDataRef" => "add_async_method",
                 "UserDataRefMut" => "add_async_method_mut",

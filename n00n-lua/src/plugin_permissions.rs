@@ -47,28 +47,32 @@ pub struct PluginPermissions {
 }
 
 impl PluginPermissions {
+    #[must_use]
     pub fn trusted() -> Self {
         Self { allowed: [true; 5] }
     }
 
+    #[must_use]
     pub fn denied() -> Self {
         Self {
             allowed: [false; 5],
         }
     }
 
+    #[must_use]
     pub fn is_allowed(&self, perm: Permission) -> bool {
         self.allowed[perm as usize]
     }
 
     pub fn from_manifest(manifest: &toml::Value) -> Self {
+        const DEFAULT_PERMISSION: bool = true;
         let perms = manifest.get("permissions");
         let mut allowed = [true; 5];
         for perm in Permission::ALL {
             allowed[perm as usize] = perms
                 .and_then(|p| p.get(perm.manifest_key()))
                 .and_then(toml::Value::as_bool)
-                .unwrap_or(true);
+                .unwrap_or_else(|| DEFAULT_PERMISSION);
         }
         Self { allowed }
     }
@@ -77,6 +81,12 @@ impl PluginPermissions {
         self.allowed[perm as usize] = value;
     }
 
+    /// Wraps a function with a permission check. Returns a Lua function that
+    /// executes the original if the permission is allowed, or returns a permission
+    /// denied error otherwise.
+    ///
+    /// # Errors
+    /// Returns an error if the Lua function cannot be created.
     pub fn guard<F, A, R>(&self, perm: Permission, lua: &Lua, f: F) -> LuaResult<Function>
     where
         F: Fn(&Lua, A) -> LuaResult<R> + Send + 'static,
@@ -92,6 +102,12 @@ impl PluginPermissions {
         }
     }
 
+    /// Wraps an async function with a permission check. Returns a Lua async function
+    /// that executes the original if the permission is allowed, or returns a permission
+    /// denied error otherwise.
+    ///
+    /// # Errors
+    /// Returns an error if the Lua function cannot be created.
     pub fn guard_async<F, Fut, A, R>(
         &self,
         perm: Permission,
@@ -116,8 +132,7 @@ impl PluginPermissions {
 
 fn denied_error(perm: Permission) -> LuaError {
     LuaError::runtime(format!(
-        "permission denied: '{}' not granted for this plugin",
-        perm
+        "permission denied: '{perm}' not granted for this plugin"
     ))
 }
 
@@ -165,11 +180,11 @@ mod tests {
     #[test]
     fn from_manifest_partial() {
         let val: toml::Value = toml::from_str(
-            r#"
+            r"
             [permissions]
             fs_read = false
             net = false
-            "#,
+            ",
         )
         .unwrap();
         let p = PluginPermissions::from_manifest(&val);

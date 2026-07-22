@@ -11,7 +11,7 @@ use n00n_storage::StateDir;
 
 use crate::setup;
 
-pub fn run(model_arg: Option<String>, yolo: bool, no_jit: bool) -> Result<()> {
+pub fn run(model_arg: Option<&str>, yolo: bool, no_jit: bool) -> Result<()> {
     let storage = StateDir::resolve().context("resolve data directory")?;
     n00n_providers::model_registry::load_from_storage(&storage);
 
@@ -26,7 +26,7 @@ pub fn run(model_arg: Option<String>, yolo: bool, no_jit: bool) -> Result<()> {
         .context("load init.lua files")?;
 
     let mut config = raw_config
-        .unwrap_or_default()
+        .unwrap_or_else(Default::default)
         .into_config(false)
         .context("invalid config")?;
     config.permissions = load_permissions(&cwd);
@@ -48,21 +48,21 @@ pub fn run(model_arg: Option<String>, yolo: bool, no_jit: bool) -> Result<()> {
         stream: config.provider.stream_timeout,
     };
 
-    let model = setup::resolve_model(model_arg.as_deref(), &config.provider, &storage)?;
+    let model = setup::resolve_model(model_arg, &config.provider, &storage)?;
     setup::install_panic_log_hook();
 
     let (mcp_handle, _mcp_config_errors) = smol::block_on(n00n_agent::mcp::start(&cwd));
 
     let prompt_slots = plugin_host
         .event_handle()
-        .map(|h| h.collect_prompt_slots())
-        .unwrap_or_default();
+        .map_or_else(Default::default, |h| h.collect_prompt_slots());
 
     n00n_acp::run(n00n_acp::AcpParams {
         model,
         config: config.agent,
         permissions_config: config.permissions,
         timeouts,
+        openai_options: n00n_providers::OpenAiOptions::from(&config.provider),
         initial_wd: cwd,
         mcp_handle,
         prompt_slots: Arc::new(prompt_slots),

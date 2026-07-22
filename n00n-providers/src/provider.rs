@@ -24,7 +24,10 @@ use crate::providers::openrouter::OpenRouter;
 use crate::providers::synthetic::Synthetic;
 use crate::providers::tensorx::TensorX;
 use crate::providers::zai::Zai;
-use crate::{AgentError, Message, ProviderEvent, ProviderUsage, RequestOptions, StreamResponse};
+use crate::{
+    AgentError, Message, OpenAiOptions, ProviderEvent, ProviderUsage, RequestOptions,
+    StreamResponse,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, EnumIter)]
 #[strum(serialize_all = "kebab-case")]
@@ -50,6 +53,7 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
+    #[must_use]
     pub const fn display_name(self) -> &'static str {
         match self {
             Self::Anthropic => "Anthropic",
@@ -68,6 +72,7 @@ impl ProviderKind {
         }
     }
 
+    #[must_use]
     pub const fn api_key_env(self) -> &'static str {
         match self {
             Self::Anthropic => "ANTHROPIC_API_KEY",
@@ -86,6 +91,7 @@ impl ProviderKind {
         }
     }
 
+    #[must_use]
     pub const fn base_url(self) -> &'static str {
         match self {
             Self::Anthropic => "https://api.anthropic.com/v1/messages",
@@ -106,6 +112,7 @@ impl ProviderKind {
         }
     }
 
+    #[must_use]
     pub const fn supports_thinking(self) -> bool {
         matches!(
             self,
@@ -122,6 +129,7 @@ impl ProviderKind {
         )
     }
 
+    #[must_use]
     pub const fn features(self) -> Option<&'static str> {
         match self {
             Self::Anthropic => {
@@ -150,24 +158,26 @@ impl ProviderKind {
         }
     }
 
+    #[must_use]
     pub const fn family(self) -> ModelFamily {
         match self {
             Self::Anthropic => ModelFamily::Claude,
             Self::OpenAi => ModelFamily::Gpt,
             Self::Google => ModelFamily::Gemini,
-            Self::Copilot => ModelFamily::Generic,
-            Self::Ollama => ModelFamily::Generic,
-            Self::LlamaCpp => ModelFamily::Generic,
-            Self::Mistral => ModelFamily::Generic,
+            Self::Copilot
+            | Self::Ollama
+            | Self::LlamaCpp
+            | Self::Mistral
+            | Self::DeepSeek
+            | Self::OpenRouter
+            | Self::TensorX
+            | Self::Opencode => ModelFamily::Generic,
             Self::Zai => ModelFamily::Glm,
-            Self::DeepSeek => ModelFamily::Generic,
-            Self::OpenRouter => ModelFamily::Generic,
             Self::Synthetic => ModelFamily::Synthetic,
-            Self::TensorX => ModelFamily::Generic,
-            Self::Opencode => ModelFamily::Generic,
         }
     }
 
+    #[must_use]
     pub const fn accepts_arbitrary_models(self) -> bool {
         matches!(
             self,
@@ -183,47 +193,57 @@ impl ProviderKind {
     }
 
     /// `None` when we honestly don't know the output window: llama.cpp
-    /// serves whatever model the user loaded, and TensorX rejects explicit
-    /// max_tokens (see tensorx.rs). Unknown means "don't limit", never
+    /// serves whatever model the user loaded, and `TensorX` rejects explicit
+    /// `max_tokens` (see tensorx.rs). Unknown means "don't limit", never
     /// "assume small"; a `0` sentinel here once silently capped llama.cpp
     /// thinking budgets at the floor.
+    #[must_use]
     pub const fn fallback_max_output(self) -> Option<u32> {
         match self {
-            Self::Anthropic => Some(128_000),
-            Self::OpenAi => Some(100_000),
+            Self::OpenAi | Self::Copilot => Some(100_000),
             Self::Google => Some(65_536),
-            Self::Copilot => Some(100_000),
+            Self::Anthropic | Self::OpenRouter | Self::Opencode => Some(128_000),
             Self::Ollama => Some(16_384),
-            Self::LlamaCpp => None,
-            Self::Mistral => Some(32_000),
+            Self::LlamaCpp | Self::TensorX => None,
+            Self::Mistral | Self::Synthetic => Some(32_000),
             Self::Zai => Some(16_000),
             Self::DeepSeek => Some(384_000),
-            Self::OpenRouter => Some(128_000),
-            Self::Synthetic => Some(32_000),
-            Self::TensorX => None,
-            Self::Opencode => Some(128_000),
         }
     }
 
+    #[must_use]
     pub const fn fallback_context_window(self) -> u32 {
         match self {
-            Self::Anthropic => 200_000,
-            Self::OpenAi => 200_000,
-            Self::Google => 1_000_000,
-            Self::Copilot => 200_000,
-            Self::Ollama => 128_000,
-            Self::LlamaCpp => 128_000,
-            Self::Mistral => 128_000,
-            Self::Zai => 128_000,
-            Self::DeepSeek => 1_000_000,
-            Self::OpenRouter => 200_000,
-            Self::Synthetic => 128_000,
-            Self::TensorX => 200_000,
+            Self::Anthropic | Self::OpenAi | Self::Copilot | Self::OpenRouter | Self::TensorX => {
+                200_000
+            }
+            Self::Google | Self::DeepSeek => 1_000_000,
+            Self::Ollama | Self::LlamaCpp | Self::Mistral | Self::Zai | Self::Synthetic => 128_000,
             Self::Opencode => 256_000,
         }
     }
 
+    /// Creates a new provider instance for this kind.
+    ///
+    /// # Errors
+    /// Returns an error if the provider's configuration is missing or invalid
+    /// (e.g., missing API key, invalid base URL, or provider-specific setup failure).
     pub fn create(self, timeouts: Timeouts) -> Result<Box<dyn Provider>, AgentError> {
+        if self == Self::OpenAi {
+            return Ok(Box::new(OpenAi::new(timeouts)?));
+        }
+        self.create_with_openai_options(timeouts, OpenAiOptions::default())
+    }
+
+    /// Creates a provider with OpenAI-specific runtime options.
+    ///
+    /// # Errors
+    /// Returns an error if the provider configuration is missing or invalid.
+    pub fn create_with_openai_options(
+        self,
+        timeouts: Timeouts,
+        openai_options: OpenAiOptions,
+    ) -> Result<Box<dyn Provider>, AgentError> {
         match self {
             Self::Anthropic => {
                 if bedrock::is_enabled() {
@@ -232,7 +252,10 @@ impl ProviderKind {
                     Ok(Box::new(Anthropic::new(timeouts)?))
                 }
             }
-            Self::OpenAi => Ok(Box::new(OpenAi::new(timeouts)?)),
+            Self::OpenAi => Ok(Box::new(OpenAi::new_with_options(
+                timeouts,
+                openai_options,
+            )?)),
             Self::Google => Ok(Box::new(Google::new(timeouts)?)),
             Self::Copilot => Ok(Box::new(Copilot::new(timeouts)?)),
             Self::Ollama => Ok(Box::new(LocalEndpoint::new(&OLLAMA, timeouts)?)),
@@ -247,7 +270,11 @@ impl ProviderKind {
         }
     }
 
+    #[must_use]
     pub fn is_available(self) -> bool {
+        if !should_discover(self) {
+            return false;
+        }
         self.create(Timeouts::default()).is_ok()
     }
 }
@@ -298,19 +325,47 @@ fn provider_for_slug(slug: &str, timeouts: Timeouts) -> Result<Box<dyn Provider>
     }
 }
 
+/// Creates a provider instance from a model configuration.
+///
+/// # Errors
+/// Returns an error if the provider cannot be created (e.g., missing API key,
+/// invalid configuration, or provider-specific setup failure).
 pub fn from_model(model: &mut Model, timeouts: Timeouts) -> Result<Box<dyn Provider>, AgentError> {
+    from_model_with_openai_options(model, timeouts, OpenAiOptions::default())
+}
+
+/// Creates a provider instance from a model configuration with `OpenAI` runtime options.
+///
+/// # Errors
+/// Returns an error if the provider cannot be created.
+pub fn from_model_with_openai_options(
+    model: &mut Model,
+    timeouts: Timeouts,
+    openai_options: OpenAiOptions,
+) -> Result<Box<dyn Provider>, AgentError> {
     if let Some(slug) = &model.dynamic_slug {
         debug!(slug, model = %model.id, "slug provider created");
         return provider_for_slug(slug, timeouts);
     }
-    let provider = model.provider.create(timeouts)?;
+    let provider = model
+        .provider
+        .create_with_openai_options(timeouts, openai_options)?;
     provider.adjust_model(model);
     debug!(provider = %model.provider, model = %model.id, "provider created");
     Ok(provider)
 }
 
 pub fn from_model_fallback(model: &mut Model, timeouts: Timeouts) -> Box<dyn Provider> {
-    match from_model(model, timeouts) {
+    from_model_fallback_with_openai_options(model, timeouts, OpenAiOptions::default())
+}
+
+#[must_use]
+pub fn from_model_fallback_with_openai_options(
+    model: &mut Model,
+    timeouts: Timeouts,
+    openai_options: OpenAiOptions,
+) -> Box<dyn Provider> {
+    match from_model_with_openai_options(model, timeouts, openai_options) {
         Ok(provider) => provider,
         Err(e) => {
             warn!(error = %e, "provider creation failed, using unconfigured provider");
@@ -350,9 +405,26 @@ impl Provider for UnconfiguredProvider {
     }
 }
 
+/// Creates a provider instance from a model configuration asynchronously.
+///
+/// # Errors
+/// Returns an error if the provider cannot be created (e.g., missing API key,
+/// invalid configuration, or provider-specific setup failure).
 pub async fn from_model_async(
     model: &mut Model,
     timeouts: Timeouts,
+) -> Result<Box<dyn Provider>, AgentError> {
+    from_model_async_with_openai_options(model, timeouts, OpenAiOptions::default()).await
+}
+
+/// Creates a provider instance asynchronously with `OpenAI` runtime options.
+///
+/// # Errors
+/// Returns an error if the provider cannot be created.
+pub async fn from_model_async_with_openai_options(
+    model: &mut Model,
+    timeouts: Timeouts,
+    openai_options: OpenAiOptions,
 ) -> Result<Box<dyn Provider>, AgentError> {
     let slug = model.dynamic_slug.clone();
     let kind = model.provider;
@@ -361,7 +433,7 @@ pub async fn from_model_async(
         if let Some(slug) = &slug {
             provider_for_slug(slug, timeouts)
         } else {
-            kind.create(timeouts)
+            kind.create_with_openai_options(timeouts, openai_options)
         }
     })
     .await?;
@@ -379,6 +451,7 @@ pub struct ModelBatch {
 
 /// Offline version of model discovery: returns specs from static tables
 /// and configured dynamic providers. See [`fetch_all_models`] for live lookups.
+#[must_use]
 pub fn available_model_specs() -> Vec<String> {
     let mut specs: Vec<String> = ProviderKind::iter()
         .filter(|kind| should_discover(*kind) && kind.is_available())
@@ -401,22 +474,35 @@ pub fn available_model_specs() -> Vec<String> {
 }
 
 fn should_discover(kind: ProviderKind) -> bool {
-    if kind != ProviderKind::LlamaCpp {
-        return true;
-    }
-
     let config = n00n_config::providers::ProvidersConfig::load();
-    llama_cpp_is_configured(
-        std::env::var_os("LLAMA_CPP_HOST").is_some(),
-        std::env::var_os("LLAMA_CPP_API_KEY").is_some(),
-        config.get("llama-cpp").is_some(),
-    )
+    match kind {
+        ProviderKind::Ollama => ollama_is_configured(
+            std::env::var_os("OLLAMA_HOST").is_some(),
+            std::env::var_os("OLLAMA_API_KEY").is_some(),
+            config.get("ollama").is_some(),
+        ),
+        ProviderKind::LlamaCpp => llama_cpp_is_configured(
+            std::env::var_os("LLAMA_CPP_HOST").is_some(),
+            std::env::var_os("LLAMA_CPP_API_KEY").is_some(),
+            config.get("llama-cpp").is_some(),
+        ),
+        _ => true,
+    }
+}
+
+fn ollama_is_configured(has_host: bool, has_api_key: bool, has_provider_config: bool) -> bool {
+    has_host || has_api_key || has_provider_config
 }
 
 fn llama_cpp_is_configured(has_host: bool, has_api_key: bool, has_provider_config: bool) -> bool {
     has_host || has_api_key || has_provider_config
 }
 
+/// Fetches all available models from all providers asynchronously.
+///
+/// # Panics
+/// Panics if the model registry mutex is poisoned.
+#[allow(clippy::too_many_lines)]
 pub async fn fetch_all_models(
     mut on_ready: impl FnMut(ModelBatch),
     on_done: Option<Box<dyn FnOnce() + Send>>,
@@ -436,7 +522,7 @@ pub async fn fetch_all_models(
                     if kind.accepts_arbitrary_models() {
                         crate::model_registry::model_registry()
                             .write()
-                            .unwrap()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .set_known_models(kind, models.clone());
                     }
                     let mut specs: Vec<String> =
@@ -542,7 +628,7 @@ pub async fn fetch_all_models(
 
 #[cfg(test)]
 mod tests {
-    use super::{ProviderKind, llama_cpp_is_configured, should_discover};
+    use super::{llama_cpp_is_configured, ollama_is_configured};
 
     #[test_case::test_case(false, false, false => false; "unconfigured")]
     #[test_case::test_case(true, false, false => true; "host")]
@@ -558,8 +644,15 @@ mod tests {
         llama_cpp_is_configured(has_host, has_api_key, has_provider_config)
     }
 
-    #[test]
-    fn other_providers_are_always_discovered() {
-        assert!(should_discover(ProviderKind::Ollama));
+    #[test_case::test_case(false, false, false => false; "unconfigured")]
+    #[test_case::test_case(true, false, false => true; "host")]
+    #[test_case::test_case(false, true, false => true; "api_key")]
+    #[test_case::test_case(false, false, true => true; "provider_config")]
+    fn ollama_configuration_sources(
+        has_host: bool,
+        has_api_key: bool,
+        has_provider_config: bool,
+    ) -> bool {
+        ollama_is_configured(has_host, has_api_key, has_provider_config)
     }
 }

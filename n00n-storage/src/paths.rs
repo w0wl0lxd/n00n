@@ -22,6 +22,7 @@ struct Paths {
 /// Returns an absolute path with `..` and `.` components resolved, but without
 /// calling `canonicalize`. This means no `\\?\` prefix on Windows and no symlink
 /// resolution. Use this for display, logging, and scope matching.
+#[must_use]
 pub fn normalize_path(path: &Path) -> PathBuf {
     let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     normalize_abs_path(&abs)
@@ -56,6 +57,7 @@ fn normalize_abs_path(abs: &Path) -> PathBuf {
 /// The result is for display, logging, and scope matching only. Do not pass
 /// it to Win32 filesystem APIs if the path exceeds 260 characters (the
 /// `\\?\` prefix is what bypasses that limit).
+#[must_use]
 pub fn canonicalize_clean(path: &Path) -> PathBuf {
     match fs::canonicalize(path) {
         Ok(canon) => strip_windows_extended_prefix(&canon),
@@ -76,6 +78,7 @@ pub fn canonicalize_clean(path: &Path) -> PathBuf {
 /// a symlink is in play.
 ///
 /// Returns `None` if the root/prefix portion of the path cannot be resolved.
+#[must_use]
 pub fn incremental_canonicalize(path: &Path) -> Option<PathBuf> {
     let mut current = PathBuf::new();
 
@@ -155,8 +158,7 @@ fn state_logs(s: &impl BaseStrategy, fallback: &Path) -> (PathBuf, PathBuf) {
     let state_base = s.state_dir();
     let state = state_base
         .as_ref()
-        .map(|d| d.join(APP_NAME))
-        .unwrap_or_else(|| fallback.to_path_buf());
+        .map_or_else(|| fallback.to_path_buf(), |d| d.join(APP_NAME));
     let logs = state_base
         .as_ref()
         .and_then(|d| d.parent().map(|p| p.join("logs").join(APP_NAME)))
@@ -195,53 +197,97 @@ fn ensure(path: &Path) -> Result<PathBuf, std::io::Error> {
     Ok(path.to_path_buf())
 }
 
+/// # Errors
+/// Returns an error if the base directories cannot be resolved or created.
 pub fn config_dir() -> Result<PathBuf, std::io::Error> {
     let p = resolve().ok_or_else(err)?;
     ensure(&p.config)
 }
 
+/// # Errors
+/// Returns an error if the base directories cannot be resolved or created.
 pub fn xdg_config_dir() -> Result<PathBuf, std::io::Error> {
     let p = resolve().ok_or_else(err)?;
     ensure(&p.xdg_config)
 }
 
+/// # Errors
+/// Returns an error if the base directories cannot be resolved or created.
 pub fn data_dir() -> Result<PathBuf, std::io::Error> {
     let p = resolve().ok_or_else(err)?;
     ensure(&p.data)
 }
 
+/// # Errors
+/// Returns an error if the base directories cannot be resolved or created.
 pub fn state_dir() -> Result<PathBuf, std::io::Error> {
     let p = resolve().ok_or_else(err)?;
     ensure(&p.state)
 }
 
+/// # Errors
+/// Returns an error if the base directories cannot be resolved or created.
 pub fn logs_dir() -> Result<PathBuf, std::io::Error> {
     let p = resolve().ok_or_else(err)?;
     ensure(&p.logs)
 }
 
+/// # Errors
+/// Returns an error if the base directories cannot be resolved or created.
 pub fn cache_dir() -> Result<PathBuf, std::io::Error> {
     let p = resolve().ok_or_else(err)?;
     ensure(&p.cache)
 }
 
+#[must_use]
 pub fn home() -> Option<PathBuf> {
     etcetera::home_dir().ok()
 }
 
+#[must_use]
 pub fn user_config_dirs(
     _home: Option<&Path>,
     xdg_config: Option<&Path>,
     subdir: &str,
 ) -> Vec<PathBuf> {
-    xdg_config
-        .map(|dir| vec![dir.join(subdir)])
-        .unwrap_or_default()
+    xdg_config.map_or_else(Vec::new, |dir| vec![dir.join(subdir)])
 }
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
+
     use super::*;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &Path) -> Self {
+            let previous = std::env::var_os(key);
+            // SAFETY: tests run single-threaded; env is restored on drop.
+            #[allow(unsafe_code)]
+            unsafe {
+                std::env::set_var(key, value);
+            };
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            // SAFETY: same single-threaded assumption as above.
+            #[allow(unsafe_code)]
+            unsafe {
+                match self.previous.take() {
+                    Some(v) => std::env::set_var(self.key, v),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
 
     #[test]
     fn normalize_path_resolves_parent() {
@@ -313,25 +359,16 @@ mod tests {
     }
 
     #[test]
+    #[allow(unsafe_code)]
     fn user_config_dirs_neither_depends_on_process_env() {
         let home_a = tempfile::tempdir().unwrap();
         let xdg_a = home_a.path().join(".config").join(APP_NAME);
 
         let hostile = tempfile::tempdir().unwrap();
 
-        let prev = std::env::var_os("XDG_CONFIG_HOME");
-        // SAFETY: tests run single-threaded within a process nextest invokes once.
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", hostile.path()) };
+        let _guard = EnvVarGuard::set("XDG_CONFIG_HOME", hostile.path());
 
         let dirs = user_config_dirs(Some(home_a.path()), Some(&xdg_a), "AGENTS.md");
-
-        // SAFETY: same single-threaded assumption as above.
-        unsafe {
-            match prev {
-                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
-                None => std::env::remove_var("XDG_CONFIG_HOME"),
-            }
-        }
 
         assert!(
             !dirs.iter().any(|p| p.starts_with(hostile.path())),

@@ -111,6 +111,7 @@ inventory::submit!(BuiltInProvider {
     needs_url: false,
 });
 
+#[allow(clippy::too_many_lines)]
 pub(crate) fn models() -> &'static [ModelEntry] {
     &[
         ModelEntry {
@@ -126,7 +127,7 @@ pub(crate) fn models() -> &'static [ModelEntry] {
                 cache_read: 0.30,
                 fast: None,
             },
-            max_output_tokens: 131072,
+            max_output_tokens: 131_072,
             context_window: 200_000,
         },
         ModelEntry {
@@ -142,7 +143,7 @@ pub(crate) fn models() -> &'static [ModelEntry] {
                 cache_read: 0.20,
                 fast: None,
             },
-            max_output_tokens: 131072,
+            max_output_tokens: 131_072,
             context_window: 1_000_000,
         },
         ModelEntry {
@@ -158,7 +159,7 @@ pub(crate) fn models() -> &'static [ModelEntry] {
                 cache_read: 0.20,
                 fast: None,
             },
-            max_output_tokens: 131072,
+            max_output_tokens: 131_072,
             context_window: 200_000,
         },
         ModelEntry {
@@ -174,7 +175,7 @@ pub(crate) fn models() -> &'static [ModelEntry] {
                 cache_read: 0.00,
                 fast: None,
             },
-            max_output_tokens: 131072,
+            max_output_tokens: 131_072,
             context_window: 200_000,
         },
         ModelEntry {
@@ -190,7 +191,7 @@ pub(crate) fn models() -> &'static [ModelEntry] {
                 cache_read: 0.11,
                 fast: None,
             },
-            max_output_tokens: 131072,
+            max_output_tokens: 131_072,
             context_window: 200_000,
         },
         ModelEntry {
@@ -262,20 +263,23 @@ impl Zai {
             auth.base_url = Some(url);
         }
         Ok(Self {
-            compat: OpenAiCompatProvider::new(&CONFIG_STANDARD, timeouts),
+            compat: OpenAiCompatProvider::new(&CONFIG_STANDARD, timeouts)?,
             auth: Arc::new(Mutex::new(auth)),
             key_pool: Some(pool),
             system_prefix: None,
         })
     }
 
-    pub(crate) fn with_auth(auth: Arc<Mutex<ResolvedAuth>>, timeouts: super::Timeouts) -> Self {
-        Self {
-            compat: OpenAiCompatProvider::new(&CONFIG_STANDARD, timeouts),
+    pub(crate) fn with_auth(
+        auth: Arc<Mutex<ResolvedAuth>>,
+        timeouts: super::Timeouts,
+    ) -> Result<Self, AgentError> {
+        Ok(Self {
+            compat: OpenAiCompatProvider::new(&CONFIG_STANDARD, timeouts)?,
             auth,
             key_pool: None,
             system_prefix: None,
-        }
+        })
     }
 
     pub(crate) fn with_system_prefix(mut self, prefix: Option<String>) -> Self {
@@ -296,15 +300,19 @@ impl Provider for Zai {
         session_id: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
-            let auth = self.auth.lock().unwrap().clone();
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             let mut buf = String::new();
-            let system = super::with_prefix(&self.system_prefix, system, &mut buf);
+            let system = super::with_prefix(self.system_prefix.as_deref(), system, &mut buf);
             let mut body = self.compat.build_body_with_session(
                 model,
                 messages,
                 system,
                 tools,
-                session_id.map(|s| s.as_str()),
+                session_id.map(n00n_storage::id::SessionRef::as_str),
             );
             if model.supports_thinking() {
                 opts.thinking
@@ -332,14 +340,22 @@ impl Provider for Zai {
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<crate::model::ModelInfo>, AgentError>> {
         Box::pin(async move {
-            let auth = self.auth.lock().unwrap().clone();
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             self.compat.do_list_models(&auth).await
         })
     }
 
     fn fetch_usage(&self) -> BoxFuture<'_, Result<Option<ProviderUsage>, AgentError>> {
         Box::pin(async move {
-            let auth = self.auth.lock().unwrap().clone();
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             let body = self.compat.get_text(&auth, QUOTA_LIMIT_URL).await?;
             let parsed: QuotaResponse = serde_json::from_str(&body)?;
             Ok(Some(parsed.into()))
@@ -394,10 +410,10 @@ mod tests {
         assert_eq!(usage.limits.len(), 3);
         assert_eq!(usage.limits[0].label, "5-hour tokens");
         assert_eq!(usage.limits[0].percentage, 16);
-        assert_eq!(usage.limits[0].reset_at, Some(1777819631597));
+        assert_eq!(usage.limits[0].reset_at, Some(1_777_819_631_597));
         assert_eq!(usage.limits[1].label, "Weekly tokens");
         assert_eq!(usage.limits[2].label, "Subscription time");
-        assert_eq!(usage.limits[2].reset_at, Some(1780336384978));
+        assert_eq!(usage.limits[2].reset_at, Some(1_780_336_384_978));
     }
 
     #[test]

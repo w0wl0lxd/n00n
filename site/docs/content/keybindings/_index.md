@@ -20,6 +20,7 @@ On macOS, some bindings use Option or Fn keys instead (run `/help` for exact key
 | `Ctrl+S` | File picker |
 | `Ctrl+O` | Open plan in editor |
 | `Ctrl+T` | Toggle plan panel |
+| `Alt+T` | Toggle transcript details |
 | `Ctrl+X` | Open tasks |
 
 ## Editing
@@ -112,7 +113,7 @@ The `/help` modal and the splash show default labels, not live overrides, but pr
 
 ### Recovering from a bad keymap
 
-If an override leaves N00n stuck (a rebound `Ctrl+C`, a modal that won't close, a plugin that throws on load), boot without plugins:
+If an override leaves n00n stuck (a rebound `Ctrl+C`, a modal that won't close, a plugin that throws on load), boot without plugins:
 
 ```bash
 n00n --no-plugins

@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use super::{RetryInfo, Status};
 
 use crate::animation::spinner_frame;
+use crate::cast;
 use crate::theme;
 
 use n00n_providers::{ModelPricing, TokenUsage};
@@ -21,8 +22,8 @@ const WORKFLOW_LABEL: &str = " [workflow]";
 pub(crate) fn format_tokens(n: u32) -> String {
     match n {
         0..1_000 => n.to_string(),
-        1_000..1_000_000 => format!("{:.1}k", n as f64 / 1_000.0),
-        _ => format!("{:.1}m", n as f64 / 1_000_000.0),
+        1_000..1_000_000 => format!("{:.1}k", f64::from(n) / 1_000.0),
+        _ => format!("{:.1}m", f64::from(n) / 1_000_000.0),
     }
 }
 
@@ -105,6 +106,7 @@ impl StatusBar {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // status-bar rendering assembly; layout is sequential
     pub fn view(&self, frame: &mut Frame, area: Rect, ctx: &StatusBarContext) {
         let mut left_spans = Vec::new();
 
@@ -149,70 +151,69 @@ impl StatusBar {
 
         let mut right_spans = Vec::new();
 
-        match ctx.status {
-            Status::Error { message: e, .. } => {
-                left_spans.push(Span::styled(format!(" {e}"), theme::current().error));
+        if let Status::Error { message: e, .. } = ctx.status {
+            left_spans.push(Span::styled(format!(" {e}"), theme::current().error));
+        } else {
+            let pct = if ctx.stats.context_window > 0 {
+                cast::f64_to_u32(
+                    f64::from(ctx.stats.context_size) / f64::from(ctx.stats.context_window) * 100.0,
+                )
+            } else {
+                0
+            };
+
+            right_spans.push(Span::styled(
+                self.cwd_branch.clone(),
+                theme::current().status_dim,
+            ));
+            right_spans.push(Span::raw("  "));
+            right_spans.push(Span::styled(
+                ctx.model_id.to_string(),
+                theme::current().status_dim,
+            ));
+
+            if let Some(ref label) = ctx.thinking_label {
+                right_spans.push(Span::styled(
+                    format!(" [{label}]"),
+                    theme::current().status_dim,
+                ));
             }
-            _ => {
-                let pct = if ctx.stats.context_window > 0 {
-                    (ctx.stats.context_size as f64 / ctx.stats.context_window as f64 * 100.0) as u32
-                } else {
-                    0
-                };
 
-                right_spans.push(Span::styled(
-                    self.cwd_branch.clone(),
-                    theme::current().status_dim,
-                ));
-                right_spans.push(Span::raw("  "));
-                right_spans.push(Span::styled(
-                    ctx.model_id.to_string(),
-                    theme::current().status_dim,
-                ));
+            if ctx.fast {
+                right_spans.push(Span::styled(FAST_LABEL, theme::current().status_dim));
+            }
+            if ctx.workflow {
+                right_spans.push(Span::styled(WORKFLOW_LABEL, theme::current().status_dim));
+            }
 
-                if let Some(ref label) = ctx.thinking_label {
-                    right_spans.push(Span::styled(
-                        format!(" [{label}]"),
-                        theme::current().status_dim,
-                    ));
-                }
+            let context_text = format!(
+                "  {}/{} ({}%)",
+                format_tokens(ctx.stats.context_size),
+                format_tokens(ctx.stats.context_window),
+                pct,
+            );
+            let rest_text = if ctx.stats.pricing.is_zero() {
+                format!("{context_text} ")
+            } else {
+                format!(
+                    "{context_text} ${:.3} ",
+                    ctx.stats.usage.cost(ctx.stats.pricing, ctx.fast),
+                )
+            };
+            right_spans.push(Span::styled(
+                rest_text,
+                Style::new().fg(theme::current().foreground),
+            ));
 
-                if ctx.fast {
-                    right_spans.push(Span::styled(FAST_LABEL, theme::current().status_dim));
-                }
-                if ctx.workflow {
-                    right_spans.push(Span::styled(WORKFLOW_LABEL, theme::current().status_dim));
-                }
-
-                let context_text = format!(
-                    "  {}/{} ({}%)",
-                    format_tokens(ctx.stats.context_size),
-                    format_tokens(ctx.stats.context_window),
-                    pct,
+            if ctx.stats.show_global && !ctx.stats.pricing.is_zero() {
+                let global_text = format!(
+                    " \u{03a3}${:.3} ",
+                    ctx.stats.global_usage.cost(ctx.stats.pricing, ctx.fast),
                 );
-                let rest_text = if ctx.stats.pricing.is_zero() {
-                    format!("{context_text} ")
-                } else {
-                    format!(
-                        "{context_text} ${:.3} ",
-                        ctx.stats.usage.cost(ctx.stats.pricing, ctx.fast),
-                    )
-                };
                 right_spans.push(Span::styled(
-                    rest_text,
+                    global_text,
                     Style::new().fg(theme::current().foreground),
                 ));
-
-                if ctx.stats.show_global && !ctx.stats.pricing.is_zero() {
-                    let global_text = format!(
-                        " \u{03a3}${:.3} ",
-                        ctx.stats.global_usage.cost(ctx.stats.pricing, ctx.fast),
-                    );
-                    right_spans.push(Span::styled(
-                        global_text,
-                        Style::new().fg(theme::current().foreground),
-                    ));
-                }
             }
         }
 
@@ -225,7 +226,12 @@ impl StatusBar {
 
         let [left_area, right_area] = Layout::horizontal([
             Constraint::Min(0),
-            Constraint::Length(right_spans.iter().map(|s| s.width() as u16).sum()),
+            Constraint::Length(
+                right_spans
+                    .iter()
+                    .map(|s| cast::usize_to_u16(s.width()))
+                    .sum(),
+            ),
         ])
         .areas(area);
 
@@ -246,14 +252,11 @@ fn collapse_home(path: &str) -> String {
 
 fn collapse_home_with(path: &str, home: &str) -> String {
     path.strip_prefix(home)
-        .map(|rest| format!("~{rest}"))
-        .unwrap_or_else(|| path.to_string())
+        .map_or_else(|| path.to_string(), |rest| format!("~{rest}"))
 }
 
 fn cwd_branch_label() -> String {
-    let cwd = env::current_dir()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| ".".into());
+    let cwd = env::current_dir().map_or_else(|_| ".".into(), |p| p.to_string_lossy().into_owned());
     let label = collapse_home(&cwd);
     match detect_branch(&cwd) {
         Some(branch) => format!("{label}:{branch}"),
@@ -402,7 +405,7 @@ mod tests {
             .buffer()
             .content
             .iter()
-            .map(|cell| cell.symbol())
+            .map(ratatui::buffer::Cell::symbol)
             .collect();
 
         assert!(!text.contains("thinking..."), "status bar: {text:?}");

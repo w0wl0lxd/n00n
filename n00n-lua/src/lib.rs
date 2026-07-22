@@ -1,5 +1,6 @@
 // n00n-lua wraps the Luau C runtime; unsafe is isolated to this FFI boundary.
 #![allow(unsafe_code)]
+#![allow(clippy::doc_markdown, clippy::doc_link_with_quotes)]
 
 mod api;
 pub mod docs;
@@ -36,6 +37,7 @@ pub mod test_support {
         }
     }
 
+    #[must_use]
     pub fn lua_command_writer_pair() -> (LuaCommandWriterHandle, LuaCommandReader) {
         let (writer, reader) = LuaCommandWriter::new();
         (LuaCommandWriterHandle(writer), reader)
@@ -48,6 +50,7 @@ pub mod test_support {
     impl RequestProbe {
         /// Next request as `(kind, clicks)`: `"click"` carries no clicks,
         /// `"click_fallback"` and `"restore"` carry their restore item's.
+        #[must_use]
         pub fn try_recv(&self) -> Option<(&'static str, Vec<usize>)> {
             use crate::runtime::Request;
             Some(match self.0.try_recv().ok()? {
@@ -62,11 +65,13 @@ pub mod test_support {
         }
     }
 
+    #[must_use]
     pub fn probed_event_handle() -> (crate::EventHandle, RequestProbe) {
         let (tx, rx) = flume::unbounded();
         (crate::EventHandle::probed_for_test(tx), RequestProbe(rx))
     }
 
+    #[must_use]
     pub fn keymap_reader_with(entries: Vec<KeymapEntry>) -> KeymapReader {
         let (writer, reader) = KeymapWriter::new();
         writer.publish(entries);

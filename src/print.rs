@@ -19,12 +19,13 @@ use n00n_agent::tools::QUESTION_TOOL_NAME;
 use n00n_agent::{AgentConfig, AgentEvent, Envelope, ImageSource, PermissionsConfig};
 use n00n_lua::EventHandle;
 use n00n_providers::model::Model;
-use n00n_providers::{StopReason, TokenUsage};
+use n00n_providers::{OpenAiOptions, StopReason, TokenUsage};
 use n00n_storage::id::SessionRef;
 use serde::Serialize;
 use serde_json::Value;
 
 const AGENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const LOCAL_TOKEN_USAGE_NOTE: &str = "usage.input is fresh input; usage.cache_read and usage.cache_creation are cached context. Local token counts are not ChatGPT subscription quota.";
 
 // Fails fast: silently dropping an image the caller explicitly attached
 // would be worse than erroring.
@@ -40,7 +41,7 @@ fn load_images(paths: &[PathBuf]) -> Result<Vec<ImageSource>> {
         .collect()
 }
 
-#[derive(Clone, ValueEnum)]
+#[derive(Clone, Copy, ValueEnum)]
 pub enum OutputFormat {
     Text,
     Json,
@@ -60,6 +61,7 @@ struct PrintResult {
     session_id: SessionRef,
     total_cost_usd: f64,
     usage: TokenUsage,
+    usage_note: &'static str,
 }
 
 #[derive(Serialize)]
@@ -134,34 +136,32 @@ impl VerboseOutput {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 pub fn run(
     model: &Model,
     prompt_arg: Option<String>,
-    image_paths: Vec<PathBuf>,
+    image_paths: &[PathBuf],
     format: OutputFormat,
     verbose: bool,
     config: AgentConfig,
     permissions_config: PermissionsConfig,
     timeouts: n00n_providers::Timeouts,
-    lua_handle: Option<EventHandle>,
+    openai_options: OpenAiOptions,
+    lua_handle: Option<&EventHandle>,
     fast: bool,
     workflow: bool,
 ) -> Result<()> {
-    let prompt = match prompt_arg {
-        Some(p) => p,
-        None => {
-            let mut buf = String::new();
-            io::stdin().read_to_string(&mut buf).context("read stdin")?;
-            buf
-        }
+    let prompt = if let Some(p) = prompt_arg {
+        p
+    } else {
+        let mut buf = String::new();
+        io::stdin().read_to_string(&mut buf).context("read stdin")?;
+        buf
     };
 
-    let images = load_images(&image_paths)?;
+    let images = load_images(image_paths)?;
 
-    let prompt_slots = lua_handle
-        .as_ref()
-        .map(|h| h.collect_prompt_slots())
-        .unwrap_or_default();
+    let prompt_slots = lua_handle.map_or_else(Default::default, EventHandle::collect_prompt_slots);
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let (mcp_handle, mcp_config_errors) = smol::block_on(n00n_agent::mcp::start(&cwd));
@@ -174,6 +174,7 @@ pub fn run(
         config,
         permissions_config,
         timeouts,
+        openai_options,
         prompt,
         images,
         prompt_slots,
@@ -211,6 +212,7 @@ pub fn run(
     }
 
     let mut result_text = String::new();
+    let mut result_checkpoint = 0;
     let mut is_error = false;
     let mut num_turns: u32 = 0;
     let mut usage = TokenUsage::default();
@@ -230,8 +232,8 @@ pub fn run(
                     result_text.push_str(text);
                 }
             }
-            AgentEvent::ThinkingDelta { .. } => {}
-            AgentEvent::ToolPending { .. }
+            AgentEvent::ThinkingDelta { .. }
+            | AgentEvent::ToolPending { .. }
             | AgentEvent::ToolStart(_)
             | AgentEvent::ToolOutput { .. }
             | AgentEvent::ToolDone(_)
@@ -252,6 +254,9 @@ pub fn run(
                 message,
                 delay_ms,
             } => {
+                if parent_tool_use_id.is_none() {
+                    result_text.truncate(result_checkpoint);
+                }
                 if let Some(out) = &mut verbose_out {
                     out.emit(&RetryEvent {
                         event_type: "system",
@@ -264,6 +269,9 @@ pub fn run(
                 }
             }
             AgentEvent::TurnComplete(tc) => {
+                if parent_tool_use_id.is_none() {
+                    result_checkpoint = result_text.len();
+                }
                 if let Some(out) = &mut verbose_out {
                     let content_value = serde_json::to_value(&tc.message.content)?;
                     out.emit(&AssistantEvent {
@@ -305,7 +313,7 @@ pub fn run(
             }
             AgentEvent::Error { message } => {
                 is_error = true;
-                result_text = message.clone();
+                result_text.clone_from(message);
                 break;
             }
         }
@@ -336,6 +344,7 @@ pub fn run(
                 session_id,
                 total_cost_usd,
                 usage,
+                usage_note: LOCAL_TOKEN_USAGE_NOTE,
             };
             match verbose_out {
                 Some(VerboseOutput::Json(mut events)) => {
@@ -365,6 +374,7 @@ mod tests {
         "session_id",
         "total_cost_usd",
         "usage",
+        "usage_note",
         "duration_ms",
     ];
     const INIT_EVENT_FIELDS: &[&str] = &["type", "subtype", "cwd", "session_id", "tools", "model"];
@@ -390,6 +400,7 @@ mod tests {
             session_id: SessionRef::generate(),
             total_cost_usd: 0.003,
             usage: TokenUsage::default(),
+            usage_note: LOCAL_TOKEN_USAGE_NOTE,
         };
         let json: Value = serde_json::to_value(&result).unwrap();
         for field in PRINT_RESULT_FIELDS {

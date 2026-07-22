@@ -216,6 +216,7 @@ impl LuaCtx {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 impl UserData for LuaCtx {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("cancelled", |_, this, ()| Ok(this.cancel.is_cancelled()));
@@ -228,10 +229,11 @@ impl UserData for LuaCtx {
         });
 
         methods.add_method("audience", |lua, this, ()| {
+            const DEFAULT_AUDIENCE: &str = "main";
             let Some(audience) = this.audience() else {
                 return Ok(this.cap_err_pair("audience"));
             };
-            let name = lua.create_string(audience.name().unwrap_or("main"))?;
+            let name = lua.create_string(audience.name().unwrap_or_else(|| DEFAULT_AUDIENCE))?;
             Ok((LuaValue::String(name), None))
         });
 
@@ -252,7 +254,7 @@ impl UserData for LuaCtx {
                 return Ok((config_val, None));
             }
             let key: String = lua.from_value(args[0].clone())?;
-            let default = args.get(1).cloned().unwrap_or(LuaValue::Nil);
+            let default = args.get(1).cloned().unwrap_or_else(|| LuaValue::Nil);
             let val = match config_val {
                 LuaValue::Table(ref tbl) => {
                     let val = tbl.raw_get::<LuaValue>(key.as_str())?;
@@ -281,13 +283,17 @@ impl UserData for LuaCtx {
                 return Ok(this.cap_err_pair("set_deadline"));
             }
             let handle = active_task(lua);
-            let cell = handle.lock().unwrap_or_else(|e| e.into_inner());
+            let cell = handle
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if cell.deadline_secs.get().is_some() {
                 return Err(mlua::Error::runtime(DEADLINE_ALREADY_SET_MSG));
             }
+            let deadline = Instant::now()
+                .checked_add(Duration::from_secs(secs))
+                .ok_or_else(|| mlua::Error::runtime("deadline is out of range"))?;
             cell.deadline_secs.set(Some(secs));
-            cell.deadline
-                .set(Some(Instant::now() + Duration::from_secs(secs)));
+            cell.deadline.set(Some(deadline));
             Ok((LuaValue::Nil, None))
         });
 
@@ -315,12 +321,16 @@ impl UserData for LuaCtx {
                 let Some(loaded) = this.loaded_instructions().cloned() else {
                     return Ok(this.cap_err_pair("find_instructions"));
                 };
-                let results = smol::unblock(move || {
-                    let cwd = std::env::current_dir().unwrap_or_default();
+                let results = smol::unblock(move || -> mlua::Result<Vec<(String, String)>> {
+                    let cwd = std::env::current_dir().map_err(|e| {
+                        mlua::Error::runtime(format!("failed to get current directory: {e}"))
+                    })?;
                     let abs = resolve_abs_with_cwd(dir_path, &cwd);
-                    n00n_agent::find_subdirectory_instructions(&abs, &cwd, &loaded)
+                    Ok(n00n_agent::find_subdirectory_instructions(
+                        &abs, &cwd, &loaded,
+                    ))
                 })
-                .await;
+                .await?;
                 let tbl = lua.create_table()?;
                 for (i, (path, content)) in results.into_iter().enumerate() {
                     let entry = lua.create_table()?;
@@ -378,7 +388,7 @@ mod tests {
 
     fn populated_ctx() -> ToolContext {
         let mut ctx = stub_ctx_with(&AgentMode::Build, None, Some(TOOL_USE_ID));
-        ctx.deadline = Deadline::after(Duration::from_secs(60));
+        ctx.deadline = Deadline::after(Duration::from_mins(1));
         ctx.tool_output_lines = ToolOutputLines {
             bash: 999,
             ..ToolOutputLines::default()

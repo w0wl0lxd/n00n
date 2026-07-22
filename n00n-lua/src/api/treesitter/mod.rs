@@ -71,10 +71,12 @@ fn get_string_parser(
 /// local text = n00n.treesitter.get_node_text(node, source)
 /// print(text)
 #[lua_fn]
+#[allow(clippy::needless_pass_by_value)]
 fn get_node_text(_lua: &Lua, node: AnyUserData, source: String) -> LuaResult<String> {
     let lua_node = node.borrow::<LuaNode>()?;
-    let start = lua_node.node.start_byte();
-    let end = lua_node.node.end_byte();
+    let ts = lua_node.ts_node()?;
+    let start = ts.start_byte();
+    let end = ts.end_byte();
     if end > source.len() {
         return Err(mlua::Error::runtime("node range exceeds source length"));
     }
@@ -88,10 +90,12 @@ fn get_node_text(_lua: &Lua, node: AnyUserData, source: String) -> LuaResult<Str
 /// @example
 /// local sr, sc, er, ec = n00n.treesitter.get_node_range(node)
 #[lua_fn]
+#[allow(clippy::needless_pass_by_value, clippy::cast_possible_wrap)]
 fn get_node_range(_lua: &Lua, node: AnyUserData) -> LuaResult<(i64, i64, i64, i64)> {
     let n = node.borrow::<LuaNode>()?;
-    let sp = n.node.start_position();
-    let ep = n.node.end_position();
+    let ts = n.ts_node()?;
+    let sp = ts.start_position();
+    let ep = ts.end_position();
     Ok((
         sp.row as i64,
         sp.column as i64,
@@ -109,17 +113,19 @@ fn get_node_range(_lua: &Lua, node: AnyUserData) -> LuaResult<(i64, i64, i64, i6
 /// local r = n00n.treesitter.get_range(node)
 /// print("bytes: " .. r[3] .. "-" .. r[6])
 #[lua_fn]
+#[allow(clippy::needless_pass_by_value, clippy::cast_possible_wrap)]
 fn get_range(lua: &Lua, node: AnyUserData) -> LuaResult<Table> {
     let n = node.borrow::<LuaNode>()?;
-    let sp = n.node.start_position();
-    let ep = n.node.end_position();
+    let ts = n.ts_node()?;
+    let sp = ts.start_position();
+    let ep = ts.end_position();
     let tbl = lua.create_table()?;
     tbl.set(1, sp.row as i64)?;
     tbl.set(2, sp.column as i64)?;
-    tbl.set(3, n.node.start_byte() as i64)?;
+    tbl.set(3, ts.start_byte() as i64)?;
     tbl.set(4, ep.row as i64)?;
     tbl.set(5, ep.column as i64)?;
-    tbl.set(6, n.node.end_byte() as i64)?;
+    tbl.set(6, ts.end_byte() as i64)?;
     Ok(tbl)
 }
 
@@ -130,12 +136,14 @@ fn get_range(lua: &Lua, node: AnyUserData) -> LuaResult<Table> {
 /// @param source Node Node to check ancestry for.
 /// @return (boolean)
 #[lua_fn]
+#[allow(clippy::needless_pass_by_value)]
 fn is_ancestor(_lua: &Lua, dest: AnyUserData, source: AnyUserData) -> LuaResult<bool> {
     let dest = dest.borrow::<LuaNode>()?;
     let source = source.borrow::<LuaNode>()?;
-    let mut current = Some(source.node);
+    let dest_node = dest.ts_node()?;
+    let mut current = Some(source.ts_node()?);
     while let Some(node) = current {
-        if node.id() == dest.node.id() {
+        if node.id() == dest_node.id() {
             return Ok(true);
         }
         current = node.parent();
@@ -151,10 +159,12 @@ fn is_ancestor(_lua: &Lua, dest: AnyUserData, source: AnyUserData) -> LuaResult<
 /// @param col integer 0-based column number.
 /// @return (boolean)
 #[lua_fn]
+#[allow(clippy::needless_pass_by_value)]
 fn is_in_node_range(_lua: &Lua, node: AnyUserData, line: usize, col: usize) -> LuaResult<bool> {
     let n = node.borrow::<LuaNode>()?;
-    let sp = n.node.start_position();
-    let ep = n.node.end_position();
+    let ts = n.ts_node()?;
+    let sp = ts.start_position();
+    let ep = ts.end_position();
     Ok((line > sp.row || (line == sp.row && col >= sp.column))
         && (line < ep.row || (line == ep.row && col < ep.column)))
 }
@@ -165,14 +175,16 @@ fn is_in_node_range(_lua: &Lua, node: AnyUserData, line: usize, col: usize) -> L
 /// @param range table Four-element array `{start_row, start_col, end_row, end_col}`.
 /// @return (boolean)
 #[lua_fn]
+#[allow(clippy::needless_pass_by_value)]
 fn node_contains(_lua: &Lua, node: AnyUserData, range: Table) -> LuaResult<bool> {
     let n = node.borrow::<LuaNode>()?;
+    let ts = n.ts_node()?;
     let sr: usize = range.get(1)?;
     let sc: usize = range.get(2)?;
     let er: usize = range.get(3)?;
     let ec: usize = range.get(4)?;
-    let sp = n.node.start_position();
-    let ep = n.node.end_position();
+    let sp = ts.start_position();
+    let ep = ts.end_position();
     Ok((sr > sp.row || (sr == sp.row && sc >= sp.column))
         && (er < ep.row || (er == ep.row && ec <= ep.column)))
 }
@@ -182,6 +194,7 @@ fn node_contains(_lua: &Lua, node: AnyUserData, range: Table) -> LuaResult<bool>
 /// @param opts table? Options (currently unused).
 /// @return (Node|nil) Always nil.
 #[lua_fn]
+#[allow(clippy::needless_pass_by_value, clippy::unnecessary_wraps)]
 fn get_node(_lua: &Lua, opts: Option<Table>) -> LuaResult<Option<LuaNode>> {
     let _ = opts;
     Ok(None)
