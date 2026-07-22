@@ -1,6 +1,5 @@
 [advisories]
 yanked = "warn"
-ignore-source-required = false
 
 [licenses]
 allow = [
