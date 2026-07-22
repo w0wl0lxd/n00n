@@ -426,7 +426,7 @@ impl Segment {
             let new_end = start + indented.len();
             self.lines.splice(start..end, indented);
             self.highlight_range = Some((start, new_end));
-            self.shift_after(end, new_end as isize - end as isize);
+            self.shift_after(end, new_end.cast_signed() - end.cast_signed());
             self.invalidate_height();
         }
         self.pending_highlight = None;
@@ -584,11 +584,14 @@ impl SegmentCache {
 
 pub(crate) fn wrapped_line_count(lines: &[Line<'_>], width: u16) -> u16 {
     if width == 0 {
-        return lines.len() as u16;
+        return u16::try_from(lines.len()).unwrap_or_else(|_| u16::MAX);
     }
-    Paragraph::new(lines.to_vec())
-        .wrap(Wrap { trim: false })
-        .line_count(width) as u16
+    u16::try_from(
+        Paragraph::new(lines.to_vec())
+            .wrap(Wrap { trim: false })
+            .line_count(width),
+    )
+    .unwrap_or_else(|_| u16::MAX)
 }
 
 #[cfg(test)]
@@ -635,7 +638,7 @@ mod tests {
         seg.highlight_range = Some((1, 3));
         seg.spinner_lines = vec![(0, 0), (5, 1)];
         seg.apply_highlight_result((0..replacement_lines).map(|_| Line::raw("hl")).collect());
-        let delta = expected_base as isize - 4;
+        let delta = expected_base.cast_signed() - 4;
         assert_eq!(seg.snapshot_base, Some(expected_base));
         assert_eq!(
             seg.spinner_lines,

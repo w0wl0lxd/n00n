@@ -205,7 +205,7 @@ impl Selection {
             } else if doc_row >= view_bottom {
                 self.area.y + self.area.height.saturating_sub(1)
             } else {
-                self.area.y + (doc_row - view_top) as u16
+                self.area.y + u16::try_from(doc_row - view_top).unwrap_or_else(|_| u16::MAX)
             }
         };
 
@@ -373,7 +373,7 @@ fn compute_wrap_types(line: &Line<'_>, width: u16) -> Vec<bool> {
 
     while i < chars.len() {
         let ch = chars[i];
-        let cw = ch.width().unwrap_or(0);
+        let cw = ch.width().unwrap_or_else(|| 0);
 
         if ch == ' ' || ch == '\t' {
             last_breakable = Some(i);
@@ -439,7 +439,7 @@ pub(crate) fn range_covers(
 }
 
 impl ScreenSelection {
-    pub fn covers_rect(&self, area: Rect) -> bool {
+    pub fn covers_rect(self, area: Rect) -> bool {
         if area.width == 0 || area.height == 0 {
             return false;
         }
@@ -455,7 +455,7 @@ impl ScreenSelection {
 }
 
 #[inline]
-pub(crate) fn col_range(ss: &ScreenSelection, left: u16, right: u16, row: u16) -> (u16, u16) {
+pub(crate) fn col_range(ss: ScreenSelection, left: u16, right: u16, row: u16) -> (u16, u16) {
     let col_start = if row == ss.start_row {
         ss.start_col.max(left)
     } else {
@@ -470,7 +470,7 @@ pub(crate) fn col_range(ss: &ScreenSelection, left: u16, right: u16, row: u16) -
 }
 
 /// Last column is the scrollbar, so we skip it.
-pub fn apply_highlight(buf: &mut Buffer, area: Rect, ss: &ScreenSelection) {
+pub fn apply_highlight(buf: &mut Buffer, area: Rect, ss: ScreenSelection) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -514,7 +514,7 @@ pub(crate) fn strip_code_bar_prefix(
 pub(crate) fn append_rows(
     buf: &Buffer,
     area: Rect,
-    ss: &ScreenSelection,
+    ss: ScreenSelection,
     from: u16,
     to: u16,
     out: &mut String,
@@ -581,7 +581,7 @@ pub(crate) fn append_rows(
 /// Searched in reverse so overlays win over what is behind them.
 pub fn extract_selected_text(
     buf: &Buffer,
-    ss: &ScreenSelection,
+    ss: ScreenSelection,
     regions: &[ContentRegion<'_>],
 ) -> String {
     let mut out = String::new();
@@ -675,7 +675,7 @@ mod tests {
             raw_text: raw,
             ..Default::default()
         };
-        let text = extract_selected_text(&buf, &sel, &[region]);
+        let text = extract_selected_text(&buf, sel, &[region]);
         assert_eq!(text, expected);
     }
 
@@ -706,7 +706,7 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let text = extract_selected_text(&buf, &ss(0, 0, 4, 7), &regions);
+        let text = extract_selected_text(&buf, ss(0, 0, 4, 7), &regions);
         assert_eq!(text, "Line 0\nLine 2\nLine 4");
     }
 
@@ -728,7 +728,7 @@ mod tests {
             raw_text: "overlay raw text",
             ..Default::default()
         };
-        let text = extract_selected_text(&buf, &ss(0, 0, 2, 9), &[base, overlay]);
+        let text = extract_selected_text(&buf, ss(0, 0, 2, 9), &[base, overlay]);
         assert_eq!(text, "overlay raw text");
     }
 
@@ -753,21 +753,21 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let text = extract_selected_text(&buf, &ss(1, 0, 2, 18), &regions);
+        let text = extract_selected_text(&buf, ss(1, 0, 2, 18), &regions);
         assert_eq!(text, "msg0 line2\nmsg1 rendered");
     }
 
     #[test]
     fn extract_no_matching_region_returns_empty() {
         let (buf, _) = test_buffer();
-        assert_eq!(extract_selected_text(&buf, &ss(0, 0, 2, 7), &[]), "");
+        assert_eq!(extract_selected_text(&buf, ss(0, 0, 2, 7), &[]), "");
 
         let region = ContentRegion {
             area: Rect::new(0, 5, 10, 1),
             raw_text: "far away",
             ..Default::default()
         };
-        assert_eq!(extract_selected_text(&buf, &ss(0, 0, 2, 7), &[region]), "");
+        assert_eq!(extract_selected_text(&buf, ss(0, 0, 2, 7), &[region]), "");
     }
 
     #[test]
@@ -779,7 +779,7 @@ mod tests {
             area,
             ..Default::default()
         };
-        let text = extract_selected_text(&buf, &ss(0, 0, 0, 9), &[region]);
+        let text = extract_selected_text(&buf, ss(0, 0, 0, 9), &[region]);
         assert_eq!(text, "Status");
     }
 
@@ -869,7 +869,7 @@ mod tests {
             area,
             ..Default::default()
         };
-        let text = extract_selected_text(&buf, &ss(0, 0, 1, 18), &[region]);
+        let text = extract_selected_text(&buf, ss(0, 0, 1, 18), &[region]);
         assert_eq!(text, "fn main() {}\nlet x = 1;");
     }
 
@@ -884,7 +884,7 @@ mod tests {
             area,
             ..Default::default()
         };
-        let text = extract_selected_text(&buf, &ss(0, 0, 0, 18), &[region]);
+        let text = extract_selected_text(&buf, ss(0, 0, 0, 18), &[region]);
         assert_eq!(text, "│ cell content");
     }
 
@@ -895,7 +895,7 @@ mod tests {
             area,
             ..Default::default()
         };
-        let text = extract_selected_text(&buf, &ss(0, 5, 0, 13), &[region]);
+        let text = extract_selected_text(&buf, ss(0, 5, 0, 13), &[region]);
         assert_eq!(text, "main() {}");
     }
 
@@ -910,7 +910,7 @@ mod tests {
             area,
             ..Default::default()
         };
-        let text = extract_selected_text(&buf, &ss(0, 0, 0, 10), &[region]);
+        let text = extract_selected_text(&buf, ss(0, 0, 0, 10), &[region]);
         assert_eq!(text, "continued");
     }
 
@@ -1011,7 +1011,7 @@ mod tests {
             line_breaks: breaks,
             ..Default::default()
         };
-        let text = extract_selected_text(&buf, &ss(0, 0, 1, 19), &[region]);
+        let text = extract_selected_text(&buf, ss(0, 0, 1, 19), &[region]);
         assert_eq!(text, "helloworld");
     }
 
@@ -1030,7 +1030,7 @@ mod tests {
             line_breaks: breaks,
             ..Default::default()
         };
-        let text = extract_selected_text(&buf, &ss(0, 0, 1, 19), &[region]);
+        let text = extract_selected_text(&buf, ss(0, 0, 1, 19), &[region]);
         assert_eq!(text, "long_variable_name_here");
     }
 
@@ -1082,7 +1082,7 @@ mod tests {
             area,
             ..Default::default()
         };
-        let text = extract_selected_text(&buf, &ss(0, 0, 3, 9), &[region]);
+        let text = extract_selected_text(&buf, ss(0, 0, 3, 9), &[region]);
         assert_eq!(
             text, "Line A\n\n\nLine D",
             "two blank rows produce two pending newlines"
@@ -1096,14 +1096,14 @@ mod tests {
             area,
             ..Default::default()
         };
-        let text = extract_selected_text(&buf, &ss(0, 0, 0, 0), &[region]);
+        let text = extract_selected_text(&buf, ss(0, 0, 0, 0), &[region]);
         assert_eq!(text, "H");
     }
 
     #[test_case(ss(5, 10, 5, 20), 5, (10, 20) ; "single_row")]
     #[test_case(ss(3, 10, 7, 50), 5, (0, 79)   ; "mid_row_full_width")]
     fn col_range_cases(sel: ScreenSelection, row: u16, expected: (u16, u16)) {
-        assert_eq!(col_range(&sel, 0, 79, row), expected);
+        assert_eq!(col_range(sel, 0, 79, row), expected);
     }
 
     #[test]
@@ -1122,7 +1122,7 @@ mod tests {
         use ratatui::widgets::{Paragraph, Widget, Wrap};
         let lines = vec![Line::from(input)];
         let p = Paragraph::new(lines.clone()).wrap(Wrap { trim: false });
-        let height = p.line_count(width) as u16;
+        let height = u16::try_from(p.line_count(width)).unwrap_or_else(|_| u16::MAX);
         let area = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(area);
         Paragraph::new(lines.clone())
@@ -1134,7 +1134,7 @@ mod tests {
             line_breaks: breaks,
             ..Default::default()
         };
-        extract_selected_text(&buf, &ss(0, 0, height - 1, width - 1), &[region])
+        extract_selected_text(&buf, ss(0, 0, height - 1, width - 1), &[region])
     }
 
     #[test_case("hello world", 5, "hello world" ; "word_wrap_at_exact_boundary")]
@@ -1236,7 +1236,7 @@ mod tests {
     ) {
         let buf = Buffer::empty(buf_area);
         let mut out = String::new();
-        append_rows(&buf, area, &sel, from, to, &mut out, &LineBreaks::EveryRow);
+        append_rows(&buf, area, sel, from, to, &mut out, &LineBreaks::EveryRow);
         assert!(out.is_empty());
     }
 
@@ -1278,7 +1278,7 @@ mod tests {
         use ratatui::widgets::{Paragraph, Widget, Wrap};
         let lines = vec![Line::from("hello world"), Line::from("ok")];
         let p = Paragraph::new(lines.clone()).wrap(Wrap { trim: false });
-        let height = p.line_count(6) as u16;
+        let height = u16::try_from(p.line_count(6)).unwrap_or_else(|_| u16::MAX);
         let area = Rect::new(0, 0, 6, height);
         let mut buf = Buffer::empty(area);
         Paragraph::new(lines.clone())
@@ -1290,7 +1290,7 @@ mod tests {
             line_breaks: breaks,
             ..Default::default()
         };
-        let text = extract_selected_text(&buf, &ss(0, 0, height - 1, 5), &[region]);
+        let text = extract_selected_text(&buf, ss(0, 0, height - 1, 5), &[region]);
         assert_eq!(text, "hello world\nok");
     }
 
@@ -1308,7 +1308,7 @@ mod tests {
         append_rows(
             &buf,
             area,
-            &ss(0, 1, 0, 3),
+            ss(0, 1, 0, 3),
             0,
             1,
             &mut out,
