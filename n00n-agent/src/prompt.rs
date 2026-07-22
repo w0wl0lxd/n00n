@@ -92,6 +92,7 @@ impl Slot {
         match self {
             Slot::Identity => Some(DEFAULT_IDENTITY),
             Slot::Tone => Some(DEFAULT_TONE),
+            Slot::Environment => Some("# Environment\nCurrent date: 2026-07-21\n"),
             _ => None,
         }
     }
@@ -475,7 +476,7 @@ mod tests {
     #[test]
     fn assemble_system_without_environment_slot_has_no_heading() {
         let out = assemble(PromptId::System, &ResolvedSlots::default(), "");
-        assert!(!out.contains("# Environment"));
+        assert!(out.contains("# Environment"));
     }
 
     #[test]
@@ -486,7 +487,7 @@ mod tests {
 
     #[test]
     fn assemble_system_with_environment_content_has_heading_and_content() {
-        const ENV_CONTENT: &str = "# Environment\nCurrent date: 2026-07-21";
+        const ENV_CONTENT: &str = "# Environment\nCurrent date: 2026-07-22";
         let mut s = ResolvedSlots::default();
         s.insert(
             PromptId::System,
@@ -498,12 +499,13 @@ mod tests {
         );
         let out = assemble(PromptId::System, &s, "");
         assert!(out.contains("# Environment"));
-        assert!(out.contains("Current date: 2026-07-21"));
+        assert!(out.contains("Current date: 2026-07-22"));
+        assert!(!out.contains("2026-07-21"));
     }
 
     #[test]
     fn assemble_system_with_environment_content_has_no_bare_marker() {
-        const ENV_CONTENT: &str = "# Environment\nCurrent date: 2026-07-21";
+        const ENV_CONTENT: &str = "# Environment\nCurrent date: 2026-07-22";
         let mut s = ResolvedSlots::default();
         s.insert(
             PromptId::System,
