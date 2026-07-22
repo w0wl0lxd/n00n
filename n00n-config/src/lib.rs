@@ -944,6 +944,7 @@ impl ToolOutputLines {
         ("other", Self::DEFAULT.other),
     ];
 
+    // map_or is used here to apply defaults when fields are None; unwrap_or_default would skip the map
     #[allow(clippy::unwrap_or_default)]
     fn from_file(f: Option<ToolOutputLinesFile>) -> Self {
         let d = Self::DEFAULT;
@@ -1647,6 +1648,7 @@ fn load_permissions_inner(cwd: &Path, global_dirs: &[PathBuf]) -> PermissionsCon
         }
     }
 
+    // unwrap_or_else is needed to call PermissionsFileConfig::default function
     #[allow(clippy::unwrap_or_default)]
     let project_perms = read_permissions_file(&cwd.join(PROJECT_DIR).join(PERMISSIONS_FILE))
         .unwrap_or_else(PermissionsFileConfig::default);
