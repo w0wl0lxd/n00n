@@ -31,18 +31,17 @@ pub(crate) struct InputReader {
 }
 
 impl InputReader {
-    pub(crate) fn spawn() -> Self {
+    pub(crate) fn spawn() -> std::io::Result<Self> {
         let (tx, rx) = flume::unbounded::<Event>();
         let (ctl_tx, ctl_rx) = flume::unbounded::<Ctl>();
         let join = std::thread::Builder::new()
             .name("input-reader".into())
-            .spawn(move || read_loop(&tx, &ctl_rx))
-            .expect("failed to spawn input reader thread");
-        Self {
+            .spawn(move || read_loop(&tx, &ctl_rx))?;
+        Ok(Self {
             rx,
             ctl_tx,
             join: Some(join),
-        }
+        })
     }
 
     pub(crate) fn receiver(&self) -> &flume::Receiver<Event> {

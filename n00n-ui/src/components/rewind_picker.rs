@@ -50,7 +50,7 @@ impl RewindPicker {
                 continue;
             };
             turn_num += 1;
-            let first_line = full_text.lines().next().unwrap_or("");
+            let first_line = full_text.lines().next().unwrap_or_else(|| "");
             let preview = if first_line.len() > PREVIEW_MAX_LEN {
                 format!(
                     "{turn_num}: {}...",
@@ -95,10 +95,9 @@ impl RewindPicker {
 
     pub fn handle_key(&mut self, key: KeyEvent) -> RewindPickerAction {
         match self.picker.handle_key(key) {
-            PickerAction::Consumed => RewindPickerAction::Consumed,
             PickerAction::Select(_, entry) => RewindPickerAction::Select(entry),
             PickerAction::Close => RewindPickerAction::Close,
-            PickerAction::Toggle(..) => RewindPickerAction::Consumed,
+            PickerAction::Consumed | PickerAction::Toggle(..) => RewindPickerAction::Consumed,
         }
     }
 
