@@ -87,11 +87,11 @@ fn load_config(plugin_host: &PluginHost, cli: &Cli, cwd: &Path) -> Result<Config
 
     let mut config = raw_config
         .unwrap_or_else(Default::default)
-        .into_config(cli.no_rtk)
+        .into_config(cli.plugin_flags.no_rtk)
         .context("invalid config")?;
     config.permissions = load_permissions(cwd);
 
-    if cli.yolo || config.always_yolo {
+    if cli.permission_flags.yolo || config.always_yolo {
         config.permissions.yolo = true;
     }
     if !cli.allowed_tools.is_empty() {
@@ -138,11 +138,14 @@ fn build_stack(
 ) -> Result<(Stack, Vec<String>)> {
     let mut warnings = Vec::new();
 
-    let mut plugin_host = if cli.no_plugins {
+    let mut plugin_host = if cli.plugin_flags.no_plugins {
         PluginHost::disabled()
     } else {
-        PluginHost::with_jit(Arc::clone(ToolRegistry::global_arc()), !cli.no_jit)
-            .context("initialize lua plugin host")?
+        PluginHost::with_jit(
+            Arc::clone(ToolRegistry::global_arc()),
+            !cli.plugin_flags.no_jit,
+        )
+        .context("initialize lua plugin host")?
     };
 
     let (fallback_config, fallback_model) = fallback.unzip();
@@ -161,7 +164,7 @@ fn build_stack(
         }
     }
 
-    let commands = discover_commands(cli.no_commands);
+    let commands = discover_commands(cli.plugin_flags.no_commands);
 
     let model_result = setup::resolve_model(cli.model.as_deref(), &config.provider, storage);
     let (model, needs_login) = match (model_result, fallback_model) {
@@ -170,7 +173,7 @@ fn build_stack(
             warnings.push(format!("{MODEL_FALLBACK_WARNING}: {e:#}"));
             (last_model, false)
         }
-        (Err(e), None) if !cli.print => {
+        (Err(e), None) if !cli.run_flags.print => {
             let placeholder = Model::from_spec(FALLBACK_MODEL_SPEC)
                 .or_else(|_| Model::from_spec("anthropic/claude-sonnet-4-20250514"))
                 .map_err(|_| e)?;
@@ -267,7 +270,7 @@ pub fn run(mut cli: Cli) -> Result<()> {
         .context("run sdk mode")?;
         return Ok(());
     }
-    if cli.print {
+    if cli.run_flags.print {
         let fast = stack.config.always_fast && stack.model.supports_fast();
         let timeouts = stack.timeouts();
         crate::print::run(
@@ -276,7 +279,7 @@ pub fn run(mut cli: Cli) -> Result<()> {
                 prompt_arg: cli.initial_prompt,
                 image_paths: &cli.images,
                 format: cli.output_format,
-                verbose: cli.verbose,
+                verbose: cli.run_flags.verbose,
                 config: stack.config.agent,
                 permissions_config: stack.config.permissions,
                 timeouts,
@@ -292,7 +295,7 @@ pub fn run(mut cli: Cli) -> Result<()> {
 
     let cwd_str = cwd.to_string_lossy().into_owned();
     let mut tabs = vec![resolve_session(
-        cli.continue_session,
+        cli.session_flags.continue_session,
         cli.session.as_deref(),
         &stack.model.spec(),
         &cwd_str,
@@ -339,7 +342,7 @@ pub fn run(mut cli: Cli) -> Result<()> {
                 )),
                 timeouts: stack.timeouts(),
                 openai_options,
-                exit_on_done: cli.exit_on_done,
+                exit_on_done: cli.run_flags.exit_on_done,
                 lua_command_reader: stack.plugin_host.command_reader(),
                 keymap_reader: stack.plugin_host.keymap_reader(),
                 hint_reader: stack.plugin_host.hint_reader(),

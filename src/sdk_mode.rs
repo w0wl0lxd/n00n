@@ -472,7 +472,8 @@ pub fn run(params: SdkParams) -> Result<()> {
     if let Some(max) = cli.max_turns {
         config.max_turns = Some(max);
     }
-    let permission_mode = PermissionMode::resolve(cli.permission_mode.as_deref(), cli.yolo);
+    let permission_mode =
+        PermissionMode::resolve(cli.permission_mode.as_deref(), cli.permission_flags.yolo);
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let working_dir = cwd.to_string_lossy().into_owned();
@@ -546,7 +547,7 @@ pub fn run(params: SdkParams) -> Result<()> {
         writer: writer.clone(),
         shared: Arc::clone(&shared),
         answer_tx: handle.answer_tx.clone(),
-        include_partial_messages: cli.include_partial_messages,
+        include_partial_messages: cli.run_flags.include_partial_messages,
         fast,
         synth: StreamSynth::new(),
         tool_inputs: HashMap::new(),
@@ -663,9 +664,9 @@ fn resolve_session(cli: &Cli, cwd: &str) -> Result<(Option<SessionRef>, Vec<Mess
             .map_err(|e| eyre!("invalid session id {id}: {e}"))?;
         let session = StoredSession::load(session_ref.id(), &storage)
             .map_err(|e| eyre!("load session {id}: {e}"))?;
-        let resumed = (!cli.fork_session).then_some(session_ref);
+        let resumed = (!cli.session_flags.fork_session).then_some(session_ref);
         (resumed, session.messages)
-    } else if cli.continue_session {
+    } else if cli.session_flags.continue_session {
         let storage = StateDir::resolve().context("resolve state dir")?;
         match StoredSession::latest(cwd, &storage) {
             Ok(Some(session)) => (Some(SessionRef::from(session.id)), session.messages),
