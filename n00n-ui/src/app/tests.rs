@@ -945,6 +945,66 @@ fn completed_subagent_card_header_and_body_clicks_toggle_without_navigation(tool
     );
 }
 
+#[test_case("task"     ; "task")]
+#[test_case("agent"    ; "agent")]
+#[test_case("team"     ; "team")]
+#[test_case("workflow" ; "workflow")]
+fn ctrl_click_subagent_card_header_enters_chat(tool: &str) {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    app.update(agent_msg(AgentEvent::ToolStart(Box::new(ToolStartEvent {
+        id: "card1".into(),
+        tool: tool.into(),
+        summary: "safe summary".into(),
+        annotation: Some("safe annotation".into()),
+        input: None,
+        raw_input: None,
+        output: None,
+        render_header: None,
+    }))));
+    app.update(subagent_msg(
+        AgentEvent::TextDelta {
+            text: "child".into(),
+        },
+        "card1",
+        Some("research"),
+    ));
+    app.update(agent_msg(AgentEvent::ToolDone(Box::new(ToolDoneEvent {
+        id: "card1".into(),
+        tool: tool.into(),
+        output: ToolOutput::Markdown("body line\n".repeat(100).into()),
+        is_error: false,
+        annotation: None,
+        written_path: None,
+    }))));
+
+    let mut terminal = Terminal::new(TestBackend::new(80, 80)).unwrap();
+    terminal.draw(|frame| app.view(frame)).unwrap();
+    let area = app.msg_area();
+
+    let ctrl_click = |app: &mut App, row| {
+        app.update(Msg::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 10,
+            row,
+            modifiers: KeyModifiers::CONTROL,
+        }));
+        app.update(Msg::Mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 10,
+            row,
+            modifiers: KeyModifiers::CONTROL,
+        }));
+    };
+
+    ctrl_click(&mut app, area.y);
+    assert_eq!(
+        app.active_chat, 1,
+        "{tool} ctrl+header click must enter the subagent chat"
+    );
+}
+
 fn open_tasks_picker(app: &mut App) {
     for c in "/tasks".chars() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
