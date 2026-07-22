@@ -216,7 +216,9 @@ impl AgentLoop {
                     message: e.to_string(),
                 })?;
             for pm in messages {
-                let text = pm.content.text.unwrap_or_default();
+                let Some(text) = pm.content.text else {
+                    continue;
+                };
                 let msg = match pm.role {
                     PromptRole::Assistant => Message {
                         role: n00n_providers::Role::Assistant,
