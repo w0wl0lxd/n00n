@@ -868,7 +868,6 @@ impl OpenAi {
             && auth.base_url.as_deref() == Some(CONFIG.base_url)
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn stream_websocket<F>(
         &self,
         connection: WebSocketConnection,
@@ -1236,7 +1235,6 @@ impl OpenAi {
         attempt
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn run_codex_attempt(
         &self,
         request: CodexRequest<'_>,
@@ -1566,7 +1564,6 @@ impl OpenAi {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn run_codex_attempt_with_auth_retry(
         &self,
         request: CodexRequest<'_>,
