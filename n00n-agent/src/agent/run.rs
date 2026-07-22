@@ -521,11 +521,12 @@ impl<'h> Agent<'h> {
 }
 
 #[must_use]
-#[allow(clippy::manual_unwrap_or)]
-fn u32_from_usize(value: usize) -> u32 {
-    match u32::try_from(value) {
-        Ok(n) => n,
-        Err(_) => u32::MAX,
+fn u32_from_usize_saturating(value: usize) -> u32 {
+    if let Ok(n) = u32::try_from(value) {
+        n
+    } else {
+        warn!(value, "token count exceeded u32 range; saturating");
+        u32::MAX
     }
 }
 
@@ -549,12 +550,12 @@ pub fn estimate_message_tokens(messages: &[Message]) -> u32 {
             ContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE,
         })
         .sum();
-    u32_from_usize(total)
+    u32_from_usize_saturating(total)
 }
 
 #[must_use]
 pub fn estimate_tool_tokens(tools: &Value) -> u32 {
-    u32_from_usize(count_json(tools))
+    u32_from_usize_saturating(count_json(tools))
 }
 
 #[cfg(test)]
@@ -573,12 +574,21 @@ mod tests {
     use super::*;
     use crate::Envelope;
     use crate::permissions::PermissionManager;
+    use serde_json::json;
+
+    #[test]
+    fn estimate_message_tokens_empty_is_zero() {
+        assert_eq!(estimate_message_tokens(&[]), 0);
+    }
 
     #[test]
     fn estimate_message_tokens_counts_content_blocks() {
         let messages = vec![Message::user("hello world".into())];
         let tokens = estimate_message_tokens(&messages);
-        assert!(tokens > 0, "expected positive token count for messages");
+        assert!(
+            tokens >= 2,
+            "expected at least two tokens for two words, got {tokens}"
+        );
     }
 
     #[test]
@@ -589,8 +599,18 @@ mod tests {
     }
 
     #[test]
-    fn estimate_message_tokens_empty_is_zero() {
-        assert_eq!(estimate_message_tokens(&[]), 0);
+    fn estimate_tool_tokens_empty_array_is_nonzero() {
+        let tools = json!([]);
+        let tokens = estimate_tool_tokens(&tools);
+        assert!(tokens > 0, "empty array JSON still has token count");
+    }
+
+    #[test]
+    fn context_size_additions_use_saturating_add() {
+        let context_size: u32 = u32::MAX - 100;
+        let additional: u32 = 200;
+        let result = context_size.saturating_add(additional);
+        assert_eq!(result, u32::MAX);
     }
 
     #[test]
@@ -610,7 +630,7 @@ mod tests {
         }];
         let tokens = estimate_message_tokens(&messages);
         assert!(
-            tokens >= u32_from_usize(IMAGE_TOKEN_ESTIMATE),
+            tokens >= u32_from_usize_saturating(IMAGE_TOKEN_ESTIMATE),
             "image blocks should add {IMAGE_TOKEN_ESTIMATE} tokens"
         );
     }

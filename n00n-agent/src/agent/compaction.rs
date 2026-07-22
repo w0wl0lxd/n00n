@@ -346,11 +346,23 @@ mod tests {
         model
     }
 
-    #[test_case(0,   0,   CompactionTier::Normal    ; "zero_context_window_defaults_normal")]
+    #[test_case(0,     0, CompactionTier::Normal    ; "zero_context_window_defaults_normal")]
     #[test_case(0,   100, CompactionTier::Minimal    ; "empty_remaining_is_minimal")]
     #[test_case(10,  100, CompactionTier::Minimal    ; "low_ratio_minimal")]
+    #[test_case(19,  100, CompactionTier::Minimal    ; "just_below_0_2_threshold")]
+    #[test_case(20,  100, CompactionTier::Aggressive ; "at_0_2_threshold")]
     #[test_case(30,  100, CompactionTier::Aggressive ; "mid_ratio_aggressive")]
+    #[test_case(39,  100, CompactionTier::Aggressive ; "just_below_0_4_threshold")]
+    #[test_case(40,  100, CompactionTier::Normal     ; "at_0_4_threshold")]
     #[test_case(50,  100, CompactionTier::Normal     ; "high_ratio_normal")]
+    #[test_case(199, 1000, CompactionTier::Minimal    ; "just_below_0_2_at_1000")]
+    #[test_case(200, 1000, CompactionTier::Aggressive ; "at_0_2_boundary_1000")]
+    #[test_case(399, 1000, CompactionTier::Aggressive ; "just_below_0_4_at_1000")]
+    #[test_case(400, 1000, CompactionTier::Normal     ; "at_0_4_boundary_1000")]
+    #[test_case(1999, 10000, CompactionTier::Minimal    ; "just_below_0_2_at_10000")]
+    #[test_case(2000, 10000, CompactionTier::Aggressive ; "at_0_2_boundary_10000")]
+    #[test_case(3999, 10000, CompactionTier::Aggressive ; "just_below_0_4_at_10000")]
+    #[test_case(4000, 10000, CompactionTier::Normal     ; "at_0_4_boundary_10000")]
     fn compaction_tier_from_remaining(
         remaining: u32,
         context_window: u32,
