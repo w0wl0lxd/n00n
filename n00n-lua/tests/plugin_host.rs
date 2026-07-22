@@ -29,6 +29,46 @@ fn fresh_registry() -> Arc<ToolRegistry> {
     Arc::new(ToolRegistry::new())
 }
 
+struct NetworkSessionProbe {
+    address: std::net::SocketAddr,
+    sessions: flume::Sender<Option<SessionRef>>,
+}
+
+impl Provider for NetworkSessionProbe {
+    fn stream_message<'a>(
+        &'a self,
+        _: &'a Model,
+        _: &'a [Message],
+        _: &'a str,
+        _: &'a serde_json::Value,
+        _: &'a flume::Sender<ProviderEvent>,
+        _: RequestOptions,
+        session_id: Option<&'a SessionRef>,
+    ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
+        Box::pin(async move {
+            let _stream = smol::net::TcpStream::connect(self.address).await?;
+            self.sessions.send_async(session_id.cloned()).await?;
+            Ok(StreamResponse {
+                message: Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::Text {
+                        text: "network reached".into(),
+                    }],
+                    display_text: None,
+                },
+                usage: TokenUsage::default(),
+                stop_reason: Some(StopReason::EndTurn),
+            })
+        })
+    }
+
+    fn list_models(
+        &self,
+    ) -> BoxFuture<'_, Result<Vec<n00n_providers::model::ModelInfo>, AgentError>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+}
+
 fn builtins_host() -> (Arc<ToolRegistry>, PluginHost) {
     let reg = fresh_registry();
     let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
@@ -3485,6 +3525,51 @@ fn session_close_idempotent_and_prompt_after_close_errors() {
     host.load_source("session_plugin", &src).unwrap();
     let out = exec_tool(&reg, "session_probe", serde_json::json!({})).unwrap();
     assert_eq!(out, SESSION_CLOSED_ERR);
+}
+
+#[test]
+fn lua_subagent_keeps_generated_session_ref_when_provider_reaches_network() {
+    smol::block_on(async {
+        let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (session_tx, session_rx) = flume::bounded(1);
+        let network = smol::spawn(async move { listener.accept().await.unwrap() });
+        let reg = fresh_registry();
+        let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+        let src = format!(
+            r#"n00n.api.register_tool({{
+                name = "session_network_probe",
+                description = "test",
+                schema = {MINIMAL_SCHEMA},
+                audiences = {{ "main" }},
+                handler = function(input, ctx)
+                    local sess, open_err = n00n.agent.session(ctx, {{}})
+                    if open_err then return open_err end
+                    local result, prompt_err = sess:prompt("reach the provider")
+                    if prompt_err then return prompt_err end
+                    return result.text
+                end
+            }})"#
+        );
+        host.load_source("session_network_plugin", &src).unwrap();
+        let entry = reg.get("session_network_probe").unwrap();
+        let invocation = entry.tool.parse(&serde_json::json!({})).unwrap();
+        let mut ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
+        ctx.provider = Arc::new(NetworkSessionProbe {
+            address,
+            sessions: session_tx,
+        });
+
+        let result = invocation.execute(&ctx).await.output.unwrap();
+        let n00n_agent::ToolOutput::Plain(output) = result else {
+            panic!("expected plain output");
+        };
+        let session_id = session_rx.recv_async().await.unwrap();
+        let _connection = network.await;
+
+        assert_eq!(output.text, "network reached");
+        assert!(session_id.is_some());
+    });
 }
 
 #[test_case::test_case("{ audience = 'wurkflow' }", "unknown audience: wurkflow" ; "unknown_audience")]

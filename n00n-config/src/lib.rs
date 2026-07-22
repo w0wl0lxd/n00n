@@ -31,6 +31,8 @@ pub const DEFAULT_COMPACTION_BUFFER: CompactionBuffer = CompactionBuffer::Percen
 pub const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
 pub const DEFAULT_LOW_SPEED_TIMEOUT_SECS: u64 = 120;
 pub const DEFAULT_STREAM_TIMEOUT_SECS: u64 = 300;
+pub const DEFAULT_OPENAI_CODING_PLAN_SLOTS: u64 = 4;
+pub const MAX_OPENAI_CODING_PLAN_SLOTS: u64 = 8;
 
 pub const DEFAULT_MAX_LOG_BYTES_MB: u64 = 200;
 pub const DEFAULT_MAX_LOG_FILES: u32 = 10;
@@ -151,6 +153,13 @@ pub enum ConfigError {
         field: &'static str,
         value: u64,
         min: u64,
+    },
+    #[error("invalid config: {section}.{field} = {value} exceeds maximum ({max})")]
+    AboveMaximum {
+        section: &'static str,
+        field: &'static str,
+        value: u64,
+        max: u64,
     },
     #[error("invalid config: always_thinking: {0}")]
     Thinking(#[from] ThinkingParseError),
@@ -491,6 +500,7 @@ pub struct ProviderFileConfig {
     pub connect_timeout_secs: Option<u64>,
     pub low_speed_timeout_secs: Option<u64>,
     pub stream_timeout_secs: Option<u64>,
+    pub openai_coding_plan_slots: Option<u64>,
 }
 
 impl ProviderFileConfig {
@@ -501,7 +511,8 @@ impl ProviderFileConfig {
             default_model,
             connect_timeout_secs,
             low_speed_timeout_secs,
-            stream_timeout_secs
+            stream_timeout_secs,
+            openai_coding_plan_slots
         );
     }
 }
@@ -1101,6 +1112,10 @@ pub struct ProviderConfig {
              min = MIN_STREAM_TIMEOUT_SECS, val = "self.stream_timeout.as_secs()",
              desc = "Streaming response timeout (seconds)")]
     pub stream_timeout: Duration,
+
+    #[config(key = "openai_coding_plan_slots", ty = "u64", default = DEFAULT_OPENAI_CODING_PLAN_SLOTS,
+             min = 1, desc = "Maximum concurrent OpenAI Coding Plan streams per account (1-8)")]
+    pub openai_coding_plan_slots: u64,
 }
 
 impl Default for ProviderConfig {
@@ -1110,6 +1125,7 @@ impl Default for ProviderConfig {
             connect_timeout: Duration::from_secs(DEFAULT_CONNECT_TIMEOUT_SECS),
             low_speed_timeout: Duration::from_secs(DEFAULT_LOW_SPEED_TIMEOUT_SECS),
             stream_timeout: Duration::from_secs(DEFAULT_STREAM_TIMEOUT_SECS),
+            openai_coding_plan_slots: DEFAULT_OPENAI_CODING_PLAN_SLOTS,
         }
     }
 }
@@ -1130,7 +1146,22 @@ impl ProviderConfig {
                 f.stream_timeout_secs
                     .map_or(DEFAULT_STREAM_TIMEOUT_SECS, |v| v),
             ),
+            openai_coding_plan_slots: f
+                .openai_coding_plan_slots
+                .map_or(DEFAULT_OPENAI_CODING_PLAN_SLOTS, |slots| slots),
         }
+    }
+
+    fn validate_openai_coding_plan_slots(&self) -> Result<(), ConfigError> {
+        if self.openai_coding_plan_slots > MAX_OPENAI_CODING_PLAN_SLOTS {
+            return Err(ConfigError::AboveMaximum {
+                section: "provider",
+                field: "openai_coding_plan_slots",
+                value: self.openai_coding_plan_slots,
+                max: MAX_OPENAI_CODING_PLAN_SLOTS,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -1231,6 +1262,7 @@ impl Config {
         self.ui.validate_all()?;
         self.agent.validate()?;
         self.provider.validate()?;
+        self.provider.validate_openai_coding_plan_slots()?;
         self.storage.validate()?;
         Ok(())
     }
@@ -1972,6 +2004,29 @@ mod tests {
             serde_json::to_value(CompactionBuffer::Tokens(9_000)).unwrap(),
             serde_json::json!(9_000)
         );
+    }
+
+    #[test]
+    fn openai_coding_plan_slots_default_and_reject_above_eight() {
+        let default = RawConfig::default().into_config(false).unwrap();
+        assert_eq!(
+            default.provider.openai_coding_plan_slots,
+            DEFAULT_OPENAI_CODING_PLAN_SLOTS
+        );
+
+        let invalid = RawConfig {
+            provider: ProviderFileConfig {
+                openai_coding_plan_slots: Some(MAX_OPENAI_CODING_PLAN_SLOTS + 1),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+        .into_config(false)
+        .unwrap();
+        assert!(matches!(
+            invalid.validate(),
+            Err(ConfigError::AboveMaximum { .. })
+        ));
     }
 
     #[test]
