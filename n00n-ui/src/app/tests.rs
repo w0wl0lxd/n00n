@@ -2358,6 +2358,21 @@ fn typing_in_read_only_subagent_flashes_explanation() {
     );
 }
 
+#[test]
+fn typing_in_finished_subagent_with_prompt_flashes_and_does_not_enqueue() {
+    let (mut app, prompt_rx) = app_with_steerable_subagent("child-a");
+    finish_subagent(&mut app, "child-a", false);
+
+    app.update(Msg::Key(key(KeyCode::Char('h'))));
+    app.update(Msg::Key(key(KeyCode::Enter)));
+
+    assert_eq!(
+        app.status_bar.flash_text(),
+        Some("This agent cannot receive follow-up messages")
+    );
+    assert!(prompt_rx.try_recv().is_err());
+}
+
 fn app_with_subagent_tx(id: &str) -> (App, flume::Receiver<String>, flume::Receiver<String>) {
     let (sub_tx, sub_rx) = flume::unbounded();
     let (main_tx, main_rx) = flume::unbounded();
