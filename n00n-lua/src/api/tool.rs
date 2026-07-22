@@ -24,7 +24,7 @@ use n00n_agent::tools::{
 };
 use n00n_agent::{
     AgentEvent, BufferSnapshot, ImageMediaType, ImageSource, InstructionBlock, SharedBuf,
-    TextOutput, ToolOutput,
+    TextOutput, ToolOutput, ToolTelemetry, ToolUsage,
 };
 use n00n_config::ToolOutputLines;
 use n00n_lua_macro::{lua_fn, lua_table};
@@ -46,6 +46,8 @@ const TIMEOUT_PARSE_ERR: &str = "register_tool: 'timeout' must be a positive num
 const MAX_HINT_CONTENT_SIZE: usize = 1024 * 1024;
 const DESCRIBE_TIMEOUT: Duration = Duration::from_secs(3);
 const PLAIN_HEADER_STYLE: &str = "tool";
+const MAX_SAFE_INTEGER_I64: i64 = 9_007_199_254_740_991;
+const MAX_SAFE_INTEGER_F64: f64 = 9_007_199_254_740_991.0;
 
 type DescribeFn = Box<dyn Fn(&str, &str, &Value) -> Option<String>>;
 
@@ -463,31 +465,41 @@ impl ToolInvocation for LuaToolInvocation {
                     let instructions = reply.instructions;
                     let image = reply.image;
                     let state = reply.state;
+                    let telemetry = reply.telemetry;
+                    let output_telemetry = telemetry.clone();
                     ToolExecResult {
                         output: reply.result.map(|s| {
-                            if let Some(source) = image {
-                                ToolOutput::Image { source, text: s }
+                            let output = if let Some(source) = image {
+                                ToolOutput::Image {
+                                    source,
+                                    text: s,
+                                    telemetry: None,
+                                }
                             } else if let Some(diff) = reply.diff {
                                 ToolOutput::Diff {
                                     summary: s,
                                     path: diff.path,
                                     before: diff.before,
                                     after: diff.after,
+                                    telemetry: None,
                                 }
                             } else {
                                 let inner = TextOutput {
                                     text: s,
                                     instructions: instructions.filter(|b| !b.is_empty()),
                                     state,
+                                    telemetry: None,
                                 };
                                 match format {
                                     LuaOutputFormat::Markdown => ToolOutput::Markdown(inner),
                                     LuaOutputFormat::Plain => ToolOutput::Plain(inner),
                                 }
-                            }
+                            };
+                            output.with_telemetry(output_telemetry)
                         }),
                         annotation: reply.annotation,
                         written_path: reply.written_path,
+                        telemetry,
                     }
                 }
             }
@@ -585,6 +597,12 @@ fn parse_hint_content(lua: &Lua, spec: &Table) -> LuaResult<HintContent> {
 /// function. The handler receives `(input, ctx)` and returns either a plain
 /// string or a table with richer output fields.
 ///
+/// `cost` and `usage` are accounting metadata. n00n exposes only a finite,
+/// non-negative cost and the allowlisted numeric token counts. If
+/// `is_error = true` after usage was charged, this sanitized metadata is
+/// returned alongside the error; provider payloads and extra usage fields are
+/// discarded.
+///
 /// @param spec table Tool specification:
 ///   name            (string)   Required. ASCII identifier, up to 64 chars ([a-zA-Z_][a-zA-Z0-9_]*).
 ///   description     (string)   Required. Non-empty description shown to the model.
@@ -605,6 +623,8 @@ fn parse_hint_content(lua: &Lua, spec: &Table) -> LuaResult<HintContent> {
 ///                                image       (table)   { media_type: string, data: string } base64 image.
 ///                                instructions (table)  Array of { path, content } blocks injected as context.
 ///                                state       (any)     Serializable state forwarded to restore.
+///                                cost        (number)  Non-negative estimated cost attached as sanitized tool telemetry.
+///                                usage       (table)   Token counts: fresh_input_tokens, cache_read_tokens, cache_write_tokens, input_tokens, output_tokens.
 ///   audiences       (string[]) Which model audiences see the tool. Values: "main", "sub", "all". Default: all audiences.
 ///   kind            (string)   Optional grouping label (e.g. "filesystem").
 ///   timeout         (number)   Execution timeout in seconds. 0 or false disables. Default: inherits agent deadline.
@@ -1239,6 +1259,13 @@ pub(crate) enum LuaOutputFormat {
 
 const LUA_FORMAT_MARKDOWN: &str = "markdown";
 const LUA_FORMAT_PLAIN: &str = "plain";
+const USAGE_COST_FIELD: &str = "cost";
+const USAGE_COUNTS_FIELD: &str = "usage";
+const FRESH_INPUT_TOKENS_FIELD: &str = "fresh_input_tokens";
+const CACHE_READ_TOKENS_FIELD: &str = "cache_read_tokens";
+const CACHE_WRITE_TOKENS_FIELD: &str = "cache_write_tokens";
+const INPUT_TOKENS_FIELD: &str = "input_tokens";
+const OUTPUT_TOKENS_FIELD: &str = "output_tokens";
 
 pub(crate) struct DiffPayload {
     pub path: String,
@@ -1260,6 +1287,7 @@ pub(crate) struct ToolCallReply {
     /// handler return; becomes `ToolOutput::Image` with `llm_output` as caption.
     pub image: Option<ImageSource>,
     pub state: Option<Value>,
+    pub telemetry: Option<ToolTelemetry>,
 }
 
 impl ToolCallReply {
@@ -1303,6 +1331,13 @@ impl ToolCallReply {
                 .inspect_err(|e| tracing::warn!(error = %e, "tool state is not JSON-serializable, dropping it"))
                 .ok(),
         };
+        let telemetry = match extract_telemetry(t) {
+            Ok(telemetry) => telemetry,
+            Err(error) => {
+                result = Err(error);
+                None
+            }
+        };
         Self {
             result,
             snapshot,
@@ -1315,6 +1350,7 @@ impl ToolCallReply {
             diff,
             image,
             state,
+            telemetry,
         }
     }
 
@@ -1348,12 +1384,98 @@ impl ToolCallReply {
             diff: None,
             image: None,
             state: None,
+            telemetry: None,
         }
     }
 
     pub fn err(msg: impl Into<String>) -> Self {
         Self::plain(Err(msg.into()))
     }
+}
+
+fn optional_nonnegative_integer(table: &mlua::Table, field: &str) -> Result<Option<u64>, String> {
+    let value = table
+        .get::<LuaValue>(field)
+        .map_err(|error| format!("invalid tool usage field '{field}': {error}"))?;
+    match value {
+        LuaValue::Nil => Ok(None),
+        LuaValue::Integer(value) if (0..=MAX_SAFE_INTEGER_I64).contains(&value) => {
+            Ok(Some(value as u64))
+        }
+        LuaValue::Number(value)
+            if value.is_finite()
+                && value >= 0.0
+                && value.fract() == 0.0
+                && value <= MAX_SAFE_INTEGER_F64 =>
+        {
+            Ok(Some(value as u64))
+        }
+        _ => Err(format!(
+            "tool usage field '{field}' must be a finite nonnegative integer"
+        )),
+    }
+}
+
+fn extract_tool_usage(table: &mlua::Table) -> Result<ToolUsage, String> {
+    let fresh_input = optional_nonnegative_integer(table, FRESH_INPUT_TOKENS_FIELD)?;
+    let cache_read =
+        optional_nonnegative_integer(table, CACHE_READ_TOKENS_FIELD)?.map_or(0, |value| value);
+    let cache_write =
+        optional_nonnegative_integer(table, CACHE_WRITE_TOKENS_FIELD)?.map_or(0, |value| value);
+    let input = optional_nonnegative_integer(table, INPUT_TOKENS_FIELD)?;
+    let output = optional_nonnegative_integer(table, OUTPUT_TOKENS_FIELD)?.map_or(0, |value| value);
+    let cached = cache_read
+        .checked_add(cache_write)
+        .ok_or_else(|| "tool usage cached input token categories overflow".to_owned())?;
+    let (fresh_input, input) = match (fresh_input, input) {
+        (Some(fresh), Some(total)) => (fresh, total),
+        (None, Some(total)) => (
+            total.checked_sub(cached).ok_or_else(|| {
+                format!(
+                    "tool usage input token categories do not conserve total: cached input \
+                     tokens ({cached}) exceed input_tokens ({total})"
+                )
+            })?,
+            total,
+        ),
+        (Some(fresh), None) => (
+            fresh,
+            fresh
+                .checked_add(cached)
+                .ok_or_else(|| "tool usage input token categories overflow".to_owned())?,
+        ),
+        (None, None) => (0, cached),
+    };
+    ToolUsage::try_new(fresh_input, cache_read, cache_write, input, output)
+}
+
+fn extract_cost(table: &mlua::Table) -> Result<Option<f64>, String> {
+    let value = table
+        .get::<LuaValue>(USAGE_COST_FIELD)
+        .map_err(|error| format!("invalid tool telemetry field 'cost': {error}"))?;
+    match value {
+        LuaValue::Nil => Ok(None),
+        LuaValue::Integer(value) if (0..=MAX_SAFE_INTEGER_I64).contains(&value) => value
+            .to_string()
+            .parse::<f64>()
+            .map(Some)
+            .map_err(|error| format!("invalid tool telemetry field 'cost': {error}")),
+        LuaValue::Number(value) if value.is_finite() && value >= 0.0 => Ok(Some(value)),
+        _ => Err("tool telemetry field 'cost' must be a finite nonnegative number".to_owned()),
+    }
+}
+
+fn extract_telemetry(table: &mlua::Table) -> Result<Option<ToolTelemetry>, String> {
+    let cost = extract_cost(table)?;
+    let usage = match table
+        .get::<LuaValue>(USAGE_COUNTS_FIELD)
+        .map_err(|error| format!("invalid tool telemetry field 'usage': {error}"))?
+    {
+        LuaValue::Nil => None,
+        LuaValue::Table(usage) => Some(extract_tool_usage(&usage)?),
+        _ => return Err("tool telemetry field 'usage' must be a table".to_owned()),
+    };
+    ToolTelemetry::try_new(cost, usage)
 }
 
 fn extract_format(t: &mlua::Table) -> LuaOutputFormat {
@@ -1805,6 +1927,213 @@ mod tests {
         let reply = ToolCallReply::from_lua_value(&lua, &val);
         assert_eq!(reply.result, Ok("hi".to_string()));
         assert_eq!(reply.format, LuaOutputFormat::Markdown);
+    }
+
+    #[test]
+    fn from_lua_value_exposes_only_sanitized_usage_metadata() {
+        let lua = Lua::new();
+        let value: LuaValue = lua
+            .load(
+                r#"return {
+                    llm_output = "done",
+                    cost = 0.25,
+                    usage = {
+                        fresh_input_tokens = 11,
+                        cache_read_tokens = 12,
+                        cache_write_tokens = 13,
+                        input_tokens = 36,
+                        output_tokens = 14,
+                        raw_prompt = "PRIVATE_PROMPT",
+                    },
+                    raw_payload = "PRIVATE_PAYLOAD",
+                }"#,
+            )
+            .eval()
+            .unwrap();
+
+        let reply = ToolCallReply::from_lua_value(&lua, &value);
+        let telemetry = reply.telemetry.expect("telemetry missing");
+        let usage = telemetry.usage.expect("usage missing");
+
+        assert_eq!(telemetry.cost, Some(0.25));
+        assert_eq!(usage.fresh_input_tokens, 11);
+        assert_eq!(usage.cache_read_tokens, 12);
+        assert_eq!(usage.cache_write_tokens, 13);
+        assert_eq!(usage.input_tokens, 36);
+        assert_eq!(usage.output_tokens, 14);
+        assert_eq!(reply.state, None);
+    }
+
+    #[test]
+    fn from_lua_value_preserves_usage_metadata_on_image_output() {
+        let lua = Lua::new();
+        let value: LuaValue = lua
+            .load(
+                r#"return {
+                    llm_output = "caption",
+                    image = { media_type = "image/png", data = "aGVsbG8=" },
+                    cost = 0.25,
+                }"#,
+            )
+            .eval()
+            .unwrap();
+
+        let reply = ToolCallReply::from_lua_value(&lua, &value);
+
+        assert_eq!(reply.result, Ok("caption".to_owned()));
+        assert_eq!(
+            reply.telemetry.and_then(|telemetry| telemetry.cost),
+            Some(0.25)
+        );
+    }
+
+    #[test]
+    fn from_lua_value_preserves_usage_metadata_on_diff_output() {
+        let lua = Lua::new();
+        let value: LuaValue = lua
+            .load(
+                r#"return {
+                    llm_output = "changed",
+                    diff_path = "src/lib.rs",
+                    diff_before = "old",
+                    diff_after = "new",
+                    usage = { input_tokens = 9 },
+                }"#,
+            )
+            .eval()
+            .unwrap();
+
+        let reply = ToolCallReply::from_lua_value(&lua, &value);
+
+        assert_eq!(reply.result, Ok("changed".to_owned()));
+        assert_eq!(
+            reply
+                .telemetry
+                .and_then(|telemetry| telemetry.usage)
+                .map(|usage| usage.input_tokens),
+            Some(9)
+        );
+    }
+
+    #[test]
+    fn from_lua_value_preserves_sanitized_usage_on_charged_error() {
+        let lua = Lua::new();
+        let value: LuaValue = lua
+            .load(
+                r#"return {
+                    llm_output = "failed",
+                    is_error = true,
+                    cost = 0.5,
+                    usage = { input_tokens = 9, output_tokens = 3, raw_prompt = "PRIVATE_PROMPT" },
+                }"#,
+            )
+            .eval()
+            .unwrap();
+
+        let reply = ToolCallReply::from_lua_value(&lua, &value);
+        let telemetry = reply.telemetry.expect("charged failure telemetry missing");
+        let usage = telemetry.usage.expect("charged failure usage missing");
+
+        assert_eq!(reply.result, Err("failed".to_owned()));
+        assert_eq!(telemetry.cost, Some(0.5));
+        assert_eq!(usage.input_tokens, 9);
+        assert_eq!(usage.output_tokens, 3);
+    }
+
+    #[test]
+    fn from_lua_value_rejects_nonconserving_usage() {
+        let lua = Lua::new();
+        let value: LuaValue = lua
+            .load(
+                r#"return {
+                    llm_output = "done",
+                    usage = {
+                        fresh_input_tokens = 5,
+                        cache_read_tokens = 7,
+                        cache_write_tokens = 11,
+                        input_tokens = 24,
+                    },
+                }"#,
+            )
+            .eval()
+            .unwrap();
+
+        let reply = ToolCallReply::from_lua_value(&lua, &value);
+
+        assert!(
+            reply
+                .result
+                .is_err_and(|error| error.contains("do not conserve"))
+        );
+        assert_eq!(reply.telemetry, None);
+    }
+
+    #[test_case::test_case("-1" ; "negative")]
+    #[test_case::test_case("1.5" ; "fractional")]
+    #[test_case::test_case("0 / 0" ; "nan")]
+    #[test_case::test_case("math.huge" ; "infinite")]
+    #[test_case::test_case("'invalid'" ; "non_numeric")]
+    fn from_lua_value_rejects_malformed_usage_count(value: &str) {
+        let lua = Lua::new();
+        let source =
+            format!("return {{ llm_output = 'done', usage = {{ input_tokens = {value} }} }}");
+        let value: LuaValue = lua.load(source).eval().unwrap();
+        let reply = ToolCallReply::from_lua_value(&lua, &value);
+
+        assert!(reply.result.is_err_and(|error| {
+            error.contains("input_tokens") && error.contains("finite nonnegative integer")
+        }));
+        assert_eq!(reply.telemetry, None);
+    }
+
+    #[test]
+    fn from_lua_value_rejects_integer_usage_count_above_safe_range() {
+        let lua = Lua::new();
+        let usage = lua.create_table().unwrap();
+        usage.set(INPUT_TOKENS_FIELD, i64::MAX).unwrap();
+        let output = lua.create_table().unwrap();
+        output.set("llm_output", "done").unwrap();
+        output.set(USAGE_COUNTS_FIELD, usage).unwrap();
+
+        let reply = ToolCallReply::from_lua_value(&lua, &LuaValue::Table(output));
+
+        assert!(reply.result.is_err_and(|error| {
+            error.contains(INPUT_TOKENS_FIELD) && error.contains("finite nonnegative integer")
+        }));
+        assert_eq!(reply.telemetry, None);
+    }
+
+    #[test_case::test_case("-0.1" ; "negative")]
+    #[test_case::test_case("0 / 0" ; "nan")]
+    #[test_case::test_case("math.huge" ; "infinite")]
+    #[test_case::test_case("'invalid'" ; "non_numeric")]
+    fn from_lua_value_rejects_malformed_cost(value: &str) {
+        let lua = Lua::new();
+        let source = format!("return {{ llm_output = 'done', cost = {value} }}");
+        let value: LuaValue = lua.load(source).eval().unwrap();
+        let reply = ToolCallReply::from_lua_value(&lua, &value);
+
+        assert!(reply.result.is_err_and(|error| {
+            error.contains("cost") && error.contains("finite nonnegative number")
+        }));
+        assert_eq!(reply.telemetry, None);
+    }
+
+    #[test]
+    fn from_lua_value_rejects_non_table_usage() {
+        let lua = Lua::new();
+        let value: LuaValue = lua
+            .load("return { llm_output = 'done', usage = 42 }")
+            .eval()
+            .unwrap();
+        let reply = ToolCallReply::from_lua_value(&lua, &value);
+
+        assert!(
+            reply
+                .result
+                .is_err_and(|error| error.contains("must be a table"))
+        );
+        assert_eq!(reply.telemetry, None);
     }
 
     #[test]
