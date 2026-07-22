@@ -145,13 +145,14 @@ n00n.agent.session = function(ctx, opts)
   recorder.sessions = recorder.sessions + 1
   recorder.has_local_tools = opts.local_tools ~= nil
   recorder.structured_output_schema = opts.local_tools and opts.local_tools.structured_output and opts.local_tools.structured_output.input_schema
-  local sess = { opts = opts, ctx = ctx }
+  local sess = { opts = opts, ctx = ctx, turn = 0 }
   function sess:prompt(msg)
+    self.turn = self.turn + 1
     recorder.prompts[#recorder.prompts + 1] = msg
     return behaviors[opts.name](self, msg)
   end
   function sess:get_progress()
-    return { completed_count = 0, recent_tools = {}, elapsed_ms = 0, done = true }
+    return { turn_id = self.turn, completed_count = 0, recent_tools = {}, activities = {}, elapsed_ms = 0, done = true }
   end
   function sess:close()
     recorder.closed = recorder.closed + 1

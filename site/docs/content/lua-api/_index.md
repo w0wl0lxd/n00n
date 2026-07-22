@@ -86,6 +86,7 @@ a string belongs.
 | [`n00n.ui.Win`](#n00n-ui-Win) | Handle to a floating or split window. |
 | [`n00n.ui.Buf`](#n00n-ui-Buf) | A content buffer that holds styled lines of text. |
 | [`n00n.uv`](#n00n-uv) | System and environment utilities, modelled after `vim.uv`. |
+| [`n00n.arbor`](#n00n-arbor) | Graph-based code analysis via Arbor CLI. |
 | [`n00n.workflow`](#n00n-workflow) | Sandboxed workflow script compilation. |
 | [`n00n.yaml`](#n00n-yaml) | YAML encoding and decoding. |
 
@@ -908,11 +909,24 @@ Returns a table with:
   `elapsed_ms` (integer): time since the session was created.
   `current_tool` (string?): name of the tool currently running, if any.
   `recent_tools` (table): names of the last few finished tools, oldest first.
+  `activities` (table): up to five safe rendered tool summaries, oldest first.
   `completed_count` (integer): total number of finished tools so far.
-  `done` (bool): true once the prompt has completed.
+  `turn_id` (integer): increases before each `prompt` call.
+  `done` (bool): true once the current prompt call has completed.
 
 The call returns at most every `PROGRESS_TIMEOUT_MS` milliseconds, or
 immediately when a tool starts or finishes.
+
+---
+
+### `Session:cancel()` {#Session-cancel}
+
+```lua
+Session:cancel()
+```
+
+Cancel the current turn in this session without closing it. The agent will
+stop at the next cancellation point and return an error from `:prompt()`.
 
 
 ## n00n.async {#n00n-async}
@@ -2211,6 +2225,48 @@ Decode a TOON string back into a Lua value. Inverse of `to_toon`.
 
 ```lua
 local t, err = n00n.json.from_toon(s)
+```
+
+---
+
+### `n00n.json.tooned()` {#n00n-json-tooned}
+
+```lua
+n00n.json.tooned({value})
+```
+
+Lossless JSON/TOON passthrough. Encodes the value as JSON and TOON and
+returns whichever representation is smaller. If TOON does not shrink the
+payload, the original JSON string is returned unchanged.
+
+**Parameters:**
+
+- `{value}` (`any`) Lua value to encode.
+
+**Returns:** (`string?`, `string?`) Encoded string (JSON or TOON) and its format ("json" or "toon"), or nil plus an error.
+
+**Example:**
+
+```lua
+local s, fmt = n00n.json.tooned({ users = { { id = 1, name = "Alice" } } })
+```
+
+---
+
+### `n00n.json.toon_stats()` {#n00n-json-toon_stats}
+
+```lua
+n00n.json.toon_stats()
+```
+
+Return historical TOON passthrough statistics.
+
+**Returns:** (`table?`, `string?`) Stats table with calls, json_bytes, toon_bytes, toon_wins, saved_bytes, or nil plus an error.
+
+**Example:**
+
+```lua
+local stats, err = n00n.json.toon_stats()
 ```
 
 
@@ -4119,6 +4175,30 @@ end
 
 ---
 
+### `n00n.ui.pick_model()` {#n00n-ui-pick_model}
+
+```lua
+n00n.ui.pick_model({current?})
+```
+
+Opens n00n's native model discovery picker and waits for a selection.
+Returns nil when the picker is cancelled or the UI is unavailable.
+
+**Parameters:**
+
+- `{current?}` (`string?`) Model spec to preselect. Omit for no preselection.
+
+**Returns:** (`string?`) Selected model spec, or nil when cancelled.
+
+**Example:**
+
+```lua
+local model = n00n.ui.pick_model(current_model)
+if model then current_model = model end
+```
+
+---
+
 ### `n00n.ui.open_win()` {#n00n-ui-open_win}
 
 ```lua
@@ -4683,6 +4763,151 @@ local editor = n00n.uv.os_getenv("EDITOR") or "vi"
 ```
 
 
+## n00n.arbor {#n00n-arbor}
+
+Graph-based code analysis via Arbor CLI. Wraps `arbor callers`, `arbor callees`, `arbor map`, `arbor diff`, `arbor query`, and `arbor status`. Each method shells out to the `arbor` binary (Anandb71/arbor, `cargo install arbor-graph-cli`) and parses its JSON output into Lua tables.
+
+---
+
+### `n00n.arbor.check_binary()` {#n00n-arbor-check_binary}
+
+```lua
+n00n.arbor.check_binary()
+```
+
+Check that the `arbor` CLI is installed and working.
+
+**Returns:** (`nil|string`) nil on success, or an error message string.
+
+---
+
+### `n00n.arbor.available()` {#n00n-arbor-available}
+
+```lua
+n00n.arbor.available()
+```
+
+Returns true if the `arbor` CLI is on PATH.
+
+**Returns:** (`boolean`) true when arbor is available.
+
+---
+
+### `n00n.arbor.callers()` {#n00n-arbor-callers}
+
+```lua
+n00n.arbor.callers({symbol}, {project})
+```
+
+Show who calls a symbol.
+
+**Parameters:**
+
+- `{symbol}` (`string`) Symbol name (function, class, etc.)
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`table`) Array of caller objects with `name`, `path`, `kind`, `line` fields.
+
+---
+
+### `n00n.arbor.callees()` {#n00n-arbor-callees}
+
+```lua
+n00n.arbor.callees({symbol}, {project})
+```
+
+Show what a symbol calls.
+
+**Parameters:**
+
+- `{symbol}` (`string`) Symbol name.
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`table`) Array of callee objects with `name`, `path`, `kind`, `line` fields.
+
+---
+
+### `n00n.arbor.map()` {#n00n-arbor-map}
+
+```lua
+n00n.arbor.map({project}, {token_budget?})
+```
+
+Ranked project skeleton with symbols.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+- `{token_budget}` (`integer`) Optional token budget (default 1024).
+
+**Returns:** (`table`) Array of map entries with `file`, `symbols` (each with `name`, `kind`, `line`, `centrality`, `callers`).
+
+---
+
+### `n00n.arbor.diff()` {#n00n-arbor-diff}
+
+```lua
+n00n.arbor.diff({project})
+```
+
+Blast radius of unpushed git changes.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`table`) Impact object with `direct_callers`, `indirect_callers`, `blast_radius_nodes`, `api_entrypoints_affected`, `files_likely_require_updates`.
+
+---
+
+### `n00n.arbor.query()` {#n00n-arbor-query}
+
+```lua
+n00n.arbor.query({query}, {project})
+```
+
+Free-text search of the code graph.
+
+**Parameters:**
+
+- `{query}` (`string`) Search query text.
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`string`) Raw query results as text.
+
+---
+
+### `n00n.arbor.status()` {#n00n-arbor-status}
+
+```lua
+n00n.arbor.status({project})
+```
+
+Show Arbor index status for a project.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`string`) Status text.
+
+---
+
+### `n00n.arbor.ensure_indexed()` {#n00n-arbor-ensure_indexed}
+
+```lua
+n00n.arbor.ensure_indexed({project})
+```
+
+Run `arbor index` if the project is not yet indexed.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`nil`) nil on success, or error on failure.
+
+
 ## n00n.workflow {#n00n-workflow}
 
 Sandboxed workflow script compilation.
@@ -4811,6 +5036,16 @@ print(t.name) -- n00n
 
 These ship inside n00n; `require` them from any plugin. Small modules are
 shown as full source, larger ones as their public interface.
+
+### `require("n00n.activity_preview")`
+
+```lua
+function ActivityPreview.new(ctx, description, opts)
+function ActivityPreview:render()
+function ActivityPreview:set_row(key, label, message, status)
+function ActivityPreview:update(progress, label, session_key)
+function ActivityPreview:prompt(sess, message, label)
+```
 
 ### `require("n00n.color")`
 
@@ -5016,7 +5251,8 @@ function TextInput:render(prefix, prefix_width, width)
 
 -- opts: max_lines (default 80) shown while collapsed, keep "head"|"tail"
 -- (default "tail"), max_expand_lines (default 2000) kept for expansion,
--- max_line_bytes (optional) per-line byte cap applied at render time.
+-- max_line_bytes and max_width (optional) cap each complete rendered row,
+-- and hide_collapsed (default false) reveals body lines only after a click.
 function ToolView.new(buf, opts)
 function ToolView:set_header(lines)
 function ToolView:clear()

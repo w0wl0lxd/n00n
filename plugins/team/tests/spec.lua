@@ -97,7 +97,7 @@ case("roles_run_with_custom_opts", function()
     return {}, nil
   end
 
-  local session_name = nil
+  local session_name, activity_label
   n00n.agent.session = function(ctx, opts)
     session_name = opts.name
     return {
@@ -112,8 +112,14 @@ case("roles_run_with_custom_opts", function()
     return 0.05, nil
   end
 
+  local preview = {
+    prompt = function(_, sess, prompt, label)
+      activity_label = label
+      return sess:prompt(prompt)
+    end,
+  }
   local dummy_ctx = {}
-  local res = roles.run(dummy_ctx, "developer", "implement helper", { model_tier = "medium" })
+  local res = roles.run(dummy_ctx, "developer", "implement helper", { model_tier = "medium", preview = preview })
 
   n00n.agent.resolve_model = old_resolve
   n00n.agent.tools = old_tools
@@ -123,6 +129,7 @@ case("roles_run_with_custom_opts", function()
   assert(res.ok == true, "roles.run should succeed")
   assert(resolved_tier == "medium", "should use custom model tier")
   assert(session_name == "developer", "session name should match role")
+  assert(activity_label == "developer", "role session must publish through the shared preview")
   assert(res.text == "implemented!", "returned text should match mock")
   assert(res.cost == 0.05, "cost should match mock")
 end)
@@ -290,6 +297,23 @@ case("quorum_validators_receive_no_tools", function()
   assert(result.accepted, "tool-less validator should approve")
 end)
 
+case("quorum_routes_each_validator_through_preview", function()
+  local quorum = require("quorum")
+  local restore = stub_agent(true)
+  local labels = {}
+  local preview = {
+    prompt = function(_, sess, prompt, label)
+      labels[#labels + 1] = label
+      return sess:prompt(prompt)
+    end,
+  }
+  local verdict = quorum.validate({}, "artifact", { n = 3, preview = preview })
+  restore()
+  assert(verdict.accepted, "preview must not change quorum result")
+  assert(#labels == 3, "every quorum session must reach the preview")
+  assert(labels[1] == "quorum-security", "validator label must identify quorum role")
+end)
+
 case("quorum_all_reject_rejected", function()
   local quorum = require("quorum")
   local restore = stub_agent(false)
@@ -359,9 +383,20 @@ case("swarm_dry_run_terminates_within_max_rounds", function()
     }
   end
 
+  local activity_labels = {}
+  local preview = {
+    prompt = function(_, sess, prompt, label)
+      activity_labels[#activity_labels + 1] = label
+      return sess:prompt(prompt)
+    end,
+  }
   local dummy_ctx = {}
   local ok, out = pcall(function()
-    return swarm.run(dummy_ctx, "add a retry helper and write tests", { relay_k = 2, max_rounds = 4 })
+    return swarm.run(dummy_ctx, "add a retry helper and write tests", {
+      relay_k = 2,
+      max_rounds = 4,
+      preview = preview,
+    })
   end)
 
   n00n.env.state_dir = old_env
@@ -375,6 +410,9 @@ case("swarm_dry_run_terminates_within_max_rounds", function()
   assert(ok, "swarm.run should not error: " .. tostring(out))
   assert(out.ok == true, "swarm must report ok")
   assert(out.text ~= nil and out.text ~= "", "swarm must emit a report")
+  assert(activity_labels[1] == "swarm-explorer", "swarm explorer label must identify its agent")
+  assert(activity_labels[2] == "swarm-worker", "swarm worker label must identify its agent")
+  assert(activity_labels[3] == "quorum-security", "swarm quorum must retain validator labels")
   -- One accepted round = 2 explorer/worker + 3 quorum = 5 sessions * 0.01.
   -- Bounded by max_rounds means cost stays at one round, not 4.
   assert(out.cost <= 0.06, "swarm must terminate within max_rounds (cost " .. tostring(out.cost) .. ")")
