@@ -92,7 +92,13 @@ mod tests {
 
     #[test]
     fn from_source_decodes_png_and_fits_width() {
-        let img = ImageBuffer::from_fn(8, 8, |x, y| image::Rgb([x as u8 * 32, y as u8 * 32, 128]));
+        let img = ImageBuffer::from_fn(8, 8, |x, y| {
+            image::Rgb([
+                u8::try_from(x).unwrap_or_else(|_| u8::MAX) * 32,
+                u8::try_from(y).unwrap_or_else(|_| u8::MAX) * 32,
+                128,
+            ])
+        });
         let mut png = Vec::new();
         img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .unwrap();
