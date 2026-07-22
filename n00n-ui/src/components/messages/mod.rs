@@ -200,6 +200,18 @@ impl MessagesPanel {
         self.messages.push(msg);
     }
 
+    pub fn message_count(&self) -> usize {
+        self.messages.len()
+    }
+
+    pub fn truncate_messages(&mut self, len: usize) {
+        self.messages.truncate(len);
+        self.streaming_thinking.clear();
+        self.streaming_text.clear();
+        self.prompt_progress = None;
+        self.cache.invalidate_from_msg_count();
+    }
+
     pub fn set_pending_compaction_summary(&mut self, summary: String) {
         if let Some(message) = self.messages.iter_mut().rev().find(|message| {
             matches!(
@@ -697,11 +709,6 @@ impl MessagesPanel {
         if old_start < u32::from(self.scroll_top) {
             self.shift_scroll_for_height_change(old_height, new_height);
         }
-    }
-
-    #[cfg(test)]
-    pub fn message_count(&self) -> usize {
-        self.messages.len()
     }
 
     #[cfg(test)]

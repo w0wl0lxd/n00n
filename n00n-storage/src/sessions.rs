@@ -96,6 +96,46 @@ impl std::ops::AddAssign for StoredTokenUsage {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StoredImageMediaType {
+    Png,
+    Jpeg,
+    Gif,
+    Webp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredImageSource {
+    pub media_type: StoredImageMediaType,
+    pub data: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredMcpPrompt {
+    pub qualified_name: String,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub arguments: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredQueuedMessage {
+    pub text: String,
+    pub images: Vec<StoredImageSource>,
+    /// `None` means this field was absent in an older session snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<StoredMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<StoredThinking>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fast: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub workflow: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<StoredMcpPrompt>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionMeta {
     #[serde(default)]
@@ -112,6 +152,9 @@ pub struct SessionMeta {
     pub input_draft: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queued_messages: Vec<String>,
+    /// Full queued-message snapshots, including messages hidden by the paint gate.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queued_submissions: Vec<StoredQueuedMessage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subagents: Vec<StoredSubagent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -122,6 +165,9 @@ pub struct SessionMeta {
     pub workflow: bool,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub usage_by_model: HashMap<String, StoredTokenUsage>,
+    /// Monotonic snapshot ordering used by write-behind persistence.
+    #[serde(default)]
+    pub revision: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1720,8 +1766,8 @@ mod tests {
         try_lock_openai_response_chain,
     };
     use super::{
-        SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError, TitleSource,
-        TranscriptEntry,
+        SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError, StoredQueuedMessage,
+        TitleSource, TranscriptEntry,
     };
     use crate::StateDir;
     use crate::id::N00nId;
@@ -2959,6 +3005,19 @@ mod tests {
         assert!(meta.thinking.is_none());
         assert!(!meta.fast);
         assert!(!meta.workflow);
+    }
+
+    #[test]
+    fn queued_message_backward_compat_defaults_semantics() {
+        let stored: StoredQueuedMessage =
+            serde_json::from_str(r#"{"text":"queued","images":[]}"#).unwrap();
+        assert_eq!(stored.text, "queued");
+        assert!(stored.mode.is_none());
+        assert!(stored.plan_path.is_none());
+        assert!(stored.thinking.is_none());
+        assert!(!stored.fast);
+        assert!(!stored.workflow);
+        assert!(stored.prompt.is_none());
     }
 
     #[test]
