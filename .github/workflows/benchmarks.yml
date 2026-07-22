@@ -33,7 +33,7 @@ jobs:
         with:
           components: rustfmt
       - name: Run benchmarks
-        run: cargo bench --workspace -- --output-format bencher | tee criterion-output.txt
+        run: cargo bench --workspace --bench luau_perf --bench splash -- --output-format bencher | tee criterion-output.txt
       - name: Store / report results
         uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1
         with:
