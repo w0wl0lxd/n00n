@@ -1164,8 +1164,8 @@ fn call_local_tool(
 mod tests {
     use serde_json::json;
 
-    use n00n_agent::{ExtractedCommand, InterruptPoint, InterruptSource};
     use super::*;
+    use n00n_agent::{ExtractedCommand, InterruptPoint, InterruptSource};
 
     fn call(src: &str, input: JsonValue) -> Result<String, String> {
         let lua = Lua::new();
