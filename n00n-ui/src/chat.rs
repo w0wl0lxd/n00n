@@ -458,10 +458,13 @@ impl Chat {
         self.messages_panel.tool_done(event);
     }
 
-    #[cfg(test)]
     #[must_use]
     pub fn message_count(&self) -> usize {
         self.messages_panel.message_count()
+    }
+
+    pub fn truncate_messages(&mut self, len: usize) {
+        self.messages_panel.truncate_messages(len);
     }
 
     #[cfg(test)]

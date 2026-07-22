@@ -13,7 +13,7 @@ use super::history::{History, sanitize_cancelled_history};
 use super::instructions::LoadedInstructions;
 use super::streaming::stream_with_retry;
 use super::tool_dispatch::{self, RecentCalls};
-use crate::cancel::{CancelMap, CancelToken};
+use crate::cancel::{CancelMap, CancelToken, PreDispatchGate};
 use crate::mcp::McpHandle;
 use crate::permissions::PermissionManager;
 use crate::tools::{Deadline, FileReadTracker, LocalTools, ToolAudience, ToolContext};
@@ -94,7 +94,9 @@ pub struct Agent<'h> {
     recent_calls: RecentCalls,
     auto_compact: bool,
     loaded_instructions: LoadedInstructions,
-    rollback_len: usize,
+    pre_dispatch_rollback_len: Option<usize>,
+    rollback_len: Option<usize>,
+    pre_dispatch_gate: Option<Arc<PreDispatchGate>>,
     mcp: Option<McpHandle>,
     config: AgentConfig,
     tool_output_lines: ToolOutputLines,
@@ -138,7 +140,9 @@ impl<'h> Agent<'h> {
             recent_calls: RecentCalls::new(),
             auto_compact: compaction::auto_compact_enabled(),
             loaded_instructions: LoadedInstructions::new(),
-            rollback_len: 0,
+            pre_dispatch_rollback_len: None,
+            rollback_len: None,
+            pre_dispatch_gate: None,
             mcp: None,
             reauth_attempts: 0,
             post_tool_empty_retried: false,
@@ -182,6 +186,18 @@ impl<'h> Agent<'h> {
     }
 
     #[must_use]
+    pub fn with_pre_dispatch_gate(mut self, gate: Arc<PreDispatchGate>) -> Self {
+        self.pre_dispatch_gate = Some(gate);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pre_dispatch_rollback_len(mut self, rollback_len: usize) -> Self {
+        self.pre_dispatch_rollback_len = Some(rollback_len);
+        self
+    }
+
+    #[must_use]
     pub fn with_local_tools(mut self, local_tools: LocalTools) -> Self {
         self.local_tools = local_tools;
         self
@@ -209,7 +225,11 @@ impl<'h> Agent<'h> {
     /// Returns an error if the agent loop fails due to provider errors,
     /// tool execution failures, or cancellation.
     pub async fn run(&mut self, input: AgentInput) -> Result<(), AgentError> {
-        self.rollback_len = self.history.len();
+        let rollback_len = self.rollback_len.unwrap_or_else(|| self.history.len());
+        self.rollback_len = Some(rollback_len);
+        let pre_dispatch_rollback_len = self
+            .pre_dispatch_rollback_len
+            .unwrap_or_else(|| rollback_len);
         let msg = Message::user_with_images(input.message.clone(), input.images);
         self.history.push(msg);
         self.context_size = estimate_message_tokens(self.history.as_slice());
@@ -234,7 +254,16 @@ impl<'h> Agent<'h> {
         .await;
 
         if matches!(result, Err(AgentError::Cancelled)) {
-            sanitize_cancelled_history(self.history, self.rollback_len);
+            if self
+                .pre_dispatch_gate
+                .as_ref()
+                .is_some_and(|gate| gate.is_cancelled())
+            {
+                self.history.truncate(pre_dispatch_rollback_len);
+            } else {
+                let rollback_len = self.rollback_len.unwrap_or_else(|| self.history.len());
+                sanitize_cancelled_history(self.history, rollback_len);
+            }
         }
 
         result
@@ -258,8 +287,14 @@ impl<'h> Agent<'h> {
         }
     }
 
+    fn commit_pre_dispatch(&self) -> bool {
+        self.pre_dispatch_gate
+            .as_ref()
+            .is_none_or(|gate| gate.try_commit())
+    }
+
     async fn turn(&mut self) -> Result<TurnOutcome, AgentError> {
-        if self.cancel.is_cancelled() {
+        if self.cancel.is_cancelled() || !self.commit_pre_dispatch() {
             return Err(AgentError::Cancelled);
         }
         let response = match stream_with_retry(
@@ -482,6 +517,9 @@ impl<'h> Agent<'h> {
     }
 
     async fn do_compact(&mut self) -> Result<(), AgentError> {
+        if !self.commit_pre_dispatch() {
+            return Err(AgentError::Cancelled);
+        }
         let (compact_provider, compact_model) =
             resolve_compaction_model(&self.provider, &self.model, self.timeouts);
         let usage = compaction::compact_history(
@@ -494,7 +532,7 @@ impl<'h> Agent<'h> {
         .await?;
         let cost = usage.cost(&compact_model.pricing, false);
         self.record_usage(usage, cost);
-        self.rollback_len = self.history.len();
+        self.rollback_len = Some(self.history.len());
         self.event_tx.send(AgentEvent::CompactionDone)?;
         self.history
             .push(Message::synthetic(CONTINUE_AFTER_COMPACT.into()));
@@ -563,13 +601,17 @@ pub fn estimate_message_tokens(messages: &[Message]) -> u32 {
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     use n00n_providers::provider::{BoxFuture, Provider};
     use n00n_providers::{
         ContentBlock, Message, Model, ProviderEvent, RequestOptions, Role, StopReason,
         StreamResponse, TokenUsage,
     };
+    use n00n_storage::sessions::TranscriptEntry;
     use serde_json::Value;
     use test_case::test_case;
 
@@ -600,6 +642,8 @@ mod tests {
     struct MockProvider {
         responses: Mutex<Vec<StreamResponse>>,
         requests: Arc<Mutex<Vec<Vec<Message>>>>,
+        cancel_on_request: Option<usize>,
+        calls: AtomicUsize,
     }
 
     impl MockProvider {
@@ -607,6 +651,8 @@ mod tests {
             Self {
                 responses: Mutex::new(responses),
                 requests: Arc::new(Mutex::new(Vec::new())),
+                cancel_on_request: None,
+                calls: AtomicUsize::new(0),
             }
         }
 
@@ -616,9 +662,20 @@ mod tests {
                 Self {
                     responses: Mutex::new(responses),
                     requests: Arc::clone(&requests),
+                    cancel_on_request: None,
+                    calls: AtomicUsize::new(0),
                 },
                 requests,
             )
+        }
+
+        fn cancel_on_request(responses: Vec<StreamResponse>, request: usize) -> Self {
+            Self {
+                responses: Mutex::new(responses),
+                requests: Arc::new(Mutex::new(Vec::new())),
+                cancel_on_request: Some(request),
+                calls: AtomicUsize::new(0),
+            }
         }
     }
 
@@ -634,6 +691,10 @@ mod tests {
             _: Option<&'a SessionRef>,
         ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
             Box::pin(async {
+                let request = self.calls.fetch_add(1, Ordering::Relaxed);
+                if self.cancel_on_request == Some(request) {
+                    return Err(AgentError::Cancelled);
+                }
                 self.requests.lock().unwrap().push(messages.to_vec());
                 let mut responses = self.responses.lock().unwrap();
                 assert!(!responses.is_empty(), "MockProvider: no more responses");
@@ -1112,6 +1173,52 @@ mod tests {
             assert!(matches!(result, Err(AgentError::Cancelled)));
             drop(agent);
             assert_ends_with_cancel_marker(&history);
+        });
+    }
+
+    #[test]
+    fn post_compaction_cancellation_keeps_compaction_transcript_and_cleanup() {
+        smol::block_on(async {
+            let mut history = History::new(vec![Message::user("x".repeat(680_000))]);
+            let (mut agent, _event_rx) = make_agent(
+                MockProvider::cancel_on_request(vec![text_response(StopReason::EndTurn)], 1),
+                &mut history,
+            );
+            agent.model = Arc::new(small_context_model(200_000, 8_192));
+
+            let result = agent.run(default_input()).await;
+
+            assert!(matches!(result, Err(AgentError::Cancelled)));
+            drop(agent);
+            assert!(
+                history
+                    .transcript()
+                    .iter()
+                    .any(|entry| matches!(entry, TranscriptEntry::Compaction { .. }))
+            );
+            assert_ends_with_cancel_marker(&history);
+        });
+    }
+
+    #[test]
+    fn pre_dispatch_cancellation_rolls_back_without_provider_call() {
+        smol::block_on(async {
+            let (provider, requests) =
+                MockProvider::recording(vec![text_response(StopReason::EndTurn)]);
+            let mut history = History::new(Vec::new());
+            let (mut agent, _event_rx) = make_agent(provider, &mut history);
+            let gate = Arc::new(PreDispatchGate::new());
+            assert!(gate.try_cancel());
+            agent = agent
+                .with_pre_dispatch_gate(gate)
+                .with_pre_dispatch_rollback_len(0);
+
+            let result = agent.run(default_input()).await;
+
+            assert!(matches!(result, Err(AgentError::Cancelled)));
+            drop(agent);
+            assert_eq!(history.len(), 0);
+            assert_eq!(requests.lock().unwrap().len(), 0);
         });
     }
 

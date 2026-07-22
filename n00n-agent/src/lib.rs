@@ -14,7 +14,7 @@ pub use agent::{
     Agent, AgentParams, AgentRunParams, History, Instructions, LoadedInstructions, SharedMessages,
     SharedTranscript, find_subdirectory_instructions, is_instruction_file,
 };
-pub use cancel::{CancelMap, CancelToken, CancelTrigger};
+pub use cancel::{CancelMap, CancelToken, CancelTrigger, PreDispatchGate};
 pub use n00n_config::{AgentConfig, PermissionsConfig, ToolOutputLines};
 pub mod command;
 pub mod diff;
@@ -76,6 +76,7 @@ pub struct McpPromptRef {
     pub arguments: HashMap<String, String>,
 }
 
+#[derive(Clone)]
 pub struct AgentInput {
     pub message: String,
     pub mode: AgentMode,

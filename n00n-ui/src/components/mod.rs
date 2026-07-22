@@ -32,7 +32,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use n00n_agent::AgentInput;
+use n00n_agent::{AgentInput, PreDispatchGate};
 use n00n_agent::{BufferSnapshot, ImageSource, ToolInput, ToolOutput};
 use n00n_providers::{Message, ModelTier};
 use n00n_storage::sessions::TranscriptEntry;
@@ -181,8 +181,18 @@ pub struct LoadedSession {
 
 use std::path::PathBuf;
 
+pub struct SubmissionDispatch {
+    pub input: AgentInput,
+    pub submission_id: u64,
+    pub run_id: u64,
+    pub gate: Arc<PreDispatchGate>,
+    /// User-composer submissions wait for the exact session bubble to paint.
+    /// Background API submissions explicitly skip that UI-only gate.
+    pub paint_required: bool,
+}
+
 pub enum Action {
-    SendMessage(Box<AgentInput>),
+    SendMessage(Box<SubmissionDispatch>),
     ShellCommand {
         id: String,
         command: String,

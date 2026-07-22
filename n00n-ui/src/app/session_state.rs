@@ -118,6 +118,7 @@ impl SessionState {
         self.session.meta.thinking = Some(self.thinking.into());
         self.session.meta.fast = self.fast;
         self.session.meta.workflow = self.workflow;
+        self.session.meta.revision = self.session.meta.revision.saturating_add(1);
         self.session.updated_at = n00n_storage::now_epoch();
         self.session.update_title_if_default();
     }

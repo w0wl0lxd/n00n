@@ -9,8 +9,8 @@ use arc_swap::ArcSwap;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use n00n_agent::permissions::PermissionManager;
 use n00n_agent::{
-    ImageMediaType, McpConfigErrors, McpServerInfo, McpServerStatus, McpSnapshot,
-    McpSnapshotReader, ToolDoneEvent, ToolOutput, ToolStartEvent, TurnCompleteEvent,
+    ImageMediaType, InterruptSource, McpConfigErrors, McpPromptArg, McpServerInfo, McpServerStatus,
+    McpSnapshot, McpSnapshotReader, ToolDoneEvent, ToolOutput, ToolStartEvent, TurnCompleteEvent,
 };
 use n00n_config::{PermissionsConfig, UiConfig};
 use n00n_lua::{HintReader, KeymapReader, LuaCommandReader};
@@ -35,13 +35,21 @@ fn set_zone(app: &mut App, zone: SelectionZone, area: Rect) {
 }
 
 fn build_app(dir: StateDir, writer: Arc<StorageWriter>) -> App {
+    build_app_with_mcp(dir, writer, McpSnapshotReader::empty())
+}
+
+fn build_app_with_mcp(
+    dir: StateDir,
+    writer: Arc<StorageWriter>,
+    mcp_reader: McpSnapshotReader,
+) -> App {
     let model = test_model();
     App::new(
         &model,
         AppSession::new("test-model", "/tmp/test"),
         dir,
         Arc::new(ArcSwapOption::empty()),
-        McpSnapshotReader::empty(),
+        mcp_reader,
         McpConfigErrors::new(PathBuf::new()),
         LuaCommandReader::empty(),
         KeymapReader::empty(),
@@ -176,8 +184,9 @@ fn typing_and_submit() {
     app.update(Msg::Key(key(KeyCode::Char('i'))));
 
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
-    assert!(matches!(&actions[0], Action::SendMessage(s) if s.message == "hi"));
+    assert!(matches!(&actions[0], Action::SendMessage(s) if s.input.message == "hi"));
     assert_eq!(app.status, Status::Streaming);
+    assert!(app.input_box.is_empty());
     // Regression check: the bubble has to be on screen the same frame we
     // submit, otherwise it briefly sits one row too high before snapping down.
     assert_eq!(
@@ -185,6 +194,280 @@ fn typing_and_submit() {
         Some(&DisplayRole::User),
     );
     assert_eq!(app.main_chat().last_message_text(), "hi");
+}
+
+#[derive(Clone)]
+struct ManualSubmissionClock(Arc<std::sync::Mutex<Instant>>);
+
+impl SubmissionClock for ManualSubmissionClock {
+    fn now(&self) -> Instant {
+        *self.0.lock().unwrap()
+    }
+}
+
+impl ManualSubmissionClock {
+    fn advance(&self, duration: Duration) {
+        let mut now = self.0.lock().unwrap();
+        *now += duration;
+    }
+}
+
+fn install_manual_submission_clock(app: &mut App) -> ManualSubmissionClock {
+    let clock = ManualSubmissionClock(Arc::new(std::sync::Mutex::new(Instant::now())));
+    app.submission_clock = Arc::new(clock.clone());
+    clock
+}
+
+#[test]
+fn rapid_submissions_keep_fifo_while_first_waits_for_persistence() {
+    let mut app = test_app();
+    let (shared, receiver) = shared_queue::queue();
+    app.queue.set_shared(shared);
+
+    let first = type_and_submit(&mut app, "first");
+    let Action::SendMessage(first_dispatch) = first.into_iter().next().unwrap() else {
+        panic!("expected first submission dispatch");
+    };
+    app.handle_submit(Submission {
+        text: "second".into(),
+        images: Vec::new(),
+    });
+
+    assert!(
+        receiver
+            .poll(n00n_agent::InterruptPoint::ToolComplete)
+            .is_none()
+    );
+
+    let first_id = first_dispatch.submission_id;
+    assert!(
+        app.queue
+            .mark_submission_ready(first_id, first_dispatch.input)
+    );
+    let crate::agent::shared_queue::QueueItem::Message { input, .. } = receiver.pop().unwrap()
+    else {
+        panic!("expected first queued submission");
+    };
+    assert_eq!(input.message, "first");
+    let n00n_agent::ExtractedCommand::Interrupt(second, _) = receiver
+        .poll(n00n_agent::InterruptPoint::ToolComplete)
+        .unwrap()
+    else {
+        panic!("expected second queued submission");
+    };
+    assert_eq!(second.message, "second");
+}
+
+#[test]
+fn session_api_prompt_is_explicitly_non_paint_gated() {
+    let mut app = test_app();
+    let outcome = app.submit_background_prompt(crate::app::queue::QueuedMessage {
+        text: "background prompt".into(),
+        images: Vec::new(),
+    });
+    let SubmitOutcome::Started(actions) = outcome else {
+        panic!("expected background prompt to start");
+    };
+    let Action::SendMessage(dispatch) = &actions[0] else {
+        panic!("expected submission dispatch");
+    };
+
+    assert!(!dispatch.paint_required);
+    assert_eq!(app.main_chat().message_count(), 0);
+}
+
+#[test]
+fn background_persistence_failure_is_terminal_without_composer_restore() {
+    let mut app = test_app();
+    let SubmitOutcome::Started(actions) = app.submit_background_prompt(QueuedMessage {
+        text: "background prompt".into(),
+        images: Vec::new(),
+    }) else {
+        panic!("expected background prompt to start");
+    };
+    let Action::SendMessage(dispatch) = actions.into_iter().next().unwrap() else {
+        panic!("expected background submission dispatch");
+    };
+    let submission_id = dispatch.submission_id;
+    let gate = Arc::clone(&dispatch.gate);
+    assert!(matches!(
+        app.submit_background_prompt(QueuedMessage {
+            text: "queued after failure".into(),
+            images: Vec::new(),
+        }),
+        SubmitOutcome::Queued
+    ));
+
+    app.handle_submission_persistence_failure(&dispatch);
+
+    assert!(gate.is_cancelled());
+    assert!(matches!(
+        &app.status,
+        Status::Error { message, .. } if message == PERSISTENCE_FAILURE_MSG
+    ));
+    assert_eq!(app.main_chat().last_message_text(), PERSISTENCE_FAILURE_MSG);
+    assert!(app.input_box.is_empty());
+    assert_eq!(app.queue.text_messages(), vec!["queued after failure"]);
+    assert_eq!(submission_id, dispatch.submission_id);
+}
+
+#[test]
+fn escape_before_dispatch_restores_text_and_exact_images_once() {
+    let mut app = test_app();
+    install_manual_submission_clock(&mut app);
+    app.input_box.set_input("describe".into());
+    with_image(&mut app);
+
+    let actions = app.update(Msg::Key(key(KeyCode::Enter)));
+    let Action::SendMessage(dispatch) = &actions[0] else {
+        panic!("expected submission dispatch");
+    };
+    let gate = Arc::clone(&dispatch.gate);
+    assert_eq!(app.main_chat().message_count(), 1);
+
+    let cancel_actions = app.update(Msg::Key(key(KeyCode::Esc)));
+
+    assert!(cancel_actions.is_empty());
+    assert!(gate.is_cancelled());
+    assert_eq!(app.status, Status::Idle);
+    assert_eq!(app.main_chat().message_count(), 0);
+    let restored = app.input_box.submit().unwrap();
+    assert_eq!(restored.text, "describe");
+    assert_eq!(restored.images.len(), 1);
+    assert_eq!(restored.images[0].media_type, ImageMediaType::Png);
+    assert_eq!(&*restored.images[0].data, "dGVzdA==");
+
+    app.handle_submission_persistence_failure(dispatch);
+    assert_eq!(app.main_chat().message_count(), 0);
+    assert!(app.input_box.is_empty());
+}
+
+#[test]
+fn committed_submission_keeps_double_escape_cancellation() {
+    let mut app = test_app();
+    install_manual_submission_clock(&mut app);
+    let actions = type_and_submit(&mut app, "sent");
+    let Action::SendMessage(dispatch) = &actions[0] else {
+        panic!("expected submission dispatch");
+    };
+    assert!(dispatch.gate.try_commit());
+
+    let first = app.update(Msg::Key(key(KeyCode::Esc)));
+    assert!(first.is_empty());
+    assert!(app.input_box.is_empty());
+    assert_eq!(app.main_chat().last_message_text(), "sent");
+
+    let second = app.update(Msg::Key(key(KeyCode::Esc)));
+    assert!(matches!(&second[..], [Action::CancelAgent { .. }]));
+}
+
+#[test]
+fn shell_preamble_restores_once_on_cancel_and_resubmits_once() {
+    let mut app = test_app();
+    install_manual_submission_clock(&mut app);
+    app.shell.push_result(Message::user("shell output".into()));
+
+    let actions = type_and_submit(&mut app, "use context");
+    let Action::SendMessage(mut dispatch) = actions.into_iter().next().unwrap() else {
+        panic!("expected submission dispatch");
+    };
+    assert!(app.stage_submission_preamble(&mut dispatch));
+    assert_eq!(dispatch.input.preamble.len(), 1);
+    assert!(app.shell.drain_results().is_empty());
+
+    app.update(Msg::Key(key(KeyCode::Esc)));
+    let restored_preamble = app.shell.drain_results();
+    assert_eq!(restored_preamble.len(), 1);
+    assert_eq!(restored_preamble[0].user_text(), Some("shell output"));
+    app.shell.restore_results(restored_preamble);
+    let submission = app.input_box.submit().expect("cancel restores submission");
+    let actions = app.handle_submit(submission);
+    let Action::SendMessage(mut dispatch) = actions.into_iter().next().unwrap() else {
+        panic!("expected resubmission dispatch");
+    };
+    assert!(app.stage_submission_preamble(&mut dispatch));
+    assert_eq!(dispatch.input.preamble.len(), 1);
+    assert_eq!(dispatch.input.preamble[0].user_text(), Some("shell output"));
+    assert!(app.shell.drain_results().is_empty());
+
+    app.handle_submission_persistence_failure(&dispatch);
+    let restored_after_failure = app.shell.drain_results();
+    assert_eq!(restored_after_failure.len(), 1);
+    assert_eq!(restored_after_failure[0].user_text(), Some("shell output"));
+}
+#[test]
+fn escape_during_mcp_error_restores_and_resubmits_exactly_once() {
+    let mut app = test_app();
+    install_manual_submission_clock(&mut app);
+    app.shell.push_result(Message::user("mcp context".into()));
+
+    let actions = type_and_submit(&mut app, "review");
+    let Action::SendMessage(mut dispatch) = actions.into_iter().next().unwrap() else {
+        panic!("expected submission dispatch");
+    };
+    assert!(app.stage_submission_preamble(&mut dispatch));
+    app.update(agent_msg(AgentEvent::Error {
+        message: "MCP prompt failed".into(),
+    }));
+
+    app.update(Msg::Key(key(KeyCode::Esc)));
+
+    assert_eq!(app.main_chat().message_count(), 0);
+    assert_eq!(app.input_box.buffer.value(), "review");
+    let restored = app.shell.drain_results();
+    assert_eq!(restored.len(), 1);
+    app.shell.restore_results(restored);
+
+    let submission = app.input_box.submit().expect("restored submission");
+    let actions = app.handle_submit(submission);
+    assert_eq!(actions.len(), 1);
+    let Action::SendMessage(mut retry) = actions.into_iter().next().unwrap() else {
+        panic!("expected retry dispatch");
+    };
+    assert!(app.stage_submission_preamble(&mut retry));
+    assert_eq!(retry.input.preamble.len(), 1);
+    assert!(app.shell.drain_results().is_empty());
+}
+
+#[test]
+fn expired_escape_window_does_not_restore_without_sleeping() {
+    let mut app = test_app();
+    let clock = install_manual_submission_clock(&mut app);
+    type_and_submit(&mut app, "too late");
+    clock.advance(SUBMISSION_ESCAPE_WINDOW + Duration::from_millis(1));
+
+    let actions = app.update(Msg::Key(key(KeyCode::Esc)));
+
+    assert!(actions.is_empty());
+    assert!(app.input_box.is_empty());
+    assert_eq!(app.main_chat().last_message_text(), "too late");
+    assert_eq!(app.status, Status::Streaming);
+}
+
+#[test]
+fn escape_at_submission_window_boundary_restores() {
+    let mut app = test_app();
+    let clock = install_manual_submission_clock(&mut app);
+    type_and_submit(&mut app, "at boundary");
+    clock.advance(SUBMISSION_ESCAPE_WINDOW);
+
+    app.update(Msg::Key(key(KeyCode::Esc)));
+
+    assert_eq!(app.status, Status::Idle);
+    assert_eq!(app.input_box.buffer.value(), "at boundary");
+}
+
+#[test]
+fn escape_one_millisecond_after_submission_window_does_not_restore() {
+    let mut app = test_app();
+    let clock = install_manual_submission_clock(&mut app);
+    type_and_submit(&mut app, "after boundary");
+    clock.advance(SUBMISSION_ESCAPE_WINDOW + Duration::from_millis(1));
+
+    app.update(Msg::Key(key(KeyCode::Esc)));
+
+    assert_eq!(app.status, Status::Streaming);
+    assert!(app.input_box.is_empty());
 }
 
 fn with_text(app: &mut App) {
@@ -1855,7 +2138,7 @@ fn stale_events_ignored_after_run_id_increment() {
     cancel_app(&mut app);
     let current_run = app.run_id;
     let actions = type_and_submit(&mut app, "new prompt");
-    assert!(matches!(&actions[0], Action::SendMessage(i) if i.message == "new prompt"));
+    assert!(matches!(&actions[0], Action::SendMessage(i) if i.input.message == "new prompt"));
     let active_run = app.run_id;
 
     app.update(agent_msg_with_run_id(
@@ -2102,6 +2385,216 @@ fn reload_persists_session_with_content_to_disk() {
     drain_writer(app, writer);
 
     assert_eq!(AppSession::load(id, &dir).unwrap().messages.len(), 1);
+}
+
+#[test]
+fn rewind_snapshot_survives_crash_restore() {
+    let (_tmp, dir, writer, mut app) = tempdir_app();
+    app.state.session.messages = vec![
+        Message::user("first".into()),
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text {
+                text: "reply".into(),
+            }],
+            ..Default::default()
+        },
+        Message::user("second".into()),
+    ];
+    let id = app.state.session.id;
+    let before = app.state.session.meta.revision;
+    app.rewind_to(crate::components::rewind_picker::RewindEntry {
+        turn_index: 2,
+        prompt_preview: "2: second".into(),
+        prompt_text: "second".into(),
+    });
+    assert!(app.state.session.meta.revision > before);
+    drain_writer(app, writer);
+
+    let restored = AppSession::load(id, &dir).unwrap();
+    assert_eq!(restored.messages.len(), 2);
+    assert_eq!(restored.meta.input_draft.as_deref(), Some("second"));
+}
+
+#[test]
+fn loaded_metadata_consumption_survives_crash_restore() {
+    let (_tmp, dir, writer, mut app) = tempdir_app();
+    let mut seed = AppSession::new("test-model", "/tmp/test");
+    seed.meta.input_draft = Some("draft before crash".into());
+    seed.meta.queued_messages = vec!["queued before crash".into()];
+    seed.messages.push(Message::user("history".into()));
+    let id = seed.id;
+    seed.save(&dir).unwrap();
+
+    let (shared, _receiver) = shared_queue::queue();
+    app.queue.set_shared(shared);
+    let previous_revision = seed.meta.revision;
+    app.apply_loaded_session(seed, &test_model());
+    assert!(app.state.session.meta.revision > previous_revision);
+    drain_writer(app, writer);
+
+    let restored = AppSession::load(id, &dir).unwrap();
+    assert_eq!(
+        restored.meta.input_draft.as_deref(),
+        Some("draft before crash")
+    );
+    assert_eq!(restored.meta.queued_messages, vec!["queued before crash"]);
+}
+
+#[test]
+fn draw_failure_pending_submission_restores_fifo_and_images_after_restart() {
+    let (_tmp, dir, writer, mut app) = tempdir_app();
+    let (shared, receiver) = shared_queue::queue();
+    app.queue.set_shared(shared);
+
+    app.input_box.set_input("first with image".into());
+    with_image(&mut app);
+    let actions = app.update(Msg::Key(key(KeyCode::Enter)));
+    let Action::SendMessage(dispatch) = actions.into_iter().next().unwrap() else {
+        panic!("expected paint-gated submission");
+    };
+    assert!(
+        receiver.pop().is_none(),
+        "paint gate must block provider dispatch"
+    );
+
+    assert!(matches!(
+        app.submit_prompt(QueuedMessage {
+            text: "second in fifo".into(),
+            images: Vec::new(),
+        }),
+        SubmitOutcome::Queued
+    ));
+    app.preserve_submission_for_shutdown(*dispatch);
+    app.save_session();
+    let session_id = app.state.session.id;
+    drop(app);
+    Arc::try_unwrap(writer)
+        .ok()
+        .expect("test owns the storage writer")
+        .shutdown(WRITER_DRAIN_TIMEOUT);
+
+    let writer = Arc::new(StorageWriter::new(dir.clone()));
+    let mut restarted = build_app(dir.clone(), Arc::clone(&writer));
+    let (shared, receiver) = shared_queue::queue();
+    restarted.queue.set_shared(shared);
+    restarted.apply_loaded_session(
+        AppSession::load(session_id, &dir).expect("saved session loads"),
+        &test_model(),
+    );
+
+    let Some(shared_queue::QueueItem::Message { text, input, .. }) = receiver.pop() else {
+        panic!("first pending message must be restored");
+    };
+    assert_eq!(text, "first with image");
+    assert_eq!(input.images.len(), 1);
+    assert_eq!(&*input.images[0].data, "dGVzdA==");
+    let Some(shared_queue::QueueItem::Message { text, .. }) = receiver.pop() else {
+        panic!("second queued message must be restored");
+    };
+    assert_eq!(text, "second in fifo");
+    assert!(receiver.pop().is_none());
+
+    drop(restarted);
+    Arc::try_unwrap(writer)
+        .ok()
+        .expect("test owns the restarted storage writer")
+        .shutdown(WRITER_DRAIN_TIMEOUT);
+}
+
+#[test]
+fn mcp_prompt_draw_failure_survives_restart_without_text_fallback() {
+    let (_tmp, dir, writer, mut app) = tempdir_app();
+    let mcp_reader = McpSnapshotReader::from_snapshot(McpSnapshot {
+        prompts: vec![n00n_agent::McpPromptInfo {
+            display_name: "myserver:review".into(),
+            qualified_name: "myserver/review".into(),
+            description: "Review a change".into(),
+            arguments: vec![McpPromptArg {
+                name: "diff".into(),
+                description: "The diff".into(),
+                required: true,
+            }],
+        }],
+        ..Default::default()
+    });
+    app.command_palette = crate::components::command::CommandPalette::new(
+        Arc::from([]),
+        mcp_reader.clone(),
+        LuaCommandReader::empty(),
+    );
+    let (shared, _receiver) = shared_queue::queue();
+    app.queue.set_shared(shared);
+    app.state.thinking = n00n_providers::ThinkingConfig::Effort(Effort::High);
+    app.state.fast = true;
+    app.state.workflow = true;
+    let actions = app.execute_command(ParsedCommand {
+        name: "/myserver:review".into(),
+        args: "important diff".into(),
+    });
+    let Action::SendMessage(dispatch) = actions.into_iter().next().unwrap() else {
+        panic!("expected MCP prompt dispatch");
+    };
+    assert_eq!(dispatch.input.message, "/myserver:review important diff");
+    let prompt = dispatch
+        .input
+        .prompt
+        .as_ref()
+        .expect("MCP prompt reference");
+    assert_eq!(prompt.qualified_name, "myserver/review");
+    assert_eq!(
+        prompt.arguments.get("diff").map(String::as_str),
+        Some("important diff")
+    );
+    assert_eq!(
+        dispatch.input.thinking,
+        n00n_providers::ThinkingConfig::Effort(Effort::High)
+    );
+    assert!(dispatch.input.fast);
+    assert!(dispatch.input.workflow);
+
+    app.preserve_submission_for_shutdown(*dispatch);
+    app.save_session();
+    let session_id = app.state.session.id;
+    drop(app);
+    Arc::try_unwrap(writer)
+        .ok()
+        .expect("test owns the storage writer")
+        .shutdown(WRITER_DRAIN_TIMEOUT);
+
+    let writer = Arc::new(StorageWriter::new(dir.clone()));
+    let mut restarted = build_app_with_mcp(dir.clone(), Arc::clone(&writer), mcp_reader);
+    let (shared, receiver) = shared_queue::queue();
+    restarted.queue.set_shared(shared);
+    restarted.apply_loaded_session(
+        AppSession::load(session_id, &dir).expect("saved session loads"),
+        &test_model(),
+    );
+
+    let Some(shared_queue::QueueItem::Message { input, .. }) = receiver.pop() else {
+        panic!("MCP prompt must be restored");
+    };
+    let prompt = input
+        .prompt
+        .expect("restored MCP prompt must use get_prompt");
+    assert_eq!(prompt.qualified_name, "myserver/review");
+    assert_eq!(
+        prompt.arguments.get("diff").map(String::as_str),
+        Some("important diff")
+    );
+    assert_eq!(
+        input.thinking,
+        n00n_providers::ThinkingConfig::Effort(Effort::High)
+    );
+    assert!(input.fast);
+    assert!(input.workflow);
+    assert_eq!(input.message, "/myserver:review important diff");
+
+    drop(restarted);
+    Arc::try_unwrap(writer)
+        .ok()
+        .expect("test owns the restarted storage writer")
+        .shutdown(WRITER_DRAIN_TIMEOUT);
 }
 
 #[test]
@@ -3040,7 +3533,7 @@ fn plan_form_menu_options(
     assert_eq!(
         actions
             .iter()
-            .any(|a| matches!(a, Action::SendMessage(i) if i.message == expected_msg)),
+            .any(|a| matches!(a, Action::SendMessage(i) if i.input.message == expected_msg)),
         has_send_message
     );
 }
@@ -3056,7 +3549,7 @@ fn plan_form_implement_toggled_parallel() {
     assert!(
         actions
             .iter()
-            .any(|a| matches!(a, Action::SendMessage(i) if i.message == expected_msg))
+            .any(|a| matches!(a, Action::SendMessage(i) if i.input.message == expected_msg))
     );
 }
 

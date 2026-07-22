@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -5,9 +6,13 @@ use crate::chat::{Chat, DONE_TEXT, RESTORE_BATCH_SIZE, history_to_display, trans
 use crate::components::DisplayRole;
 use crate::components::rewind_picker::RewindEntry;
 use crate::components::{Action, LoadedSession};
+use n00n_agent::{AgentInput, AgentMode, McpPromptRef};
 use n00n_providers::{Model, TokenUsage};
 use n00n_storage::id::N00nId;
-use n00n_storage::sessions::StoredSubagent;
+use n00n_storage::sessions::{
+    StoredImageMediaType, StoredImageSource, StoredMcpPrompt, StoredMode, StoredQueuedMessage,
+    StoredSubagent, StoredThinking,
+};
 
 use crate::AppSession;
 
@@ -25,7 +30,93 @@ pub(crate) fn session_has_content(session: &AppSession) -> bool {
         || !session.meta.subagents.is_empty()
         || session.meta.input_draft.is_some()
         || !session.meta.queued_messages.is_empty()
+        || !session.meta.queued_submissions.is_empty()
         || session.meta.mode != Some(n00n_storage::sessions::StoredMode::Build)
+        || session.meta.plan_path.is_some()
+        || session.meta.plan_written
+        || !session.meta.session_rules.is_empty()
+        || session.meta.context_size != 0
+        || !matches!(session.meta.thinking, None | Some(StoredThinking::Off))
+        || session.meta.fast
+        || session.meta.workflow
+        || !session.meta.usage_by_model.is_empty()
+        || !session.transcript.is_empty()
+        || !session.tool_outputs.is_empty()
+        || session.token_usage != TokenUsage::default()
+}
+
+fn stored_image(image: &n00n_agent::ImageSource) -> StoredImageSource {
+    StoredImageSource {
+        media_type: match image.media_type {
+            n00n_agent::ImageMediaType::Png => StoredImageMediaType::Png,
+            n00n_agent::ImageMediaType::Jpeg => StoredImageMediaType::Jpeg,
+            n00n_agent::ImageMediaType::Gif => StoredImageMediaType::Gif,
+            n00n_agent::ImageMediaType::Webp => StoredImageMediaType::Webp,
+        },
+        data: image.data.to_string(),
+    }
+}
+
+fn restored_image(image: StoredImageSource) -> n00n_agent::ImageSource {
+    let media_type = match image.media_type {
+        StoredImageMediaType::Png => n00n_agent::ImageMediaType::Png,
+        StoredImageMediaType::Jpeg => n00n_agent::ImageMediaType::Jpeg,
+        StoredImageMediaType::Gif => n00n_agent::ImageMediaType::Gif,
+        StoredImageMediaType::Webp => n00n_agent::ImageMediaType::Webp,
+    };
+    n00n_agent::ImageSource::new(media_type, Arc::from(image.data))
+}
+
+fn stored_message(input: AgentInput) -> StoredQueuedMessage {
+    // Preamble contains live shell results and may include transient secrets.
+    let (mode, plan_path) = match input.mode {
+        AgentMode::Build => (Some(StoredMode::Build), None),
+        AgentMode::Plan(path) => (
+            Some(StoredMode::Plan),
+            Some(path.to_string_lossy().into_owned()),
+        ),
+    };
+    StoredQueuedMessage {
+        text: input.message,
+        images: input.images.iter().map(stored_image).collect(),
+        mode,
+        plan_path,
+        thinking: Some(input.thinking.into()),
+        fast: input.fast,
+        workflow: input.workflow,
+        prompt: input.prompt.map(|prompt| StoredMcpPrompt {
+            qualified_name: prompt.qualified_name,
+            arguments: prompt.arguments,
+        }),
+    }
+}
+
+fn restored_submission(app: &App, message: StoredQueuedMessage) -> (QueuedMessage, AgentInput) {
+    let queued = QueuedMessage {
+        text: message.text,
+        images: message.images.into_iter().map(restored_image).collect(),
+    };
+    let mut input = app.build_agent_input(&queued);
+    if let Some(mode) = message.mode {
+        input.mode = match mode {
+            StoredMode::Build => AgentMode::Build,
+            StoredMode::Plan => message
+                .plan_path
+                .map_or(input.mode, |path| AgentMode::Plan(PathBuf::from(path))),
+        };
+    }
+    if let Some(thinking) = message.thinking {
+        input.thinking = thinking.into();
+    }
+    input.fast = message.fast;
+    input.workflow = message.workflow;
+    input.prompt = message.prompt.map(|prompt| {
+        Box::new(McpPromptRef {
+            qualified_name: prompt.qualified_name,
+            arguments: prompt.arguments,
+        })
+    });
+    (queued, input)
 }
 
 impl App {
@@ -34,6 +125,14 @@ impl App {
     }
 
     pub(crate) fn save_session(&mut self) {
+        let snapshot = self.session_snapshot();
+        if !session_has_content(&snapshot) {
+            return;
+        }
+        self.storage_writer.send(Box::new(snapshot));
+    }
+
+    pub(crate) fn session_snapshot(&mut self) -> AppSession {
         self.state.sync_session(
             &self.shared_history,
             &self.shared_transcript,
@@ -41,17 +140,17 @@ impl App {
             &self.permissions,
         );
         self.sync_ephemeral_state();
-        if !self.has_content() {
-            return;
-        }
-        self.enqueue_save();
+        self.state.session.clone()
     }
 
     fn sync_ephemeral_state(&mut self) {
         let draft = self.input_box.buffer.value();
         self.state.session.meta.input_draft = if draft.is_empty() { None } else { Some(draft) };
 
+        let queued = self.queue.queued_inputs();
         self.state.session.meta.queued_messages = self.queue.text_messages();
+        self.state.session.meta.queued_submissions =
+            queued.into_iter().map(stored_message).collect();
 
         self.state.session.meta.subagents = self
             .chats
@@ -74,9 +173,11 @@ impl App {
         }
     }
 
-    pub(super) fn enqueue_save(&self) {
-        self.storage_writer
-            .send(Box::new(self.state.session.clone()));
+    pub(super) fn enqueue_save(&mut self) {
+        let snapshot = self.session_snapshot();
+        if session_has_content(&snapshot) {
+            self.storage_writer.send(Box::new(snapshot));
+        }
     }
 
     pub(super) fn reset_ui_chrome(&mut self) {
@@ -123,12 +224,28 @@ impl App {
             self.input_box.buffer.move_to_end();
         }
 
-        for text in std::mem::take(&mut self.state.session.meta.queued_messages) {
-            let msg = QueuedMessage {
-                text,
-                images: Vec::new(),
+        let queued: Vec<(QueuedMessage, AgentInput)> =
+            if self.state.session.meta.queued_submissions.is_empty() {
+                std::mem::take(&mut self.state.session.meta.queued_messages)
+                    .into_iter()
+                    .map(|text| {
+                        let msg = QueuedMessage {
+                            text,
+                            images: Vec::new(),
+                        };
+                        let input = self.build_agent_input(&msg);
+                        (msg, input)
+                    })
+                    .collect()
+            } else {
+                std::mem::take(&mut self.state.session.meta.queued_submissions)
+                    .into_iter()
+                    .map(|message| restored_submission(self, message))
+                    .collect()
             };
-            self.queue_and_notify(msg);
+        self.state.session.meta.queued_messages.clear();
+        for (msg, input) in queued {
+            self.queue_restored_submission(msg, input);
         }
 
         self.fire_restore_items(restore_items);
@@ -252,7 +369,7 @@ impl App {
     }
 
     pub(crate) fn load_session(&mut self, session_id: N00nId) -> Vec<Action> {
-        let session = match AppSession::load(session_id, &self.storage) {
+        let mut session = match AppSession::load(session_id, &self.storage) {
             Ok(s) => s,
             Err(e) => {
                 self.status_bar
@@ -261,6 +378,7 @@ impl App {
             }
         };
         self.save_session();
+        session.meta.revision = session.meta.revision.max(self.state.session.meta.revision);
         let loaded = self.apply_loaded_session(session, &self.state.model.clone());
         vec![Action::LoadSession(Box::new(loaded))]
     }

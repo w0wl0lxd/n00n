@@ -40,7 +40,9 @@ use crate::app::shell::{ShellEvent, spawn_shell};
 use crate::app::{App, Msg, QueuedMessage, SubmitOutcome};
 use crate::components::input::Submission;
 use crate::components::usage_modal::UsageFetchState;
-use crate::components::{Action, DisplayMessage, DisplayRole, ExitRequest, Status};
+use crate::components::{
+    Action, DisplayMessage, DisplayRole, ExitRequest, Status, SubmissionDispatch,
+};
 use crate::input::InputReader;
 
 use crate::storage_writer::StorageWriter;
@@ -156,7 +158,7 @@ struct SpawnCtx {
 
 impl SpawnCtx {
     fn spawn_runtime(&self, session: AppSession) -> SessionRuntime {
-        let resumed = !session.messages.is_empty();
+        let resumed = crate::app::session_has_content(&session);
         let permissions = Arc::new(self.permissions.fork());
         let handles = AgentHandles::spawn(
             &self.model_slot,
@@ -213,6 +215,9 @@ pub(crate) struct EventLoop<'t> {
     warn_rx: flume::Receiver<String>,
     warn_tx: flume::Sender<String>,
     ui_action_rx: Option<flume::Receiver<UiAction>>,
+    submission_persist_tx: flume::Sender<SubmissionPersistence>,
+    submission_persist_rx: flume::Receiver<SubmissionPersistence>,
+    post_draw_submissions: Vec<(N00nId, SubmissionDispatch)>,
     last_save: Instant,
     _model_fetch_task: smol::Task<()>,
     /// Set when UI state changed and a fresh frame must be painted. Draws are
@@ -223,12 +228,19 @@ pub(crate) struct EventLoop<'t> {
 
 /// One item from any of the event loop's sources; `None` from `next_wake`
 /// means the wait timed out (animation/idle tick).
+struct SubmissionPersistence {
+    session_id: N00nId,
+    dispatch: SubmissionDispatch,
+    result: Result<(), SessionError>,
+}
+
 enum Wake {
     Input(Event),
     InputGone,
     Ui(UiAction),
     Agent(usize, Box<n00n_agent::Envelope>),
     Shell(usize, ShellEvent),
+    SubmissionPersisted(SubmissionPersistence),
     Warn(String),
 }
 
@@ -436,6 +448,7 @@ impl<'t> EventLoop<'t> {
             app.flash(w);
         }
 
+        let (submission_persist_tx, submission_persist_rx) = flume::unbounded();
         Ok(Self {
             terminal,
             sessions: runtimes,
@@ -445,6 +458,9 @@ impl<'t> EventLoop<'t> {
             warn_rx: bg.warn_rx,
             warn_tx: bg.warn_tx,
             ui_action_rx,
+            submission_persist_tx,
+            submission_persist_rx,
+            post_draw_submissions: Vec::new(),
             last_save: Instant::now(),
             _model_fetch_task: bg.task,
             dirty: true,
@@ -469,13 +485,16 @@ impl<'t> EventLoop<'t> {
             if let Err(e) = self.drain_channels() {
                 break Err(e);
             }
-            let should_draw = self.dirty || self.sessions[self.focused].app.is_animating();
+            let should_draw = self.dirty
+                || self.sessions[self.focused].app.is_animating()
+                || !self.post_draw_submissions.is_empty();
             let app = &mut self.sessions[self.focused].app;
             if should_draw {
-                if let Err(e) = self.terminal.draw(|f| app.view(f)) {
+                if let Err(e) = draw_then_post_terminal(self.terminal, |f| app.view(f), || {}) {
                     break Err(e.into());
                 }
                 self.dirty = false;
+                self.after_terminal_draw();
             }
 
             if let Some(i) = self
@@ -530,6 +549,9 @@ impl<'t> EventLoop<'t> {
             sel = sel.recv(rx, |res| res.ok().map(Wake::Ui));
         }
         sel = sel.recv(&self.warn_rx, |res| res.ok().map(Wake::Warn));
+        sel = sel.recv(&self.submission_persist_rx, |res| {
+            res.ok().map(Wake::SubmissionPersisted)
+        });
         for (i, rt) in self.sessions.iter().enumerate() {
             if !rt.handles.agent_rx.is_disconnected() {
                 sel = sel.recv(&rt.handles.agent_rx, move |res| {
@@ -553,6 +575,9 @@ impl<'t> EventLoop<'t> {
             sel = sel.recv(rx, |res| res.ok().map(Wake::Ui));
         }
         sel = sel.recv(&self.warn_rx, |res| res.ok().map(Wake::Warn));
+        sel = sel.recv(&self.submission_persist_rx, |res| {
+            res.ok().map(Wake::SubmissionPersisted)
+        });
         for (i, rt) in self.sessions.iter().enumerate() {
             if !rt.handles.agent_rx.is_disconnected() {
                 sel = sel.recv(&rt.handles.agent_rx, move |res| {
@@ -574,6 +599,7 @@ impl<'t> EventLoop<'t> {
             Wake::Ui(action) => self.handle_ui_action(action),
             Wake::Agent(i, envelope) => self.handle_agent(i, envelope),
             Wake::Shell(i, event) => self.sessions[i].app.handle_shell_event(event),
+            Wake::SubmissionPersisted(completion) => self.handle_submission_persisted(completion),
             Wake::Warn(warning) => self.focused_app().flash(warning),
         }
         Ok(())
@@ -880,7 +906,7 @@ impl<'t> EventLoop<'t> {
             text,
             images: Vec::new(),
         };
-        match self.sessions[idx].app.submit_prompt(msg) {
+        match self.sessions[idx].app.submit_background_prompt(msg) {
             SubmitOutcome::Started(actions) => {
                 self.dispatch(idx, actions);
                 Ok(json!("started"))
@@ -1034,7 +1060,27 @@ impl<'t> EventLoop<'t> {
 
     fn dispatch(&mut self, idx: usize, actions: Vec<Action>) {
         for action in actions {
-            self.handle_action(idx, action);
+            match action {
+                Action::SendMessage(dispatch) if dispatch.paint_required => {
+                    self.post_draw_submissions
+                        .push((self.sessions[idx].id(), *dispatch));
+                }
+                Action::SendMessage(dispatch) => {
+                    self.handle_action(idx, Action::SendMessage(dispatch));
+                }
+                action => self.handle_action(idx, action),
+            }
+        }
+    }
+
+    /// The optimistic user bubble must have completed a terminal draw before
+    /// persistence or provider dispatch can begin.
+    fn after_terminal_draw(&mut self) {
+        let painted_session = self.sessions[self.focused].id();
+        for (_, dispatch) in
+            take_painted_submissions(&mut self.post_draw_submissions, painted_session)
+        {
+            self.handle_action(self.focused, Action::SendMessage(Box::new(dispatch)));
         }
     }
 
@@ -1059,36 +1105,52 @@ impl<'t> EventLoop<'t> {
         );
     }
 
+    fn handle_submission_persisted(&mut self, completion: SubmissionPersistence) {
+        let Some(idx) = self.position(completion.session_id) else {
+            return;
+        };
+        let rt = &mut self.sessions[idx];
+        if completion.result.is_err() {
+            rt.app
+                .handle_submission_persistence_failure(&completion.dispatch);
+            return;
+        }
+        if !rt.app.accepts_submission_persistence(&completion.dispatch) {
+            rt.app
+                .queue
+                .remove_submission(completion.dispatch.submission_id);
+            return;
+        }
+        let submission_id = completion.dispatch.submission_id;
+        if !rt
+            .app
+            .queue
+            .mark_submission_ready(submission_id, completion.dispatch.input)
+        {
+            rt.app.queue.remove_submission(submission_id);
+        }
+    }
+
     fn handle_action(&mut self, idx: usize, action: Action) {
         match action {
-            Action::SendMessage(input) => {
+            Action::SendMessage(mut dispatch) => {
                 let rt = &mut self.sessions[idx];
-                match n00n_storage::sessions::openai_response_chain_parent_exists(
-                    &rt.app.storage,
-                    rt.app.state.session.id,
-                ) {
-                    Ok(false) => {
-                        let mut initial_session = rt.app.state.session.clone();
-                        if let Err(error) = initial_session.save(&rt.app.storage) {
-                            warn!(%error, "failed to persist session before provider request");
-                        }
-                    }
-                    Err(error) => {
-                        warn!(%error, "failed to check session persistence before provider request");
-                    }
-                    Ok(true) => {}
+                if !rt.app.stage_submission_preamble(&mut dispatch) {
+                    rt.app.queue.remove_submission(dispatch.submission_id);
+                    return;
                 }
-                let mut input = *input;
-                input.preamble = rt.app.shell.drain_results();
-                let run_id = rt.app.run_id;
-                rt.handles.queue.push(QueueItem::Message {
-                    text: input.message.clone(),
-                    image_count: input.images.len(),
-                    input,
-                    run_id,
-                    displayed: true,
-                    delivery: crate::agent::shared_queue::Delivery::TurnEnd,
-                });
+                let session_id = rt.app.state.session.id;
+                let snapshot = rt.app.session_snapshot();
+                let completion_tx = self.submission_persist_tx.clone();
+                self.ctx
+                    .storage_writer
+                    .persist(Box::new(snapshot), move |result| {
+                        let _ = completion_tx.send(SubmissionPersistence {
+                            session_id,
+                            dispatch: *dispatch,
+                            result,
+                        });
+                    });
             }
             Action::CancelAgent { run_id } => {
                 let _ = self.sessions[idx]
@@ -1264,7 +1326,23 @@ impl<'t> EventLoop<'t> {
         }
     }
 
+    fn preserve_post_draw_submissions(&mut self) {
+        for (session_id, dispatch) in std::mem::take(&mut self.post_draw_submissions)
+            .into_iter()
+            .rev()
+        {
+            let Some(idx) = self.position(session_id) else {
+                warn!(%session_id, "paint-gated submission lost its session before shutdown");
+                continue;
+            };
+            self.sessions[idx]
+                .app
+                .preserve_submission_for_shutdown(dispatch);
+        }
+    }
+
     fn shutdown(mut self) -> ShutdownReport {
+        self.preserve_post_draw_submissions();
         let exit = self.sessions[self.focused].app.exit_request;
         if let Some(ref h) = self.ctx.mcp_handle {
             mcp::kill_process_groups(&h.reader().load().pids);
@@ -1302,6 +1380,35 @@ impl<'t> EventLoop<'t> {
     }
 }
 
+fn draw_then_post_terminal<B>(
+    terminal: &mut ratatui::Terminal<B>,
+    draw: impl FnOnce(&mut ratatui::Frame<'_>),
+    after_draw: impl FnOnce(),
+) -> Result<(), B::Error>
+where
+    B: ratatui::backend::Backend,
+{
+    terminal.draw(draw)?;
+    after_draw();
+    Ok(())
+}
+
+fn take_painted_submissions<T>(
+    pending: &mut Vec<(N00nId, T)>,
+    painted_session: N00nId,
+) -> Vec<(N00nId, T)> {
+    let submissions = std::mem::take(pending);
+    let mut ready = Vec::new();
+    for (session_id, submission) in submissions {
+        if session_id == painted_session {
+            ready.push((session_id, submission));
+        } else {
+            pending.push((session_id, submission));
+        }
+    }
+    ready
+}
+
 fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
     if kind == MouseEventKind::ScrollUp {
         lines as i32
@@ -1312,12 +1419,134 @@ fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{DRAIN_BUDGET, DrainScheduler};
+    use super::{DRAIN_BUDGET, DrainScheduler, draw_then_post_terminal, take_painted_submissions};
+    use n00n_storage::id::N00nId;
+    use ratatui::{
+        Terminal,
+        backend::{Backend, ClearType, TestBackend, WindowSize},
+        buffer::Cell,
+        layout::{Position, Size},
+        widgets::Paragraph,
+    };
+    use std::io;
+
+    struct FailingBackend(TestBackend);
+
+    fn infallible<T>(result: Result<T, std::convert::Infallible>) -> io::Result<T> {
+        match result {
+            Ok(value) => Ok(value),
+            Err(error) => match error {},
+        }
+    }
+
+    impl Backend for FailingBackend {
+        type Error = io::Error;
+        fn draw<'a, I>(&mut self, _content: I) -> io::Result<()>
+        where
+            I: Iterator<Item = (u16, u16, &'a Cell)>,
+        {
+            Err(io::Error::other("deterministic draw failure"))
+        }
+
+        fn hide_cursor(&mut self) -> io::Result<()> {
+            infallible(self.0.hide_cursor())
+        }
+
+        fn show_cursor(&mut self) -> io::Result<()> {
+            infallible(self.0.show_cursor())
+        }
+
+        fn get_cursor_position(&mut self) -> io::Result<Position> {
+            infallible(self.0.get_cursor_position())
+        }
+
+        fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
+            infallible(self.0.set_cursor_position(position))
+        }
+
+        fn clear(&mut self) -> io::Result<()> {
+            infallible(self.0.clear())
+        }
+
+        fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
+            infallible(self.0.clear_region(clear_type))
+        }
+
+        fn size(&self) -> io::Result<Size> {
+            infallible(self.0.size())
+        }
+
+        fn window_size(&mut self) -> io::Result<WindowSize> {
+            infallible(self.0.window_size())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            infallible(self.0.flush())
+        }
+    }
 
     #[derive(Debug, PartialEq, Eq)]
     enum Source {
         Input(usize),
         Agent(usize),
+    }
+
+    #[test]
+    fn painted_submission_waits_for_its_session_after_focus_switch() {
+        let first = N00nId::generate();
+        let second = N00nId::generate();
+        let mut pending = vec![(first, "first"), (second, "second")];
+
+        let released = take_painted_submissions(&mut pending, second);
+
+        assert_eq!(released, vec![(second, "second")]);
+        assert_eq!(pending, vec![(first, "first")]);
+        assert_eq!(
+            take_painted_submissions(&mut pending, first),
+            vec![(first, "first")]
+        );
+    }
+
+    #[test]
+    fn post_draw_hook_runs_after_terminal_buffer_is_painted() {
+        let mut terminal = Terminal::new(TestBackend::new(20, 1)).expect("test terminal");
+        let painted = std::cell::Cell::new(false);
+        let persistence_started = std::cell::Cell::new(false);
+
+        draw_then_post_terminal(
+            &mut terminal,
+            |frame| {
+                frame.render_widget(Paragraph::new("bubble"), frame.area());
+                painted.set(true);
+            },
+            || {
+                persistence_started.set(true);
+                assert!(painted.get());
+            },
+        )
+        .expect("draw succeeds");
+
+        assert!(persistence_started.get());
+        assert_eq!(
+            terminal.backend().buffer().cell((0, 0)).unwrap().symbol(),
+            "b"
+        );
+    }
+
+    #[test]
+    fn terminal_draw_failure_does_not_release_post_draw_work() {
+        let mut terminal =
+            Terminal::new(FailingBackend(TestBackend::new(20, 1))).expect("test terminal");
+        let post_draw_ran = std::cell::Cell::new(false);
+
+        let result = draw_then_post_terminal(
+            &mut terminal,
+            |frame| frame.render_widget(Paragraph::new("bubble"), frame.area()),
+            || post_draw_ran.set(true),
+        );
+
+        assert!(result.is_err());
+        assert!(!post_draw_ran.get());
     }
 
     #[test]
