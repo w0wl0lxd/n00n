@@ -8,7 +8,8 @@ use n00n_agent::permissions::PermissionManager;
 use n00n_agent::template;
 use n00n_agent::template::Vars;
 use n00n_agent::tools::{
-    DescriptionContext, FileReadTracker, RegisteredTool, ToolAudience, ToolFilter, ToolRegistry,
+    ActiveTools, DescriptionContext, FileReadTracker, RegisteredTool, ToolAudience, ToolFilter,
+    ToolRegistry,
 };
 use n00n_agent::{
     Agent, AgentConfig, AgentEvent, AgentInput, AgentParams, AgentRunParams, CancelMap,
@@ -33,6 +34,7 @@ pub(super) struct AgentLoop {
     vars: Vars,
     instructions: Instructions,
     tools: Value,
+    tool_filter: ToolFilter,
     mcp_handle: Option<McpHandle>,
     history: History,
     btw_system: Arc<ArcSwap<String>>,
@@ -91,6 +93,7 @@ impl AgentLoop {
             vars: Vars::default(),
             instructions: Instructions::default(),
             tools: Value::Null,
+            tool_filter: ToolFilter::All,
             mcp_handle,
             history: History::restored_with_transcript(initial_history, initial_transcript)
                 .with_mirror(shared_history)
@@ -263,6 +266,7 @@ impl AgentLoop {
                 system,
                 event_tx,
                 tools: self.tools.clone(),
+                tool_filter: self.tool_filter.clone(),
             },
         )
         .with_loaded_instructions(self.instructions.loaded.clone())
@@ -319,15 +323,21 @@ impl AgentLoop {
         });
     }
 
-    fn build_tools(&self, model: &Model, workflow: bool) -> Value {
+    fn build_tools(&mut self, model: &Model, workflow: bool) -> Value {
         let examples = model.supports_tool_examples();
         let filter = ToolFilter::from_config(&self.config, model, &[]);
+        self.tool_filter = filter.clone();
         let ctx = DescriptionContext {
             filter: &filter,
             audience: ToolAudience::MAIN,
             workflow,
         };
-        ToolRegistry::global().definitions(&self.vars, &ctx, examples)
+        ToolRegistry::global().definitions_active(
+            &self.vars,
+            &ctx,
+            examples,
+            &ActiveTools::default(),
+        )
     }
 
     async fn reload_instructions(&mut self) {
