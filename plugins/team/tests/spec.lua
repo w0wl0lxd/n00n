@@ -137,14 +137,15 @@ case("usage_price_prefers_session_aggregate_cost", function()
   }, "aggregate-cost usage")
 end)
 
-case("roles_catalogue_has_five", function()
+case("roles_catalogue_has_six", function()
   local n = 0
   for _ in pairs(roles.ROLES) do
     n = n + 1
   end
-  assert(n == 5, "expected 5 roles, got " .. n)
+  assert(n == 6, "expected 6 roles, got " .. n)
   assert(roles.ROLES.developer.tier == "strong", "developer must be strong")
   assert(roles.ROLES.product_manager.tier == "weak", "product_manager must be weak")
+  assert(roles.ROLES.sprint.tier == "weak", "sprint must be weak")
 end)
 
 case("route_tier_available", function()
