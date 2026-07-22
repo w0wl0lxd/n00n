@@ -18,6 +18,7 @@
 -- only re-spends tokens on uncached agent() calls.
 
 local ToolView = require("n00n.tool_view")
+local telemetry = require("n00n.telemetry")
 
 local STRUCTURED_OUTPUT_NAME = "structured_output"
 local STRUCTURED_OUTPUT_DESCRIPTION = "Report your final result. Call it exactly once when your task is complete."
@@ -78,11 +79,7 @@ local DEFAULT_TIMEOUT_SECS = 600
 
 local description = [[Run a bounded, sandboxed Lua workflow for multi-stage agent orchestration.
 
-Start with meta({ name = ..., description = ..., phases = {...} }). Available globals only:
-- agent({ prompt, subagent_type?, model_tier?, label?, output_schema? }) returns one isolated agent result. research is read-only; general is the default. Tiers are weak/medium/strong and capped at the current model. output_schema returns validated JSON.
-- parallel(fns, { concurrency? }) runs zero-argument branches in order; any failure fails the call.
-- pipeline(items, stages, { concurrency? }) runs each item through all stages.
-- phase(name, fn), log(...), and inputs.
+Start with meta({ name = ..., description = ..., phases = {...} }). Globals: agent({ prompt, subagent_type?, model_tier?, label?, output_schema? }) returns isolated agent result (research=read-only, general=default; tiers weak/medium/strong; output_schema returns validated JSON). parallel(fns, { concurrency? }) runs branches in order; any failure fails the call. pipeline(items, stages, { concurrency? }) runs each item through all stages. phase(name, fn), log(...), and inputs.
 
 No n00n, os, io, require, print, or load. Scripts must be deterministic for resume replay, must return the final string, and are limited to 24 agent calls by default (32 hard maximum). Use task for one agent.]]
 
@@ -93,14 +90,14 @@ local schema = {
   properties = {
     script = {
       type = "string",
-      description = "Lua workflow script. First statement: meta({...}). Then orchestrate with agent/parallel/pipeline/phase/log. Must return the final answer as a string.",
+      description = "Lua workflow script. First statement: meta({...}). Orchestrate with agent/parallel/pipeline/phase/log. Must return final answer as string.",
     },
     inputs = {
-      description = "Free-form object exposed to the script as the global `inputs`.",
+      description = "Free-form object exposed to script as global `inputs`.",
     },
     resume = {
       type = "string",
-      description = "Prior run_id. Replays journaled agent() results and only spends tokens on new calls.",
+      description = "Prior run_id. Replays journaled agent() results; only spends tokens on new calls.",
     },
   },
 }
@@ -388,7 +385,7 @@ local function pipeline(items, stages, popts)
   return parallel(fns, popts)
 end
 
-local function make_agent(ctx, progress, journal)
+local function make_agent(ctx, progress, journal, logger)
   return function(aopts)
     aopts = aopts or {}
     if type(aopts.prompt) ~= "string" then
@@ -512,6 +509,9 @@ local function make_agent(ctx, progress, journal)
 
       aggregate_permit = aggregate_agent_semaphore:acquire()
       progress.agent_started(label)
+      if logger then
+        logger.log("agent_started", { label = label, model_tier = aopts.model_tier, subagent_type = subagent_type })
+      end
       local sess, sess_err = n00n.agent.session(ctx, {
         model_spec = model.spec,
         system = system,
@@ -538,6 +538,9 @@ local function make_agent(ctx, progress, journal)
       aggregate_permit:release()
       aggregate_permit = nil
       progress.agent_done(label)
+      if logger then
+        logger.log("agent_done", { label = label, model_tier = aopts.model_tier, subagent_type = subagent_type })
+      end
 
       if prompt_err then
         error("sub-agent error: " .. prompt_err, 0)
@@ -581,6 +584,9 @@ local function make_agent(ctx, progress, journal)
     end
     key_permit:release()
     if not ok then
+      if logger then
+        logger.log("agent_error", { label = label, error = tostring(result) })
+      end
       local gate = journal.lock:acquire()
       if journal.in_flight[key] == key_lock then
         journal.in_flight[key] = nil
@@ -671,10 +677,10 @@ local function make_progress(ctx)
   }
 end
 
-local function build_env(ctx, progress, inputs, journal, captured)
+local function build_env(ctx, progress, inputs, journal, captured, saga, logger)
   local env = {
     inputs = inputs,
-    agent = make_agent(ctx, progress, journal),
+    agent = make_agent(ctx, progress, journal, logger),
     parallel = parallel,
     pipeline = pipeline,
     tostring = tostring,
@@ -719,6 +725,12 @@ local function build_env(ctx, progress, inputs, journal, captured)
     captured.meta = t
     journal.meta_ready = true
     progress.set_name(t.name)
+    local sess_id, _ = n00n.session.current()
+    if sess_id then
+      pcall(function()
+        n00n.session.set_title({ id = sess_id, title = "workflow: " .. t.name:sub(1, 60) })
+      end)
+    end
   end
   env.phase = function(name, fn)
     if type(fn) ~= "function" then
@@ -737,6 +749,24 @@ local function build_env(ctx, progress, inputs, journal, captured)
       parts[i] = tostring(select(i, ...))
     end
     progress.log(table.concat(parts, " "))
+  end
+  env.compensate = function(fn)
+    if type(fn) ~= "function" then
+      error("compensate: fn must be a function", 0)
+    end
+    if not saga then
+      error("compensate() is only available inside a workflow", 0)
+    end
+    table.insert(saga.compensations, fn)
+  end
+  env.on_error = function(fn)
+    if type(fn) ~= "function" then
+      error("on_error: fn must be a function", 0)
+    end
+    if not saga then
+      error("on_error() is only available inside a workflow", 0)
+    end
+    table.insert(saga.error_handlers, fn)
   end
   return env
 end
@@ -779,16 +809,49 @@ local function handler(input, ctx)
   local progress = make_progress(ctx)
   progress.log("run_id " .. run_id)
   local captured = {}
+  local saga = { compensations = {}, error_handlers = {} }
+  local workflow_dir = run_dir(run_id)
+  local logger = workflow_dir and telemetry.open(n00n.fs.joinpath(workflow_dir, "events"), run_id)
+  if logger then
+    logger.log("run_started", { run_id = run_id })
+  end
+
+  local function run_compensations(err)
+    if not saga or #saga.compensations == 0 then
+      return err
+    end
+    local comp_failures = {}
+    for i = #saga.compensations, 1, -1 do
+      local cok, cerr = pcall(saga.compensations[i])
+      if not cok then
+        table.insert(comp_failures, tostring(cerr))
+      end
+    end
+    for _, eh in ipairs(saga.error_handlers) do
+      pcall(eh, err)
+    end
+    if #comp_failures > 0 then
+      return tostring(err) .. "\ncompensation failures: " .. table.concat(comp_failures, "; ")
+    end
+    return err
+  end
 
   local function on_finish(err, result)
     if err then
+      local final_err = run_compensations(err)
+      if logger then
+        logger.log("run_error", { error = tostring(final_err) })
+      end
       ctx:finish({
-        llm_output = SCRIPT_ERROR_PREFIX .. tostring(err),
+        llm_output = SCRIPT_ERROR_PREFIX .. tostring(final_err),
         is_error = true,
         body = progress.buf,
         state = { run_id = run_id },
       })
     else
+      if logger then
+        logger.log("run_done", { run_id = run_id })
+      end
       ctx:finish({
         llm_output = result,
         body = progress.buf,
@@ -805,7 +868,7 @@ local function handler(input, ctx)
     local permit
     local ok, result = pcall(function()
       permit = workflow_semaphore:acquire()
-      local env = build_env(ctx, progress, input.inputs or {}, journal, captured)
+      local env = build_env(ctx, progress, input.inputs or {}, journal, captured, saga, logger)
       local run_fn, load_err = n00n.workflow.compile(input.script, env)
       if not run_fn then
         error(tostring(load_err), 0)
@@ -828,6 +891,8 @@ local function handler(input, ctx)
       permit:release()
     end
     if not ok then
+      -- Compensations run inside on_finish, but if on_finish itself errors we
+      -- still want rollback for catastrophic errors. Wrap and re-raise.
       error(result, 0)
     end
     return result

@@ -84,7 +84,7 @@ How many lines of output to show per tool in the UI. All values are `usize` with
 | `workflow` | 8 |
 | `index` | 3 |
 | `grep` | 3 |
-| `explore` | 3 |
+| `explore` | 5 |
 | `read` | 3 |
 | `write` | 7 |
 | `web` | 3 |
@@ -107,6 +107,7 @@ How many lines of output to show per tool in the UI. All values are `usize` with
 | `connect_timeout_secs` | u64 | `10` | 1 | HTTP connect timeout (seconds) |
 | `low_speed_timeout_secs` | u64 | `120` | 1 | Low speed timeout (seconds with less than 1 byte received) |
 | `stream_timeout_secs` | u64 | `300` | 10 | Streaming response timeout (seconds) |
+| `openai_coding_plan_slots` | u64 | `4` | 1 | Maximum concurrent OpenAI Coding Plan streams per account (1-8) |
 
 ### `storage`
 

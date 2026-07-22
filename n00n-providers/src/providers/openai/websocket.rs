@@ -1,5 +1,5 @@
 use std::io::{Error as IoError, ErrorKind};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use async_tungstenite::WebSocketStream;
 use async_tungstenite::tungstenite::client::IntoClientRequest;
@@ -11,9 +11,11 @@ use futures::SinkExt;
 use futures_lite::StreamExt;
 use serde_json::{Value, json};
 use smol::Timer;
-use tracing::debug;
+use tracing::{debug, warn};
 
-use super::responses::{ResponseAccumulator, build_body, is_semantic_progress_event};
+use super::responses::{
+    ResponseAccumulator, build_body, is_semantic_progress_event, response_in_flight_timeout,
+};
 use crate::model::Model;
 use crate::providers::ResolvedAuth;
 use crate::{
@@ -24,10 +26,12 @@ use crate::{
 const DEFAULT_RESPONSES_WS_URL: &str = "wss://api.openai.com/v1/responses";
 const RESPONSES_WEBSOCKET_BETA: &str = "responses_websockets=2026-02-06";
 const MAX_CONNECTION_AGE: Duration = Duration::from_mins(55);
+const CONNECTION_RETIRE_MIN_MARGIN: Duration = Duration::from_secs(10);
 const MAX_POOL_IDLE: Duration = Duration::from_secs(30);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
 const PREFLIGHT_PING_PAYLOAD: &[u8] = b"n00n-preflight";
 const MAX_SAFE_CLOSE_REASON_CHARS: usize = 120;
+const MALFORMED_RETRY_AFTER_DELAY: Duration = Duration::from_mins(1);
 
 type ResponsesSocket = WebSocketStream<async_tungstenite::smol::ConnectStream>;
 
@@ -73,8 +77,23 @@ impl WebSocketAttemptError {
         self.delivery.phase != RequestDeliveryPhase::NotSent
     }
 
+    pub(crate) fn definitive_rejection(&self) -> bool {
+        if self.emitted_event
+            || self.delivery.phase == RequestDeliveryPhase::Accepted
+            || self.delivery.response_id.is_some()
+        {
+            return false;
+        }
+        !self.transport_failure
+            || self.delivery.phase == RequestDeliveryPhase::NotSent
+                && matches!(
+                    self.error,
+                    AgentError::Api { .. } | AgentError::CodingPlanAdmission { .. }
+                )
+    }
+
     pub(crate) fn into_agent_error(self) -> AgentError {
-        if self.request_sent() && (self.transport_failure || self.error.is_retryable()) {
+        if self.request_sent() {
             AgentError::RequestSent {
                 message: self.error.to_string(),
                 metadata: Some(self.delivery),
@@ -159,30 +178,6 @@ fn responses_websocket_url(base_url: Option<&str>) -> String {
     url
 }
 
-#[allow(clippy::large_futures)]
-pub(crate) async fn stream_message(
-    body: &Value,
-    event_tx: &Sender<ProviderEvent>,
-    auth: &ResolvedAuth,
-    connect_timeout: Duration,
-    stream_timeout: Duration,
-) -> Result<(Option<String>, StreamResponse), WebSocketAttemptError> {
-    let mut connection = ResponsesWebSocket::connect(auth, connect_timeout)
-        .await
-        .map_err(|error| {
-            WebSocketAttemptError::transport(
-                error,
-                false,
-                RequestDeliveryMetadata::new(RequestDeliveryPhase::NotSent),
-            )
-        })?;
-    let result = connection
-        .stream_message(body, event_tx, stream_timeout)
-        .await;
-    connection.close().await;
-    result
-}
-
 impl ResponsesWebSocket {
     #[allow(clippy::large_futures)]
     pub(crate) async fn connect(
@@ -212,12 +207,15 @@ impl ResponsesWebSocket {
         let connect = async_tungstenite::smol::connect_async(request);
         let (socket, _) = {
             #[allow(clippy::large_futures)]
-            futures_lite::future::or(async { connect.await.map_err(ws_err) }, async {
-                Timer::after(connect_timeout).await;
-                Err(AgentError::Timeout {
-                    secs: connect_timeout.as_secs(),
-                })
-            })
+            futures_lite::future::or(
+                async { connect.await.map_err(|error| ws_connect_err(auth, error)) },
+                async {
+                    Timer::after(connect_timeout).await;
+                    Err(AgentError::Timeout {
+                        secs: connect_timeout.as_secs(),
+                    })
+                },
+            )
             .await?
         };
         let now = Instant::now();
@@ -229,12 +227,29 @@ impl ResponsesWebSocket {
         })
     }
 
-    pub(crate) fn is_expired(&self) -> bool {
-        self.opened_at.elapsed() >= MAX_CONNECTION_AGE
+    pub(crate) fn should_retire_before_send(&self, stream_timeout: Duration) -> bool {
+        self.opened_at.elapsed().saturating_add(
+            response_in_flight_timeout(stream_timeout).saturating_add(CONNECTION_RETIRE_MIN_MARGIN),
+        ) >= MAX_CONNECTION_AGE
+    }
+
+    pub(crate) fn age(&self) -> Duration {
+        self.opened_at.elapsed()
+    }
+
+    pub(crate) fn idle_for(&self) -> Duration {
+        self.available_since.elapsed()
     }
 
     pub(crate) fn is_idle(&self) -> bool {
-        self.available_since.elapsed() >= MAX_POOL_IDLE
+        self.idle_for() >= MAX_POOL_IDLE
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_age_for_test(&mut self, age: Duration) {
+        self.opened_at = Instant::now()
+            .checked_sub(age)
+            .expect("test socket age must fit in Instant");
     }
 
     pub(crate) fn is_validated_for_send(&self) -> bool {
@@ -309,14 +324,30 @@ impl ResponsesWebSocket {
         stream_timeout: Duration,
         keepalive_interval: Duration,
     ) -> Result<(Option<String>, StreamResponse), WebSocketAttemptError> {
+        let mut delivery = RequestDeliveryMetadata::new(RequestDeliveryPhase::NotSent);
+        if self.should_retire_before_send(stream_timeout) {
+            return Err(WebSocketAttemptError::transport(
+                IoError::new(
+                    ErrorKind::ConnectionAborted,
+                    "Responses WebSocket retired before request send",
+                )
+                .into(),
+                false,
+                delivery,
+            ));
+        }
         let create_event = build_create_event(body);
-        let mut delivery =
-            RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance);
-        let total_deadline = self.opened_at + MAX_CONNECTION_AGE;
-        let mut progress_deadline = (Instant::now() + stream_timeout).min(total_deadline);
-        let create_sent = send_json_until(&mut self.socket, &create_event, progress_deadline)
-            .await
-            .map_err(|error| WebSocketAttemptError::transport(error, false, delivery.clone()))?;
+        delivery.phase = RequestDeliveryPhase::SentAwaitingAcceptance;
+        let response_timeout = response_in_flight_timeout(stream_timeout);
+        let response_deadline = Instant::now() + response_timeout;
+        let mut progress_deadline = Instant::now() + stream_timeout;
+        let create_sent = send_json_until(
+            &mut self.socket,
+            &create_event,
+            progress_deadline.min(response_deadline),
+        )
+        .await
+        .map_err(|error| WebSocketAttemptError::transport(error, false, delivery.clone()))?;
         if !create_sent {
             return Err(WebSocketAttemptError::transport(
                 AgentError::Timeout {
@@ -331,28 +362,22 @@ impl ResponsesWebSocket {
         let mut keepalive_deadline = Instant::now() + keepalive_interval;
         loop {
             let now = Instant::now();
-            if now >= total_deadline {
-                return Err(WebSocketAttemptError::transport(
-                    IoError::new(
-                        ErrorKind::TimedOut,
-                        "Responses WebSocket exceeded the maximum connection lifetime",
-                    )
-                    .into(),
-                    acc.emitted_event(),
-                    delivery,
-                ));
-            }
-            if now >= progress_deadline {
+            if now >= response_deadline || now >= progress_deadline {
+                let timeout = if now >= response_deadline {
+                    response_timeout
+                } else {
+                    stream_timeout
+                };
                 return Err(WebSocketAttemptError::transport(
                     AgentError::Timeout {
-                        secs: stream_timeout.as_secs(),
+                        secs: timeout.as_secs(),
                     },
                     acc.emitted_event(),
                     delivery,
                 ));
             }
             if now >= keepalive_deadline {
-                let ping_deadline = progress_deadline.min(total_deadline);
+                let ping_deadline = progress_deadline.min(response_deadline);
                 let ping_sent = send_message_until(
                     &mut self.socket,
                     WsMessage::Ping(Vec::new().into()),
@@ -376,8 +401,8 @@ impl ResponsesWebSocket {
             }
 
             let wake_at = progress_deadline
-                .min(keepalive_deadline)
-                .min(total_deadline);
+                .min(response_deadline)
+                .min(keepalive_deadline);
             let Some(message) = next_message_until(&mut self.socket, wake_at)
                 .await
                 .map_err(|error| {
@@ -420,8 +445,7 @@ impl ResponsesWebSocket {
                             match acc.handle_event(event_type, &event, event_tx).await {
                                 Ok(true) => break,
                                 Ok(false) if semantic_progress => {
-                                    progress_deadline =
-                                        (Instant::now() + stream_timeout).min(total_deadline);
+                                    progress_deadline = Instant::now() + stream_timeout;
                                 }
                                 Ok(false) => {}
                                 Err(error) => {
@@ -437,7 +461,7 @@ impl ResponsesWebSocket {
                     }
                 }
                 WsMessage::Ping(_) => {
-                    let flush_deadline = progress_deadline.min(total_deadline);
+                    let flush_deadline = progress_deadline.min(response_deadline);
                     let flushed = flush_until(&mut self.socket, flush_deadline)
                         .await
                         .map_err(|error| {
@@ -479,8 +503,62 @@ impl ResponsesWebSocket {
         Ok((response_id, acc.into_stream_response()))
     }
 
+    #[cfg(test)]
     async fn close(&mut self) {
         let _ = self.socket.close(None).await;
+    }
+}
+
+fn ws_connect_err(auth: &ResolvedAuth, error: WsError) -> AgentError {
+    let WsError::Http(response) = error else {
+        return ws_err(error);
+    };
+    let is_coding_plan =
+        auth.base_url.as_deref() == Some(crate::providers::openai::auth::CODING_PLAN_BASE_URL);
+    let status = response.status().as_u16();
+    let empty_body = response
+        .body()
+        .as_ref()
+        .is_none_or(|body| body.iter().all(u8::is_ascii_whitespace));
+    if is_coding_plan && status == 403 && empty_body {
+        return AgentError::CodingPlanAdmission {
+            retry_after: retry_after(
+                response
+                    .headers()
+                    .get("retry-after")
+                    .map(HeaderValue::as_bytes),
+            ),
+        };
+    }
+    ws_err(WsError::Http(response))
+}
+
+pub(crate) fn retry_after(value: Option<&[u8]>) -> Option<Duration> {
+    retry_after_at(value, SystemTime::now())
+}
+
+fn retry_after_at(value: Option<&[u8]>, now: SystemTime) -> Option<Duration> {
+    let value = value?;
+    if let Ok(delay) = parse_retry_after(value, now) {
+        Some(delay)
+    } else {
+        warn!(
+            fallback_seconds = MALFORMED_RETRY_AFTER_DELAY.as_secs(),
+            "provider returned malformed Retry-After; using conservative delay"
+        );
+        Some(MALFORMED_RETRY_AFTER_DELAY)
+    }
+}
+
+fn parse_retry_after(value: &[u8], now: SystemTime) -> Result<Duration, ()> {
+    let value = std::str::from_utf8(value).map_err(|_| ())?.trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Ok(Duration::from_secs(seconds));
+    }
+    let deadline = httpdate::parse_http_date(value).map_err(|_| ())?;
+    match deadline.duration_since(now) {
+        Ok(delay) => Ok(delay),
+        Err(_) => Ok(Duration::ZERO),
     }
 }
 
@@ -852,12 +930,15 @@ mod tests {
         assert!(delivery.response_id.is_none());
     }
 
-    #[test]
-    fn retryable_response_error_after_send_is_not_replayed() {
+    #[test_case(400)]
+    #[test_case(401)]
+    #[test_case(429)]
+    #[test_case(500)]
+    fn provider_response_error_after_send_is_not_replayed(status: u16) {
         let error = WebSocketAttemptError::response(
             AgentError::Api {
-                status: 500,
-                message: "provider failed after accepting the create".into(),
+                status,
+                message: "provider rejected an already-written create".into(),
             },
             false,
             RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance),
@@ -1178,6 +1259,63 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::large_futures)]
+    fn repeated_in_progress_events_hit_absolute_response_deadline() {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = smol::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = async_tungstenite::accept_async(stream).await.unwrap();
+                assert!(matches!(socket.next().await, Some(Ok(WsMessage::Text(_)))));
+                for sequence in 0..40 {
+                    if sequence > 0 {
+                        Timer::after(Duration::from_millis(10)).await;
+                    }
+                    if socket
+                        .send(WsMessage::Text(
+                            json!({
+                                "type":"response.in_progress",
+                                "response":{"id":"resp_progress","sequence":sequence}
+                            })
+                            .to_string()
+                            .into(),
+                        ))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+            let auth = ResolvedAuth {
+                base_url: Some(format!("http://{address}/v1")),
+                headers: Vec::new(),
+            };
+            let mut connection = ResponsesWebSocket::connect(&auth, Duration::from_secs(2))
+                .await
+                .unwrap();
+            let (event_tx, _) = flume::unbounded();
+            let started = Instant::now();
+
+            let error = connection
+                .stream_message_with_keepalive(
+                    &json!({"model":"test","input":[]}),
+                    &event_tx,
+                    Duration::from_millis(20),
+                    Duration::from_secs(1),
+                )
+                .await
+                .unwrap_err();
+            server.await;
+
+            assert!(matches!(error.error, AgentError::Timeout { .. }));
+            assert!(started.elapsed() < Duration::from_secs(1));
+            assert_eq!(error.delivery.response_id.as_deref(), Some("resp_progress"));
+        });
+    }
+
+    #[test]
     fn close_reason_is_control_free_and_character_capped() {
         let reason = format!(
             "restart\n{}\u{7}",
@@ -1205,6 +1343,46 @@ mod tests {
         ] {
             assert!(request.headers().contains_key(header), "missing {header}");
         }
+    }
+
+    #[test]
+    fn empty_coding_plan_handshake_forbidden_is_typed_admission_error() {
+        let auth = ResolvedAuth {
+            base_url: Some(crate::providers::openai::auth::CODING_PLAN_BASE_URL.into()),
+            headers: Vec::new(),
+        };
+        let response = async_tungstenite::tungstenite::http::Response::builder()
+            .status(403)
+            .header("retry-after", "7")
+            .body(Some(b" \n".to_vec()))
+            .unwrap();
+
+        match super::ws_connect_err(&auth, WsError::Http(Box::new(response))) {
+            AgentError::CodingPlanAdmission { retry_after } => {
+                assert_eq!(retry_after, Some(Duration::from_secs(7)));
+            }
+            other => panic!("expected CodingPlanAdmission, got {other:?}"),
+        }
+    }
+
+    #[test_case(b"invalid"; "nonnumeric")]
+    #[test_case(b"\xff"; "non_utf8")]
+    fn malformed_retry_after_uses_conservative_delay(value: &[u8]) {
+        assert_eq!(
+            super::retry_after(Some(value)),
+            Some(MALFORMED_RETRY_AFTER_DELAY)
+        );
+    }
+
+    #[test]
+    fn http_date_retry_after_uses_remaining_delay() {
+        let now = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let value = httpdate::fmt_http_date(now + Duration::from_secs(7));
+
+        assert_eq!(
+            super::retry_after_at(Some(value.as_bytes()), now),
+            Some(Duration::from_secs(7))
+        );
     }
 
     #[test]

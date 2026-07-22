@@ -24,7 +24,10 @@ use crate::providers::openrouter::OpenRouter;
 use crate::providers::synthetic::Synthetic;
 use crate::providers::tensorx::TensorX;
 use crate::providers::zai::Zai;
-use crate::{AgentError, Message, ProviderEvent, ProviderUsage, RequestOptions, StreamResponse};
+use crate::{
+    AgentError, Message, OpenAiOptions, ProviderEvent, ProviderUsage, RequestOptions,
+    StreamResponse,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, EnumIter)]
 #[strum(serialize_all = "kebab-case")]
@@ -226,6 +229,21 @@ impl ProviderKind {
     /// Returns an error if the provider's configuration is missing or invalid
     /// (e.g., missing API key, invalid base URL, or provider-specific setup failure).
     pub fn create(self, timeouts: Timeouts) -> Result<Box<dyn Provider>, AgentError> {
+        if self == Self::OpenAi {
+            return Ok(Box::new(OpenAi::new(timeouts)?));
+        }
+        self.create_with_openai_options(timeouts, OpenAiOptions::default())
+    }
+
+    /// Creates a provider with OpenAI-specific runtime options.
+    ///
+    /// # Errors
+    /// Returns an error if the provider configuration is missing or invalid.
+    pub fn create_with_openai_options(
+        self,
+        timeouts: Timeouts,
+        openai_options: OpenAiOptions,
+    ) -> Result<Box<dyn Provider>, AgentError> {
         match self {
             Self::Anthropic => {
                 if bedrock::is_enabled() {
@@ -234,7 +252,10 @@ impl ProviderKind {
                     Ok(Box::new(Anthropic::new(timeouts)?))
                 }
             }
-            Self::OpenAi => Ok(Box::new(OpenAi::new(timeouts)?)),
+            Self::OpenAi => Ok(Box::new(OpenAi::new_with_options(
+                timeouts,
+                openai_options,
+            )?)),
             Self::Google => Ok(Box::new(Google::new(timeouts)?)),
             Self::Copilot => Ok(Box::new(Copilot::new(timeouts)?)),
             Self::Ollama => Ok(Box::new(LocalEndpoint::new(&OLLAMA, timeouts)?)),
@@ -310,18 +331,41 @@ fn provider_for_slug(slug: &str, timeouts: Timeouts) -> Result<Box<dyn Provider>
 /// Returns an error if the provider cannot be created (e.g., missing API key,
 /// invalid configuration, or provider-specific setup failure).
 pub fn from_model(model: &mut Model, timeouts: Timeouts) -> Result<Box<dyn Provider>, AgentError> {
+    from_model_with_openai_options(model, timeouts, OpenAiOptions::default())
+}
+
+/// Creates a provider instance from a model configuration with `OpenAI` runtime options.
+///
+/// # Errors
+/// Returns an error if the provider cannot be created.
+pub fn from_model_with_openai_options(
+    model: &mut Model,
+    timeouts: Timeouts,
+    openai_options: OpenAiOptions,
+) -> Result<Box<dyn Provider>, AgentError> {
     if let Some(slug) = &model.dynamic_slug {
         debug!(slug, model = %model.id, "slug provider created");
         return provider_for_slug(slug, timeouts);
     }
-    let provider = model.provider.create(timeouts)?;
+    let provider = model
+        .provider
+        .create_with_openai_options(timeouts, openai_options)?;
     provider.adjust_model(model);
     debug!(provider = %model.provider, model = %model.id, "provider created");
     Ok(provider)
 }
 
 pub fn from_model_fallback(model: &mut Model, timeouts: Timeouts) -> Box<dyn Provider> {
-    match from_model(model, timeouts) {
+    from_model_fallback_with_openai_options(model, timeouts, OpenAiOptions::default())
+}
+
+#[must_use]
+pub fn from_model_fallback_with_openai_options(
+    model: &mut Model,
+    timeouts: Timeouts,
+    openai_options: OpenAiOptions,
+) -> Box<dyn Provider> {
+    match from_model_with_openai_options(model, timeouts, openai_options) {
         Ok(provider) => provider,
         Err(e) => {
             warn!(error = %e, "provider creation failed, using unconfigured provider");
@@ -370,6 +414,18 @@ pub async fn from_model_async(
     model: &mut Model,
     timeouts: Timeouts,
 ) -> Result<Box<dyn Provider>, AgentError> {
+    from_model_async_with_openai_options(model, timeouts, OpenAiOptions::default()).await
+}
+
+/// Creates a provider instance asynchronously with `OpenAI` runtime options.
+///
+/// # Errors
+/// Returns an error if the provider cannot be created.
+pub async fn from_model_async_with_openai_options(
+    model: &mut Model,
+    timeouts: Timeouts,
+    openai_options: OpenAiOptions,
+) -> Result<Box<dyn Provider>, AgentError> {
     let slug = model.dynamic_slug.clone();
     let kind = model.provider;
     let id = model.id.clone();
@@ -377,7 +433,7 @@ pub async fn from_model_async(
         if let Some(slug) = &slug {
             provider_for_slug(slug, timeouts)
         } else {
-            kind.create(timeouts)
+            kind.create_with_openai_options(timeouts, openai_options)
         }
     })
     .await?;

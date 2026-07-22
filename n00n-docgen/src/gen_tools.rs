@@ -44,6 +44,8 @@ const SECTIONS: &[(&str, &[&str])] = &[
             "todo_write",
             "memory",
             "skill",
+            "tool_search",
+            "load_namespace",
         ],
     ),
     ("Web", &["webfetch", "websearch"]),

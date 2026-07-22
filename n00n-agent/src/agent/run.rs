@@ -5,7 +5,8 @@ use tracing::{error, info, warn};
 
 use n00n_providers::provider::Provider;
 use n00n_providers::{
-    ContentBlock, Message, Model, RequestOptions, StopReason, StreamResponse, TokenUsage,
+    ContentBlock, Message, Model, OpenAiOptions, RequestOptions, StopReason, StreamResponse,
+    TokenUsage,
 };
 
 use super::compaction::{self, CONTINUE_AFTER_COMPACT};
@@ -13,13 +14,15 @@ use super::history::{History, sanitize_cancelled_history};
 use super::instructions::LoadedInstructions;
 use super::streaming::stream_with_retry;
 use super::tool_dispatch::{self, RecentCalls};
-use crate::cancel::{CancelMap, CancelToken};
+use crate::cancel::{CancelMap, CancelToken, PreDispatchGate};
 use crate::mcp::McpHandle;
 use crate::permissions::PermissionManager;
-use crate::tools::{Deadline, FileReadTracker, LocalTools, ToolAudience, ToolContext};
+use crate::tools::{
+    ActiveTools, Deadline, FileReadTracker, LocalTools, ToolAudience, ToolContext, ToolFilter,
+};
 use crate::{
     AgentConfig, AgentError, AgentEvent, AgentInput, AgentMode, EventSender, ExtractedCommand,
-    InterruptPoint, InterruptSource, TurnCompleteEvent,
+    InterruptPoint, InterruptSource, ToolDoneEvent, TurnCompleteEvent,
 };
 use n00n_config::ToolOutputLines;
 use n00n_storage::id::SessionRef;
@@ -39,11 +42,16 @@ pub fn resolve_compaction_model(
     provider: &Arc<dyn Provider>,
     model: &Model,
     timeouts: n00n_providers::Timeouts,
+    openai_options: OpenAiOptions,
 ) -> (Arc<dyn Provider>, Model) {
     if let Ok(registry) = n00n_providers::model_registry::model_registry().read()
         && let Some(spec) = registry.spec_for_tier_any(n00n_providers::ModelTier::Compaction)
         && let Ok(mut m) = Model::from_spec(&spec)
-        && let Ok(p) = n00n_providers::provider::from_model(&mut m, timeouts)
+        && let Ok(p) = n00n_providers::provider::from_model_with_openai_options(
+            &mut m,
+            timeouts,
+            openai_options,
+        )
     {
         return (Arc::from(p), m);
     }
@@ -64,6 +72,7 @@ pub struct AgentParams {
     pub permissions: Arc<PermissionManager>,
     pub session_id: Option<SessionRef>,
     pub timeouts: n00n_providers::Timeouts,
+    pub openai_options: OpenAiOptions,
     pub file_tracker: Arc<FileReadTracker>,
     pub prompt_slots: Arc<crate::prompt::ResolvedSlots>,
     pub subagent_cancels: Arc<CancelMap<String>>,
@@ -76,6 +85,7 @@ pub struct AgentRunParams<'h> {
     pub system: String,
     pub event_tx: EventSender,
     pub tools: Value,
+    pub tool_filter: ToolFilter,
 }
 
 pub struct Agent<'h> {
@@ -96,7 +106,9 @@ pub struct Agent<'h> {
     recent_calls: RecentCalls,
     auto_compact: bool,
     loaded_instructions: LoadedInstructions,
-    rollback_len: usize,
+    pre_dispatch_rollback_len: Option<usize>,
+    rollback_len: Option<usize>,
+    pre_dispatch_gate: Option<Arc<PreDispatchGate>>,
     mcp: Option<McpHandle>,
     config: AgentConfig,
     tool_output_lines: ToolOutputLines,
@@ -106,6 +118,7 @@ pub struct Agent<'h> {
     opts: RequestOptions,
     session_id: Option<SessionRef>,
     timeouts: n00n_providers::Timeouts,
+    openai_options: OpenAiOptions,
     file_tracker: Arc<FileReadTracker>,
     prompt_slots: Arc<crate::prompt::ResolvedSlots>,
     subagent_cancels: Arc<crate::cancel::CancelMap<String>>,
@@ -113,18 +126,23 @@ pub struct Agent<'h> {
     audience: ToolAudience,
     workflow: bool,
     local_tools: LocalTools,
+    tool_filter: ToolFilter,
+    active_tools: ActiveTools,
+    supports_tool_examples: bool,
 }
 
 impl<'h> Agent<'h> {
     #[must_use]
     pub fn new(params: AgentParams, run: AgentRunParams<'h>) -> Self {
-        Self {
+        let supports_tool_examples = params.model.supports_tool_examples();
+        let mut agent = Self {
             provider: params.provider,
             model: Arc::new(params.model),
             config: params.config,
             tool_output_lines: params.tool_output_lines,
             permissions: params.permissions,
             timeouts: params.timeouts,
+            openai_options: params.openai_options,
             history: run.history,
             system: run.system,
             event_tx: run.event_tx,
@@ -140,7 +158,9 @@ impl<'h> Agent<'h> {
             recent_calls: RecentCalls::new(),
             auto_compact: compaction::auto_compact_enabled(),
             loaded_instructions: LoadedInstructions::new(),
-            rollback_len: 0,
+            pre_dispatch_rollback_len: None,
+            rollback_len: None,
+            pre_dispatch_gate: None,
             mcp: None,
             reauth_attempts: 0,
             post_tool_empty_retried: false,
@@ -153,7 +173,12 @@ impl<'h> Agent<'h> {
             audience: params.audience,
             workflow: false,
             local_tools: LocalTools::default(),
-        }
+            tool_filter: run.tool_filter,
+            active_tools: ActiveTools::default(),
+            supports_tool_examples,
+        };
+        agent.warm_active_tools();
+        agent
     }
 
     #[must_use]
@@ -180,6 +205,18 @@ impl<'h> Agent<'h> {
     #[must_use]
     pub fn with_cancel(mut self, cancel: CancelToken) -> Self {
         self.cancel = cancel;
+        self
+    }
+
+    #[must_use]
+    pub fn with_pre_dispatch_gate(mut self, gate: Arc<PreDispatchGate>) -> Self {
+        self.pre_dispatch_gate = Some(gate);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pre_dispatch_rollback_len(mut self, rollback_len: usize) -> Self {
+        self.pre_dispatch_rollback_len = Some(rollback_len);
         self
     }
 
@@ -211,7 +248,11 @@ impl<'h> Agent<'h> {
     /// Returns an error if the agent loop fails due to provider errors,
     /// tool execution failures, or cancellation.
     pub async fn run(&mut self, input: AgentInput) -> Result<(), AgentError> {
-        self.rollback_len = self.history.len();
+        let rollback_len = self.rollback_len.unwrap_or_else(|| self.history.len());
+        self.rollback_len = Some(rollback_len);
+        let pre_dispatch_rollback_len = self
+            .pre_dispatch_rollback_len
+            .unwrap_or_else(|| rollback_len);
         let msg = Message::user_with_images(input.message.clone(), input.images);
         self.history.push(msg);
         self.context_size = estimate_message_tokens(self.history.as_slice())
@@ -237,7 +278,16 @@ impl<'h> Agent<'h> {
         .await;
 
         if matches!(result, Err(AgentError::Cancelled)) {
-            sanitize_cancelled_history(self.history, self.rollback_len);
+            if self
+                .pre_dispatch_gate
+                .as_ref()
+                .is_some_and(|gate| gate.is_cancelled())
+            {
+                self.history.truncate(pre_dispatch_rollback_len);
+            } else {
+                let rollback_len = self.rollback_len.unwrap_or_else(|| self.history.len());
+                sanitize_cancelled_history(self.history, rollback_len);
+            }
         }
 
         result
@@ -261,8 +311,14 @@ impl<'h> Agent<'h> {
         }
     }
 
+    fn commit_pre_dispatch(&self) -> bool {
+        self.pre_dispatch_gate
+            .as_ref()
+            .is_none_or(|gate| gate.try_commit())
+    }
+
     async fn turn(&mut self) -> Result<TurnOutcome, AgentError> {
-        if self.cancel.is_cancelled() {
+        if self.cancel.is_cancelled() || !self.commit_pre_dispatch() {
             return Err(AgentError::Cancelled);
         }
         let response = match stream_with_retry(
@@ -314,7 +370,10 @@ impl<'h> Agent<'h> {
 
         if has_tools {
             let history_len_before = self.history.len();
-            self.process_tool_calls(response).await?;
+            let tool_results = self.process_tool_calls(response).await?;
+            if self.apply_tool_search_results(&tool_results) {
+                self.rebuild_tools();
+            }
             let tool_results_start = history_len_before.saturating_add(1);
             self.context_size = self.context_size.saturating_add(estimate_message_tokens(
                 &self.history.as_slice()[tool_results_start..],
@@ -424,7 +483,10 @@ impl<'h> Agent<'h> {
         })
     }
 
-    async fn process_tool_calls(&mut self, response: StreamResponse) -> Result<(), AgentError> {
+    async fn process_tool_calls(
+        &mut self,
+        response: StreamResponse,
+    ) -> Result<Vec<ToolDoneEvent>, AgentError> {
         self.post_tool_empty_retried = false;
         let ctx = self.tool_context();
         tool_dispatch::process_tool_calls(
@@ -454,6 +516,7 @@ impl<'h> Agent<'h> {
             tool_output_lines: self.tool_output_lines,
             permissions: Arc::clone(&self.permissions),
             timeouts: self.timeouts,
+            openai_options: self.openai_options,
             file_tracker: Arc::clone(&self.file_tracker),
             prompt_slots: Arc::clone(&self.prompt_slots),
             opts: self.opts,
@@ -464,6 +527,71 @@ impl<'h> Agent<'h> {
             local_tools: Arc::clone(&self.local_tools),
             live_sink: None,
         }
+    }
+
+    fn rebuild_tools(&mut self) {
+        let vars = crate::template::env_vars();
+        let ctx = crate::tools::DescriptionContext {
+            filter: &self.tool_filter,
+            audience: self.audience,
+            workflow: self.workflow,
+        };
+        let mut tools = self.registry.definitions_active(
+            &vars,
+            &ctx,
+            self.supports_tool_examples,
+            &self.active_tools,
+        );
+        if let Some(mcp) = &self.mcp {
+            mcp.extend_tools(&mut tools);
+        }
+        self.tools = tools;
+    }
+
+    fn warm_active_tools(&mut self) {
+        let Some(arr) = self.tools.as_array() else {
+            return;
+        };
+        for def in arr {
+            let Some(name) = def.get("name").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if let Some(entry) = self.registry.get(name)
+                && entry.defer_loading
+            {
+                self.active_tools.names.insert(name.to_owned());
+            }
+        }
+    }
+
+    fn apply_tool_search_results(&mut self, results: &[ToolDoneEvent]) -> bool {
+        let mut dirty = false;
+        for done in results {
+            match done.tool.as_ref() {
+                "tool_search" => {
+                    let text = done.output.as_text();
+                    if let Ok(Value::Array(items)) = serde_json::from_str::<Value>(&text) {
+                        for item in items {
+                            if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
+                                self.active_tools.names.insert(name.to_owned());
+                                dirty = true;
+                            }
+                        }
+                    }
+                }
+                "load_namespace" => {
+                    let text = done.output.as_text();
+                    if let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(&text)
+                        && let Some(ns) = obj.get("namespace").and_then(|v| v.as_str())
+                    {
+                        self.active_tools.namespaces.insert(ns.to_owned());
+                        dirty = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        dirty
     }
 
     async fn try_auto_compact(&mut self) -> Result<bool, AgentError> {
@@ -486,8 +614,15 @@ impl<'h> Agent<'h> {
     }
 
     async fn do_compact(&mut self) -> Result<(), AgentError> {
-        let (compact_provider, compact_model) =
-            resolve_compaction_model(&self.provider, &self.model, self.timeouts);
+        if !self.commit_pre_dispatch() {
+            return Err(AgentError::Cancelled);
+        }
+        let (compact_provider, compact_model) = resolve_compaction_model(
+            &self.provider,
+            &self.model,
+            self.timeouts,
+            self.openai_options,
+        );
         let usage = compaction::compact_history(
             &*compact_provider,
             &compact_model,
@@ -498,7 +633,7 @@ impl<'h> Agent<'h> {
         .await?;
         let cost = usage.cost(&compact_model.pricing, false);
         self.record_usage(usage, cost);
-        self.rollback_len = self.history.len();
+        self.rollback_len = Some(self.history.len());
         self.event_tx.send(AgentEvent::CompactionDone)?;
         self.history
             .push(Message::synthetic(CONTINUE_AFTER_COMPACT.into()));
@@ -581,13 +716,17 @@ pub fn estimate_tool_tokens(tools: &Value) -> u32 {
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     use n00n_providers::provider::{BoxFuture, Provider};
     use n00n_providers::{
         ContentBlock, ImageMediaType, ImageSource, Message, Model, ProviderEvent, RequestOptions,
         Role, StopReason, StreamResponse, TokenUsage,
     };
+    use n00n_storage::sessions::TranscriptEntry;
     use serde_json::Value;
     use test_case::test_case;
 
@@ -600,6 +739,8 @@ mod tests {
     fn estimate_message_tokens_empty_is_zero() {
         assert_eq!(estimate_message_tokens(&[]), 0);
     }
+
+    const COST_EPSILON: f64 = 1e-12;
 
     #[test]
     fn estimate_message_tokens_counts_content_blocks() {
@@ -682,8 +823,6 @@ mod tests {
         assert_eq!(estimate_tool_tokens(&serde_json::json!([])), 1);
     }
 
-    const COST_EPSILON: f64 = 1e-12;
-
     struct MockInterruptSource {
         commands: Mutex<VecDeque<ExtractedCommand>>,
     }
@@ -705,6 +844,8 @@ mod tests {
     struct MockProvider {
         responses: Mutex<Vec<StreamResponse>>,
         requests: Arc<Mutex<Vec<Vec<Message>>>>,
+        cancel_on_request: Option<usize>,
+        calls: AtomicUsize,
     }
 
     impl MockProvider {
@@ -712,6 +853,8 @@ mod tests {
             Self {
                 responses: Mutex::new(responses),
                 requests: Arc::new(Mutex::new(Vec::new())),
+                cancel_on_request: None,
+                calls: AtomicUsize::new(0),
             }
         }
 
@@ -721,9 +864,20 @@ mod tests {
                 Self {
                     responses: Mutex::new(responses),
                     requests: Arc::clone(&requests),
+                    cancel_on_request: None,
+                    calls: AtomicUsize::new(0),
                 },
                 requests,
             )
+        }
+
+        fn cancel_on_request(responses: Vec<StreamResponse>, request: usize) -> Self {
+            Self {
+                responses: Mutex::new(responses),
+                requests: Arc::new(Mutex::new(Vec::new())),
+                cancel_on_request: Some(request),
+                calls: AtomicUsize::new(0),
+            }
         }
     }
 
@@ -739,6 +893,10 @@ mod tests {
             _: Option<&'a SessionRef>,
         ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
             Box::pin(async {
+                let request = self.calls.fetch_add(1, Ordering::Relaxed);
+                if self.cancel_on_request == Some(request) {
+                    return Err(AgentError::Cancelled);
+                }
                 self.requests.lock().unwrap().push(messages.to_vec());
                 let mut responses = self.responses.lock().unwrap();
                 assert!(!responses.is_empty(), "MockProvider: no more responses");
@@ -817,6 +975,7 @@ mod tests {
                 )),
                 session_id: None,
                 timeouts: n00n_providers::Timeouts::default(),
+                openai_options: OpenAiOptions::default(),
                 file_tracker: FileReadTracker::fresh(),
                 prompt_slots: Arc::new(crate::prompt::ResolvedSlots::default()),
                 subagent_cancels: Arc::new(crate::cancel::CancelMap::new()),
@@ -828,6 +987,7 @@ mod tests {
                 system: "system".into(),
                 event_tx: EventSender::new(raw_tx, 0),
                 tools: serde_json::json!([]),
+                tool_filter: ToolFilter::All,
             },
         );
         (agent, event_rx)
@@ -1198,6 +1358,7 @@ mod tests {
                     )),
                     session_id: None,
                     timeouts: n00n_providers::Timeouts::default(),
+                    openai_options: OpenAiOptions::default(),
                     file_tracker: FileReadTracker::fresh(),
                     prompt_slots: Arc::new(crate::prompt::ResolvedSlots::default()),
                     subagent_cancels: Arc::new(crate::cancel::CancelMap::new()),
@@ -1209,6 +1370,7 @@ mod tests {
                     system: "system".into(),
                     event_tx: EventSender::new(raw_tx, 0),
                     tools: serde_json::json!([]),
+                    tool_filter: ToolFilter::All,
                 },
             )
             .with_cancel(cancel);
@@ -1217,6 +1379,52 @@ mod tests {
             assert!(matches!(result, Err(AgentError::Cancelled)));
             drop(agent);
             assert_ends_with_cancel_marker(&history);
+        });
+    }
+
+    #[test]
+    fn post_compaction_cancellation_keeps_compaction_transcript_and_cleanup() {
+        smol::block_on(async {
+            let mut history = History::new(vec![Message::user("x".repeat(680_000))]);
+            let (mut agent, _event_rx) = make_agent(
+                MockProvider::cancel_on_request(vec![text_response(StopReason::EndTurn)], 1),
+                &mut history,
+            );
+            agent.model = Arc::new(small_context_model(200_000, 8_192));
+
+            let result = agent.run(default_input()).await;
+
+            assert!(matches!(result, Err(AgentError::Cancelled)));
+            drop(agent);
+            assert!(
+                history
+                    .transcript()
+                    .iter()
+                    .any(|entry| matches!(entry, TranscriptEntry::Compaction { .. }))
+            );
+            assert_ends_with_cancel_marker(&history);
+        });
+    }
+
+    #[test]
+    fn pre_dispatch_cancellation_rolls_back_without_provider_call() {
+        smol::block_on(async {
+            let (provider, requests) =
+                MockProvider::recording(vec![text_response(StopReason::EndTurn)]);
+            let mut history = History::new(Vec::new());
+            let (mut agent, _event_rx) = make_agent(provider, &mut history);
+            let gate = Arc::new(PreDispatchGate::new());
+            assert!(gate.try_cancel());
+            agent = agent
+                .with_pre_dispatch_gate(gate)
+                .with_pre_dispatch_rollback_len(0);
+
+            let result = agent.run(default_input()).await;
+
+            assert!(matches!(result, Err(AgentError::Cancelled)));
+            drop(agent);
+            assert_eq!(history.len(), 0);
+            assert_eq!(requests.lock().unwrap().len(), 0);
         });
     }
 

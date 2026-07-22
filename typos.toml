@@ -21,6 +21,8 @@ extend-ignore-re = [
   'file\.write_all\(b"\{\\"t\\":\\"msg\\",\\"d\\":\{\\"trun"\)',
   'fromat = "bgra"',
   'splash_animaton = false',
+  'HaaA',
+  'TruLayer',
 ]
 
 [default.extend-identifiers]
