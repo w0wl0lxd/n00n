@@ -3530,6 +3530,15 @@ fn view_image_tool_returns_image_output() {
     assert_eq!(decoded, std::fs::read(&path).unwrap());
 }
 
+#[cfg(unix)]
+#[test]
+fn view_image_rejects_non_regular_file_before_reading() {
+    let (reg, _host) = builtins_host();
+    let err =
+        exec_tool_output(&reg, "view_image", serde_json::json!({"path": "/dev/zero"})).unwrap_err();
+    assert!(err.contains("not a regular file"), "got: {err}");
+}
+
 #[test]
 fn view_image_tool_rejects_non_image() {
     let (reg, _host) = builtins_host();
@@ -3558,12 +3567,76 @@ fn probe_output(data: &str) -> (image::ImageFormat, u32, u32) {
     (format, w, h)
 }
 
+const ANIMATED_WEBP_BASE64: &str = "UklGRp4AAABXRUJQVlA4WAoAAAASAAAAAQAAAQAAQU5JTQYAAAD/////AABBTk1GNgAAAAAAAAAAAAEAAAEAAPQBAAJWUDhMHgAAAC8BQAAAFzD/AoIi/0eb//kPNAsK27ZBYXEQ0f/IA0FOTUY0AAAAAAAAAAAAAQAAAQAA9AEAAFZQOEwcAAAALwFAABAXIBBIYZM//wKCIv9Hm/+AvcEYRPQ/BA==";
+
+fn animated_gif_fixture() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
+    encoder
+        .encode_frames([
+            image::Frame::new(image::RgbaImage::from_pixel(
+                2,
+                2,
+                image::Rgba([255, 0, 0, 255]),
+            )),
+            image::Frame::new(image::RgbaImage::from_pixel(
+                2,
+                2,
+                image::Rgba([0, 0, 255, 255]),
+            )),
+        ])
+        .unwrap();
+    drop(encoder);
+    bytes
+}
+
+fn test_crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFF_u32;
+    for &byte in data {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ ((crc & 1) * 0xEDB8_8320);
+        }
+    }
+    !crc
+}
+
 #[test]
-fn view_image_downscales_oversized_png_with_honest_caption() {
+fn view_image_rejects_decode_bomb_before_shipping_bytes() {
     let (reg, _host) = builtins_host();
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("wide.png");
-    image::DynamicImage::new_rgb8(2000, 100)
+    let path = dir.path().join("pixel-bomb.png");
+    image::DynamicImage::new_rgb8(1, 1)
+        .save_with_format(&path, image::ImageFormat::Png)
+        .unwrap();
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[16..20].copy_from_slice(&10_000_u32.to_be_bytes());
+    bytes[20..24].copy_from_slice(&10_000_u32.to_be_bytes());
+    let crc = test_crc32(&bytes[12..29]);
+    bytes[29..33].copy_from_slice(&crc.to_be_bytes());
+    std::fs::write(&path, bytes).unwrap();
+
+    let err = exec_tool_output(
+        &reg,
+        "view_image",
+        serde_json::json!({"path": path.to_str().unwrap()}),
+    )
+    .unwrap_err();
+    assert!(err.contains("10000x10000"), "got: {err}");
+    assert!(err.contains("limit 50000000 pixels"), "got: {err}");
+}
+
+#[test]
+fn view_image_tall_png_returns_first_lossless_tile_with_schema_guidance() {
+    use base64::Engine as _;
+
+    let (reg, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tall.png");
+    let mut source_image = image::GrayImage::new(1440, 12_079);
+    source_image.put_pixel(0, 0, image::Luma([1]));
+    source_image.put_pixel(0, 2_000, image::Luma([2]));
+    source_image
         .save_with_format(&path, image::ImageFormat::Png)
         .unwrap();
 
@@ -3573,56 +3646,40 @@ fn view_image_downscales_oversized_png_with_honest_caption() {
         serde_json::json!({"path": path.to_str().unwrap()}),
     )
     .unwrap();
-    let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
+    let n00n_agent::ToolOutput::Image {
+        source: output,
+        text,
+        ..
+    } = out
+    else {
         panic!("expected Image output, got {out:?}");
     };
-    assert_eq!(source.media_type, n00n_agent::ImageMediaType::Png);
-    assert!(text.contains("downscaled from 2000x100"), "caption: {text}");
-
-    let (format, w, h) = probe_output(&source.data);
-    assert_eq!(format, image::ImageFormat::Png);
-    assert_eq!(w, 1568, "long edge must land exactly on the API limit");
-    assert!(h <= 79, "aspect ratio broken: {w}x{h}");
-    // Caption must report the dimensions actually shipped, not the original.
-    assert!(text.contains(&format!("{w}x{h}")), "caption: {text}");
-}
-
-#[test]
-fn view_image_oversized_gif_reencodes_to_png_first_frame() {
-    let (reg, _host) = builtins_host();
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("banner.gif");
-    image::DynamicImage::new_rgb8(2000, 8)
-        .save_with_format(&path, image::ImageFormat::Gif)
+    assert_eq!(output.media_type, n00n_agent::ImageMediaType::Png);
+    assert!(text.contains("1440x12079"), "caption: {text}");
+    assert!(text.contains("tile 1/7"), "caption: {text}");
+    assert!(text.contains("tile_index=2..7"), "caption: {text}");
+    assert!(!text.contains("downscaled"), "caption: {text}");
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&*output.data)
         .unwrap();
-
-    let out = exec_tool_output(
-        &reg,
-        "view_image",
-        serde_json::json!({"path": path.to_str().unwrap()}),
-    )
-    .unwrap();
-    let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
-        panic!("expected Image output, got {out:?}");
-    };
-    // gif encoding is unsupported, so downscaling forces png; the caption
-    // must confess the downscale and the lost animation.
-    assert_eq!(source.media_type, n00n_agent::ImageMediaType::Png);
-    assert!(text.contains("downscaled from 2000x8"), "caption: {text}");
-    assert!(text.contains("first frame only"), "caption: {text}");
-    assert_eq!(probe_output(&source.data).0, image::ImageFormat::Png);
+    let tile = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+        .unwrap()
+        .to_luma8();
+    assert_eq!(tile.dimensions(), (1440, 2000));
+    assert_eq!(tile.get_pixel(0, 0), source_image.get_pixel(0, 0));
 }
 
 #[test]
-fn view_image_small_gif_passes_through_unchanged() {
+fn view_image_provider_safe_tall_png_passes_through_byte_for_byte() {
     use base64::Engine as _;
 
     let (reg, _host) = builtins_host();
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("tiny.gif");
-    image::DynamicImage::new_rgb8(4, 2)
-        .save_with_format(&path, image::ImageFormat::Gif)
+    let path = dir.path().join("provider-safe-tall.png");
+    image::GrayImage::new(1440, 8000)
+        .save_with_format(&path, image::ImageFormat::Png)
         .unwrap();
+    let original = std::fs::read(&path).unwrap();
 
     let out = exec_tool_output(
         &reg,
@@ -3633,18 +3690,326 @@ fn view_image_small_gif_passes_through_unchanged() {
     let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
         panic!("expected Image output, got {out:?}");
     };
-    assert_eq!(source.media_type, n00n_agent::ImageMediaType::Gif);
-    assert!(
-        !text.contains("first frame only"),
-        "pass-through keeps animation, caption must not claim otherwise: {text}"
-    );
-    let decoded = base64::engine::general_purpose::STANDARD
+    assert_eq!(source.media_type, n00n_agent::ImageMediaType::Png);
+    assert!(text.contains("1440x8000"), "caption: {text}");
+    let shipped = base64::engine::general_purpose::STANDARD
         .decode(&*source.data)
         .unwrap();
+    assert_eq!(shipped, original);
+}
+
+#[test]
+fn view_image_over_transport_limit_returns_lossless_tile_without_jpeg_fallback() {
+    let (reg, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("oversized.png");
+    image::DynamicImage::new_rgb8(1, 1)
+        .save_with_format(&path, image::ImageFormat::Png)
+        .unwrap();
+    let mut original = std::fs::read(&path).unwrap();
+    original.resize(4 * 1024 * 1024, 0);
+    std::fs::write(&path, &original).unwrap();
+
+    let tile = exec_tool_output(
+        &reg,
+        "view_image",
+        serde_json::json!({"path": path.to_str().unwrap()}),
+    )
+    .unwrap();
+    let n00n_agent::ToolOutput::Image { source, text, .. } = tile else {
+        panic!("expected Image output, got {tile:?}");
+    };
+    assert_eq!(source.media_type, n00n_agent::ImageMediaType::Png);
+    assert!(text.contains("tile 1/1"), "caption: {text}");
+    assert!(text.contains("byte transport limit"), "caption: {text}");
+    assert_eq!(probe_output(&source.data).0, image::ImageFormat::Png);
     assert_eq!(
-        decoded,
         std::fs::read(&path).unwrap(),
-        "under-limit gif must ship byte-identical, not re-encoded"
+        original,
+        "tiling changed source file"
+    );
+}
+
+#[test]
+fn view_image_lossless_tiles_cover_source_once_without_gaps() {
+    use base64::Engine as _;
+
+    let (reg, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("grid.png");
+    let mut source_image = image::RgbaImage::new(5, 4);
+    for y in 0_u8..4 {
+        for x in 0_u8..5 {
+            source_image.put_pixel(
+                u32::from(x),
+                u32::from(y),
+                image::Rgba([x, y, x + 10 * y, 255]),
+            );
+        }
+    }
+    source_image
+        .save_with_format(&path, image::ImageFormat::Png)
+        .unwrap();
+    let original = std::fs::read(&path).unwrap();
+    let bounds = [(0, 0, 3, 2), (3, 0, 5, 2), (0, 2, 3, 4), (3, 2, 5, 4)];
+    let mut coverage = [0_u8; 20];
+
+    for (offset, &(x0, y0, x1, y1)) in bounds.iter().enumerate() {
+        let tile_index = offset + 1;
+        let out = exec_tool_output(
+            &reg,
+            "view_image",
+            serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "tile_index": tile_index,
+                "tile_width": 3,
+                "tile_height": 2,
+            }),
+        )
+        .unwrap();
+        let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
+            panic!("expected Image output, got {out:?}");
+        };
+        assert_eq!(source.media_type, n00n_agent::ImageMediaType::Png);
+        assert!(
+            text.contains(&format!("tile {tile_index}/4")),
+            "caption: {text}"
+        );
+        assert!(
+            text.contains(&format!("source bounds x=[{x0},{x1}) y=[{y0},{y1})")),
+            "caption: {text}"
+        );
+
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&*source.data)
+            .unwrap();
+        let tile = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+            .unwrap()
+            .to_rgba8();
+        assert_eq!(tile.dimensions(), (x1 - x0, y1 - y0));
+        for tile_y in 0..tile.height() {
+            for tile_x in 0..tile.width() {
+                let source_x = x0 + tile_x;
+                let source_y = y0 + tile_y;
+                assert_eq!(
+                    tile.get_pixel(tile_x, tile_y),
+                    source_image.get_pixel(source_x, source_y)
+                );
+                coverage[(source_y * 5 + source_x) as usize] += 1;
+            }
+        }
+    }
+
+    assert!(
+        coverage.iter().all(|&count| count == 1),
+        "coverage: {coverage:?}"
+    );
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        original,
+        "tiling changed source file"
+    );
+}
+
+#[test]
+fn view_image_rejects_crop_area_before_allocating_or_encoding() {
+    let (reg, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("crop-limit.png");
+    image::DynamicImage::new_rgb8(5, 4)
+        .save_with_format(&path, image::ImageFormat::Png)
+        .unwrap();
+
+    let err = exec_tool_output(
+        &reg,
+        "view_image",
+        serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "crop": [0, 0, 8000, 8000],
+        }),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("crop area must be at most 4000000 pixels"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn view_image_rejects_incompressible_tile_at_bounded_encode_limit() {
+    let (reg, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("incompressible.png");
+    let mut image = image::RgbaImage::new(1000, 1000);
+    let mut state = 0x1234_5678_u32;
+    for pixel in image.pixels_mut() {
+        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        *pixel = image::Rgba(state.to_le_bytes());
+    }
+    image
+        .save_with_format(&path, image::ImageFormat::Png)
+        .unwrap();
+
+    let err = exec_tool_output(
+        &reg,
+        "view_image",
+        serde_json::json!({"path": path.to_str().unwrap()}),
+    )
+    .unwrap_err();
+    assert!(err.contains("bounded"), "got: {err}");
+    assert!(err.contains("retry with smaller"), "got: {err}");
+}
+
+#[test]
+fn view_image_lossless_crop_reports_exact_source_bounds() {
+    let (reg, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("crop.png");
+    image::DynamicImage::new_rgb8(5, 4)
+        .save_with_format(&path, image::ImageFormat::Png)
+        .unwrap();
+
+    let out = exec_tool_output(
+        &reg,
+        "view_image",
+        serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "crop": [1, 1, 3, 2],
+        }),
+    )
+    .unwrap();
+    let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
+        panic!("expected Image output, got {out:?}");
+    };
+    assert_eq!(source.media_type, n00n_agent::ImageMediaType::Png);
+    assert!(
+        text.contains("crop source bounds x=[1,4) y=[1,3)"),
+        "caption: {text}"
+    );
+    assert_eq!(probe_output(&source.data), (image::ImageFormat::Png, 3, 2));
+}
+
+#[test]
+fn view_image_unicode_path_passes_through_unchanged() {
+    use base64::Engine as _;
+
+    let (reg, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("截图 100% [原始].png");
+    image::DynamicImage::new_rgb8(4, 2)
+        .save_with_format(&path, image::ImageFormat::Png)
+        .unwrap();
+    let original = std::fs::read(&path).unwrap();
+
+    let out = exec_tool_output(
+        &reg,
+        "view_image",
+        serde_json::json!({"path": path.to_str().unwrap()}),
+    )
+    .unwrap();
+    let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
+        panic!("expected Image output, got {out:?}");
+    };
+    assert!(text.contains("截图 100% [原始].png"), "caption: {text}");
+    let shipped = base64::engine::general_purpose::STANDARD
+        .decode(&*source.data)
+        .unwrap();
+    assert_eq!(shipped, original);
+}
+
+#[test]
+fn view_image_animated_gif_requires_explicit_capability_or_static_opt_in() {
+    use base64::Engine as _;
+    use image::AnimationDecoder as _;
+
+    let (reg, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("animated.gif");
+    let fixture = animated_gif_fixture();
+    let frames = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(&fixture))
+        .unwrap()
+        .into_frames()
+        .count();
+    assert_eq!(frames, 2, "fixture must contain multiple GIF frames");
+    std::fs::write(&path, &fixture).unwrap();
+
+    let err = exec_tool_output(
+        &reg,
+        "view_image",
+        serde_json::json!({"path": path.to_str().unwrap()}),
+    )
+    .unwrap_err();
+    assert!(err.contains("GIF"), "got: {err}");
+    assert!(err.contains("allow_gif_animation=true"), "got: {err}");
+
+    let raw = exec_tool_output(
+        &reg,
+        "view_image",
+        serde_json::json!({"path": path.to_str().unwrap(), "allow_gif_animation": true}),
+    )
+    .unwrap();
+    let n00n_agent::ToolOutput::Image { source, .. } = raw else {
+        panic!("expected Image output, got {raw:?}");
+    };
+    assert_eq!(source.media_type, n00n_agent::ImageMediaType::Gif);
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(&*source.data)
+            .unwrap(),
+        fixture
+    );
+
+    let out = exec_tool_output(
+        &reg,
+        "view_image",
+        serde_json::json!({"path": path.to_str().unwrap(), "static_image": true}),
+    )
+    .unwrap();
+    let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
+        panic!("expected Image output, got {out:?}");
+    };
+    assert_eq!(source.media_type, n00n_agent::ImageMediaType::Png);
+    assert!(
+        text.contains("explicit static first frame"),
+        "caption: {text}"
+    );
+}
+
+#[test]
+fn view_image_animated_webp_requires_explicit_static_opt_in() {
+    use base64::Engine as _;
+
+    let (reg, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("animated.webp");
+    let fixture = base64::engine::general_purpose::STANDARD
+        .decode(ANIMATED_WEBP_BASE64)
+        .unwrap();
+    assert!(fixture.windows(4).any(|chunk| chunk == b"ANMF"));
+    std::fs::write(&path, fixture).unwrap();
+
+    let err = exec_tool_output(
+        &reg,
+        "view_image",
+        serde_json::json!({"path": path.to_str().unwrap()}),
+    )
+    .unwrap_err();
+    assert!(err.contains("animated webp"), "got: {err}");
+    assert!(err.contains("static_image=true"), "got: {err}");
+
+    let out = exec_tool_output(
+        &reg,
+        "view_image",
+        serde_json::json!({"path": path.to_str().unwrap(), "static_image": true}),
+    )
+    .unwrap();
+    let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
+        panic!("expected Image output, got {out:?}");
+    };
+    assert_eq!(source.media_type, n00n_agent::ImageMediaType::Png);
+    assert!(
+        text.contains("explicit static first frame"),
+        "caption: {text}"
     );
 }
 
