@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-n00n ships with 23 built-in tools. This is the full reference.
+n00n ships with 25 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -122,6 +122,26 @@ View an image file (png, jpeg, gif, webp) so you can actually see it; it is retu
 |-----------|------|----------|-------------|
 | `path` | string | yes | Path to the image file |
 
+### `codegraph` *(lua plugin)*
+
+Query a pre-indexed semantic codegraph for cross-file structural analysis. Returns verbatim source code grouped by file, plus a dependency impact "blast radius" summary with caller counts and test coverage info.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `projectPath` | string | no | Absolute path to the project (defaults to current workspace) |
+| `query` | string | yes | Natural language question or symbol/file names to explore (e.g. 'AuthService login', 'GraphTraverser BFS impact') |
+
+### `arbor` *(lua plugin)*
+
+Graph-based code analysis using Arbor.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `command` | string | yes |  |
+| `token_budget` | integer | no |  |
+| `project` | string | no |  |
+| `symbol` | string | no |  |
+
 ## Execution & Control
 
 ### `batch` *(lua plugin)*
@@ -167,16 +187,18 @@ Control background agents started by task or team.
 
 ### `team` *(lua plugin)*
 
-Launch an agent team. A supervisor decomposes an SDLC goal into role agents and runs each as its own subagent on a cost-aware model tier:
+Run a bounded ALMAS team for an SDLC goal. Roles cover scope, planning, implementation, testing, and review on cost-aware tiers.
+supervised returns a plan; autonomous executes it with optional validator quorum; swarm runs bounded explorer/worker/validator rounds with an information-bottleneck fan-out gate. model overrides tiers; auto_tier routes by task. use_retrieval grounds work, compact TOON-encodes that context, and background returns an agent_id for agent_control. Default/hard budgets are 16/24 agents and 4 concurrent.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
+| `max_agents` | integer | no | 16, hard maximum 24 | Total team agent-call budget. |
 | `background` | boolean | no |  | Start the team in a separate background session and return its agent_id immediately. |
 | `compact` | boolean | no |  | Encode retrieved context as TOON (token-saving, opt-in). |
 | `model_tier` | string | no |  | Supervisor/model tier (weak/medium/strong). Defaults to strong when model is omitted. |
 | `quorum` | boolean | no |  | Require validator quorum for autonomous validation and swarm acceptance. |
 | `max_steps` | integer | no | 6, maximum 8 | Maximum supervisor plan steps to execute. |
-| `max_concurrent` | integer | no | 8 | Swarm mode only: max concurrent subagents per round. |
+| `max_concurrent` | integer | no | 4 | Swarm concurrency. Maximum 4. |
 | `ibn_gate` | boolean | no |  | Use the information-bottleneck fan-out gate in swarm mode. |
 | `max_rounds` | integer | no | 2, maximum 4 | Swarm mode only: max coordination rounds. |
 | `goal` | string | yes |  | High-level SDLC goal, e.g. 'Add a retry helper and cover it with tests.' |
@@ -188,12 +210,13 @@ Launch an agent team. A supervisor decomposes an SDLC goal into role agents and 
 
 ### `task` *(lua plugin)*
 
-Launch an autonomous subagent to perform tasks independently. Best combined with batch.
+Launch one isolated agent; combine independent calls with batch.
+research (default) is read-only; general can edit. Each call starts fresh, so include context and ask for concise file:line results. Summarize returned results for the user. auto_tier is opt-in. background returns an agent_id for agent_control.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `description` | string | yes | Short (3-5 words) description of the task |
-| `model_tier` | string | no | Model tier (optional, omit to use current model, capped at current tier):<br>- "strong" (e.g. Opus): Deep reasoning, complex architecture, subtle bugs, most critical sections. ~5x cost of medium.<br>- "medium" (e.g. Sonnet): Balanced. Refactors, features, multi-file changes.<br>- "weak" (e.g. Haiku): Fast/cheap. Search, summarize, boilerplate, simple edits. |
+| `model_tier` | string | no | Optional capped tier: "weak" for simple work, "medium" for normal changes, or "strong" for complex/critical work. |
 | `auto_tier` | boolean | no | Pick model_tier from the prompt automatically (opt-in). Overrides model_tier when set. |
 | `background` | boolean | no | Start this task in a separate background session and return its agent_id immediately. |
 | `model` | string | no | Exact model spec (optional, e.g. openai/gpt-5.6-luna). Overrides model_tier. |
@@ -204,7 +227,7 @@ Launch an autonomous subagent to perform tasks independently. Best combined with
 
 ### `workflow` *(lua plugin)*
 
-Run a workflow script that orchestrates many subagents at scale.
+Run a bounded, sandboxed Lua workflow for multi-stage agent orchestration.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
