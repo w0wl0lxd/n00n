@@ -46,12 +46,28 @@ pub enum AgentError {
     HttpRequest(#[from] isahc::http::Error),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("local storage operation failed")]
+    Storage,
     #[error("channel send failed")]
     Channel,
     #[error("cancelled")]
     Cancelled,
     #[error("stream timed out after {secs}s of inactivity")]
     Timeout { secs: u64 },
+    #[error("credential lock acquisition timed out after {millis}ms")]
+    CredentialLockTimeout { millis: u64 },
+    #[error("OpenAI Coding Plan request admission timed out after {millis}ms")]
+    CodingPlanAdmissionTimeout { millis: u64 },
+    #[error("OpenAI response-chain lock acquisition timed out after {millis}ms")]
+    ResponseChainBusy { millis: u64 },
+    #[error("OpenAI Coding Plan account scope changed before request send")]
+    CodingPlanAdmissionScopeChanged,
+    #[error(
+        "OpenAI Coding Plan rejected the connection before the request was sent; the account may be at its concurrent request limit"
+    )]
+    CodingPlanAdmission {
+        retry_after: Option<std::time::Duration>,
+    },
     #[error("request may have been accepted before the connection failed: {message}")]
     RequestSent {
         message: String,
@@ -70,10 +86,16 @@ impl AgentError {
             Self::Io(_) | Self::Http(_) | Self::Timeout { .. } => true,
             Self::Config { .. }
             | Self::Tool { .. }
+            | Self::Storage
             | Self::Channel
             | Self::Json(_)
             | Self::Cancelled
             | Self::HttpRequest(_)
+            | Self::CredentialLockTimeout { .. }
+            | Self::CodingPlanAdmissionTimeout { .. }
+            | Self::ResponseChainBusy { .. }
+            | Self::CodingPlanAdmissionScopeChanged
+            | Self::CodingPlanAdmission { .. }
             | Self::RequestSent { .. } => false,
         }
     }
@@ -119,9 +141,15 @@ impl AgentError {
             | Self::Http(_)
             | Self::HttpRequest(_)
             | Self::Json(_)
+            | Self::Storage
             | Self::Channel
             | Self::Cancelled
             | Self::Timeout { .. }
+            | Self::CredentialLockTimeout { .. }
+            | Self::CodingPlanAdmissionTimeout { .. }
+            | Self::ResponseChainBusy { .. }
+            | Self::CodingPlanAdmissionScopeChanged
+            | Self::CodingPlanAdmission { .. }
             | Self::RequestSent { .. } => false,
         }
     }
@@ -151,8 +179,28 @@ impl AgentError {
             Self::Io(e) => format!("I/O error: {e}"),
             Self::Http(_) => "connection error, check your network".into(),
             Self::Timeout { .. } => "stream timed out, retrying".into(),
+            Self::CredentialLockTimeout { .. } => {
+                "credential store is busy, try again in a moment".into()
+            }
+            Self::CodingPlanAdmissionTimeout { .. } => {
+                "OpenAI Coding Plan is busy for this account, try again shortly".into()
+            }
+            Self::ResponseChainBusy { .. } => {
+                "this session is busy in another n00n process, try again shortly".into()
+            }
+            Self::CodingPlanAdmissionScopeChanged => {
+                "OpenAI account changed before request send, retrying with the current account".into()
+            }
+            Self::CodingPlanAdmission { retry_after } => match retry_after {
+                Some(delay) => format!(
+                    "OpenAI Coding Plan is busy for this account, retrying after {}s",
+                    delay.as_secs()
+                ),
+                None => "OpenAI Coding Plan rejected the connection before the request was sent; the account may be at its concurrent request limit".into(),
+            },
             Self::HttpRequest(e) => format!("request error: {e}"),
             Self::Json(_) => "received an invalid response from the API".into(),
+            Self::Storage => "local storage error, try again".into(),
             Self::Channel => "internal error, try again".into(),
             Self::Cancelled => "cancelled".into(),
             Self::RequestSent { .. } => {
@@ -178,6 +226,11 @@ impl AgentError {
             Self::Api { status, .. } if *status >= 500 => format!("Server error ({status})"),
             Self::Io(_) | Self::Http(_) => "Connection error".into(),
             Self::Timeout { .. } => "Stream timed out".into(),
+            Self::CredentialLockTimeout { .. } => "Credential store is busy".into(),
+            Self::CodingPlanAdmissionTimeout { .. } => "OpenAI Coding Plan is busy".into(),
+            Self::ResponseChainBusy { .. } => "OpenAI session is busy".into(),
+            Self::CodingPlanAdmissionScopeChanged => "OpenAI account changed".into(),
+            Self::CodingPlanAdmission { .. } => "OpenAI Coding Plan admission rejected".into(),
             _ => self.to_string(),
         }
     }
@@ -194,10 +247,11 @@ impl From<n00n_storage::StorageError> for AgentError {
         match e {
             n00n_storage::StorageError::Io(io) => Self::Io(io),
             n00n_storage::StorageError::Json(j) => Self::Json(j),
-            other => Self::Api {
-                status: 0,
-                message: other.to_string(),
-            },
+            n00n_storage::StorageError::HomeNotSet
+            | n00n_storage::StorageError::NotFound(_)
+            | n00n_storage::StorageError::SlugCollision
+            | n00n_storage::StorageError::Toon(_)
+            | n00n_storage::StorageError::GetRandom(_) => Self::Storage,
         }
     }
 }
@@ -259,6 +313,16 @@ mod tests {
     #[test]
     fn timeout_is_retryable() {
         assert!(AgentError::Timeout { secs: 30 }.is_retryable());
+    }
+
+    #[test]
+    fn missing_local_storage_item_is_not_an_api_error_or_path_leak() {
+        let private_ref = "/home/user/.local/share/n00n/sessions/Cd-private";
+        let error = AgentError::from(n00n_storage::StorageError::NotFound(private_ref.into()));
+
+        assert!(!matches!(error, AgentError::Api { .. }));
+        assert!(!error.to_string().contains(private_ref));
+        assert!(!error.user_message().contains(private_ref));
     }
 
     // llama.cpp: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/server-context.cpp

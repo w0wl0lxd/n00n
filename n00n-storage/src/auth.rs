@@ -89,7 +89,7 @@ fn save_auth(path: &Path, data: &impl Serialize) -> Result<(), StorageError> {
     }
     let json = serde_json::to_string_pretty(data)?;
     atomic_write_permissions(path, json.as_bytes(), AUTH_FILE_MODE)?;
-    debug!(path = %path.display(), "auth data saved");
+    debug!("auth data saved");
     Ok(())
 }
 
