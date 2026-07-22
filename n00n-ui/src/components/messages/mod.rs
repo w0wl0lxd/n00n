@@ -690,11 +690,19 @@ impl MessagesPanel {
     fn shift_scroll_for_height_change(&mut self, old_height: u16, new_height: u16) {
         let delta = i32::from(new_height) - i32::from(old_height);
         self.scroll_top = if delta >= 0 {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            self.scroll_top.saturating_add(delta as u16)
+            if let Ok(v) = u16::try_from(delta) {
+                self.scroll_top.saturating_add(v)
+            } else {
+                tracing::warn!("scroll delta exceeds u16::MAX, ignoring");
+                self.scroll_top
+            }
         } else {
-            #[allow(clippy::cast_possible_truncation)]
-            self.scroll_top.saturating_sub(delta.unsigned_abs() as u16)
+            if let Ok(v) = u16::try_from(delta.unsigned_abs()) {
+                self.scroll_top.saturating_sub(v)
+            } else {
+                tracing::warn!("scroll delta exceeds u16::MAX, ignoring");
+                self.scroll_top
+            }
         };
     }
 
@@ -1539,12 +1547,7 @@ impl MessagesPanel {
         thinking_indicator(streaming_thinking.line_count(), None)
     }
 
-    #[allow(clippy::unused_self)]
-    fn build_cached_thinking_indicator(
-        &self,
-        text: &str,
-        duration: Option<&str>,
-    ) -> Vec<Line<'static>> {
+    fn build_cached_thinking_indicator(text: &str, duration: Option<&str>) -> Vec<Line<'static>> {
         thinking_indicator(logical_line_count(text), duration)
     }
 
@@ -1589,7 +1592,7 @@ impl MessagesPanel {
             return;
         };
         let lines = if collapsed {
-            self.build_cached_thinking_indicator(&text, duration.as_deref())
+            Self::build_cached_thinking_indicator(&text, duration.as_deref())
         } else {
             let style = thinking_style();
             text_to_lines(
@@ -1723,7 +1726,7 @@ impl MessagesPanel {
         }
         if matches!(&msg.role, DisplayRole::Thinking) && msg.thinking_collapsed {
             let text = msg.text.clone();
-            let lines = self.build_cached_thinking_indicator(&text, msg.annotation.as_deref());
+            let lines = Self::build_cached_thinking_indicator(&text, msg.annotation.as_deref());
             let search_text = format!("thinking> {text}");
             return vec![Segment::with_lines(
                 lines,
@@ -1867,7 +1870,7 @@ impl MessagesPanel {
                 if matches!(&msg.role, DisplayRole::Thinking) && msg.thinking_collapsed {
                     let text = msg.text.clone();
                     let lines =
-                        self.build_cached_thinking_indicator(&text, msg.annotation.as_deref());
+                        Self::build_cached_thinking_indicator(&text, msg.annotation.as_deref());
                     let search_text = format!("thinking> {text}");
                     self.cache.push_spacer_if_needed();
                     self.cache.push(Segment::with_lines(

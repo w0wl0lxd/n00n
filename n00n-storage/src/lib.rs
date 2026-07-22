@@ -169,7 +169,7 @@ fn retry_rename(src: &Path, dest: &Path) -> std::io::Result<()> {
 /// Flush a directory's metadata so a file created/renamed inside it is
 /// guaranteed to be reachable after a crash. No-op on platforms where this is
 /// not meaningful or not supported.
-#[allow(clippy::unnecessary_wraps)]
+#[allow(clippy::unnecessary_wraps)] // Returns Ok(()) on non-Unix for API consistency
 fn sync_dir(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {

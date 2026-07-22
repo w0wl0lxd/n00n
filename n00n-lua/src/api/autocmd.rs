@@ -182,7 +182,7 @@ fn create_autocmd(lua: &Lua, #[ctx] plugin: Arc<str>, event: Value, opts: Table)
 /// @example
 /// n00n.api.del_autocmd(id)
 #[lua_fn]
-#[allow(clippy::unnecessary_wraps)]
+#[allow(clippy::unnecessary_wraps)] // #[lua_fn] macro requires LuaResult wrapper
 fn del_autocmd(lua: &Lua, id: u64) -> LuaResult<()> {
     if let Some(mut store) = lua.app_data_mut::<AutocmdStore>() {
         store.remove(id);

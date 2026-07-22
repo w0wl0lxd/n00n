@@ -4,7 +4,9 @@
 //! so the casts below clamp before truncating and explicitly acknowledge the
 //! unavoidable precision loss when converting integer widths/counts to floats.
 
-#[allow(clippy::cast_precision_loss, dead_code)]
+// Converting usize to f32/f64 loses precision for large values, but terminal dimensions
+// and animation progress are bounded by screen size (typically < 10,000), where precision loss is acceptable.
+#[allow(clippy::cast_precision_loss)]
 pub(crate) const fn usize_to_f32(v: usize) -> f32 {
     v as f32
 }
@@ -14,14 +16,22 @@ pub(crate) const fn usize_to_f64(v: usize) -> f64 {
     v as f64
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
 pub(crate) fn f64_to_usize(v: f64) -> usize {
-    v.max(0.0) as usize
+    v.clamp(0.0, usize::MAX as f64) as usize
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
 pub(crate) fn f32_to_usize(v: f32) -> usize {
-    v.max(0.0) as usize
+    v.clamp(0.0, usize::MAX as f32) as usize
 }
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -66,5 +76,5 @@ pub(crate) fn usize_to_isize(v: usize) -> isize {
 
 #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
 pub(crate) fn isize_to_usize(v: isize) -> usize {
-    v.max(0) as usize
+    v.clamp(0, isize::MAX) as usize
 }

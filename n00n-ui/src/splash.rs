@@ -39,8 +39,9 @@ const LOGO_DELAY: f32 = 0.2;
 const LOGO_RAMP: f32 = 0.8;
 /// Ascii chars mapped to increasing wave intensity (first must be space).
 const FIELD_SYMS: &[&str] = &[" ", ".", ":", "+", "*"];
+// FIELD_SYMS.len() is small (5), so precision loss is acceptable
 #[allow(clippy::cast_precision_loss)]
-const FIELD_CHAR_MAX: f32 = (FIELD_SYMS.len() - 1) as f32;
+const FIELD_CHAR_MAX: f32 = FIELD_SYMS.len() as f32 - 1.0;
 /// Number of overlapping sine wave layers in the background field.
 const WAVE_LAYERS: usize = 3;
 /// Peak brightness multiplier for the field. Lower = subtler background.
@@ -56,8 +57,7 @@ const PI: f32 = std::f32::consts::PI;
 const FRAC_PI_2: f32 = std::f32::consts::FRAC_PI_2;
 const BHASKARA_B: f32 = 4.0 / (PI * PI);
 
-#[allow(clippy::inline_always)]
-#[inline(always)]
+#[inline]
 fn fast_sin(x: f32) -> f32 {
     let x = x - (x * INV_TAU).floor() * TAU;
     let (x, sign) = if x > PI { (x - PI, -1.0_f32) } else { (x, 1.0) };
@@ -65,8 +65,7 @@ fn fast_sin(x: f32) -> f32 {
     sign * (4.0 * raw) / (5.0 - raw)
 }
 
-#[allow(clippy::inline_always)]
-#[inline(always)]
+#[inline]
 fn fast_sincos(x: f32) -> (f32, f32) {
     (fast_sin(x), fast_sin(x + FRAC_PI_2))
 }
@@ -79,7 +78,6 @@ pub struct ColorTransition {
 
 impl ColorTransition {
     #[must_use]
-    #[allow(clippy::unwrap_used, clippy::missing_panics_doc)]
     pub fn new(color: Color) -> Self {
         let rgb = extract_rgb(color, (100, 140, 255));
         let start = Instant::now()
@@ -144,14 +142,16 @@ impl Default for Splash {
 
 impl Splash {
     #[must_use]
-    #[allow(clippy::cast_precision_loss)]
     pub fn new(animate: bool) -> Self {
         let mut rng = [0u8; 8];
         getrandom::fill(&mut rng).ok();
         let tip_idx = u32::from_le_bytes([rng[4], rng[5], rng[6], rng[7]]) as usize % TIPS.len();
+        // Random offset modulo 10_000 fits in f32 without meaningful precision loss
+        #[allow(clippy::cast_precision_loss)]
+        let field_offset = (u64::from_le_bytes(rng) % 10_000) as f32;
         Self {
             start: Instant::now(),
-            field_offset: (u64::from_le_bytes(rng) % 10_000) as f32,
+            field_offset,
             animate,
             tip_idx,
         }
@@ -173,7 +173,7 @@ impl Splash {
             ease_out_cubic(t / FADE_DURATION)
         };
         if self.animate {
-            self.render_field(area, buf, t + self.field_offset, fade, accent);
+            Splash::render_field(area, buf, t + self.field_offset, fade, accent);
         }
     }
 
@@ -204,8 +204,10 @@ impl Splash {
         render_version(area, buf, fade, version_y, new_version);
     }
 
-    #[allow(clippy::too_many_lines, clippy::unused_self)]
-    fn render_field(&self, area: Rect, buf: &mut Buffer, t: f32, fade: f32, accent: Color) {
+    // Hot-path rendering function with tight loops that benefit from being inlined together.
+    // Extracting helpers would add function call overhead and make the code harder to follow.
+    #[allow(clippy::too_many_lines)]
+    fn render_field(area: Rect, buf: &mut Buffer, t: f32, fade: f32, accent: Color) {
         let theme = theme::current();
         let (ac_r, ac_g, ac_b) = extract_rgb(accent, (100, 140, 255));
         let (bg_r, bg_g, bg_b) = extract_rgb(theme.background, (15, 15, 25));
@@ -387,7 +389,14 @@ impl Splash {
 
         let total_width: u16 = HELP_SEGMENTS
             .iter()
-            .map(|(s, _)| u16::try_from(s.len()).unwrap_or_else(|_| u16::MAX))
+            .map(|(s, _)| {
+                if let Ok(v) = u16::try_from(s.len()) {
+                    v
+                } else {
+                    tracing::warn!("help segment length exceeds u16::MAX, clamping");
+                    u16::MAX
+                }
+            })
             .sum();
         let x_start = area.x + area.width.saturating_sub(total_width) / 2;
 
@@ -418,8 +427,12 @@ impl Splash {
         let bg_rgb = extract_rgb(bg, (15, 15, 25));
 
         let (label, desc) = TIPS[self.tip_idx];
-        let total_width =
-            u16::try_from(5 + label.len() + 1 + desc.len()).unwrap_or_else(|_| u16::MAX);
+        let total_width = if let Ok(v) = u16::try_from(5 + label.len() + 1 + desc.len()) {
+            v
+        } else {
+            tracing::warn!("tip text length exceeds u16::MAX, clamping");
+            u16::MAX
+        };
         let x_start = area.x + area.width.saturating_sub(total_width) / 2;
 
         let segments: &[(&str, Style)] = &[
@@ -452,10 +465,13 @@ fn render_version(area: Rect, buf: &mut Buffer, fade: f32, y: u16, new_version: 
         0.4 * fade,
         bg,
     );
-    let x_start = area.x
-        + area
-            .width
-            .saturating_sub(u16::try_from(text.chars().count()).unwrap_or_else(|_| u16::MAX) + 1);
+    let text_len = if let Ok(v) = u16::try_from(text.chars().count()) {
+        v
+    } else {
+        tracing::warn!("version text length exceeds u16::MAX, clamping");
+        u16::MAX
+    };
+    let x_start = area.x + area.width.saturating_sub(text_len + 1);
     render_segments(area, buf, y, x_start, &[(&text, style)]);
 }
 
@@ -478,11 +494,13 @@ fn render_centered_faded(
         intensity * fade,
         bg,
     );
-    let x_start = area.x
-        + area
-            .width
-            .saturating_sub(u16::try_from(text.chars().count()).unwrap_or_else(|_| u16::MAX))
-            / 2;
+    let text_len = if let Ok(v) = u16::try_from(text.chars().count()) {
+        v
+    } else {
+        tracing::warn!("text length exceeds u16::MAX, clamping");
+        u16::MAX
+    };
+    let x_start = area.x + area.width.saturating_sub(text_len) / 2;
     render_segments(area, buf, y, x_start, &[(text, style)]);
 }
 

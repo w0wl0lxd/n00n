@@ -375,8 +375,13 @@ impl InputBox {
             }
         }
 
-        #[allow(clippy::cast_possible_truncation)]
-        let mut total_vl = total_visual_lines(&self.buffer, ew, focused) as u16;
+        let mut total_vl =
+            if let Ok(v) = u16::try_from(total_visual_lines(&self.buffer, ew, focused)) {
+                v
+            } else {
+                tracing::warn!("visual line count exceeds u16::MAX, clamping");
+                u16::MAX
+            };
         if !self.pending_images.is_empty() {
             total_vl += 1;
         }

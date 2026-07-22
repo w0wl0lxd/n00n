@@ -121,7 +121,8 @@ impl FilePickerModal {
                     .overrides(overrides)
                     .build_parallel()
                     .run(|| {
-                        #[allow(clippy::clone_on_ref_ptr)] // nucleo::Injector is an Arc internally
+                        // nucleo::Injector is an Arc internally, but the type doesn't expose it
+                        #[allow(clippy::clone_on_ref_ptr)]
                         let injector = injector.clone();
                         let cancel = Arc::clone(&cancel);
                         let root = root.clone();

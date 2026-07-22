@@ -686,13 +686,15 @@ impl Theme {
             })
     }
 
-    #[allow(clippy::expect_used)]
     fn load_or_bundled() -> Self {
         if let Some(name) = read_theme_name()
             && let Ok(theme) = load_by_name(&name)
         {
             return theme;
         }
+        // Bundled themes are shipped with the binary and must parse; if they fail,
+        // it's a critical bug that should surface at startup rather than silently corrupt state.
+        #[allow(clippy::expect_used)]
         Self::from_toml(BUNDLED_THEMES[0].toml).expect("bundled theme must parse")
     }
 

@@ -228,7 +228,7 @@ fn set_lines(_lua: &Lua, this: &BufHandle, lines: Table) -> LuaResult<()> {
 ///   buf:line("(empty)")
 /// end
 #[lua_fn]
-#[allow(clippy::unnecessary_wraps)]
+#[allow(clippy::unnecessary_wraps)] // #[lua_fn] macro requires LuaResult wrapper
 fn len(_lua: &Lua, this: &BufHandle) -> LuaResult<usize> {
     Ok(this.buf.len())
 }
