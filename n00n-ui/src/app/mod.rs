@@ -96,8 +96,15 @@ const TASK_DONE_DETAIL: &str = "✓ done";
 const TASK_ERROR_DETAIL: &str = "✗ error";
 const TASK_RUNNING_DETAIL: &str = "◈ running";
 const STEERING_UNAVAILABLE_MSG: &str = "This agent is no longer accepting messages";
+const STEERING_BUSY_MSG: &str = "This agent is busy; try again in a moment";
 const TASK_PANEL_FOOTER: &[(&str, &str)] =
     &[("enter", "open"), ("ctrl+x", "toggle"), ("esc", "close")];
+
+enum SubagentPromptError {
+    Finished,
+    Disconnected,
+    Full(String),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TaskStatus {
@@ -440,29 +447,56 @@ impl App {
     }
 
     fn send_to_agent(&self, subagent_id: Option<&str>, answer: String) {
-        let routed = subagent_id.and_then(|id| self.subagent_answers.get(id));
-        if let Some(tx) = routed {
-            let _ = tx.try_send(answer);
-        } else {
-            self.send_answer(answer);
+        if let Some(id) = subagent_id {
+            if let Some(tx) = self.subagent_answers.get(id) {
+                let _ = tx.try_send(answer);
+            }
+            // If the target subagent has finished, its answer channel is gone;
+            // do not fall back to the main agent's answer channel.
+            return;
+        }
+        self.send_answer(answer);
+    }
+
+    fn send_subagent_prompt(
+        &mut self,
+        subagent_id: &str,
+        message: String,
+    ) -> Result<(), SubagentPromptError> {
+        let Some(&idx) = self.chat_index.get(subagent_id) else {
+            return Err(SubagentPromptError::Disconnected);
+        };
+        if self.chats[idx].is_finished() {
+            self.subagent_prompts.remove(subagent_id);
+            return Err(SubagentPromptError::Finished);
+        }
+        let Some(tx) = self.subagent_prompts.get(subagent_id) else {
+            return Err(SubagentPromptError::Disconnected);
+        };
+        match tx.try_send(message.clone()) {
+            Ok(()) => {
+                self.chats[idx].show_user_message(message);
+                Ok(())
+            }
+            Err(flume::TrySendError::Full(_)) => Err(SubagentPromptError::Full(message)),
+            Err(flume::TrySendError::Disconnected(_)) => {
+                self.subagent_prompts.remove(subagent_id);
+                Err(SubagentPromptError::Disconnected)
+            }
         }
     }
 
-    fn send_subagent_prompt(&mut self, subagent_id: &str, message: String) -> bool {
-        let Some(&idx) = self.chat_index.get(subagent_id) else {
-            return false;
-        };
-        if self.chats[idx].is_finished() {
-            return false;
+    fn handle_subagent_prompt_result(&mut self, subagent_id: String, text: String) {
+        match self.send_subagent_prompt(&subagent_id, text) {
+            Ok(()) => {}
+            Err(SubagentPromptError::Full(text)) => {
+                self.flash(STEERING_BUSY_MSG.into());
+                self.input_box.set_input(text);
+            }
+            Err(SubagentPromptError::Finished) | Err(SubagentPromptError::Disconnected) => {
+                self.flash(STEERING_UNAVAILABLE_MSG.into());
+            }
         }
-        let sent = self
-            .subagent_prompts
-            .get(subagent_id)
-            .is_some_and(|tx| tx.try_send(message.clone()).is_ok());
-        if sent {
-            self.chats[idx].show_user_message(message);
-        }
-        sent
     }
 
     fn handle_scroll(&mut self, column: u16, row: u16, delta: i32) {
@@ -1027,9 +1061,7 @@ impl App {
                 return vec![];
             }
             PendingInput::SubagentFollowUp { subagent_id } => {
-                if !self.send_subagent_prompt(&subagent_id, sub.text) {
-                    self.flash(STEERING_UNAVAILABLE_MSG.into());
-                }
+                self.handle_subagent_prompt_result(subagent_id, sub.text);
                 return vec![];
             }
             PendingInput::None => {}
@@ -1041,9 +1073,7 @@ impl App {
             let Some(tool_use_id) = self.chats[self.active_chat].tool_use_id.clone() else {
                 return vec![];
             };
-            if !self.send_subagent_prompt(&tool_use_id, sub.text) {
-                self.flash("This agent cannot receive follow-up messages".into());
-            }
+            self.handle_subagent_prompt_result(tool_use_id, sub.text);
             return vec![];
         }
         if sub.is_empty() {
