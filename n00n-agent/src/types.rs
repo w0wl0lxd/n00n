@@ -1217,6 +1217,14 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
+    #[derive(Deserialize)]
+    struct ToolSnapshotFields {
+        #[allow(dead_code)]
+        id: String,
+        #[serde(default)]
+        theme_gen: Option<u64>,
+    }
+
     #[test_case(&ToolOutput::Plain("ok".into()),                      Some("1 lines")     ; "plain_short_annotates")]
     #[test_case(&ToolOutput::Plain((0..20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n").into()), Some("20 lines") ; "plain_long_annotates")]
     #[test_case(&ToolOutput::Plain(String::new().into()),             None                ; "plain_empty_no_annotation")]
@@ -1634,15 +1642,6 @@ mod tests {
     fn agent_event_tool_snapshot_theme_gen_backwards_compat() {
         const OMIT_MSG: &str = "theme_gen: None must not appear in serialized JSON";
         const COMPAT_MSG: &str = "missing theme_gen must deserialize as None (backwards compat)";
-
-        #[derive(Deserialize)]
-        #[allow(clippy::items_after_statements)]
-        struct ToolSnapshotFields {
-            #[allow(dead_code)]
-            id: String,
-            #[serde(default)]
-            theme_gen: Option<u64>,
-        }
 
         let event = AgentEvent::ToolSnapshot {
             id: "t1".into(),

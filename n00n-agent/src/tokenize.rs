@@ -174,10 +174,20 @@ mod tests {
         fn gen_text(state: &mut u64, max_len: usize) -> String {
             const ALPHABET: &[u8] =
                 b"abcdefghijklmnopqrstuvwxyz0123456789 \n\t!@#$%^&*()_+-=[]{}|;':\",./<>?";
-            let len = (xorshift64(state) as usize) % max_len;
+            let raw = xorshift64(state);
+            let len = if max_len == 0 {
+                0
+            } else {
+                (raw as usize) % max_len
+            };
             let mut out = String::with_capacity(len);
             for _ in 0..len {
-                let idx = (xorshift64(state) as usize) % ALPHABET.len();
+                let raw = xorshift64(state);
+                let idx = if ALPHABET.is_empty() {
+                    0
+                } else {
+                    (raw as usize) % ALPHABET.len()
+                };
                 out.push(ALPHABET[idx] as char);
             }
             out
