@@ -532,7 +532,14 @@ async fn session(
     let (model, provider): (Model, Arc<dyn provider::Provider>) = if let Some(ref spec) = model_spec
     {
         let mut m = try_pair!(Model::from_spec(spec));
-        let p = try_pair!(provider::from_model_async(&mut m, agent_ctx.timeouts).await);
+        let p = try_pair!(
+            provider::from_model_async_with_openai_options(
+                &mut m,
+                agent_ctx.timeouts,
+                agent_ctx.openai_options,
+            )
+            .await
+        );
         (m, Arc::from(p))
     } else {
         (
@@ -686,6 +693,7 @@ async fn session(
             permissions: Arc::clone(&agent_ctx.permissions),
             session_id: Some(session_id.into()),
             timeouts: agent_ctx.timeouts,
+            openai_options: agent_ctx.openai_options,
             file_tracker: FileReadTracker::fresh(),
             prompt_slots: Arc::clone(&agent_ctx.prompt_slots),
             subagent_cancels: Arc::new(CancelMap::new()),

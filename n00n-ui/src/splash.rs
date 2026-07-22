@@ -39,6 +39,7 @@ const LOGO_DELAY: f32 = 0.2;
 const LOGO_RAMP: f32 = 0.8;
 /// Ascii chars mapped to increasing wave intensity (first must be space).
 const FIELD_SYMS: &[&str] = &[" ", ".", ":", "+", "*"];
+#[allow(clippy::cast_precision_loss)]
 const FIELD_CHAR_MAX: f32 = (FIELD_SYMS.len() - 1) as f32;
 /// Number of overlapping sine wave layers in the background field.
 const WAVE_LAYERS: usize = 3;
@@ -55,6 +56,7 @@ const PI: f32 = std::f32::consts::PI;
 const FRAC_PI_2: f32 = std::f32::consts::FRAC_PI_2;
 const BHASKARA_B: f32 = 4.0 / (PI * PI);
 
+#[allow(clippy::inline_always)]
 #[inline(always)]
 fn fast_sin(x: f32) -> f32 {
     let x = x - (x * INV_TAU).floor() * TAU;
@@ -63,6 +65,7 @@ fn fast_sin(x: f32) -> f32 {
     sign * (4.0 * raw) / (5.0 - raw)
 }
 
+#[allow(clippy::inline_always)]
 #[inline(always)]
 fn fast_sincos(x: f32) -> (f32, f32) {
     (fast_sin(x), fast_sin(x + FRAC_PI_2))
@@ -76,6 +79,7 @@ pub struct ColorTransition {
 
 impl ColorTransition {
     #[must_use]
+    #[allow(clippy::unwrap_used, clippy::missing_panics_doc)]
     pub fn new(color: Color) -> Self {
         let rgb = extract_rgb(color, (100, 140, 255));
         let start = Instant::now()
@@ -100,6 +104,7 @@ impl ColorTransition {
     }
 
     #[must_use]
+    #[allow(clippy::disallowed_methods)]
     pub fn is_animating(&self) -> bool {
         Instant::now()
             .saturating_duration_since(self.start)
@@ -113,6 +118,7 @@ impl ColorTransition {
         Color::Rgb(r, g, b)
     }
 
+    #[allow(clippy::disallowed_methods)]
     fn resolve_rgb(&self, now: Instant) -> (u8, u8, u8) {
         let t = (now.saturating_duration_since(self.start).as_secs_f32() / COLOR_TRANSITION_SECS)
             .min(1.0);
@@ -140,6 +146,7 @@ impl Default for Splash {
 
 impl Splash {
     #[must_use]
+    #[allow(clippy::cast_precision_loss)]
     pub fn new(animate: bool) -> Self {
         let mut rng = [0u8; 8];
         getrandom::fill(&mut rng).ok();
@@ -189,31 +196,32 @@ impl Splash {
         let top_y = area.y + area.height.saturating_sub(block_height) / if compact { 1 } else { 2 };
         let tag_y = top_y + 1;
         let help_y = top_y + if compact { 2 } else { 3 };
-        let hint_y = top_y + if compact { 3 } else { 5 };
+        let tip_offset = top_y + if compact { 3 } else { 5 };
         let version_y = if compact { top_y } else { area.y };
 
         Self::render_logo(area, buf, t, fade, top_y, accent);
         render_centered_faded(area, buf, fade, 0.75, tag_y, TAGLINE);
         Self::render_help(area, buf, fade, help_y, accent);
-        self.render_tip(area, buf, fade, hint_y, accent);
+        self.render_tip(area, buf, fade, tip_offset, accent);
         render_version(area, buf, fade, version_y, new_version);
     }
 
-    fn render_field(area: Rect, buf: &mut Buffer, t: f32, fade: f32, accent: Color) {
+    #[allow(clippy::too_many_lines, clippy::unused_self)]
+    fn render_field(&self, area: Rect, buf: &mut Buffer, t: f32, fade: f32, accent: Color) {
         let theme = theme::current();
         let (ac_r, ac_g, ac_b) = extract_rgb(accent, (100, 140, 255));
         let (bg_r, bg_g, bg_b) = extract_rgb(theme.background, (15, 15, 25));
 
-        let w = area.width as usize;
-        let h = area.height as usize;
-        if w == 0 || h == 0 {
+        let width = area.width as usize;
+        let height = area.height as usize;
+        if width == 0 || height == 0 {
             return;
         }
-        let inv_w = 1.0 / w as f32;
-        let inv_h = 1.0 / h as f32;
+        let inv_w = 1.0 / crate::cast::usize_to_f32(width);
+        let inv_h = 1.0 / crate::cast::usize_to_f32(height);
 
         let layers: [(f32, f32, f32, f32); WAVE_LAYERS] = std::array::from_fn(|i| {
-            let lf = i as f32;
+            let lf = crate::cast::usize_to_f32(i);
             (
                 2.0 + lf * 1.8,
                 1.5 + lf * 1.2,
@@ -228,7 +236,7 @@ impl Splash {
 
         let style_lut: [(&str, Style); 4] = std::array::from_fn(|i| {
             let idx = i + 1;
-            let frac = idx as f32 / FIELD_CHAR_MAX;
+            let frac = crate::cast::usize_to_f32(idx) / FIELD_CHAR_MAX;
             let t = FIELD_BASE_OPACITY + frac * (1.0 - FIELD_BASE_OPACITY);
             (
                 FIELD_SYMS[idx],
@@ -244,29 +252,31 @@ impl Splash {
 
         // Single allocation for all per-column data: vx | sin0 | cos0 | sin1 | cos1 | sin2 | cos2
         // Contiguous SoA layout enables LLVM auto-vectorization of the inner wave loops.
-        let mut col_data = vec![0.0_f32; w * (1 + WAVE_LAYERS * 2)];
-        for col in 0..w {
-            let nx = col as f32 * inv_w;
+        let mut col_data = vec![0.0_f32; width * (1 + WAVE_LAYERS * 2)];
+        for col in 0..width {
+            let nx = crate::cast::usize_to_f32(col) * inv_w;
             let d = (nx - 0.5) * 2.0;
             col_data[col] = d * d;
             for i in 0..WAVE_LAYERS {
                 let (s, c) = fast_sincos(nx * layers[i].0);
-                col_data[w + i * 2 * w + col] = s * layers[i].3;
-                col_data[w + (i * 2 + 1) * w + col] = c * layers[i].3;
+                col_data[width + i * 2 * width + col] = s * layers[i].3;
+                col_data[width + (i * 2 + 1) * width + col] = c * layers[i].3;
             }
         }
-        let vx = &col_data[..w];
-        let col_sin: [&[f32]; WAVE_LAYERS] =
-            std::array::from_fn(|i| &col_data[w + i * 2 * w..w + i * 2 * w + w]);
-        let col_cos: [&[f32]; WAVE_LAYERS] =
-            std::array::from_fn(|i| &col_data[w + (i * 2 + 1) * w..w + (i * 2 + 2) * w]);
+        let vx = &col_data[..width];
+        let col_sin: [&[f32]; WAVE_LAYERS] = std::array::from_fn(|i| {
+            &col_data[width + i * 2 * width..width + i * 2 * width + width]
+        });
+        let col_cos: [&[f32]; WAVE_LAYERS] = std::array::from_fn(|i| {
+            &col_data[width + (i * 2 + 1) * width..width + (i * 2 + 2) * width]
+        });
 
         let col_start = vx.partition_point(|&v| v > vignette_inv);
-        let col_end = w - vx
-            .iter()
-            .rev()
-            .position(|&v| v <= vignette_inv)
-            .unwrap_or_else(|| 0);
+        let col_end = width
+            - vx.iter()
+                .rev()
+                .position(|&v| v <= vignette_inv)
+                .unwrap_or_else(|| 0);
         if col_start >= col_end {
             return;
         }
@@ -276,8 +286,8 @@ impl Splash {
 
         let mut vals = vec![0.0_f32; col_end - col_start];
 
-        for row in 0..h {
-            let ny = row as f32 * inv_h;
+        for row in 0..height {
+            let ny = crate::cast::usize_to_f32(row) * inv_h;
             let d = (ny - 0.5) * 2.0;
             let vy = d * d;
 
@@ -316,11 +326,11 @@ impl Splash {
                 out[j] = (out[j] + half_weight_sum) * vignette * val_scale;
             }
 
-            let y = area.y + row as u16;
+            let y = area.y + crate::cast::usize_to_u16(row);
             let row_offset = y as usize * buf_width + area.x as usize;
 
             for (j, val) in out.iter_mut().enumerate() {
-                let idx = (*val * FIELD_CHAR_MAX + 0.5) as usize;
+                let idx = crate::cast::f32_to_usize(*val * FIELD_CHAR_MAX + 0.5);
                 *val = 0.0;
                 if idx == 0 {
                     continue;
@@ -340,7 +350,11 @@ impl Splash {
         let (ac_r, ac_g, ac_b) = extract_rgb(accent, (100, 140, 255));
         let (bg_r, bg_g, bg_b) = extract_rgb(bg, (15, 15, 25));
 
-        let logo_x = area.x + (area.width.saturating_sub(LOGO.len() as u16)) / 2;
+        let logo_x = area.x
+            + (area
+                .width
+                .saturating_sub(crate::cast::usize_to_u16(LOGO.len())))
+                / 2;
         let alpha = 0.85 * ease_out_cubic(((t - LOGO_DELAY) / LOGO_RAMP).clamp(0.0, 1.0)) * fade;
         let style = Style::new()
             .fg(Color::Rgb(
@@ -352,7 +366,7 @@ impl Splash {
             .add_modifier(Modifier::BOLD);
 
         for (col, ch) in LOGO.chars().enumerate() {
-            let x = logo_x + col as u16;
+            let x = logo_x + crate::cast::usize_to_u16(col);
             if x >= area.x + area.width || top_y >= area.y + area.height {
                 continue;
             }
@@ -373,7 +387,10 @@ impl Splash {
         let fg = extract_rgb(theme.foreground, (200, 200, 200));
         let bg_rgb = extract_rgb(bg, (15, 15, 25));
 
-        let total_width: u16 = HELP_SEGMENTS.iter().map(|(s, _)| s.len() as u16).sum();
+        let total_width: u16 = HELP_SEGMENTS
+            .iter()
+            .map(|(s, _)| u16::try_from(s.len()).unwrap_or_else(|_| u16::MAX))
+            .sum();
         let x_start = area.x + area.width.saturating_sub(total_width) / 2;
 
         let segments: Vec<_> = HELP_SEGMENTS
@@ -403,7 +420,8 @@ impl Splash {
         let bg_rgb = extract_rgb(bg, (15, 15, 25));
 
         let (label, desc) = TIPS[self.tip_idx];
-        let total_width = (5 + label.len() + 1 + desc.len()) as u16;
+        let total_width =
+            u16::try_from(5 + label.len() + 1 + desc.len()).unwrap_or_else(|_| u16::MAX);
         let x_start = area.x + area.width.saturating_sub(total_width) / 2;
 
         let segments: &[(&str, Style)] = &[
@@ -436,7 +454,10 @@ fn render_version(area: Rect, buf: &mut Buffer, fade: f32, y: u16, new_version: 
         0.4 * fade,
         bg,
     );
-    let x_start = area.x + area.width.saturating_sub(text.chars().count() as u16 + 1);
+    let x_start = area.x
+        + area
+            .width
+            .saturating_sub(u16::try_from(text.chars().count()).unwrap_or_else(|_| u16::MAX) + 1);
     render_segments(area, buf, y, x_start, &[(&text, style)]);
 }
 
@@ -459,7 +480,11 @@ fn render_centered_faded(
         intensity * fade,
         bg,
     );
-    let x_start = area.x + area.width.saturating_sub(text.chars().count() as u16) / 2;
+    let x_start = area.x
+        + area
+            .width
+            .saturating_sub(u16::try_from(text.chars().count()).unwrap_or_else(|_| u16::MAX))
+            / 2;
     render_segments(area, buf, y, x_start, &[(text, style)]);
 }
 

@@ -9,6 +9,7 @@
 //! This benchmark uses the same low-level Luau FFI hooks as the runtime; the
 //! unsafe code is isolated to this file and exercised only during benchmarking.
 #![allow(unsafe_code)]
+#![allow(unsafe_code)]
 
 use std::cell::Cell;
 use std::ffi::c_int;

@@ -39,6 +39,7 @@ use crate::permissions::PermissionManager;
 use crate::{AgentConfig, AgentMode, EventSender, SharedBuf};
 use n00n_config::ToolOutputLines;
 use n00n_providers::Model;
+use n00n_providers::OpenAiOptions;
 use n00n_providers::RequestOptions;
 use n00n_providers::provider::Provider;
 use n00n_storage::id::SessionRef;
@@ -228,6 +229,7 @@ pub struct ToolContext {
     pub tool_output_lines: ToolOutputLines,
     pub permissions: Arc<PermissionManager>,
     pub timeouts: n00n_providers::Timeouts,
+    pub openai_options: OpenAiOptions,
     pub file_tracker: Arc<FileReadTracker>,
     pub prompt_slots: Arc<crate::prompt::ResolvedSlots>,
     pub opts: RequestOptions,
@@ -474,6 +476,7 @@ pub fn interpreter_ctx(
         tool_output_lines: ToolOutputLines::default(),
         permissions,
         timeouts: n00n_providers::Timeouts::default(),
+        openai_options: OpenAiOptions::default(),
         file_tracker,
         prompt_slots: Arc::new(crate::prompt::ResolvedSlots::default()),
         opts: RequestOptions::default(),

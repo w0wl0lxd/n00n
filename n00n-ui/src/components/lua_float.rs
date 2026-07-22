@@ -87,7 +87,9 @@ impl FloatWindow {
     fn scroll_by(&mut self, delta: i32) {
         let max_offset = self.layout().max_offset(self.viewport_h);
         if delta >= 0 {
-            self.scroll_offset = self.scroll_offset.saturating_sub(delta as usize);
+            self.scroll_offset = self
+                .scroll_offset
+                .saturating_sub(delta.unsigned_abs() as usize);
         } else {
             self.scroll_offset =
                 (self.scroll_offset + delta.unsigned_abs() as usize).min(max_offset);
@@ -211,7 +213,7 @@ impl FloatManager {
         event_tx: flume::Sender<WinEvent>,
         cmd_rx: flume::Receiver<WinCommand>,
     ) {
-        let cached_lines = buf.read_if_dirty().unwrap_or_default();
+        let cached_lines = buf.read_if_dirty().unwrap_or_else(Default::default);
         let id = self.next_id;
         self.next_id += 1;
 
@@ -374,7 +376,7 @@ impl FloatManager {
         }
         self.render_window(frame, idx, rect);
     }
-
+    #[allow(clippy::too_many_lines)]
     fn render_window(&mut self, frame: &mut Frame, idx: usize, popup: Rect) {
         let t = theme::current();
         let win = &mut self.windows[idx];
@@ -429,8 +431,8 @@ impl FloatManager {
         }
 
         let layout = win.layout();
-        let reserved_top_h = layout.reserved_top as u16;
-        let reserved_bot_h = layout.reserved_bot as u16;
+        let reserved_top_h = u16::try_from(layout.reserved_top).unwrap_or_else(|_| u16::MAX);
+        let reserved_bot_h = u16::try_from(layout.reserved_bot).unwrap_or_else(|_| u16::MAX);
         let chrome_h = reserved_top_h + reserved_bot_h;
 
         let (pinned_top_area, scroll_area, pinned_bot_area) =
@@ -496,12 +498,12 @@ impl FloatManager {
             frame.render_widget(Paragraph::new(pinned), pa);
         }
 
-        if scrollable as u16 > win.viewport_h {
+        if u16::try_from(scrollable).unwrap_or_else(|_| u16::MAX) > win.viewport_h {
             render_vertical_scrollbar(
                 frame,
                 scroll_area,
-                scrollable as u16,
-                win.scroll_offset as u16,
+                u16::try_from(scrollable).unwrap_or_else(|_| u16::MAX),
+                u16::try_from(win.scroll_offset).unwrap_or_else(|_| u16::MAX),
                 None,
             );
         }
@@ -587,26 +589,28 @@ fn resolve_rect(config: &FloatConfig, area: Rect) -> Rect {
             (cx, cy)
         }
         (col, row) => {
-            let col_offset = col.unwrap_or_else(|| 0);
-            let row_offset = row.unwrap_or_else(|| 0);
+            let col_off = col.unwrap_or_else(|| 0);
+            let row_off = row.unwrap_or_else(|| 0);
 
             let left = match config.anchor {
-                Anchor::NW | Anchor::SW => (area.x as i16 + col_offset)
-                    .clamp(area.x as i16, (area.x + area.width) as i16)
-                    as u16,
-                Anchor::NE | Anchor::SE => ((area.x + area.width) as i16 - width as i16
-                    + col_offset)
-                    .clamp(area.x as i16, (area.x + area.width) as i16)
-                    as u16,
+                Anchor::NW | Anchor::SW => (area.x.cast_signed() + col_off)
+                    .clamp(area.x.cast_signed(), (area.x + area.width).cast_signed())
+                    .cast_unsigned(),
+                Anchor::NE | Anchor::SE => {
+                    ((area.x + area.width).cast_signed() - width.cast_signed() + col_off)
+                        .clamp(area.x.cast_signed(), (area.x + area.width).cast_signed())
+                        .cast_unsigned()
+                }
             };
             let top = match config.anchor {
-                Anchor::NW | Anchor::NE => (area.y as i16 + row_offset)
-                    .clamp(area.y as i16, (area.y + area.height) as i16)
-                    as u16,
-                Anchor::SW | Anchor::SE => ((area.y + area.height) as i16 - height as i16
-                    + row_offset)
-                    .clamp(area.y as i16, (area.y + area.height) as i16)
-                    as u16,
+                Anchor::NW | Anchor::NE => (area.y.cast_signed() + row_off)
+                    .clamp(area.y.cast_signed(), (area.y + area.height).cast_signed())
+                    .cast_unsigned(),
+                Anchor::SW | Anchor::SE => {
+                    ((area.y + area.height).cast_signed() - height.cast_signed() + row_off)
+                        .clamp(area.y.cast_signed(), (area.y + area.height).cast_signed())
+                        .cast_unsigned()
+                }
             };
             (left, top)
         }
@@ -653,7 +657,9 @@ fn snapshot_to_line(sline: &SnapshotLine) -> Line<'_> {
                 {
                     Span::styled(
                         spinner_str(animation_elapsed_ms()),
-                        theme::style_by_name(n.strip_prefix(SPINNER_STYLE_PREFIX).unwrap_or(n)),
+                        theme::style_by_name(
+                            n.strip_prefix(SPINNER_STYLE_PREFIX).unwrap_or_else(|| n),
+                        ),
                     )
                 }
                 style => Span::styled(span.text.clone(), resolve_span_style(style)),
@@ -1090,7 +1096,7 @@ mod tests {
         let (event_tx, cmd_rx, _event_rx, _cmd_tx) = make_channels();
         let buf = Arc::new(SharedBuf::new());
         buf.append(make_line("initial"));
-        mgr.open(buf.clone(), make_config(), true, event_tx, cmd_rx);
+        mgr.open(Arc::clone(&buf), make_config(), true, event_tx, cmd_rx);
         assert_eq!(mgr.windows[0].cached_lines.len(), 1);
 
         buf.append(make_line("second"));
@@ -1106,7 +1112,7 @@ mod tests {
         for i in 0..5 {
             buf.append(make_line(&format!("line{i}")));
         }
-        mgr.open(buf.clone(), make_config(), true, event_tx, cmd_rx);
+        mgr.open(Arc::clone(&buf), make_config(), true, event_tx, cmd_rx);
         mgr.windows[0].cursor = 4;
 
         buf.set_lines(vec![make_line("only")]);
@@ -1261,7 +1267,7 @@ mod tests {
         }
         let mut cfg = make_config();
         cfg.reserved_bottom = 1;
-        mgr.open(buf.clone(), cfg, true, event_tx, cmd_rx);
+        mgr.open(Arc::clone(&buf), cfg, true, event_tx, cmd_rx);
         mgr.windows[0].cursor = 3;
 
         buf.set_lines(vec![make_line("a"), make_line("b")]);
@@ -1325,7 +1331,7 @@ mod tests {
         let mut mgr = FloatManager::new();
         let (event_tx, cmd_rx, _event_rx, cmd_tx) = make_channels();
         let buf = Arc::new(SharedBuf::new());
-        mgr.open(buf.clone(), make_config(), true, event_tx, cmd_rx);
+        mgr.open(Arc::clone(&buf), make_config(), true, event_tx, cmd_rx);
         assert_eq!(mgr.windows[0].cached_lines.len(), 0);
 
         cmd_tx.send(WinCommand::SetCursor(5)).unwrap();
@@ -1466,7 +1472,7 @@ mod tests {
         let mut mgr = FloatManager::new();
         let (event_tx, cmd_rx, _event_rx, _cmd_tx) = make_channels();
         let buf = make_buf(&["initial"]);
-        mgr.open(buf.clone(), make_config(), true, event_tx, cmd_rx);
+        mgr.open(Arc::clone(&buf), make_config(), true, event_tx, cmd_rx);
         assert_eq!(mgr.windows[0].cached_lines.len(), 1);
 
         buf.append(make_line("second"));
@@ -1551,7 +1557,7 @@ mod tests {
         let lines: Vec<String> = (0..line_count).map(|i| format!("l{i}")).collect();
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
         let buf = make_buf(&refs);
-        let cached_lines = buf.read_if_dirty().unwrap_or_default();
+        let cached_lines = buf.read_if_dirty().unwrap_or_else(Default::default);
         FloatWindow {
             id: 0,
             buf,
