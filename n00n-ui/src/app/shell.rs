@@ -164,8 +164,10 @@ pub(crate) fn spawn_shell(
     visible: bool,
     tx: flume::Sender<ShellEvent>,
     cancel: CancelToken,
-    config: AgentConfig,
+    config: &AgentConfig,
 ) {
+    let max_output_lines = config.max_output_lines;
+    let max_output_bytes = config.max_output_bytes;
     smol::spawn(async move {
         let _ = tx.send(ShellEvent::Start {
             id: id.clone(),
@@ -177,8 +179,8 @@ pub(crate) fn spawn_shell(
             &id,
             &tx,
             &cancel,
-            config.max_output_lines,
-            config.max_output_bytes,
+            max_output_lines,
+            max_output_bytes,
         )
         .await;
 
@@ -197,8 +199,8 @@ pub(crate) fn spawn_shell(
     })
     .detach();
 }
-
 #[allow(unsafe_code)]
+#[allow(clippy::too_many_lines)]
 async fn run_command(
     command: &str,
     id: &str,
@@ -301,7 +303,10 @@ async fn run_command(
             }
             if !status.success() {
                 if output.is_empty() {
-                    return Err(format!("exited with code {}", status.code().unwrap_or(-1)));
+                    return Err(format!(
+                        "exited with code {}",
+                        status.code().unwrap_or_else(|| -1)
+                    ));
                 }
                 return Err(output);
             }
@@ -342,20 +347,20 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
-    #[test_case("! ls",                     Some(ShellPrefix { prefix_len: 2, command: "ls".into(), visible: true })           ; "simple_visible")]
-    #[test_case("!! ls",                    Some(ShellPrefix { prefix_len: 3, command: "ls".into(), visible: false })          ; "simple_anonymous")]
-    #[test_case("! cargo test --release",   Some(ShellPrefix { prefix_len: 2, command: "cargo test --release".into(), visible: true })  ; "multi_word_command")]
-    #[test_case("!! cargo build",           Some(ShellPrefix { prefix_len: 3, command: "cargo build".into(), visible: false }) ; "multi_word_anonymous")]
+    #[test_case("! ls",                     Some(&ShellPrefix { prefix_len: 2, command: "ls".into(), visible: true })           ; "simple_visible")]
+    #[test_case("!! ls",                    Some(&ShellPrefix { prefix_len: 3, command: "ls".into(), visible: false })          ; "simple_anonymous")]
+    #[test_case("! cargo test --release",   Some(&ShellPrefix { prefix_len: 2, command: "cargo test --release".into(), visible: true })  ; "multi_word_command")]
+    #[test_case("!! cargo build",           Some(&ShellPrefix { prefix_len: 3, command: "cargo build".into(), visible: false }) ; "multi_word_anonymous")]
     #[test_case("! ",                       None                        ; "bang_space_only")]
     #[test_case("!",                        None                        ; "bang_alone")]
     #[test_case("!!",                       None                        ; "double_bang_alone")]
     #[test_case("!! ",                      None                        ; "double_bang_space_only")]
     #[test_case("hello ! world",            None                        ; "bang_mid_string")]
     #[test_case(" ! ls",                    None                        ; "leading_space")]
-    #[test_case("!echo hi",                 Some(ShellPrefix { prefix_len: 1, command: "echo hi".into(), visible: true })      ; "no_space_after_bang")]
-    #[test_case("!!echo hi",                Some(ShellPrefix { prefix_len: 2, command: "echo hi".into(), visible: false })     ; "no_space_after_double_bang")]
-    #[test_case("!  ls",                    Some(ShellPrefix { prefix_len: 2, command: "ls".into(), visible: true })           ; "extra_spaces_trimmed")]
-    fn parse_shell_prefix_cases(input: &str, expected: Option<ShellPrefix>) {
-        assert_eq!(parse_shell_prefix(input), expected);
+    #[test_case("!echo hi",                 Some(&ShellPrefix { prefix_len: 1, command: "echo hi".into(), visible: true })      ; "no_space_after_bang")]
+    #[test_case("!!echo hi",                Some(&ShellPrefix { prefix_len: 2, command: "echo hi".into(), visible: false })     ; "no_space_after_double_bang")]
+    #[test_case("!  ls",                    Some(&ShellPrefix { prefix_len: 2, command: "ls".into(), visible: true })           ; "extra_spaces_trimmed")]
+    fn parse_shell_prefix_cases(input: &str, expected: Option<&ShellPrefix>) {
+        assert_eq!(parse_shell_prefix(input).as_ref(), expected);
     }
 }

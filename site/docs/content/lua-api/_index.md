@@ -66,7 +66,7 @@ a string belongs.
 | [`n00n.fn`](#n00n-fn) | Process and environment helpers, modeled after Neovim's `vim.fn` job |
 | [`n00n.fs`](#n00n-fs) | File-system utilities, modelled after `vim.fs` and `vim.uv`. |
 | [`n00n.image`](#n00n-image) | Small building blocks for working with images: probe metadata, decode |
-| [`n00n.image.Image`](#n00n-image-Image) | A decoded image you can inspect, resize, and re-encode. |
+| [`n00n.image.Image`](#n00n-image-Image) | A decoded image you can inspect, resize, crop, and re-encode. |
 | [`n00n.interpreter`](#n00n-interpreter) | Run Python code in a memory-safe, time-limited sandbox. |
 | [`n00n.json`](#n00n-json) | JSON encoding, decoding, schema validation, and TOON round-trip. |
 | [`n00n.json.SchemaValidator`](#n00n-json-SchemaValidator) | A compiled JSON Schema validator. |
@@ -1505,6 +1505,33 @@ local encoded = n00n.base64.encode(buf)
 
 ---
 
+### `n00n.fs.read_bytes_limited()` {#n00n-fs-read_bytes_limited}
+
+```lua
+n00n.fs.read_bytes_limited({path}, {max_bytes})
+```
+
+Read at most {max_bytes} raw bytes from a regular file at {path}.
+The opened handle is checked before reading, so devices, FIFOs, and directories
+are rejected. Reads one byte beyond the limit to report oversized files without
+allocating their full contents.
+
+**Parameters:**
+
+- `{path}` (`string`) Absolute or relative file path. `~/` is expanded to the home directory.
+- `{max_bytes}` (`integer`) Maximum file size in bytes.
+
+**Returns:** (`buffer?`, `string?`) File bytes, or nil plus a sanitized error message.
+
+**Example:**
+
+```lua
+local bytes, err = n00n.fs.read_bytes_limited("image.png", 50 * 1024 * 1024)
+if err then return end
+```
+
+---
+
 ### `n00n.fs.metadata()` {#n00n-fs-metadata}
 
 ```lua
@@ -1928,7 +1955,8 @@ decoding the pixels. Much faster than `decode` when you only need to
 check the size or format.
 
 Returns a table with `format` (string), `width` (integer), `height`
-(integer), or `(nil, err)` if the bytes are not a recognized image.
+(integer), and `animated` (boolean; GIF/WebP streams with multiple frames),
+or `(nil, err)` if the bytes are not a recognized image.
 
 **Parameters:**
 
@@ -1972,7 +2000,7 @@ print(img:width() .. "x" .. img:height())
 
 ## n00n.image.Image {#n00n-image-Image}
 
-A decoded image you can inspect, resize, and re-encode.
+A decoded image you can inspect, resize, crop, and re-encode.
 
 Get one from `n00n.image.decode()`. The image data lives in memory
 until the handle is garbage collected.
@@ -2029,6 +2057,33 @@ local encoded = small:encode("jpeg")
 
 ---
 
+### `Image:crop()` {#Image-crop}
+
+```lua
+Image:crop({x}, {y}, {width}, {height})
+```
+
+Copy a rectangular pixel region without resizing it. Coordinates are
+zero-based source pixels. The original image is unchanged.
+
+**Parameters:**
+
+- `{x}` (`integer`) Left edge in source pixels.
+- `{y}` (`integer`) Top edge in source pixels.
+- `{width}` (`integer`) Crop width in pixels. Must be positive.
+- `{height}` (`integer`) Crop height in pixels. Must be positive.
+
+**Returns:** ([`n00n.image.Image`](#n00n-image-Image)) A new image handle containing the crop.
+
+**Example:**
+
+```lua
+local tile = img:crop(0, 2000, 1440, 2000)
+local png = tile:encode("png")
+```
+
+---
+
 ### `Image:encode()` {#Image-encode}
 
 ```lua
@@ -2050,6 +2105,24 @@ images for sending over the network or writing to disk.
 local bytes = img:encode("png")
 -- bytes is a Lua string containing the raw PNG data
 ```
+
+---
+
+### `Image:encode_limited()` {#Image-encode_limited}
+
+```lua
+Image:encode_limited({format}, {max_bytes})
+```
+
+Encode with a strict output-byte limit. Use this for untrusted or
+transport-bound image output so encoding cannot grow a `Vec` without bound.
+
+**Parameters:**
+
+- `{format}` (`string`) Output format: `"png"`, `"jpeg"`, or `"jpg"`.
+- `{max_bytes}` (`integer`) Maximum encoded bytes, up to 3,750,000.
+
+**Returns:** (`string?`, `string?`) Encoded bytes, or nil plus an error when the limit is exceeded.
 
 
 ## n00n.interpreter {#n00n-interpreter}
@@ -5100,6 +5173,16 @@ end
 return M
 ```
 
+### `require("n00n.explore_result")`
+
+```lua
+function Card:update(output)
+function ExploreResult.new(opts)
+function ExploreResult.live(ctx, opts)
+function ExploreResult.header(label, project)
+function ExploreResult.restore(output, ctx, opts)
+```
+
 ### `require("n00n.fuzzy_replace")`
 
 ```lua
@@ -5284,6 +5367,11 @@ function ToolView:set_header(lines)
 function ToolView:clear()
 function ToolView:append(line)
 function ToolView:append_text(text)
+
+-- Replace the logical result in one publication. Expansion is view state,
+-- so it survives live-result updates while readers never observe a partial card.
+function ToolView:replace_lines(lines)
+function ToolView:replace_text(text)
 
 -- Append {content} with line numbers, then syntax-highlight it for {ext}
 -- asynchronously. Returns false when {content} is empty.

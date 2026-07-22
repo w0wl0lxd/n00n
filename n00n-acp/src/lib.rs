@@ -8,14 +8,15 @@ use std::sync::Arc;
 
 use n00n_agent::prompt::ResolvedSlots;
 use n00n_agent::{AgentConfig, PermissionsConfig};
-use n00n_providers::Timeouts;
 use n00n_providers::model::Model;
+use n00n_providers::{OpenAiOptions, Timeouts};
 
 pub struct AcpParams {
     pub model: Model,
     pub config: AgentConfig,
     pub permissions_config: PermissionsConfig,
     pub timeouts: Timeouts,
+    pub openai_options: OpenAiOptions,
     pub initial_wd: PathBuf,
     pub mcp_handle: Option<n00n_agent::McpHandle>,
     pub prompt_slots: Arc<ResolvedSlots>,

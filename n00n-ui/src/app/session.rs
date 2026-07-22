@@ -200,7 +200,7 @@ impl App {
 
     pub(crate) fn restore_display(&mut self) {
         let restoring = Arc::new(AtomicBool::new(true));
-        self.restoring = restoring.clone();
+        self.restoring = Arc::clone(&restoring);
 
         let (display_msgs, restore_items) = if self.state.session.transcript.is_empty() {
             history_to_display(

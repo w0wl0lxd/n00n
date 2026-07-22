@@ -67,10 +67,10 @@ pub fn install_panic_log_hook() {
         } else {
             "unknown panic payload".into()
         };
-        let location = info.location().map(|l| l.to_string());
+        let location = info.location().map(std::string::ToString::to_string);
         tracing::error!(
             panic.payload = %payload,
-            panic.location = location.as_deref().unwrap_or("<unknown>"),
+            panic.location = location.as_deref().unwrap_or_else(|| "<unknown>"),
             "panic occurred"
         );
         prev(info);
