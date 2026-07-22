@@ -698,14 +698,13 @@ struct SseFunctionCall {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(clippy::struct_field_names)]
 struct SseUsageMetadata {
     #[serde(default)]
-    prompt_token_count: u32,
+    prompt_tokens: u32,
     #[serde(default)]
-    candidates_token_count: u32,
+    candidates_tokens: u32,
     #[serde(default)]
-    cached_content_token_count: Option<u32>,
+    cached_content_tokens: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -757,9 +756,9 @@ async fn parse_sse(
         };
 
         if let Some(meta) = chunk.usage_metadata {
-            usage.input = meta.prompt_token_count;
-            usage.output = meta.candidates_token_count;
-            if let Some(cached) = meta.cached_content_token_count {
+            usage.input = meta.prompt_tokens;
+            usage.output = meta.candidates_tokens;
+            if let Some(cached) = meta.cached_content_tokens {
                 usage.cache_read = cached;
             }
         }

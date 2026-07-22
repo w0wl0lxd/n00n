@@ -390,7 +390,6 @@ impl ResponseAccumulator {
         metadata
     }
 
-    #[allow(clippy::too_many_lines)]
     pub async fn handle_event(
         &mut self,
         event_type: &str,
@@ -492,12 +491,18 @@ impl ResponseAccumulator {
 
             "response.in_progress" => {
                 if let Some(pp) = data.get("prompt_progress") {
-                    #[allow(clippy::cast_possible_truncation)]
-                    let processed = pp["processed"].as_u64().map_or(0, |v| v as u32);
-                    #[allow(clippy::cast_possible_truncation)]
-                    let total = pp["total"].as_u64().map_or(0, |v| v as u32);
-                    #[allow(clippy::cast_possible_truncation)]
-                    let cache = pp["cache"].as_u64().map_or(0, |v| v as u32);
+                    let processed = pp["processed"]
+                        .as_u64()
+                        .and_then(|v| u32::try_from(v).ok())
+                        .unwrap_or(0);
+                    let total = pp["total"]
+                        .as_u64()
+                        .and_then(|v| u32::try_from(v).ok())
+                        .unwrap_or(0);
+                    let cache = pp["cache"]
+                        .as_u64()
+                        .and_then(|v| u32::try_from(v).ok())
+                        .unwrap_or(0);
                     self.emitted_event = true;
                     event_tx
                         .send_async(ProviderEvent::PromptProgress {
@@ -848,41 +853,24 @@ pub(crate) async fn parse_sse(
     Ok((response_id, acc.into_stream_response()))
 }
 
-#[allow(clippy::manual_unwrap_or)]
 fn parse_usage(u: &Value) -> TokenUsage {
-    let input_tokens = u["input_tokens"].as_u64().map_or_else(
-        || 0,
-        |v| match u32::try_from(v) {
-            Ok(v) => v,
-            Err(_) => u32::MAX,
-        },
-    );
-    let output_tokens = u["output_tokens"].as_u64().map_or_else(
-        || 0,
-        |v| match u32::try_from(v) {
-            Ok(v) => v,
-            Err(_) => u32::MAX,
-        },
-    );
+    let input_tokens = u["input_tokens"]
+        .as_u64()
+        .and_then(|v| u32::try_from(v).ok())
+        .unwrap_or(0);
+    let output_tokens = u["output_tokens"]
+        .as_u64()
+        .and_then(|v| u32::try_from(v).ok())
+        .unwrap_or(0);
 
     let cached = u["input_tokens_details"]["cached_tokens"]
         .as_u64()
-        .map_or_else(
-            || 0,
-            |v| match u32::try_from(v) {
-                Ok(v) => v,
-                Err(_) => u32::MAX,
-            },
-        );
+        .and_then(|v| u32::try_from(v).ok())
+        .unwrap_or(0);
     let cache_write = u["input_tokens_details"]["cache_write_tokens"]
         .as_u64()
-        .map_or_else(
-            || 0,
-            |v| match u32::try_from(v) {
-                Ok(v) => v,
-                Err(_) => u32::MAX,
-            },
-        );
+        .and_then(|v| u32::try_from(v).ok())
+        .unwrap_or(0);
 
     let fresh_input = input_tokens
         .saturating_sub(cached)
@@ -1634,7 +1622,6 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
     }
 
     #[test]
-    #[allow(clippy::large_futures)]
     fn partial_sse_eof_preserves_response_id_without_a_second_post() {
         smol::block_on(async {
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

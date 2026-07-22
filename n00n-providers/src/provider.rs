@@ -282,7 +282,6 @@ impl ProviderKind {
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 pub trait Provider: Send + Sync {
-    #[allow(clippy::too_many_arguments)]
     fn stream_message<'a>(
         &'a self,
         model: &'a Model,
@@ -502,7 +501,6 @@ fn llama_cpp_is_configured(has_host: bool, has_api_key: bool, has_provider_confi
 ///
 /// # Panics
 /// Panics if the model registry mutex is poisoned.
-#[allow(clippy::too_many_lines)]
 pub async fn fetch_all_models(
     mut on_ready: impl FnMut(ModelBatch),
     on_done: Option<Box<dyn FnOnce() + Send>>,

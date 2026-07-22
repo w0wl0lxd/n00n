@@ -179,7 +179,6 @@ fn responses_websocket_url(base_url: Option<&str>) -> String {
 }
 
 impl ResponsesWebSocket {
-    #[allow(clippy::large_futures)]
     pub(crate) async fn connect(
         auth: &ResolvedAuth,
         connect_timeout: Duration,
@@ -206,7 +205,6 @@ impl ResponsesWebSocket {
 
         let connect = async_tungstenite::smol::connect_async(request);
         let (socket, _) = {
-            #[allow(clippy::large_futures)]
             futures_lite::future::or(
                 async { connect.await.map_err(|error| ws_connect_err(auth, error)) },
                 async {
@@ -316,7 +314,6 @@ impl ResponsesWebSocket {
             .await
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn stream_message_with_keepalive(
         &mut self,
         body: &Value,
@@ -740,11 +737,7 @@ fn error_from_event(event: &Value) -> AgentError {
     };
 
     let status = if let Some(s) = event.get("status").and_then(Value::as_u64) {
-        #[allow(clippy::manual_unwrap_or)]
-        match u16::try_from(s) {
-            Ok(v) => v,
-            Err(_) => 500,
-        }
+        u16::try_from(s).unwrap_or(500)
     } else {
         match error_type {
             "overloaded_error" => 529,
@@ -840,7 +833,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::large_futures)]
     fn preflight_rejects_unread_application_data() {
         smol::block_on(async {
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -957,7 +949,6 @@ mod tests {
         ));
     }
     #[test]
-    #[allow(clippy::large_futures)]
     fn fake_transport_close_after_send_is_not_synthetic_422() {
         smol::block_on(async {
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -997,7 +988,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::large_futures)]
     fn malformed_response_after_send_preserves_delivery_metadata() {
         smol::block_on(async {
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1038,8 +1028,8 @@ mod tests {
             ));
         });
     }
+
     #[test]
-    #[allow(clippy::large_futures)]
     fn close_after_response_created_preserves_delivery_metadata() {
         smol::block_on(async {
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1099,7 +1089,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::large_futures)]
     fn idle_response_sends_client_keepalive() {
         smol::block_on(async {
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1159,7 +1148,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::large_futures)]
     fn pong_heartbeats_do_not_extend_response_progress_timeout() {
         smol::block_on(async {
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1207,7 +1195,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::large_futures)]
     fn unknown_json_events_do_not_extend_response_progress_timeout() {
         smol::block_on(async {
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1259,7 +1246,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::large_futures)]
     fn repeated_in_progress_events_hit_absolute_response_deadline() {
         smol::block_on(async {
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

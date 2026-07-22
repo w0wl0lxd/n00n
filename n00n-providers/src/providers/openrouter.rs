@@ -33,11 +33,10 @@ pub(crate) fn models() -> &'static [ModelEntry] {
 }
 
 #[derive(Debug)]
-#[allow(clippy::struct_field_names)]
 struct OpenRouterModelInfo {
-    reasoning_mandatory: bool,
-    reasoning_default_enabled: bool,
-    reasoning_efforts: Vec<Effort>,
+    mandatory: bool,
+    default_enabled: bool,
+    efforts: Vec<Effort>,
 }
 
 pub struct OpenRouter {
@@ -86,11 +85,11 @@ fn effort_dialect(info: Option<&OpenRouterModelInfo>) -> EffortDialect<'_> {
         return dialect::PREFER_HIGH;
     };
     EffortDialect {
-        supported: match info.reasoning_efforts.as_slice() {
+        supported: match info.efforts.as_slice() {
             [] => dialect::PREFER_HIGH.supported,
             declared => declared,
         },
-        off: (info.reasoning_default_enabled && !info.reasoning_mandatory).then_some(dialect::OFF),
+        off: (info.default_enabled && !info.mandatory).then_some(dialect::OFF),
         ..dialect::PREFER_HIGH
     }
 }
@@ -140,10 +139,9 @@ fn parse_model(m: &Value) -> Option<ModelInfo> {
         .get("reasoning")
         .and_then(|v| v.as_object())
         .map(|v| OpenRouterModelInfo {
-            reasoning_mandatory: v.get("mandatory").and_then(Value::as_bool) == Some(true),
-            reasoning_default_enabled: v.get("default_enabled").and_then(Value::as_bool)
-                == Some(true),
-            reasoning_efforts: v
+            mandatory: v.get("mandatory").and_then(Value::as_bool) == Some(true),
+            default_enabled: v.get("default_enabled").and_then(Value::as_bool) == Some(true),
+            efforts: v
                 .get("supported_efforts")
                 .and_then(Value::as_array)
                 .map_or_else(Default::default, |arr| {
@@ -320,9 +318,9 @@ mod tests {
         let reasoning = provider_info
             .downcast_ref::<OpenRouterModelInfo>()
             .expect("wrong provider info type");
-        assert!(reasoning.reasoning_default_enabled);
-        assert!(!reasoning.reasoning_mandatory);
-        assert_eq!(reasoning.reasoning_efforts, vec![Effort::Low, Effort::High]);
+        assert!(reasoning.default_enabled);
+        assert!(!reasoning.mandatory);
+        assert_eq!(reasoning.efforts, vec![Effort::Low, Effort::High]);
     }
 
     fn openrouter_model(info: Option<&OpenRouterModelInfo>) -> (EffortDialect<'_>, Model) {
@@ -344,9 +342,9 @@ mod tests {
 
     fn reasoning_info(efforts: &[Effort]) -> OpenRouterModelInfo {
         OpenRouterModelInfo {
-            reasoning_mandatory: false,
-            reasoning_default_enabled: false,
-            reasoning_efforts: efforts.to_vec(),
+            mandatory: false,
+            default_enabled: false,
+            efforts: efforts.to_vec(),
         }
     }
 
@@ -382,9 +380,9 @@ mod tests {
         expected: Option<&str>,
     ) {
         let info = OpenRouterModelInfo {
-            reasoning_mandatory: mandatory,
-            reasoning_default_enabled: default_enabled,
-            reasoning_efforts: vec![],
+            mandatory,
+            default_enabled,
+            efforts: vec![],
         };
         let (dialect, model) = openrouter_model(Some(&info));
         assert_eq!(ThinkingConfig::Off.effort_str(&dialect, &model), expected);

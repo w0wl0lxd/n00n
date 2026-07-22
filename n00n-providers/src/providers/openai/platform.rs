@@ -589,11 +589,8 @@ impl OpenAi {
                 return Ok(lock);
             }
             if started.elapsed() >= RESPONSE_CHAIN_LOCK_WAIT_TIMEOUT {
-                #[allow(clippy::manual_unwrap_or)]
-                let millis = match u64::try_from(RESPONSE_CHAIN_LOCK_WAIT_TIMEOUT.as_millis()) {
-                    Ok(millis) => millis,
-                    Err(_) => u64::MAX,
-                };
+                let millis =
+                    u64::try_from(RESPONSE_CHAIN_LOCK_WAIT_TIMEOUT.as_millis()).unwrap_or(u64::MAX);
                 return Err(AgentError::ResponseChainBusy { millis });
             }
             let remaining = RESPONSE_CHAIN_LOCK_WAIT_TIMEOUT.saturating_sub(started.elapsed());
@@ -776,7 +773,6 @@ impl OpenAi {
         })
     }
 
-    #[allow(clippy::large_futures)]
     async fn connect_current_websocket(
         &self,
         attempt_nonce: u64,
@@ -835,9 +831,6 @@ impl OpenAi {
             && auth.base_url.as_deref() == Some(CONFIG.base_url)
     }
 
-    #[allow(clippy::large_futures)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_lines)]
     async fn stream_websocket<F>(
         &self,
         slot: Option<ResponseConnectionSlot>,
@@ -1205,9 +1198,6 @@ impl OpenAi {
         attempt
     }
 
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_lines)]
-    #[allow(clippy::large_futures)]
     async fn run_codex_attempt(
         &self,
         model: &Model,
@@ -1512,9 +1502,6 @@ impl OpenAi {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_lines)]
-    #[allow(clippy::large_futures)]
     async fn run_codex_attempt_with_auth_retry(
         &self,
         model: &Model,
@@ -1718,7 +1705,6 @@ impl OpenAi {
 }
 
 impl Provider for OpenAi {
-    #[allow(clippy::large_futures)]
     fn stream_message<'a>(
         &'a self,
         model: &'a Model,
@@ -2338,7 +2324,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)]
     fn ephemeral_preflight_failure_rebuilds_second_turn_with_full_history() {
         smol::block_on(async {
             let temp_dir = TempDir::new().unwrap();
@@ -2853,7 +2838,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::large_futures)]
     fn connection_limit_after_create_send_does_not_reconnect() {
         smol::block_on(async {
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3022,7 +3006,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::large_futures)]
     fn response_created_then_401_is_not_retryable_and_sends_one_create() {
         smol::block_on(async {
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3114,7 +3097,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::large_futures)]
     fn created_then_connection_limit_does_not_send_a_second_create() {
         smol::block_on(async {
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3212,8 +3194,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::large_futures)]
-    #[allow(clippy::too_many_lines)]
     fn near_expiry_pooled_socket_is_replaced_before_second_turn_create() {
         smol::block_on(async {
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3359,8 +3339,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::large_futures)]
-    #[allow(clippy::result_large_err)]
     fn token_refresh_during_new_socket_handshake_reconnects_before_create() {
         smol::block_on(async {
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3450,8 +3428,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::large_futures)]
-    #[allow(clippy::too_many_lines)]
     fn token_refresh_during_reused_socket_preflight_reconnects_before_create() {
         smol::block_on(async {
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3573,7 +3549,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::large_futures)]
     fn simultaneous_post_send_closes_emit_one_create_per_attempt() {
         smol::block_on(async {
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3667,7 +3642,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::large_futures)]
     fn cancelled_websocket_attempt_is_not_reused() {
         smol::block_on(async {
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

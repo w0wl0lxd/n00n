@@ -245,19 +245,21 @@ fn parse_iso8601_to_epoch(s: &str) -> Option<u64> {
 }
 
 // Inverse of days_to_ymd. Howard Hinnant's algorithm; valid for any civil date.
-#[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
 fn ymdhms_to_epoch(year: u64, month: u64, day: u64, hour: u64, minute: u64, second: u64) -> u64 {
     let y = if month <= 2 { year - 1 } else { year };
     let era = y / 400;
     let yoe = y - era * 400;
-    let m = month as i64;
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + day as i64 - 1;
-    let doe = yoe as i64 * 365 + (yoe / 4) as i64 - (yoe / 100) as i64 + doy;
-    let days_since_epoch = (era as i64 * 146_097 + doe - 719_468) as u64;
+    let m = i64::try_from(month).unwrap_or(0);
+    let doy =
+        (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + i64::try_from(day).unwrap_or(0) - 1;
+    let doe = i64::try_from(yoe).unwrap_or(0) * 365 + i64::try_from(yoe / 4).unwrap_or(0)
+        - i64::try_from(yoe / 100).unwrap_or(0)
+        + doy;
+    let days_since_epoch =
+        u64::try_from(i64::try_from(era).unwrap_or(0) * 146_097 + doe - 719_468).unwrap_or(0);
     days_since_epoch * 86400 + hour * 3600 + minute * 60 + second
 }
 
-#[allow(clippy::too_many_arguments)]
 fn sign_request_sigv4(
     method: &str,
     url: &str,
@@ -535,7 +537,6 @@ impl Bedrock {
 }
 
 impl Provider for Bedrock {
-    #[allow(clippy::too_many_lines)]
     fn stream_message<'a>(
         &'a self,
         model: &'a Model,
@@ -857,17 +858,20 @@ mod tests {
         );
     }
 
-    #[allow(clippy::cast_possible_truncation)]
     fn build_eventstream_frame(header_name: &str, header_value: &str, payload: &[u8]) -> Vec<u8> {
         let mut header_buf = Vec::new();
-        header_buf.push(header_name.len() as u8);
+        header_buf.push(u8::try_from(header_name.len()).unwrap_or(255));
         header_buf.extend_from_slice(header_name.as_bytes());
         header_buf.push(7);
-        header_buf.extend_from_slice(&(header_value.len() as u16).to_be_bytes());
+        header_buf.extend_from_slice(
+            &u16::try_from(header_value.len())
+                .unwrap_or(u16::MAX)
+                .to_be_bytes(),
+        );
         header_buf.extend_from_slice(header_value.as_bytes());
 
-        let headers_len = header_buf.len() as u32;
-        let total_len = 12 + headers_len + payload.len() as u32 + 4;
+        let headers_len = u32::try_from(header_buf.len()).unwrap_or(u32::MAX);
+        let total_len = 12 + headers_len + u32::try_from(payload.len()).unwrap_or(u32::MAX) + 4;
 
         let mut frame = Vec::new();
         frame.extend_from_slice(&total_len.to_be_bytes());

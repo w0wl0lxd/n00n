@@ -48,7 +48,6 @@ pub(crate) const EPHEMERAL: CacheControl = CacheControl {
 };
 
 #[derive(Deserialize)]
-#[allow(clippy::struct_field_names)]
 struct Usage {
     #[serde(default)]
     input_tokens: u32,
@@ -269,7 +268,6 @@ impl EventParser {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     pub async fn process(
         &mut self,
         event_type: &str,
@@ -419,7 +417,6 @@ impl EventParser {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 pub(crate) fn models() -> &'static [ModelEntry] {
     const MODELS: &[ModelEntry] = &[
         ModelEntry {
