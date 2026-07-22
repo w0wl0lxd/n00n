@@ -233,8 +233,7 @@ fn read_initial_prompt(cli_prompt: Option<String>) -> Result<Option<String>> {
     }
 }
 
-#[allow(clippy::too_many_lines)]
-pub fn run(mut cli: Cli) -> Result<()> {
+pub fn run(cli: Cli) -> Result<()> {
     let storage = StateDir::resolve().context("resolve data directory")?;
     n00n_providers::model_registry::load_from_storage(&storage);
 
@@ -243,67 +242,90 @@ pub fn run(mut cli: Cli) -> Result<()> {
     load_env_files(&cwd);
     warn_stale_config_toml(&cwd);
 
-    let (mut stack, _) = build_stack(&cli, &cwd, &storage, None)?;
+    let (stack, _) = build_stack(&cli, &cwd, &storage, None)?;
     let openai_options = n00n_providers::OpenAiOptions::from(&stack.config.provider);
 
     setup::init_logging(&stack.config.storage);
     setup::install_panic_log_hook();
 
     if cli.is_sdk_mode() {
-        let fast = stack.config.always_fast && stack.model.supports_fast();
-        let prompt_slots = stack
-            .plugin_host
-            .event_handle()
-            .map_or_else(Default::default, |h| h.collect_prompt_slots());
-        let timeouts = stack.timeouts();
-        crate::sdk_mode::run(crate::sdk_mode::SdkParams {
-            cli,
-            model: stack.model,
+        return run_sdk_mode(cli, stack, openai_options);
+    }
+    if cli.run_flags.print {
+        return run_print_mode(cli, stack, openai_options);
+    }
+
+    run_ui_loop(&cli, stack, &storage, &cwd)
+}
+
+fn run_sdk_mode(
+    cli: Cli,
+    stack: Stack,
+    openai_options: n00n_providers::OpenAiOptions,
+) -> Result<()> {
+    let fast = stack.config.always_fast && stack.model.supports_fast();
+    let prompt_slots = stack
+        .plugin_host
+        .event_handle()
+        .map_or_else(Default::default, |h| h.collect_prompt_slots());
+    let timeouts = stack.timeouts();
+    crate::sdk_mode::run(crate::sdk_mode::SdkParams {
+        cli,
+        model: stack.model,
+        config: stack.config.agent,
+        permissions_config: stack.config.permissions,
+        timeouts,
+        openai_options,
+        prompt_slots,
+        fast,
+        workflow: stack.config.always_workflow,
+    })
+    .context("run sdk mode")
+}
+
+fn run_print_mode(
+    cli: Cli,
+    stack: Stack,
+    openai_options: n00n_providers::OpenAiOptions,
+) -> Result<()> {
+    let fast = stack.config.always_fast && stack.model.supports_fast();
+    let timeouts = stack.timeouts();
+    crate::print::run(
+        &stack.model,
+        crate::print::PrintArgs {
+            prompt_arg: cli.initial_prompt,
+            image_paths: &cli.images,
+            format: cli.output_format,
+            verbose: cli.run_flags.verbose,
             config: stack.config.agent,
             permissions_config: stack.config.permissions,
             timeouts,
             openai_options,
-            prompt_slots,
+            lua_handle: stack.plugin_host.event_handle().as_ref(),
             fast,
             workflow: stack.config.always_workflow,
-        })
-        .context("run sdk mode")?;
-        return Ok(());
-    }
-    if cli.run_flags.print {
-        let fast = stack.config.always_fast && stack.model.supports_fast();
-        let timeouts = stack.timeouts();
-        crate::print::run(
-            &stack.model,
-            crate::print::PrintArgs {
-                prompt_arg: cli.initial_prompt,
-                image_paths: &cli.images,
-                format: cli.output_format,
-                verbose: cli.run_flags.verbose,
-                config: stack.config.agent,
-                permissions_config: stack.config.permissions,
-                timeouts,
-                openai_options,
-                lua_handle: stack.plugin_host.event_handle().as_ref(),
-                fast,
-                workflow: stack.config.always_workflow,
-            },
-        )
-        .context("run print mode")?;
-        return Ok(());
-    }
+        },
+    )
+    .context("run print mode")
+}
 
+fn run_ui_loop(
+    cli: &Cli,
+    mut stack: Stack,
+    storage: &StateDir,
+    cwd: &std::path::Path,
+) -> Result<()> {
     let cwd_str = cwd.to_string_lossy().into_owned();
     let mut tabs = vec![resolve_session(
         cli.session_flags.continue_session,
         cli.session.as_deref(),
         &stack.model.spec(),
         &cwd_str,
-        &storage,
+        storage,
     )?];
     let mut focused = 0;
     let mut warnings: Vec<String> = Vec::new();
-    let mut initial_prompt = read_initial_prompt(cli.initial_prompt.take())?;
+    let mut initial_prompt = read_initial_prompt(cli.initial_prompt.clone())?;
     let mut teardown = Teardown::default();
 
     loop {
@@ -338,7 +360,7 @@ pub fn run(mut cli: Cli) -> Result<()> {
                 input_history_size: stack.config.storage.input_history_size,
                 permissions: Arc::new(n00n_agent::permissions::PermissionManager::new(
                     stack.config.permissions.clone(),
-                    cwd.clone(),
+                    cwd.to_path_buf(),
                 )),
                 timeouts: stack.timeouts(),
                 openai_options,
@@ -368,34 +390,63 @@ pub fn run(mut cli: Cli) -> Result<()> {
                 tabs: reloaded,
                 focused: f,
             } => {
-                let started = std::time::Instant::now();
-                let last_good = (stack.config.clone(), stack.model.clone());
-                // Shut the old host down first so nothing can repopulate
-                // the registry after the clear: its senders disconnect, the
-                // watchdog aborts in-flight callbacks, and only this thread
-                // issues loads. The old VM then shares nothing with the new
-                // stack, so its slow join (up to 2s) can run on a
-                // background thread.
-                stack.plugin_host.begin_shutdown();
-                ToolRegistry::global().clear_lua();
-                teardown.defer(move || drop(stack));
-                let (new_stack, new_warnings) = build_stack(&cli, &cwd, &storage, Some(last_good))?;
-                tabs = reloaded;
-                if tabs.is_empty() {
-                    tabs.push(AppSession::new(&new_stack.model.spec(), &cwd_str));
-                }
-                stack = new_stack;
-                warnings = new_warnings;
-                focused = f.min(tabs.len() - 1);
-                tracing::info!(
-                    elapsed_ms =
-                        u64::try_from(started.elapsed().as_millis()).map_or(u64::MAX, |ms| ms),
-                    tabs = tabs.len(),
-                    "reload: rebuilt plugins and config"
-                );
+                let (new_tabs, new_focused) = handle_reload(
+                    cli,
+                    cwd,
+                    storage,
+                    &mut stack,
+                    &mut warnings,
+                    &mut teardown,
+                    reloaded,
+                    f,
+                )?;
+                tabs = new_tabs;
+                focused = new_focused;
             }
         }
     }
+}
+
+fn handle_reload(
+    cli: &Cli,
+    cwd: &std::path::Path,
+    storage: &StateDir,
+    stack: &mut Stack,
+    warnings: &mut Vec<String>,
+    teardown: &mut Teardown,
+    reloaded: Vec<AppSession>,
+    f: usize,
+) -> Result<(Vec<AppSession>, usize)> {
+    let started = std::time::Instant::now();
+    let last_good = (stack.config.clone(), stack.model.clone());
+    let cwd_str = cwd.to_string_lossy().into_owned();
+    // Shut the old host down first so nothing can repopulate
+    // the registry after the clear: its senders disconnect, the
+    // watchdog aborts in-flight callbacks, and only this thread
+    // issues loads. The old VM then shares nothing with the new
+    // stack, so its slow join (up to 2s) can run on a
+    // background thread.
+    stack.plugin_host.begin_shutdown();
+    ToolRegistry::global().clear_lua();
+    let plugin_host = std::mem::replace(&mut stack.plugin_host, PluginHost::disabled());
+    teardown.defer(move || drop(plugin_host));
+
+    let (new_stack, new_warnings) = build_stack(cli, cwd, storage, Some(last_good))
+        .context("reload with fallback should not fail")?;
+    let tabs = if reloaded.is_empty() {
+        vec![AppSession::new(&new_stack.model.spec(), &cwd_str)]
+    } else {
+        reloaded
+    };
+    *stack = new_stack;
+    *warnings = new_warnings;
+    let focused = f.min(tabs.len() - 1);
+    tracing::info!(
+        elapsed_ms = u64::try_from(started.elapsed().as_millis()).map_or(u64::MAX, |ms| ms),
+        tabs = tabs.len(),
+        "reload: rebuilt plugins and config"
+    );
+    Ok((tabs, focused))
 }
 
 fn warn_stale_config_toml(cwd: &std::path::Path) {

@@ -11,6 +11,7 @@ use std::io::{self, BufRead, Write};
 use std::mem;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Instant;
 
 use color_eyre::Result;
@@ -455,7 +456,6 @@ struct Shared {
     pending: HashSet<String>,
 }
 
-#[allow(clippy::too_many_lines)]
 pub fn run(params: SdkParams) -> Result<()> {
     let SdkParams {
         cli,
@@ -503,6 +503,52 @@ pub fn run(params: SdkParams) -> Result<()> {
         workflow,
     });
 
+    let (writer, writer_thread) = spawn_writer(handle.session_id.clone());
+
+    let tools: Vec<&str> = handle
+        .tool_names
+        .iter()
+        .map(|t| n00n_to_claude_tool_name(t))
+        .collect();
+    emit_init(
+        &writer,
+        &working_dir,
+        &tools,
+        &startup_model,
+        permission_mode,
+    )?;
+
+    let shared = Arc::new(Mutex::new(Shared {
+        model: startup_model.clone(),
+        permission_mode,
+        turn_start: Instant::now(),
+        pending: HashSet::new(),
+    }));
+
+    let pump = spawn_pump(
+        writer.clone(),
+        Arc::clone(&shared),
+        handle.answer_tx.clone(),
+        cli.run_flags.include_partial_messages,
+        fast,
+        handle.event_rx.clone(),
+    );
+
+    run_event_loop(
+        &handle,
+        &writer,
+        &shared,
+        &startup_model,
+        &cwd,
+        fast,
+        workflow,
+    );
+
+    shutdown(handle, writer, writer_thread, pump);
+    Ok(())
+}
+
+fn spawn_writer(session_id: SessionRef) -> (SdkWriter, thread::JoinHandle<()>) {
     let (out_tx, out_rx) = flume::unbounded::<String>();
     let writer_thread = std::thread::spawn(move || {
         let mut stdout = io::stdout().lock();
@@ -512,16 +558,17 @@ pub fn run(params: SdkParams) -> Result<()> {
             }
         }
     });
+    let writer = SdkWriter { session_id, out_tx };
+    (writer, writer_thread)
+}
 
-    let writer = SdkWriter {
-        session_id: handle.session_id.clone(),
-        out_tx,
-    };
-    let tools: Vec<&str> = handle
-        .tool_names
-        .iter()
-        .map(|t| n00n_to_claude_tool_name(t))
-        .collect();
+fn emit_init(
+    writer: &SdkWriter,
+    working_dir: &str,
+    tools: &[&str],
+    startup_model: &Model,
+    permission_mode: PermissionMode,
+) -> Result<()> {
     writer.emit_system(
         "init",
         serde_json::json!({
@@ -534,30 +581,64 @@ pub fn run(params: SdkParams) -> Result<()> {
             "slash_commands": [],
             "output_style": "default",
         }),
-    )?;
+    )
+}
 
-    let shared = Arc::new(Mutex::new(Shared {
-        model: startup_model.clone(),
-        permission_mode,
-        turn_start: Instant::now(),
-        pending: HashSet::new(),
-    }));
-
-    let pump = EventPump {
-        writer: writer.clone(),
-        shared: Arc::clone(&shared),
-        answer_tx: handle.answer_tx.clone(),
-        include_partial_messages: cli.run_flags.include_partial_messages,
+fn spawn_pump(
+    writer: SdkWriter,
+    shared: Arc<Mutex<Shared>>,
+    answer_tx: Sender<String>,
+    include_partial_messages: bool,
+    fast: bool,
+    event_rx: Receiver<Envelope>,
+) -> smol::Task<()> {
+    EventPump {
+        writer,
+        shared,
+        answer_tx,
+        include_partial_messages,
         fast,
         synth: StreamSynth::new(),
         tool_inputs: HashMap::new(),
         result_text: String::new(),
         request_counter: 0,
     }
-    .spawn(handle.event_rx.clone());
+    .spawn(event_rx)
+}
 
+fn shutdown(
+    handle: InteractiveHandle,
+    writer: SdkWriter,
+    writer_thread: thread::JoinHandle<()>,
+    pump: smol::Task<()>,
+) {
+    let InteractiveHandle { input_tx, task, .. } = handle;
+    drop(input_tx);
+    smol::block_on(async {
+        task.await;
+        pump.await;
+    });
+    drop(writer);
+    let _ = writer_thread.join();
+}
+
+fn run_event_loop(
+    handle: &InteractiveHandle,
+    writer: &SdkWriter,
+    shared: &Arc<Mutex<Shared>>,
+    startup_model: &Model,
+    cwd: &Path,
+    fast: bool,
+    workflow: bool,
+) {
     for line in io::stdin().lock().lines() {
-        let line = line.context("read stdin")?;
+        let line = match line {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("error reading stdin: {e}");
+                break;
+            }
+        };
         if line.is_empty() {
             continue;
         }
@@ -570,88 +651,127 @@ pub fn run(params: SdkParams) -> Result<()> {
             }
         };
 
-        match msg.msg_type.as_str() {
-            "user" => {
-                let Some(user) = parse_or_warn::<InboundUser>(msg.payload, "user message") else {
-                    continue;
-                };
-                let content = user.message.content;
-                let prompt = content_text(&content).unwrap_or_else(|| content.to_string());
-                let images = content_images(&content);
-                let mode = match shared.lock() {
-                    Ok(mut shared) => {
-                        shared.turn_start = Instant::now();
-                        shared.permission_mode
-                    }
-                    Err(e) => {
-                        eprintln!("error: mutex poisoned: {e}");
-                        break;
-                    }
-                };
-                let input = AgentInput {
-                    message: prompt,
-                    mode: mode.agent_mode(&cwd),
-                    images,
-                    preamble: Vec::new(),
-                    thinking: n00n_providers::ThinkingConfig::default(),
-                    fast,
-                    workflow,
-                    prompt: None,
-                };
-                if handle.input_tx.send(input).is_err() {
-                    break;
-                }
-            }
-            "control_request" => {
-                let Some(cr) =
-                    parse_or_warn::<InboundControlRequest>(msg.payload, "control_request")
-                else {
-                    continue;
-                };
-                handle_control_request(&cr, &writer, &handle, &shared, &startup_model)?;
-            }
-            "control_response" => {
-                let Some(cr) =
-                    parse_or_warn::<InboundControlResponse>(msg.payload, "control_response")
-                else {
-                    continue;
-                };
-                let data = cr.response;
-                if let Some(req_id) = data.get("request_id").and_then(Value::as_str)
-                    && let Ok(mut shared) = shared.lock()
-                    && shared.pending.remove(req_id)
-                {
-                    let _ = handle
-                        .answer_tx
-                        .send(decode_permission_response(&data).encode());
-                }
-            }
-            "control_cancel_request" => {
-                let Some(ccr) = parse_or_warn::<InboundControlCancelRequest>(
-                    msg.payload,
-                    "control_cancel_request",
-                ) else {
-                    continue;
-                };
-                if let Ok(mut shared) = shared.lock()
-                    && shared.pending.remove(&ccr.request_id)
-                {
-                    let _ = handle.answer_tx.send(PermissionAnswer::Deny.encode());
-                }
-            }
-            other => warn!("unknown inbound message type: {other}"),
+        if !process_inbound_message(
+            msg,
+            handle,
+            writer,
+            shared,
+            startup_model,
+            cwd,
+            fast,
+            workflow,
+        ) {
+            break;
         }
     }
+}
 
-    let InteractiveHandle { input_tx, task, .. } = handle;
-    drop(input_tx);
-    smol::block_on(async {
-        task.await;
-        pump.await;
-    });
-    drop(writer);
-    let _ = writer_thread.join();
-    Ok(())
+fn process_inbound_message(
+    msg: InboundMessage,
+    handle: &InteractiveHandle,
+    writer: &SdkWriter,
+    shared: &Arc<Mutex<Shared>>,
+    startup_model: &Model,
+    cwd: &Path,
+    fast: bool,
+    workflow: bool,
+) -> bool {
+    match msg.msg_type.as_str() {
+        "user" => handle_user_message(msg, handle, shared, cwd, fast, workflow),
+        "control_request" => {
+            if let Some(cr) = parse_or_warn::<InboundControlRequest>(msg.payload, "control_request")
+                && let Err(e) = handle_control_request(&cr, writer, handle, shared, startup_model)
+            {
+                eprintln!("error handling control request: {e}");
+            }
+            true
+        }
+        "control_response" => {
+            if let Some(cr) =
+                parse_or_warn::<InboundControlResponse>(msg.payload, "control_response")
+            {
+                handle_control_response(cr, handle, shared);
+            }
+            true
+        }
+        "control_cancel_request" => {
+            if let Some(ccr) =
+                parse_or_warn::<InboundControlCancelRequest>(msg.payload, "control_cancel_request")
+            {
+                handle_control_cancel(&ccr, handle, shared);
+            }
+            true
+        }
+        other => {
+            warn!("unknown inbound message type: {other}");
+            true
+        }
+    }
+}
+
+fn handle_user_message(
+    msg: InboundMessage,
+    handle: &InteractiveHandle,
+    shared: &Arc<Mutex<Shared>>,
+    cwd: &Path,
+    fast: bool,
+    workflow: bool,
+) -> bool {
+    let Some(user) = parse_or_warn::<InboundUser>(msg.payload, "user message") else {
+        return true;
+    };
+    let content = user.message.content;
+    let prompt = content_text(&content).unwrap_or_else(|| content.to_string());
+    let images = content_images(&content);
+    let mode = match shared.lock() {
+        Ok(mut shared) => {
+            shared.turn_start = Instant::now();
+            shared.permission_mode
+        }
+        Err(e) => {
+            eprintln!("error: mutex poisoned: {e}");
+            return false;
+        }
+    };
+    let input = AgentInput {
+        message: prompt,
+        mode: mode.agent_mode(cwd),
+        images,
+        preamble: Vec::new(),
+        thinking: n00n_providers::ThinkingConfig::default(),
+        fast,
+        workflow,
+        prompt: None,
+    };
+    handle.input_tx.send(input).is_ok()
+}
+
+fn handle_control_response(
+    cr: InboundControlResponse,
+    handle: &InteractiveHandle,
+    shared: &Arc<Mutex<Shared>>,
+) {
+    let data = cr.response;
+    if let Some(req_id) = data.get("request_id").and_then(Value::as_str)
+        && let Ok(mut shared) = shared.lock()
+        && shared.pending.remove(req_id)
+    {
+        let _ = handle
+            .answer_tx
+            .send(decode_permission_response(&data).encode());
+    }
+}
+
+fn handle_control_cancel(
+    ccr: &InboundControlCancelRequest,
+    handle: &InteractiveHandle,
+    shared: &Arc<Mutex<Shared>>,
+) {
+    if let Ok(mut shared) = shared.lock()
+        && shared.pending.remove(&ccr.request_id)
+    {
+        let _ = handle.answer_tx.send(PermissionAnswer::Deny.encode());
+    }
 }
 
 type StoredSession = Session<Message, TokenUsage, ToolOutput>;
@@ -911,7 +1031,6 @@ impl EventPump {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)]
     fn handle(&mut self, envelope: &Envelope) -> Result<()> {
         let parent_tool_use_id = envelope
             .subagent
@@ -919,36 +1038,9 @@ impl EventPump {
             .map(|s| s.parent_tool_use_id.clone());
 
         match &envelope.event {
-            AgentEvent::TextDelta { text } => {
-                if self.include_partial_messages {
-                    let model = self.model_id();
-                    let events = self.synth.text_delta(&model, text);
-                    self.emit_stream(events)?;
-                }
-            }
-            AgentEvent::ThinkingDelta { text } => {
-                if self.include_partial_messages {
-                    let model = self.model_id();
-                    let events = self.synth.thinking_delta(&model, text);
-                    self.emit_stream(events)?;
-                }
-            }
-            AgentEvent::ToolStart(ts) => {
-                let name = ts.tool.to_string();
-                let input = ts.raw_input.clone().unwrap_or_else(|| Value::Null);
-
-                if self.include_partial_messages {
-                    let model = self.model_id();
-                    let events = self.synth.tool_use(
-                        &model,
-                        &ts.id,
-                        n00n_to_claude_tool_name(&name),
-                        &serde_json::to_string(&input)?,
-                    );
-                    self.emit_stream(events)?;
-                }
-                self.tool_inputs.insert(ts.id.clone(), (name, input));
-            }
+            AgentEvent::TextDelta { text } => self.handle_text_delta(text),
+            AgentEvent::ThinkingDelta { text } => self.handle_thinking_delta(text),
+            AgentEvent::ToolStart(ts) => self.handle_tool_start(ts),
             AgentEvent::ToolPending { .. }
             | AgentEvent::ToolOutput { .. }
             | AgentEvent::ToolDone(_)
@@ -962,98 +1054,159 @@ impl EventPump {
             | AgentEvent::ToolHeaderSnapshot { .. }
             | AgentEvent::LiveToolBuf { .. }
             | AgentEvent::Nudge
-            | AgentEvent::PromptProgress { .. } => {}
+            | AgentEvent::PromptProgress { .. } => Ok(()),
             AgentEvent::Retry {
                 attempt,
                 message,
                 delay_ms,
-            } => {
-                self.synth.reset();
-                self.writer.emit_system(
-                    "api_retry",
-                    serde_json::json!({
-                        "attempt": attempt,
-                        "retry_delay_ms": delay_ms,
-                        "error": message,
-                    }),
-                )?;
-            }
-            AgentEvent::TurnComplete(tc) => {
-                if self.include_partial_messages {
-                    let events = self.synth.finish_message(&tc.usage);
-                    self.emit_stream(events)?;
-                }
-
-                let content_value = serde_json::to_value(&tc.message.content)?;
-                if parent_tool_use_id.is_none() {
-                    self.result_text = content_text(&content_value).unwrap_or_else(String::new);
-                }
-                self.writer.emit(WireInner::Assistant(AssistantPayload {
-                    message: AssistantMessage {
-                        id: wire_uuid(),
-                        model: tc.model.clone(),
-                        role: "assistant",
-                        content: map_tool_names_in_content(&content_value),
-                        stop_reason: None,
-                        usage: tc.usage,
-                    },
-                    parent_tool_use_id,
-                }))?;
-            }
+            } => self.handle_retry(*attempt, message, *delay_ms),
+            AgentEvent::TurnComplete(tc) => self.handle_turn_complete(tc, parent_tool_use_id),
             AgentEvent::ToolResultsSubmitted { message } => {
-                self.writer.emit(WireInner::User(UserPayload {
-                    message: UserMessage {
-                        role: "user",
-                        content: serde_json::to_value(&message.content)?,
-                    },
-                    parent_tool_use_id,
-                }))?;
+                self.handle_tool_results_submitted(message, parent_tool_use_id)
             }
             AgentEvent::PermissionRequest { id, tool, .. } => {
-                let bypass = self.shared.lock().is_ok_and(|shared| {
-                    shared.permission_mode == PermissionMode::BypassPermissions
-                });
-                if bypass {
-                    let _ = self.answer_tx.send(PermissionAnswer::AllowSession.encode());
-                    return Ok(());
-                }
-
-                let (tool_name, input) = self
-                    .tool_inputs
-                    .get(id)
-                    .cloned()
-                    .unwrap_or_else(|| (tool.to_string(), Value::Null));
-
-                self.request_counter += 1;
-                let req_id = format!("req_{}", self.request_counter);
-                if let Ok(mut shared) = self.shared.lock() {
-                    shared.pending.insert(req_id.clone());
-                }
-
-                self.writer
-                    .emit(WireInner::ControlRequest(ControlRequestPayload {
-                        request_id: req_id,
-                        request: ControlRequestInner {
-                            subtype: "can_use_tool",
-                            tool_name: Some(n00n_to_claude_tool_name(&tool_name).into()),
-                            input: Some(input),
-                            tool_use_id: Some(id.clone()),
-                        },
-                    }))?;
+                self.handle_permission_request(id, tool)
             }
             AgentEvent::Done {
                 usage,
                 num_turns,
                 stop_reason: _,
-            } => {
-                let result = mem::take(&mut self.result_text);
-                self.emit_turn_result(false, result, *num_turns, *usage)?;
-            }
-            AgentEvent::Error { message } => {
-                self.emit_turn_result(true, message.clone(), 0, TokenUsage::default())?;
-            }
+            } => self.handle_done(usage, *num_turns),
+            AgentEvent::Error { message } => self.handle_error(message),
+        }
+    }
+
+    fn handle_text_delta(&mut self, text: &str) -> Result<()> {
+        if self.include_partial_messages {
+            let model = self.model_id();
+            let events = self.synth.text_delta(&model, text);
+            self.emit_stream(events)?;
         }
         Ok(())
+    }
+
+    fn handle_thinking_delta(&mut self, text: &str) -> Result<()> {
+        if self.include_partial_messages {
+            let model = self.model_id();
+            let events = self.synth.thinking_delta(&model, text);
+            self.emit_stream(events)?;
+        }
+        Ok(())
+    }
+
+    fn handle_tool_start(&mut self, ts: &n00n_agent::ToolStartEvent) -> Result<()> {
+        let name = ts.tool.to_string();
+        let input = ts.raw_input.clone().unwrap_or_else(|| Value::Null);
+
+        if self.include_partial_messages {
+            let model = self.model_id();
+            let events = self.synth.tool_use(
+                &model,
+                &ts.id,
+                n00n_to_claude_tool_name(&name),
+                &serde_json::to_string(&input)?,
+            );
+            self.emit_stream(events)?;
+        }
+        self.tool_inputs.insert(ts.id.clone(), (name, input));
+        Ok(())
+    }
+
+    fn handle_retry(&mut self, attempt: u32, message: &str, delay_ms: u64) -> Result<()> {
+        self.synth.reset();
+        self.writer.emit_system(
+            "api_retry",
+            serde_json::json!({
+                "attempt": attempt,
+                "retry_delay_ms": delay_ms,
+                "error": message,
+            }),
+        )
+    }
+
+    fn handle_turn_complete(
+        &mut self,
+        tc: &n00n_agent::TurnCompleteEvent,
+        parent_tool_use_id: Option<String>,
+    ) -> Result<()> {
+        if self.include_partial_messages {
+            let events = self.synth.finish_message(&tc.usage);
+            self.emit_stream(events)?;
+        }
+
+        let content_value = serde_json::to_value(&tc.message.content)?;
+        if parent_tool_use_id.is_none() {
+            self.result_text = content_text(&content_value).unwrap_or_else(String::new);
+        }
+        self.writer.emit(WireInner::Assistant(AssistantPayload {
+            message: AssistantMessage {
+                id: wire_uuid(),
+                model: tc.model.clone(),
+                role: "assistant",
+                content: map_tool_names_in_content(&content_value),
+                stop_reason: None,
+                usage: tc.usage,
+            },
+            parent_tool_use_id,
+        }))
+    }
+
+    fn handle_tool_results_submitted(
+        &mut self,
+        message: &n00n_providers::Message,
+        parent_tool_use_id: Option<String>,
+    ) -> Result<()> {
+        self.writer.emit(WireInner::User(UserPayload {
+            message: UserMessage {
+                role: "user",
+                content: serde_json::to_value(&message.content)?,
+            },
+            parent_tool_use_id,
+        }))
+    }
+
+    fn handle_permission_request(&mut self, id: &str, tool: &n00n_config::ToolKey) -> Result<()> {
+        let bypass = self
+            .shared
+            .lock()
+            .is_ok_and(|shared| shared.permission_mode == PermissionMode::BypassPermissions);
+        if bypass {
+            let _ = self.answer_tx.send(PermissionAnswer::AllowSession.encode());
+            return Ok(());
+        }
+
+        let tool_str = tool.to_string();
+        let (tool_name, input) = self
+            .tool_inputs
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| (tool_str, Value::Null));
+
+        self.request_counter += 1;
+        let req_id = format!("req_{}", self.request_counter);
+        if let Ok(mut shared) = self.shared.lock() {
+            shared.pending.insert(req_id.clone());
+        }
+
+        self.writer
+            .emit(WireInner::ControlRequest(ControlRequestPayload {
+                request_id: req_id,
+                request: ControlRequestInner {
+                    subtype: "can_use_tool",
+                    tool_name: Some(n00n_to_claude_tool_name(&tool_name).into()),
+                    input: Some(input),
+                    tool_use_id: Some(id.to_string()),
+                },
+            }))
+    }
+
+    fn handle_done(&mut self, usage: &TokenUsage, num_turns: u32) -> Result<()> {
+        let result = mem::take(&mut self.result_text);
+        self.emit_turn_result(false, result, num_turns, *usage)
+    }
+
+    fn handle_error(&mut self, message: &str) -> Result<()> {
+        self.emit_turn_result(true, message.to_string(), 0, TokenUsage::default())
     }
 }
 
