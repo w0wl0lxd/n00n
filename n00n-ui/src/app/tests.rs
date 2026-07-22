@@ -856,16 +856,19 @@ fn completed_subagent_chat_remains_discoverable_by_tool_id() {
     assert_eq!(idx, Some(1));
 }
 
-#[test]
-fn completed_task_body_click_expands_while_header_navigates() {
+#[test_case("task"     ; "task")]
+#[test_case("agent"    ; "agent")]
+#[test_case("team"     ; "team")]
+#[test_case("workflow" ; "workflow")]
+fn completed_subagent_card_header_and_body_clicks_toggle_without_navigation(tool: &str) {
     let mut app = test_app();
     app.status = Status::Streaming;
     app.run_id = 1;
     app.update(agent_msg(AgentEvent::ToolStart(Box::new(ToolStartEvent {
-        id: "task1".into(),
-        tool: "task".into(),
-        summary: "research".into(),
-        annotation: None,
+        id: "card1".into(),
+        tool: tool.into(),
+        summary: "safe summary".into(),
+        annotation: Some("safe annotation".into()),
         input: None,
         raw_input: None,
         output: None,
@@ -875,12 +878,12 @@ fn completed_task_body_click_expands_while_header_navigates() {
         AgentEvent::TextDelta {
             text: "child".into(),
         },
-        "task1",
+        "card1",
         Some("research"),
     ));
     app.update(agent_msg(AgentEvent::ToolDone(Box::new(ToolDoneEvent {
-        id: "task1".into(),
-        tool: "task".into(),
+        id: "card1".into(),
+        tool: tool.into(),
         output: ToolOutput::Markdown("body line\n".repeat(100).into()),
         is_error: false,
         annotation: None,
@@ -892,34 +895,54 @@ fn completed_task_body_click_expands_while_header_navigates() {
     let area = app.msg_area();
     let collapsed_lines = app.chats[0].total_lines();
 
-    app.update(mouse_event(
-        MouseEventKind::Down(MouseButton::Left),
-        10,
-        area.y + 1,
-    ));
-    app.update(mouse_event(
-        MouseEventKind::Up(MouseButton::Left),
-        10,
-        area.y + 1,
-    ));
-    assert_eq!(app.active_chat, 0, "task body must not navigate");
+    let click = |app: &mut App, row| {
+        app.update(mouse_event(
+            MouseEventKind::Down(MouseButton::Left),
+            10,
+            row,
+        ));
+        app.update(mouse_event(MouseEventKind::Up(MouseButton::Left), 10, row));
+    };
+
+    click(&mut app, area.y + 1);
+    assert_eq!(app.active_chat, 0, "{tool} body click must not navigate");
     terminal.draw(|frame| app.view(frame)).unwrap();
     assert!(
         app.chats[0].total_lines() > collapsed_lines,
-        "task body click must expand the completed task"
+        "{tool} body click must expand the completed card"
     );
 
-    app.update(mouse_event(
-        MouseEventKind::Down(MouseButton::Left),
-        10,
-        area.y,
-    ));
-    app.update(mouse_event(
-        MouseEventKind::Up(MouseButton::Left),
-        10,
-        area.y,
-    ));
-    assert_eq!(app.active_chat, 1, "task header navigates to child chat");
+    click(&mut app, area.y + 1);
+    assert_eq!(
+        app.active_chat, 0,
+        "second {tool} body click must not navigate"
+    );
+    terminal.draw(|frame| app.view(frame)).unwrap();
+    assert_eq!(
+        app.chats[0].total_lines(),
+        collapsed_lines,
+        "second {tool} body click must collapse the card"
+    );
+
+    click(&mut app, area.y);
+    assert_eq!(app.active_chat, 0, "{tool} header click must not navigate");
+    terminal.draw(|frame| app.view(frame)).unwrap();
+    assert!(
+        app.chats[0].total_lines() > collapsed_lines,
+        "{tool} header row 0 must expand the same card"
+    );
+
+    click(&mut app, area.y);
+    assert_eq!(
+        app.active_chat, 0,
+        "second {tool} header click must not navigate"
+    );
+    terminal.draw(|frame| app.view(frame)).unwrap();
+    assert_eq!(
+        app.chats[0].total_lines(),
+        collapsed_lines,
+        "second {tool} header click must collapse the card"
+    );
 }
 
 fn open_tasks_picker(app: &mut App) {
@@ -951,6 +974,26 @@ fn ctrl_x_toggles_tasks_picker() {
     assert!(app.task_picker.is_open());
     app.update(Msg::Key(kb::TASKS.to_key_event()));
     assert!(!app.task_picker.is_open());
+}
+
+#[test]
+fn ctrl_x_then_enter_still_switches_sessions() {
+    let mut app = app_with_subagent();
+    assert_eq!(app.active_chat, 0);
+
+    app.update(Msg::Key(kb::TASKS.to_key_event()));
+    assert!(
+        app.task_picker.is_open(),
+        "Ctrl+X must open the session picker"
+    );
+    app.update(Msg::Key(key(KeyCode::Down)));
+    app.update(Msg::Key(key(KeyCode::Enter)));
+
+    assert!(!app.task_picker.is_open());
+    assert_eq!(
+        app.active_chat, 1,
+        "Enter must switch to the selected child session"
+    );
 }
 
 fn app_with_subagent_id(id: &str) -> App {

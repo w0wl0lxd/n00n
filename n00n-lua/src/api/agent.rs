@@ -40,6 +40,8 @@ use crate::api::util::ctx::{AgentContext, LuaCtx};
 const SESSION_CLOSED_ERR: &str = "session closed";
 const DEFAULT_SESSION_AUDIENCE: ToolAudience = ToolAudience::GENERAL_SUB;
 const PROGRESS_MAX_RECENT: usize = 5;
+const ACTIVITY_TOOL_MAX_BYTES: usize = 64;
+const ACTIVITY_ID_MAX_BYTES: usize = 128;
 const PROGRESS_TIMEOUT_MS: u64 = 500;
 const STEERING_QUEUE_CAPACITY: usize = 32;
 
@@ -504,17 +506,14 @@ async fn session(
 
     let session_id = N00nId::generate();
     let child_id = session_id.to_string();
-    let parent_tool_use_id = agent_ctx
-        .tool_use_id
-        .clone()
-        .unwrap_or_else(|| format!("session-{child_id}"));
+    let parent_tool_use_id = child_id.clone();
     let start = Instant::now();
     let (sub_tx, sub_rx) = flume::unbounded::<Envelope>();
     let sub_event_tx = EventSender::new(sub_tx, agent_ctx.event_tx.run_id());
     let parent_tx = agent_ctx.event_tx.clone();
     let (answer_tx, answer_rx) = flume::unbounded::<String>();
     let (prompt_tx, prompt_rx) = flume::bounded::<String>(STEERING_QUEUE_CAPACITY);
-    let progress = Arc::new(Progress::new(start));
+    let progress = Arc::new(Progress::new(start, child_id.clone()));
 
     let subagent_info: Arc<OnceLock<SubagentInfo>> = Arc::new(OnceLock::new());
     let total_input = Arc::new(AtomicU32::new(0));
@@ -535,10 +534,10 @@ async fn session(
                         continue;
                     }
                     AgentEvent::ToolStart(e) => {
-                        progress.set_current(&e.tool);
+                        progress.start_action(&e.id, &e.tool);
                     }
                     AgentEvent::ToolDone(e) => {
-                        progress.add_recent(&e.tool);
+                        progress.finish_action(&e.id, &e.tool, e.is_error);
                     }
                     AgentEvent::Error { .. }
                     | AgentEvent::ToolOutput { .. }
@@ -700,28 +699,75 @@ async fn dispatch_racing_live(
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ActivityStatus {
+    Running,
+    Done,
+    Failed,
+}
+
+impl ActivityStatus {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Done => "done",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+struct ActivityAction {
+    tool_call_id: String,
+    sequence: u64,
+    tool: String,
+    status: ActivityStatus,
+}
+
 struct ProgressState {
     current: Option<String>,
     recent: VecDeque<String>,
+    actions: VecDeque<ActivityAction>,
+    next_sequence: u64,
     done: bool,
     completed_count: u64,
 }
 
 struct Progress {
+    session_id: String,
     start: Instant,
     state: Mutex<ProgressState>,
     tx: flume::Sender<()>,
     rx: flume::Receiver<()>,
 }
 
+fn sanitize_activity_value(value: &str, max_bytes: usize, fallback: &str) -> String {
+    let mut out = String::with_capacity(value.len().min(max_bytes));
+    for byte in value.bytes() {
+        if out.len() >= max_bytes {
+            break;
+        }
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b':' | b'/' | b'-') {
+            out.push(char::from(byte));
+        }
+    }
+    if out.is_empty() {
+        fallback.to_owned()
+    } else {
+        out
+    }
+}
+
 impl Progress {
-    fn new(start: Instant) -> Self {
+    fn new(start: Instant, session_id: String) -> Self {
         let (tx, rx) = flume::unbounded();
         Self {
+            session_id,
             start,
             state: Mutex::new(ProgressState {
                 current: None,
                 recent: VecDeque::new(),
+                actions: VecDeque::new(),
+                next_sequence: 1,
                 done: false,
                 completed_count: 0,
             }),
@@ -734,21 +780,74 @@ impl Progress {
         let _ = self.tx.send(());
     }
 
-    fn set_current(&self, tool: &str) {
+    fn start_action(&self, tool_call_id: &str, tool: &str) {
+        let id = sanitize_activity_value(tool_call_id, ACTIVITY_ID_MAX_BYTES, "call");
+        let tool = sanitize_activity_value(tool, ACTIVITY_TOOL_MAX_BYTES, "tool");
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.current = Some(tool.to_owned());
+        state.current = Some(tool.clone());
+        if let Some(action) = state
+            .actions
+            .iter_mut()
+            .find(|action| action.tool_call_id == id)
+        {
+            action.status = ActivityStatus::Running;
+            action.tool = tool;
+        } else {
+            if state.actions.len() >= PROGRESS_MAX_RECENT {
+                state.actions.pop_front();
+            }
+            let sequence = state.next_sequence;
+            state.next_sequence = state.next_sequence.saturating_add(1);
+            state.actions.push_back(ActivityAction {
+                tool_call_id: id,
+                sequence,
+                tool,
+                status: ActivityStatus::Running,
+            });
+        }
         drop(state);
         self.notify();
     }
 
-    fn add_recent(&self, tool: &str) {
+    fn finish_action(&self, tool_call_id: &str, tool: &str, is_error: bool) {
+        let id = sanitize_activity_value(tool_call_id, ACTIVITY_ID_MAX_BYTES, "call");
+        let tool = sanitize_activity_value(tool, ACTIVITY_TOOL_MAX_BYTES, "tool");
+        let status = if is_error {
+            ActivityStatus::Failed
+        } else {
+            ActivityStatus::Done
+        };
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.current = None;
-        state.completed_count += 1;
+        if let Some(action) = state
+            .actions
+            .iter_mut()
+            .find(|action| action.tool_call_id == id)
+        {
+            action.status = status;
+        } else {
+            if state.actions.len() >= PROGRESS_MAX_RECENT {
+                state.actions.pop_front();
+            }
+            let sequence = state.next_sequence;
+            state.next_sequence = state.next_sequence.saturating_add(1);
+            state.actions.push_back(ActivityAction {
+                tool_call_id: id,
+                sequence,
+                tool: tool.clone(),
+                status,
+            });
+        }
+        state.current = state
+            .actions
+            .iter()
+            .rev()
+            .find(|action| action.status == ActivityStatus::Running)
+            .map(|action| action.tool.clone());
+        state.completed_count = state.completed_count.saturating_add(1);
         if state.recent.len() >= PROGRESS_MAX_RECENT {
             state.recent.pop_front();
         }
-        state.recent.push_back(tool.to_owned());
+        state.recent.push_back(tool);
         drop(state);
         self.notify();
     }
@@ -981,6 +1080,7 @@ async fn get_progress(lua: Lua, this: mlua::UserDataRef<LuaSession>) -> LuaResul
     let state = progress.state.lock().unwrap_or_else(|e| e.into_inner());
     let elapsed = progress.start.elapsed().as_millis() as u64;
     let tbl = lua.create_table()?;
+    tbl.set("session_id", progress.session_id.as_str())?;
     tbl.set("elapsed_ms", elapsed)?;
     tbl.set("current_tool", state.current.as_deref())?;
     tbl.set("done", state.done)?;
@@ -991,6 +1091,19 @@ async fn get_progress(lua: Lua, this: mlua::UserDataRef<LuaSession>) -> LuaResul
         recent.set(i + 1, tool.as_str())?;
     }
     tbl.set("recent_tools", recent)?;
+
+    let actions = lua.create_table()?;
+    for (i, action) in state.actions.iter().enumerate() {
+        let item = lua.create_table()?;
+        item.set("session_id", progress.session_id.as_str())?;
+        item.set("tool_call_id", action.tool_call_id.as_str())?;
+        item.set("sequence", action.sequence)?;
+        item.set("tool", action.tool.as_str())?;
+        item.set("status", action.status.as_str())?;
+        item.set("message", action.status.as_str())?;
+        actions.set(i + 1, item)?;
+    }
+    tbl.set("actions", actions)?;
     Ok((Some(tbl), None))
 }
 
