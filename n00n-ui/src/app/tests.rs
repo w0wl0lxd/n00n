@@ -124,7 +124,7 @@ fn subagent_info_with_channels(
     _parent_id: &str,
     name: &str,
     answer_tx: Option<flume::Sender<String>>,
-    prompt_tx: Option<flume::Sender<String>>,
+    prompt_tx: Option<flume::Sender<SubagentPrompt>>,
 ) -> SubagentInfo {
     SubagentInfo {
         parent_tool_use_id: session_id.into(),
@@ -1238,7 +1238,7 @@ fn picker_navigate_to_subagent_then_type_routes_prompt_to_subagent() {
     app.update(Msg::Key(key(KeyCode::Char('h'))));
     app.update(Msg::Key(key(KeyCode::Enter)));
 
-    assert_eq!(prompt_rx.try_recv().unwrap(), "h");
+    assert_eq!(prompt_rx.try_recv().unwrap().text, "h");
     assert_eq!(app.chats[1].last_message_text(), "h");
     assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::User));
 }
@@ -2352,7 +2352,7 @@ fn auth_retry_sends_empty_answer(submit: fn(&mut App) -> Vec<Action>) {
 #[test]
 fn typing_in_running_subagent_routes_prompt_to_that_agent() {
     let (mut app, _answer_rx, _main_rx) = app_with_subagent_tx("task1");
-    let (prompt_tx, prompt_rx) = flume::unbounded();
+    let (prompt_tx, prompt_rx) = flume::unbounded::<SubagentPrompt>();
     app.subagent_prompts.insert("task1".into(), prompt_tx);
     app.active_chat = 1;
 
@@ -2361,7 +2361,7 @@ fn typing_in_running_subagent_routes_prompt_to_that_agent() {
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
 
     assert!(actions.is_empty());
-    assert_eq!(prompt_rx.try_recv().unwrap(), "hi");
+    assert_eq!(prompt_rx.try_recv().unwrap().text, "hi");
     assert_eq!(app.chats[1].last_message_text(), "hi");
     assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::User));
 }
@@ -2395,8 +2395,18 @@ fn subagent_prompt_queue_full_restores_input_and_flashes_busy() {
         .get("child-a")
         .cloned()
         .expect("prompt tx should be set");
-    fill_tx.try_send("fill1".into()).unwrap();
-    fill_tx.try_send("fill2".into()).unwrap();
+    fill_tx
+        .try_send(SubagentPrompt {
+            text: "fill1".into(),
+            images: Vec::new(),
+        })
+        .unwrap();
+    fill_tx
+        .try_send(SubagentPrompt {
+            text: "fill2".into(),
+            images: Vec::new(),
+        })
+        .unwrap();
     app.active_chat = 1;
 
     app.input_box.set_input("hi".into());
@@ -2404,14 +2414,14 @@ fn subagent_prompt_queue_full_restores_input_and_flashes_busy() {
 
     assert_eq!(app.status_bar.flash_text(), Some(STEERING_BUSY_MSG));
     assert_eq!(app.input_box.buffer.value(), "hi");
-    assert_eq!(prompt_rx.try_recv().unwrap(), "fill1");
-    assert_eq!(prompt_rx.try_recv().unwrap(), "fill2");
+    assert_eq!(prompt_rx.try_recv().unwrap().text, "fill1");
+    assert_eq!(prompt_rx.try_recv().unwrap().text, "fill2");
     assert!(prompt_rx.try_recv().is_err());
 }
 
 #[test]
 fn subagent_prompt_disconnected_removes_sender_and_flashes_unavailable() {
-    let (prompt_tx, prompt_rx) = flume::bounded::<String>(1);
+    let (prompt_tx, prompt_rx) = flume::bounded::<SubagentPrompt>(1);
     drop(prompt_rx);
     let mut app = test_app();
     app.status = Status::Streaming;
@@ -2490,7 +2500,7 @@ fn permission_answer_to_disconnected_subagent_does_not_fall_back_to_main() {
 
 #[test]
 fn cancel_subagent_removes_prompt_sender() {
-    let (prompt_tx, _prompt_rx) = flume::bounded::<String>(2);
+    let (prompt_tx, _prompt_rx) = flume::bounded::<SubagentPrompt>(2);
     let mut app = test_app();
     app.status = Status::Streaming;
     app.run_id = 1;
@@ -2530,8 +2540,8 @@ fn app_with_subagent_tx(id: &str) -> (App, flume::Receiver<String>, flume::Recei
     (app, sub_rx, main_rx)
 }
 
-fn app_with_steerable_subagent(id: &str) -> (App, flume::Receiver<String>) {
-    let (prompt_tx, prompt_rx) = flume::bounded(2);
+fn app_with_steerable_subagent(id: &str) -> (App, flume::Receiver<SubagentPrompt>) {
+    let (prompt_tx, prompt_rx) = flume::bounded::<SubagentPrompt>(2);
     let mut app = test_app();
     app.status = Status::Streaming;
     app.run_id = 1;
@@ -2606,7 +2616,7 @@ fn expanded_subagent_chat_sends_typed_steering() {
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
 
     assert!(actions.is_empty());
-    assert_eq!(prompt_rx.try_recv().unwrap(), "expand");
+    assert_eq!(prompt_rx.try_recv().unwrap().text, "expand");
     assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::User));
     assert_eq!(app.chats[1].last_message_text(), "expand");
 }
@@ -2631,7 +2641,7 @@ fn expanded_subagent_chat_sends_pasted_steering() {
 
     app.update(Msg::Key(key(KeyCode::Enter)));
 
-    assert_eq!(prompt_rx.try_recv().unwrap(), "pasted steering");
+    assert_eq!(prompt_rx.try_recv().unwrap().text, "pasted steering");
     assert_eq!(app.chats[1].last_message_text(), "pasted steering");
 }
 
@@ -3896,4 +3906,37 @@ fn subagent_cancel_then_navigate_back_main_unaffected() {
     assert_eq!(app.active_chat, 0);
     assert_eq!(app.status, Status::Streaming);
     assert!(!app.chats[0].is_finished());
+}
+
+#[test]
+fn subagent_prompt_carries_images() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    let (prompt_tx, prompt_rx) = flume::bounded::<SubagentPrompt>(32);
+    app.update(Msg::Agent(Box::new(Envelope {
+        event: AgentEvent::TextDelta {
+            text: "running".into(),
+        },
+        subagent: Some(subagent_info_with_channels(
+            "task1",
+            "task-group",
+            "research",
+            None,
+            Some(prompt_tx),
+        )),
+        run_id: 1,
+    })));
+    app.active_chat = 1;
+
+    let img = ImageSource::new(ImageMediaType::Png, Arc::from("dGVzdA=="));
+    app.input_box.attach_image(img);
+    app.update(Msg::Key(key(KeyCode::Char('d'))));
+    app.update(Msg::Key(key(KeyCode::Enter)));
+
+    let prompt = prompt_rx.try_recv().unwrap();
+    assert_eq!(prompt.text, "d");
+    assert_eq!(prompt.images.len(), 1);
+    assert_eq!(app.chats[1].last_message_text(), "d");
+    assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::User));
 }
