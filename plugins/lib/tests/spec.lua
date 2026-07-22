@@ -1,3 +1,4 @@
+local ActivityPreview = require("n00n.activity_preview")
 local truncate = require("n00n.truncate")
 local ToolView = require("n00n.tool_view")
 
@@ -160,6 +161,54 @@ case("tool_view_toggle_twice_collapses_back", function()
   eq(buf.lines[2], "line8")
 end)
 
+case("tool_view_hide_collapsed_reveals_body_on_toggle", function()
+  local buf = mock_buf()
+  local view = ToolView.new(buf, { max_lines = 5, hide_collapsed = true })
+  view:set_header({ "activity" })
+  view:append("bash - cargo test")
+  eq(#buf.lines, 1)
+  eq(buf.lines[1], "activity")
+
+  view:toggle()
+  eq(#buf.lines, 2)
+  eq(buf.lines[2], "bash - cargo test")
+
+  view:toggle()
+  eq(#buf.lines, 1)
+end)
+
+local function line_text(line)
+  if type(line) == "string" then
+    return line
+  end
+  local out = {}
+  for _, span in ipairs(line) do
+    out[#out + 1] = type(span) == "string" and span or (span[1] or "")
+  end
+  return table.concat(out)
+end
+
+case("tool_view_caps_complete_rows_by_width_and_bytes", function()
+  local buf = mock_buf()
+  local view = ToolView.new(buf, { max_lines = 1, max_width = 8, max_line_bytes = 10 })
+  view:set_header({ { { "界界界界界", "bold" }, { " credential", "dim" } } })
+  view:append("first")
+  view:append("second")
+
+  for _, line in ipairs(buf.lines) do
+    local text = line_text(line)
+    assert(#text <= 10, "row must honor byte cap: " .. #text)
+    assert(n00n.ui.display_width(text) <= 8, "row must honor display-width cap")
+  end
+end)
+
+case("tool_view_tiny_byte_cap_never_overflows_for_ellipsis", function()
+  local buf = mock_buf()
+  local view = ToolView.new(buf, { max_lines = 1, max_line_bytes = 2 })
+  view:set_header({ "abcdef" })
+  assert(#line_text(buf.lines[1]) <= 2, "ellipsis must fit inside byte cap")
+end)
+
 case("tool_view_toggle_head_mode_expands", function()
   local buf = mock_buf()
   local view = ToolView.new(buf, { max_lines = 2, keep = "head" })
@@ -261,9 +310,9 @@ case("tool_view_max_line_bytes_truncates_string_line", function()
   local buf = mock_buf()
   local view = ToolView.new(buf, { max_lines = 3, keep = "tail", max_line_bytes = 10 })
   view:append(string.rep("a", 20))
-  eq(#buf.lines[1], 13)
+  eq(#buf.lines[1], 10)
   assert(buf.lines[1]:find("…"), "truncated line should end with ellipsis")
-  eq(buf.lines[1]:sub(1, 10), string.rep("a", 10))
+  eq(buf.lines[1]:sub(1, 7), string.rep("a", 7))
 end)
 
 case("tool_view_max_line_bytes_truncates_span_line", function()
@@ -273,14 +322,15 @@ case("tool_view_max_line_bytes_truncates_span_line", function()
   eq(buf.lines[1][1][1], "hello")
   eq(buf.lines[1][1][2], "dim")
   eq(buf.lines[1][3][2], "error")
-  assert(buf.lines[1][3][1]:find("…"), "span should be truncated with ellipsis")
+  eq(buf.lines[1][4][1], "…")
+  assert(#line_text(buf.lines[1]) <= 12, "complete span row must fit byte limit")
 end)
 
 case("tool_view_max_line_bytes_utf8_safe", function()
   local buf = mock_buf()
   local view = ToolView.new(buf, { max_lines = 3, keep = "tail", max_line_bytes = 10 })
   view:append("éééééééééé")
-  eq(buf.lines[1], string.rep("é", 5) .. "…")
+  eq(buf.lines[1], string.rep("é", 3) .. "…")
 end)
 
 case("tool_view_max_line_bytes_default_off", function()
@@ -1317,6 +1367,81 @@ end)
 
 case("route_tier_blank_prompt", function()
   eq(route_tier.route_tier(nil), "medium")
+end)
+
+case("activity_preview_publishes_immediately_and_keeps_five_sessions", function()
+  local old_buf = n00n.ui.buf
+  n00n.ui.buf = function()
+    local buf = mock_buf()
+    function buf:on() end
+    return buf
+  end
+  local live_buf
+  local ctx = {
+    live_buf = function(_, buf)
+      live_buf = buf
+    end,
+  }
+  local preview, err = ActivityPreview.new(ctx, "team", { session_rows = true })
+  eq(err, nil)
+  eq(live_buf, preview.view.buf, "preview must publish before any prompt")
+
+  local old_activity = { activities = { { id = "old", tool = "read", status = "success" } } }
+  preview:update(old_activity, "role1", "session1")
+  eq(preview.rows[1].label, "read", "message-free activity must show only tool and status")
+  for i = 1, 6 do
+    preview:set_row("session" .. i, "role" .. i, nil, "success")
+  end
+  eq(#preview.rows, 5)
+  eq(preview.rows[1].label, "role2")
+  eq(preview.rows[5].label, "role6")
+  preview:update(old_activity, "role1", "session1")
+  eq(preview.rows[1].label, "role2", "evicted historical activity must not displace newer sessions")
+  n00n.ui.buf = old_buf
+end)
+
+case("activity_preview_repeated_prompts_keep_order_and_update_status_in_place", function()
+  local old_buf = n00n.ui.buf
+  n00n.ui.buf = function()
+    local buf = mock_buf()
+    function buf:on() end
+    return buf
+  end
+  local preview = ActivityPreview.new({ live_buf = function() end }, "team", { session_rows = true })
+  local session = { turn = 0 }
+  function session:prompt()
+    self.turn = self.turn + 1
+    return { text = "done" }
+  end
+  function session:get_progress()
+    return {
+      turn_id = self.turn,
+      done = true,
+      activities = { { id = "tool-" .. self.turn, tool = "read", status = "running" } },
+    }
+  end
+
+  local _, first_err = preview:prompt(session, "first", "worker")
+  local _, second_err = preview:prompt(session, "second", "worker")
+  eq(first_err, nil)
+  eq(second_err, nil)
+  eq(#preview.rows, 4)
+  eq(preview.rows[1].key, "worker#1")
+  eq(preview.rows[2].key, tostring(session) .. "/tool-1")
+  eq(preview.rows[3].key, "worker#2")
+  eq(preview.rows[4].key, tostring(session) .. "/tool-2")
+  eq(preview.rows[1].status, "success")
+  eq(preview.rows[3].status, "success")
+
+  preview:update({ activities = { { id = "tool-2", tool = "read", status = "success" } } }, "worker", tostring(session))
+  eq(#preview.rows, 4, "completion must update the existing activity row")
+  eq(preview.rows[4].status, "success")
+  local tracked = 0
+  for _ in pairs(preview.activity_ids[tostring(session)]) do
+    tracked = tracked + 1
+  end
+  eq(tracked, 1, "per-session activity tracking must stay snapshot-bounded")
+  n00n.ui.buf = old_buf
 end)
 
 if #failures > 0 then

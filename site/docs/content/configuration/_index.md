@@ -70,7 +70,7 @@ All fields are optional. Typos in field names cause an error right away.
 | `mouse_scroll_lines` | u32 | `3` | 1 | Lines per mouse wheel scroll |
 | `max_input_lines` | u32 | `20` | 1 | Maximum visible input lines |
 | `show_thinking` | bool | `true` | - | When true (default), show full model reasoning live and persisted. When false, hide reasoning behind an indicator (thinking> ...) with a click-to-expand hint, both while thinking and after it completes |
-| `mascot` | bool | `false` | - | Show the n00n mascot on the idle splash screen (opt-in) |
+| `mascot` | bool | `false` | - | Show the n00n mascot on the idle splash screen |
 
 ### `ui.tool_output_lines`
 
@@ -84,6 +84,7 @@ How many lines of output to show per tool in the UI. All values are `usize` with
 | `workflow` | 8 |
 | `index` | 3 |
 | `grep` | 3 |
+| `explore` | 3 |
 | `read` | 3 |
 | `write` | 7 |
 | `web` | 3 |
@@ -150,6 +151,13 @@ n00n.setup({
 | `ruff_fix` | boolean | `true` | - | Run Ruff --fix --unsafe-fixes and formatting before execution when Ruff is available. |
 | `timeout_secs` | integer | `30` | 5 | Stop the script after this many seconds. A call's `timeout` param overrides it. |
 
+### `plugins.codegraph`
+
+| Field | Type | Default | Min | Description |
+|-------|------|---------|-----|-------------|
+| `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool. |
+| `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
+
 ### `plugins.edit`
 
 | Field | Type | Default | Min | Description |
@@ -199,7 +207,7 @@ n00n.setup({
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
 | `auto_tier` | boolean | `false` | - | Route each subagent's model tier from its prompt (opt-in, off by default). |
-| `max_concurrent` | integer | `8` | 1 | Max concurrently running subagents. |
+| `max_concurrent` | integer | `4` | 1 | Concurrent subagents (hard max 8). |
 
 ### `plugins.webfetch`
 
@@ -221,8 +229,9 @@ n00n.setup({
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
-| `max_concurrent_agents` | integer | `8` | 1 | Max subagents one parallel()/pipeline() call runs at once. |
-| `max_concurrent_workflows` | integer | `4` | 1 | Max concurrently running workflows. |
+| `max_agents_per_run` | integer | `24` | 1 | Agent-call budget per workflow (hard max 32). |
+| `max_concurrent_agents` | integer | `4` | 1 | Concurrency per parallel()/pipeline() (hard max 8). |
+| `max_concurrent_workflows` | integer | `2` | 1 | Concurrent workflows (hard max 4). |
 | `timeout_secs` | integer | `600` | 1 | Hard deadline for one workflow run (cancels pure-Lua runaway loops via the VM watchdog). |
 
 ## Validation
