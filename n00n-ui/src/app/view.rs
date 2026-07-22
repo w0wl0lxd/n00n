@@ -36,7 +36,7 @@ impl App {
         let layout = self.compute_layout(frame.area(), form_visible);
         let render_chat = self.resolve_render_chat();
 
-        self.render_background(frame);
+        Self::render_background(frame);
         self.render_messages(frame, &layout, render_chat);
         self.render_bottom_panel(frame, &layout);
         self.render_splits(frame, &layout);
@@ -134,13 +134,13 @@ impl App {
         if self.task_picker.is_open() {
             self.task_picker
                 .selected_index()
-                .unwrap_or(self.active_chat)
+                .unwrap_or_else(|| self.active_chat)
         } else {
             self.active_chat
         }
     }
 
-    fn render_background(&self, frame: &mut Frame) {
+    fn render_background(frame: &mut Frame) {
         let bg =
             Block::default().style(ratatui::style::Style::new().bg(theme::current().background));
         bg.render(frame.area(), frame.buffer_mut());
@@ -302,7 +302,7 @@ impl App {
             model_id: chat
                 .model_id
                 .as_deref()
-                .unwrap_or(&self.state.session.model),
+                .unwrap_or_else(|| &self.state.session.model),
             stats: UsageStats {
                 usage: &chat.token_usage,
                 global_usage: &self.state.token_usage,
@@ -395,7 +395,7 @@ impl App {
         let sel = state.sel();
         let scroll = self.scroll_offset(sel.zone);
         if let Some(screen_sel) = sel.to_screen(scroll) {
-            selection::apply_highlight(frame.buffer_mut(), sel.highlight_area(), &screen_sel);
+            selection::apply_highlight(frame.buffer_mut(), sel.highlight_area(), screen_sel);
         }
         if state.is_pending_copy() {
             let sel = *sel;

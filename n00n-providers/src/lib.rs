@@ -15,7 +15,7 @@ pub(crate) mod providers;
 pub mod retry;
 pub(crate) mod types;
 
-pub use error::AgentError;
+pub use error::{AgentError, RequestDeliveryMetadata, RequestDeliveryPhase};
 pub use model::{
     FastPricing, Model, ModelEntry, ModelError, ModelFamily, ModelInfo, ModelPricing, ModelTier,
     TokenUsage, models_for_provider,

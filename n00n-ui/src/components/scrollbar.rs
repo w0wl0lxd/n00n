@@ -64,8 +64,8 @@ pub fn vertical_thumb_bounds(
     let pos = f64::from(position.min(max_scroll));
     let viewport = f64::from(viewport_height);
 
-    let thumb_start = (pos * track / content).round() as u16;
-    let thumb_end = ((pos + viewport) * track / content).round() as u16;
+    let thumb_start = crate::cast::f64_to_u16((pos * track / content).round());
+    let thumb_end = crate::cast::f64_to_u16(((pos + viewport) * track / content).round());
     let thumb_len = thumb_end.saturating_sub(thumb_start).max(1);
 
     let thumb_start = thumb_start.min(viewport_height.saturating_sub(thumb_len));
@@ -87,7 +87,7 @@ pub fn position_for_thumb_row(
     let max_thumb_start = viewport_height.saturating_sub(thumb_len).max(1);
     let pos = ((u32::from(thumb_row) * u32::from(max_scroll)) + (u32::from(max_thumb_start) / 2))
         / u32::from(max_thumb_start);
-    pos.min(u32::from(max_scroll)) as u16
+    u16::try_from(pos.min(u32::from(max_scroll))).unwrap_or_else(|_| u16::MAX)
 }
 
 #[cfg(test)]
@@ -142,7 +142,7 @@ mod tests {
         let expected = (u32::from(max_scroll) * u32::from(mid_row)
             + u32::from(viewport_height - thumb_len) / 2)
             / u32::from(viewport_height - thumb_len);
-        assert_eq!(pos, expected as u16);
+        assert_eq!(pos, u16::try_from(expected).unwrap_or_else(|_| u16::MAX));
     }
 
     #[test]
