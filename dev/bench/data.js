@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784709193215,
+  "lastUpdate": 1784710982851,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -323,6 +323,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 134355,
             "range": "± 27065",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "45815f2822d8cfdb68b0baee08033719d6817819",
+          "message": "Merge pull request #53 from w0wl0lxd/feat/tooling-token-optimization\n\nperf(token-optimization): shrink skill tool definition and count tool tokens",
+          "timestamp": "2026-07-22T04:49:51-04:00",
+          "tree_id": "9aacd04000dd952d2edddc88ddb321b390fd467f",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/45815f2822d8cfdb68b0baee08033719d6817819"
+        },
+        "date": 1784710981789,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6544082,
+            "range": "± 50537",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2919548,
+            "range": "± 46065",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2381633,
+            "range": "± 22294",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7522169,
+            "range": "± 151502",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3662903,
+            "range": "± 22642",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3699618,
+            "range": "± 24736",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 554424,
+            "range": "± 1310",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 167553,
+            "range": "± 1328",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 167561,
+            "range": "± 269",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1023640,
+            "range": "± 32460",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 611114,
+            "range": "± 3046",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 610346,
+            "range": "± 7944",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 74575,
+            "range": "± 1624",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 101144,
+            "range": "± 11474",
             "unit": "ns/iter"
           }
         ]
