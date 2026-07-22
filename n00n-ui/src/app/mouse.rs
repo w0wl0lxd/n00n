@@ -96,6 +96,11 @@ impl App {
         }
     }
 
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     fn handle_scrollbar_mouse(&mut self, event: &MouseEvent) -> bool {
         if !scrollbar::is_enabled() {
             return false;
@@ -174,7 +179,6 @@ impl App {
                 self.scrollbar_drag = None;
                 true
             }
-            MouseEventKind::Up(MouseButton::Left) => false,
             _ => false,
         }
     }
@@ -311,7 +315,7 @@ impl App {
                     raw_text: &copy_text,
                     line_breaks,
                 }];
-                selection::extract_selected_text(buf, &screen_sel, &regions)
+                selection::extract_selected_text(buf, screen_sel, &regions)
             }
             SelectionZone::Overlay => {
                 let scroll = self.scroll_offset(sel.zone);
@@ -323,7 +327,7 @@ impl App {
                     area: sel.area,
                     ..Default::default()
                 }];
-                selection::extract_selected_text(buf, &screen_sel, &regions)
+                selection::extract_selected_text(buf, screen_sel, &regions)
             }
         };
 
@@ -367,10 +371,9 @@ impl App {
     pub(super) fn msg_area(&self) -> Rect {
         self.zones
             .find(SelectionZone::Messages)
-            .map(|z| {
+            .map_or_else(Default::default, |z| {
                 let a = z.area;
                 Rect::new(a.x, a.y, a.width.saturating_sub(1), a.height)
             })
-            .unwrap_or_default()
     }
 }

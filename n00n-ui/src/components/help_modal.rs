@@ -128,7 +128,7 @@ impl HelpModal {
             .filter(|kb| kb.platform.is_visible())
             .map(|kb| kb.label.resolve().display_width())
             .max()
-            .unwrap_or(0)
+            .unwrap_or_else(|| 0)
             + KEY_COL_GAP;
 
         let mut first = true;
@@ -200,7 +200,7 @@ impl HelpModal {
             }
         }
 
-        let total = lines.len() as u16;
+        let total = u16::try_from(lines.len()).unwrap_or_else(|_| u16::MAX);
         let modal = Modal {
             title: TITLE,
             width_percent: 50,

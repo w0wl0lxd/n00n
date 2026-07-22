@@ -1,4 +1,4 @@
-use super::segment::SegmentCache;
+use super::segment::{Segment, SegmentCache};
 use crate::selection::{self, LineBreaks, ScreenSelection, Selection};
 
 use ratatui::buffer::Buffer;
@@ -37,7 +37,7 @@ pub(super) fn extract_selection_text(
         let rel_start = doc_start.row.saturating_sub(seg_start) as usize;
         let rel_end = ((doc_end.row + 1).saturating_sub(seg_start) as usize).min(h as usize);
 
-        let inset = seg.content_inset();
+        let inset = Segment::content_inset();
         let content_x = msg_area.x.saturating_add(inset);
         let start_col = if seg_start > doc_start.row {
             0
@@ -74,9 +74,13 @@ pub(super) fn extract_selection_text(
             .render(tmp_area, &mut tmp);
 
         let ss = ScreenSelection {
-            start_row: (rel_start as u16).saturating_sub(inset / 2),
+            start_row: u16::try_from(rel_start)
+                .unwrap_or_else(|_| u16::MAX)
+                .saturating_sub(inset / 2),
             start_col,
-            end_row: (rel_end.saturating_sub(1) as u16).saturating_sub(inset / 2),
+            end_row: u16::try_from(rel_end.saturating_sub(1))
+                .unwrap_or_else(|_| u16::MAX)
+                .saturating_sub(inset / 2),
             end_col,
         };
 
@@ -84,9 +88,13 @@ pub(super) fn extract_selection_text(
         selection::append_rows(
             &tmp,
             tmp_area,
-            &ss,
-            (rel_start as u16).saturating_sub(inset / 2),
-            (rel_end as u16).saturating_sub(inset / 2),
+            ss,
+            u16::try_from(rel_start)
+                .unwrap_or_else(|_| u16::MAX)
+                .saturating_sub(inset / 2),
+            u16::try_from(rel_end)
+                .unwrap_or_else(|_| u16::MAX)
+                .saturating_sub(inset / 2),
             &mut out,
             &breaks,
         );

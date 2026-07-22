@@ -1,3 +1,12 @@
+#![allow(
+    clippy::disallowed_methods,
+    clippy::expect_used,
+    clippy::manual_let_else,
+    clippy::needless_pass_by_value,
+    clippy::too_many_lines,
+    clippy::unwrap_used
+)]
+
 mod gen_commands;
 mod gen_config;
 mod gen_keybindings;
@@ -16,12 +25,13 @@ fn page_path(section: &str) -> PathBuf {
     Path::new(CONTENT_DIR).join(section).join("_index.md")
 }
 
-fn write_file(path: &Path, content: &str) {
+fn write_file(path: &Path, content: &str) -> Result<(), std::io::Error> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).unwrap();
+        fs::create_dir_all(parent)?;
     }
-    fs::write(path, content).unwrap();
+    fs::write(path, content)?;
     println!("wrote {}", path.display());
+    Ok(())
 }
 
 fn check_file(path: &Path, expected: &str) -> bool {
@@ -64,6 +74,7 @@ fn main() -> ExitCode {
             )
             .await
         });
+
     let outputs = [
         (page_path("tools"), tools),
         (page_path("providers"), providers),
@@ -86,7 +97,10 @@ fn main() -> ExitCode {
         }
     } else {
         for (path, content) in &outputs {
-            write_file(path, content);
+            if let Err(e) = write_file(path, content) {
+                eprintln!("Error writing {}: {}", path.display(), e);
+                return ExitCode::FAILURE;
+            }
         }
         ExitCode::SUCCESS
     }
