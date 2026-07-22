@@ -29,6 +29,15 @@ pub enum Language {
     Sql,
     Toml,
     Yaml,
+    Astro,
+    Containerfile,
+    Css,
+    Hcl,
+    Json,
+    Make,
+    Scss,
+    Svelte,
+    Vue,
 }
 
 impl Language {
@@ -62,6 +71,15 @@ impl Language {
             "sql" => Some(Self::Sql),
             "toml" => Some(Self::Toml),
             "yaml" => Some(Self::Yaml),
+            "astro" => Some(Self::Astro),
+            "containerfile" => Some(Self::Containerfile),
+            "css" => Some(Self::Css),
+            "hcl" => Some(Self::Hcl),
+            "json" => Some(Self::Json),
+            "make" => Some(Self::Make),
+            "scss" => Some(Self::Scss),
+            "svelte" => Some(Self::Svelte),
+            "vue" => Some(Self::Vue),
             _ => None,
         }
     }
@@ -96,6 +114,15 @@ impl Language {
             "sql" => Some(Self::Sql),
             "toml" => Some(Self::Toml),
             "yaml" | "yml" => Some(Self::Yaml),
+            "astro" => Some(Self::Astro),
+            "dockerfile" => Some(Self::Containerfile),
+            "css" => Some(Self::Css),
+            "hcl" | "tf" | "tfvars" => Some(Self::Hcl),
+            "json" => Some(Self::Json),
+            "mk" => Some(Self::Make),
+            "scss" => Some(Self::Scss),
+            "svelte" => Some(Self::Svelte),
+            "vue" => Some(Self::Vue),
             _ => None,
         }
     }
@@ -130,6 +157,245 @@ impl Language {
             Self::Sql => tree_sitter_sequel::LANGUAGE.into(),
             Self::Toml => tree_sitter_toml_ng::LANGUAGE.into(),
             Self::Yaml => tree_sitter_yaml::LANGUAGE.into(),
+            Self::Astro => tree_sitter_astro_next::LANGUAGE.into(),
+            Self::Containerfile => tree_sitter_containerfile::LANGUAGE.into(),
+            Self::Css => tree_sitter_css::LANGUAGE.into(),
+            Self::Hcl => tree_sitter_hcl::LANGUAGE.into(),
+            Self::Json => tree_sitter_json::LANGUAGE.into(),
+            Self::Make => tree_sitter_make::LANGUAGE.into(),
+            Self::Scss => tree_sitter_scss::language(),
+            Self::Svelte => tree_sitter_svelte_ng::LANGUAGE.into(),
+            Self::Vue => tree_sitter_vue_next::LANGUAGE.into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Language;
+
+    #[test]
+    fn recognizes_new_index_languages_by_name_and_extension() {
+        let cases = [
+            ("astro", "astro", Language::Astro),
+            ("css", "css", Language::Css),
+            ("scss", "scss", Language::Scss),
+            ("json", "json", Language::Json),
+            ("hcl", "tf", Language::Hcl),
+            ("svelte", "svelte", Language::Svelte),
+            ("vue", "vue", Language::Vue),
+            ("containerfile", "dockerfile", Language::Containerfile),
+            ("make", "mk", Language::Make),
+        ];
+
+        for (name, extension, expected) in cases {
+            assert_eq!(Language::from_name(name), Some(expected));
+            assert_eq!(Language::from_extension(extension), Some(expected));
+        }
+    }
+
+    #[test]
+    fn new_index_languages_load_tree_sitter_grammars() {
+        let languages = [
+            Language::Astro,
+            Language::Css,
+            Language::Scss,
+            Language::Json,
+            Language::Hcl,
+            Language::Svelte,
+            Language::Vue,
+            Language::Containerfile,
+            Language::Make,
+        ];
+
+        for language in languages {
+            assert!(language.ts_language().node_kind_count() > 0);
+        }
+    }
+
+    #[test]
+    fn from_name_and_from_extension_reject_unknown_values() {
+        assert_eq!(Language::from_name("brainfuck"), None);
+        assert_eq!(Language::from_name(""), None);
+        assert_eq!(Language::from_extension("bf"), None);
+        assert_eq!(Language::from_extension(""), None);
+    }
+
+    #[test]
+    fn hcl_extension_variants_all_resolve_to_hcl() {
+        for ext in ["hcl", "tf", "tfvars"] {
+            assert_eq!(Language::from_extension(ext), Some(Language::Hcl));
+        }
+    }
+
+    #[test]
+    fn scss_and_css_are_distinct_languages_with_working_grammars() {
+        assert_ne!(Language::Css, Language::Scss);
+
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&Language::Css.ts_language())
+            .expect("CSS grammar should load");
+        let css_tree = parser
+            .parse(".card { color: red; }", None)
+            .expect("CSS source should parse");
+        let css_sexp = css_tree.root_node().to_sexp();
+        assert!(
+            css_sexp.contains("rule_set"),
+            "unexpected syntax tree: {css_sexp}"
+        );
+
+        parser
+            .set_language(&Language::Scss.ts_language())
+            .expect("SCSS grammar should load");
+        let scss_tree = parser
+            .parse(".card { &:hover { color: blue; } }", None)
+            .expect("SCSS source should parse");
+        let scss_sexp = scss_tree.root_node().to_sexp();
+        assert!(
+            scss_sexp.contains("rule_set"),
+            "unexpected syntax tree: {scss_sexp}"
+        );
+    }
+
+    #[test]
+    fn json_grammar_parses_nested_pairs() {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&Language::Json.ts_language())
+            .expect("JSON grammar should load");
+        let tree = parser
+            .parse(r#"{"outer": {"inner": 1}}"#, None)
+            .expect("JSON source should parse");
+        let sexp = tree.root_node().to_sexp();
+        assert!(sexp.contains("pair"), "unexpected syntax tree: {sexp}");
+    }
+
+    #[test]
+    fn hcl_grammar_parses_blocks_and_attributes() {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&Language::Hcl.ts_language())
+            .expect("HCL grammar should load");
+        let tree = parser
+            .parse(
+                "resource \"aws_s3_bucket\" \"assets\" {\n  bucket = \"assets\"\n}\n",
+                None,
+            )
+            .expect("HCL source should parse");
+        let sexp = tree.root_node().to_sexp();
+        assert!(sexp.contains("block"), "unexpected syntax tree: {sexp}");
+        assert!(
+            sexp.contains("attribute"),
+            "unexpected syntax tree: {sexp}"
+        );
+    }
+
+    #[test]
+    fn containerfile_grammar_parses_from_instruction() {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&Language::Containerfile.ts_language())
+            .expect("Containerfile grammar should load");
+        let tree = parser
+            .parse("FROM rust:1.94\n", None)
+            .expect("Containerfile source should parse");
+        let sexp = tree.root_node().to_sexp();
+        assert!(
+            sexp.contains("from_instruction"),
+            "unexpected syntax tree: {sexp}"
+        );
+    }
+
+    #[test]
+    fn make_grammar_parses_rule() {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&Language::Make.ts_language())
+            .expect("Make grammar should load");
+        let tree = parser
+            .parse("all:\n\techo hi\n", None)
+            .expect("Makefile source should parse");
+        let sexp = tree.root_node().to_sexp();
+        assert!(sexp.contains("rule"), "unexpected syntax tree: {sexp}");
+    }
+
+    #[test]
+    fn vue_grammar_parses_template_and_script_elements() {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&Language::Vue.ts_language())
+            .expect("Vue grammar should load");
+        let tree = parser
+            .parse(
+                "<template><div>{{ msg }}</div></template>\n<script>export default {}</script>\n",
+                None,
+            )
+            .expect("Vue source should parse");
+        let sexp = tree.root_node().to_sexp();
+        assert!(
+            sexp.contains("template_element"),
+            "unexpected syntax tree: {sexp}"
+        );
+        assert!(
+            sexp.contains("script_element"),
+            "unexpected syntax tree: {sexp}"
+        );
+    }
+
+    #[test]
+    fn svelte_grammar_parses_script_and_style_elements() {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&Language::Svelte.ts_language())
+            .expect("Svelte grammar should load");
+        let tree = parser
+            .parse(
+                "<script>let count = 0;</script>\n<style>div { color: red; }</style>\n",
+                None,
+            )
+            .expect("Svelte source should parse");
+        let sexp = tree.root_node().to_sexp();
+        assert!(
+            sexp.contains("script_element"),
+            "unexpected syntax tree: {sexp}"
+        );
+        assert!(
+            sexp.contains("style_element"),
+            "unexpected syntax tree: {sexp}"
+        );
+    }
+
+    #[test]
+    fn astro_grammar_parses_frontmatter() {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&Language::Astro.ts_language())
+            .expect("Astro grammar should load");
+        let tree = parser
+            .parse("---\nconst title = 'Hello'\n---\n<main>{title}</main>\n", None)
+            .expect("Astro source should parse");
+        let sexp = tree.root_node().to_sexp();
+        assert!(
+            sexp.contains("frontmatter"),
+            "unexpected syntax tree: {sexp}"
+        );
+    }
+
+    #[test]
+    fn existing_html_grammar_still_parses_elements() {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&Language::Html.ts_language())
+            .expect("HTML grammar should load");
+        let tree = parser
+            .parse("<main><div>text</div></main>", None)
+            .expect("HTML source should parse");
+
+        let syntax = tree.root_node().to_sexp();
+        assert!(
+            syntax.contains("element"),
+            "unexpected syntax tree: {syntax}"
+        );
     }
 }
