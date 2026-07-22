@@ -3,6 +3,7 @@
 -- (product_manager, planner, developer, tester, reviewer); each runs as its own
 -- subagent on a cost-aware model tier. Built entirely on n00n.agent.* and the
 -- existing provider/model-tier machinery — no core changes.
+local ActivityPreview = require("n00n.activity_preview")
 local memory = require("mem")
 local retrieve = require("retrieve")
 local roles = require("roles")
@@ -218,10 +219,10 @@ local function run_supervisor(ctx, goal, opts)
     return nil, sess_err
   end
 
-  local res, rerr = sess:prompt(plan_prompt(goal))
+  local res, rerr = opts._preview:prompt(sess, plan_prompt(goal), "supervisor")
   if not rerr and not captured then
     local nudged
-    nudged, rerr = sess:prompt(NUDGE)
+    nudged, rerr = opts._preview:prompt(sess, NUDGE, "supervisor")
     if nudged then
       res = nudged
     end
@@ -276,6 +277,7 @@ local function run_step(ctx, step, goal, input, relay_k, prior_results)
     auto_tier = input.auto_tier,
     thinking = input.thinking,
     budget = input._agent_budget,
+    preview = input._preview,
   }
   return roles.run(ctx, step.role, step_prompt, role_opts)
 end
@@ -303,6 +305,7 @@ local function run_autonomous(ctx, goal, input, steps, relay_k)
           model = input.model,
           thinking = input.thinking,
           budget = input._agent_budget,
+          preview = input._preview,
         })
         total_cost = add_cost(total_cost, verdict.cost)
         total_usage = roles.add_usage(total_usage, verdict.usage)
@@ -347,7 +350,7 @@ end
 
 local finish_run
 
-local function handler(input, ctx)
+local function run_team(input, ctx)
   if input.background then
     local forwarded = {}
     for key, value in pairs(input) do
@@ -418,6 +421,7 @@ local function handler(input, ctx)
         budget = input._agent_budget,
         thinking = input.thinking,
         quorum = input.quorum,
+        preview = input._preview,
       })
       local total_cost = add_cost(supervisor_cost, out.cost)
       local total_usage = roles.add_usage(supervisor_usage, out.usage)
@@ -445,6 +449,23 @@ local function handler(input, ctx)
   total_cost = add_cost(supervisor_cost, total_cost)
   total_usage = roles.add_usage(supervisor_usage, total_usage)
   return finish_run(ctx, input, results, total_cost, #results, "steps", slug, failures, total_usage)
+end
+
+local function handler(input, ctx)
+  if input.background then
+    return run_team(input, ctx)
+  end
+  local preview, preview_err = ActivityPreview.new(ctx, "team: " .. (input.goal or "team"), { session_rows = true })
+  if not preview then
+    return { llm_output = "failed to publish team preview: " .. tostring(preview_err), is_error = true }
+  end
+  input._preview = preview
+  local ok, result = pcall(run_team, input, ctx)
+  if not ok then
+    return { llm_output = "team failed: " .. tostring(result), is_error = true, body = preview.view.buf }
+  end
+  result.body = preview.view.buf
+  return result
 end
 
 finish_run = function(ctx, input, results, total_cost, completed, unit, slug, failures, usage)

@@ -1,7 +1,7 @@
 //! `n00n.agent` exposes subagent primitives to Lua plugins. Policy (retries,
 //! validation, concurrency) lives in the task plugin, not here.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque, hash_map::Entry};
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -21,7 +21,7 @@ use n00n_agent::tools::{
 };
 use n00n_agent::{
     Agent, AgentEvent, AgentInput, AgentMode, AgentParams, AgentRunParams, Envelope, EventSender,
-    History, SubagentInfo, ToolDoneEvent,
+    History, SubagentInfo, ToolDoneEvent, ToolStartEvent,
 };
 use n00n_lua_macro::{lua_class, lua_fn, lua_table};
 use n00n_providers::model::ModelTier;
@@ -39,6 +39,24 @@ use crate::api::util::ctx::{AgentContext, LuaCtx};
 const SESSION_CLOSED_ERR: &str = "session closed";
 const DEFAULT_SESSION_AUDIENCE: ToolAudience = ToolAudience::GENERAL_SUB;
 const PROGRESS_MAX_RECENT: usize = 5;
+const ACTIVITY_MESSAGE_MAX_CHARS: usize = 80;
+const REDACTED: &str = "[REDACTED]";
+const SAFE_ACTIVITY_DESCRIPTION_TOOLS: &[&str] = &[
+    "batch",
+    "code_execution",
+    "edit",
+    "glob",
+    "grep",
+    "index",
+    "memory",
+    "multiedit",
+    "question",
+    "read",
+    "skill",
+    "todo_write",
+    "view_image",
+    "write",
+];
 const PROGRESS_TIMEOUT_MS: u64 = 500;
 const STEERING_QUEUE_CAPACITY: usize = 32;
 
@@ -616,14 +634,17 @@ async fn session(
         smol::spawn(async move {
             while let Ok(mut envelope) = sub_rx.recv_async().await {
                 match &envelope.event {
+                    AgentEvent::Done { .. } => {
+                        progress.record_forwarder_barrier();
+                        continue;
+                    }
                     AgentEvent::ToolStart(e) => {
-                        progress.set_current(&e.tool);
+                        progress.record_start(e);
                     }
                     AgentEvent::ToolDone(e) => {
-                        progress.add_recent(&e.tool);
+                        progress.record_done(e);
                     }
-                    AgentEvent::Done { .. }
-                    | AgentEvent::Error { .. }
+                    AgentEvent::Error { .. }
                     | AgentEvent::ToolOutput { .. }
                     | AgentEvent::ToolPending { .. }
                     | AgentEvent::SubagentHistory { .. } => continue,
@@ -783,11 +804,159 @@ async fn dispatch_racing_live(
     }
 }
 
+fn activity_message(event: &ToolStartEvent) -> Option<String> {
+    if !SAFE_ACTIVITY_DESCRIPTION_TOOLS.contains(&event.tool.as_ref()) {
+        return None;
+    }
+    let rendered_header = event
+        .render_header
+        .as_ref()
+        .map(n00n_agent::BufferSnapshot::first_line_text);
+    rendered_header
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+        .or_else(|| (!event.summary.trim().is_empty()).then_some(event.summary.as_str()))
+        .or_else(|| {
+            event
+                .annotation
+                .as_deref()
+                .filter(|text| !text.trim().is_empty())
+        })
+        .map(sanitize_activity_message)
+}
+
+fn sanitize_activity_message(raw: &str) -> String {
+    let words = raw.split_whitespace().collect::<Vec<_>>();
+    let mut sanitized = Vec::with_capacity(words.len());
+    let mut index = 0;
+    while index < words.len() {
+        let word = words[index];
+        if word.eq_ignore_ascii_case("bearer") {
+            sanitized.push(format!("Bearer {REDACTED}"));
+            index = index.saturating_add(2);
+            continue;
+        }
+
+        let separator = word.find(['=', ':']);
+        let key = separator.map_or(word, |position| &word[..position]);
+        if is_sensitive_key(key) || is_sensitive_key(word) {
+            let separator_char =
+                separator.map_or('=', |position| word.as_bytes()[position] as char);
+            sanitized.push(format!("{key}{separator_char}{REDACTED}"));
+            let inline_value = separator.and_then(|position| word.get(position + 1..));
+            index += 1;
+            if inline_value.is_some_and(|value| value.eq_ignore_ascii_case("bearer")) {
+                index = index.saturating_add(1).min(words.len());
+            } else if inline_value.is_none_or(str::is_empty) {
+                if words
+                    .get(index)
+                    .is_some_and(|next| *next == "=" || *next == ":")
+                {
+                    index += 1;
+                }
+                if words
+                    .get(index)
+                    .is_some_and(|next| next.eq_ignore_ascii_case("bearer"))
+                {
+                    index += 1;
+                }
+                if index < words.len() {
+                    index += 1;
+                }
+            }
+            continue;
+        }
+
+        let secret_value = separator.map_or(word, |position| &word[position + 1..]);
+        if is_secret_token(secret_value) {
+            let prefix = separator.map_or("", |position| &word[..=position]);
+            sanitized.push(format!("{prefix}{REDACTED}"));
+        } else {
+            sanitized.push(word.to_owned());
+        }
+        index += 1;
+    }
+    truncate_activity_message(&sanitized.join(" "))
+}
+
+fn is_sensitive_key(value: &str) -> bool {
+    let normalized: String = value
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .flat_map(char::to_lowercase)
+        .collect();
+    [
+        "apikey",
+        "accesstoken",
+        "authtoken",
+        "authorization",
+        "password",
+        "passwd",
+        "secret",
+        "privatekey",
+        "clientsecret",
+    ]
+    .iter()
+    .any(|key| normalized.contains(key))
+}
+
+fn is_secret_token(value: &str) -> bool {
+    let lower = value
+        .trim_matches(|character: char| !character.is_ascii_alphanumeric())
+        .to_ascii_lowercase();
+    ["sk-", "ghp_", "github_pat_", "glpat-", "xoxb-", "xoxp-"]
+        .iter()
+        .any(|prefix| lower.contains(prefix))
+        || lower.starts_with("akia")
+        || lower.starts_with("aiza")
+}
+
+fn truncate_activity_message(message: &str) -> String {
+    if message.chars().count() <= ACTIVITY_MESSAGE_MAX_CHARS {
+        return message.to_owned();
+    }
+    let mut truncated: String = message
+        .chars()
+        .take(ACTIVITY_MESSAGE_MAX_CHARS.saturating_sub(1))
+        .collect();
+    truncated.push('…');
+    truncated
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActivityStatus {
+    Running,
+    Success,
+    Error,
+}
+
+impl ActivityStatus {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Success => "success",
+            Self::Error => "error",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Activity {
+    id: String,
+    tool: String,
+    message: Option<String>,
+    status: ActivityStatus,
+}
+
 struct ProgressState {
     current: Option<String>,
     recent: VecDeque<String>,
+    activities: VecDeque<Activity>,
     done: bool,
     completed_count: u64,
+    active_activity_counts: HashMap<String, usize>,
+    turn_id: u64,
+    forwarded_barriers: u64,
 }
 
 struct Progress {
@@ -795,58 +964,164 @@ struct Progress {
     state: Mutex<ProgressState>,
     tx: flume::Sender<()>,
     rx: flume::Receiver<()>,
+    barrier_tx: flume::Sender<()>,
+    barrier_rx: flume::Receiver<()>,
 }
 
 impl Progress {
     fn new(start: Instant) -> Self {
-        let (tx, rx) = flume::unbounded();
+        let (tx, rx) = flume::bounded(1);
+        let (barrier_tx, barrier_rx) = flume::bounded(1);
         Self {
             start,
             state: Mutex::new(ProgressState {
                 current: None,
                 recent: VecDeque::new(),
+                activities: VecDeque::new(),
                 done: false,
                 completed_count: 0,
+                active_activity_counts: HashMap::new(),
+                turn_id: 0,
+                forwarded_barriers: 0,
             }),
             tx,
             rx,
+            barrier_tx,
+            barrier_rx,
         }
     }
 
     fn notify(&self) {
-        let _ = self.tx.send(());
+        let _ = self.tx.try_send(());
     }
 
-    fn set_current(&self, tool: &str) {
+    fn begin_turn(&self) -> u64 {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.current = Some(tool.to_owned());
+        state.turn_id = state.turn_id.saturating_add(1);
+        state.done = false;
+        state.current = None;
+        let turn_id = state.turn_id;
+        drop(state);
+        self.notify();
+        turn_id
+    }
+
+    fn next_forwarder_barrier(&self) -> u64 {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .forwarded_barriers
+            .saturating_add(1)
+    }
+
+    fn record_forwarder_barrier(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.forwarded_barriers = state.forwarded_barriers.saturating_add(1);
+        drop(state);
+        let _ = self.barrier_tx.try_send(());
+    }
+
+    async fn wait_for_forwarder_barrier(&self, target: u64) {
+        loop {
+            let reached = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .forwarded_barriers
+                >= target;
+            if reached || self.barrier_rx.recv_async().await.is_err() {
+                return;
+            }
+        }
+    }
+
+    fn record_start(&self, event: &ToolStartEvent) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let active_count = state
+            .active_activity_counts
+            .entry(event.id.clone())
+            .or_insert(0);
+        *active_count = active_count.saturating_add(1);
+        if state.activities.len() >= PROGRESS_MAX_RECENT {
+            state.activities.pop_front();
+        }
+        state.activities.push_back(Activity {
+            id: event.id.clone(),
+            tool: event.tool.to_string(),
+            message: activity_message(event),
+            status: ActivityStatus::Running,
+        });
+        state.current = Some(event.tool.to_string());
         drop(state);
         self.notify();
     }
 
-    fn add_recent(&self, tool: &str) {
+    fn record_done(&self, event: &ToolDoneEvent) {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.current = None;
-        state.completed_count += 1;
+        match state.active_activity_counts.entry(event.id.clone()) {
+            Entry::Occupied(mut entry) if *entry.get() > 1 => {
+                *entry.get_mut() = entry.get().saturating_sub(1);
+            }
+            Entry::Occupied(entry) => {
+                entry.remove();
+            }
+            Entry::Vacant(_) => return,
+        }
+        if let Some(activity) = state
+            .activities
+            .iter_mut()
+            .find(|activity| activity.id == event.id && activity.status == ActivityStatus::Running)
+        {
+            activity.status = if event.is_error {
+                ActivityStatus::Error
+            } else {
+                ActivityStatus::Success
+            };
+        }
+        state.completed_count = state.completed_count.saturating_add(1);
         if state.recent.len() >= PROGRESS_MAX_RECENT {
             state.recent.pop_front();
         }
-        state.recent.push_back(tool.to_owned());
+        state.recent.push_back(event.tool.to_string());
+        state.current = state
+            .activities
+            .iter()
+            .rev()
+            .find(|activity| activity.status == ActivityStatus::Running)
+            .map(|activity| activity.tool.clone());
         drop(state);
         self.notify();
     }
 
-    fn set_done(&self) {
+    fn set_current_done(&self) {
+        let turn_id = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .turn_id;
+        self.set_done(turn_id);
+    }
+
+    fn set_done(&self, turn_id: u64) {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.turn_id != turn_id {
+            return;
+        }
         state.done = true;
         state.current = None;
         drop(state);
@@ -880,6 +1155,23 @@ fn prompt_result_table(
     table.set("fast", fast)?;
     set_usage_fields(&table, usage)?;
     Ok(table)
+}
+
+fn latest_assistant_text(history: &History) -> String {
+    history
+        .as_slice()
+        .iter()
+        .rev()
+        .filter(|message| matches!(message.role, Role::Assistant))
+        .flat_map(|message| message.content.iter())
+        .find_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .map_or_else(
+            || "(no response)".to_owned(),
+            std::borrow::ToOwned::to_owned,
+        )
 }
 
 struct SessionState {
@@ -918,7 +1210,7 @@ impl SessionState {
             return;
         }
         self.closed = true;
-        self.progress.set_done();
+        self.progress.set_current_done();
         self.parent_cancels.remove(&self.child_id);
         let messages = std::mem::replace(&mut self.history, History::new(Vec::new())).into_vec();
         let _ = self.parent_event_tx.send(AgentEvent::SubagentHistory {
@@ -1020,6 +1312,7 @@ async fn prompt(
     if s.closed {
         return Ok((None, Some(SESSION_CLOSED_ERR.to_owned())));
     }
+    let progress_turn = s.progress.begin_turn();
     if s.subagent_info.get().is_none() {
         let _ = s.subagent_info.set(SubagentInfo {
             parent_tool_use_id: s.parent_tool_use_id.clone(),
@@ -1061,13 +1354,31 @@ async fn prompt(
             workflow: false,
             prompt: None,
         };
+        let barrier_target = s.progress.next_forwarder_barrier();
         let result = agent.run(input).await;
         s.usage += agent.total_usage();
         s.cost += agent.total_cost();
         drop(agent);
+        if result.is_err()
+            && let Err(barrier_error) = s.sub_event_tx.send(AgentEvent::Done {
+                usage: TokenUsage::default(),
+                num_turns: 0,
+                stop_reason: None,
+            })
+        {
+            s.failed = true;
+            s.progress.set_done(progress_turn);
+            return Ok((
+                None,
+                Some(format!(
+                    "subagent event forwarder barrier failed: {barrier_error}"
+                )),
+            ));
+        }
+        s.progress.wait_for_forwarder_barrier(barrier_target).await;
         if let Err(e) = result {
             s.failed = true;
-            s.progress.set_done();
+            s.progress.set_done(progress_turn);
             let table = prompt_result_table(
                 &lua,
                 s.start.elapsed().as_millis() as u64,
@@ -1080,23 +1391,9 @@ async fn prompt(
         }
         next_message = s.prompt_rx.try_recv().ok();
     }
-    s.progress.set_done();
+    s.progress.set_done(progress_turn);
 
-    let text = s
-        .history
-        .as_slice()
-        .iter()
-        .rev()
-        .filter(|m| matches!(m.role, Role::Assistant))
-        .flat_map(|m| m.content.iter())
-        .find_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .map_or_else(
-            || "(no response)".to_owned(),
-            std::borrow::ToOwned::to_owned,
-        );
+    let text = latest_assistant_text(&s.history);
 
     let table = prompt_result_table(
         &lua,
@@ -1115,8 +1412,10 @@ async fn prompt(
 ///   `elapsed_ms` (integer): time since the session was created.
 ///   `current_tool` (string?): name of the tool currently running, if any.
 ///   `recent_tools` (table): names of the last few finished tools, oldest first.
+///   `activities` (table): up to five safe rendered tool summaries, oldest first.
 ///   `completed_count` (integer): total number of finished tools so far.
-///   `done` (bool): true once the prompt has completed.
+///   `turn_id` (integer): increases before each `prompt` call.
+///   `done` (bool): true once the current prompt call has completed.
 ///
 /// The call returns at most every `PROGRESS_TIMEOUT_MS` milliseconds, or
 /// immediately when a tool starts or finishes.
@@ -1141,12 +1440,24 @@ async fn get_progress(lua: Lua, this: mlua::UserDataRef<LuaSession>) -> LuaResul
     tbl.set("current_tool", state.current.as_deref())?;
     tbl.set("done", state.done)?;
     tbl.set("completed_count", state.completed_count)?;
+    tbl.set("turn_id", state.turn_id)?;
 
     let recent = lua.create_table()?;
     for (i, tool) in state.recent.iter().enumerate() {
         recent.set(i + 1, tool.as_str())?;
     }
     tbl.set("recent_tools", recent)?;
+
+    let activities = lua.create_table()?;
+    for (i, activity) in state.activities.iter().enumerate() {
+        let item = lua.create_table()?;
+        item.set("id", activity.id.as_str())?;
+        item.set("tool", activity.tool.as_str())?;
+        item.set("message", activity.message.as_deref())?;
+        item.set("status", activity.status.as_str())?;
+        activities.set(i + 1, item)?;
+    }
+    tbl.set("activities", activities)?;
     Ok((Some(tbl), None))
 }
 
@@ -1201,6 +1512,7 @@ fn call_local_tool(
 
 #[cfg(test)]
 mod tests {
+    use n00n_agent::ToolOutput;
     use serde_json::json;
 
     use super::*;
@@ -1209,6 +1521,215 @@ mod tests {
         let lua = Lua::new();
         let f: Function = lua.load(src).eval().unwrap();
         call_local_tool(&lua.weak(), &f, input)
+    }
+
+    fn progress_start(id: &str, summary: &str) -> ToolStartEvent {
+        ToolStartEvent {
+            id: id.into(),
+            tool: Arc::from("read"),
+            summary: summary.into(),
+            render_header: None,
+            annotation: None,
+            input: None,
+            raw_input: Some(json!({"secret": "must not be read"})),
+            output: Some(ToolOutput::Plain("must not be read".into())),
+        }
+    }
+
+    fn progress_done(id: &str, is_error: bool) -> ToolDoneEvent {
+        ToolDoneEvent {
+            id: id.into(),
+            tool: Arc::from("read"),
+            output: ToolOutput::Plain("must not be read".into()),
+            is_error,
+            annotation: Some("must not be read".into()),
+            written_path: None,
+        }
+    }
+
+    #[test]
+    fn progress_updates_start_in_place_and_retains_status() {
+        let progress = Progress::new(Instant::now());
+        progress.record_start(&progress_start("one", "cargo test"));
+        progress.record_done(&progress_done("one", true));
+        progress.record_done(&progress_done("one", true));
+
+        let state = progress
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(state.completed_count, 1);
+        assert_eq!(state.activities.len(), 1);
+        assert_eq!(state.activities[0].message.as_deref(), Some("cargo test"));
+        assert_eq!(state.activities[0].status, ActivityStatus::Error);
+        assert!(state.active_activity_counts.is_empty());
+    }
+
+    #[test]
+    fn progress_tracks_reused_activity_ids_in_order() {
+        let progress = Progress::new(Instant::now());
+        progress.record_start(&progress_start("call_read", "first"));
+        progress.record_start(&progress_start("call_read", "second"));
+        progress.record_done(&progress_done("call_read", false));
+        progress.record_done(&progress_done("call_read", true));
+
+        let state = progress
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(state.completed_count, 2);
+        assert_eq!(state.activities.len(), 2);
+        assert_eq!(state.activities[0].message.as_deref(), Some("first"));
+        assert_eq!(state.activities[0].status, ActivityStatus::Success);
+        assert_eq!(state.activities[1].message.as_deref(), Some("second"));
+        assert_eq!(state.activities[1].status, ActivityStatus::Error);
+        assert!(state.active_activity_counts.is_empty());
+    }
+
+    #[test]
+    fn progress_keeps_latest_five_activity_rows() {
+        let progress = Progress::new(Instant::now());
+        for i in 0..7 {
+            let id = i.to_string();
+            progress.record_start(&progress_start(&id, &format!("message {i}")));
+            progress.record_done(&progress_done(&id, false));
+        }
+
+        let state = progress
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(state.activities.len(), PROGRESS_MAX_RECENT);
+        assert_eq!(state.activities[0].message.as_deref(), Some("message 2"));
+        assert_eq!(state.activities[4].message.as_deref(), Some("message 6"));
+        assert!(
+            state
+                .activities
+                .iter()
+                .all(|activity| activity.status == ActivityStatus::Success)
+        );
+    }
+
+    #[test]
+    fn progress_activity_message_is_sanitized_and_truncated() {
+        let progress = Progress::new(Instant::now());
+        let long_secret = format!("API_KEY=super-secret\n{}", "é".repeat(100));
+        progress.record_start(&progress_start("secret", &long_secret));
+
+        let state = progress
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let message = state.activities[0].message.as_deref().unwrap();
+        assert!(!message.contains("super-secret"));
+        assert!(!message.contains('\n'));
+        assert!(message.ends_with('…'));
+        assert!(message.chars().count() <= ACTIVITY_MESSAGE_MAX_CHARS);
+    }
+
+    #[test]
+    fn progress_counts_done_events_for_evicted_activity_rows() {
+        let progress = Progress::new(Instant::now());
+        for i in 0..7 {
+            progress.record_start(&progress_start(&i.to_string(), "running"));
+        }
+        for i in 0..7 {
+            progress.record_done(&progress_done(&i.to_string(), false));
+        }
+
+        let state = progress
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(state.completed_count, 7);
+        assert_eq!(state.recent.len(), PROGRESS_MAX_RECENT);
+        assert!(
+            state
+                .activities
+                .iter()
+                .all(|activity| activity.status == ActivityStatus::Success)
+        );
+    }
+
+    #[test]
+    fn forwarder_barrier_observes_prior_tool_done() {
+        smol::block_on(async {
+            let progress = Arc::new(Progress::new(Instant::now()));
+            progress.record_start(&progress_start("one", "reading"));
+            let target = progress.next_forwarder_barrier();
+            let forwarded = Arc::clone(&progress);
+            let worker = smol::spawn(async move {
+                forwarded.record_done(&progress_done("one", false));
+                forwarded.record_forwarder_barrier();
+            });
+
+            progress.wait_for_forwarder_barrier(target).await;
+            worker.await;
+            let state = progress
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert_eq!(state.activities[0].status, ActivityStatus::Success);
+        });
+    }
+
+    #[test]
+    fn progress_redacts_separated_credentials() {
+        let sanitized = sanitize_activity_message(
+            "API_KEY = first Authorization: Bearer second --password third foo=sk-secret",
+        );
+        assert_eq!(
+            sanitized,
+            "API_KEY=[REDACTED] Authorization:[REDACTED] --password=[REDACTED] foo=[REDACTED]"
+        );
+    }
+
+    #[test]
+    fn progress_redacts_adjacent_bearer_scheme_and_token() {
+        let sanitized = sanitize_activity_message("Authorization:Bearer visible-token trailing");
+        assert_eq!(sanitized, "Authorization:[REDACTED] trailing");
+    }
+
+    #[test]
+    fn progress_redacts_credentials_embedded_in_urls_and_tokens() {
+        let sanitized = sanitize_activity_message(
+            "https://host.test/path?api_key=visible glpat-visible prefix-ghp_visible",
+        );
+        assert_eq!(sanitized, "https:[REDACTED] [REDACTED] [REDACTED]");
+    }
+
+    #[test]
+    fn progress_notifications_are_coalesced() {
+        let progress = Progress::new(Instant::now());
+        for _ in 0..100 {
+            progress.notify();
+            progress.record_forwarder_barrier();
+        }
+        assert_eq!(progress.rx.len(), 1);
+        assert_eq!(progress.barrier_rx.len(), 1);
+    }
+
+    #[test]
+    fn progress_hides_bash_and_unknown_tool_headers() {
+        for tool in ["bash", "custom_plugin"] {
+            let mut event = progress_start(tool, "API_KEY=visible");
+            event.tool = Arc::from(tool);
+            event.render_header = Some(n00n_agent::BufferSnapshot::plain_text(
+                "Authorization: Bearer rendered-secret".into(),
+            ));
+            assert_eq!(activity_message(&event), None);
+        }
+    }
+
+    #[test]
+    fn progress_done_is_turn_safe() {
+        let progress = Progress::new(Instant::now());
+        let first = progress.begin_turn();
+        let second = progress.begin_turn();
+        progress.set_done(first);
+        assert!(!progress.state.lock().unwrap().done);
+        progress.set_done(second);
+        assert!(progress.state.lock().unwrap().done);
     }
 
     #[test]

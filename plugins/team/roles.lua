@@ -87,7 +87,12 @@ function M.run(ctx, role, prompt, opts)
     return { ok = false, error = serr }
   end
 
-  local res, rerr = sess:prompt(prompt)
+  local res, rerr
+  if opts.preview then
+    res, rerr = opts.preview:prompt(sess, prompt, opts.activity_label or role)
+  else
+    res, rerr = sess:prompt(prompt)
+  end
   sess:close()
   local measured_usage, cost, metrics_err = M.metrics(model.spec, res)
   if metrics_err then
