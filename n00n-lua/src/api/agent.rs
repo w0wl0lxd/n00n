@@ -1366,6 +1366,7 @@ async fn prompt(
         .with_user_response_rx(Arc::clone(&s.answer_rx))
         .with_interrupt_source(Arc::new(PromptInterruptSource {
             rx: s.prompt_rx.clone(),
+            thinking: s.thinking,
             fast: s.fast,
         }))
         .with_cancel(s.child_cancel.clone())

@@ -22,6 +22,7 @@ const TASK_PLUGIN_SRC: &str = include_str!("../../plugins/task/init.lua");
 
 // Mirrors of the plugin's error contracts and policy numbers.
 const STRUCTURED_OUTPUT_TOOL: &str = "structured_output";
+const DONE_PROMPT_SUFFIX: &str = "\n\nWhen finished, call the done tool with your final answer.";
 const MAX_SCHEMA_ERRORS: usize = 3;
 const OVERSIZED_SCHEMA_DESCRIPTION_BYTES: usize = 33_000;
 const OVERDEEP_SCHEMA_LEVELS: usize = 20;
@@ -505,12 +506,13 @@ fn plain_path_returns_text_and_sanitized_usage_without_local_tools() {
     );
 
     let snap = probe(&reg);
-    assert_eq!(snap["has_local_tools"], json!(false));
+    assert_eq!(snap["has_local_tools"], json!(true));
     assert_eq!(snap["structured_output_schema"], Value::Null);
     assert_eq!(snap["usage_fast"], json!(true));
     assert_eq!(snap["prompt_count"], json!(1));
+    let expected_prompt = format!("{TASK_PROMPT}{DONE_PROMPT_SUFFIX}");
     let prompt = snap["prompts"][0].as_str().expect("prompt missing");
-    assert_eq!(prompt, TASK_PROMPT, "got: {prompt}");
+    assert_eq!(prompt, expected_prompt, "got: {prompt}");
     assert_eq!(snap["closed"], json!(1));
 }
 
