@@ -12,7 +12,7 @@ use n00n_agent::{
     ImageMediaType, McpConfigErrors, McpServerInfo, McpServerStatus, McpSnapshot,
     McpSnapshotReader, ToolDoneEvent, ToolOutput, ToolStartEvent, TurnCompleteEvent,
 };
-use n00n_config::{PermissionsConfig, UiConfig};
+use n00n_config::{PermissionsConfig, ToolKey, UiConfig};
 use n00n_lua::{HintReader, KeymapReader, LuaCommandReader};
 use n00n_providers::{ContentBlock, Effort, Role, TokenUsage};
 use n00n_storage::sessions::{StoredMode, StoredThinking};
@@ -2372,10 +2372,7 @@ fn typing_in_read_only_subagent_flashes_explanation() {
     app.update(Msg::Key(key(KeyCode::Char('h'))));
     app.update(Msg::Key(key(KeyCode::Enter)));
 
-    assert_eq!(
-        app.status_bar.flash_text(),
-        Some("This agent cannot receive follow-up messages")
-    );
+    assert_eq!(app.status_bar.flash_text(), Some(STEERING_UNAVAILABLE_MSG));
 }
 
 #[test]
@@ -2386,11 +2383,75 @@ fn typing_in_finished_subagent_with_prompt_flashes_and_does_not_enqueue() {
     app.update(Msg::Key(key(KeyCode::Char('h'))));
     app.update(Msg::Key(key(KeyCode::Enter)));
 
-    assert_eq!(
-        app.status_bar.flash_text(),
-        Some("This agent cannot receive follow-up messages")
-    );
+    assert_eq!(app.status_bar.flash_text(), Some(STEERING_UNAVAILABLE_MSG));
     assert!(prompt_rx.try_recv().is_err());
+}
+
+#[test]
+fn subagent_prompt_queue_full_restores_input_and_flashes_busy() {
+    let (mut app, prompt_rx) = app_with_steerable_subagent("child-a");
+    let fill_tx = app
+        .subagent_prompts
+        .get("child-a")
+        .cloned()
+        .expect("prompt tx should be set");
+    fill_tx.try_send("fill1".into()).unwrap();
+    fill_tx.try_send("fill2".into()).unwrap();
+    app.active_chat = 1;
+
+    app.input_box.set_input("hi".into());
+    app.update(Msg::Key(key(KeyCode::Enter)));
+
+    assert_eq!(app.status_bar.flash_text(), Some(STEERING_BUSY_MSG));
+    assert_eq!(app.input_box.buffer.value(), "hi");
+    assert_eq!(prompt_rx.try_recv().unwrap(), "fill1");
+    assert_eq!(prompt_rx.try_recv().unwrap(), "fill2");
+    assert!(prompt_rx.try_recv().is_err());
+}
+
+#[test]
+fn subagent_prompt_disconnected_removes_sender_and_flashes_unavailable() {
+    let (prompt_tx, prompt_rx) = flume::bounded::<String>(1);
+    drop(prompt_rx);
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    app.update(Msg::Agent(Box::new(Envelope {
+        event: AgentEvent::TextDelta { text: "x".into() },
+        subagent: Some(subagent_info_with_channels(
+            "child-a",
+            "task-group",
+            "research",
+            None,
+            Some(prompt_tx),
+        )),
+        run_id: 1,
+    })));
+    app.active_chat = 1;
+
+    app.input_box.set_input("hi".into());
+    app.update(Msg::Key(key(KeyCode::Enter)));
+
+    assert_eq!(app.status_bar.flash_text(), Some(STEERING_UNAVAILABLE_MSG));
+    assert!(!app.subagent_prompts.contains_key("child-a"));
+}
+
+#[test]
+fn permission_answer_to_finished_subagent_does_not_fall_back_to_main() {
+    let (mut app, sub_rx, main_rx) = app_with_subagent_tx("task1");
+    app.permission_prompt.open(
+        "perm-id".into(),
+        ToolKey::native("bash"),
+        vec!["execute".into()],
+        Some("task1".into()),
+    );
+    finish_subagent(&mut app, "task1", false);
+
+    app.update(Msg::Key(key(KeyCode::Char('y'))));
+
+    assert!(main_rx.try_recv().is_err());
+    assert!(sub_rx.try_recv().is_err());
+    assert!(!app.permission_prompt.is_open());
 }
 
 fn app_with_subagent_tx(id: &str) -> (App, flume::Receiver<String>, flume::Receiver<String>) {
@@ -2604,7 +2665,7 @@ fn stale_auth_required_after_cancel_is_dropped() {
 }
 
 #[test]
-fn send_to_agent_unknown_subagent_falls_back_to_main() {
+fn send_to_agent_unknown_subagent_does_not_fall_back_to_main() {
     let (main_tx, main_rx) = flume::unbounded();
     let mut app = test_app();
     app.status = Status::Streaming;
@@ -2616,7 +2677,7 @@ fn send_to_agent_unknown_subagent_falls_back_to_main() {
     };
     app.update(Msg::Key(key(KeyCode::Enter)));
 
-    assert_eq!(main_rx.try_recv().unwrap(), "");
+    assert!(main_rx.try_recv().is_err());
     assert_eq!(app.pending_input, PendingInput::None);
 }
 
