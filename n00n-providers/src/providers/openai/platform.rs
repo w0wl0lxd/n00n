@@ -589,8 +589,10 @@ impl OpenAi {
                 return Ok(lock);
             }
             if started.elapsed() >= RESPONSE_CHAIN_LOCK_WAIT_TIMEOUT {
-                let millis =
-                    u64::try_from(RESPONSE_CHAIN_LOCK_WAIT_TIMEOUT.as_millis()).unwrap_or(u64::MAX);
+                const MAX_MILLIS: u64 = u64::MAX;
+                let millis = u64::try_from(RESPONSE_CHAIN_LOCK_WAIT_TIMEOUT.as_millis())
+                    .ok()
+                    .unwrap_or_else(|| MAX_MILLIS);
                 return Err(AgentError::ResponseChainBusy { millis });
             }
             let remaining = RESPONSE_CHAIN_LOCK_WAIT_TIMEOUT.saturating_sub(started.elapsed());
@@ -785,10 +787,10 @@ impl OpenAi {
             if auth.generation != self.auth_generation.load(Ordering::Acquire) {
                 continue;
             }
-            let socket = super::websocket::ResponsesWebSocket::connect(
+            let socket = Box::pin(super::websocket::ResponsesWebSocket::connect(
                 &auth.resolved,
                 self.websocket_connect_timeout,
-            )
+            ))
             .await
             .map_err(not_sent_websocket_error)?;
             return Ok(ScopedResponsesWebSocket {
@@ -831,6 +833,7 @@ impl OpenAi {
             && auth.base_url.as_deref() == Some(CONFIG.base_url)
     }
 
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn stream_websocket<F>(
         &self,
         slot: Option<ResponseConnectionSlot>,
@@ -893,7 +896,7 @@ impl OpenAi {
                     self.reset_connection_local_chain(chain_session);
                     cleared_connection_chain = true;
                 }
-                scoped = Some(self.connect_current_websocket(attempt_nonce).await?);
+                scoped = Some(Box::pin(self.connect_current_websocket(attempt_nonce)).await?);
                 reused = false;
             }
             let send_auth = self
@@ -1198,6 +1201,7 @@ impl OpenAi {
         attempt
     }
 
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn run_codex_attempt(
         &self,
         model: &Model,
@@ -1315,33 +1319,32 @@ impl OpenAi {
         let (response_id, response, chainable) = {
             let admission_guard = admission;
             let connection_slot = self.response_connection_slot(session_id);
-            let websocket_result = self
-                .stream_websocket(
-                    connection_slot,
-                    &body,
-                    &mut full_history_body,
-                    full_history_fallback_available,
-                    || {
-                        super::websocket::build_request_body(
-                            model,
-                            messages,
-                            system,
-                            tools,
-                            opts,
-                            None,
-                            prompt_cache_key.as_deref(),
-                            false,
-                        )
-                    },
-                    session_id.map(canonical_session_key),
-                    admission_scope.as_deref(),
-                    event_tx,
-                    auth,
-                    &socket_credential_hash,
-                    stream_timeout,
-                    attempt_nonce,
-                )
-                .await;
+            let websocket_result = Box::pin(self.stream_websocket(
+                connection_slot,
+                &body,
+                &mut full_history_body,
+                full_history_fallback_available,
+                || {
+                    super::websocket::build_request_body(
+                        model,
+                        messages,
+                        system,
+                        tools,
+                        opts,
+                        None,
+                        prompt_cache_key.as_deref(),
+                        false,
+                    )
+                },
+                session_id.map(canonical_session_key),
+                admission_scope.as_deref(),
+                event_tx,
+                auth,
+                &socket_credential_hash,
+                stream_timeout,
+                attempt_nonce,
+            ))
+            .await;
             match websocket_result {
                 Ok((response_id, response)) => (response_id, response, true),
                 Err(error) if should_fallback_to_http(&error) => {
@@ -1502,6 +1505,7 @@ impl OpenAi {
         }
     }
 
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn run_codex_attempt_with_auth_retry(
         &self,
         model: &Model,
@@ -1528,8 +1532,49 @@ impl OpenAi {
                 };
             }
         };
-        let attempt = self
-            .run_codex_attempt(
+        let attempt = Box::pin(self.run_codex_attempt(
+            model,
+            messages,
+            system,
+            tools,
+            tools_hash,
+            event_tx,
+            opts,
+            session_id,
+            durable_chain,
+            &coding_plan_auth.resolved,
+            attempt_nonce,
+        ))
+        .await;
+        if attempt.should_reacquire_admission() {
+            let Ok(current) = self.coding_plan_auth(false, None, attempt_nonce).await else {
+                return attempt;
+            };
+            return Box::pin(self.run_codex_attempt(
+                model,
+                messages,
+                system,
+                tools,
+                tools_hash,
+                event_tx,
+                opts,
+                session_id,
+                durable_chain,
+                &current.resolved,
+                attempt_nonce,
+            ))
+            .await;
+        }
+        if let Some(delay) = coding_plan_admission_retry_delay(&attempt) {
+            debug!(
+                process_instance_nonce = process_instance_nonce(),
+                attempt_nonce,
+                phase = "request_admission_retry",
+                retry_delay_ms = delay.as_millis(),
+                "retrying definitively unsent OpenAI Coding Plan admission rejection"
+            );
+            smol::Timer::after(delay).await;
+            return Box::pin(self.run_codex_attempt(
                 model,
                 messages,
                 system,
@@ -1541,52 +1586,8 @@ impl OpenAi {
                 durable_chain,
                 &coding_plan_auth.resolved,
                 attempt_nonce,
-            )
+            ))
             .await;
-        if attempt.should_reacquire_admission() {
-            let Ok(current) = self.coding_plan_auth(false, None, attempt_nonce).await else {
-                return attempt;
-            };
-            return self
-                .run_codex_attempt(
-                    model,
-                    messages,
-                    system,
-                    tools,
-                    tools_hash,
-                    event_tx,
-                    opts,
-                    session_id,
-                    durable_chain,
-                    &current.resolved,
-                    attempt_nonce,
-                )
-                .await;
-        }
-        if let Some(delay) = coding_plan_admission_retry_delay(&attempt) {
-            debug!(
-                process_instance_nonce = process_instance_nonce(),
-                attempt_nonce,
-                phase = "request_admission_retry",
-                retry_delay_ms = delay.as_millis(),
-                "retrying definitively unsent OpenAI Coding Plan admission rejection"
-            );
-            smol::Timer::after(delay).await;
-            return self
-                .run_codex_attempt(
-                    model,
-                    messages,
-                    system,
-                    tools,
-                    tools_hash,
-                    event_tx,
-                    opts,
-                    session_id,
-                    durable_chain,
-                    &coding_plan_auth.resolved,
-                    attempt_nonce,
-                )
-                .await;
         }
         let Some(observed) = coding_plan_auth.oauth_tokens.as_ref() else {
             return attempt;
@@ -1601,7 +1602,7 @@ impl OpenAi {
         else {
             return attempt;
         };
-        self.run_codex_attempt(
+        Box::pin(self.run_codex_attempt(
             model,
             messages,
             system,
@@ -1613,7 +1614,7 @@ impl OpenAi {
             durable_chain,
             &refreshed.resolved,
             attempt_nonce,
-        )
+        ))
         .await
     }
 
@@ -1727,19 +1728,18 @@ impl Provider for OpenAi {
                 };
                 let durable_chain = session_id.is_some() && self.response_state_storage.is_some();
                 let tools_hash = stable_json_hash(tools)?;
-                let attempt = self
-                    .run_codex_attempt_with_auth_retry(
-                        model,
-                        messages,
-                        system,
-                        tools,
-                        &tools_hash,
-                        event_tx,
-                        opts,
-                        session_id,
-                        durable_chain,
-                    )
-                    .await;
+                let attempt = Box::pin(self.run_codex_attempt_with_auth_retry(
+                    model,
+                    messages,
+                    system,
+                    tools,
+                    &tools_hash,
+                    event_tx,
+                    opts,
+                    session_id,
+                    durable_chain,
+                ))
+                .await;
                 if attempt.previous_response_id.is_none() {
                     return attempt.result;
                 }
@@ -1752,20 +1752,19 @@ impl Provider for OpenAi {
                     full_history_fallback = true,
                     "OpenAI Responses chain was not found; retrying with full history"
                 );
-                return self
-                    .run_codex_attempt_with_auth_retry(
-                        model,
-                        messages,
-                        system,
-                        tools,
-                        &tools_hash,
-                        event_tx,
-                        opts,
-                        session_id,
-                        durable_chain,
-                    )
-                    .await
-                    .result;
+                return Box::pin(self.run_codex_attempt_with_auth_retry(
+                    model,
+                    messages,
+                    system,
+                    tools,
+                    &tools_hash,
+                    event_tx,
+                    opts,
+                    session_id,
+                    durable_chain,
+                ))
+                .await
+                .result;
             }
 
             let prompt_cache_key = session_id.map(canonical_prompt_cache_key);
@@ -2324,6 +2323,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn ephemeral_preflight_failure_rebuilds_second_turn_with_full_history() {
         smol::block_on(async {
             let temp_dir = TempDir::new().unwrap();
@@ -2898,23 +2898,22 @@ mod tests {
             let slot = provider.response_connection_slot(Some(&session)).unwrap();
             let (event_tx, _) = flume::unbounded();
 
-            let error = provider
-                .stream_websocket(
-                    Some(slot),
-                    &serde_json::json!({"model":"test","input":[]}),
-                    &mut None,
-                    false,
-                    || Value::Null,
-                    None,
-                    None,
-                    &event_tx,
-                    &auth,
-                    TEST_CREDENTIAL_HASH,
-                    Duration::from_secs(2),
-                    0,
-                )
-                .await
-                .unwrap_err();
+            let error = Box::pin(provider.stream_websocket(
+                Some(slot),
+                &serde_json::json!({"model":"test","input":[]}),
+                &mut None,
+                false,
+                || Value::Null,
+                None,
+                None,
+                &event_tx,
+                &auth,
+                TEST_CREDENTIAL_HASH,
+                Duration::from_secs(2),
+                0,
+            ))
+            .await
+            .unwrap_err();
             let _ = done_tx.send_async(()).await;
             server.await;
 
@@ -3062,21 +3061,20 @@ mod tests {
             let tools = serde_json::json!([]);
             let (event_tx, _) = flume::unbounded();
 
-            let attempt = provider
-                .run_codex_attempt(
-                    &model,
-                    &[Message::user("hello".into())],
-                    "",
-                    &tools,
-                    TOOLS_HASH,
-                    &event_tx,
-                    RequestOptions::default(),
-                    None,
-                    false,
-                    &auth,
-                    0,
-                )
-                .await;
+            let attempt = Box::pin(provider.run_codex_attempt(
+                &model,
+                &[Message::user("hello".into())],
+                "",
+                &tools,
+                TOOLS_HASH,
+                &event_tx,
+                RequestOptions::default(),
+                None,
+                false,
+                &auth,
+                0,
+            ))
+            .await;
             server.await;
 
             assert_eq!(creates.load(Ordering::Relaxed), 1);
@@ -3167,23 +3165,22 @@ mod tests {
             let session = SessionRef::generate();
             let slot = provider.response_connection_slot(Some(&session)).unwrap();
             let (event_tx, _) = flume::unbounded();
-            let error = provider
-                .stream_websocket(
-                    Some(slot),
-                    &serde_json::json!({"model":"test","input":[]}),
-                    &mut None,
-                    false,
-                    || Value::Null,
-                    None,
-                    None,
-                    &event_tx,
-                    &auth,
-                    TEST_CREDENTIAL_HASH,
-                    Duration::from_secs(2),
-                    0,
-                )
-                .await
-                .unwrap_err();
+            let error = Box::pin(provider.stream_websocket(
+                Some(slot),
+                &serde_json::json!({"model":"test","input":[]}),
+                &mut None,
+                false,
+                || Value::Null,
+                None,
+                None,
+                &event_tx,
+                &auth,
+                TEST_CREDENTIAL_HASH,
+                Duration::from_secs(2),
+                0,
+            ))
+            .await
+            .unwrap_err();
             done_tx.send_async(()).await.unwrap();
             server.await;
 
@@ -3194,6 +3191,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn near_expiry_pooled_socket_is_replaced_before_second_turn_create() {
         smol::block_on(async {
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3278,23 +3276,22 @@ mod tests {
             let (event_tx, _) = flume::unbounded();
             let body = serde_json::json!({"model":"test","input":[]});
 
-            let (first_id, _) = provider
-                .stream_websocket(
-                    Some(Arc::clone(&slot)),
-                    &body,
-                    &mut None,
-                    false,
-                    || Value::Null,
-                    None,
-                    None,
-                    &event_tx,
-                    &auth,
-                    TEST_CREDENTIAL_HASH,
-                    Duration::from_secs(2),
-                    0,
-                )
-                .await
-                .unwrap();
+            let (first_id, _) = Box::pin(provider.stream_websocket(
+                Some(Arc::clone(&slot)),
+                &body,
+                &mut None,
+                false,
+                || Value::Null,
+                None,
+                None,
+                &event_tx,
+                &auth,
+                TEST_CREDENTIAL_HASH,
+                Duration::from_secs(2),
+                0,
+            ))
+            .await
+            .unwrap();
             {
                 let mut connection = slot.lock().await;
                 connection
@@ -3313,23 +3310,22 @@ mod tests {
                     )
                     .await
             );
-            let (second_id, _) = provider
-                .stream_websocket(
-                    Some(slot),
-                    &body,
-                    &mut None,
-                    false,
-                    || Value::Null,
-                    None,
-                    None,
-                    &event_tx,
-                    &auth,
-                    TEST_CREDENTIAL_HASH,
-                    Duration::from_secs(2),
-                    0,
-                )
-                .await
-                .unwrap();
+            let (second_id, _) = Box::pin(provider.stream_websocket(
+                Some(slot),
+                &body,
+                &mut None,
+                false,
+                || Value::Null,
+                None,
+                None,
+                &event_tx,
+                &auth,
+                TEST_CREDENTIAL_HASH,
+                Duration::from_secs(2),
+                0,
+            ))
+            .await
+            .unwrap();
             server.await;
 
             assert_eq!(first_id.as_deref(), Some("resp_first"));
@@ -3339,6 +3335,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::result_large_err)]
     fn token_refresh_during_new_socket_handshake_reconnects_before_create() {
         smol::block_on(async {
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3378,7 +3375,7 @@ mod tests {
                         server_provider
                             .auth_generation
                             .fetch_add(1, Ordering::Release);
-                        Ok(response)
+                        Ok::<_, async_tungstenite::tungstenite::handshake::server::ErrorResponse>(response)
                     },
                 )
                 .await
@@ -3404,23 +3401,22 @@ mod tests {
             });
             let (event_tx, _) = flume::unbounded();
 
-            let (response_id, _) = provider
-                .stream_websocket(
-                    None,
-                    &serde_json::json!({"model":"test","input":[]}),
-                    &mut None,
-                    false,
-                    || Value::Null,
-                    None,
-                    None,
-                    &event_tx,
-                    &old_auth,
-                    &old_credential_hash,
-                    Duration::from_secs(2),
-                    0,
-                )
-                .await
-                .unwrap();
+            let (response_id, _) = Box::pin(provider.stream_websocket(
+                None,
+                &serde_json::json!({"model":"test","input":[]}),
+                &mut None,
+                false,
+                || Value::Null,
+                None,
+                None,
+                &event_tx,
+                &old_auth,
+                &old_credential_hash,
+                Duration::from_secs(2),
+                0,
+            ))
+            .await
+            .unwrap();
             server.await;
 
             assert_eq!(response_id.as_deref(), Some("resp_fresh"));
@@ -3428,6 +3424,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn token_refresh_during_reused_socket_preflight_reconnects_before_create() {
         smol::block_on(async {
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3506,40 +3503,38 @@ mod tests {
             let (event_tx, _) = flume::unbounded();
             let body = serde_json::json!({"model":"test","input":[]});
 
-            let (first_id, _) = provider
-                .stream_websocket(
-                    Some(Arc::clone(&slot)),
-                    &body,
-                    &mut None,
-                    false,
-                    || Value::Null,
-                    None,
-                    None,
-                    &event_tx,
-                    &old_auth,
-                    &old_credential_hash,
-                    Duration::from_secs(2),
-                    0,
-                )
-                .await
-                .unwrap();
-            let (second_id, _) = provider
-                .stream_websocket(
-                    Some(slot),
-                    &body,
-                    &mut None,
-                    false,
-                    || Value::Null,
-                    None,
-                    None,
-                    &event_tx,
-                    &old_auth,
-                    &old_credential_hash,
-                    Duration::from_secs(2),
-                    0,
-                )
-                .await
-                .unwrap();
+            let (first_id, _) = Box::pin(provider.stream_websocket(
+                Some(Arc::clone(&slot)),
+                &body,
+                &mut None,
+                false,
+                || Value::Null,
+                None,
+                None,
+                &event_tx,
+                &old_auth,
+                &old_credential_hash,
+                Duration::from_secs(2),
+                0,
+            ))
+            .await
+            .unwrap();
+            let (second_id, _) = Box::pin(provider.stream_websocket(
+                Some(slot),
+                &body,
+                &mut None,
+                false,
+                || Value::Null,
+                None,
+                None,
+                &event_tx,
+                &old_auth,
+                &old_credential_hash,
+                Duration::from_secs(2),
+                0,
+            ))
+            .await
+            .unwrap();
             server.await;
 
             assert_eq!(first_id.as_deref(), Some("resp_first"));
@@ -3683,16 +3678,16 @@ mod tests {
                 0,
             );
 
-            let cancelled = futures_lite::future::race(
+            let cancelled = Box::pin(futures_lite::future::race(
                 async {
-                    let _ = attempt.await;
+                    let _ = Box::pin(attempt).await;
                     false
                 },
                 async {
                     request_rx.recv_async().await.unwrap();
                     true
                 },
-            )
+            ))
             .await;
 
             assert!(cancelled);

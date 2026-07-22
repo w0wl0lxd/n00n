@@ -205,7 +205,7 @@ impl ResponsesWebSocket {
 
         let connect = async_tungstenite::smol::connect_async(request);
         let (socket, _) = {
-            futures_lite::future::or(
+            Box::pin(futures_lite::future::or(
                 async { connect.await.map_err(|error| ws_connect_err(auth, error)) },
                 async {
                     Timer::after(connect_timeout).await;
@@ -213,7 +213,7 @@ impl ResponsesWebSocket {
                         secs: connect_timeout.as_secs(),
                     })
                 },
-            )
+            ))
             .await?
         };
         let now = Instant::now();
@@ -314,6 +314,7 @@ impl ResponsesWebSocket {
             .await
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn stream_message_with_keepalive(
         &mut self,
         body: &Value,
@@ -737,7 +738,8 @@ fn error_from_event(event: &Value) -> AgentError {
     };
 
     let status = if let Some(s) = event.get("status").and_then(Value::as_u64) {
-        u16::try_from(s).unwrap_or(500)
+        const DEFAULT_STATUS: u16 = 500;
+        u16::try_from(s).ok().unwrap_or_else(|| DEFAULT_STATUS)
     } else {
         match error_type {
             "overloaded_error" => 529,
@@ -852,9 +854,10 @@ mod tests {
                 base_url: Some(format!("http://{address}/v1")),
                 headers: Vec::new(),
             };
-            let mut connection = ResponsesWebSocket::connect(&auth, Duration::from_secs(2))
-                .await
-                .unwrap();
+            let mut connection =
+                Box::pin(ResponsesWebSocket::connect(&auth, Duration::from_secs(2)))
+                    .await
+                    .unwrap();
 
             let error = connection
                 .preflight(Duration::from_secs(2))
@@ -963,9 +966,10 @@ mod tests {
                 base_url: Some(format!("http://{address}/v1")),
                 headers: Vec::new(),
             };
-            let mut connection = ResponsesWebSocket::connect(&auth, Duration::from_secs(2))
-                .await
-                .unwrap();
+            let mut connection =
+                Box::pin(ResponsesWebSocket::connect(&auth, Duration::from_secs(2)))
+                    .await
+                    .unwrap();
             let (event_tx, _) = flume::unbounded();
             let error = connection
                 .stream_message(
@@ -1002,9 +1006,10 @@ mod tests {
                 base_url: Some(format!("http://{address}/v1")),
                 headers: Vec::new(),
             };
-            let mut connection = ResponsesWebSocket::connect(&auth, Duration::from_secs(2))
-                .await
-                .unwrap();
+            let mut connection =
+                Box::pin(ResponsesWebSocket::connect(&auth, Duration::from_secs(2)))
+                    .await
+                    .unwrap();
             let (event_tx, _) = flume::unbounded();
             let error = connection
                 .stream_message(
@@ -1058,9 +1063,10 @@ mod tests {
                 base_url: Some(format!("http://{address}/v1")),
                 headers: Vec::new(),
             };
-            let mut connection = ResponsesWebSocket::connect(&auth, Duration::from_secs(2))
-                .await
-                .unwrap();
+            let mut connection =
+                Box::pin(ResponsesWebSocket::connect(&auth, Duration::from_secs(2)))
+                    .await
+                    .unwrap();
             let (event_tx, _) = flume::unbounded();
             let error = connection
                 .stream_message(
@@ -1127,9 +1133,10 @@ mod tests {
                 base_url: Some(format!("http://{address}/v1")),
                 headers: Vec::new(),
             };
-            let mut connection = ResponsesWebSocket::connect(&auth, Duration::from_secs(2))
-                .await
-                .unwrap();
+            let mut connection =
+                Box::pin(ResponsesWebSocket::connect(&auth, Duration::from_secs(2)))
+                    .await
+                    .unwrap();
             let (event_tx, _) = flume::unbounded();
             let (response_id, _) = connection
                 .stream_message_with_keepalive(
@@ -1171,9 +1178,10 @@ mod tests {
                 base_url: Some(format!("http://{address}/v1")),
                 headers: Vec::new(),
             };
-            let mut connection = ResponsesWebSocket::connect(&auth, Duration::from_secs(2))
-                .await
-                .unwrap();
+            let mut connection =
+                Box::pin(ResponsesWebSocket::connect(&auth, Duration::from_secs(2)))
+                    .await
+                    .unwrap();
             let (event_tx, _) = flume::unbounded();
             let error = connection
                 .stream_message_with_keepalive(
@@ -1222,9 +1230,10 @@ mod tests {
                 base_url: Some(format!("http://{address}/v1")),
                 headers: Vec::new(),
             };
-            let mut connection = ResponsesWebSocket::connect(&auth, Duration::from_secs(2))
-                .await
-                .unwrap();
+            let mut connection =
+                Box::pin(ResponsesWebSocket::connect(&auth, Duration::from_secs(2)))
+                    .await
+                    .unwrap();
             let (event_tx, _) = flume::unbounded();
             let error = connection
                 .stream_message_with_keepalive(
@@ -1278,9 +1287,10 @@ mod tests {
                 base_url: Some(format!("http://{address}/v1")),
                 headers: Vec::new(),
             };
-            let mut connection = ResponsesWebSocket::connect(&auth, Duration::from_secs(2))
-                .await
-                .unwrap();
+            let mut connection =
+                Box::pin(ResponsesWebSocket::connect(&auth, Duration::from_secs(2)))
+                    .await
+                    .unwrap();
             let (event_tx, _) = flume::unbounded();
             let started = Instant::now();
 

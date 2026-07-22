@@ -241,25 +241,32 @@ fn parse_iso8601_to_epoch(s: &str) -> Option<u64> {
     let hour: u64 = time_parts.next()?.parse().ok()?;
     let minute: u64 = time_parts.next()?.parse().ok()?;
     let second: u64 = time_parts.next()?.parse().ok()?;
-    Some(ymdhms_to_epoch(year, month, day, hour, minute, second))
+    ymdhms_to_epoch(year, month, day, hour, minute, second)
 }
 
 // Inverse of days_to_ymd. Howard Hinnant's algorithm; valid for any civil date.
-fn ymdhms_to_epoch(year: u64, month: u64, day: u64, hour: u64, minute: u64, second: u64) -> u64 {
+fn ymdhms_to_epoch(
+    year: u64,
+    month: u64,
+    day: u64,
+    hour: u64,
+    minute: u64,
+    second: u64,
+) -> Option<u64> {
     let y = if month <= 2 { year - 1 } else { year };
     let era = y / 400;
     let yoe = y - era * 400;
-    let m = i64::try_from(month).unwrap_or(0);
-    let doy =
-        (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + i64::try_from(day).unwrap_or(0) - 1;
-    let doe = i64::try_from(yoe).unwrap_or(0) * 365 + i64::try_from(yoe / 4).unwrap_or(0)
-        - i64::try_from(yoe / 100).unwrap_or(0)
+    let m = i64::try_from(month).ok()?;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + i64::try_from(day).ok()? - 1;
+    let doe = i64::try_from(yoe).ok()? * 365 + i64::try_from(yoe / 4).ok()?
+        - i64::try_from(yoe / 100).ok()?
         + doy;
     let days_since_epoch =
-        u64::try_from(i64::try_from(era).unwrap_or(0) * 146_097 + doe - 719_468).unwrap_or(0);
-    days_since_epoch * 86400 + hour * 3600 + minute * 60 + second
+        u64::try_from(i64::try_from(era).ok()? * 146_097 + doe - 719_468).ok()?;
+    Some(days_since_epoch * 86400 + hour * 3600 + minute * 60 + second)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn sign_request_sigv4(
     method: &str,
     url: &str,
@@ -537,6 +544,7 @@ impl Bedrock {
 }
 
 impl Provider for Bedrock {
+    #[allow(clippy::too_many_lines)]
     fn stream_message<'a>(
         &'a self,
         model: &'a Model,
@@ -858,20 +866,20 @@ mod tests {
         );
     }
 
-    fn build_eventstream_frame(header_name: &str, header_value: &str, payload: &[u8]) -> Vec<u8> {
+    fn build_eventstream_frame(
+        header_name: &str,
+        header_value: &str,
+        payload: &[u8],
+    ) -> Option<Vec<u8>> {
         let mut header_buf = Vec::new();
-        header_buf.push(u8::try_from(header_name.len()).unwrap_or(255));
+        header_buf.push(u8::try_from(header_name.len()).ok()?);
         header_buf.extend_from_slice(header_name.as_bytes());
         header_buf.push(7);
-        header_buf.extend_from_slice(
-            &u16::try_from(header_value.len())
-                .unwrap_or(u16::MAX)
-                .to_be_bytes(),
-        );
+        header_buf.extend_from_slice(&u16::try_from(header_value.len()).ok()?.to_be_bytes());
         header_buf.extend_from_slice(header_value.as_bytes());
 
-        let headers_len = u32::try_from(header_buf.len()).unwrap_or(u32::MAX);
-        let total_len = 12 + headers_len + u32::try_from(payload.len()).unwrap_or(u32::MAX) + 4;
+        let headers_len = u32::try_from(header_buf.len()).ok()?;
+        let total_len = 12 + headers_len + u32::try_from(payload.len()).ok()? + 4;
 
         let mut frame = Vec::new();
         frame.extend_from_slice(&total_len.to_be_bytes());
@@ -880,13 +888,13 @@ mod tests {
         frame.extend_from_slice(&header_buf);
         frame.extend_from_slice(payload);
         frame.extend_from_slice(&0u32.to_be_bytes());
-        frame
+        Some(frame)
     }
 
     #[test]
     fn decode_eventstream_chunk_returns_payload() {
         let payload = b"{\"type\":\"content_block_delta\"}";
-        let frame = build_eventstream_frame(":event-type", "chunk", payload);
+        let frame = build_eventstream_frame(":event-type", "chunk", payload).unwrap();
         let (consumed, data) = decode_eventstream_frame(&frame).unwrap();
         assert_eq!(consumed, frame.len());
         assert_eq!(data.unwrap(), payload);
@@ -894,7 +902,7 @@ mod tests {
 
     #[test]
     fn decode_eventstream_metadata_returns_none() {
-        let frame = build_eventstream_frame(":event-type", "initial-response", b"");
+        let frame = build_eventstream_frame(":event-type", "initial-response", b"").unwrap();
         let (consumed, data) = decode_eventstream_frame(&frame).unwrap();
         assert_eq!(consumed, frame.len());
         assert!(data.is_none());
@@ -904,7 +912,7 @@ mod tests {
     #[test_case("ThrottlingException", 429, "Rate exceeded" ; "throttling_exception")]
     #[test_case("UnknownException", 500, "oops" ; "unknown_maps_to_500")]
     fn decode_eventstream_exception(exc_type: &str, expected_status: u16, msg: &str) {
-        let frame = build_eventstream_frame(":exception-type", exc_type, msg.as_bytes());
+        let frame = build_eventstream_frame(":exception-type", exc_type, msg.as_bytes()).unwrap();
         let err = decode_eventstream_frame(&frame).unwrap_err();
         match err {
             AgentError::Api { status, message } => {

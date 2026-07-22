@@ -553,6 +553,7 @@ struct ToolAccumulator {
     arguments: String,
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn parse_sse(
     reader: impl AsyncBufRead + Unpin,
     event_tx: &Sender<ProviderEvent>,

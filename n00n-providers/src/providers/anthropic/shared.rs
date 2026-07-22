@@ -48,6 +48,7 @@ pub(crate) const EPHEMERAL: CacheControl = CacheControl {
 };
 
 #[derive(Deserialize)]
+#[allow(clippy::struct_field_names)]
 struct Usage {
     #[serde(default)]
     input_tokens: u32,
@@ -268,6 +269,148 @@ impl EventParser {
         }
     }
 
+    fn handle_message_start(&mut self, data: &str) {
+        if let Ok(ev) = serde_json::from_str::<MessageStartEvent>(data)
+            && let Some(u) = ev.message.usage
+        {
+            self.usage = TokenUsage::from(u);
+        }
+    }
+
+    async fn handle_content_block_start(
+        &mut self,
+        data: &str,
+        event_tx: &Sender<ProviderEvent>,
+    ) -> Result<(), AgentError> {
+        match serde_json::from_str::<ContentBlockStartEvent>(data) {
+            Ok(ev) => {
+                self.current_block_idx = ev.index;
+                match ev.content_block {
+                    SseContentBlock::Text => {
+                        self.content_blocks.push(ContentBlock::Text {
+                            text: String::new(),
+                        });
+                    }
+                    SseContentBlock::Thinking => {
+                        self.content_blocks.push(ContentBlock::Thinking {
+                            thinking: String::new(),
+                            signature: None,
+                        });
+                    }
+                    SseContentBlock::RedactedThinking { data } => {
+                        self.content_blocks
+                            .push(ContentBlock::RedactedThinking { data });
+                    }
+                    SseContentBlock::ToolUse { id, name } => {
+                        self.current_tool_json.clear();
+                        event_tx
+                            .send_async(ProviderEvent::ToolUseStart {
+                                id: id.clone(),
+                                name: name.clone(),
+                            })
+                            .await?;
+                        self.content_blocks.push(ContentBlock::ToolUse {
+                            id,
+                            name,
+                            input: Value::Null,
+                        });
+                    }
+                }
+            }
+            Err(e) => warn!(error = %e, "failed to parse content_block_start"),
+        }
+        Ok(())
+    }
+
+    async fn handle_content_block_delta(
+        &mut self,
+        data: &str,
+        event_tx: &Sender<ProviderEvent>,
+    ) -> Result<(), AgentError> {
+        match serde_json::from_str::<ContentBlockDeltaEvent>(data) {
+            Ok(ev) => {
+                self.current_block_idx = ev.index;
+                let block = self.content_blocks.get_mut(self.current_block_idx);
+                match ev.delta {
+                    Delta::Text { text } => {
+                        if !text.is_empty() {
+                            if let Some(ContentBlock::Text { text: t }) = block {
+                                t.push_str(&text);
+                            }
+                            event_tx
+                                .send_async(ProviderEvent::TextDelta { text })
+                                .await?;
+                        }
+                    }
+                    Delta::Thinking { thinking } => {
+                        if !thinking.is_empty() {
+                            if let Some(ContentBlock::Thinking { thinking: t, .. }) = block {
+                                t.push_str(&thinking);
+                            }
+                            event_tx
+                                .send_async(ProviderEvent::ThinkingDelta { text: thinking })
+                                .await?;
+                        }
+                    }
+                    Delta::Signature { signature } => {
+                        if let Some(ContentBlock::Thinking { signature: sig, .. }) = block {
+                            *sig = Some(signature);
+                        }
+                    }
+                    Delta::InputJson { partial_json } => {
+                        self.current_tool_json.push_str(&partial_json);
+                    }
+                }
+            }
+            Err(e) => warn!(error = %e, "failed to parse content_block_delta"),
+        }
+        Ok(())
+    }
+
+    fn handle_content_block_stop(&mut self) {
+        if let Some(ContentBlock::ToolUse { name, input, .. }) =
+            self.content_blocks.get_mut(self.current_block_idx)
+        {
+            *input = match serde_json::from_str(&self.current_tool_json) {
+                Ok(v) => {
+                    debug!(tool = %name, json = %self.current_tool_json, "tool input JSON");
+                    v
+                }
+                Err(e) => {
+                    warn!(error = %e, json = %self.current_tool_json, "malformed tool JSON, falling back to {{}}");
+                    Value::Object(serde_json::Map::default())
+                }
+            };
+            self.current_tool_json.clear();
+        }
+    }
+
+    fn handle_message_delta(&mut self, data: &str) {
+        if let Ok(ev) = serde_json::from_str::<MessageDeltaEvent>(data) {
+            if let Some(u) = ev.usage {
+                self.usage.output = u.output_tokens;
+            }
+            if let Some(d) = ev.delta {
+                self.stop_reason = d
+                    .stop_reason
+                    .map(|s| StopReason::from_anthropic(&s))
+                    .or(self.stop_reason.take());
+            }
+        }
+    }
+
+    fn handle_error(data: &str) -> Result<ControlFlow<(), ()>, AgentError> {
+        if let Ok(ev) = serde_json::from_str::<super::super::SseErrorPayload>(data) {
+            warn!(error_type = %ev.error.r#type, message = %ev.error.message, "SSE error event");
+            return Err(ev.into_agent_error());
+        }
+        warn!(raw = %data, "unparseable SSE error event");
+        Err(AgentError::Api {
+            status: 400,
+            message: data.to_string(),
+        })
+    }
+
     pub async fn process(
         &mut self,
         event_type: &str,
@@ -275,128 +418,12 @@ impl EventParser {
         event_tx: &Sender<ProviderEvent>,
     ) -> Result<ControlFlow<(), ()>, AgentError> {
         match event_type {
-            "message_start" => {
-                if let Ok(ev) = serde_json::from_str::<MessageStartEvent>(data)
-                    && let Some(u) = ev.message.usage
-                {
-                    self.usage = TokenUsage::from(u);
-                }
-            }
-            "content_block_start" => match serde_json::from_str::<ContentBlockStartEvent>(data) {
-                Ok(ev) => {
-                    self.current_block_idx = ev.index;
-                    match ev.content_block {
-                        SseContentBlock::Text => {
-                            self.content_blocks.push(ContentBlock::Text {
-                                text: String::new(),
-                            });
-                        }
-                        SseContentBlock::Thinking => {
-                            self.content_blocks.push(ContentBlock::Thinking {
-                                thinking: String::new(),
-                                signature: None,
-                            });
-                        }
-                        SseContentBlock::RedactedThinking { data } => {
-                            self.content_blocks
-                                .push(ContentBlock::RedactedThinking { data });
-                        }
-                        SseContentBlock::ToolUse { id, name } => {
-                            self.current_tool_json.clear();
-                            event_tx
-                                .send_async(ProviderEvent::ToolUseStart {
-                                    id: id.clone(),
-                                    name: name.clone(),
-                                })
-                                .await?;
-                            self.content_blocks.push(ContentBlock::ToolUse {
-                                id,
-                                name,
-                                input: Value::Null,
-                            });
-                        }
-                    }
-                }
-                Err(e) => warn!(error = %e, "failed to parse content_block_start"),
-            },
-            "content_block_delta" => match serde_json::from_str::<ContentBlockDeltaEvent>(data) {
-                Ok(ev) => {
-                    self.current_block_idx = ev.index;
-                    let block = self.content_blocks.get_mut(self.current_block_idx);
-                    match ev.delta {
-                        Delta::Text { text } => {
-                            if !text.is_empty() {
-                                if let Some(ContentBlock::Text { text: t }) = block {
-                                    t.push_str(&text);
-                                }
-                                event_tx
-                                    .send_async(ProviderEvent::TextDelta { text })
-                                    .await?;
-                            }
-                        }
-                        Delta::Thinking { thinking } => {
-                            if !thinking.is_empty() {
-                                if let Some(ContentBlock::Thinking { thinking: t, .. }) = block {
-                                    t.push_str(&thinking);
-                                }
-                                event_tx
-                                    .send_async(ProviderEvent::ThinkingDelta { text: thinking })
-                                    .await?;
-                            }
-                        }
-                        Delta::Signature { signature } => {
-                            if let Some(ContentBlock::Thinking { signature: sig, .. }) = block {
-                                *sig = Some(signature);
-                            }
-                        }
-                        Delta::InputJson { partial_json } => {
-                            self.current_tool_json.push_str(&partial_json);
-                        }
-                    }
-                }
-                Err(e) => warn!(error = %e, "failed to parse content_block_delta"),
-            },
-            "content_block_stop" => {
-                if let Some(ContentBlock::ToolUse { name, input, .. }) =
-                    self.content_blocks.get_mut(self.current_block_idx)
-                {
-                    *input = match serde_json::from_str(&self.current_tool_json) {
-                        Ok(v) => {
-                            debug!(tool = %name, json = %self.current_tool_json, "tool input JSON");
-                            v
-                        }
-                        Err(e) => {
-                            warn!(error = %e, json = %self.current_tool_json, "malformed tool JSON, falling back to {{}}");
-                            Value::Object(serde_json::Map::default())
-                        }
-                    };
-                    self.current_tool_json.clear();
-                }
-            }
-            "message_delta" => {
-                if let Ok(ev) = serde_json::from_str::<MessageDeltaEvent>(data) {
-                    if let Some(u) = ev.usage {
-                        self.usage.output = u.output_tokens;
-                    }
-                    if let Some(d) = ev.delta {
-                        self.stop_reason = d
-                            .stop_reason
-                            .map(|s| StopReason::from_anthropic(&s))
-                            .or(self.stop_reason.take());
-                    }
-                }
-            }
-            "error" => {
-                if let Ok(ev) = serde_json::from_str::<super::super::SseErrorPayload>(data) {
-                    warn!(error_type = %ev.error.r#type, message = %ev.error.message, "SSE error event");
-                    return Err(ev.into_agent_error());
-                }
-                warn!(raw = %data, "unparseable SSE error event");
-                return Err(AgentError::Api {
-                    status: 400,
-                    message: data.to_string(),
-                });
-            }
+            "message_start" => self.handle_message_start(data),
+            "content_block_start" => self.handle_content_block_start(data, event_tx).await?,
+            "content_block_delta" => self.handle_content_block_delta(data, event_tx).await?,
+            "content_block_stop" => self.handle_content_block_stop(),
+            "message_delta" => self.handle_message_delta(data),
+            "error" => return Self::handle_error(data),
             "message_stop" => return Ok(ControlFlow::Break(())),
             _ => {}
         }
@@ -417,6 +444,7 @@ impl EventParser {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) fn models() -> &'static [ModelEntry] {
     const MODELS: &[ModelEntry] = &[
         ModelEntry {

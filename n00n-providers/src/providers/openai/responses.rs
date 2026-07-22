@@ -390,6 +390,7 @@ impl ResponseAccumulator {
         metadata
     }
 
+    #[allow(clippy::too_many_lines)]
     pub async fn handle_event(
         &mut self,
         event_type: &str,
@@ -494,15 +495,15 @@ impl ResponseAccumulator {
                     let processed = pp["processed"]
                         .as_u64()
                         .and_then(|v| u32::try_from(v).ok())
-                        .unwrap_or(0);
+                        .unwrap_or_else(|| 0);
                     let total = pp["total"]
                         .as_u64()
                         .and_then(|v| u32::try_from(v).ok())
-                        .unwrap_or(0);
+                        .unwrap_or_else(|| 0);
                     let cache = pp["cache"]
                         .as_u64()
                         .and_then(|v| u32::try_from(v).ok())
-                        .unwrap_or(0);
+                        .unwrap_or_else(|| 0);
                     self.emitted_event = true;
                     event_tx
                         .send_async(ProviderEvent::PromptProgress {
@@ -857,20 +858,20 @@ fn parse_usage(u: &Value) -> TokenUsage {
     let input_tokens = u["input_tokens"]
         .as_u64()
         .and_then(|v| u32::try_from(v).ok())
-        .unwrap_or(0);
+        .unwrap_or_else(|| 0);
     let output_tokens = u["output_tokens"]
         .as_u64()
         .and_then(|v| u32::try_from(v).ok())
-        .unwrap_or(0);
+        .unwrap_or_else(|| 0);
 
     let cached = u["input_tokens_details"]["cached_tokens"]
         .as_u64()
         .and_then(|v| u32::try_from(v).ok())
-        .unwrap_or(0);
+        .unwrap_or_else(|| 0);
     let cache_write = u["input_tokens_details"]["cache_write_tokens"]
         .as_u64()
         .and_then(|v| u32::try_from(v).ok())
-        .unwrap_or(0);
+        .unwrap_or_else(|| 0);
 
     let fresh_input = input_tokens
         .saturating_sub(cached)

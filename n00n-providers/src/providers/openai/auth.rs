@@ -228,7 +228,10 @@ fn lock_credentials_with_timeout(
         match file.try_lock() {
             Ok(()) => return Ok((CredentialsLock { _file: file }, started.elapsed())),
             Err(TryLockError::WouldBlock) if started.elapsed() >= timeout => {
-                let millis = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+                const MAX_MILLIS: u64 = u64::MAX;
+                let millis = u64::try_from(timeout.as_millis())
+                    .ok()
+                    .unwrap_or_else(|| MAX_MILLIS);
                 return Err(AgentError::CredentialLockTimeout { millis });
             }
             Err(TryLockError::WouldBlock) => {
@@ -441,8 +444,10 @@ pub(crate) fn acquire_coding_plan_admission(
             }
         }
         if started.elapsed() >= CODING_PLAN_ADMISSION_WAIT_TIMEOUT {
-            let millis =
-                u64::try_from(CODING_PLAN_ADMISSION_WAIT_TIMEOUT.as_millis()).unwrap_or(u64::MAX);
+            const MAX_MILLIS: u64 = u64::MAX;
+            let millis = u64::try_from(CODING_PLAN_ADMISSION_WAIT_TIMEOUT.as_millis())
+                .ok()
+                .unwrap_or_else(|| MAX_MILLIS);
             return Err(AgentError::CodingPlanAdmissionTimeout { millis });
         }
         let remaining = CODING_PLAN_ADMISSION_WAIT_TIMEOUT.saturating_sub(started.elapsed());
