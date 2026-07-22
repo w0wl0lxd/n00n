@@ -7,6 +7,12 @@ local truncate = require("n00n.truncate")
 local ToolView = require("n00n.tool_view")
 local output_limits = require("n00n.output_limits")
 
+n00n.api.register_prompt_hint({
+  prompt = "system",
+  slot = "environment",
+  content = "Current date: " .. os.date("%Y-%m-%d"),
+})
+
 local opts = n00n.api.register_options(output_limits.extend({
   max_response_bytes = {
     default = 5 * 1024 * 1024,
@@ -24,9 +30,6 @@ n00n.api.register_tool({
   name = "websearch",
   kind = "fetch",
   description = "Search the web for real-time information using Exa AI.\n\n"
-    .. "Today's date is "
-    .. os.date("%Y-%m-%d")
-    .. ".\n\n"
     .. "- Use for current events, documentation, APIs, or anything not in local files.\n"
     .. "- Prefer specific, targeted queries over broad ones.\n"
     .. "- Results include page titles, URLs, and content snippets.",

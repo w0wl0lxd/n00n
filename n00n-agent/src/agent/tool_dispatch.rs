@@ -432,7 +432,21 @@ pub(super) async fn process_tool_calls(
 
     let mut all_results = results;
     all_results.extend(immediate_errors);
-    let tool_msg = crate::types::tool_results(all_results);
+
+    let filtered_results: Vec<ToolDoneEvent> = all_results
+        .into_iter()
+        .map(|mut result| {
+            if let ToolOutput::Plain(text) = &result.output {
+                let filtered = super::run::filter_tool_result(&text.text);
+                if filtered != text.text {
+                    result.output = ToolOutput::Plain(filtered.into());
+                }
+            }
+            result
+        })
+        .collect();
+
+    let tool_msg = crate::types::tool_results(filtered_results);
     event_tx.send(AgentEvent::ToolResultsSubmitted {
         message: Box::new(tool_msg.clone()),
     })?;
