@@ -7,7 +7,7 @@ local truncate = require("n00n.truncate")
 local ToolView = require("n00n.tool_view")
 local output_limits = require("n00n.output_limits")
 
-n00n.api.register_prompt_hint({
+n00n.api.set_prompt({
   prompt = "system",
   slot = "environment",
   content = "Current date: " .. os.date("%Y-%m-%d"),
