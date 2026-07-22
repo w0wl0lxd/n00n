@@ -135,22 +135,45 @@ impl VerboseOutput {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_lines)]
-pub fn run(
-    model: &Model,
+pub struct PrintArgs<'a> {
+    pub prompt_arg: Option<String>,
+    pub image_paths: &'a [PathBuf],
+    pub format: OutputFormat,
+    pub verbose: bool,
+    pub config: AgentConfig,
+    pub permissions_config: PermissionsConfig,
+    pub timeouts: n00n_providers::Timeouts,
+    pub openai_options: OpenAiOptions,
+    pub lua_handle: Option<&'a EventHandle>,
+    pub fast: bool,
+    pub workflow: bool,
+}
+
+struct PrintState<'a> {
+    verbose_out: &'a mut Option<VerboseOutput>,
+    result_text: &'a mut String,
+    result_checkpoint: &'a mut usize,
+    is_error: &'a mut bool,
+    num_turns: &'a mut u32,
+    usage: &'a mut TokenUsage,
+    stop_reason: &'a mut Option<StopReason>,
+    session_id: &'a SessionRef,
+}
+
+struct ResultSummary {
+    is_error: bool,
+    duration_ms: u128,
+    num_turns: u32,
+    stop_reason: Option<StopReason>,
+    session_id: SessionRef,
+    usage: TokenUsage,
+    total_cost_usd: f64,
+}
+
+fn load_inputs(
     prompt_arg: Option<String>,
     image_paths: &[PathBuf],
-    format: OutputFormat,
-    verbose: bool,
-    config: AgentConfig,
-    permissions_config: PermissionsConfig,
-    timeouts: n00n_providers::Timeouts,
-    openai_options: OpenAiOptions,
-    lua_handle: Option<&EventHandle>,
-    fast: bool,
-    workflow: bool,
-) -> Result<()> {
+) -> Result<(String, Vec<ImageSource>)> {
     let prompt = if let Some(p) = prompt_arg {
         p
     } else {
@@ -158,8 +181,54 @@ pub fn run(
         io::stdin().read_to_string(&mut buf).context("read stdin")?;
         buf
     };
-
     let images = load_images(image_paths)?;
+    Ok((prompt, images))
+}
+
+fn init_verbose_output(format: OutputFormat, verbose: bool) -> Option<VerboseOutput> {
+    match format {
+        OutputFormat::StreamJson => Some(VerboseOutput::StreamJson),
+        _ if verbose => Some(VerboseOutput::Json(Vec::new())),
+        _ => None,
+    }
+}
+
+fn emit_init_event(
+    verbose_out: &mut Option<VerboseOutput>,
+    cwd: &str,
+    session_id: &SessionRef,
+    tool_names: &[String],
+    model_id: &str,
+) -> Result<()> {
+    if let Some(out) = verbose_out {
+        out.emit(&InitEvent {
+            event_type: "system",
+            subtype: "init",
+            cwd,
+            session_id,
+            tools: tool_names,
+            model: model_id,
+        })?;
+    }
+    Ok(())
+}
+
+pub fn run(model: &Model, args: PrintArgs<'_>) -> Result<()> {
+    let PrintArgs {
+        prompt_arg,
+        image_paths,
+        format,
+        verbose,
+        config,
+        permissions_config,
+        timeouts,
+        openai_options,
+        lua_handle,
+        fast,
+        workflow,
+    } = args;
+
+    let (prompt, images) = load_inputs(prompt_arg, image_paths)?;
 
     let prompt_slots = lua_handle.map_or_else(Default::default, EventHandle::collect_prompt_slots);
 
@@ -194,22 +263,8 @@ pub fn run(
     } = handle;
     let start = Instant::now();
 
-    let mut verbose_out = match format {
-        OutputFormat::StreamJson => Some(VerboseOutput::StreamJson),
-        _ if verbose => Some(VerboseOutput::Json(Vec::new())),
-        _ => None,
-    };
-
-    if let Some(out) = &mut verbose_out {
-        out.emit(&InitEvent {
-            event_type: "system",
-            subtype: "init",
-            cwd: &cwd,
-            session_id: &session_id,
-            tools: &tool_names,
-            model: &model.id,
-        })?;
-    }
+    let mut verbose_out = init_verbose_output(format, verbose);
+    emit_init_event(&mut verbose_out, &cwd, &session_id, &tool_names, &model.id)?;
 
     let mut result_text = String::new();
     let mut result_checkpoint = 0;
@@ -218,6 +273,17 @@ pub fn run(
     let mut usage = TokenUsage::default();
     let mut stop_reason: Option<StopReason> = None;
 
+    let mut state = PrintState {
+        verbose_out: &mut verbose_out,
+        result_text: &mut result_text,
+        result_checkpoint: &mut result_checkpoint,
+        is_error: &mut is_error,
+        num_turns: &mut num_turns,
+        usage: &mut usage,
+        stop_reason: &mut stop_reason,
+        session_id: &session_id,
+    };
+
     while let Ok(envelope) = smol::block_on(event_rx.recv_async()) {
         let Envelope {
             ref event,
@@ -225,97 +291,8 @@ pub fn run(
             ..
         } = envelope;
         let parent_tool_use_id = subagent.as_ref().map(|s| s.parent_tool_use_id.as_str());
-
-        match event {
-            AgentEvent::TextDelta { text } => {
-                if parent_tool_use_id.is_none() {
-                    result_text.push_str(text);
-                }
-            }
-            AgentEvent::ThinkingDelta { .. }
-            | AgentEvent::ToolPending { .. }
-            | AgentEvent::ToolStart(_)
-            | AgentEvent::ToolOutput { .. }
-            | AgentEvent::ToolDone(_)
-            | AgentEvent::QueueItemConsumed { .. }
-            | AgentEvent::AutoCompacting
-            | AgentEvent::CompactionDone
-            | AgentEvent::AuthRequired
-            | AgentEvent::PermissionRequest { .. }
-            | AgentEvent::SubagentInputRequired { .. }
-            | AgentEvent::SubagentHistory { .. }
-            | AgentEvent::ToolSnapshot { .. }
-            | AgentEvent::ToolHeaderSnapshot { .. }
-            | AgentEvent::LiveToolBuf { .. }
-            | AgentEvent::Nudge
-            | AgentEvent::PromptProgress { .. } => {}
-            AgentEvent::Retry {
-                attempt,
-                message,
-                delay_ms,
-            } => {
-                if parent_tool_use_id.is_none() {
-                    result_text.truncate(result_checkpoint);
-                }
-                if let Some(out) = &mut verbose_out {
-                    out.emit(&RetryEvent {
-                        event_type: "system",
-                        subtype: "api_retry",
-                        attempt: *attempt,
-                        retry_delay_ms: *delay_ms,
-                        error: message,
-                        session_id: &session_id,
-                    })?;
-                }
-            }
-            AgentEvent::TurnComplete(tc) => {
-                if parent_tool_use_id.is_none() {
-                    result_checkpoint = result_text.len();
-                }
-                if let Some(out) = &mut verbose_out {
-                    let content_value = serde_json::to_value(&tc.message.content)?;
-                    out.emit(&AssistantEvent {
-                        event_type: "assistant",
-                        message: AssistantMessage {
-                            model: &tc.model,
-                            role: "assistant",
-                            content: &content_value,
-                            usage: &tc.usage,
-                        },
-                        session_id: &session_id,
-                        parent_tool_use_id,
-                    })?;
-                }
-            }
-            AgentEvent::ToolResultsSubmitted { message } => {
-                if let Some(out) = &mut verbose_out {
-                    let content_value = serde_json::to_value(&message.content)?;
-                    out.emit(&UserEvent {
-                        event_type: "user",
-                        message: UserMessage {
-                            role: "user",
-                            content: &content_value,
-                        },
-                        session_id: &session_id,
-                        parent_tool_use_id,
-                    })?;
-                }
-            }
-            AgentEvent::Done {
-                usage: u,
-                num_turns: turns,
-                stop_reason: sr,
-            } => {
-                num_turns = *turns;
-                usage = *u;
-                stop_reason = *sr;
-                break;
-            }
-            AgentEvent::Error { message } => {
-                is_error = true;
-                result_text.clone_from(message);
-                break;
-            }
+        if handle_print_event(event, parent_tool_use_id, &mut state)? {
+            break;
         }
     }
     smol::block_on(async {
@@ -327,6 +304,136 @@ pub fn run(
 
     let duration_ms = start.elapsed().as_millis();
     let total_cost_usd = usage.cost(&model.pricing, fast);
+    output_result(
+        format,
+        std::mem::take(&mut verbose_out),
+        std::mem::take(&mut result_text),
+        ResultSummary {
+            is_error,
+            duration_ms,
+            num_turns,
+            stop_reason,
+            session_id,
+            usage,
+            total_cost_usd,
+        },
+    )
+}
+
+fn handle_print_event(
+    event: &AgentEvent,
+    parent_tool_use_id: Option<&str>,
+    state: &mut PrintState<'_>,
+) -> Result<bool> {
+    match event {
+        AgentEvent::TextDelta { text } => {
+            if parent_tool_use_id.is_none() {
+                state.result_text.push_str(text);
+            }
+        }
+        AgentEvent::ThinkingDelta { .. }
+        | AgentEvent::ToolPending { .. }
+        | AgentEvent::ToolStart(_)
+        | AgentEvent::ToolOutput { .. }
+        | AgentEvent::ToolDone(_)
+        | AgentEvent::QueueItemConsumed { .. }
+        | AgentEvent::AutoCompacting
+        | AgentEvent::CompactionDone
+        | AgentEvent::AuthRequired
+        | AgentEvent::PermissionRequest { .. }
+        | AgentEvent::SubagentInputRequired { .. }
+        | AgentEvent::SubagentHistory { .. }
+        | AgentEvent::ToolSnapshot { .. }
+        | AgentEvent::ToolHeaderSnapshot { .. }
+        | AgentEvent::LiveToolBuf { .. }
+        | AgentEvent::Nudge
+        | AgentEvent::PromptProgress { .. } => {}
+        AgentEvent::Retry {
+            attempt,
+            message,
+            delay_ms,
+        } => {
+            if parent_tool_use_id.is_none() {
+                state.result_text.truncate(*state.result_checkpoint);
+            }
+            if let Some(out) = state.verbose_out {
+                out.emit(&RetryEvent {
+                    event_type: "system",
+                    subtype: "api_retry",
+                    attempt: *attempt,
+                    retry_delay_ms: *delay_ms,
+                    error: message,
+                    session_id: state.session_id,
+                })?;
+            }
+        }
+        AgentEvent::TurnComplete(tc) => {
+            if parent_tool_use_id.is_none() {
+                *state.result_checkpoint = state.result_text.len();
+            }
+            if let Some(out) = state.verbose_out {
+                let content_value = serde_json::to_value(&tc.message.content)?;
+                out.emit(&AssistantEvent {
+                    event_type: "assistant",
+                    message: AssistantMessage {
+                        model: &tc.model,
+                        role: "assistant",
+                        content: &content_value,
+                        usage: &tc.usage,
+                    },
+                    session_id: state.session_id,
+                    parent_tool_use_id,
+                })?;
+            }
+        }
+        AgentEvent::ToolResultsSubmitted { message } => {
+            if let Some(out) = state.verbose_out {
+                let content_value = serde_json::to_value(&message.content)?;
+                out.emit(&UserEvent {
+                    event_type: "user",
+                    message: UserMessage {
+                        role: "user",
+                        content: &content_value,
+                    },
+                    session_id: state.session_id,
+                    parent_tool_use_id,
+                })?;
+            }
+        }
+        AgentEvent::Done {
+            usage: u,
+            num_turns: turns,
+            stop_reason: sr,
+        } => {
+            *state.num_turns = *turns;
+            *state.usage = *u;
+            *state.stop_reason = *sr;
+            return Ok(true);
+        }
+        AgentEvent::Error { message } => {
+            *state.is_error = true;
+            state.result_text.clone_from(message);
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn output_result(
+    format: OutputFormat,
+    verbose_out: Option<VerboseOutput>,
+    result_text: String,
+    summary: ResultSummary,
+) -> Result<()> {
+    let ResultSummary {
+        is_error,
+        duration_ms,
+        num_turns,
+        stop_reason,
+        session_id,
+        usage,
+        total_cost_usd,
+    } = summary;
 
     match format {
         OutputFormat::Text => {

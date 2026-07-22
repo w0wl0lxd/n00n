@@ -272,17 +272,19 @@ pub fn run(mut cli: Cli) -> Result<()> {
         let timeouts = stack.timeouts();
         crate::print::run(
             &stack.model,
-            cli.initial_prompt,
-            &cli.images,
-            cli.output_format,
-            cli.verbose,
-            stack.config.agent,
-            stack.config.permissions,
-            timeouts,
-            openai_options,
-            stack.plugin_host.event_handle().as_ref(),
-            fast,
-            stack.config.always_workflow,
+            crate::print::PrintArgs {
+                prompt_arg: cli.initial_prompt,
+                image_paths: &cli.images,
+                format: cli.output_format,
+                verbose: cli.verbose,
+                config: stack.config.agent,
+                permissions_config: stack.config.permissions,
+                timeouts,
+                openai_options,
+                lua_handle: stack.plugin_host.event_handle().as_ref(),
+                fast,
+                workflow: stack.config.always_workflow,
+            },
         )
         .context("run print mode")?;
         return Ok(());

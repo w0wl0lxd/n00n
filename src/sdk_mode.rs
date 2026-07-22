@@ -3,9 +3,8 @@
 //! Wire protocol matches Claude Code's SDK interface so tools like Conductor, Windsurf, and custom
 //! orchestrators work without adaptation.
 //!
-//! Per-message wire ids (`uuid`, assistant `message.id`) use `uuid::Uuid::now_v7()` to emit the
-//! hyphenated-hex `UUIDv7` shape that Claude Code SDK consumers expect, rather than n00n's base58
-//! `N00nId` canonical form.
+//! Per-message wire ids (`uuid`, assistant `message.id`) emit the hyphenated-hex `UUIDv7` shape
+//! that Claude Code SDK consumers expect, derived from n00n's base58 `N00nId` bytes.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Write};
@@ -28,11 +27,12 @@ use n00n_agent::{
 use n00n_providers::model::Model;
 use n00n_providers::{ImageSource, Message, OpenAiOptions, StopReason, Timeouts, TokenUsage};
 use n00n_storage::StateDir;
-use n00n_storage::id::SessionRef;
+use n00n_storage::id::{N00nId, SessionRef};
 use n00n_storage::sessions::Session;
 use serde::Serialize;
 use serde_json::Value;
 use tracing::warn;
+use uuid::Uuid;
 
 use crate::cli::Cli;
 
@@ -57,9 +57,8 @@ const TOOL_NAME_MAP: &[(&str, &str)] = &[
 
 /// Emits a hyphenated-hex `UUIDv7` string for Claude Code SDK wire ids
 /// (message.id, assistant message.id).
-#[allow(clippy::disallowed_methods)]
 fn wire_uuid() -> String {
-    uuid::Uuid::now_v7().to_string()
+    Uuid::from_bytes(*N00nId::generate().as_bytes()).to_string()
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
