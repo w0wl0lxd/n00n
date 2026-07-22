@@ -22,7 +22,7 @@ pub fn height(queue_len: usize) -> u16 {
     if queue_len == 0 {
         0
     } else {
-        queue_len as u16 + 2
+        u16::try_from(queue_len).unwrap_or_else(|_| u16::MAX) + 2
     }
 }
 

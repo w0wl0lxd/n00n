@@ -16,10 +16,10 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             let storage = StateDir::resolve().context("resolve data directory")?;
             match action {
                 AuthAction::Login { provider } => {
-                    subcmd::auth_login(provider.as_deref(), &storage)?
+                    subcmd::auth_login(provider.as_deref(), &storage)?;
                 }
                 AuthAction::Logout { provider } => subcmd::auth_logout(&provider, &storage)?,
-                AuthAction::Status => subcmd::auth_status(&storage)?,
+                AuthAction::Status => subcmd::auth_status(&storage),
             }
         }
         Some(Command::Index { path }) => {
@@ -42,7 +42,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             update::rollback().map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
         }
         Some(Command::Acp { model, yolo }) => {
-            acp::run(model, yolo, cli.no_jit)?;
+            acp::run(model.as_deref(), yolo, cli.no_jit)?;
         }
         Some(Command::Prompt {
             variant,

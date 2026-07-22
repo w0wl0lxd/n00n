@@ -116,6 +116,7 @@ pub fn render(text: &str, width: u16) -> Vec<Line> {
 /// Reuses highlighter and table-width caches across calls so streaming
 /// (successive prefixes of a growing message) doesn't re-highlight completed
 /// code lines. Bump `theme_gen` to flush caches after a theme change.
+#[derive(Debug)]
 pub struct Renderer {
     highlighters: Vec<CodeHighlighter>,
     table_col_widths: Vec<Vec<usize>>,

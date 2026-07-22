@@ -290,7 +290,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::agent::shared_queue;
-    use n00n_agent::AgentInput;
+    use n00n_agent::{AgentInput, AgentMode, ThinkingConfig};
 
     fn displayed_message(text: &str) -> QueueItem {
         QueueItem::Message {
@@ -298,10 +298,10 @@ mod tests {
             image_count: 0,
             input: AgentInput {
                 message: String::new(),
-                mode: Default::default(),
+                mode: AgentMode::default(),
                 images: Vec::new(),
                 preamble: Vec::new(),
-                thinking: Default::default(),
+                thinking: ThinkingConfig::default(),
                 fast: false,
                 workflow: false,
                 prompt: None,
