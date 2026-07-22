@@ -669,6 +669,7 @@ fn search_text_diff_output_includes_hunks() {
             before: "old\n".into(),
             after: "new\n".into(),
             summary: "1 edit".into(),
+            telemetry: None,
         },
         is_error: false,
         annotation: None,
