@@ -26,8 +26,7 @@ pub struct TextBuffer {
 }
 
 impl TextBuffer {
-    #[allow(clippy::needless_pass_by_value)]
-    pub fn new(input: String) -> Self {
+    pub fn new(input: &str) -> Self {
         let lines: Vec<String> = input.split('\n').map(str::to_string).collect();
         Self {
             lines,
@@ -429,7 +428,7 @@ mod tests {
 
     #[test]
     fn insert_at_middle() {
-        let mut buf = TextBuffer::new(String::new());
+        let mut buf = TextBuffer::new("");
         buf.push_char('a');
         buf.push_char('c');
         buf.raw_x = 1;
@@ -439,7 +438,7 @@ mod tests {
 
     #[test]
     fn split_then_merge_is_identity() {
-        let mut buf = TextBuffer::new("abcd".into());
+        let mut buf = TextBuffer::new("abcd");
         buf.raw_x = 2;
         buf.add_line();
         assert_eq!(buf.lines(), &["ab", "cd"]);
@@ -450,7 +449,7 @@ mod tests {
 
     #[test]
     fn delete_char_merges_lines() {
-        let mut buf = TextBuffer::new("ab\ncd".into());
+        let mut buf = TextBuffer::new("ab\ncd");
         buf.raw_x = 2;
         buf.delete_char();
         assert_eq!(buf.value(), "abcd");
@@ -458,7 +457,7 @@ mod tests {
 
     #[test]
     fn cursor_wraps_across_lines() {
-        let mut buf = TextBuffer::new("ab\ncd".into());
+        let mut buf = TextBuffer::new("ab\ncd");
         buf.raw_x = 2;
         buf.move_right();
         assert_eq!((buf.y(), buf.x()), (1, 0));
@@ -469,7 +468,7 @@ mod tests {
 
     #[test]
     fn insert_text_multiline() {
-        let mut buf = TextBuffer::new(String::new());
+        let mut buf = TextBuffer::new("");
         buf.insert_text("line1\nline2\nline3");
         assert_eq!(buf.lines(), &["line1", "line2", "line3"]);
         assert_eq!(buf.y(), 2);
@@ -478,7 +477,7 @@ mod tests {
 
     #[test]
     fn insert_text_at_cursor_middle() {
-        let mut buf = TextBuffer::new("abcd".into());
+        let mut buf = TextBuffer::new("abcd");
         buf.raw_x = 2;
         buf.insert_text("X\nY");
         assert_eq!(buf.lines(), &["abX", "Ycd"]);
@@ -486,14 +485,14 @@ mod tests {
 
     #[test]
     fn insert_text_replaces_tabs_with_spaces() {
-        let mut buf = TextBuffer::new(String::new());
+        let mut buf = TextBuffer::new("");
         buf.insert_text("\tindented\n\t\tdouble");
         assert_eq!(buf.lines(), &["  indented", "    double"]);
     }
 
     #[test]
     fn remove_word() {
-        let mut buf = TextBuffer::new("hello world".into());
+        let mut buf = TextBuffer::new("hello world");
         buf.raw_x = 11;
         buf.remove_word_before_cursor();
         assert_eq!(buf.value(), "hello ");
@@ -501,13 +500,13 @@ mod tests {
         buf.remove_word_before_cursor();
         assert_eq!(buf.value(), "");
 
-        let mut buf = TextBuffer::new("ab\ncd".into());
+        let mut buf = TextBuffer::new("ab\ncd");
         buf.cursor_y = 1;
         buf.raw_x = 0;
         buf.remove_word_before_cursor();
         assert_eq!(buf.value(), "abcd");
 
-        let mut buf = TextBuffer::new("hello ●●●".into());
+        let mut buf = TextBuffer::new("hello ●●●");
         buf.move_to_end();
         buf.remove_word_before_cursor();
         assert_eq!(buf.value(), "hello ");
@@ -515,19 +514,19 @@ mod tests {
 
     #[test]
     fn move_word_left() {
-        let mut buf = TextBuffer::new("hello world".into());
+        let mut buf = TextBuffer::new("hello world");
         buf.move_to_end();
         buf.move_word_left();
         assert_eq!(buf.x(), 6);
         buf.move_word_left();
         assert_eq!(buf.x(), 0);
 
-        let mut buf = TextBuffer::new("  hello".into());
+        let mut buf = TextBuffer::new("  hello");
         buf.move_to_end();
         buf.move_word_left();
         assert_eq!(buf.x(), 2);
 
-        let mut buf = TextBuffer::new("ab\ncd".into());
+        let mut buf = TextBuffer::new("ab\ncd");
         buf.cursor_y = 1;
         buf.raw_x = 0;
         buf.move_word_left();
@@ -536,17 +535,17 @@ mod tests {
 
     #[test]
     fn move_word_right() {
-        let mut buf = TextBuffer::new("hello world".into());
+        let mut buf = TextBuffer::new("hello world");
         buf.move_word_right();
         assert_eq!(buf.x(), 5);
         buf.move_word_right();
         assert_eq!(buf.x(), 11);
 
-        let mut buf = TextBuffer::new("hello  ".into());
+        let mut buf = TextBuffer::new("hello  ");
         buf.move_word_right();
         assert_eq!(buf.x(), 5);
 
-        let mut buf = TextBuffer::new("ab\ncd".into());
+        let mut buf = TextBuffer::new("ab\ncd");
         buf.raw_x = 2;
         buf.move_word_right();
         assert_eq!((buf.y(), buf.x()), (1, 0));
@@ -554,7 +553,7 @@ mod tests {
 
     #[test]
     fn multibyte_operations() {
-        let mut buf = TextBuffer::new(String::new());
+        let mut buf = TextBuffer::new("");
         buf.push_char('a');
         buf.push_char('●');
         buf.push_char('b');
@@ -565,7 +564,7 @@ mod tests {
         buf.remove_char();
         assert_eq!(buf.value(), "a");
 
-        let mut buf = TextBuffer::new("a●b".into());
+        let mut buf = TextBuffer::new("a●b");
         buf.move_to_end();
         buf.move_left();
         assert_eq!(buf.x(), 2);
@@ -574,17 +573,17 @@ mod tests {
         buf.move_right();
         assert_eq!(buf.x(), 2);
 
-        let mut buf = TextBuffer::new("a●b".into());
+        let mut buf = TextBuffer::new("a●b");
         buf.raw_x = 1;
         buf.delete_char();
         assert_eq!(buf.value(), "ab");
 
-        let mut buf = TextBuffer::new("a●b".into());
+        let mut buf = TextBuffer::new("a●b");
         buf.raw_x = 2;
         buf.add_line();
         assert_eq!(buf.lines(), &["a●", "b"]);
 
-        let mut buf = TextBuffer::new("a●b".into());
+        let mut buf = TextBuffer::new("a●b");
         buf.raw_x = 2;
         buf.insert_text("X");
         assert_eq!(buf.value(), "a●Xb");
@@ -592,7 +591,7 @@ mod tests {
 
     #[test]
     fn sticky_x_with_multibyte() {
-        let mut buf = TextBuffer::new("a●cd\nhi\na●cd".into());
+        let mut buf = TextBuffer::new("a●cd\nhi\na●cd");
         buf.raw_x = 4;
         buf.move_down();
         assert_eq!(buf.x(), 2);
@@ -602,21 +601,21 @@ mod tests {
 
     #[test]
     fn delete_word_after_cursor() {
-        let mut buf = TextBuffer::new("hello world".into());
+        let mut buf = TextBuffer::new("hello world");
         buf.delete_word_after_cursor();
         assert_eq!(buf.value(), " world");
 
-        let mut buf = TextBuffer::new("hello world".into());
+        let mut buf = TextBuffer::new("hello world");
         buf.raw_x = 6;
         buf.delete_word_after_cursor();
         assert_eq!(buf.value(), "hello ");
 
-        let mut buf = TextBuffer::new("ab\ncd".into());
+        let mut buf = TextBuffer::new("ab\ncd");
         buf.raw_x = 2;
         buf.delete_word_after_cursor();
         assert_eq!(buf.value(), "abcd");
 
-        let mut buf = TextBuffer::new("end".into());
+        let mut buf = TextBuffer::new("end");
         buf.raw_x = 3;
         buf.delete_word_after_cursor();
         assert_eq!(buf.value(), "end");
@@ -624,16 +623,16 @@ mod tests {
 
     #[test]
     fn kill_to_end_of_line() {
-        let mut buf = TextBuffer::new("hello world".into());
+        let mut buf = TextBuffer::new("hello world");
         buf.raw_x = 5;
         buf.kill_to_end_of_line();
         assert_eq!(buf.value(), "hello");
 
-        let mut buf = TextBuffer::new("ab\ncd".into());
+        let mut buf = TextBuffer::new("ab\ncd");
         buf.kill_to_end_of_line();
         assert_eq!(buf.lines(), &["", "cd"]);
 
-        let mut buf = TextBuffer::new("●text".into());
+        let mut buf = TextBuffer::new("●text");
         buf.raw_x = 1;
         buf.kill_to_end_of_line();
         assert_eq!(buf.value(), "●");
@@ -671,14 +670,14 @@ mod tests {
     #[test_case(plain(KeyCode::Up),              EditResult::Moved   ; "plain_up")]
     #[test_case(plain(KeyCode::Down),            EditResult::Moved   ; "plain_down")]
     fn handle_key_returns_correct_result(key: KeyEvent, expected: EditResult) {
-        let mut buf = TextBuffer::new("hello world".into());
+        let mut buf = TextBuffer::new("hello world");
         buf.raw_x = 5;
         assert_eq!(buf.handle_key(key), expected);
     }
 
     #[test]
     fn kill_to_start_of_line() {
-        let mut buf = TextBuffer::new("●hello world".into());
+        let mut buf = TextBuffer::new("●hello world");
         buf.raw_x = 1;
         buf.kill_to_start_of_line();
         assert_eq!(buf.value(), "hello world");

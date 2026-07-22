@@ -104,7 +104,6 @@ impl ColorTransition {
     }
 
     #[must_use]
-    #[allow(clippy::disallowed_methods)]
     pub fn is_animating(&self) -> bool {
         Instant::now()
             .saturating_duration_since(self.start)
@@ -118,7 +117,6 @@ impl ColorTransition {
         Color::Rgb(r, g, b)
     }
 
-    #[allow(clippy::disallowed_methods)]
     fn resolve_rgb(&self, now: Instant) -> (u8, u8, u8) {
         let t = (now.saturating_duration_since(self.start).as_secs_f32() / COLOR_TRANSITION_SECS)
             .min(1.0);
