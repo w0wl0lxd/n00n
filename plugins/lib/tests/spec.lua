@@ -1,3 +1,5 @@
+local ActivityPreview = require("n00n.activity_preview")
+local ExploreResult = require("n00n.explore_result")
 local truncate = require("n00n.truncate")
 local ToolView = require("n00n.tool_view")
 
@@ -18,228 +20,35 @@ end
 
 -- Mock buf that records set_lines calls
 local function mock_buf()
-  local b = { lines = nil, call_count = 0 }
+  local b = { lines = nil, call_count = 0, handlers = {} }
   function b:set_lines(lines)
     self.lines = lines
     self.call_count = self.call_count + 1
   end
+  function b:on(event, callback)
+    self.handlers[event] = callback
+  end
+  function b:click(event)
+    local callback = self.handlers.click
+    if callback then
+      callback(event)
+    end
+  end
+  function b:len()
+    return self.lines and #self.lines or 0
+  end
   return b
 end
 
--- local function line_text(line)
---   if type(line) == "string" then
---     return line
---   end
---   local out = {}
---   for _, span in ipairs(line or {}) do
---     out[#out + 1] = type(span) == "string" and span or (span[1] or "")
---   end
---   return table.concat(out)
--- end
---
--- local function buf_text(buf)
---   local out = {}
---   for _, line in ipairs(buf:get_lines()) do
---     out[#out + 1] = line_text(line)
---   end
---   return table.concat(out, "\n")
--- end
---
--- local function occurrences(text, needle)
---   local count, from = 0, 1
---   while true do
---     local at = text:find(needle, from, true)
---     if not at then
---       return count
---     end
---     count = count + 1
---     from = at + #needle
---   end
--- end
---
--- local function action(session_id, tool_call_id, sequence, tool, status, extra)
---   local out = {
---     session_id = session_id,
---     tool_call_id = tool_call_id,
---     sequence = sequence,
---     tool = tool,
---     status = status,
---     message = status,
---   }
---   for key, value in pairs(extra or {}) do
---     out[key] = value
---   end
---   return out
--- end
---
--- local function new_activity()
---   local SessionActivity = require("n00n.session_activity")
---   local live
---   local ctx = {
---     live_buf = function(_, buf)
---       live = buf
---     end,
---   }
---   local activity = SessionActivity.new(ctx, { max_lines = 5 })
---   assert(activity.buf == live, "activity buffer must be published with ctx:live_buf immediately")
---   activity:set_header({ "Activity" })
---   return activity, live
--- end
-
--- case("session_activity_header_and_body_clicks_toggle", function()
---   local activity, buf = new_activity()
---   local actions = {}
---   for i = 1, 6 do
---     actions[i] = action("session-a", "call-" .. i, i, "tool" .. i, "running")
---   end
---   activity:ingest({ session_id = "session-a", actions = actions })
---
---   assert(not buf_text(buf):find("tool1 %- running"), "collapsed card must hide the oldest action")
---   buf:click({ row = 0 })
---   assert(buf_text(buf):find("tool1 %- running"), "header row 0 must expand the card")
---   buf:click({ row = 2 })
---   assert(not buf_text(buf):find("tool1 %- running"), "body rows must collapse the same card")
--- end)
-
--- case("session_activity_latest_five_preserve_first_seen_order", function()
---   local activity, buf = new_activity()
---   local actions = {}
---   for i = 1, 7 do
---     actions[i] = action("session-a", "call-" .. i, i, "tool" .. i, "running")
---   end
---   activity:ingest({ session_id = "session-a", actions = actions })
---
---   local text = buf_text(buf)
---   assert(
---     not text:find("tool1 %- running") and not text:find("tool2 %- running"),
---     "only the latest five belong in the collapsed tail"
---   )
---   local previous = 0
---   for i = 3, 7 do
---     local at = assert(text:find("tool" .. i .. " %- running"), "missing tool" .. i)
---     assert(at > previous, "latest five must render oldest-to-newest")
---     previous = at
---   end
--- end)
-
--- case("session_activity_done_updates_in_place_without_reordering", function()
---   local activity, buf = new_activity()
---   activity:ingest({
---     session_id = "session-a",
---     actions = {
---       action("session-a", "same", 1, "read", "running"),
---       action("session-a", "later", 2, "write", "running"),
---     },
---   })
---   activity:ingest({
---     session_id = "session-a",
---     actions = {
---       action("session-a", "same", 1, "read", "done"),
---       action("session-a", "later", 2, "write", "running"),
---     },
---   })
---
---   local text = buf_text(buf)
---   eq(occurrences(text, "read - "), 1, "ToolStart/ToolDone must share one row")
---   assert(text:find("read %- done") < text:find("write %- running"), "completion must not reorder first-seen actions")
---   assert(not text:find("read %- running"), "running status must transition in place")
--- end)
-
--- case("session_activity_expansion_survives_status_updates", function()
---   local activity, buf = new_activity()
---   local actions = {}
---   for i = 1, 6 do
---     actions[i] = action("session-a", "call-" .. i, i, "tool" .. i, "running")
---   end
---   activity:ingest({ session_id = "session-a", actions = actions })
---   buf:click({ row = 0 })
---   assert(buf_text(buf):find("tool1 %- running"), "precondition: card expanded")
---
---   actions[6] = action("session-a", "call-6", 6, "tool6", "done")
---   activity:ingest({ session_id = "session-a", actions = actions })
---   local text = buf_text(buf)
---   assert(text:find("tool1 %- running"), "progress updates must not collapse an expanded card")
---   assert(text:find("tool6 %- done"), "status update must remain visible in the same expanded buffer")
--- end)
-
--- case("session_activity_structural_session_and_call_identity_do_not_collide", function()
---   local activity, buf = new_activity()
---   activity:ingest({
---     session_id = "session-a",
---     actions = { action("session-a", "provider-id", 1, "read", "running") },
---   })
---   activity:ingest({
---     session_id = "session-b",
---     actions = { action("session-b", "provider-id", 1, "write", "running") },
---   })
---
---   local text = buf_text(buf)
---   eq(occurrences(text, "read - running"), 1)
---   eq(occurrences(text, "write - running"), 1)
--- end)
-
--- case("session_activity_uses_only_safe_fixed_status_messages", function()
---   local activity, buf = new_activity()
---   activity:ingest({
---     session_id = "session-a",
---     actions = {
---       action("session-a", "call-1", 1, "bash", "failed", {
---         message = "header SECRET_MESSAGE",
---         summary = "summary SECRET_SUMMARY",
---         annotation = "annotation SECRET_ANNOTATION",
---         header = "header SECRET_HEADER",
---       }),
---     },
---   })
---
---   local text = buf_text(buf)
---   assert(text:find("bash %- failed"), "status selects the fixed failed message")
---   assert(not text:find("SECRET_", 1, true), "summary, annotation, header, and arbitrary message must be ignored")
--- end)
-
--- case("session_activity_sanitizes_and_caps_tool_labels", function()
---   local activity, buf = new_activity()
---   local malicious = "bash\n\27[31m" .. string.rep("x", 200) .. " SECRET_TOOL"
---   activity:ingest({
---     session_id = "session-a",
---     actions = { action("session-a", "call-1", 1, malicious, "running") },
---   })
---
---   local rendered = buf_text(buf)
---   assert(not rendered:find("\n\27", 1, true), "control characters must not survive")
---   assert(not rendered:find("SECRET_TOOL", 1, true), "over-cap suffix must not survive")
---   local label = assert(rendered:match("Activity\n([^\n]+) %- running"), "expected one rendered action")
---   assert(#label < #malicious, "sanitized tool label must be length-capped")
---   assert(label:match("^[%w_.:/-]+$"), "tool label contains unsupported characters: " .. label)
--- end)
-
--- case("session_activity_state_excludes_raw_io_prompts_logs_and_secrets", function()
---   local activity = new_activity()
---   activity:ingest({
---     session_id = "session-a",
---     prompt = "SECRET_PROMPT",
---     logs = { "SECRET_LOG" },
---     actions = {
---       action("session-a", "call-1", 1, "read", "done", {
---         raw_input = "SECRET_RAW_INPUT",
---         input = "SECRET_INPUT",
---         output = "SECRET_OUTPUT",
---         environment = "SECRET_ENV",
---       }),
---     },
---   })
---
---   local state = activity:state()
---   local encoded = assert(n00n.json.encode(state))
---   assert(not encoded:find("SECRET_", 1, true), "serialized activity state crossed the privacy boundary: " .. encoded)
---   local allowed =
---     { session_id = true, tool_call_id = true, sequence = true, tool = true, status = true, message = true }
---   for _, item in ipairs(state.actions or {}) do
---     for key in pairs(item) do
---       assert(allowed[key], "unsafe activity state key: " .. tostring(key))
---     end
---   end
--- end)
+local function with_mock_ui_buf(fn)
+  local original = n00n.ui.buf
+  n00n.ui.buf = mock_buf
+  local ok, err = pcall(fn)
+  n00n.ui.buf = original
+  if not ok then
+    error(err)
+  end
+end
 
 case("truncate_within_limits_unchanged", function()
   eq(truncate("hello", 100, 1000), "hello")
@@ -375,6 +184,93 @@ case("tool_view_toggle_twice_collapses_back", function()
   eq(buf.lines[2], "line8")
 end)
 
+case("tool_view_hide_collapsed_reveals_body_on_toggle", function()
+  local buf = mock_buf()
+  local view = ToolView.new(buf, { max_lines = 5, hide_collapsed = true })
+  view:set_header({ "activity" })
+  view:append("bash - cargo test")
+  eq(#buf.lines, 1)
+  eq(buf.lines[1], "activity")
+
+  view:toggle()
+  eq(#buf.lines, 2)
+  eq(buf.lines[2], "bash - cargo test")
+
+  view:toggle()
+  eq(#buf.lines, 1)
+end)
+
+local function line_text(line)
+  if type(line) == "string" then
+    return line
+  end
+  local out = {}
+  for _, span in ipairs(line) do
+    out[#out + 1] = type(span) == "string" and span or (span[1] or "")
+  end
+  return table.concat(out)
+end
+
+case("tool_view_replace_text_publishes_once_and_bounds_large_output", function()
+  local buf = mock_buf()
+  local view = ToolView.new(buf, { max_lines = 5, keep = "head", max_expand_lines = 20 })
+  local lines = {}
+  for i = 1, 1000 do
+    lines[i] = "line" .. i
+  end
+
+  view:replace_text(table.concat(lines, "\n"))
+
+  eq(buf.call_count, 1, "a logical replacement must publish one snapshot")
+  eq(#buf.lines, 6, "five result rows plus the expansion notice")
+  view:toggle()
+  eq(#buf.lines, 21, "expanded publication stays bounded by max_expand_lines")
+  eq(line_text(buf.lines[21]), "980 lines omitted")
+end)
+
+case("explore_result_live_update_keeps_expansion", function()
+  with_mock_ui_buf(function()
+    local card = ExploreResult.new()
+    card:update("one\ntwo\nthree\nfour\nfive\nsix")
+    eq(card.buf:len(), 6)
+
+    card.buf:click({ row = 6 })
+    eq(card.buf:len(), 6, "expanded six-line result has no notice")
+    card:update("alpha\nbeta\ngamma\ndelta\nepsilon\nzeta\neta")
+    eq(card.buf:len(), 7, "a live update must preserve expanded state")
+  end)
+end)
+
+case("explore_result_restore_click_matches_live_card", function()
+  with_mock_ui_buf(function()
+    local buf = ExploreResult.restore("one\ntwo\nthree\nfour\nfive\nsix\nseven")
+    eq(buf:len(), 6)
+    buf:click({ row = 6 })
+    eq(buf:len(), 7)
+  end)
+end)
+
+case("tool_view_caps_complete_rows_by_width_and_bytes", function()
+  local buf = mock_buf()
+  local view = ToolView.new(buf, { max_lines = 1, max_width = 8, max_line_bytes = 10 })
+  view:set_header({ { { "界界界界界", "bold" }, { " credential", "dim" } } })
+  view:append("first")
+  view:append("second")
+
+  for _, line in ipairs(buf.lines) do
+    local text = line_text(line)
+    assert(#text <= 10, "row must honor byte cap: " .. #text)
+    assert(n00n.ui.display_width(text) <= 8, "row must honor display-width cap")
+  end
+end)
+
+case("tool_view_tiny_byte_cap_never_overflows_for_ellipsis", function()
+  local buf = mock_buf()
+  local view = ToolView.new(buf, { max_lines = 1, max_line_bytes = 2 })
+  view:set_header({ "abcdef" })
+  assert(#line_text(buf.lines[1]) <= 2, "ellipsis must fit inside byte cap")
+end)
+
 case("tool_view_toggle_head_mode_expands", function()
   local buf = mock_buf()
   local view = ToolView.new(buf, { max_lines = 2, keep = "head" })
@@ -476,9 +372,9 @@ case("tool_view_max_line_bytes_truncates_string_line", function()
   local buf = mock_buf()
   local view = ToolView.new(buf, { max_lines = 3, keep = "tail", max_line_bytes = 10 })
   view:append(string.rep("a", 20))
-  eq(#buf.lines[1], 13)
+  eq(#buf.lines[1], 10)
   assert(buf.lines[1]:find("…"), "truncated line should end with ellipsis")
-  eq(buf.lines[1]:sub(1, 10), string.rep("a", 10))
+  eq(buf.lines[1]:sub(1, 7), string.rep("a", 7))
 end)
 
 case("tool_view_max_line_bytes_truncates_span_line", function()
@@ -488,14 +384,15 @@ case("tool_view_max_line_bytes_truncates_span_line", function()
   eq(buf.lines[1][1][1], "hello")
   eq(buf.lines[1][1][2], "dim")
   eq(buf.lines[1][3][2], "error")
-  assert(buf.lines[1][3][1]:find("…"), "span should be truncated with ellipsis")
+  eq(buf.lines[1][4][1], "…")
+  assert(#line_text(buf.lines[1]) <= 12, "complete span row must fit byte limit")
 end)
 
 case("tool_view_max_line_bytes_utf8_safe", function()
   local buf = mock_buf()
   local view = ToolView.new(buf, { max_lines = 3, keep = "tail", max_line_bytes = 10 })
   view:append("éééééééééé")
-  eq(buf.lines[1], string.rep("é", 5) .. "…")
+  eq(buf.lines[1], string.rep("é", 3) .. "…")
 end)
 
 case("tool_view_max_line_bytes_default_off", function()
@@ -1532,6 +1429,81 @@ end)
 
 case("route_tier_blank_prompt", function()
   eq(route_tier.route_tier(nil), "medium")
+end)
+
+case("activity_preview_publishes_immediately_and_keeps_five_sessions", function()
+  local old_buf = n00n.ui.buf
+  n00n.ui.buf = function()
+    local buf = mock_buf()
+    function buf:on() end
+    return buf
+  end
+  local live_buf
+  local ctx = {
+    live_buf = function(_, buf)
+      live_buf = buf
+    end,
+  }
+  local preview, err = ActivityPreview.new(ctx, "team", { session_rows = true })
+  eq(err, nil)
+  eq(live_buf, preview.view.buf, "preview must publish before any prompt")
+
+  local old_activity = { activities = { { id = "old", tool = "read", status = "success" } } }
+  preview:update(old_activity, "role1", "session1")
+  eq(preview.rows[1].label, "read", "message-free activity must show only tool and status")
+  for i = 1, 6 do
+    preview:set_row("session" .. i, "role" .. i, nil, "success")
+  end
+  eq(#preview.rows, 5)
+  eq(preview.rows[1].label, "role2")
+  eq(preview.rows[5].label, "role6")
+  preview:update(old_activity, "role1", "session1")
+  eq(preview.rows[1].label, "role2", "evicted historical activity must not displace newer sessions")
+  n00n.ui.buf = old_buf
+end)
+
+case("activity_preview_repeated_prompts_keep_order_and_update_status_in_place", function()
+  local old_buf = n00n.ui.buf
+  n00n.ui.buf = function()
+    local buf = mock_buf()
+    function buf:on() end
+    return buf
+  end
+  local preview = ActivityPreview.new({ live_buf = function() end }, "team", { session_rows = true })
+  local session = { turn = 0 }
+  function session:prompt()
+    self.turn = self.turn + 1
+    return { text = "done" }
+  end
+  function session:get_progress()
+    return {
+      turn_id = self.turn,
+      done = true,
+      activities = { { id = "tool-" .. self.turn, tool = "read", status = "running" } },
+    }
+  end
+
+  local _, first_err = preview:prompt(session, "first", "worker")
+  local _, second_err = preview:prompt(session, "second", "worker")
+  eq(first_err, nil)
+  eq(second_err, nil)
+  eq(#preview.rows, 4)
+  eq(preview.rows[1].key, "worker#1")
+  eq(preview.rows[2].key, tostring(session) .. "/tool-1")
+  eq(preview.rows[3].key, "worker#2")
+  eq(preview.rows[4].key, tostring(session) .. "/tool-2")
+  eq(preview.rows[1].status, "success")
+  eq(preview.rows[3].status, "success")
+
+  preview:update({ activities = { { id = "tool-2", tool = "read", status = "success" } } }, "worker", tostring(session))
+  eq(#preview.rows, 4, "completion must update the existing activity row")
+  eq(preview.rows[4].status, "success")
+  local tracked = 0
+  for _ in pairs(preview.activity_ids[tostring(session)]) do
+    tracked = tracked + 1
+  end
+  eq(tracked, 1, "per-session activity tracking must stay snapshot-bounded")
+  n00n.ui.buf = old_buf
 end)
 
 if #failures > 0 then

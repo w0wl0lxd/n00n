@@ -12,13 +12,14 @@ use nucleo::pattern::{CaseMatching, Normalization};
 use nucleo::{Config, Matcher, Nucleo, Utf32String};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use tracing::warn;
 use unicode_width::UnicodeWidthChar;
 
 use crate::animation::spinner_frame;
+use crate::cast;
 use crate::components::Overlay;
 use crate::components::keybindings::key;
 use crate::components::modal::Modal;
@@ -96,25 +97,33 @@ impl FilePickerModal {
         let nucleo = Nucleo::new(Config::DEFAULT.match_paths(), notify, None, 1);
         let injector = nucleo.injector();
         let cancel = Arc::new(AtomicBool::new(false));
-        let cancel_clone = cancel.clone();
+        let cancel_clone = Arc::clone(&cancel);
         let (done_tx, done_rx) = flume::bounded(1);
 
         let root = PathBuf::from(cwd);
         if let Err(e) = thread::Builder::new()
             .name("file-walker".into())
             .spawn(move || {
-                let overrides = OverrideBuilder::new(&root)
-                    .add("!.git")
-                    .unwrap()
-                    .build()
-                    .unwrap();
+                let mut overrides_builder = OverrideBuilder::new(&root);
+                if let Err(e) = overrides_builder.add("!.git") {
+                    warn!("invalid override pattern: {e}");
+                    return;
+                }
+                let overrides = match overrides_builder.build() {
+                    Ok(o) => o,
+                    Err(e) => {
+                        warn!("failed to build overrides: {e}");
+                        return;
+                    }
+                };
                 WalkBuilder::new(&root)
                     .hidden(false)
                     .overrides(overrides)
                     .build_parallel()
                     .run(|| {
+                        #[allow(clippy::clone_on_ref_ptr)] // nucleo::Injector is an Arc internally
                         let injector = injector.clone();
-                        let cancel = cancel.clone();
+                        let cancel = Arc::clone(&cancel);
                         let root = root.clone();
                         Box::new(move |entry| {
                             if cancel.load(Ordering::Relaxed) {
@@ -129,12 +138,17 @@ impl FilePickerModal {
                             {
                                 return ignore::WalkState::Continue;
                             }
-                            let path = entry.path().strip_prefix(&root).unwrap_or(entry.path());
+                            let full_path = entry.path();
+                            let path = if let Ok(p) = full_path.strip_prefix(&root) {
+                                p.to_path_buf()
+                            } else {
+                                full_path.to_path_buf()
+                            };
                             let mut name = path.to_string_lossy().into_owned();
                             if entry.file_type().is_some_and(|ft| ft.is_dir()) {
                                 name.push(std::path::MAIN_SEPARATOR);
                             }
-                            injector.push((), |_, cols| {
+                            injector.push((), |(), cols| {
                                 cols[0] = Utf32String::from(name.as_str());
                             });
                             ignore::WalkState::Continue
@@ -198,11 +212,12 @@ impl FilePickerModal {
 
     pub fn scroll(&mut self, delta: i32) {
         let Some(s) = &mut self.session else { return };
-        if delta > 0 {
-            move_selection(s, -(delta as isize));
+        let delta = if delta > 0 {
+            -cast::u32_to_isize(delta.unsigned_abs())
         } else {
-            move_selection(s, delta.unsigned_abs() as isize);
-        }
+            cast::u32_to_isize(delta.unsigned_abs())
+        };
+        move_selection(s, delta);
     }
 
     pub fn handle_paste(&mut self, text: &str) -> bool {
@@ -245,10 +260,12 @@ impl FilePickerModal {
                 reparse_pattern(s);
             }
             _ if key::SCROLL_HALF_UP.matches(key) => {
-                move_selection(s, -((s.viewport_height / 2).max(1) as isize))
+                let half = cast::usize_to_isize((s.viewport_height / 2).max(1));
+                move_selection(s, -half);
             }
             _ if key::SCROLL_HALF_DOWN.matches(key) => {
-                move_selection(s, (s.viewport_height / 2).max(1) as isize)
+                let half = cast::usize_to_isize((s.viewport_height / 2).max(1));
+                move_selection(s, half);
             }
             _ if key::SCROLL_LINE_UP.matches(key) => move_selection(s, -1),
             _ if key::SCROLL_LINE_DOWN.matches(key) => move_selection(s, 1),
@@ -307,7 +324,7 @@ impl FilePickerModal {
             _ => return Rect::default(),
         };
 
-        let match_count = s.matches.len() as u16;
+        let match_count = cast::usize_to_u16(s.matches.len());
         let title = if s.walking { TITLE_WALKING } else { TITLE };
 
         let has_query_without_matches = s.matches.is_empty() && !s.search.value().is_empty();
@@ -325,7 +342,7 @@ impl FilePickerModal {
         };
         let (popup, inner) = modal.render(frame, area, content_rows + SEARCH_ROW);
         s.inner_area = inner;
-        s.viewport_height = inner.height.saturating_sub(SEARCH_ROW) as usize;
+        s.viewport_height = usize::from(inner.height.saturating_sub(SEARCH_ROW));
         ensure_visible(s);
 
         let [list_area, search_area] =
@@ -334,8 +351,14 @@ impl FilePickerModal {
         render_list(frame, list_area, s);
         render_search(frame, search_area, s);
 
-        if match_count > s.viewport_height as u16 {
-            render_vertical_scrollbar(frame, list_area, match_count, s.scroll_offset as u16, None);
+        if match_count > cast::usize_to_u16(s.viewport_height) {
+            render_vertical_scrollbar(
+                frame,
+                list_area,
+                match_count,
+                cast::usize_to_u16(s.scroll_offset),
+                None,
+            );
         }
 
         popup
@@ -394,8 +417,10 @@ fn move_selection(s: &mut Session, delta: isize) {
     if s.matches.is_empty() {
         return;
     }
-    let new = (s.selected as isize + delta).clamp(0, s.matches.len() as isize - 1);
-    s.selected = new as usize;
+    let selected = cast::usize_to_isize(s.selected);
+    let max = cast::usize_to_isize(s.matches.len()).saturating_sub(1);
+    let new = (selected + delta).clamp(0, max);
+    s.selected = cast::isize_to_usize(new);
     ensure_visible(s);
 }
 
@@ -440,9 +465,9 @@ fn render_list(frame: &mut Frame, area: Rect, s: &Session) {
     let more = s.total_matches > MAX_MATERIALIZED;
     let at_bottom = s.scroll_offset + s.viewport_height >= s.matches.len();
     let hint_row = usize::from(more && at_bottom);
-    let visible_rows = s.viewport_height - hint_row;
+    let visible_rows = s.viewport_height.saturating_sub(hint_row);
 
-    let max_label_width = area.width.saturating_sub(LABEL_INDENT.len() as u16) as usize;
+    let max_label_width = usize::from(area.width).saturating_sub(LABEL_INDENT.len());
     let end = (s.scroll_offset + visible_rows).min(s.matches.len());
 
     let mut lines: Vec<Line> = s.matches[s.scroll_offset..end]
@@ -471,7 +496,7 @@ fn render_search(frame: &mut Frame, area: Rect, s: &Session) {
     let cursor_byte = TextBuffer::char_to_byte(&query, s.search.x());
     let (before, rest) = query.split_at(cursor_byte);
     let mut chars = rest.chars();
-    let cursor_char = chars.next().unwrap_or(' ');
+    let cursor_char = chars.next().map_or(' ', |c| c);
     let after = chars.as_str();
 
     let mut spans = vec![super::chevron_span()];
@@ -499,7 +524,7 @@ fn build_highlighted_line<'a>(
 ) -> Line<'a> {
     let base = if selected { t.item_selected } else { t.item };
     let highlight = base
-        .fg(t.accent.fg.unwrap_or_default())
+        .fg(t.accent.fg.or(base.fg).unwrap_or_else(|| Color::Reset))
         .add_modifier(Modifier::BOLD);
 
     let mut spans = vec![Span::styled(LABEL_INDENT, base)];
@@ -508,20 +533,20 @@ fn build_highlighted_line<'a>(
     let mut width = 0usize;
 
     for (i, ch) in text.chars().enumerate() {
-        let cw = ch.width().unwrap_or(0);
+        let cw = ch.width().map_or(0, |w| w);
         if width + cw > max_width {
             break;
         }
         width += cw;
 
-        let is_match = indices.binary_search(&(i as u32)).is_ok();
-        if is_match != in_match && !run.is_empty() {
+        let matched = indices.binary_search(&cast::usize_to_u32(i)).is_ok();
+        if matched != in_match && !run.is_empty() {
             spans.push(Span::styled(
                 mem::take(&mut run),
                 if in_match { highlight } else { base },
             ));
         }
-        in_match = is_match;
+        in_match = matched;
         run.push(ch);
     }
 
@@ -574,7 +599,7 @@ mod tests {
 
     fn inject_file(picker: &FilePickerModal, path: &str) {
         let s = picker.session.as_ref().unwrap();
-        s.nucleo.injector().push((), |_, cols| {
+        s.nucleo.injector().push((), |(), cols| {
             cols[0] = Utf32String::from(path);
         });
     }
@@ -605,8 +630,9 @@ mod tests {
             "should stay hidden before debounce"
         );
 
-        picker.session.as_mut().unwrap().started_at =
-            Instant::now() - std::time::Duration::from_millis(200);
+        picker.session.as_mut().unwrap().started_at = Instant::now()
+            .checked_sub(std::time::Duration::from_millis(200))
+            .unwrap();
         picker.tick();
         assert!(
             picker.session.as_ref().unwrap().visible,
@@ -670,7 +696,7 @@ mod tests {
                 indices: Vec::new(),
             })
             .collect();
-        s.total_matches = n as u32;
+        s.total_matches = cast::usize_to_u32(n);
         picker
     }
 

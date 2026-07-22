@@ -26,6 +26,7 @@ const ENV_VAR: &str = "GEMINI_API_KEY";
 const FLASH_MAX_THINKING: u32 = 24_576;
 const PRO_MAX_THINKING: u32 = 32_768;
 const CACHE_PREFIX_LEN: usize = 3;
+const CACHE_TTL: Duration = Duration::from_mins(5);
 
 /// The generic per-model max, capped by Google's documented `thinkingBudget`
 /// hard limits per family.
@@ -38,31 +39,35 @@ fn max_thinking(model: &Model) -> u32 {
     model.max_thinking_budget().map_or(cap, |m| m.min(cap))
 }
 
-fn tools_hash(tools: &Value) -> u64 {
+fn tools_hash(tools: &Value) -> Result<u64, AgentError> {
     let mut hasher = DefaultHasher::new();
-    let json_str = serde_json::to_string(tools).unwrap();
+    let json_str = serde_json::to_string(tools)?;
     hasher.write(json_str.as_bytes());
-    hasher.finish()
+    Ok(hasher.finish())
 }
 
 #[derive(Clone, Debug)]
 struct CachedContentState {
     name: String,
     tools_hash: u64,
-    message_count: usize,
+    cached_count: usize,
+    created_at: Instant,
 }
 
 impl CachedContentState {
-    fn new(name: String, tools_hash: u64, message_count: usize) -> Self {
+    fn new(name: String, tools_hash: u64, cached_count: usize) -> Self {
         Self {
             name,
             tools_hash,
-            message_count,
+            cached_count,
+            created_at: Instant::now(),
         }
     }
 
-    fn is_valid(&self, tools_hash: u64, message_count: usize) -> bool {
-        self.tools_hash == tools_hash && message_count >= self.message_count
+    fn is_valid(&self, tools_hash: u64, current_message_count: usize, now: Instant) -> bool {
+        self.tools_hash == tools_hash
+            && current_message_count >= self.cached_count
+            && now.saturating_duration_since(self.created_at) < CACHE_TTL
     }
 }
 
@@ -151,7 +156,7 @@ impl Google {
         let pool = KeyPool::resolve("google", ENV_VAR)?;
         let resolved = resolve_auth_from_key(pool.current());
         Ok(Self {
-            client: http_client(timeouts),
+            client: http_client(timeouts)?,
             auth: Arc::new(Mutex::new(resolved)),
             key_pool: Some(pool),
             stream_timeout: timeouts.stream,
@@ -162,18 +167,21 @@ impl Google {
     pub(crate) fn with_auth(
         auth: Arc<Mutex<super::ResolvedAuth>>,
         timeouts: super::Timeouts,
-    ) -> Self {
-        Self {
-            client: http_client(timeouts),
+    ) -> Result<Self, AgentError> {
+        Ok(Self {
+            client: http_client(timeouts)?,
             auth,
             key_pool: None,
             stream_timeout: timeouts.stream,
             cache_state: Arc::new(Mutex::new(HashMap::new())),
-        }
+        })
     }
 
     fn build_request(&self, method: &str, url: &str) -> isahc::http::request::Builder {
-        let auth = self.auth.lock().unwrap();
+        let auth = self
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         auth.configure_request(
             Request::builder()
                 .method(method)
@@ -183,18 +191,26 @@ impl Google {
     }
 
     fn api_key(&self) -> String {
-        let auth = self.auth.lock().unwrap();
+        let auth = self
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         auth.headers
             .iter()
             .find(|(k, _)| k == "x-goog-api-key")
-            .map(|(_, v)| v.clone())
-            .unwrap_or_default()
+            .map_or_else(String::default, |(_, v)| v.clone())
     }
 
     fn stream_url(&self, model_id: &str) -> String {
         let base = {
-            let auth = self.auth.lock().unwrap();
-            auth.base_url.as_deref().unwrap_or(BASE_URL).to_string()
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            auth.base_url
+                .as_deref()
+                .unwrap_or_else(|| BASE_URL)
+                .to_string()
         };
         let encoded = super::urlenc(model_id);
         format!("{base}/models/{encoded}:streamGenerateContent?alt=sse")
@@ -202,8 +218,14 @@ impl Google {
 
     fn models_url(&self) -> String {
         let base = {
-            let auth = self.auth.lock().unwrap();
-            auth.base_url.as_deref().unwrap_or(BASE_URL).to_string()
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            auth.base_url
+                .as_deref()
+                .unwrap_or_else(|| BASE_URL)
+                .to_string()
         };
         let key = self.api_key();
         format!("{base}/models?key={key}&pageSize=1000")
@@ -211,8 +233,14 @@ impl Google {
 
     fn cached_contents_url(&self) -> String {
         let base = {
-            let auth = self.auth.lock().unwrap();
-            auth.base_url.as_deref().unwrap_or(BASE_URL).to_string()
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            auth.base_url
+                .as_deref()
+                .unwrap_or_else(|| BASE_URL)
+                .to_string()
         };
         let key = self.api_key();
         format!("{base}/cachedContents?key={key}")
@@ -224,7 +252,7 @@ impl Google {
         system: &str,
         tools: &Value,
         messages: &[Message],
-    ) -> Result<String, AgentError> {
+    ) -> Result<(String, usize), AgentError> {
         let url = self.cached_contents_url();
         let prefix_len = messages.len().min(CACHE_PREFIX_LEN);
 
@@ -255,13 +283,22 @@ impl Google {
 
         let response_text = response.text().await?;
         let cached: serde_json::Value = serde_json::from_str(&response_text)?;
-        Ok(cached["name"].as_str().unwrap_or("").to_string())
+        Ok((
+            cached["name"].as_str().unwrap_or_else(|| "").to_string(),
+            prefix_len,
+        ))
     }
 
     async fn delete_cached_content(&self, name: &str) -> Result<(), AgentError> {
         let base = {
-            let auth = self.auth.lock().unwrap();
-            auth.base_url.as_deref().unwrap_or(BASE_URL).to_string()
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            auth.base_url
+                .as_deref()
+                .unwrap_or_else(|| BASE_URL)
+                .to_string()
         };
         let key = self.api_key();
         let url = format!("{base}/{}?key={key}", name.trim_start_matches('/'));
@@ -277,7 +314,6 @@ impl Google {
     }
 
     fn build_body(
-        &self,
         model: &Model,
         messages: &[Message],
         system: &str,
@@ -315,7 +351,7 @@ impl Google {
         event_tx: &Sender<ProviderEvent>,
         thinking: ThinkingConfig,
     ) -> Result<StreamResponse, AgentError> {
-        let body = self.build_body(model, messages, system, tools, thinking);
+        let body = Self::build_body(model, messages, system, tools, thinking);
         let url = self.stream_url(&model.id);
         let json_body = serde_json::to_vec(&body)?;
 
@@ -347,7 +383,7 @@ impl Provider for Google {
         session_id: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
-            let current_tools_hash = tools_hash(tools);
+            let current_tools_hash = tools_hash(tools)?;
             let current_message_count = messages.len();
 
             // Caching requires a stable session key and a prefix worth caching.
@@ -362,11 +398,16 @@ impl Provider for Google {
                     .await;
             }
 
-            let (cached_content_name, old_name_to_delete) = {
-                let mut cache_state = self.cache_state.lock().unwrap();
+            let now = Instant::now();
+
+            let (cached, old_name_to_delete) = {
+                let mut cache_state = self
+                    .cache_state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if let Some(state) = cache_state.get(sid) {
-                    if state.is_valid(current_tools_hash, current_message_count) {
-                        (Some(state.name.clone()), None)
+                    if state.is_valid(current_tools_hash, current_message_count, now) {
+                        (Some((state.name.clone(), state.cached_count)), None)
                     } else {
                         let old_name = state.name.clone();
                         cache_state.remove(sid);
@@ -381,24 +422,23 @@ impl Provider for Google {
                 let _ = self.delete_cached_content(&name).await;
             }
 
-            let cached_content_name = if let Some(name) = cached_content_name {
-                name
+            let (cached_content_name, cached_count) = if let Some(pair) = cached {
+                pair
             } else {
                 match self
                     .create_cached_content(&model.id, system, tools, messages)
                     .await
                 {
-                    Ok(name) => {
-                        let mut cache_state = self.cache_state.lock().unwrap();
+                    Ok((name, prefix_len)) => {
+                        let mut cache_state = self
+                            .cache_state
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         cache_state.insert(
                             sid.clone(),
-                            CachedContentState::new(
-                                name.clone(),
-                                current_tools_hash,
-                                current_message_count,
-                            ),
+                            CachedContentState::new(name.clone(), current_tools_hash, prefix_len),
                         );
-                        name
+                        (name, prefix_len)
                     }
                     Err(_) => {
                         return self
@@ -417,9 +457,9 @@ impl Provider for Google {
             // The cached content already contains the system prompt and tool declarations;
             // the generation request only carries the new messages.
             let no_tools = json!([]);
-            let mut body = self.build_body(
+            let mut body = Self::build_body(
                 model,
-                &messages[CACHE_PREFIX_LEN..],
+                &messages[cached_count..],
                 "",
                 &no_tools,
                 opts.thinking,
@@ -447,9 +487,9 @@ impl Provider for Google {
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<crate::model::ModelInfo>, AgentError>> {
         let url = self.models_url();
-        let request = self.build_request("GET", &url).body(()).unwrap();
         let client = self.client.clone();
         Box::pin(async move {
+            let request = self.build_request("GET", &url).body(())?;
             let mut response = client.send_async(request).await?;
             if response.status().as_u16() != 200 {
                 return Err(AgentError::from_response(response).await);
@@ -468,8 +508,7 @@ impl Provider for Google {
                     let id = m
                         .name
                         .strip_prefix("models/")
-                        .map(String::from)
-                        .unwrap_or(m.name);
+                        .map_or_else(|| m.name.clone(), String::from);
                     crate::model::ModelInfo::id_only(id)
                 })
                 .collect();
@@ -481,7 +520,11 @@ impl Provider for Google {
     fn reload_auth(&self) -> BoxFuture<'_, Result<(), AgentError>> {
         Box::pin(async {
             let pool = KeyPool::resolve("google", ENV_VAR)?;
-            *self.auth.lock().unwrap() = resolve_auth_from_key(pool.current());
+            *self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                resolve_auth_from_key(pool.current());
             Ok(())
         })
     }
@@ -561,7 +604,7 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
                     let name = tool_names
                         .get(tool_use_id.as_str())
                         .copied()
-                        .unwrap_or("unknown");
+                        .unwrap_or_else(|| "unknown");
                     parts.push(json!({
                         "functionResponse": {
                             "name": name,
@@ -604,7 +647,7 @@ fn convert_tools(tools: &Value) -> Vec<Value> {
     arr.iter()
         .filter_map(|t| {
             let name = t.get("name")?.as_str()?;
-            let description = t.get("description")?.as_str().unwrap_or("");
+            let description = t.get("description")?.as_str().unwrap_or_else(|| "");
             let parameters = t
                 .get("input_schema")
                 .cloned()
@@ -670,6 +713,7 @@ struct SseFunctionCall {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_field_names)]
 struct SseUsageMetadata {
     #[serde(default)]
     prompt_token_count: u32,
@@ -715,7 +759,7 @@ async fn parse_sse(
 
     while let Some(line) = next_sse_line(&mut lines, &mut deadline, stream_timeout).await? {
         let data = match line.strip_prefix("data:") {
-            Some(d) => d.strip_prefix(' ').unwrap_or(d),
+            Some(d) => d.strip_prefix(' ').unwrap_or_else(|| d),
             _ => continue,
         };
 
@@ -754,7 +798,7 @@ async fn parse_sse(
             for part in parts {
                 if let Some(func_call) = part.function_call {
                     let id = format!("call_{}", func_call.name);
-                    let input = func_call.args.unwrap_or_default();
+                    let input = func_call.args.unwrap_or_else(Default::default);
                     event_tx
                         .send_async(ProviderEvent::ToolUseStart {
                             id: id.clone(),
@@ -768,7 +812,7 @@ async fn parse_sse(
                     });
                     stop_reason = Some(StopReason::ToolUse);
                 } else if let Some(text) = part.text {
-                    if part.thought.unwrap_or(false) {
+                    if part.thought.unwrap_or_else(|| false) {
                         if !text.is_empty() {
                             event_tx
                                 .send_async(ProviderEvent::ThinkingDelta { text: text.clone() })
@@ -803,25 +847,7 @@ async fn parse_sse(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use test_case::test_case;
-
-    const GEMINI_API_KEY: &str = "test-key";
-
-    fn test_auth() -> Arc<Mutex<ResolvedAuth>> {
-        Arc::new(Mutex::new(ResolvedAuth {
-            base_url: None,
-            headers: vec![("x-goog-api-key".into(), GEMINI_API_KEY.into())],
-        }))
-    }
-
-    fn test_timeouts() -> super::super::Timeouts {
-        super::super::Timeouts {
-            connect: Duration::from_secs(5),
-            low_speed: Duration::from_secs(30),
-            stream: Duration::from_secs(300),
-        }
-    }
 
     fn test_model() -> Model {
         Model {
@@ -841,10 +867,9 @@ mod tests {
 
     #[test]
     fn google_build_body_basic() {
-        let google = Google::with_auth(test_auth(), test_timeouts());
         let model = test_model();
         let messages = vec![Message::user("hello".into())];
-        let body = google.build_body(
+        let body = Google::build_body(
             &model,
             &messages,
             "be helpful",
@@ -860,9 +885,8 @@ mod tests {
 
     #[test]
     fn google_build_body_thinking_adaptive() {
-        let google = Google::with_auth(test_auth(), test_timeouts());
         let messages = vec![Message::user("think".into())];
-        let body = google.build_body(
+        let body = Google::build_body(
             &test_model(),
             &messages,
             "",
@@ -878,9 +902,8 @@ mod tests {
 
     #[test]
     fn google_build_body_thinking_budget() {
-        let google = Google::with_auth(test_auth(), test_timeouts());
         let messages = vec![Message::user("think hard".into())];
-        let body = google.build_body(
+        let body = Google::build_body(
             &test_model(),
             &messages,
             "",
@@ -992,7 +1015,7 @@ mod tests {
         let result = convert_messages(&messages);
         assert_eq!(result.len(), 2);
         assert!(result[0]["parts"][0].get("functionResponse").is_some());
-        assert!(result[0]["parts"].as_array().unwrap().len() == 1);
+        assert_eq!(result[0]["parts"].as_array().unwrap().len(), 1);
         assert_eq!(result[1]["role"], "user");
         assert_eq!(result[1]["parts"][0]["inlineData"]["mimeType"], "image/png");
     }
@@ -1172,18 +1195,31 @@ mod tests {
 
     #[test]
     fn cached_content_state_valid_when_tools_and_count_match() {
+        let now = Instant::now();
         let state = CachedContentState::new("cache1".to_string(), 123, 5);
-        assert!(state.is_valid(123, 5));
-        assert!(state.is_valid(123, 6));
-        assert!(!state.is_valid(124, 5));
-        assert!(!state.is_valid(123, 4));
+        assert!(state.is_valid(123, 5, now));
+        assert!(state.is_valid(123, 6, now));
+        assert!(!state.is_valid(124, 5, now));
+        assert!(!state.is_valid(123, 4, now));
+    }
+
+    #[test]
+    fn cached_content_state_invalid_after_ttl() {
+        let now = Instant::now();
+        let mut state = CachedContentState::new("cache1".to_string(), 123, 5);
+        state.created_at = now
+            .checked_sub(CACHE_TTL)
+            .unwrap()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap();
+        assert!(!state.is_valid(123, 5, now));
     }
 
     #[test]
     fn tools_hash_is_deterministic() {
         let tools = json!([{"name": "bash", "input_schema": {"type": "object"}}]);
-        let hash1 = tools_hash(&tools);
-        let hash2 = tools_hash(&tools);
+        let hash1 = tools_hash(&tools).unwrap();
+        let hash2 = tools_hash(&tools).unwrap();
         assert_eq!(hash1, hash2);
     }
 
@@ -1191,6 +1227,6 @@ mod tests {
     fn tools_hash_differs_for_different_tools() {
         let tools1 = json!([{"name": "bash", "input_schema": {"type": "object"}}]);
         let tools2 = json!([{"name": "read", "input_schema": {"type": "object"}}]);
-        assert_ne!(tools_hash(&tools1), tools_hash(&tools2));
+        assert_ne!(tools_hash(&tools1).unwrap(), tools_hash(&tools2).unwrap());
     }
 }

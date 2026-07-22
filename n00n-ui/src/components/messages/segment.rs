@@ -1,9 +1,9 @@
-use crate::markdown::TRUNCATION_PREFIX;
 use crate::render_worker::RenderWorker;
 use crate::terminal_image::TerminalImage;
 use crate::theme;
 
 use super::super::code_view::SectionFlags;
+use super::super::code_view::TruncationAction;
 use super::super::tool_display::{HighlightRequest, ToolLines};
 use n00n_agent::{ImageMediaType, ImageSource};
 use ratatui::text::{Line, Span};
@@ -17,6 +17,17 @@ const INST_SUFFIX: &str = "__inst";
 pub(super) enum SegmentIdentity {
     Tool(String),
     Instructions(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum MessageAction {
+    ToggleCompaction(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PositionedMessageAction {
+    line: usize,
+    action: MessageAction,
 }
 
 fn media_type_label(media_type: ImageMediaType) -> &'static str {
@@ -79,9 +90,9 @@ pub(super) struct Segment {
     pub tool_id: Option<String>,
     pub identity: Option<SegmentIdentity>,
     /// Backlink to `self.messages`, set only by `with_lines`. A click on a
-    /// collapsed thinking indicator has no tool_id to route by, so this is
+    /// collapsed thinking indicator has no `tool_id` to route by, so this is
     /// how the click finds its message. It looks unused; delete it and the
-    /// show_thinking toggle breaks.
+    /// `show_thinking` toggle breaks.
     pub msg_index: Option<usize>,
     pub truncation: SectionFlags,
     cached_height: Cell<Option<CachedHeight>>,
@@ -90,6 +101,8 @@ pub(super) struct Segment {
     highlight_key: HighlightKey,
     pub spinner_lines: Vec<(usize, usize)>,
     snapshot_base: Option<usize>,
+    truncation_actions: Vec<TruncationAction>,
+    message_actions: Vec<PositionedMessageAction>,
     pub content_indent: &'static str,
     surface: Surface,
     image: Option<TerminalImage>,
@@ -100,6 +113,28 @@ impl Segment {
         Self {
             identity: Some(SegmentIdentity::Tool(tool_id.clone())),
             tool_id: Some(tool_id),
+            surface: Surface::Tool,
+            ..Self::default()
+        }
+    }
+
+    pub fn with_compaction(
+        lines: Vec<Line<'static>>,
+        search_text: String,
+        msg_index: usize,
+        actions: Vec<(usize, String)>,
+    ) -> Self {
+        Self {
+            lines,
+            search_text,
+            msg_index: Some(msg_index),
+            message_actions: actions
+                .into_iter()
+                .map(|(line, id)| PositionedMessageAction {
+                    line,
+                    action: MessageAction::ToggleCompaction(id),
+                })
+                .collect(),
             surface: Surface::Tool,
             ..Self::default()
         }
@@ -163,7 +198,7 @@ impl Segment {
                 }
             }
             Err(err) => {
-                let search_text = format!("[image: {}]", err);
+                let search_text = format!("[image: {err}]");
                 let lines = vec![Line::from(vec![Span::styled(
                     search_text.clone(),
                     theme::current().error,
@@ -224,7 +259,7 @@ impl Segment {
     }
 
     pub fn content_inset(&self) -> u16 {
-        0
+        if self.surface.is_framed() { 2 } else { 0 }
     }
 
     fn content_width(&self, width: u16) -> u16 {
@@ -258,7 +293,6 @@ impl Segment {
         if self.image.is_some() {
             return None;
         }
-        let rel_row = rel_row.saturating_sub(self.content_inset() / 2);
         let width = self.content_width(width);
         let mut acc = 0u16;
         for (i, line) in self.lines.iter().enumerate() {
@@ -281,20 +315,29 @@ impl Segment {
         }
     }
 
-    pub fn is_snapshot_line(&self, source_line: usize) -> bool {
-        self.snapshot_base.is_some_and(|base| source_line >= base)
+    pub fn truncation_action(&self, source_line: usize) -> Option<SectionFlags> {
+        self.truncation_actions
+            .iter()
+            .find(|action| action.line == source_line)
+            .map(|action| action.section)
     }
 
-    pub fn is_truncation_line(&self, source_line: usize) -> bool {
-        let Some(line) = self.lines.get(source_line) else {
-            return false;
-        };
-        let text: String = line
-            .spans
+    pub fn message_action(&self, source_line: usize) -> Option<&MessageAction> {
+        self.message_actions
             .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        text.contains(TRUNCATION_PREFIX) && text.contains('›')
+            .find(|action| action.line == source_line)
+            .map(|action| &action.action)
+    }
+
+    #[cfg(test)]
+    pub fn compaction_action_row(&self, id: &str, width: u16) -> Option<u16> {
+        (0..self.height(width)).find(|&row| {
+            self.source_line_at(row, width)
+                .and_then(|line| self.message_action(line))
+                .is_some_and(
+                    |action| matches!(action, MessageAction::ToggleCompaction(action_id) if action_id == id),
+                )
+        })
     }
 
     fn invalidate_height(&self) {
@@ -337,6 +380,7 @@ impl Segment {
         self.snapshot_base = tl.snapshot_base;
         self.content_indent = tl.content_indent;
         self.truncation = tl.truncation;
+        self.truncation_actions = tl.truncation_actions;
         self.set_lines(tl.lines);
     }
 
@@ -357,6 +401,7 @@ impl Segment {
             self.spinner_lines = tl.spinner_lines;
             self.snapshot_base = tl.snapshot_base;
             self.content_indent = tl.content_indent;
+            self.truncation_actions = tl.truncation_actions;
         } else {
             self.apply_highlight(tl, worker);
         }
@@ -381,7 +426,7 @@ impl Segment {
             let new_end = start + indented.len();
             self.lines.splice(start..end, indented);
             self.highlight_range = Some((start, new_end));
-            self.shift_after(end, new_end as isize - end as isize);
+            self.shift_after(end, new_end.cast_signed() - end.cast_signed());
             self.invalidate_height();
         }
         self.pending_highlight = None;
@@ -403,6 +448,12 @@ impl Segment {
         }
         if let Some(base) = &mut self.snapshot_base {
             shift(base);
+        }
+        for action in &mut self.truncation_actions {
+            shift(&mut action.line);
+        }
+        for action in &mut self.message_actions {
+            shift(&mut action.line);
         }
     }
 }
@@ -468,14 +519,17 @@ impl SegmentCache {
     }
 
     pub fn total_height(&self, width: u16) -> u32 {
-        self.segments.iter().map(|s| s.height(width) as u32).sum()
+        self.segments
+            .iter()
+            .map(|s| u32::from(s.height(width)))
+            .sum()
     }
 
     pub fn segment_at_row(&self, doc_row: u32, width: u16) -> Option<(usize, &Segment, u32)> {
         let mut cumulative: u32 = 0;
         for (i, seg) in self.segments.iter().enumerate() {
             let seg_start = cumulative;
-            cumulative += seg.height(width) as u32;
+            cumulative += u32::from(seg.height(width));
             if doc_row < cumulative {
                 return Some((i, seg, seg_start));
             }
@@ -530,11 +584,14 @@ impl SegmentCache {
 
 pub(crate) fn wrapped_line_count(lines: &[Line<'_>], width: u16) -> u16 {
     if width == 0 {
-        return lines.len() as u16;
+        return u16::try_from(lines.len()).unwrap_or_else(|_| u16::MAX);
     }
-    Paragraph::new(lines.to_vec())
-        .wrap(Wrap { trim: false })
-        .line_count(width) as u16
+    u16::try_from(
+        Paragraph::new(lines.to_vec())
+            .wrap(Wrap { trim: false })
+            .line_count(width),
+    )
+    .unwrap_or_else(|_| u16::MAX)
 }
 
 #[cfg(test)]
@@ -581,7 +638,7 @@ mod tests {
         seg.highlight_range = Some((1, 3));
         seg.spinner_lines = vec![(0, 0), (5, 1)];
         seg.apply_highlight_result((0..replacement_lines).map(|_| Line::raw("hl")).collect());
-        let delta = expected_base as isize - 4;
+        let delta = expected_base.cast_signed() - 4;
         assert_eq!(seg.snapshot_base, Some(expected_base));
         assert_eq!(
             seg.spinner_lines,

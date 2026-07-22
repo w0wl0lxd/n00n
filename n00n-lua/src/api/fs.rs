@@ -2,6 +2,8 @@ use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::fs::FileType;
 use std::io::ErrorKind;
+
+use futures_lite::io::AsyncReadExt;
 use std::path::{Component, Path, PathBuf};
 
 use mlua::{IntoLua, Lua, Result as LuaResult, Table, Value};
@@ -36,11 +38,11 @@ fn make_absolute(path: &str) -> LuaResult<PathBuf> {
 
 fn path_to_string(p: &Path) -> LuaResult<String> {
     p.to_str()
-        .map(|s| s.to_owned())
+        .map(std::borrow::ToOwned::to_owned)
         .ok_or_else(|| mlua::Error::runtime("non-utf8 path"))
 }
 
-fn filetype_str(ft: &FileType) -> &'static str {
+fn filetype_str(ft: FileType) -> &'static str {
     if ft.is_file() {
         "file"
     } else if ft.is_dir() {
@@ -60,9 +62,8 @@ fn collect_dir_entries(
     visited: &mut HashSet<PathBuf>,
     out: &mut Vec<(String, &'static str)>,
 ) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
@@ -72,17 +73,16 @@ fn collect_dir_entries(
         };
         let (type_str, is_dir) = match entry.file_type() {
             Ok(ft) if ft.is_symlink() => match std::fs::metadata(&path) {
-                Ok(meta) => (filetype_str(&meta.file_type()), meta.is_dir()),
+                Ok(meta) => (filetype_str(meta.file_type()), meta.is_dir()),
                 Err(_) => ("link", false),
             },
-            Ok(ft) => (filetype_str(&ft), ft.is_dir()),
+            Ok(ft) => (filetype_str(ft), ft.is_dir()),
             Err(_) => ("unknown", false),
         };
         out.push((name, type_str));
         if is_dir && depth < max_depth {
-            let canonical = match path.canonicalize() {
-                Ok(c) => c,
-                Err(_) => continue,
+            let Ok(canonical) = path.canonicalize() else {
+                continue;
             };
             if visited.insert(canonical) {
                 collect_dir_entries(base, &path, depth + 1, max_depth, visited, out);
@@ -102,6 +102,85 @@ fn result_pair<T: mlua::IntoLua, E: std::fmt::Display>(
             mlua::Value::String(lua.create_string(e.to_string())?),
         )),
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum ReadBytesLimitedError {
+    #[error("cannot open file: {0}")]
+    Open(#[source] std::io::Error),
+    #[error("cannot inspect file: {0}")]
+    Metadata(#[source] std::io::Error),
+    #[error("file is not a regular file")]
+    NotRegularFile,
+    #[error("cannot read file: {0}")]
+    Read(#[source] std::io::Error),
+    #[error("file exceeds maximum size of {max_bytes} bytes")]
+    TooLarge { max_bytes: usize },
+    #[error("maximum file size is too large")]
+    LimitTooLarge,
+    #[error("file cannot be buffered within the configured limit")]
+    Allocation,
+}
+
+#[cfg(unix)]
+async fn open_for_limited_read(path: &Path) -> std::io::Result<smol::fs::File> {
+    use smol::fs::unix::OpenOptionsExt as _;
+
+    smol::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .await
+}
+
+#[cfg(not(unix))]
+async fn open_for_limited_read(path: &Path) -> std::io::Result<smol::fs::File> {
+    smol::fs::File::open(path).await
+}
+
+async fn read_regular_file_limited(
+    path: &Path,
+    max_bytes: usize,
+) -> Result<Vec<u8>, ReadBytesLimitedError> {
+    const READ_CHUNK_BYTES: usize = 64 * 1024;
+
+    let max_read_bytes = max_bytes
+        .checked_add(1)
+        .ok_or(ReadBytesLimitedError::LimitTooLarge)?;
+    let mut file = open_for_limited_read(path)
+        .await
+        .map_err(ReadBytesLimitedError::Open)?;
+    if !file
+        .metadata()
+        .await
+        .map_err(ReadBytesLimitedError::Metadata)?
+        .is_file()
+    {
+        return Err(ReadBytesLimitedError::NotRegularFile);
+    }
+
+    let mut bytes = Vec::new();
+    let mut chunk = vec![0_u8; READ_CHUNK_BYTES];
+    while bytes.len() < max_read_bytes {
+        let remaining = max_read_bytes - bytes.len();
+        let read_len = remaining.min(READ_CHUNK_BYTES);
+        let read = file
+            .read(&mut chunk[..read_len])
+            .await
+            .map_err(ReadBytesLimitedError::Read)?;
+        if read == 0 {
+            break;
+        }
+        bytes
+            .try_reserve(read)
+            .map_err(|_| ReadBytesLimitedError::Allocation)?;
+        bytes.extend_from_slice(&chunk[..read]);
+    }
+
+    if bytes.len() > max_bytes {
+        return Err(ReadBytesLimitedError::TooLarge { max_bytes });
+    }
+    Ok(bytes)
 }
 
 /// Read the entire file at {path} as a UTF-8 string.
@@ -146,6 +225,29 @@ async fn read_bytes(lua: Lua, path: String) -> LuaResult<(Value, Value)> {
     }
 }
 
+/// Read at most {max_bytes} raw bytes from a regular file at {path}.
+/// The opened handle is checked before reading, so devices, FIFOs, and directories
+/// are rejected. Reads one byte beyond the limit to report oversized files without
+/// allocating their full contents.
+///
+/// @param path string Absolute or relative file path. `~/` is expanded to the home directory.
+/// @param max_bytes integer Maximum file size in bytes.
+/// @return (buffer?, string?) File bytes, or nil plus a sanitized error message.
+/// @example
+/// local bytes, err = n00n.fs.read_bytes_limited("image.png", 50 * 1024 * 1024)
+/// if err then return end
+#[lua_fn(guard = FsRead)]
+async fn read_bytes_limited(lua: Lua, path: String, max_bytes: usize) -> LuaResult<(Value, Value)> {
+    let abs = make_absolute(&path)?;
+    match read_regular_file_limited(&abs, max_bytes).await {
+        Ok(bytes) => Ok((lua.create_buffer(bytes)?.into_lua(&lua)?, Value::Nil)),
+        Err(error) => Ok((
+            Value::Nil,
+            Value::String(lua.create_string(error.to_string())?),
+        )),
+    }
+}
+
 /// Get metadata for the file or directory at {path}.
 /// Returns a table with `size` (integer), `is_file` (boolean), and `is_dir` (boolean).
 /// If {path} does not exist, returns nil with no error.
@@ -184,7 +286,7 @@ fn dirname(_lua: &Lua, path: String) -> LuaResult<Option<String>> {
     Ok(Path::new(&path)
         .parent()
         .and_then(|p| p.to_str())
-        .map(|s| s.to_owned()))
+        .map(std::borrow::ToOwned::to_owned))
 }
 
 /// Return the final component (the file name) of {path}. Like `vim.fs.basename`.
@@ -198,7 +300,7 @@ fn basename(_lua: &Lua, path: String) -> LuaResult<Option<String>> {
     Ok(Path::new(&path)
         .file_name()
         .and_then(|n| n.to_str())
-        .map(|s| s.to_owned()))
+        .map(std::borrow::ToOwned::to_owned))
 }
 
 /// Join one or more path segments into a single path. Like `vim.fs.joinpath`.
@@ -307,12 +409,15 @@ async fn root(_lua: Lua, source: String, marker: Value) -> LuaResult<Option<Stri
     smol::unblock(move || {
         let start = Path::new(&source);
         let start = if start.is_file() || !start.exists() {
-            start.parent().unwrap_or(start)
+            start.parent().unwrap_or_else(|| start)
         } else {
             start
         };
 
-        let mut dir = make_absolute(start.to_str().unwrap_or_default())?;
+        let start_str = start
+            .to_str()
+            .ok_or_else(|| mlua::Error::runtime("path contains invalid UTF-8"))?;
+        let mut dir = make_absolute(start_str)?;
 
         loop {
             for m in &markers {
@@ -368,7 +473,7 @@ fn ext(_lua: &Lua, path: String) -> LuaResult<Option<String>> {
     Ok(Path::new(&path)
         .extension()
         .and_then(|e| e.to_str())
-        .map(|s| s.to_owned()))
+        .map(std::borrow::ToOwned::to_owned))
 }
 
 /// List the contents of the directory at {path}.
@@ -388,7 +493,7 @@ fn ext(_lua: &Lua, path: String) -> LuaResult<Option<String>> {
 async fn dir(lua: Lua, path: String, opts: Option<Table>) -> LuaResult<(Value, Value)> {
     let abs = make_absolute(&path)?;
     let max_depth: u32 = match &opts {
-        Some(t) => t.get::<u32>("depth").unwrap_or(1),
+        Some(t) => t.get::<u32>("depth").unwrap_or_else(|_| 1),
         None => 1,
     };
 
@@ -463,7 +568,7 @@ async fn mkdir(lua: Lua, path: String, opts: Option<Table>) -> LuaResult<(Value,
     let parents = opts
         .as_ref()
         .and_then(|t| t.get::<bool>("parents").ok())
-        .unwrap_or(false);
+        .unwrap_or_else(|| false);
     let result = if parents {
         smol::fs::create_dir_all(&abs).await
     } else {
@@ -506,13 +611,13 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
     let gitignore = opts
         .as_ref()
         .and_then(|t| t.get::<bool>("gitignore").ok())
-        .unwrap_or(true);
+        .unwrap_or_else(|| true);
     let sort = opts.as_ref().and_then(|t| t.get::<String>("sort").ok());
     let sort_mtime = sort.as_deref() == Some("mtime");
 
     let result: Result<Vec<String>, String> = smol::unblock(move || {
         let root = n00n_agent::tools::resolve_search_path(path.as_deref())?;
-        let pattern_refs: Vec<&str> = patterns.iter().map(|s| s.as_str()).collect();
+        let pattern_refs: Vec<&str> = patterns.iter().map(std::string::String::as_str).collect();
 
         let walker = n00n_agent::tools::walk_builder_opts(&root, &pattern_refs, gitignore)?.build();
 
@@ -539,7 +644,7 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
                 None => Box::new(iter),
             };
             bounded
-                .filter_map(|e| e.into_path().to_str().map(|s| s.to_owned()))
+                .filter_map(|e| e.into_path().to_str().map(std::borrow::ToOwned::to_owned))
                 .collect()
         };
 
@@ -555,7 +660,7 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
             }
             Ok((Value::Table(tbl), Value::Nil))
         }
-        Err(e) => err_pair(&lua, format_args!("glob: {e}")),
+        Err(e) => err_pair(&lua, format!("glob: {e}")),
     }
 }
 
@@ -602,7 +707,7 @@ async fn grep(lua: Lua, pattern: String, opts: Option<Table>) -> LuaResult<(Valu
         }
     }
 
-    let result = smol::unblock(move || n00n_agent::tools::grep::grep_search(params)).await;
+    let result = smol::unblock(move || n00n_agent::tools::grep::grep_search(&params)).await;
 
     match result {
         Ok((base, entries)) => {
@@ -644,7 +749,7 @@ lua_table! {
     /// if err then return end
     /// ```
     "n00n.fs" => pub(crate) fn create_fs_table(perms: &PluginPermissions), DOCS [
-        read(perms), read_bytes(perms), metadata(perms), dirname, basename,
+        read(perms), read_bytes(perms), read_bytes_limited(perms), metadata(perms), dirname, basename,
         joinpath, normalize, abspath, parents, root(perms), relpath, ext,
         dir(perms), write(perms), rm(perms), mkdir(perms), glob(perms), grep(perms),
     ]
@@ -671,6 +776,45 @@ mod tests {
         let read: mlua::Function = tbl.get("read").unwrap();
         let result: String = smol::block_on(read.call_async(file.to_str().unwrap())).unwrap();
         assert_eq!(result, "world");
+    }
+
+    #[test]
+    fn read_bytes_limited_rejects_oversized_regular_file() {
+        const LIMIT: usize = 4096;
+        const EXPECTED_ERROR: &str = "file exceeds maximum size of 4096 bytes";
+
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("oversized.bin");
+        std::fs::write(&file, vec![0_u8; LIMIT + 1]).unwrap();
+        let lua = Lua::new();
+        let tbl = create_fs_table(&lua, &PluginPermissions::trusted()).unwrap();
+        let read: mlua::Function = tbl.get("read_bytes_limited").unwrap();
+        let (value, error): (Value, Value) =
+            smol::block_on(read.call_async((file.to_str().unwrap(), LIMIT))).unwrap();
+
+        assert!(matches!(value, Value::Nil));
+        let Value::String(error) = error else {
+            panic!("expected size error");
+        };
+        assert_eq!(error.to_str().unwrap(), EXPECTED_ERROR);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_bytes_limited_rejects_device() {
+        const EXPECTED_ERROR: &str = "file is not a regular file";
+
+        let lua = Lua::new();
+        let tbl = create_fs_table(&lua, &PluginPermissions::trusted()).unwrap();
+        let read: mlua::Function = tbl.get("read_bytes_limited").unwrap();
+        let (value, error): (Value, Value) =
+            smol::block_on(read.call_async(("/dev/zero", 1_usize))).unwrap();
+
+        assert!(matches!(value, Value::Nil));
+        let Value::String(error) = error else {
+            panic!("expected regular-file error");
+        };
+        assert_eq!(error.to_str().unwrap(), EXPECTED_ERROR);
     }
 
     #[test]
@@ -1130,7 +1274,7 @@ mod tests {
         std::fs::write(&old_path, "").unwrap();
         std::fs::write(&new_path, "").unwrap();
 
-        let old_time = SystemTime::now() - Duration::from_secs(60);
+        let old_time = SystemTime::now() - Duration::from_mins(1);
         let new_time = SystemTime::now();
         OpenOptions::new()
             .write(true)
@@ -1200,7 +1344,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut content = String::new();
         for i in 1..=20 {
-            content.push_str(&format!("line_{i}\n"));
+            let _ = std::fmt::Write::write_fmt(&mut content, format_args!("line_{i}\n"));
         }
         std::fs::write(tmp.path().join("data.txt"), &content).unwrap();
         std::fs::write(tmp.path().join("other.txt"), "no hits here\n").unwrap();

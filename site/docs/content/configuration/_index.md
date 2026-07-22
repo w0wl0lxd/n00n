@@ -70,7 +70,7 @@ All fields are optional. Typos in field names cause an error right away.
 | `mouse_scroll_lines` | u32 | `3` | 1 | Lines per mouse wheel scroll |
 | `max_input_lines` | u32 | `20` | 1 | Maximum visible input lines |
 | `show_thinking` | bool | `true` | - | When true (default), show full model reasoning live and persisted. When false, hide reasoning behind an indicator (thinking> ...) with a click-to-expand hint, both while thinking and after it completes |
-| `mascot` | bool | `true` | - | Show the n00n mascot on the idle splash screen |
+| `mascot` | bool | `false` | - | Show the n00n mascot on the idle splash screen |
 
 ### `ui.tool_output_lines`
 
@@ -84,6 +84,7 @@ How many lines of output to show per tool in the UI. All values are `usize` with
 | `workflow` | 8 |
 | `index` | 3 |
 | `grep` | 3 |
+| `explore` | 5 |
 | `read` | 3 |
 | `write` | 7 |
 | `web` | 3 |
@@ -106,6 +107,7 @@ How many lines of output to show per tool in the UI. All values are `usize` with
 | `connect_timeout_secs` | u64 | `10` | 1 | HTTP connect timeout (seconds) |
 | `low_speed_timeout_secs` | u64 | `120` | 1 | Low speed timeout (seconds with less than 1 byte received) |
 | `stream_timeout_secs` | u64 | `300` | 10 | Streaming response timeout (seconds) |
+| `openai_coding_plan_slots` | u64 | `4` | 1 | Maximum concurrent OpenAI Coding Plan streams per account (1-8) |
 
 ### `storage`
 
@@ -121,7 +123,7 @@ The `plugins` table turns plugins on or off and passes options to them. All bund
 
 Each plugin checks its own options at startup. A typo, a wrong type, or an unknown plugin name gives you a clear error right away.
 
-The edit plugin's extra tools are options too: `plugins.edit = { multiedit = false, edit_lines = true }`. The old `tools` table is gone. If your config still uses it, N00n stops at startup and shows you the new form.
+The edit plugin's extra tools are options too: `plugins.edit = { multiedit = false, edit_lines = true }`. The old `tools` table is gone. If your config still uses it, n00n stops at startup and shows you the new form.
 
 ```lua
 n00n.setup({
@@ -149,6 +151,13 @@ n00n.setup({
 | `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
 | `ruff_fix` | boolean | `true` | - | Run Ruff --fix --unsafe-fixes and formatting before execution when Ruff is available. |
 | `timeout_secs` | integer | `30` | 5 | Stop the script after this many seconds. A call's `timeout` param overrides it. |
+
+### `plugins.codegraph`
+
+| Field | Type | Default | Min | Description |
+|-------|------|---------|-----|-------------|
+| `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool. |
+| `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
 
 ### `plugins.edit`
 
@@ -199,7 +208,7 @@ n00n.setup({
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
 | `auto_tier` | boolean | `false` | - | Route each subagent's model tier from its prompt (opt-in, off by default). |
-| `max_concurrent` | integer | `8` | 1 | Max concurrently running subagents. |
+| `max_concurrent` | integer | `4` | 1 | Concurrent subagents (hard max 8). |
 
 ### `plugins.webfetch`
 
@@ -221,17 +230,18 @@ n00n.setup({
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
-| `max_concurrent_agents` | integer | `8` | 1 | Max subagents one parallel()/pipeline() call runs at once. |
-| `max_concurrent_workflows` | integer | `4` | 1 | Max concurrently running workflows. |
+| `max_agents_per_run` | integer | `24` | 1 | Agent-call budget per workflow (hard max 32). |
+| `max_concurrent_agents` | integer | `4` | 1 | Concurrency per parallel()/pipeline() (hard max 8). |
+| `max_concurrent_workflows` | integer | `2` | 1 | Concurrent workflows (hard max 4). |
 | `timeout_secs` | integer | `600` | 1 | Hard deadline for one workflow run (cancels pure-Lua runaway loops via the VM watchdog). |
 
 ## Validation
 
-If a value is below its minimum, N00n shows a `ConfigError` with the field name, value, and minimum.
+If a value is below its minimum, n00n shows a `ConfigError` with the field name, value, and minimum.
 
 ## Directory layout
 
-N00n uses XDG directories on Linux and macOS:
+n00n uses XDG directories on Linux and macOS:
 
 | Purpose | Path |
 |---------|------|

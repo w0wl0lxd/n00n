@@ -123,7 +123,7 @@ impl SearchModal {
             self.selected = self
                 .selected
                 .checked_sub(1)
-                .unwrap_or(self.matches.len() - 1);
+                .unwrap_or_else(|| self.matches.len() - 1);
             self.ensure_visible();
         }
     }
@@ -199,7 +199,7 @@ impl SearchModal {
         let content_rows = if self.matches.is_empty() && !self.search.value().is_empty() {
             1
         } else {
-            self.matches.len() as u16
+            u16::try_from(self.matches.len()).unwrap_or_else(|_| u16::MAX)
         };
 
         let modal = Modal {
@@ -217,9 +217,15 @@ impl SearchModal {
         self.render_list(frame, list_area, viewport_h);
         self.render_search(frame, search_area);
 
-        let total = self.matches.len() as u16;
-        if total > viewport_h as u16 {
-            render_vertical_scrollbar(frame, list_area, total, self.scroll_offset as u16, None);
+        let total = u16::try_from(self.matches.len()).unwrap_or_else(|_| u16::MAX);
+        if total > u16::try_from(viewport_h).unwrap_or_else(|_| u16::MAX) {
+            render_vertical_scrollbar(
+                frame,
+                list_area,
+                total,
+                u16::try_from(self.scroll_offset).unwrap_or_else(|_| u16::MAX),
+                None,
+            );
         }
 
         popup
@@ -236,7 +242,10 @@ impl SearchModal {
             return;
         }
 
-        let max_label_width = area.width.saturating_sub(LABEL_INDENT.len() as u16) as usize;
+        let max_label_width = area
+            .width
+            .saturating_sub(u16::try_from(LABEL_INDENT.len()).unwrap_or_else(|_| u16::MAX))
+            as usize;
         let mut lines: Vec<Line> = Vec::new();
         let end = (self.scroll_offset + viewport_height).min(self.matches.len());
 
@@ -262,7 +271,7 @@ impl SearchModal {
         let cursor_byte = TextBuffer::char_to_byte(&query, self.search.x());
         let (before, rest) = query.split_at(cursor_byte);
         let mut chars = rest.chars();
-        let cursor_char = chars.next().unwrap_or(' ');
+        let cursor_char = chars.next().unwrap_or_else(|| ' ');
         let after = chars.as_str();
 
         let line = Line::from(vec![
@@ -281,15 +290,15 @@ impl Overlay for SearchModal {
     }
 
     fn close(&mut self) {
-        self.close()
+        self.close();
     }
 }
 
 fn pick_display_line(text: &str, indices: &[u32]) -> (String, Vec<u32>) {
-    let first_idx = indices.iter().copied().min().unwrap_or(0);
+    let first_idx = indices.iter().copied().min().unwrap_or_else(|| 0);
     let mut char_offset = 0u32;
     for line in text.lines() {
-        let line_char_count = line.chars().count() as u32;
+        let line_char_count = u32::try_from(line.chars().count()).unwrap_or_else(|_| u32::MAX);
         if first_idx < char_offset + line_char_count {
             let remapped: Vec<u32> = indices
                 .iter()
@@ -300,7 +309,7 @@ fn pick_display_line(text: &str, indices: &[u32]) -> (String, Vec<u32>) {
         }
         char_offset += line_char_count + 1;
     }
-    let first_line = text.lines().next().unwrap_or("").to_string();
+    let first_line = text.lines().next().unwrap_or_else(|| "").to_string();
     (first_line, Vec::new())
 }
 
@@ -314,7 +323,7 @@ fn build_highlighted_line<'a>(
     let index_set: std::collections::HashSet<u32> = indices.iter().copied().collect();
     let base_style = if is_selected { t.item_selected } else { t.item };
     let match_style = base_style
-        .fg(t.accent.fg.unwrap_or_default())
+        .fg(t.accent.fg.unwrap_or_else(Default::default))
         .add_modifier(Modifier::BOLD);
 
     let mut spans = vec![Span::styled(LABEL_INDENT, base_style)];
@@ -322,7 +331,7 @@ fn build_highlighted_line<'a>(
     let mut run = String::new();
 
     for (char_pos, ch) in text.chars().enumerate().take(max_width) {
-        let is_match = index_set.contains(&(char_pos as u32));
+        let is_match = index_set.contains(&u32::try_from(char_pos).unwrap_or_else(|_| u32::MAX));
 
         if is_match != current_highlighted && !run.is_empty() {
             let style = if current_highlighted {
@@ -447,7 +456,7 @@ mod tests {
             modal.matches[0]
                 .display_indices
                 .iter()
-                .all(|&i| i < expected.len() as u32)
+                .all(|&i| i < u32::try_from(expected.len()).unwrap_or_else(|_| u32::MAX))
         );
     }
 

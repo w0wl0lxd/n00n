@@ -12,13 +12,18 @@ pub struct ClientRegistration {
     pub client_secret_expires_at: Option<u64>,
 }
 
+/// Register this client with the authorization server.
+///
+/// # Errors
+///
+/// Returns an error if the registration request fails or the response is invalid.
 pub async fn register_client(
     client: &HttpClient,
     registration_endpoint: &str,
     redirect_uri: &str,
 ) -> Result<ClientRegistration, OAuthError> {
     let body = json!({
-        "client_name": "N00n",
+        "client_name": "n00n",
         "redirect_uris": [redirect_uri],
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],

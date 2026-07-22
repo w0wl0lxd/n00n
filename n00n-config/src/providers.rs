@@ -192,6 +192,10 @@ impl ProvidersConfig {
         }
     }
 
+    /// Saves the providers config to disk.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the directory cannot be created or the file cannot be written.
     pub fn save(&self) -> Result<(), std::io::Error> {
         let path = providers_file_path();
         if let Some(parent) = path.parent() {
@@ -199,7 +203,8 @@ impl ProvidersConfig {
         }
         let content = toml::to_string_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        fs::write(&path, content)?;
+        n00n_storage::atomic_write(&path, content.as_bytes())
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
         debug!(path = %path.display(), "saved providers config");
         Ok(())
     }

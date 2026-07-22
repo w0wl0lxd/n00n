@@ -3,7 +3,7 @@
 //! plugins compose; provider policy stays in Lua. Errors follow the
 //! `(nil, err)` convention of `n00n.fs`.
 
-use std::io::Cursor;
+use std::io::{Cursor, Error, ErrorKind, Result as IoResult, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
 use image::{DynamicImage, ImageFormat, ImageReader};
@@ -16,12 +16,19 @@ use super::base64::bytes_arg;
 /// into gigabytes of RGBA. Host-fixed so no plugin can disable it; 50MP
 /// still covers any real camera photo.
 const MAX_PIXELS: u64 = 50_000_000;
+/// A tile is base64-encoded by the caller, so raw output must stay below the
+/// shared 5 MB transport ceiling. This also caps encoder allocation.
+const MAX_ENCODED_BYTES: usize = 3_750_000;
 
 fn format_name(format: ImageFormat) -> &'static str {
     match format {
         // Only jpeg deviates from its primary extension ("jpg").
         ImageFormat::Jpeg => "jpeg",
-        other => other.extensions_str().first().copied().unwrap_or("unknown"),
+        other => other
+            .extensions_str()
+            .first()
+            .copied()
+            .unwrap_or_else(|| "unknown"),
     }
 }
 
@@ -32,6 +39,136 @@ fn probe_bytes(bytes: &[u8]) -> Result<(ImageFormat, u32, u32), String> {
         .into_dimensions()
         .map_err(|e| format!("cannot read image header: {e}"))?;
     Ok((format, width, height))
+}
+
+fn gif_is_animated(bytes: &[u8]) -> bool {
+    if bytes.len() < 13 || (&bytes[..6] != b"GIF87a" && &bytes[..6] != b"GIF89a") {
+        return false;
+    }
+    let mut pos: usize = 13;
+    if bytes[10] & 0x80 != 0 {
+        let entries = 1_usize << (usize::from(bytes[10] & 0x07) + 1);
+        let Some(table_len) = entries.checked_mul(3) else {
+            return false;
+        };
+        let Some(next) = pos.checked_add(table_len) else {
+            return false;
+        };
+        if next > bytes.len() {
+            return false;
+        }
+        pos = next;
+    }
+
+    let mut frames = 0_u8;
+    while let Some(&block) = bytes.get(pos) {
+        pos += 1;
+        match block {
+            0x2C => {
+                let Some(descriptor_end) = pos.checked_add(9) else {
+                    return false;
+                };
+                if descriptor_end > bytes.len() {
+                    return false;
+                }
+                frames = frames.saturating_add(1);
+                if frames >= 2 {
+                    return true;
+                }
+                let packed = bytes[pos + 8];
+                pos = descriptor_end;
+                if packed & 0x80 != 0 {
+                    let entries = 1_usize << (usize::from(packed & 0x07) + 1);
+                    let Some(table_len) = entries.checked_mul(3) else {
+                        return false;
+                    };
+                    let Some(next) = pos.checked_add(table_len) else {
+                        return false;
+                    };
+                    if next > bytes.len() {
+                        return false;
+                    }
+                    pos = next;
+                }
+                if pos >= bytes.len() {
+                    return false;
+                }
+                pos += 1;
+                let Some(next) = skip_gif_sub_blocks(bytes, pos) else {
+                    return false;
+                };
+                pos = next;
+            }
+            0x21 => {
+                if pos >= bytes.len() {
+                    return false;
+                }
+                pos += 1;
+                let Some(next) = skip_gif_sub_blocks(bytes, pos) else {
+                    return false;
+                };
+                pos = next;
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+fn skip_gif_sub_blocks(bytes: &[u8], mut pos: usize) -> Option<usize> {
+    loop {
+        let len = usize::from(*bytes.get(pos)?);
+        pos = pos.checked_add(1)?;
+        if len == 0 {
+            return Some(pos);
+        }
+        pos = pos.checked_add(len)?;
+        (pos <= bytes.len()).then_some(pos)?;
+    }
+}
+
+fn webp_is_animated(bytes: &[u8]) -> bool {
+    if bytes.len() < 12 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WEBP" {
+        return false;
+    }
+    let mut pos: usize = 12;
+    while let Some(header_end) = pos.checked_add(8) {
+        if header_end > bytes.len() {
+            return false;
+        }
+        let kind = &bytes[pos..pos + 4];
+        if kind == b"ANIM" || kind == b"ANMF" {
+            return true;
+        }
+        let size = u32::from_le_bytes([
+            bytes[pos + 4],
+            bytes[pos + 5],
+            bytes[pos + 6],
+            bytes[pos + 7],
+        ]);
+        let Ok(size) = usize::try_from(size) else {
+            return false;
+        };
+        let Some(next) = header_end
+            .checked_add(size)
+            .and_then(|v| v.checked_add(size & 1))
+        else {
+            return false;
+        };
+        if next > bytes.len() {
+            return false;
+        }
+        pos = next;
+    }
+    false
+}
+
+fn is_animated(format: ImageFormat, bytes: &[u8]) -> bool {
+    match format {
+        ImageFormat::Gif => gif_is_animated(bytes),
+        ImageFormat::WebP => webp_is_animated(bytes),
+        _ => false,
+    }
 }
 
 fn decode_bytes(bytes: &[u8]) -> Result<DynamicImage, String> {
@@ -47,6 +184,55 @@ fn decode_bytes(bytes: &[u8]) -> Result<DynamicImage, String> {
 /// Opaque decoded image. `Arc` so resize/encode can hop to a blocking thread
 /// without copying pixels.
 struct LuaImage(Arc<DynamicImage>);
+
+struct LimitedWriter {
+    inner: Cursor<Vec<u8>>,
+    max_bytes: usize,
+}
+
+impl LimitedWriter {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            inner: Cursor::new(Vec::with_capacity(max_bytes.min(64 * 1024))),
+            max_bytes,
+        }
+    }
+
+    fn into_inner(self) -> Vec<u8> {
+        self.inner.into_inner()
+    }
+}
+
+impl Write for LimitedWriter {
+    fn write(&mut self, buf: &[u8]) -> IoResult<usize> {
+        let pos = usize::try_from(self.inner.position()).map_err(|_| {
+            Error::new(
+                ErrorKind::InvalidInput,
+                "encoded image position is too large",
+            )
+        })?;
+        let end = pos
+            .checked_add(buf.len())
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "encoded image length overflows"))?;
+        if end > self.max_bytes {
+            return Err(Error::new(
+                ErrorKind::WriteZero,
+                "encoded image exceeds configured byte limit",
+            ));
+        }
+        self.inner.write(buf)
+    }
+
+    fn flush(&mut self) -> IoResult<()> {
+        self.inner.flush()
+    }
+}
+
+impl Seek for LimitedWriter {
+    fn seek(&mut self, pos: SeekFrom) -> IoResult<u64> {
+        self.inner.seek(pos)
+    }
+}
 
 /// Get the width of the image in pixels.
 ///
@@ -95,6 +281,48 @@ async fn resize(
     Ok(LuaImage(Arc::new(resized)))
 }
 
+/// Copy a rectangular pixel region without resizing it. Coordinates are
+/// zero-based source pixels. The original image is unchanged.
+///
+/// @param x integer Left edge in source pixels.
+/// @param y integer Top edge in source pixels.
+/// @param width integer Crop width in pixels. Must be positive.
+/// @param height integer Crop height in pixels. Must be positive.
+/// @return (n00n.image.Image) A new image handle containing the crop.
+/// @example
+/// local tile = img:crop(0, 2000, 1440, 2000)
+/// local png = tile:encode("png")
+#[lua_fn]
+async fn crop(
+    _lua: Lua,
+    this: mlua::UserDataRef<LuaImage>,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+) -> LuaResult<LuaImage> {
+    let img = Arc::clone(&this.0);
+    drop(this);
+    if width == 0 || height == 0 {
+        return Err(mlua::Error::runtime("crop: dimensions must be positive"));
+    }
+    let right = x
+        .checked_add(width)
+        .ok_or_else(|| mlua::Error::runtime("crop: horizontal bounds overflow"))?;
+    let bottom = y
+        .checked_add(height)
+        .ok_or_else(|| mlua::Error::runtime("crop: vertical bounds overflow"))?;
+    if right > img.width() || bottom > img.height() {
+        return Err(mlua::Error::runtime(format!(
+            "crop: bounds x=[{x},{right}) y=[{y},{bottom}) are outside {}x{} image",
+            img.width(),
+            img.height()
+        )));
+    }
+    let cropped = smol::unblock(move || img.crop_imm(x, y, width, height)).await;
+    Ok(LuaImage(Arc::new(cropped)))
+}
+
 /// Encode the image into raw bytes in the given format. Use this to prepare
 /// images for sending over the network or writing to disk.
 ///
@@ -130,12 +358,70 @@ async fn encode(
     lua.create_string(encoded)
 }
 
+/// Encode with a strict output-byte limit. Use this for untrusted or
+/// transport-bound image output so encoding cannot grow a `Vec` without bound.
+///
+/// @param format string Output format: `"png"`, `"jpeg"`, or `"jpg"`.
+/// @param max_bytes integer Maximum encoded bytes, up to 3,750,000.
+/// @return (string?, string?) Encoded bytes, or nil plus an error when the limit is exceeded.
+#[lua_fn]
+async fn encode_limited(
+    lua: Lua,
+    this: mlua::UserDataRef<LuaImage>,
+    format: String,
+    max_bytes: u32,
+) -> LuaResult<(LuaValue, LuaValue)> {
+    if max_bytes == 0 {
+        return Ok((
+            LuaValue::Nil,
+            LuaValue::String(lua.create_string("encode_limited: max_bytes must be positive")?),
+        ));
+    }
+    let max_bytes = usize::try_from(max_bytes)
+        .map_err(|_| mlua::Error::runtime("encode_limited: max_bytes is too large"))?;
+    if max_bytes > MAX_ENCODED_BYTES {
+        return Ok((
+            LuaValue::Nil,
+            LuaValue::String(lua.create_string(format!(
+                "encode_limited: max_bytes exceeds host limit {MAX_ENCODED_BYTES}"
+            ))?),
+        ));
+    }
+    let out_format = match format.as_str() {
+        "png" => ImageFormat::Png,
+        "jpeg" | "jpg" => ImageFormat::Jpeg,
+        other => {
+            return Ok((
+                LuaValue::Nil,
+                LuaValue::String(lua.create_string(format!(
+                    "encode_limited: unsupported format '{other}' (png, jpeg)"
+                ))?),
+            ));
+        }
+    };
+    let img = Arc::clone(&this.0);
+    drop(this);
+    let result = smol::unblock(move || {
+        let mut writer = LimitedWriter::new(max_bytes);
+        img.write_to(&mut writer, out_format)
+            .map(|()| writer.into_inner())
+    })
+    .await;
+    match result {
+        Ok(encoded) => Ok((LuaValue::String(lua.create_string(encoded)?), LuaValue::Nil)),
+        Err(error) => Ok((
+            LuaValue::Nil,
+            LuaValue::String(lua.create_string(format!("encode_limited: {error}"))?),
+        )),
+    }
+}
+
 lua_class! {
-    /// A decoded image you can inspect, resize, and re-encode.
+    /// A decoded image you can inspect, resize, crop, and re-encode.
     ///
     /// Get one from `n00n.image.decode()`. The image data lives in memory
     /// until the handle is garbage collected.
-    "n00n.image.Image" => LuaImage, IMAGE_DOCS [width, height, resize, encode]
+    "n00n.image.Image" => LuaImage, IMAGE_DOCS [width, height, resize, crop, encode, encode_limited]
 }
 
 /// Read image metadata (format, dimensions) from raw bytes without fully
@@ -143,7 +429,8 @@ lua_class! {
 /// check the size or format.
 ///
 /// Returns a table with `format` (string), `width` (integer), `height`
-/// (integer), or `(nil, err)` if the bytes are not a recognized image.
+/// (integer), and `animated` (boolean; GIF/WebP streams with multiple frames),
+/// or `(nil, err)` if the bytes are not a recognized image.
 ///
 /// @param data string|buffer Raw image bytes.
 /// @return (table?, string?) Info table, or `(nil, err)` on failure.
@@ -160,6 +447,7 @@ fn probe(lua: &Lua, data: LuaValue) -> LuaResult<(LuaValue, LuaValue)> {
             info.set("format", format_name(format))?;
             info.set("width", width)?;
             info.set("height", height)?;
+            info.set("animated", is_animated(format, &bytes))?;
             Ok((LuaValue::Table(info), LuaValue::Nil))
         }
         Err(e) => Ok((LuaValue::Nil, LuaValue::String(lua.create_string(e)?))),

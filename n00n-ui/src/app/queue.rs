@@ -3,8 +3,9 @@
 use super::{Action, App, Status};
 
 use crate::agent::shared_queue::{Delivery, QueueItem, QueueSender};
-use crate::components::queue_panel::QueueEntry;
+use crate::components::{SubmissionDispatch, queue_panel::QueueEntry};
 use n00n_agent::ImageSource;
+use std::sync::{Arc, atomic::AtomicBool};
 
 pub(crate) use crate::agent::shared_queue::QueuedMessage;
 
@@ -31,11 +32,15 @@ impl MessageQueue {
 
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
-        self.shared.as_ref().is_none_or(|s| s.is_empty())
+        self.shared
+            .as_ref()
+            .is_none_or(super::super::agent::shared_queue::QueueSender::is_empty)
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.shared.as_ref().map_or(0, |s| s.panel_len())
+        self.shared
+            .as_ref()
+            .map_or(0, super::super::agent::shared_queue::QueueSender::panel_len)
     }
 
     pub(crate) fn remove(&mut self, index: usize) {
@@ -51,6 +56,44 @@ impl MessageQueue {
             shared.clear();
         }
         self.focus = None;
+    }
+
+    pub(crate) fn remove_submission(&self, submission_id: u64) {
+        if let Some(shared) = self.shared.clone() {
+            shared.remove_submission(submission_id);
+        }
+    }
+
+    pub(crate) fn mark_submission_ready(
+        &self,
+        submission_id: u64,
+        input: n00n_agent::AgentInput,
+    ) -> bool {
+        self.shared
+            .as_ref()
+            .is_some_and(|shared| shared.mark_submission_ready(submission_id, input))
+    }
+
+    pub(crate) fn preserve_submission(&self, dispatch: SubmissionDispatch) {
+        let Some(shared) = self.shared.clone() else {
+            return;
+        };
+        if shared.contains_submission(dispatch.submission_id) {
+            return;
+        }
+        let image_count = dispatch.input.images.len();
+        let text = dispatch.input.message.clone();
+        shared.push_front(QueueItem::Message {
+            text,
+            image_count,
+            input: dispatch.input,
+            run_id: dispatch.run_id,
+            submission_id: dispatch.submission_id,
+            pre_dispatch_gate: dispatch.gate,
+            ready: Arc::new(AtomicBool::new(false)),
+            displayed: false,
+            delivery: Delivery::TurnEnd,
+        });
     }
 
     pub(crate) fn focus(&self) -> Option<usize> {
@@ -137,11 +180,24 @@ impl MessageQueue {
     }
 
     pub(crate) fn panel_entries(&self) -> Vec<QueueEntry<'static>> {
-        self.shared.as_ref().map_or(vec![], |s| s.panel_entries())
+        self.shared.as_ref().map_or(
+            vec![],
+            super::super::agent::shared_queue::QueueSender::panel_entries,
+        )
     }
 
     pub(crate) fn text_messages(&self) -> Vec<String> {
-        self.shared.as_ref().map_or(vec![], |s| s.text_messages())
+        self.shared.as_ref().map_or(
+            vec![],
+            super::super::agent::shared_queue::QueueSender::text_messages,
+        )
+    }
+
+    pub(crate) fn queued_inputs(&self) -> Vec<n00n_agent::AgentInput> {
+        self.shared.as_ref().map_or(
+            vec![],
+            super::super::agent::shared_queue::QueueSender::queued_inputs,
+        )
     }
 
     fn clamp_focus(&mut self) {
@@ -182,6 +238,24 @@ impl App {
 
     /// Keyboard path: nobody is around to receive an `Err`, so
     /// rejections flash on screen instead.
+    /// Session API prompts do not have a user-visible optimistic bubble, so
+    /// they deliberately bypass the terminal paint gate.
+    pub(crate) fn submit_background_prompt(&mut self, msg: QueuedMessage) -> SubmitOutcome {
+        if msg.text.trim().is_empty() && msg.images.is_empty() {
+            return SubmitOutcome::Rejected(EMPTY_PROMPT_ERR);
+        }
+        if self.status == Status::Streaming {
+            if self.queue_and_notify(msg) {
+                SubmitOutcome::Queued
+            } else {
+                SubmitOutcome::Rejected(NO_QUEUE_ERR)
+            }
+        } else {
+            self.run_id += 1;
+            SubmitOutcome::Started(self.start_background_submission(&msg))
+        }
+    }
+
     pub(super) fn submit_or_queue(&mut self, msg: QueuedMessage) -> Vec<Action> {
         match self.submit_prompt(msg) {
             SubmitOutcome::Started(actions) => actions,
@@ -197,17 +271,42 @@ impl App {
     /// `QueueItemConsumed` draw it once the agent picks it up. Returns
     /// false when there is no shared queue, meaning the message was dropped.
     pub(super) fn queue_and_notify(&mut self, msg: QueuedMessage) -> bool {
+        let input = self.build_agent_input(&msg);
+        let queued = self.queue_input(msg, input, Delivery::TurnEnd);
+        if queued {
+            self.save_session();
+        }
+        queued
+    }
+
+    pub(crate) fn queue_restored_submission(
+        &mut self,
+        msg: QueuedMessage,
+        input: n00n_agent::AgentInput,
+    ) -> bool {
+        self.queue_input(msg, input, Delivery::TurnEnd)
+    }
+
+    fn queue_input(
+        &mut self,
+        msg: QueuedMessage,
+        input: n00n_agent::AgentInput,
+        delivery: Delivery,
+    ) -> bool {
         let Some(shared) = self.queue.shared.clone() else {
             return false;
         };
-        let input = self.build_agent_input(&msg);
+        let (submission_id, pre_dispatch_gate) = self.next_submission_metadata();
         shared.push(QueueItem::Message {
             text: msg.text,
             image_count: msg.images.len(),
             input,
             run_id: self.run_id,
+            submission_id,
+            pre_dispatch_gate,
+            ready: Arc::new(AtomicBool::new(true)),
             displayed: false,
-            delivery: Delivery::TurnEnd,
+            delivery,
         });
         true
     }
@@ -228,11 +327,15 @@ impl App {
             return false;
         };
         let input = self.build_agent_input(&msg);
+        let (submission_id, pre_dispatch_gate) = self.next_submission_metadata();
         let item = QueueItem::Message {
             text: msg.text,
             image_count: msg.images.len(),
             input,
             run_id: self.run_id,
+            submission_id,
+            pre_dispatch_gate,
+            ready: Arc::new(AtomicBool::new(true)),
             displayed: false,
             delivery,
         };
@@ -241,6 +344,7 @@ impl App {
         } else {
             shared.push(item);
         }
+        self.save_session();
         true
     }
 
@@ -268,11 +372,69 @@ impl App {
     /// Immediate path: kick off the agent and draw the bubble in the same
     /// frame, so the user sees their message land where it will stay.
     pub(super) fn start_from_queue(&mut self, msg: &QueuedMessage) -> Vec<Action> {
+        self.start_submission(msg, self.build_agent_input(msg), true)
+    }
+
+    fn start_background_submission(&mut self, msg: &QueuedMessage) -> Vec<Action> {
+        self.start_submission(msg, self.build_agent_input(msg), false)
+    }
+
+    pub(super) fn start_submission(
+        &mut self,
+        msg: &QueuedMessage,
+        input: n00n_agent::AgentInput,
+        paint_required: bool,
+    ) -> Vec<Action> {
         self.status = Status::Streaming;
         self.fire_session_autocmd("TurnStart", serde_json::json!({}));
-        self.main_chat()
-            .show_user_message_with_images(msg.text.clone(), msg.images.clone());
-        vec![Action::SendMessage(Box::new(self.build_agent_input(msg)))]
+        let display_len_before = self.main_chat().message_count();
+        if paint_required {
+            self.main_chat()
+                .show_user_message_with_images(msg.text.clone(), msg.images.clone());
+        }
+
+        let (submission_id, gate) = self.next_submission_metadata();
+        let Some(shared) = self.queue.shared.clone() else {
+            return vec![];
+        };
+        shared.push(QueueItem::Message {
+            text: msg.text.clone(),
+            image_count: msg.images.len(),
+            input: input.clone(),
+            run_id: self.run_id,
+            submission_id,
+            pre_dispatch_gate: Arc::clone(&gate),
+            ready: Arc::new(AtomicBool::new(false)),
+            displayed: paint_required,
+            delivery: Delivery::TurnEnd,
+        });
+        if paint_required {
+            self.pending_submission = Some(super::PendingSubmission {
+                submission_id,
+                run_id: self.run_id,
+                submitted_at: self.submission_clock.now(),
+                message: msg.clone(),
+                gate: std::sync::Arc::clone(&gate),
+                preamble: Vec::new(),
+                display_len_before,
+            });
+        }
+        vec![Action::SendMessage(Box::new(
+            crate::components::SubmissionDispatch {
+                input,
+                submission_id,
+                run_id: self.run_id,
+                gate,
+                paint_required,
+            },
+        ))]
+    }
+    fn next_submission_metadata(&mut self) -> (u64, std::sync::Arc<n00n_agent::PreDispatchGate>) {
+        self.next_submission_id += 1;
+        (
+            self.next_submission_id,
+            std::sync::Arc::new(n00n_agent::PreDispatchGate::new()),
+        )
     }
 }
 
@@ -280,7 +442,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::agent::shared_queue;
-    use n00n_agent::AgentInput;
+    use n00n_agent::{AgentInput, AgentMode, ThinkingConfig};
 
     fn displayed_message(text: &str) -> QueueItem {
         QueueItem::Message {
@@ -288,15 +450,18 @@ mod tests {
             image_count: 0,
             input: AgentInput {
                 message: String::new(),
-                mode: Default::default(),
+                mode: AgentMode::default(),
                 images: Vec::new(),
                 preamble: Vec::new(),
-                thinking: Default::default(),
+                thinking: ThinkingConfig::default(),
                 fast: false,
                 workflow: false,
                 prompt: None,
             },
             run_id: 0,
+            submission_id: 0,
+            pre_dispatch_gate: std::sync::Arc::new(n00n_agent::PreDispatchGate::new()),
+            ready: Arc::new(AtomicBool::new(true)),
             displayed: true,
             delivery: Delivery::TurnEnd,
         }

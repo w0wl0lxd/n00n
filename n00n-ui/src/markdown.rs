@@ -7,7 +7,7 @@ use n00n_markdown::render::{self, Line as RLine, LineKind, Span as RSpan, StyleT
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-pub const TRUNCATION_PREFIX: &str = "›";
+pub const TRUNCATION_PREFIX: &str = "...›";
 const MIN_TRUNCATABLE_LINES: usize = 2;
 
 /// Add `over`'s modifiers on top of `base`, keeping `base`'s colors.
@@ -129,7 +129,7 @@ pub fn truncation_notice(count: usize) -> String {
         should_truncate(count),
         "truncation_notice called with count={count} below threshold"
     );
-    format!("{TRUNCATION_PREFIX} ({count} lines) click to expand")
+    format!("› {TRUNCATION_PREFIX} ({count} lines) click to expand")
 }
 
 pub struct Truncated<'a> {
@@ -258,7 +258,7 @@ pub fn truncate_output(text: &str, max: usize) -> TruncatedOutput<'_> {
 }
 
 /// Keeps the head. Tools that want tail truncation do it in Lua instead
-/// (ToolView `keep = "tail"`).
+/// (`ToolView` `keep = "tail"`).
 pub fn truncate_lines(s: &str, max: usize) -> Truncated<'_> {
     let Some((i, _)) = s.match_indices('\n').nth(max.saturating_sub(1)) else {
         return Truncated {

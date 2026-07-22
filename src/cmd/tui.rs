@@ -86,7 +86,7 @@ fn load_config(plugin_host: &PluginHost, cli: &Cli, cwd: &Path) -> Result<Config
         .context("load init.lua files")?;
 
     let mut config = raw_config
-        .unwrap_or_default()
+        .unwrap_or_else(Default::default)
         .into_config(cli.no_rtk)
         .context("invalid config")?;
     config.permissions = load_permissions(cwd);
@@ -170,8 +170,11 @@ fn build_stack(
             warnings.push(format!("{MODEL_FALLBACK_WARNING}: {e:#}"));
             (last_model, false)
         }
-        (Err(_), None) if !cli.print => {
-            let placeholder = Model::from_spec(FALLBACK_MODEL_SPEC).expect("fallback model");
+        (Err(_e), None) if !cli.print => {
+            #[allow(clippy::expect_used)]
+            let placeholder = Model::from_spec(FALLBACK_MODEL_SPEC).unwrap_or_else(|_| {
+                Model::from_spec("anthropic/claude-sonnet-4-20250514").expect("fallback model")
+            });
             (placeholder, true)
         }
         (Err(e), None) => return Err(e),
@@ -228,6 +231,7 @@ fn read_initial_prompt(cli_prompt: Option<String>) -> Result<Option<String>> {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn run(mut cli: Cli) -> Result<()> {
     let storage = StateDir::resolve().context("resolve data directory")?;
     n00n_providers::model_registry::load_from_storage(&storage);
@@ -238,6 +242,7 @@ pub fn run(mut cli: Cli) -> Result<()> {
     warn_stale_config_toml(&cwd);
 
     let (mut stack, _) = build_stack(&cli, &cwd, &storage, None)?;
+    let openai_options = n00n_providers::OpenAiOptions::from(&stack.config.provider);
 
     setup::init_logging(&stack.config.storage);
     setup::install_panic_log_hook();
@@ -247,8 +252,7 @@ pub fn run(mut cli: Cli) -> Result<()> {
         let prompt_slots = stack
             .plugin_host
             .event_handle()
-            .map(|h| h.collect_prompt_slots())
-            .unwrap_or_default();
+            .map_or_else(Default::default, |h| h.collect_prompt_slots());
         let timeouts = stack.timeouts();
         crate::sdk_mode::run(crate::sdk_mode::SdkParams {
             cli,
@@ -256,6 +260,7 @@ pub fn run(mut cli: Cli) -> Result<()> {
             config: stack.config.agent,
             permissions_config: stack.config.permissions,
             timeouts,
+            openai_options,
             prompt_slots,
             fast,
             workflow: stack.config.always_workflow,
@@ -269,13 +274,14 @@ pub fn run(mut cli: Cli) -> Result<()> {
         crate::print::run(
             &stack.model,
             cli.initial_prompt,
-            cli.images,
+            &cli.images,
             cli.output_format,
             cli.verbose,
             stack.config.agent,
             stack.config.permissions,
             timeouts,
-            stack.plugin_host.event_handle(),
+            openai_options,
+            stack.plugin_host.event_handle().as_ref(),
             fast,
             stack.config.always_workflow,
         )
@@ -297,6 +303,7 @@ pub fn run(mut cli: Cli) -> Result<()> {
     let mut teardown = Teardown::default();
 
     loop {
+        let openai_options = n00n_providers::OpenAiOptions::from(&stack.config.provider);
         for session in &mut tabs {
             if session.messages.is_empty() {
                 session.meta.fast |= stack.config.always_fast;
@@ -330,6 +337,7 @@ pub fn run(mut cli: Cli) -> Result<()> {
                     cwd.clone(),
                 )),
                 timeouts: stack.timeouts(),
+                openai_options,
                 exit_on_done: cli.exit_on_done,
                 lua_command_reader: stack.plugin_host.command_reader(),
                 keymap_reader: stack.plugin_host.keymap_reader(),
@@ -376,7 +384,8 @@ pub fn run(mut cli: Cli) -> Result<()> {
                 warnings = new_warnings;
                 focused = f.min(tabs.len() - 1);
                 tracing::info!(
-                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    elapsed_ms =
+                        u64::try_from(started.elapsed().as_millis()).map_or(u64::MAX, |ms| ms),
                     tabs = tabs.len(),
                     "reload: rebuilt plugins and config"
                 );
@@ -470,9 +479,8 @@ mod tests {
     #[test]
     fn broken_config_without_fallback_is_fatal() {
         let mut warnings = Vec::new();
-        let err = match config_or_fallback(Err(eyre!("boom")), None, &mut warnings) {
-            Err(e) => e,
-            Ok(_) => panic!("expected error without fallback"),
+        let Err(err) = config_or_fallback(Err(eyre!("boom")), None, &mut warnings) else {
+            panic!("expected error without fallback");
         };
         assert!(err.to_string().contains("boom"));
         assert!(warnings.is_empty());

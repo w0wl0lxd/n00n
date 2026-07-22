@@ -17,6 +17,24 @@ pub(crate) mod blit;
 pub(crate) mod buf;
 pub(crate) mod win;
 
+const DEFAULT_INDEPENDENT: bool = false;
+const DEFAULT_PREFIX: &str = "";
+const EDITOR_DISPATCH_FAILED: i32 = -1;
+const DEFAULT_TITLE: &str = "";
+const DEFAULT_CURSOR_LINE: bool = false;
+const DEFAULT_RESERVED_BOTTOM: usize = 0;
+const DEFAULT_RESERVED_TOP: usize = 0;
+const DEFAULT_FOCUS: bool = true;
+const DEFAULT_ZINDEX: u16 = 50;
+const DEFAULT_ORDER: u16 = 50;
+const DEFAULT_VISIBLE: bool = true;
+const DEFAULT_TERM_SIZE: (u16, u16) = (80, 24);
+const DEFAULT_ANCHOR: Anchor = Anchor::NW;
+const DEFAULT_BORDER: Border = Border::Rounded;
+const DEFAULT_TITLE_POS: TitlePos = TitlePos::Left;
+const DEFAULT_SPLIT: Split = Split::None;
+const DEFAULT_FOOTER_LABEL: &str = "";
+
 use crate::runtime::with_task_bufs;
 use win::WinHandle;
 
@@ -85,7 +103,7 @@ pub(crate) fn parse_footer(tbl: &Table) -> LuaResult<Vec<(String, String)>> {
 /// buf:line("hello world")
 #[lua_fn]
 fn buf(lua: &Lua) -> LuaResult<buf::BufHandle> {
-    Ok(with_task_bufs(lua, |store| store.create_live()))
+    Ok(with_task_bufs(lua, buf::BufferStore::create_live))
 }
 
 /// Looks up a semantic color from the current theme. Use this to keep
@@ -128,10 +146,11 @@ async fn highlight(lua: Lua, code: String, lang: String, opts: Option<Table>) ->
     let independent = opts
         .as_ref()
         .and_then(|t| t.get::<bool>("independent").ok())
-        .unwrap_or(false);
+        .unwrap_or_else(|| DEFAULT_INDEPENDENT);
     let prefix = opts
+        .as_ref()
         .and_then(|t| t.get::<String>("prefix").ok())
-        .unwrap_or_default();
+        .unwrap_or_else(|| DEFAULT_PREFIX.to_string());
     let segments = smol::unblock(move || {
         if independent {
             n00n_highlight::highlight_lines_independent(&lang, &code)
@@ -187,7 +206,10 @@ fn humantime(_lua: &Lua, secs: u64) -> LuaResult<String> {
 /// local half_width = math.floor(size.cols / 2)
 #[lua_fn]
 fn terminal_size(lua: &Lua) -> LuaResult<Table> {
-    let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    let (cols, rows) = crossterm::terminal::size().unwrap_or_else(|error| {
+        tracing::debug!(%error, "terminal size unavailable; returning default");
+        DEFAULT_TERM_SIZE
+    });
     let tbl = lua.create_table()?;
     tbl.set("cols", cols)?;
     tbl.set("rows", rows)?;
@@ -216,10 +238,11 @@ fn display_width(_lua: &Lua, text: String) -> LuaResult<usize> {
 /// -- t.head == "hello", t.tail == " world"
 #[lua_fn]
 fn truncate_text(lua: &Lua, text: String, max_width: usize) -> LuaResult<Table> {
+    const DEFAULT_CHAR_WIDTH: usize = 0;
     let mut width = 0;
     let mut idx = 0;
     for (i, c) in text.char_indices() {
-        let w = UnicodeWidthChar::width(c).unwrap_or(0);
+        let w = UnicodeWidthChar::width(c).unwrap_or_else(|| DEFAULT_CHAR_WIDTH);
         if width + w > max_width {
             if idx == 0 {
                 idx = i + c.len_utf8();
@@ -228,6 +251,15 @@ fn truncate_text(lua: &Lua, text: String, max_width: usize) -> LuaResult<Table> 
         }
         width += w;
         idx = i + c.len_utf8();
+    }
+    // Long labels that exactly fill max_width still need to report a tail so
+    // callers can render a truncation/continuation indicator.
+    if idx == text.len()
+        && width == max_width
+        && !text.is_empty()
+        && let Some((pos, _)) = text[..idx].char_indices().next_back()
+    {
+        idx = pos;
     }
     let tbl = lua.create_table()?;
     tbl.set("head", &text[..idx])?;
@@ -274,9 +306,12 @@ async fn open_editor(
         })
         .is_err()
     {
-        return Ok(-1);
+        return Ok(EDITOR_DISPATCH_FAILED);
     }
-    Ok(reply_rx.recv_async().await.unwrap_or(-1))
+    Ok(reply_rx
+        .recv_async()
+        .await
+        .unwrap_or_else(|_| EDITOR_DISPATCH_FAILED))
 }
 
 /// Opens n00n's native model discovery picker and waits for a selection.
@@ -339,28 +374,36 @@ async fn pick_model(
 /// })
 #[lua_fn]
 fn open_win(
-    _lua: &Lua,
+    lua: &Lua,
     #[ctx] tx: flume::Sender<UiAction>,
     buf: mlua::AnyUserData,
     opts: Table,
 ) -> LuaResult<WinHandle> {
     let buf_handle = buf.borrow::<buf::BufHandle>()?;
-    if let Some(handle) = _lua.app_data_ref::<crate::runtime::TaskHandle>() {
+    if let Some(handle) = lua.app_data_ref::<crate::runtime::TaskHandle>() {
         crate::runtime::lock_cell(&handle)
             .bufs
             .detach_handlers(&buf_handle.buf);
     }
-    let title: String = opts.get("title").unwrap_or_default();
-    let cursor_line: bool = opts.get("cursor_line").unwrap_or(false);
+    let title: String = opts
+        .get("title")
+        .unwrap_or_else(|_| DEFAULT_TITLE.to_string());
+    let cursor_line: bool = opts
+        .get("cursor_line")
+        .unwrap_or_else(|_| DEFAULT_CURSOR_LINE);
     let footer = parse_footer(&opts)?;
-    let reserved_bottom: usize = opts.get("reserved_bottom").unwrap_or(0);
-    let reserved_top: usize = opts.get("reserved_top").unwrap_or(0);
+    let reserved_bottom: usize = opts
+        .get("reserved_bottom")
+        .unwrap_or_else(|_| DEFAULT_RESERVED_BOTTOM);
+    let reserved_top: usize = opts
+        .get("reserved_top")
+        .unwrap_or_else(|_| DEFAULT_RESERVED_TOP);
     let focus: bool = opts
         .get::<Option<bool>>("focus")
         .ok()
         .flatten()
-        .unwrap_or(true);
-    let zindex: u16 = opts.get("zindex").unwrap_or(50);
+        .unwrap_or_else(|| DEFAULT_FOCUS);
+    let zindex: u16 = opts.get("zindex").unwrap_or_else(|_| DEFAULT_ZINDEX);
 
     let width = parse_dimension(&opts, "width", Dimension::Percent(60));
     let height = parse_dimension(&opts, "height", Dimension::Percent(70));
@@ -370,8 +413,8 @@ fn open_win(
     let border = parse_border(&opts);
     let title_pos = parse_title_pos(&opts);
     let split = parse_split(&opts);
-    let order: u16 = opts.get("order").unwrap_or(50);
-    let visible: bool = opts.get("visible").unwrap_or(true);
+    let order: u16 = opts.get("order").unwrap_or_else(|_| DEFAULT_ORDER);
+    let visible: bool = opts.get("visible").unwrap_or_else(|_| DEFAULT_VISIBLE);
 
     let config = FloatConfig {
         width,
@@ -392,7 +435,7 @@ fn open_win(
         visible,
     };
 
-    let (term_cols, term_rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    let (term_cols, term_rows) = crossterm::terminal::size().unwrap_or_else(|_| DEFAULT_TERM_SIZE);
     let border_chrome = match config.border {
         Border::None => 0,
         _ => 2,
@@ -414,7 +457,7 @@ fn open_win(
     let (cmd_tx, cmd_rx) = flume::unbounded::<WinCommand>();
 
     let _ = tx.try_send(UiAction::OpenWin {
-        buf: buf_handle.buf.clone(),
+        buf: Arc::clone(&buf_handle.buf),
         config,
         focus,
         event_tx,
@@ -487,7 +530,9 @@ pub(crate) fn create_ui_table(
                             let entry = entry?;
                             Ok((
                                 entry.get::<String>(1)?,
-                                entry.get::<String>(2).unwrap_or_default(),
+                                entry
+                                    .get::<String>(2)
+                                    .unwrap_or_else(|_| DEFAULT_FOOTER_LABEL.to_string()),
                             ))
                         })
                         .collect::<LuaResult<_>>()?;
@@ -523,31 +568,27 @@ pub(crate) fn try_parse_dimension(tbl: &Table, key: &str) -> Option<Dimension> {
 }
 
 pub(crate) fn parse_dimension(tbl: &Table, key: &str, default: Dimension) -> Dimension {
-    try_parse_dimension(tbl, key).unwrap_or(default)
+    try_parse_dimension(tbl, key).unwrap_or_else(|| default)
 }
 
 fn parse_anchor(tbl: &Table) -> Anchor {
     tbl.get::<String>("anchor")
-        .map(|s| Anchor::parse(&s))
-        .unwrap_or_default()
+        .map_or_else(|_| DEFAULT_ANCHOR, |s| Anchor::parse(&s))
 }
 
 fn parse_split(tbl: &Table) -> Split {
     tbl.get::<String>("split")
-        .map(|s| Split::parse(&s))
-        .unwrap_or_default()
+        .map_or_else(|_| DEFAULT_SPLIT, |s| Split::parse(&s))
 }
 
 fn parse_border(tbl: &Table) -> Border {
     tbl.get::<String>("border")
-        .map(|s| Border::parse(&s))
-        .unwrap_or_default()
+        .map_or_else(|_| DEFAULT_BORDER, |s| Border::parse(&s))
 }
 
 fn parse_title_pos(tbl: &Table) -> TitlePos {
     tbl.get::<String>("title_pos")
-        .map(|s| TitlePos::parse(&s))
-        .unwrap_or_default()
+        .map_or_else(|_| DEFAULT_TITLE_POS, |s| TitlePos::parse(&s))
 }
 
 fn segments_to_lua_lines(
@@ -573,9 +614,17 @@ fn segments_to_lua_lines(
                 style.raw_set("underline", true)?;
             }
             span.raw_set(2, style)?;
-            line_tbl.raw_set(i32::try_from(j + 1).unwrap(), span)?;
+            line_tbl.raw_set(
+                i32::try_from(j + 1)
+                    .map_err(|e| mlua::Error::runtime(format!("invalid index: {e}")))?,
+                span,
+            )?;
         }
-        result.raw_set(i32::try_from(i + 1).unwrap(), line_tbl)?;
+        result.raw_set(
+            i32::try_from(i + 1)
+                .map_err(|e| mlua::Error::runtime(format!("invalid index: {e}")))?,
+            line_tbl,
+        )?;
     }
     Ok(result)
 }
@@ -647,9 +696,17 @@ fn markdown_lines_to_lua(lua: &Lua, lines: &[n00n_markdown::render::Line]) -> Lu
             let span_tbl = lua.create_table_with_capacity(2, 0)?;
             span_tbl.raw_set(1, sp.text.as_str())?;
             span_tbl.raw_set(2, span_style_to_lua(lua, sp)?)?;
-            line_tbl.raw_set(i32::try_from(j + 1).unwrap(), span_tbl)?;
+            line_tbl.raw_set(
+                i32::try_from(j + 1)
+                    .map_err(|e| mlua::Error::runtime(format!("invalid index: {e}")))?,
+                span_tbl,
+            )?;
         }
-        result.raw_set(i32::try_from(i + 1).unwrap(), line_tbl)?;
+        result.raw_set(
+            i32::try_from(i + 1)
+                .map_err(|e| mlua::Error::runtime(format!("invalid index: {e}")))?,
+            line_tbl,
+        )?;
     }
     Ok(result)
 }
@@ -954,7 +1011,7 @@ mod tests {
         let result = render_markdown(&lua, "a*b");
         let line: Table = result.get(1).unwrap();
         for i in 1..=line.len().unwrap() {
-            assert_eq!(span_style(&line, i as usize), STYLE_PLAIN);
+            assert_eq!(span_style(&line, usize::try_from(i).unwrap()), STYLE_PLAIN);
         }
     }
 
@@ -973,7 +1030,7 @@ mod tests {
         let line: Table = result.get(1).unwrap();
         for i in 1..=line.len().unwrap() {
             assert_eq!(
-                span_style(&line, i as usize),
+                span_style(&line, usize::try_from(i).unwrap()),
                 STYLE_HEADING,
                 "span {i} should be heading-styled"
             );
@@ -1172,9 +1229,10 @@ mod tests {
         let lua = Lua::new();
         let mut input = String::with_capacity(2048);
         for i in 0..200 {
-            input.push_str(&format!(
-                "# h{i}\n\npara **b{i}** *i{i}* `c{i}` ~~s{i}~~\n\n- item {i}\n\n"
-            ));
+            let _ = std::fmt::Write::write_fmt(
+                &mut input,
+                format_args!("# h{i}\n\npara **b{i}** *i{i}* `c{i}` ~~s{i}~~\n\n- item {i}\n\n"),
+            );
         }
         assert!(input.len() >= 2000);
         let result = render_markdown(&lua, &input);
@@ -1187,13 +1245,19 @@ mod tests {
         let result = render_markdown(&lua, "# foo `bar`");
         let line: Table = result.get(1).unwrap();
         let bar_idx = (1..=line.len().unwrap())
-            .find(|&i| span_text(&line, i as usize) == "bar")
+            .find(|&i| span_text(&line, usize::try_from(i).unwrap()) == "bar")
             .expect("bar span");
-        assert_eq!(span_style(&line, bar_idx as usize), STYLE_CODE);
+        assert_eq!(
+            span_style(&line, usize::try_from(bar_idx).unwrap()),
+            STYLE_CODE
+        );
         let foo_idx = (1..=line.len().unwrap())
-            .find(|&i| span_text(&line, i as usize).contains("foo"))
+            .find(|&i| span_text(&line, usize::try_from(i).unwrap()).contains("foo"))
             .expect("foo span");
-        assert_eq!(span_style(&line, foo_idx as usize), STYLE_HEADING);
+        assert_eq!(
+            span_style(&line, usize::try_from(foo_idx).unwrap()),
+            STYLE_HEADING
+        );
     }
 
     #[test_case(false, false, false, false, "" ; "default_emphasis_is_empty")]
@@ -1205,6 +1269,7 @@ mod tests {
     #[test_case(false, true, true, false, "strikethrough" ; "strike_wins_over_italic")]
     #[test_case(false, false, false, true, "" ; "underline_alone_not_surfaced")]
     #[test_case(true, false, false, true, "bold" ; "underline_ignored_with_bold")]
+    #[allow(clippy::fn_params_excessive_bools)]
     fn emphasis_style_name_combos(
         bold: bool,
         italic: bool,
@@ -1243,13 +1308,15 @@ mod tests {
             assert_eq!(tbl.get::<String>("fg").unwrap(), ORANGE_HEX);
             assert_eq!(tbl.get::<bool>("bold").unwrap(), bold);
             assert_eq!(
-                tbl.get::<Option<bool>>("italic").unwrap().unwrap_or(false),
+                tbl.get::<Option<bool>>("italic")
+                    .unwrap()
+                    .unwrap_or_else(|| false),
                 italic
             );
             assert_eq!(
                 tbl.get::<Option<bool>>("underline")
                     .unwrap()
-                    .unwrap_or(false),
+                    .unwrap_or_else(|| false),
                 underline
             );
         }
@@ -1263,14 +1330,17 @@ mod tests {
 
         let heading_line: Table = result.get(1).unwrap();
         for i in 1..=heading_line.len().unwrap() {
-            assert_eq!(span_style(&heading_line, i as usize), STYLE_HEADING);
+            assert_eq!(
+                span_style(&heading_line, usize::try_from(i).unwrap()),
+                STYLE_HEADING
+            );
         }
 
         let body_line: Table = result.get(3).unwrap();
         let mut saw_bold = false;
         for i in 1..=body_line.len().unwrap() {
-            if span_style(&body_line, i as usize) == STYLE_BOLD {
-                assert_eq!(span_text(&body_line, i as usize), "bold");
+            if span_style(&body_line, usize::try_from(i).unwrap()) == STYLE_BOLD {
+                assert_eq!(span_text(&body_line, usize::try_from(i).unwrap()), "bold");
                 saw_bold = true;
             }
         }

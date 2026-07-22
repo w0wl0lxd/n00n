@@ -28,7 +28,7 @@ pub(crate) fn refresh_syntax_theme() {
             Some(Color::Rgb(r, g, b)) => Some((name.to_owned(), (r, g, b))),
             _ => None,
         })
-        .collect(),
+        .collect::<std::collections::HashMap<_, _>>(),
     );
 }
 
@@ -49,6 +49,7 @@ pub fn fallback_span(text: &str) -> Span<'static> {
     )
 }
 
+#[must_use]
 pub fn highlight_ansi(lang: &str, code: &str) -> String {
     let theme = theme::current();
     n00n_highlight::set_theme(theme.syntax.clone());

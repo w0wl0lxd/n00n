@@ -1,3 +1,5 @@
+#![allow(clippy::needless_pass_by_value)]
+
 //! Shared plumbing for tools. The registry itself lives in `registry.rs`; this file
 //! holds the helpers every tool leans on: `ToolFilter` to enable/disable per caller,
 //! `Deadline` so a parent tool can cap a child's timeout, the walker that skips `.git`,
@@ -36,6 +38,7 @@ use crate::permissions::PermissionManager;
 use crate::{AgentConfig, AgentMode, EventSender, SharedBuf};
 use n00n_config::ToolOutputLines;
 use n00n_providers::Model;
+use n00n_providers::OpenAiOptions;
 use n00n_providers::RequestOptions;
 use n00n_providers::provider::Provider;
 use n00n_storage::id::SessionRef;
@@ -55,6 +58,7 @@ pub enum ToolFilter {
 }
 
 impl ToolFilter {
+    #[must_use]
     pub fn matches(&self, name: &str) -> bool {
         match self {
             Self::All => true,
@@ -63,6 +67,7 @@ impl ToolFilter {
         }
     }
 
+    #[must_use]
     pub fn excluding(self, names: &[&str]) -> Self {
         if names.is_empty() {
             return self;
@@ -86,6 +91,7 @@ impl ToolFilter {
         }
     }
 
+    #[must_use]
     pub fn from_config(config: &AgentConfig, model: &Model, extra_exclude: &[&str]) -> Self {
         let base = if config.allowed_tools.is_empty() {
             Self::All
@@ -101,13 +107,19 @@ impl ToolFilter {
         };
         let mut exclude: Vec<&str> = extra_exclude.to_vec();
         exclude.extend(capability_exclusions(model));
-        exclude.extend(config.disabled_tools.iter().map(|s| s.as_str()));
+        exclude.extend(
+            config
+                .disabled_tools
+                .iter()
+                .map(std::string::String::as_str),
+        );
         base.excluding(&exclude)
     }
 }
 
 /// One gate for every definitions builder (main loop, headless, Lua): a model
 /// without vision never learns `view_image` exists.
+#[must_use]
 pub fn capability_exclusions(model: &Model) -> &'static [&'static str] {
     if model.supports_vision() {
         &[]
@@ -118,6 +130,7 @@ pub fn capability_exclusions(model: &Model) -> &'static [&'static str] {
 
 /// A tool is enabled unless named in `disabled_tools` (config, or the raw
 /// list a Lua caller holds, e.g. `n00n.api.get_tools`).
+#[must_use]
 pub fn is_tool_enabled(disabled_tools: &[String], name: &str) -> bool {
     !disabled_tools.iter().any(|s| s == name)
 }
@@ -146,20 +159,30 @@ pub enum Deadline {
 }
 
 impl Deadline {
+    #[must_use]
     pub fn after(duration: Duration) -> Self {
         Self::At(Instant::now() + duration)
     }
 
+    /// Checks if the deadline has been exceeded.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `String` error if the deadline has been exceeded.
     pub fn check(self) -> Result<(), String> {
         match self {
-            Self::None => Ok(()),
             Self::At(instant) if instant.saturating_duration_since(Instant::now()).is_zero() => {
                 Err(DEADLINE_EXCEEDED.into())
             }
-            Self::At(_) => Ok(()),
+            Self::None | Self::At(_) => Ok(()),
         }
     }
 
+    /// Caps the timeout to the deadline if set.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `String` error if the deadline is in the past.
     pub fn cap_timeout(self, timeout_secs: u64) -> Result<u64, String> {
         match self {
             Self::None => Ok(timeout_secs),
@@ -175,6 +198,7 @@ impl Deadline {
     }
 }
 
+#[must_use]
 pub fn timeout_annotation(secs: u64) -> String {
     let d = Duration::from_secs(secs);
     let formatted: String = format_duration(d)
@@ -204,6 +228,7 @@ pub struct ToolContext {
     pub tool_output_lines: ToolOutputLines,
     pub permissions: Arc<PermissionManager>,
     pub timeouts: n00n_providers::Timeouts,
+    pub openai_options: OpenAiOptions,
     pub file_tracker: Arc<FileReadTracker>,
     pub prompt_slots: Arc<crate::prompt::ResolvedSlots>,
     pub opts: RequestOptions,
@@ -244,6 +269,11 @@ pub(crate) fn resolve_path(path: &str) -> Result<String, String> {
     }
 }
 
+/// Resolves a search path, using the current directory if None.
+///
+/// # Errors
+///
+/// Returns a `String` error if the path cannot be resolved or the current directory cannot be accessed.
 pub fn resolve_search_path(path: Option<&str>) -> Result<String, String> {
     match path {
         Some(p) => resolve_path(p),
@@ -281,18 +311,26 @@ fn format_rel(prefix: &str, fallback: &str, rel: &Path) -> String {
 }
 
 /// Convenience wrapper that always respects gitignore.
+///
+/// # Errors
+///
+/// Returns a `String` error if the root path is invalid.
 pub fn walk_builder(root: &str, patterns: &[&str]) -> Result<WalkBuilder, String> {
     walk_builder_opts(root, patterns, true)
 }
 
 /// `.git` is always excluded, even when `gitignore` is false.
+///
+/// # Errors
+/// Returns an error if the glob pattern is invalid.
 pub fn walk_builder_opts(
     root: &str,
     patterns: &[&str],
     gitignore: bool,
 ) -> Result<WalkBuilder, String> {
     let mut ob = ignore::overrides::OverrideBuilder::new(root);
-    ob.add("!.git").expect("!.git is a valid glob");
+    ob.add("!.git")
+        .map_err(|e| format!("invalid glob pattern for .git: {e}"))?;
 
     for p in patterns {
         ob.add(p)
@@ -314,10 +352,11 @@ pub fn walk_builder_opts(
     Ok(wb)
 }
 
+#[must_use]
 pub fn mtime(path: &Path) -> SystemTime {
     fs::metadata(path)
         .and_then(|m| m.modified())
-        .unwrap_or(SystemTime::UNIX_EPOCH)
+        .unwrap_or_else(|_| SystemTime::UNIX_EPOCH)
 }
 
 pub(crate) fn truncate_bytes(line: &str, max_bytes: usize) -> String {
@@ -329,7 +368,8 @@ pub(crate) fn truncate_bytes(line: &str, max_bytes: usize) -> String {
     }
 }
 
-pub fn truncate_output(text: String, max_lines: usize, max_bytes: usize) -> String {
+#[must_use]
+pub fn truncate_output(text: &str, max_lines: usize, max_bytes: usize) -> String {
     const TRUNCATED_MARKER: &str = "[truncated]";
     let mut lines = text.lines();
     let mut result = String::new();
@@ -360,10 +400,12 @@ pub fn truncate_output(text: String, max_lines: usize, max_bytes: usize) -> Stri
     result
 }
 
+#[must_use]
 pub fn is_builtin_tool(name: &str) -> bool {
     n00n_config::DEFAULT_BUILTINS.contains(&name) || n00n_config::EDIT_SUB_TOOLS.contains(&name)
 }
 
+#[must_use]
 pub fn all_builtin_tool_names() -> Vec<&'static str> {
     n00n_config::DEFAULT_BUILTINS
         .iter()
@@ -387,13 +429,17 @@ impl Provider for NullProvider {
         _: RequestOptions,
         _: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, crate::AgentError>> {
-        Box::pin(async { unimplemented!() })
+        Box::pin(async {
+            Err(crate::AgentError::Config {
+                message: "NullProvider cannot stream".to_string(),
+            })
+        })
     }
 
     fn list_models(
         &self,
     ) -> BoxFuture<'_, Result<Vec<n00n_providers::ModelInfo>, crate::AgentError>> {
-        Box::pin(async { unimplemented!() })
+        Box::pin(async { Ok(vec![]) })
     }
 }
 
@@ -407,8 +453,13 @@ pub fn interpreter_ctx(
     registry: Arc<ToolRegistry>,
 ) -> ToolContext {
     static PROVIDER: LazyLock<Arc<dyn Provider>> = LazyLock::new(|| Arc::new(NullProvider));
-    static MODEL: LazyLock<Arc<Model>> =
-        LazyLock::new(|| Arc::new(Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap()));
+    #[allow(clippy::expect_used)]
+    static MODEL: LazyLock<Arc<Model>> = LazyLock::new(|| {
+        Arc::new(
+            Model::from_spec("anthropic/claude-sonnet-4-20250514")
+                .expect("interpreter_ctx: valid model spec"),
+        )
+    });
     ToolContext {
         provider: Arc::clone(&PROVIDER),
         model: Arc::clone(&MODEL),
@@ -424,6 +475,7 @@ pub fn interpreter_ctx(
         tool_output_lines: ToolOutputLines::default(),
         permissions,
         timeouts: n00n_providers::Timeouts::default(),
+        openai_options: OpenAiOptions::default(),
         file_tracker,
         prompt_slots: Arc::new(crate::prompt::ResolvedSlots::default()),
         opts: RequestOptions::default(),
@@ -436,8 +488,9 @@ pub fn interpreter_ctx(
     }
 }
 
-/// Minimal ToolContext for CLI one-shot tool execution (e.g. `n00n index`).
+/// Minimal `ToolContext` for CLI one-shot tool execution (e.g. `n00n index`).
 /// Allows everything, sends events to a dummy channel, uses no model.
+#[must_use]
 pub fn cli_tool_ctx() -> ToolContext {
     let (tx, _rx) = flume::unbounded::<crate::Envelope>();
     let event_tx = crate::EventSender::new(tx, 0);
@@ -464,7 +517,10 @@ pub mod test_support {
 
     use crate::{Envelope, EventSender, ToolOutput};
 
-    use super::*;
+    use super::{
+        AgentMode, Arc, CancelToken, DescriptionContext, FileReadTracker, LazyLock,
+        PermissionManager, ToolContext, ToolRegistry, Value, interpreter_ctx, registry,
+    };
 
     pub const GUARDED_TOOL_NAME: &str = "guarded_mock";
 
@@ -481,7 +537,7 @@ pub mod test_support {
                 registry::PermissionScopes::single("guarded".into()),
             )))
         }
-        fn execute<'a>(self: Box<Self>, _ctx: &'a ToolContext) -> registry::ExecFuture<'a> {
+        fn execute(self: Box<Self>, _ctx: &ToolContext) -> registry::ExecFuture<'_> {
             Box::pin(async {
                 registry::ToolExecResult::from(Ok::<_, String>(ToolOutput::Plain("ok".into())))
             })
@@ -523,12 +579,11 @@ pub mod test_support {
         tool_use_id: Option<&str>,
     ) -> ToolContext {
         let fallback_tx;
-        let event_tx = match event_tx {
-            Some(tx) => tx,
-            None => {
-                fallback_tx = EventSender::new(flume::unbounded::<Envelope>().0, 0);
-                &fallback_tx
-            }
+        let event_tx = if let Some(tx) = event_tx {
+            tx
+        } else {
+            fallback_tx = EventSender::new(flume::unbounded::<Envelope>().0, 0);
+            &fallback_tx
         };
         let mut ctx = interpreter_ctx(
             mode,
@@ -543,6 +598,7 @@ pub mod test_support {
         ctx
     }
 
+    #[must_use]
     pub fn stub_ctx(mode: &AgentMode) -> ToolContext {
         stub_ctx_with(mode, None, None)
     }
@@ -600,14 +656,14 @@ mod tests {
     }
 
     #[test_case(Deadline::None,                          120, 120 ; "none_passes_through")]
-    #[test_case(Deadline::after(Duration::from_secs(60)), 10,  10  ; "requested_under_remaining")]
+    #[test_case(Deadline::after(Duration::from_mins(1)), 10,  10  ; "requested_under_remaining")]
     fn cap_timeout_ok(deadline: Deadline, requested: u64, expected: u64) {
         assert_eq!(deadline.cap_timeout(requested).unwrap(), expected);
     }
 
     #[test]
     fn cap_timeout_clamps_to_remaining() {
-        let clamped = Deadline::after(Duration::from_secs(3600))
+        let clamped = Deadline::after(Duration::from_hours(1))
             .cap_timeout(7200)
             .unwrap();
         assert!(clamped <= 3600, "expected <= 3600, got {clamped}");
@@ -637,11 +693,11 @@ mod tests {
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let result = truncate_output(many_lines, MAX_LINES, MAX_BYTES);
+        let result = truncate_output(&many_lines, MAX_LINES, MAX_BYTES);
         assert!(result.ends_with("[truncated]"));
 
         let many_bytes = "x".repeat(MAX_BYTES + 1000);
-        let result = truncate_output(many_bytes, MAX_LINES, MAX_BYTES);
+        let result = truncate_output(&many_bytes, MAX_LINES, MAX_BYTES);
         assert!(result.ends_with("[truncated]"));
     }
 
@@ -655,7 +711,7 @@ mod tests {
 
         let mut params = grep::GrepParams::new("hello".into());
         params.path = Some(dir_str.clone());
-        let (_, entries) = grep::grep_search(params).unwrap();
+        let (_, entries) = grep::grep_search(&params).unwrap();
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
         assert!(paths.contains(&"a.txt"));
         assert!(paths.contains(&"b.rs"));
@@ -664,13 +720,13 @@ mod tests {
         let mut params = grep::GrepParams::new("hello".into());
         params.path = Some(dir_str.clone());
         params.include = Some("*.rs".into());
-        let (_, entries) = grep::grep_search(params).unwrap();
+        let (_, entries) = grep::grep_search(&params).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].path, "b.rs");
 
         let mut params = grep::GrepParams::new("zzzznotfound".into());
         params.path = Some(dir_str);
-        let (_, entries) = grep::grep_search(params).unwrap();
+        let (_, entries) = grep::grep_search(&params).unwrap();
         assert!(entries.is_empty());
     }
 
@@ -682,7 +738,7 @@ mod tests {
 
         let mut params = grep::GrepParams::new("fn main".into());
         params.path = Some(file.to_string_lossy().into());
-        let (_, entries) = grep::grep_search(params).unwrap();
+        let (_, entries) = grep::grep_search(&params).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].path, "demo.rs");
     }
@@ -692,7 +748,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut params = grep::GrepParams::new("[invalid".into());
         params.path = Some(dir.path().to_string_lossy().into());
-        let err = grep::grep_search(params).unwrap_err();
+        let err = grep::grep_search(&params).unwrap_err();
         assert!(err.contains(grep::INVALID_REGEX), "got: {err}");
     }
 
@@ -703,7 +759,7 @@ mod tests {
 
         let mut params = grep::GrepParams::new("(?s)foo.*\\n}".into());
         params.path = Some(dir.path().to_string_lossy().into());
-        let (_, entries) = grep::grep_search(params).unwrap();
+        let (_, entries) = grep::grep_search(&params).unwrap();
         assert_eq!(entries.len(), 1);
         let lines = &entries[0].groups[0].lines;
         assert!(lines.iter().any(|l| l.text.contains("foo") && l.is_match));
@@ -722,7 +778,7 @@ mod tests {
         params.path = Some(dir.path().to_string_lossy().into());
         params.context_before = 1;
         params.context_after = 1;
-        let (_, entries) = grep::grep_search(params).unwrap();
+        let (_, entries) = grep::grep_search(&params).unwrap();
         assert_eq!(entries[0].groups.len(), 2);
 
         let g0 = &entries[0].groups[0].lines;
@@ -752,7 +808,7 @@ mod tests {
             let mut params = grep::GrepParams::new("needle".into());
             params.path = Some(path_str.clone());
             params.limit = 1000;
-            let (_, entries) = grep::grep_search(params).unwrap();
+            let (_, entries) = grep::grep_search(&params).unwrap();
 
             let flat: Vec<(String, usize, bool)> = entries
                 .iter()
@@ -782,7 +838,7 @@ mod tests {
         let mut params = grep::GrepParams::new("hit".into());
         params.path = Some(root.to_string_lossy().into());
         params.limit = 3;
-        let (_, entries) = grep::grep_search(params).unwrap();
+        let (_, entries) = grep::grep_search(&params).unwrap();
 
         let total_groups: usize = entries.iter().map(|e| e.groups.len()).sum();
         assert_eq!(total_groups, 3);

@@ -1,3 +1,10 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::needless_pass_by_value
+)]
+
 use std::sync::Arc;
 
 use n00n_agent::tools::ToolRegistry;
@@ -14,7 +21,7 @@ fn run_lua(host: &PluginHost, name: &str, src: &str) {
         .unwrap_or_else(|e| panic!("lua error in {name}: {e}"));
 }
 
-const RUST_SOURCE: &str = r#"
+const RUST_SOURCE: &str = r"
 use std::sync::Arc;
 
 const MAX_SIZE: usize = 1024;
@@ -33,7 +40,7 @@ impl Config {
 fn helper(x: &str) -> bool {
     x.len() > MAX_SIZE
 }
-"#;
+";
 
 #[test]
 fn parse_and_walk_nodes() {

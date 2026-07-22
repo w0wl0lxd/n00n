@@ -9,13 +9,13 @@ use arc_swap::ArcSwap;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use n00n_agent::permissions::PermissionManager;
 use n00n_agent::{
-    ImageMediaType, McpConfigErrors, McpServerInfo, McpServerStatus, McpSnapshot,
-    McpSnapshotReader, ToolDoneEvent, ToolOutput, ToolStartEvent, TurnCompleteEvent,
+    ImageMediaType, InterruptSource, McpConfigErrors, McpPromptArg, McpServerInfo, McpServerStatus,
+    McpSnapshot, McpSnapshotReader, ToolDoneEvent, ToolOutput, ToolStartEvent, TurnCompleteEvent,
 };
-use n00n_config::{PermissionsConfig, ToolKey, UiConfig};
+use n00n_config::{PermissionsConfig, UiConfig};
 use n00n_lua::{HintReader, KeymapReader, LuaCommandReader};
 use n00n_providers::{ContentBlock, Effort, Role, TokenUsage};
-use n00n_storage::sessions::{StoredMode, StoredThinking};
+use n00n_storage::sessions::{StoredMode, StoredThinking, TranscriptEntry};
 use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 use ratatui_image::picker::Picker;
 use std::env;
@@ -35,13 +35,21 @@ fn set_zone(app: &mut App, zone: SelectionZone, area: Rect) {
 }
 
 fn build_app(dir: StateDir, writer: Arc<StorageWriter>) -> App {
+    build_app_with_mcp(dir, writer, McpSnapshotReader::empty())
+}
+
+fn build_app_with_mcp(
+    dir: StateDir,
+    writer: Arc<StorageWriter>,
+    mcp_reader: McpSnapshotReader,
+) -> App {
     let model = test_model();
     App::new(
         &model,
         AppSession::new("test-model", "/tmp/test"),
         dir,
         Arc::new(ArcSwapOption::empty()),
-        McpSnapshotReader::empty(),
+        mcp_reader,
         McpConfigErrors::new(PathBuf::new()),
         LuaCommandReader::empty(),
         KeymapReader::empty(),
@@ -63,7 +71,7 @@ fn build_app(dir: StateDir, writer: Arc<StorageWriter>) -> App {
 
 fn test_app() -> App {
     let dir = StateDir::from_path(env::temp_dir());
-    let mut app = build_app(dir.clone(), Arc::new(StorageWriter::new(dir)));
+    let mut app = build_app(dir.clone(), Arc::new(StorageWriter::new(dir).unwrap()));
     let (shared_queue, _rx) = shared_queue::queue();
     app.queue.set_shared(shared_queue);
     app
@@ -72,7 +80,7 @@ fn test_app() -> App {
 fn tempdir_app() -> (TempDir, StateDir, Arc<StorageWriter>, App) {
     let tmp = TempDir::new().unwrap();
     let dir = StateDir::from_path(tmp.path().to_path_buf());
-    let writer = Arc::new(StorageWriter::new(dir.clone()));
+    let writer = Arc::new(StorageWriter::new(dir.clone()).unwrap());
     let app = build_app(dir.clone(), Arc::clone(&writer));
     (tmp, dir, writer, app)
 }
@@ -83,15 +91,6 @@ fn mouse_event(kind: MouseEventKind, column: u16, row: u16) -> Msg {
         column,
         row,
         modifiers: KeyModifiers::NONE,
-    })
-}
-
-fn ctrl_mouse_event(kind: MouseEventKind, column: u16, row: u16) -> Msg {
-    Msg::Mouse(MouseEvent {
-        kind,
-        column,
-        row,
-        modifiers: KeyModifiers::CONTROL,
     })
 }
 
@@ -124,7 +123,7 @@ fn subagent_info_with_channels(
     _parent_id: &str,
     name: &str,
     answer_tx: Option<flume::Sender<String>>,
-    prompt_tx: Option<flume::Sender<SubagentPrompt>>,
+    prompt_tx: Option<flume::Sender<String>>,
 ) -> SubagentInfo {
     SubagentInfo {
         parent_tool_use_id: session_id.into(),
@@ -148,7 +147,7 @@ fn subagent_msg_with_run_id(
 ) -> Msg {
     Msg::Agent(Box::new(Envelope {
         event,
-        subagent: Some(subagent_info(parent_id, name.unwrap_or("Agent"))),
+        subagent: Some(subagent_info(parent_id, name.unwrap_or_else(|| "Agent"))),
         run_id,
     }))
 }
@@ -159,7 +158,7 @@ fn subagent_msg_with_prompt(
     name: Option<&str>,
     prompt: Option<&str>,
 ) -> Msg {
-    let mut info = subagent_info(parent_id, name.unwrap_or("Agent"));
+    let mut info = subagent_info(parent_id, name.unwrap_or_else(|| "Agent"));
     info.prompt = prompt.map(String::from);
     Msg::Agent(Box::new(Envelope {
         event,
@@ -185,8 +184,9 @@ fn typing_and_submit() {
     app.update(Msg::Key(key(KeyCode::Char('i'))));
 
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
-    assert!(matches!(&actions[0], Action::SendMessage(s) if s.message == "hi"));
+    assert!(matches!(&actions[0], Action::SendMessage(s) if s.input.message == "hi"));
     assert_eq!(app.status, Status::Streaming);
+    assert!(app.input_box.is_empty());
     // Regression check: the bubble has to be on screen the same frame we
     // submit, otherwise it briefly sits one row too high before snapping down.
     assert_eq!(
@@ -194,6 +194,280 @@ fn typing_and_submit() {
         Some(&DisplayRole::User),
     );
     assert_eq!(app.main_chat().last_message_text(), "hi");
+}
+
+#[derive(Clone)]
+struct ManualSubmissionClock(Arc<std::sync::Mutex<Instant>>);
+
+impl SubmissionClock for ManualSubmissionClock {
+    fn now(&self) -> Instant {
+        *self.0.lock().unwrap()
+    }
+}
+
+impl ManualSubmissionClock {
+    fn advance(&self, duration: Duration) {
+        let mut now = self.0.lock().unwrap();
+        *now += duration;
+    }
+}
+
+fn install_manual_submission_clock(app: &mut App) -> ManualSubmissionClock {
+    let clock = ManualSubmissionClock(Arc::new(std::sync::Mutex::new(Instant::now())));
+    app.submission_clock = Arc::new(clock.clone());
+    clock
+}
+
+#[test]
+fn rapid_submissions_keep_fifo_while_first_waits_for_persistence() {
+    let mut app = test_app();
+    let (shared, receiver) = shared_queue::queue();
+    app.queue.set_shared(shared);
+
+    let first = type_and_submit(&mut app, "first");
+    let Action::SendMessage(first_dispatch) = first.into_iter().next().unwrap() else {
+        panic!("expected first submission dispatch");
+    };
+    app.handle_submit(Submission {
+        text: "second".into(),
+        images: Vec::new(),
+    });
+
+    assert!(
+        receiver
+            .poll(n00n_agent::InterruptPoint::ToolComplete)
+            .is_none()
+    );
+
+    let first_id = first_dispatch.submission_id;
+    assert!(
+        app.queue
+            .mark_submission_ready(first_id, first_dispatch.input)
+    );
+    let crate::agent::shared_queue::QueueItem::Message { input, .. } = receiver.pop().unwrap()
+    else {
+        panic!("expected first queued submission");
+    };
+    assert_eq!(input.message, "first");
+    let n00n_agent::ExtractedCommand::Interrupt(second, _) = receiver
+        .poll(n00n_agent::InterruptPoint::ToolComplete)
+        .unwrap()
+    else {
+        panic!("expected second queued submission");
+    };
+    assert_eq!(second.message, "second");
+}
+
+#[test]
+fn session_api_prompt_is_explicitly_non_paint_gated() {
+    let mut app = test_app();
+    let outcome = app.submit_background_prompt(crate::app::queue::QueuedMessage {
+        text: "background prompt".into(),
+        images: Vec::new(),
+    });
+    let SubmitOutcome::Started(actions) = outcome else {
+        panic!("expected background prompt to start");
+    };
+    let Action::SendMessage(dispatch) = &actions[0] else {
+        panic!("expected submission dispatch");
+    };
+
+    assert!(!dispatch.paint_required);
+    assert_eq!(app.main_chat().message_count(), 0);
+}
+
+#[test]
+fn background_persistence_failure_is_terminal_without_composer_restore() {
+    let mut app = test_app();
+    let SubmitOutcome::Started(actions) = app.submit_background_prompt(QueuedMessage {
+        text: "background prompt".into(),
+        images: Vec::new(),
+    }) else {
+        panic!("expected background prompt to start");
+    };
+    let Action::SendMessage(dispatch) = actions.into_iter().next().unwrap() else {
+        panic!("expected background submission dispatch");
+    };
+    let submission_id = dispatch.submission_id;
+    let gate = Arc::clone(&dispatch.gate);
+    assert!(matches!(
+        app.submit_background_prompt(QueuedMessage {
+            text: "queued after failure".into(),
+            images: Vec::new(),
+        }),
+        SubmitOutcome::Queued
+    ));
+
+    app.handle_submission_persistence_failure(&dispatch);
+
+    assert!(gate.is_cancelled());
+    assert!(matches!(
+        &app.status,
+        Status::Error { message, .. } if message == PERSISTENCE_FAILURE_MSG
+    ));
+    assert_eq!(app.main_chat().last_message_text(), PERSISTENCE_FAILURE_MSG);
+    assert!(app.input_box.is_empty());
+    assert_eq!(app.queue.text_messages(), vec!["queued after failure"]);
+    assert_eq!(submission_id, dispatch.submission_id);
+}
+
+#[test]
+fn escape_before_dispatch_restores_text_and_exact_images_once() {
+    let mut app = test_app();
+    install_manual_submission_clock(&mut app);
+    app.input_box.set_input("describe".into());
+    with_image(&mut app);
+
+    let actions = app.update(Msg::Key(key(KeyCode::Enter)));
+    let Action::SendMessage(dispatch) = &actions[0] else {
+        panic!("expected submission dispatch");
+    };
+    let gate = Arc::clone(&dispatch.gate);
+    assert_eq!(app.main_chat().message_count(), 1);
+
+    let cancel_actions = app.update(Msg::Key(key(KeyCode::Esc)));
+
+    assert!(cancel_actions.is_empty());
+    assert!(gate.is_cancelled());
+    assert_eq!(app.status, Status::Idle);
+    assert_eq!(app.main_chat().message_count(), 0);
+    let restored = app.input_box.submit().unwrap();
+    assert_eq!(restored.text, "describe");
+    assert_eq!(restored.images.len(), 1);
+    assert_eq!(restored.images[0].media_type, ImageMediaType::Png);
+    assert_eq!(&*restored.images[0].data, "dGVzdA==");
+
+    app.handle_submission_persistence_failure(dispatch);
+    assert_eq!(app.main_chat().message_count(), 0);
+    assert!(app.input_box.is_empty());
+}
+
+#[test]
+fn committed_submission_keeps_double_escape_cancellation() {
+    let mut app = test_app();
+    install_manual_submission_clock(&mut app);
+    let actions = type_and_submit(&mut app, "sent");
+    let Action::SendMessage(dispatch) = &actions[0] else {
+        panic!("expected submission dispatch");
+    };
+    assert!(dispatch.gate.try_commit());
+
+    let first = app.update(Msg::Key(key(KeyCode::Esc)));
+    assert!(first.is_empty());
+    assert!(app.input_box.is_empty());
+    assert_eq!(app.main_chat().last_message_text(), "sent");
+
+    let second = app.update(Msg::Key(key(KeyCode::Esc)));
+    assert!(matches!(&second[..], [Action::CancelAgent { .. }]));
+}
+
+#[test]
+fn shell_preamble_restores_once_on_cancel_and_resubmits_once() {
+    let mut app = test_app();
+    install_manual_submission_clock(&mut app);
+    app.shell.push_result(Message::user("shell output".into()));
+
+    let actions = type_and_submit(&mut app, "use context");
+    let Action::SendMessage(mut dispatch) = actions.into_iter().next().unwrap() else {
+        panic!("expected submission dispatch");
+    };
+    assert!(app.stage_submission_preamble(&mut dispatch));
+    assert_eq!(dispatch.input.preamble.len(), 1);
+    assert!(app.shell.drain_results().is_empty());
+
+    app.update(Msg::Key(key(KeyCode::Esc)));
+    let restored_preamble = app.shell.drain_results();
+    assert_eq!(restored_preamble.len(), 1);
+    assert_eq!(restored_preamble[0].user_text(), Some("shell output"));
+    app.shell.restore_results(restored_preamble);
+    let submission = app.input_box.submit().expect("cancel restores submission");
+    let actions = app.handle_submit(submission);
+    let Action::SendMessage(mut dispatch) = actions.into_iter().next().unwrap() else {
+        panic!("expected resubmission dispatch");
+    };
+    assert!(app.stage_submission_preamble(&mut dispatch));
+    assert_eq!(dispatch.input.preamble.len(), 1);
+    assert_eq!(dispatch.input.preamble[0].user_text(), Some("shell output"));
+    assert!(app.shell.drain_results().is_empty());
+
+    app.handle_submission_persistence_failure(&dispatch);
+    let restored_after_failure = app.shell.drain_results();
+    assert_eq!(restored_after_failure.len(), 1);
+    assert_eq!(restored_after_failure[0].user_text(), Some("shell output"));
+}
+#[test]
+fn escape_during_mcp_error_restores_and_resubmits_exactly_once() {
+    let mut app = test_app();
+    install_manual_submission_clock(&mut app);
+    app.shell.push_result(Message::user("mcp context".into()));
+
+    let actions = type_and_submit(&mut app, "review");
+    let Action::SendMessage(mut dispatch) = actions.into_iter().next().unwrap() else {
+        panic!("expected submission dispatch");
+    };
+    assert!(app.stage_submission_preamble(&mut dispatch));
+    app.update(agent_msg(AgentEvent::Error {
+        message: "MCP prompt failed".into(),
+    }));
+
+    app.update(Msg::Key(key(KeyCode::Esc)));
+
+    assert_eq!(app.main_chat().message_count(), 0);
+    assert_eq!(app.input_box.buffer.value(), "review");
+    let restored = app.shell.drain_results();
+    assert_eq!(restored.len(), 1);
+    app.shell.restore_results(restored);
+
+    let submission = app.input_box.submit().expect("restored submission");
+    let actions = app.handle_submit(submission);
+    assert_eq!(actions.len(), 1);
+    let Action::SendMessage(mut retry) = actions.into_iter().next().unwrap() else {
+        panic!("expected retry dispatch");
+    };
+    assert!(app.stage_submission_preamble(&mut retry));
+    assert_eq!(retry.input.preamble.len(), 1);
+    assert!(app.shell.drain_results().is_empty());
+}
+
+#[test]
+fn expired_escape_window_does_not_restore_without_sleeping() {
+    let mut app = test_app();
+    let clock = install_manual_submission_clock(&mut app);
+    type_and_submit(&mut app, "too late");
+    clock.advance(SUBMISSION_ESCAPE_WINDOW + Duration::from_millis(1));
+
+    let actions = app.update(Msg::Key(key(KeyCode::Esc)));
+
+    assert!(actions.is_empty());
+    assert!(app.input_box.is_empty());
+    assert_eq!(app.main_chat().last_message_text(), "too late");
+    assert_eq!(app.status, Status::Streaming);
+}
+
+#[test]
+fn escape_at_submission_window_boundary_restores() {
+    let mut app = test_app();
+    let clock = install_manual_submission_clock(&mut app);
+    type_and_submit(&mut app, "at boundary");
+    clock.advance(SUBMISSION_ESCAPE_WINDOW);
+
+    app.update(Msg::Key(key(KeyCode::Esc)));
+
+    assert_eq!(app.status, Status::Idle);
+    assert_eq!(app.input_box.buffer.value(), "at boundary");
+}
+
+#[test]
+fn escape_one_millisecond_after_submission_window_does_not_restore() {
+    let mut app = test_app();
+    let clock = install_manual_submission_clock(&mut app);
+    type_and_submit(&mut app, "after boundary");
+    clock.advance(SUBMISSION_ESCAPE_WINDOW + Duration::from_millis(1));
+
+    app.update(Msg::Key(key(KeyCode::Esc)));
+
+    assert_eq!(app.status, Status::Streaming);
+    assert!(app.input_box.is_empty());
 }
 
 fn with_text(app: &mut App) {
@@ -272,7 +546,7 @@ fn toggle_mode_state_machine() {
 }
 
 #[test_case(ToolOutput::Plain("wrote 100 bytes to /tmp/plans/test.md".into()), Some("/tmp/plans/test.md".into()), true  ; "write_matching")]
-#[test_case(ToolOutput::Diff { path: "/tmp/plans/test.md".into(), before: String::new(), after: String::new(), summary: String::new() }, None, true  ; "edit_matching")]
+#[test_case(ToolOutput::Diff { path: "/tmp/plans/test.md".into(), before: String::new(), after: String::new(), summary: String::new(), telemetry: None }, None, true  ; "edit_matching")]
 #[test_case(ToolOutput::Plain("wrote 100 bytes to /tmp/other.rs".into()), Some("/tmp/other.rs".into()), false ; "write_non_matching")]
 fn tool_done_transitions_plan_to_ready(
     output: ToolOutput,
@@ -430,7 +704,7 @@ fn submit_prompt_never_interprets_text(text: &str) {
     let mut app = test_app();
     match app.submit_prompt(queued_msg(text)) {
         SubmitOutcome::Started(actions) => {
-            assert!(matches!(&actions[0], Action::SendMessage(_)))
+            assert!(matches!(&actions[0], Action::SendMessage(_)));
         }
         _ => panic!("raw prompt must start the agent"),
     }
@@ -459,7 +733,7 @@ fn submit_prompt_rejects(mk: fn() -> App, text: &str, expected: &str) {
 
 fn streaming_app_without_queue() -> App {
     let dir = StateDir::from_path(env::temp_dir());
-    let mut app = build_app(dir.clone(), Arc::new(StorageWriter::new(dir)));
+    let mut app = build_app(dir.clone(), Arc::new(StorageWriter::new(dir).unwrap()));
     app.status = Status::Streaming;
     app
 }
@@ -606,6 +880,71 @@ fn load_session_clears_plan() {
 }
 
 #[test]
+fn picker_load_carries_recursive_transcript_through_recompact_and_save() {
+    let (_tmp, dir, writer, mut app) = tempdir_app();
+    let summary = Message {
+        role: Role::Assistant,
+        content: vec![ContentBlock::Text {
+            text: "first summary".into(),
+        }],
+        ..Default::default()
+    };
+    app.state.session.messages = vec![Message::user("summary prompt".into()), summary.clone()];
+    app.state.session.transcript = vec![
+        TranscriptEntry::Compaction {
+            entries: vec![TranscriptEntry::Compaction {
+                entries: vec![TranscriptEntry::Message(Message::user("original".into()))],
+                generated_summary: None,
+            }],
+            generated_summary: Some(summary.clone()),
+        },
+        TranscriptEntry::GeneratedMessage(Message::user("summary prompt".into())),
+        TranscriptEntry::GeneratedMessage(summary),
+    ];
+    app.state.session.save(&app.storage).unwrap();
+    let id = app.state.session.id;
+
+    let actions = app.load_session(id);
+    let Action::LoadSession(loaded) = actions.into_iter().next().expect("load action") else {
+        panic!("expected loaded session action");
+    };
+    assert!(matches!(
+        loaded.transcript.as_slice(),
+        [TranscriptEntry::Compaction { entries, .. }, ..]
+            if matches!(entries.as_slice(), [TranscriptEntry::Compaction { .. }])
+    ));
+
+    let message_mirror = Arc::new(ArcSwap::from_pointee(loaded.messages.clone()));
+    let transcript_mirror = Arc::new(ArcSwap::from_pointee(loaded.transcript.clone()));
+    let mut history =
+        n00n_agent::agent::History::restored_with_transcript(loaded.messages, loaded.transcript)
+            .with_mirror(Arc::clone(&message_mirror))
+            .with_transcript_mirror(Arc::clone(&transcript_mirror));
+    history.push(Message::user("continued".into()));
+    history.compact_boundary(
+        Message::user("summary prompt".into()),
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text {
+                text: "second summary".into(),
+            }],
+            ..Default::default()
+        },
+    );
+    app.shared_history = Some(message_mirror);
+    app.shared_transcript = Some(transcript_mirror);
+    app.save_session();
+    drain_writer(app, writer);
+
+    let saved = AppSession::load(id, &dir).unwrap();
+    assert!(matches!(
+        saved.transcript.as_slice(),
+        [TranscriptEntry::Compaction { entries, .. }, TranscriptEntry::GeneratedMessage(_), TranscriptEntry::GeneratedMessage(_)]
+            if matches!(entries.as_slice(), [TranscriptEntry::Compaction { entries, .. }, TranscriptEntry::GeneratedMessage(_), TranscriptEntry::GeneratedMessage(_), TranscriptEntry::Message(_)] if matches!(entries.as_slice(), [TranscriptEntry::Compaction { .. }]))
+    ));
+}
+
+#[test]
 fn tab_in_palette_completes_command() {
     let mut app = test_app();
     type_slash(&mut app);
@@ -697,7 +1036,7 @@ fn turn_complete_tracks_usage_and_context_per_chat() {
     };
     app.update(agent_msg(AgentEvent::TurnComplete(Box::new(
         TurnCompleteEvent {
-            message: Default::default(),
+            message: Message::default(),
             usage: main_usage,
             model: "test".into(),
             context_size: None,
@@ -711,7 +1050,7 @@ fn turn_complete_tracks_usage_and_context_per_chat() {
     };
     app.update(subagent_msg(
         AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
-            message: Default::default(),
+            message: Message::default(),
             usage: sub_usage,
             model: "test".into(),
             context_size: None,
@@ -729,12 +1068,93 @@ fn turn_complete_tracks_usage_and_context_per_chat() {
 }
 
 #[test]
+fn live_compaction_notice_becomes_typed_card() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    app.shared_transcript = Some(Arc::new(ArcSwap::from_pointee(vec![
+        TranscriptEntry::Compaction {
+            entries: vec![TranscriptEntry::Message(Message::user("original".into()))],
+            generated_summary: None,
+        },
+    ])));
+
+    app.update(agent_msg(AgentEvent::AutoCompacting));
+    assert!(app.main_chat().has_pending_compaction());
+
+    app.update(agent_msg(AgentEvent::CompactionDone));
+    assert!(!app.main_chat().has_pending_compaction());
+    assert_eq!(app.main_chat().compaction_card_count(), 1);
+}
+
+#[test]
+fn subagent_compaction_completion_uses_live_summary_without_touching_main_transcript() {
+    let mut app = app_with_subagent();
+    let main_transcript = Arc::new(ArcSwap::from_pointee(vec![TranscriptEntry::Message(
+        Message::user("main conversation".into()),
+    )]));
+    app.shared_transcript = Some(Arc::clone(&main_transcript));
+
+    app.update(subagent_msg(
+        AgentEvent::AutoCompacting,
+        "task1",
+        Some("research"),
+    ));
+    assert!(app.chats[1].has_pending_compaction());
+    app.update(subagent_msg(
+        AgentEvent::TextDelta {
+            text: "subagent summary".into(),
+        },
+        "task1",
+        Some("research"),
+    ));
+    app.update(subagent_msg(
+        AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
+            message: Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "subagent summary".into(),
+                }],
+                ..Default::default()
+            },
+            usage: TokenUsage::default(),
+            model: "test".into(),
+            context_size: None,
+        })),
+        "task1",
+        Some("research"),
+    ));
+    app.update(subagent_msg(
+        AgentEvent::CompactionDone,
+        "task1",
+        Some("research"),
+    ));
+
+    assert!(!app.chats[1].has_pending_compaction());
+    assert_eq!(app.chats[1].compaction_card_count(), 1);
+    assert_eq!(
+        app.chats[1].message_count(),
+        2,
+        "the streamed summary must not remain beside its compaction card"
+    );
+    assert_eq!(
+        app.chats[1].last_compaction_summary(),
+        Some("subagent summary")
+    );
+    assert_eq!(app.main_chat().compaction_card_count(), 0);
+    assert!(matches!(
+        main_transcript.load().as_slice(),
+        [TranscriptEntry::Message(message)] if message.user_text() == Some("main conversation")
+    ));
+}
+
+#[test]
 fn turn_complete_accumulates_usage_by_model() {
     let mut app = app_with_subagent();
 
     app.update(agent_msg(AgentEvent::TurnComplete(Box::new(
         TurnCompleteEvent {
-            message: Default::default(),
+            message: Message::default(),
             usage: TokenUsage {
                 input: 100,
                 output: 50,
@@ -747,7 +1167,7 @@ fn turn_complete_accumulates_usage_by_model() {
     ))));
     app.update(subagent_msg(
         AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
-            message: Default::default(),
+            message: Message::default(),
             usage: TokenUsage {
                 input: 200,
                 output: 75,
@@ -865,19 +1285,16 @@ fn completed_subagent_chat_remains_discoverable_by_tool_id() {
     assert_eq!(idx, Some(1));
 }
 
-#[test_case("task"     ; "task")]
-#[test_case("agent"    ; "agent")]
-#[test_case("team"     ; "team")]
-#[test_case("workflow" ; "workflow")]
-fn completed_subagent_card_header_and_body_clicks_toggle_without_navigation(tool: &str) {
+#[test]
+fn completed_task_card_click_toggles_inline_without_navigating() {
     let mut app = test_app();
     app.status = Status::Streaming;
     app.run_id = 1;
     app.update(agent_msg(AgentEvent::ToolStart(Box::new(ToolStartEvent {
-        id: "card1".into(),
-        tool: tool.into(),
-        summary: "safe summary".into(),
-        annotation: Some("safe annotation".into()),
+        id: "task1".into(),
+        tool: "task".into(),
+        summary: "research".into(),
+        annotation: None,
         input: None,
         raw_input: None,
         output: None,
@@ -887,12 +1304,12 @@ fn completed_subagent_card_header_and_body_clicks_toggle_without_navigation(tool
         AgentEvent::TextDelta {
             text: "child".into(),
         },
-        "card1",
+        "task1",
         Some("research"),
     ));
     app.update(agent_msg(AgentEvent::ToolDone(Box::new(ToolDoneEvent {
-        id: "card1".into(),
-        tool: tool.into(),
+        id: "task1".into(),
+        tool: "task".into(),
         output: ToolOutput::Markdown("body line\n".repeat(100).into()),
         is_error: false,
         annotation: None,
@@ -904,114 +1321,39 @@ fn completed_subagent_card_header_and_body_clicks_toggle_without_navigation(tool
     let area = app.msg_area();
     let collapsed_lines = app.chats[0].total_lines();
 
-    let click = |app: &mut App, row| {
-        app.update(mouse_event(
-            MouseEventKind::Down(MouseButton::Left),
-            10,
-            row,
-        ));
-        app.update(mouse_event(MouseEventKind::Up(MouseButton::Left), 10, row));
-    };
-
-    click(&mut app, area.y + 1);
-    assert_eq!(app.active_chat, 0, "{tool} body click must not navigate");
-    terminal.draw(|frame| app.view(frame)).unwrap();
-    assert!(
-        app.chats[0].total_lines() > collapsed_lines,
-        "{tool} body click must expand the completed card"
-    );
-
-    click(&mut app, area.y + 1);
-    assert_eq!(
-        app.active_chat, 0,
-        "second {tool} body click must not navigate"
-    );
-    terminal.draw(|frame| app.view(frame)).unwrap();
-    assert_eq!(
-        app.chats[0].total_lines(),
-        collapsed_lines,
-        "second {tool} body click must collapse the card"
-    );
-
-    click(&mut app, area.y);
-    assert_eq!(app.active_chat, 0, "{tool} header click must not navigate");
-    terminal.draw(|frame| app.view(frame)).unwrap();
-    assert!(
-        app.chats[0].total_lines() > collapsed_lines,
-        "{tool} header row 0 must expand the same card"
-    );
-
-    click(&mut app, area.y);
-    assert_eq!(
-        app.active_chat, 0,
-        "second {tool} header click must not navigate"
-    );
-    terminal.draw(|frame| app.view(frame)).unwrap();
-    assert_eq!(
-        app.chats[0].total_lines(),
-        collapsed_lines,
-        "second {tool} header click must collapse the card"
-    );
-}
-
-#[test_case("task"     ; "task")]
-#[test_case("agent"    ; "agent")]
-#[test_case("team"     ; "team")]
-#[test_case("workflow" ; "workflow")]
-fn ctrl_click_subagent_card_header_enters_chat(tool: &str) {
-    let mut app = test_app();
-    app.status = Status::Streaming;
-    app.run_id = 1;
-    app.update(agent_msg(AgentEvent::ToolStart(Box::new(ToolStartEvent {
-        id: "card1".into(),
-        tool: tool.into(),
-        summary: "safe summary".into(),
-        annotation: Some("safe annotation".into()),
-        input: None,
-        raw_input: None,
-        output: None,
-        render_header: None,
-    }))));
-    app.update(subagent_msg(
-        AgentEvent::TextDelta {
-            text: "child".into(),
-        },
-        "card1",
-        Some("research"),
+    app.update(mouse_event(
+        MouseEventKind::Down(MouseButton::Left),
+        10,
+        area.y,
     ));
-    app.update(agent_msg(AgentEvent::ToolDone(Box::new(ToolDoneEvent {
-        id: "card1".into(),
-        tool: tool.into(),
-        output: ToolOutput::Markdown("body line\n".repeat(100).into()),
-        is_error: false,
-        annotation: None,
-        written_path: None,
-    }))));
-
-    let mut terminal = Terminal::new(TestBackend::new(80, 80)).unwrap();
+    app.update(mouse_event(
+        MouseEventKind::Up(MouseButton::Left),
+        10,
+        area.y,
+    ));
+    assert_eq!(app.active_chat, 0, "task card click must not navigate");
     terminal.draw(|frame| app.view(frame)).unwrap();
-    let area = app.msg_area();
-
-    let ctrl_click = |app: &mut App, row| {
-        app.update(Msg::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: 10,
-            row,
-            modifiers: KeyModifiers::CONTROL,
-        }));
-        app.update(Msg::Mouse(MouseEvent {
-            kind: MouseEventKind::Up(MouseButton::Left),
-            column: 10,
-            row,
-            modifiers: KeyModifiers::CONTROL,
-        }));
-    };
-
-    ctrl_click(&mut app, area.y);
-    assert_eq!(
-        app.active_chat, 1,
-        "{tool} ctrl+header click must enter the subagent chat"
+    assert!(
+        app.chats[0].total_lines() > collapsed_lines,
+        "task card click must expand inline"
     );
+
+    app.update(mouse_event(
+        MouseEventKind::Down(MouseButton::Left),
+        10,
+        area.y,
+    ));
+    app.update(mouse_event(
+        MouseEventKind::Up(MouseButton::Left),
+        10,
+        area.y,
+    ));
+    assert_eq!(
+        app.active_chat, 0,
+        "repeated task card click must not navigate"
+    );
+    terminal.draw(|frame| app.view(frame)).unwrap();
+    assert_eq!(app.chats[0].total_lines(), collapsed_lines);
 }
 
 fn open_tasks_picker(app: &mut App) {
@@ -1043,26 +1385,6 @@ fn ctrl_x_toggles_tasks_picker() {
     assert!(app.task_picker.is_open());
     app.update(Msg::Key(kb::TASKS.to_key_event()));
     assert!(!app.task_picker.is_open());
-}
-
-#[test]
-fn ctrl_x_then_enter_still_switches_sessions() {
-    let mut app = app_with_subagent();
-    assert_eq!(app.active_chat, 0);
-
-    app.update(Msg::Key(kb::TASKS.to_key_event()));
-    assert!(
-        app.task_picker.is_open(),
-        "Ctrl+X must open the session picker"
-    );
-    app.update(Msg::Key(key(KeyCode::Down)));
-    app.update(Msg::Key(key(KeyCode::Enter)));
-
-    assert!(!app.task_picker.is_open());
-    assert_eq!(
-        app.active_chat, 1,
-        "Enter must switch to the selected child session"
-    );
 }
 
 fn app_with_subagent_id(id: &str) -> App {
@@ -1126,7 +1448,7 @@ fn task_picker_preview_copy_uses_rendered_chat() {
 }
 
 #[test]
-fn task_picker_preview_tool_click_uses_rendered_chat() {
+fn nested_task_preview_click_stays_inline_and_picker_enter_navigates() {
     let mut app = app_with_subagent();
     app.update(subagent_msg(
         AgentEvent::ToolStart(Box::new(ToolStartEvent {
@@ -1157,18 +1479,32 @@ fn task_picker_preview_tool_click_uses_rendered_chat() {
     select_subagent_preview(&mut app);
     set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 0, 80, 20));
 
-    app.update(ctrl_mouse_event(
+    app.update(mouse_event(
         MouseEventKind::Down(MouseButton::Left),
         1,
         tool_row,
     ));
-    app.update(ctrl_mouse_event(
+    app.update(mouse_event(
         MouseEventKind::Up(MouseButton::Left),
         1,
         tool_row,
     ));
 
-    assert_eq!(app.active_chat, 2);
+    assert_eq!(
+        app.active_chat, 0,
+        "nested task card click must not navigate"
+    );
+
+    app.update(Msg::Key(kb::TASKS.to_key_event()));
+    assert!(!app.task_picker.is_open());
+    app.update(Msg::Key(kb::TASKS.to_key_event()));
+    app.update(Msg::Key(key(KeyCode::Down)));
+    app.update(Msg::Key(key(KeyCode::Down)));
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    assert_eq!(
+        app.active_chat, 2,
+        "Ctrl+X and Enter must navigate explicitly"
+    );
 }
 
 #[test]
@@ -1221,26 +1557,6 @@ fn picker_enter_stays_at_navigated() {
 
     assert!(!app.task_picker.is_open());
     assert_eq!(app.active_chat, 1);
-}
-
-#[test]
-fn picker_navigate_to_subagent_then_type_routes_prompt_to_subagent() {
-    let (mut app, prompt_rx) = app_with_steerable_subagent("child-a");
-    app.active_chat = 0;
-
-    app.update(Msg::Key(kb::TASKS.to_key_event()));
-    app.update(Msg::Key(key(KeyCode::Down)));
-    app.update(Msg::Key(key(KeyCode::Enter)));
-
-    assert!(!app.task_picker.is_open());
-    assert_eq!(app.active_chat, 1);
-
-    app.update(Msg::Key(key(KeyCode::Char('h'))));
-    app.update(Msg::Key(key(KeyCode::Enter)));
-
-    assert_eq!(prompt_rx.try_recv().unwrap().text, "h");
-    assert_eq!(app.chats[1].last_message_text(), "h");
-    assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::User));
 }
 
 const OVERLAY_BLOCKED_KEYS: &[KeyEvent] = &[
@@ -1451,7 +1767,7 @@ fn edge_scroll_direction(zone: Rect, down: (u16, u16), drag: (u16, u16), expecte
     let state = app.selection_state.as_ref().unwrap();
     let edge_dir = match state {
         SelectionState::Dragging { edge_scroll, .. } => edge_scroll.as_ref().map(|es| es.dir),
-        _ => None,
+        SelectionState::PendingCopy { .. } => None,
     };
     assert_eq!(edge_dir, expected);
 }
@@ -1822,7 +2138,7 @@ fn stale_events_ignored_after_run_id_increment() {
     cancel_app(&mut app);
     let current_run = app.run_id;
     let actions = type_and_submit(&mut app, "new prompt");
-    assert!(matches!(&actions[0], Action::SendMessage(i) if i.message == "new prompt"));
+    assert!(matches!(&actions[0], Action::SendMessage(i) if i.input.message == "new prompt"));
     let active_run = app.run_id;
 
     app.update(agent_msg_with_run_id(
@@ -2072,15 +2388,223 @@ fn reload_persists_session_with_content_to_disk() {
 }
 
 #[test]
+fn rewind_snapshot_survives_crash_restore() {
+    let (_tmp, dir, writer, mut app) = tempdir_app();
+    app.state.session.messages = vec![
+        Message::user("first".into()),
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text {
+                text: "reply".into(),
+            }],
+            ..Default::default()
+        },
+        Message::user("second".into()),
+    ];
+    let id = app.state.session.id;
+    let before = app.state.session.meta.revision;
+    app.rewind_to(crate::components::rewind_picker::RewindEntry {
+        turn_index: 2,
+        prompt_preview: "2: second".into(),
+        prompt_text: "second".into(),
+    });
+    assert!(app.state.session.meta.revision > before);
+    drain_writer(app, writer);
+
+    let restored = AppSession::load(id, &dir).unwrap();
+    assert_eq!(restored.messages.len(), 2);
+    assert_eq!(restored.meta.input_draft.as_deref(), Some("second"));
+}
+
+#[test]
+fn loaded_metadata_consumption_survives_crash_restore() {
+    let (_tmp, dir, writer, mut app) = tempdir_app();
+    let mut seed = AppSession::new("test-model", "/tmp/test");
+    seed.meta.input_draft = Some("draft before crash".into());
+    seed.meta.queued_messages = vec!["queued before crash".into()];
+    seed.messages.push(Message::user("history".into()));
+    let id = seed.id;
+    seed.save(&dir).unwrap();
+
+    let (shared, _receiver) = shared_queue::queue();
+    app.queue.set_shared(shared);
+    let previous_revision = seed.meta.revision;
+    app.apply_loaded_session(seed, &test_model());
+    assert!(app.state.session.meta.revision > previous_revision);
+    drain_writer(app, writer);
+
+    let restored = AppSession::load(id, &dir).unwrap();
+    assert_eq!(
+        restored.meta.input_draft.as_deref(),
+        Some("draft before crash")
+    );
+    assert_eq!(restored.meta.queued_messages, vec!["queued before crash"]);
+}
+
+#[test]
+fn draw_failure_pending_submission_restores_fifo_and_images_after_restart() {
+    let (_tmp, dir, writer, mut app) = tempdir_app();
+    let (shared, receiver) = shared_queue::queue();
+    app.queue.set_shared(shared);
+
+    app.input_box.set_input("first with image".into());
+    with_image(&mut app);
+    let actions = app.update(Msg::Key(key(KeyCode::Enter)));
+    let Action::SendMessage(dispatch) = actions.into_iter().next().unwrap() else {
+        panic!("expected paint-gated submission");
+    };
+    assert!(
+        receiver.pop().is_none(),
+        "paint gate must block provider dispatch"
+    );
+
+    assert!(matches!(
+        app.submit_prompt(QueuedMessage {
+            text: "second in fifo".into(),
+            images: Vec::new(),
+        }),
+        SubmitOutcome::Queued
+    ));
+    app.preserve_submission_for_shutdown(*dispatch);
+    app.save_session();
+    let session_id = app.state.session.id;
+    drop(app);
+    Arc::try_unwrap(writer)
+        .ok()
+        .expect("test owns the storage writer")
+        .shutdown(WRITER_DRAIN_TIMEOUT);
+
+    let writer = Arc::new(StorageWriter::new(dir.clone()));
+    let mut restarted = build_app(dir.clone(), Arc::clone(&writer));
+    let (shared, receiver) = shared_queue::queue();
+    restarted.queue.set_shared(shared);
+    restarted.apply_loaded_session(
+        AppSession::load(session_id, &dir).expect("saved session loads"),
+        &test_model(),
+    );
+
+    let Some(shared_queue::QueueItem::Message { text, input, .. }) = receiver.pop() else {
+        panic!("first pending message must be restored");
+    };
+    assert_eq!(text, "first with image");
+    assert_eq!(input.images.len(), 1);
+    assert_eq!(&*input.images[0].data, "dGVzdA==");
+    let Some(shared_queue::QueueItem::Message { text, .. }) = receiver.pop() else {
+        panic!("second queued message must be restored");
+    };
+    assert_eq!(text, "second in fifo");
+    assert!(receiver.pop().is_none());
+
+    drop(restarted);
+    Arc::try_unwrap(writer)
+        .ok()
+        .expect("test owns the restarted storage writer")
+        .shutdown(WRITER_DRAIN_TIMEOUT);
+}
+
+#[test]
+fn mcp_prompt_draw_failure_survives_restart_without_text_fallback() {
+    let (_tmp, dir, writer, mut app) = tempdir_app();
+    let mcp_reader = McpSnapshotReader::from_snapshot(McpSnapshot {
+        prompts: vec![n00n_agent::McpPromptInfo {
+            display_name: "myserver:review".into(),
+            qualified_name: "myserver/review".into(),
+            description: "Review a change".into(),
+            arguments: vec![McpPromptArg {
+                name: "diff".into(),
+                description: "The diff".into(),
+                required: true,
+            }],
+        }],
+        ..Default::default()
+    });
+    app.command_palette = crate::components::command::CommandPalette::new(
+        Arc::from([]),
+        mcp_reader.clone(),
+        LuaCommandReader::empty(),
+    );
+    let (shared, _receiver) = shared_queue::queue();
+    app.queue.set_shared(shared);
+    app.state.thinking = n00n_providers::ThinkingConfig::Effort(Effort::High);
+    app.state.fast = true;
+    app.state.workflow = true;
+    let actions = app.execute_command(ParsedCommand {
+        name: "/myserver:review".into(),
+        args: "important diff".into(),
+    });
+    let Action::SendMessage(dispatch) = actions.into_iter().next().unwrap() else {
+        panic!("expected MCP prompt dispatch");
+    };
+    assert_eq!(dispatch.input.message, "/myserver:review important diff");
+    let prompt = dispatch
+        .input
+        .prompt
+        .as_ref()
+        .expect("MCP prompt reference");
+    assert_eq!(prompt.qualified_name, "myserver/review");
+    assert_eq!(
+        prompt.arguments.get("diff").map(String::as_str),
+        Some("important diff")
+    );
+    assert_eq!(
+        dispatch.input.thinking,
+        n00n_providers::ThinkingConfig::Effort(Effort::High)
+    );
+    assert!(dispatch.input.fast);
+    assert!(dispatch.input.workflow);
+
+    app.preserve_submission_for_shutdown(*dispatch);
+    app.save_session();
+    let session_id = app.state.session.id;
+    drop(app);
+    Arc::try_unwrap(writer)
+        .ok()
+        .expect("test owns the storage writer")
+        .shutdown(WRITER_DRAIN_TIMEOUT);
+
+    let writer = Arc::new(StorageWriter::new(dir.clone()));
+    let mut restarted = build_app_with_mcp(dir.clone(), Arc::clone(&writer), mcp_reader);
+    let (shared, receiver) = shared_queue::queue();
+    restarted.queue.set_shared(shared);
+    restarted.apply_loaded_session(
+        AppSession::load(session_id, &dir).expect("saved session loads"),
+        &test_model(),
+    );
+
+    let Some(shared_queue::QueueItem::Message { input, .. }) = receiver.pop() else {
+        panic!("MCP prompt must be restored");
+    };
+    let prompt = input
+        .prompt
+        .expect("restored MCP prompt must use get_prompt");
+    assert_eq!(prompt.qualified_name, "myserver/review");
+    assert_eq!(
+        prompt.arguments.get("diff").map(String::as_str),
+        Some("important diff")
+    );
+    assert_eq!(
+        input.thinking,
+        n00n_providers::ThinkingConfig::Effort(Effort::High)
+    );
+    assert!(input.fast);
+    assert!(input.workflow);
+    assert_eq!(input.message, "/myserver:review important diff");
+
+    drop(restarted);
+    Arc::try_unwrap(writer)
+        .ok()
+        .expect("test owns the restarted storage writer")
+        .shutdown(WRITER_DRAIN_TIMEOUT);
+}
+
+#[test]
 fn reload_leaves_empty_session_unpersisted_on_disk() {
     let (tmp, _dir, writer, mut app) = tempdir_app();
     app.execute_command(cmd("/reload"));
     drain_writer(app, writer);
 
     let sessions_dir = tmp.path().join(n00n_storage::sessions::SESSIONS_DIR);
-    let entries = std::fs::read_dir(&sessions_dir)
-        .map(|d| d.count())
-        .unwrap_or(0);
+    let entries = std::fs::read_dir(&sessions_dir).map_or(0, std::iter::Iterator::count);
     assert_eq!(entries, 0);
 }
 
@@ -2238,6 +2762,71 @@ fn rewind_to_middle_truncates_and_populates_input() {
 }
 
 #[test]
+fn rewind_truncates_active_tail_inside_recursive_transcript() {
+    let mut app = test_app();
+    let assistant = |text: &str| Message {
+        role: Role::Assistant,
+        content: vec![ContentBlock::Text { text: text.into() }],
+        ..Default::default()
+    };
+    let summary = assistant("summary");
+    let kept_reply = assistant("kept reply");
+    let removed_reply = assistant("removed reply");
+    app.state.session.messages = vec![
+        Message::user("summary prompt".into()),
+        summary.clone(),
+        Message::user("keep".into()),
+        kept_reply.clone(),
+        Message::user("remove".into()),
+        removed_reply.clone(),
+    ];
+    app.state.session.transcript = vec![
+        TranscriptEntry::Compaction {
+            entries: vec![TranscriptEntry::Compaction {
+                entries: vec![TranscriptEntry::Message(Message::user("oldest".into()))],
+                generated_summary: None,
+            }],
+            generated_summary: Some(summary.clone()),
+        },
+        TranscriptEntry::GeneratedMessage(Message::user("summary prompt".into())),
+        TranscriptEntry::GeneratedMessage(summary),
+        TranscriptEntry::Message(Message::user("keep".into())),
+        TranscriptEntry::Message(kept_reply),
+        TranscriptEntry::Message(Message::user("remove".into())),
+        TranscriptEntry::Message(removed_reply),
+    ];
+
+    let actions = app.rewind_to(crate::components::rewind_picker::RewindEntry {
+        turn_index: 4,
+        prompt_preview: "remove".into(),
+        prompt_text: "remove".into(),
+    });
+
+    assert!(matches!(
+        app.state.session.transcript.as_slice(),
+        [TranscriptEntry::Compaction { entries, .. }, TranscriptEntry::GeneratedMessage(_), TranscriptEntry::GeneratedMessage(_), TranscriptEntry::Message(_), TranscriptEntry::Message(_)]
+            if matches!(entries.as_slice(), [TranscriptEntry::Compaction { .. }])
+    ));
+    let Action::LoadSession(loaded) = &actions[0] else {
+        panic!("expected loaded session action");
+    };
+    let mut restored = n00n_agent::agent::History::restored_with_transcript(
+        loaded.messages.clone(),
+        loaded.transcript.clone(),
+    );
+    restored.compact_boundary(
+        Message::user("summary prompt".into()),
+        assistant("new summary"),
+    );
+    let TranscriptEntry::Compaction { entries, .. } = &restored.transcript()[0] else {
+        panic!("expected recursive compaction");
+    };
+    assert!(!entries.iter().any(|entry| {
+        matches!(entry, TranscriptEntry::Message(message) if message.user_text().is_some_and(|text| text.contains("remove")))
+    }));
+}
+
+#[test]
 fn rewind_to_first_turn_clears_everything() {
     let mut app = build_rewind_app();
     app.state.context_size = 100_000;
@@ -2260,12 +2849,12 @@ fn rewind_to_first_turn_clears_everything() {
 }
 
 #[test_case(Duration::ZERO,          true  ; "keeps_fresh_error")]
-#[test_case(Duration::from_secs(60), false ; "clears_stale_error")]
+#[test_case(Duration::from_mins(1), false ; "clears_stale_error")]
 fn tick_error_expiry(age: Duration, expect_error: bool) {
     let mut app = test_app();
     app.status = Status::Error {
         message: "fail".into(),
-        since: Instant::now() - age,
+        since: Instant::now().checked_sub(age).unwrap(),
     };
     app.tick_error_expiry();
     assert_eq!(matches!(app.status, Status::Error { .. }), expect_error);
@@ -2352,7 +2941,7 @@ fn auth_retry_sends_empty_answer(submit: fn(&mut App) -> Vec<Action>) {
 #[test]
 fn typing_in_running_subagent_routes_prompt_to_that_agent() {
     let (mut app, _answer_rx, _main_rx) = app_with_subagent_tx("task1");
-    let (prompt_tx, prompt_rx) = flume::unbounded::<SubagentPrompt>();
+    let (prompt_tx, prompt_rx) = flume::unbounded();
     app.subagent_prompts.insert("task1".into(), prompt_tx);
     app.active_chat = 1;
 
@@ -2361,7 +2950,7 @@ fn typing_in_running_subagent_routes_prompt_to_that_agent() {
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
 
     assert!(actions.is_empty());
-    assert_eq!(prompt_rx.try_recv().unwrap().text, "hi");
+    assert_eq!(prompt_rx.try_recv().unwrap(), "hi");
     assert_eq!(app.chats[1].last_message_text(), "hi");
     assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::User));
 }
@@ -2372,157 +2961,10 @@ fn typing_in_read_only_subagent_flashes_explanation() {
     app.update(Msg::Key(key(KeyCode::Char('h'))));
     app.update(Msg::Key(key(KeyCode::Enter)));
 
-    assert_eq!(app.status_bar.flash_text(), Some(STEERING_UNAVAILABLE_MSG));
-}
-
-#[test]
-fn typing_in_finished_subagent_with_prompt_flashes_and_does_not_enqueue() {
-    let (mut app, prompt_rx) = app_with_steerable_subagent("child-a");
-    finish_subagent(&mut app, "child-a", false);
-
-    app.update(Msg::Key(key(KeyCode::Char('h'))));
-    app.update(Msg::Key(key(KeyCode::Enter)));
-
-    assert_eq!(app.status_bar.flash_text(), Some(STEERING_UNAVAILABLE_MSG));
-    assert!(prompt_rx.try_recv().is_err());
-}
-
-#[test]
-fn subagent_prompt_queue_full_restores_input_and_flashes_busy() {
-    let (mut app, prompt_rx) = app_with_steerable_subagent("child-a");
-    let fill_tx = app
-        .subagent_prompts
-        .get("child-a")
-        .cloned()
-        .expect("prompt tx should be set");
-    fill_tx
-        .try_send(SubagentPrompt {
-            text: "fill1".into(),
-            images: Vec::new(),
-        })
-        .unwrap();
-    fill_tx
-        .try_send(SubagentPrompt {
-            text: "fill2".into(),
-            images: Vec::new(),
-        })
-        .unwrap();
-    app.active_chat = 1;
-
-    app.input_box.set_input("hi".into());
-    app.update(Msg::Key(key(KeyCode::Enter)));
-
-    assert_eq!(app.status_bar.flash_text(), Some(STEERING_BUSY_MSG));
-    assert_eq!(app.input_box.buffer.value(), "hi");
-    assert_eq!(prompt_rx.try_recv().unwrap().text, "fill1");
-    assert_eq!(prompt_rx.try_recv().unwrap().text, "fill2");
-    assert!(prompt_rx.try_recv().is_err());
-}
-
-#[test]
-fn subagent_prompt_disconnected_removes_sender_and_flashes_unavailable() {
-    let (prompt_tx, prompt_rx) = flume::bounded::<SubagentPrompt>(1);
-    drop(prompt_rx);
-    let mut app = test_app();
-    app.status = Status::Streaming;
-    app.run_id = 1;
-    app.update(Msg::Agent(Box::new(Envelope {
-        event: AgentEvent::TextDelta { text: "x".into() },
-        subagent: Some(subagent_info_with_channels(
-            "child-a",
-            "task-group",
-            "research",
-            None,
-            Some(prompt_tx),
-        )),
-        run_id: 1,
-    })));
-    app.active_chat = 1;
-
-    app.input_box.set_input("hi".into());
-    app.update(Msg::Key(key(KeyCode::Enter)));
-
-    assert_eq!(app.status_bar.flash_text(), Some(STEERING_UNAVAILABLE_MSG));
-    assert!(!app.subagent_prompts.contains_key("child-a"));
-}
-
-#[test]
-fn permission_answer_to_finished_subagent_does_not_fall_back_to_main() {
-    let (mut app, sub_rx, main_rx) = app_with_subagent_tx("task1");
-    app.permission_prompt.open(
-        "perm-id".into(),
-        ToolKey::native("bash"),
-        vec!["execute".into()],
-        Some("task1".into()),
+    assert_eq!(
+        app.status_bar.flash_text(),
+        Some("This agent cannot receive follow-up messages")
     );
-    finish_subagent(&mut app, "task1", false);
-
-    app.update(Msg::Key(key(KeyCode::Char('y'))));
-
-    assert!(main_rx.try_recv().is_err());
-    assert!(sub_rx.try_recv().is_err());
-    assert!(!app.permission_prompt.is_open());
-}
-
-#[test]
-fn permission_answer_to_active_subagent_routes_to_subagent() {
-    let (mut app, sub_rx, main_rx) = app_with_subagent_tx("task1");
-    app.permission_prompt.open(
-        "perm-id".into(),
-        ToolKey::native("bash"),
-        vec!["execute".into()],
-        Some("task1".into()),
-    );
-
-    app.update(Msg::Key(key(KeyCode::Char('y'))));
-
-    assert_eq!(sub_rx.try_recv().unwrap(), "allow");
-    assert!(main_rx.try_recv().is_err());
-    assert!(!app.permission_prompt.is_open());
-}
-
-#[test]
-fn permission_answer_to_disconnected_subagent_does_not_fall_back_to_main() {
-    let (mut app, sub_rx, main_rx) = app_with_subagent_tx("task1");
-    drop(sub_rx);
-    app.permission_prompt.open(
-        "perm-id".into(),
-        ToolKey::native("bash"),
-        vec!["execute".into()],
-        Some("task1".into()),
-    );
-
-    app.update(Msg::Key(key(KeyCode::Char('y'))));
-
-    assert!(main_rx.try_recv().is_err());
-    assert!(!app.permission_prompt.is_open());
-}
-
-#[test]
-fn cancel_subagent_removes_prompt_sender() {
-    let (prompt_tx, _prompt_rx) = flume::bounded::<SubagentPrompt>(2);
-    let mut app = test_app();
-    app.status = Status::Streaming;
-    app.run_id = 1;
-    app.update(Msg::Agent(Box::new(Envelope {
-        event: AgentEvent::TextDelta { text: "x".into() },
-        subagent: Some(subagent_info_with_channels(
-            "task1",
-            "task1",
-            "research",
-            None,
-            Some(prompt_tx),
-        )),
-        run_id: 1,
-    })));
-    app.active_chat = 1;
-    app.last_esc = Some(Instant::now());
-
-    app.update(Msg::Key(key(KeyCode::Esc)));
-
-    assert!(app.chats[1].is_finished());
-    assert!(!app.subagent_prompts.contains_key("task1"));
-    assert!(!app.subagent_answers.contains_key("task1"));
 }
 
 fn app_with_subagent_tx(id: &str) -> (App, flume::Receiver<String>, flume::Receiver<String>) {
@@ -2540,8 +2982,8 @@ fn app_with_subagent_tx(id: &str) -> (App, flume::Receiver<String>, flume::Recei
     (app, sub_rx, main_rx)
 }
 
-fn app_with_steerable_subagent(id: &str) -> (App, flume::Receiver<SubagentPrompt>) {
-    let (prompt_tx, prompt_rx) = flume::bounded::<SubagentPrompt>(2);
+fn app_with_steerable_subagent(id: &str) -> (App, flume::Receiver<String>) {
+    let (prompt_tx, prompt_rx) = flume::bounded(2);
     let mut app = test_app();
     app.status = Status::Streaming;
     app.run_id = 1;
@@ -2556,7 +2998,7 @@ fn app_with_steerable_subagent(id: &str) -> (App, flume::Receiver<SubagentPrompt
         )),
         run_id: 1,
     })));
-    app.active_chat = *app.chat_index.get(id).unwrap();
+    app.active_chat = app.chat_index[id];
     (app, prompt_rx)
 }
 
@@ -2594,7 +3036,7 @@ fn concurrent_children_with_one_parent_have_independent_chats_cancels_and_persis
         ["child-a", "child-b"]
     );
 
-    app.active_chat = *app.chat_index.get("child-b").unwrap();
+    app.active_chat = app.chat_index["child-b"];
     app.last_esc = Some(Instant::now());
     let actions = app.update(Msg::Key(key(KeyCode::Esc)));
 
@@ -2602,8 +3044,8 @@ fn concurrent_children_with_one_parent_have_independent_chats_cancels_and_persis
         &actions[..],
         [Action::CancelSubagent { tool_use_id }] if tool_use_id == "child-b"
     ));
-    assert!(!app.chats[*app.chat_index.get("child-a").unwrap()].is_finished());
-    assert!(app.chats[*app.chat_index.get("child-b").unwrap()].is_finished());
+    assert!(!app.chats[app.chat_index["child-a"]].is_finished());
+    assert!(app.chats[app.chat_index["child-b"]].is_finished());
 }
 
 #[test]
@@ -2616,7 +3058,7 @@ fn expanded_subagent_chat_sends_typed_steering() {
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
 
     assert!(actions.is_empty());
-    assert_eq!(prompt_rx.try_recv().unwrap().text, "expand");
+    assert_eq!(prompt_rx.try_recv().unwrap(), "expand");
     assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::User));
     assert_eq!(app.chats[1].last_message_text(), "expand");
 }
@@ -2641,7 +3083,7 @@ fn expanded_subagent_chat_sends_pasted_steering() {
 
     app.update(Msg::Key(key(KeyCode::Enter)));
 
-    assert_eq!(prompt_rx.try_recv().unwrap().text, "pasted steering");
+    assert_eq!(prompt_rx.try_recv().unwrap(), "pasted steering");
     assert_eq!(app.chats[1].last_message_text(), "pasted steering");
 }
 
@@ -2736,7 +3178,7 @@ fn stale_auth_required_after_cancel_is_dropped() {
 }
 
 #[test]
-fn send_to_agent_unknown_subagent_does_not_fall_back_to_main() {
+fn send_to_agent_unknown_subagent_falls_back_to_main() {
     let (main_tx, main_rx) = flume::unbounded();
     let mut app = test_app();
     app.status = Status::Streaming;
@@ -2748,7 +3190,7 @@ fn send_to_agent_unknown_subagent_does_not_fall_back_to_main() {
     };
     app.update(Msg::Key(key(KeyCode::Enter)));
 
-    assert!(main_rx.try_recv().is_err());
+    assert_eq!(main_rx.try_recv().unwrap(), "");
     assert_eq!(app.pending_input, PendingInput::None);
 }
 
@@ -3091,7 +3533,7 @@ fn plan_form_menu_options(
     assert_eq!(
         actions
             .iter()
-            .any(|a| matches!(a, Action::SendMessage(i) if i.message == expected_msg)),
+            .any(|a| matches!(a, Action::SendMessage(i) if i.input.message == expected_msg)),
         has_send_message
     );
 }
@@ -3107,7 +3549,7 @@ fn plan_form_implement_toggled_parallel() {
     assert!(
         actions
             .iter()
-            .any(|a| matches!(a, Action::SendMessage(i) if i.message == expected_msg))
+            .any(|a| matches!(a, Action::SendMessage(i) if i.input.message == expected_msg))
     );
 }
 
@@ -3527,8 +3969,8 @@ fn workflow_toggle_flows_into_agent_input() {
     assert_eq!(app.status_bar.flash_text(), Some(WORKFLOW_OFF_MSG));
 }
 
-/// Workflow sessions have synthetic ids that no ToolDone matches, so
-/// SubagentHistory is what finishes their chat.
+/// Workflow sessions have synthetic ids that no `ToolDone` matches, so
+/// `SubagentHistory` is what finishes their chat.
 #[test]
 fn subagent_history_finishes_workflow_chat() {
     let mut app = test_app();
@@ -3872,7 +4314,7 @@ fn multiple_subagents_cancel_one_other_unaffected() {
     ));
     assert_eq!(app.chats.len(), 3);
 
-    app.active_chat = *app.chat_index.get("task2").unwrap();
+    app.active_chat = app.chat_index["task2"];
     app.last_esc = Some(Instant::now());
     let actions = app.update(Msg::Key(key(KeyCode::Esc)));
 
@@ -3881,7 +4323,7 @@ fn multiple_subagents_cancel_one_other_unaffected() {
         &actions[0],
         Action::CancelSubagent { tool_use_id } if tool_use_id == "task2"
     ));
-    let task1_idx = *app.chat_index.get("task1").unwrap();
+    let task1_idx = app.chat_index["task1"];
     assert!(!app.chats[task1_idx].is_finished());
     assert!(app.chats[app.active_chat].is_finished());
 }
@@ -3906,37 +4348,4 @@ fn subagent_cancel_then_navigate_back_main_unaffected() {
     assert_eq!(app.active_chat, 0);
     assert_eq!(app.status, Status::Streaming);
     assert!(!app.chats[0].is_finished());
-}
-
-#[test]
-fn subagent_prompt_carries_images() {
-    let mut app = test_app();
-    app.status = Status::Streaming;
-    app.run_id = 1;
-    let (prompt_tx, prompt_rx) = flume::bounded::<SubagentPrompt>(32);
-    app.update(Msg::Agent(Box::new(Envelope {
-        event: AgentEvent::TextDelta {
-            text: "running".into(),
-        },
-        subagent: Some(subagent_info_with_channels(
-            "task1",
-            "task-group",
-            "research",
-            None,
-            Some(prompt_tx),
-        )),
-        run_id: 1,
-    })));
-    app.active_chat = 1;
-
-    let img = ImageSource::new(ImageMediaType::Png, Arc::from("dGVzdA=="));
-    app.input_box.attach_image(img);
-    app.update(Msg::Key(key(KeyCode::Char('d'))));
-    app.update(Msg::Key(key(KeyCode::Enter)));
-
-    let prompt = prompt_rx.try_recv().unwrap();
-    assert_eq!(prompt.text, "d");
-    assert_eq!(prompt.images.len(), 1);
-    assert_eq!(app.chats[1].last_message_text(), "d");
-    assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::User));
 }

@@ -114,7 +114,7 @@ fn write_tool_output_section(out: &mut String) {
     writeln!(out, "| Field | Default |").unwrap();
     writeln!(out, "|-------|---------|").unwrap();
     for (name, default) in ToolOutputLines::FIELD_DEFAULTS {
-        writeln!(out, "| `{name}` | {default} |",).unwrap();
+        writeln!(out, "| `{name}` | {default} |").unwrap();
     }
     writeln!(out).unwrap();
 }
@@ -207,7 +207,7 @@ All fields are optional. Typos in field names cause an error right away.
          The edit plugin's extra tools are options too: \
          `plugins.edit = {{ multiedit = false, edit_lines = true }}`. \
          The old `tools` table is gone. If your config still uses it, \
-         N00n stops at startup and shows you the new form.\n"
+         n00n stops at startup and shows you the new form.\n"
     )
     .unwrap();
     writeln!(
@@ -229,7 +229,7 @@ n00n.setup({{
     writeln!(out, "## Validation\n").unwrap();
     writeln!(
         out,
-        "If a value is below its minimum, N00n shows a `ConfigError` with the field name, \
+        "If a value is below its minimum, n00n shows a `ConfigError` with the field name, \
          value, and minimum."
     )
     .unwrap();
@@ -239,7 +239,7 @@ n00n.setup({{
         "
 ## Directory layout
 
-N00n uses XDG directories on Linux and macOS:
+n00n uses XDG directories on Linux and macOS:
 
 | Purpose | Path |
 |---------|------|

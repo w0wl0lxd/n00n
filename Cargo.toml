@@ -15,6 +15,7 @@ rust-version = "1.97"
 [[bin]]
 name = "n00n"
 path = "src/main.rs"
+bench = false
 
 [dependencies]
 n00n-ui = { workspace = true }
@@ -50,6 +51,7 @@ workspace = true
 members = [
   "n00n-acp",
   "n00n-agent",
+  "n00n-arbor",
   "n00n-config",
   "n00n-docgen",
   "n00n-highlight",
@@ -84,15 +86,19 @@ n00n-lua = { path = "n00n-lua" }
 n00n-config-macro = { path = "n00n-config-macro" }
 n00n-lua-macro = { path = "n00n-lua-macro" }
 n00n-highlight = { path = "n00n-highlight" }
+n00n-arbor = { path = "n00n-arbor" }
 n00n-markdown = { path = "n00n-markdown" }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 toon-format = "0.5"
+tiktoken-rs = "0.9"
 bs58 = "0.5"
 uuid = { version = "1", default-features = false, features = ["std", "v7"] }
 zstd = { version = "0.13", default-features = false }
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
-ratatui-image = { version = "11.0", default-features = false, features = ["crossterm"] }
+ratatui-image = { version = "11.0", default-features = false, features = [
+  "crossterm",
+] }
 crossterm = { version = "0.29", features = ["osc52"] }
 color-eyre = { version = "0.6", default-features = false, features = [
   "track-caller",
@@ -117,6 +123,7 @@ memchr = "2"
 strum = { version = "0.27", features = ["derive"] }
 htmd = "0.5"
 tempfile = "3"
+
 regex = { version = "1", default-features = false, features = [
   "std",
   "perf",
@@ -134,6 +141,7 @@ unicode-width = "0.2"
 similar = { version = "2", features = ["inline", "unicode"] }
 jsonrepair = { version = "0.1", default-features = false, features = ["serde"] }
 jsonschema = { version = "0.33", default-features = false }
+httpdate = "1.0.3"
 jiff = { version = "0.2", default-features = false, features = [
   "std",
   "tz-system",
@@ -142,7 +150,12 @@ arboard = { version = "3", default-features = false, features = [
   "image-data",
   "wayland-data-control",
 ] }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+image = { version = "0.25", default-features = false, features = [
+  "png",
+  "jpeg",
+  "gif",
+  "webp",
+] }
 flume = { version = "0.11", default-features = false, features = [
   "async",
   "select",
@@ -163,12 +176,14 @@ async-io = "2"
 event-listener = "5"
 futures-lite = "2"
 futures = "0.3"
+pin-project-lite = "0.2"
 isahc = { version = "1.7", default-features = false, features = [
   "text-decoding",
   "static-curl",
   "static-ssl",
 ] }
 libc = "0.2"
+rustix = { version = "0.38", default-features = false, features = ["process"] }
 nucleo = "0.5"
 nucleo-matcher = "0.3"
 open = "5"
@@ -176,6 +191,15 @@ criterion = { version = "0.5", features = ["html_reports"] }
 etcetera = "0.11"
 dotenvy = "0.15"
 tree-sitter = "0.26"
+tree-sitter-astro-next = "0.1.1"
+tree-sitter-containerfile = "0.9.2"
+tree-sitter-css = "0.25"
+tree-sitter-hcl = "1.1"
+tree-sitter-json = "0.24"
+tree-sitter-make = "1.1"
+tree-sitter-scss = "1.0"
+tree-sitter-svelte-ng = "1.0"
+tree-sitter-vue-next = "0.1"
 include_dir = "0.7"
 mlua = { version = "0.11", features = [
   "luau",
@@ -240,6 +264,11 @@ clone_on_ref_ptr = "deny"
 redundant_clone = "deny"
 manual_assert = "deny"
 disallowed_methods = "deny"
+# These style lints suggest `unwrap_or`/`unwrap_or_default`, which are
+# disallowed above; allowing them avoids clippy auto-fix introducing banned methods.
+unnecessary_lazy_evaluations = "allow"
+unnecessary_map_or = "allow"
+unwrap_or_default = "allow"
 
 [profile.bench]
 debug = true

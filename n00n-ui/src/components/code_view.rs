@@ -156,7 +156,7 @@ fn render_diff(
     syntax: Option<&'static SyntaxReference>,
     before: &str,
     after: &str,
-    theme: Arc<Theme>,
+    theme: &Arc<Theme>,
 ) -> Vec<Line<'static>> {
     let hunks = compute_hunks(before, after);
     let Some(last) = hunks.last() else {
@@ -171,8 +171,8 @@ fn render_diff(
 
     let mut walkers = syntax.map(|s| {
         (
-            FileWalker::new(before, s, Arc::clone(&theme)),
-            FileWalker::new(after, s, Arc::clone(&theme)),
+            FileWalker::new(before, s, Arc::clone(theme)),
+            FileWalker::new(after, s, Arc::clone(theme)),
         )
     });
 
@@ -265,15 +265,14 @@ fn diff_change_spans(
         prefix,
         base.patch(theme::current().code_block),
     )];
-    match syntax {
-        Some(syn) => spans.extend(merge_syntax_with_diff(&syn, ds, base, emph)),
-        None => {
-            let full: String = ds.iter().map(|s| s.text.as_str()).collect();
-            spans.push(Span::styled(
-                n00n_highlight::normalize_text(&full),
-                base.patch(theme::current().code_block),
-            ));
-        }
+    if let Some(syn) = syntax {
+        spans.extend(merge_syntax_with_diff(&syn, ds, base, emph));
+    } else {
+        let full: String = ds.iter().map(|s| s.text.as_str()).collect();
+        spans.push(Span::styled(
+            n00n_highlight::normalize_text(&full),
+            base.patch(theme::current().code_block),
+        ));
     }
     spans
 }
@@ -285,7 +284,10 @@ fn render_grep_results(
 ) -> (Vec<Line<'static>>, bool) {
     let mut out = Vec::new();
     let mut budget = max_lines;
-    let total_matches: usize = entries.iter().map(|e| e.match_count()).sum();
+    let total_matches: usize = entries
+        .iter()
+        .map(n00n_agent::GrepFileEntry::match_count)
+        .sum();
     let mut rendered_matches: usize = 0;
 
     let global_max_nr = entries
@@ -296,7 +298,7 @@ fn render_grep_results(
                 .flat_map(|g| g.lines.iter().map(|l| l.line_nr))
         })
         .max()
-        .unwrap_or(1);
+        .unwrap_or_else(|| 1);
     let w = nr_width(global_max_nr);
     let multi = entries.len() > 1;
     let dim = theme::current().tool_dim;
@@ -373,38 +375,30 @@ pub(crate) fn render_instructions(
     highlight: bool,
 ) -> bool {
     let dim = theme::current().tool_dim;
-    let mut used = 0;
-    let mut truncated = false;
     let multi = blocks.len() > 1;
+    let mut rendered = Vec::new();
 
-    for (i, block) in blocks.iter().enumerate() {
-        if used >= max_lines {
-            truncated = true;
-            break;
-        }
-
+    for block in blocks {
         if multi {
-            lines.push(Line::from(Span::styled(block.path.clone(), dim)));
-            used += 1;
-            if i > 0 && used >= max_lines {
-                truncated = true;
-                break;
-            }
+            rendered.push(Line::from(Span::styled(block.path.clone(), dim)));
         }
-
         if block.content.is_empty() {
             continue;
         }
 
         let code_lines: Vec<String> = block.content.lines().map(String::from).collect();
-        let total = code_lines.len();
-        let remaining = max_lines.saturating_sub(used);
         let hl = highlight.then(|| n00n_highlight::Highlighter::for_path(&block.path));
-        let (rendered, was_truncated) = render_code(hl, 1, &code_lines, total, remaining);
-        used += rendered.len();
-        truncated |= was_truncated;
-        lines.extend(rendered);
+        let (mut block_lines, _) = render_code(hl, 1, &code_lines, code_lines.len(), usize::MAX);
+        rendered.append(&mut block_lines);
     }
+
+    let hidden = rendered.len().saturating_sub(max_lines);
+    let truncated = should_truncate(hidden);
+    if truncated {
+        rendered.truncate(max_lines);
+        rendered.push(truncation_line(hidden));
+    }
+    lines.extend(rendered);
     truncated
 }
 
@@ -447,9 +441,16 @@ impl RenderLimits {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TruncationAction {
+    pub line: usize,
+    pub section: SectionFlags,
+}
+
 pub struct ToolContent {
     pub lines: Vec<Line<'static>>,
     pub truncation: SectionFlags,
+    pub truncation_actions: Vec<TruncationAction>,
 }
 
 pub fn render_tool_content(
@@ -460,6 +461,7 @@ pub fn render_tool_content(
 ) -> ToolContent {
     let mut lines = Vec::new();
     let mut truncation = SectionFlags::default();
+    let mut truncation_actions = Vec::new();
     if let Some((language, code)) = input.map(|i| match i {
         ToolInput::Script { language, code } | ToolInput::Code { language, code } => {
             (language, code)
@@ -474,6 +476,15 @@ pub fn render_tool_content(
         let hl = highlight.then(|| n00n_highlight::Highlighter::for_token(language));
         let (code_result, trunc) = render_code(hl, 1, &code_lines, total, limits.script);
         truncation.script = trunc;
+        if trunc {
+            truncation_actions.push(TruncationAction {
+                line: lines.len() + code_result.len().saturating_sub(1),
+                section: SectionFlags {
+                    script: true,
+                    output: false,
+                },
+            });
+        }
         lines.extend(code_result);
     }
     let (output_lines, output_trunc) = match output {
@@ -505,15 +516,18 @@ pub fn render_tool_content(
             before,
             after,
             ..
-        }) => (
-            render_diff(
-                highlight.then(|| n00n_highlight::syntax_for_path(path)),
-                before,
-                after,
-                n00n_highlight::theme(),
-            ),
-            false,
-        ),
+        }) => {
+            let theme = n00n_highlight::theme();
+            (
+                render_diff(
+                    highlight.then(|| n00n_highlight::syntax_for_path(path)),
+                    before,
+                    after,
+                    &theme,
+                ),
+                false,
+            )
+        }
         Some(ToolOutput::GrepResult { entries }) => {
             render_grep_results(entries, limits.output, highlight)
         }
@@ -523,15 +537,27 @@ pub fn render_tool_content(
                 render_instructions(blocks, &mut instruction_lines, limits.output, highlight);
             (instruction_lines, trunc)
         }
-        Some(ToolOutput::ReadDir(_)) => (Vec::new(), false),
         _ => (Vec::new(), false),
     };
     truncation.output = output_trunc;
     if !lines.is_empty() && !output_lines.is_empty() {
         lines.push(Line::default());
     }
+    if output_trunc {
+        truncation_actions.push(TruncationAction {
+            line: lines.len() + output_lines.len().saturating_sub(1),
+            section: SectionFlags {
+                script: false,
+                output: true,
+            },
+        });
+    }
     lines.extend(output_lines);
-    ToolContent { lines, truncation }
+    ToolContent {
+        lines,
+        truncation,
+        truncation_actions,
+    }
 }
 
 fn merge_syntax_with_diff(
@@ -555,25 +581,26 @@ fn merge_syntax_with_diff(
     let mut current_style: Option<Style> = None;
 
     for (syn_char, syn_style) in syn_iter {
-        let bg = diff_iter.next().unwrap_or(base);
+        let bg = diff_iter.next().unwrap_or_else(|| base);
         let combined = syn_style.patch(bg);
 
         if current_style == Some(combined) {
             current_text.push(syn_char);
         } else {
-            if !current_text.is_empty() {
-                result.push(Span::styled(
-                    std::mem::take(&mut current_text),
-                    current_style.unwrap(),
-                ));
+            if !current_text.is_empty()
+                && let Some(style) = current_style
+            {
+                result.push(Span::styled(std::mem::take(&mut current_text), style));
             }
             current_text.push(syn_char);
             current_style = Some(combined);
         }
     }
 
-    if !current_text.is_empty() {
-        result.push(Span::styled(current_text, current_style.unwrap()));
+    if !current_text.is_empty()
+        && let Some(style) = current_style
+    {
+        result.push(Span::styled(current_text, style));
     }
 
     result
@@ -664,7 +691,7 @@ mod tests {
             Some(n00n_highlight::syntax_for_path("test.rs")),
             before,
             after,
-            Arc::clone(&theme),
+            &theme,
         );
 
         let expected = fg_in_context(
@@ -689,7 +716,7 @@ mod tests {
             Some(n00n_highlight::syntax_for_path("test.rs")),
             before,
             after,
-            Arc::clone(&theme),
+            &theme,
         );
 
         let expected = fg_in_context("test.rs", "/*\ndoc\n", "fn x() {}", "fn", theme);
@@ -768,8 +795,10 @@ mod tests {
         assert!(texts.iter().any(|t| t.contains("a.rs")));
         assert!(texts.iter().any(|t| t.contains("b.rs")));
 
-        let gutter_width =
-            |line: &str| line.find(|c: char| c.is_alphabetic()).unwrap_or(usize::MAX);
+        let gutter_width = |line: &str| {
+            line.find(|c: char| c.is_alphabetic())
+                .unwrap_or_else(|| usize::MAX)
+        };
         let content_gutters: Vec<usize> = texts
             .iter()
             .filter(|t| !t.contains(".rs"))

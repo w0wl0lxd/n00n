@@ -1,5 +1,5 @@
 {
-  description = "N00n - AI coding agent";
+  description = "n00n - AI coding agent";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

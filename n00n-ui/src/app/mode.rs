@@ -23,7 +23,7 @@ pub(crate) enum PlanTrigger {
 }
 
 impl Mode {
-    pub(crate) fn color(&self) -> Color {
+    pub(crate) fn color(self) -> Color {
         match self {
             Self::Build => theme::current().mode_build,
             Self::Plan => theme::current().mode_plan,
@@ -73,7 +73,7 @@ impl PlanState {
 }
 
 impl App {
-    pub(crate) fn transition_plan(&mut self, trigger: PlanTrigger) {
+    pub(crate) fn transition_plan(&mut self, trigger: &PlanTrigger) {
         if self.state.mode != Mode::Plan {
             return;
         }
@@ -103,19 +103,20 @@ impl App {
         match self.state.mode {
             Mode::Build => self.enter_plan(),
             Mode::Plan => self.state.mode = Mode::Build,
-        };
+        }
         vec![]
     }
 
     pub(super) fn agent_mode(&self) -> AgentMode {
         match self.state.mode {
-            Mode::Plan => match self.state.plan.path() {
-                Some(p) => AgentMode::Plan(p.to_path_buf()),
-                None => {
+            Mode::Plan => {
+                if let Some(p) = self.state.plan.path() {
+                    AgentMode::Plan(p.to_path_buf())
+                } else {
                     debug_assert!(false, "Plan mode without path - invariant violated");
                     AgentMode::Build
                 }
-            },
+            }
             Mode::Build => AgentMode::Build,
         }
     }

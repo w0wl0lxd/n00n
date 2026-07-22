@@ -16,8 +16,9 @@ use n00n_agent::{
     PromptRole, ToolOutputLines,
 };
 use n00n_lua::EventHandle;
-use n00n_providers::{AgentError, Message, Model, TokenUsage};
+use n00n_providers::{AgentError, Message, Model, OpenAiOptions, TokenUsage};
 use n00n_storage::id::SessionRef;
+use n00n_storage::sessions::TranscriptEntry;
 use serde_json::Value;
 use tracing::error;
 
@@ -45,6 +46,7 @@ pub(super) struct AgentLoop {
     queue: Arc<QueueReceiver>,
     session_id: Option<SessionRef>,
     timeouts: n00n_providers::Timeouts,
+    openai_options: OpenAiOptions,
     lua_handle: Option<EventHandle>,
     subagent_cancels: Arc<CancelMap<String>>,
     tools_cache: Option<ToolsCache>,
@@ -67,6 +69,7 @@ impl AgentLoop {
         config: AgentConfig,
         tool_output_lines: ToolOutputLines,
         initial_history: Vec<Message>,
+        initial_transcript: Vec<TranscriptEntry<Message>>,
         shared_history: Arc<ArcSwap<Vec<Message>>>,
         shared_transcript: n00n_agent::SharedTranscript,
         btw_system: Arc<ArcSwap<String>>,
@@ -79,6 +82,7 @@ impl AgentLoop {
         init_cancel: CancelToken,
         session_id: Option<SessionRef>,
         timeouts: n00n_providers::Timeouts,
+        openai_options: OpenAiOptions,
         lua_handle: Option<EventHandle>,
         subagent_cancels: Arc<CancelMap<String>>,
     ) -> Self {
@@ -90,7 +94,7 @@ impl AgentLoop {
             instructions: Instructions::default(),
             tools: Value::Null,
             mcp_handle,
-            history: History::restored(initial_history)
+            history: History::restored_with_transcript(initial_history, initial_transcript)
                 .with_mirror(shared_history)
                 .with_transcript_mirror(shared_transcript),
             btw_system,
@@ -104,6 +108,7 @@ impl AgentLoop {
             queue,
             session_id,
             timeouts,
+            openai_options,
             lua_handle,
             subagent_cancels,
             tools_cache: None,
@@ -135,6 +140,7 @@ impl AgentLoop {
                 image_count,
                 input,
                 displayed,
+                pre_dispatch_gate,
                 ..
             } => {
                 if !displayed {
@@ -144,7 +150,8 @@ impl AgentLoop {
                         images: input.images.clone(),
                     });
                 }
-                self.do_agent_run(input, event_tx, run_id).await
+                self.do_agent_run(input, event_tx, run_id, pre_dispatch_gate)
+                    .await
             }
             QueueItem::Compact { .. } => self.do_compact(&event_tx).await,
         };
@@ -172,8 +179,12 @@ impl AgentLoop {
 
     async fn do_compact(&mut self, event_tx: &EventSender) -> Result<(), AgentError> {
         let slot = self.model_slot.load();
-        let (provider, model) =
-            agent::resolve_compaction_model(&slot.provider, &slot.model, self.timeouts);
+        let (provider, model) = agent::resolve_compaction_model(
+            &slot.provider,
+            &slot.model,
+            self.timeouts,
+            self.openai_options,
+        );
         agent::compact(&*provider, &model, &mut self.history, event_tx).await
     }
 
@@ -182,7 +193,9 @@ impl AgentLoop {
         mut input: AgentInput,
         event_tx: EventSender,
         run_id: u64,
+        pre_dispatch_gate: Arc<n00n_agent::PreDispatchGate>,
     ) -> Result<(), AgentError> {
+        let rollback_len = self.history.len();
         let slot = self.model_slot.load();
 
         let old_cwd = self.vars.apply("{cwd}").into_owned();
@@ -192,36 +205,57 @@ impl AgentLoop {
         }
         self.rebuild_tools(&slot.model, input.workflow);
 
-        for msg in std::mem::take(&mut input.preamble) {
-            self.history.push(msg);
-        }
-
-        if let Some(ref prompt_ref) = input.prompt {
+        // Keep the cancellation trigger live while MCP prompt retrieval is in
+        // flight. Retrieval is fallible, so neither the shell preamble nor the
+        // MCP messages may enter history until it succeeds.
+        let (trigger, cancel) = CancelToken::new();
+        self.set_cancel_trigger(run_id, trigger);
+        let prompt_messages = if let Some(ref prompt_ref) = input.prompt {
             let Some(ref mcp) = self.mcp_handle else {
+                self.clear_cancel_trigger(run_id);
                 return Err(AgentError::Tool {
                     tool: "mcp_prompt".into(),
                     message: "MCP not available".into(),
                 });
             };
-            let messages = mcp
+            match mcp
                 .get_prompt(&prompt_ref.qualified_name, &prompt_ref.arguments)
                 .await
-                .map_err(|e| AgentError::Tool {
-                    tool: "mcp_prompt".into(),
-                    message: e.to_string(),
-                })?;
-            for pm in messages {
-                let text = pm.content.text.unwrap_or_default();
-                let msg = match pm.role {
-                    PromptRole::Assistant => Message {
-                        role: n00n_providers::Role::Assistant,
-                        content: vec![n00n_providers::ContentBlock::Text { text }],
-                        ..Default::default()
-                    },
-                    PromptRole::User => Message::user(text),
-                };
-                self.history.push(msg);
+            {
+                Ok(messages) => messages,
+                Err(error) => {
+                    self.clear_cancel_trigger(run_id);
+                    if cancel.is_cancelled() || pre_dispatch_gate.is_cancelled() {
+                        return Err(AgentError::Cancelled);
+                    }
+                    return Err(AgentError::Tool {
+                        tool: "mcp_prompt".into(),
+                        message: error.to_string(),
+                    });
+                }
             }
+        } else {
+            Vec::new()
+        };
+        if cancel.is_cancelled() || pre_dispatch_gate.is_cancelled() {
+            self.clear_cancel_trigger(run_id);
+            return Err(AgentError::Cancelled);
+        }
+
+        for msg in std::mem::take(&mut input.preamble) {
+            self.history.push(msg);
+        }
+        for pm in prompt_messages {
+            let text = pm.content.text.unwrap_or_default();
+            let msg = match pm.role {
+                PromptRole::Assistant => Message {
+                    role: n00n_providers::Role::Assistant,
+                    content: vec![n00n_providers::ContentBlock::Text { text }],
+                    ..Default::default()
+                },
+                PromptRole::User => Message::user(text),
+            };
+            self.history.push(msg);
         }
 
         let prompt_slots = match self.lua_handle.as_ref() {
@@ -236,8 +270,6 @@ impl AgentLoop {
             &slot.model,
         );
         self.publish_btw_system(&prompt_slots);
-        let (trigger, cancel) = CancelToken::new();
-        self.set_cancel_trigger(run_id, trigger);
 
         while self.answer_rx.lock().await.try_recv().is_ok() {}
 
@@ -255,6 +287,7 @@ impl AgentLoop {
                 subagent_cancels: Arc::clone(&self.subagent_cancels),
                 registry: Arc::clone(n00n_agent::tools::ToolRegistry::global_arc()),
                 audience: ToolAudience::MAIN,
+                openai_options: self.openai_options,
             },
             AgentRunParams {
                 history: &mut self.history,
@@ -267,7 +300,9 @@ impl AgentLoop {
         .with_user_response_rx(Arc::clone(&self.answer_rx))
         .with_interrupt_source(Arc::clone(&self.queue) as Arc<dyn n00n_agent::InterruptSource>)
         .with_cancel(cancel)
-        .with_mcp(self.mcp_handle.clone());
+        .with_mcp(self.mcp_handle.clone())
+        .with_pre_dispatch_gate(pre_dispatch_gate)
+        .with_pre_dispatch_rollback_len(rollback_len);
 
         let result = agent.run(input).await;
         drop(agent);
@@ -377,7 +412,7 @@ impl AgentLoop {
 
 fn spawn_oauth_for_needs_auth(handle: &McpHandle) {
     let snapshot = handle.reader().load().clone();
-    for info in snapshot.infos.iter() {
+    for info in &snapshot.infos {
         let McpServerStatus::NeedsAuth { ref url } = info.status else {
             continue;
         };

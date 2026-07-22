@@ -5,7 +5,8 @@ use tracing::{error, info, warn};
 
 use n00n_providers::provider::Provider;
 use n00n_providers::{
-    ContentBlock, Message, Model, RequestOptions, StopReason, StreamResponse, TokenUsage,
+    ContentBlock, Message, Model, OpenAiOptions, RequestOptions, StopReason, StreamResponse,
+    TokenUsage,
 };
 
 use super::compaction::{self, CONTINUE_AFTER_COMPACT};
@@ -13,7 +14,7 @@ use super::history::{History, sanitize_cancelled_history};
 use super::instructions::LoadedInstructions;
 use super::streaming::stream_with_retry;
 use super::tool_dispatch::{self, RecentCalls};
-use crate::cancel::{CancelMap, CancelToken};
+use crate::cancel::{CancelMap, CancelToken, PreDispatchGate};
 use crate::mcp::McpHandle;
 use crate::permissions::PermissionManager;
 use crate::tools::{Deadline, FileReadTracker, LocalTools, ToolAudience, ToolContext};
@@ -24,20 +25,31 @@ use crate::{
 use n00n_config::ToolOutputLines;
 use n00n_storage::id::SessionRef;
 
+use crate::tokenize::{count_json, count_tokens};
+
 const MAX_REAUTH_ATTEMPTS: u32 = 2;
 const NUDGE_PROMPT: &str = "You just executed tool calls but returned an empty response. Please process the tool results above and continue with the task.";
+const MAX_TOKENS_CONTINUE_PROMPT: &str = "Continue exactly where you stopped.";
+const IMAGE_TOKEN_ESTIMATE: usize = 2_048;
 
+/// Resolves the model to use for compaction.
+///
+/// # Panics
+/// Panics if the model registry lock is poisoned.
 pub fn resolve_compaction_model(
     provider: &Arc<dyn Provider>,
     model: &Model,
     timeouts: n00n_providers::Timeouts,
+    openai_options: OpenAiOptions,
 ) -> (Arc<dyn Provider>, Model) {
-    if let Some(spec) = n00n_providers::model_registry::model_registry()
-        .read()
-        .unwrap()
-        .spec_for_tier_any(n00n_providers::ModelTier::Compaction)
+    if let Ok(registry) = n00n_providers::model_registry::model_registry().read()
+        && let Some(spec) = registry.spec_for_tier_any(n00n_providers::ModelTier::Compaction)
         && let Ok(mut m) = Model::from_spec(&spec)
-        && let Ok(p) = n00n_providers::provider::from_model(&mut m, timeouts)
+        && let Ok(p) = n00n_providers::provider::from_model_with_openai_options(
+            &mut m,
+            timeouts,
+            openai_options,
+        )
     {
         return (Arc::from(p), m);
     }
@@ -58,6 +70,7 @@ pub struct AgentParams {
     pub permissions: Arc<PermissionManager>,
     pub session_id: Option<SessionRef>,
     pub timeouts: n00n_providers::Timeouts,
+    pub openai_options: OpenAiOptions,
     pub file_tracker: Arc<FileReadTracker>,
     pub prompt_slots: Arc<crate::prompt::ResolvedSlots>,
     pub subagent_cancels: Arc<CancelMap<String>>,
@@ -72,49 +85,6 @@ pub struct AgentRunParams<'h> {
     pub tools: Value,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-struct TokenBudget {
-    max_input: Option<u32>,
-    max_output: Option<u32>,
-    max_total: Option<u32>,
-    max_context: Option<u32>,
-}
-
-impl TokenBudget {
-    fn from_config(config: &AgentConfig) -> Self {
-        Self {
-            max_input: config.max_input_tokens,
-            max_output: config.max_output_tokens,
-            max_total: config.max_total_tokens,
-            max_context: config.max_context_tokens,
-        }
-    }
-
-    fn check(self, usage: &TokenUsage, context_size: u32) -> Option<&'static str> {
-        if let Some(max) = self.max_input
-            && usage.total_input() > max
-        {
-            return Some("input token budget exceeded");
-        }
-        if let Some(max) = self.max_output
-            && usage.output > max
-        {
-            return Some("output token budget exceeded");
-        }
-        if let Some(max) = self.max_total
-            && usage.context_tokens() > max
-        {
-            return Some("total token budget exceeded");
-        }
-        if let Some(max) = self.max_context
-            && context_size > max
-        {
-            return Some("context token budget exceeded");
-        }
-        None
-    }
-}
-
 pub struct Agent<'h> {
     provider: Arc<dyn Provider>,
     model: Arc<Model>,
@@ -127,12 +97,15 @@ pub struct Agent<'h> {
     interrupt_source: Option<Arc<dyn InterruptSource>>,
     cancel: CancelToken,
     total_usage: TokenUsage,
+    total_cost: f64,
     context_size: u32,
     num_turns: u32,
     recent_calls: RecentCalls,
     auto_compact: bool,
     loaded_instructions: LoadedInstructions,
-    rollback_len: usize,
+    pre_dispatch_rollback_len: Option<usize>,
+    rollback_len: Option<usize>,
+    pre_dispatch_gate: Option<Arc<PreDispatchGate>>,
     mcp: Option<McpHandle>,
     config: AgentConfig,
     tool_output_lines: ToolOutputLines,
@@ -142,6 +115,7 @@ pub struct Agent<'h> {
     opts: RequestOptions,
     session_id: Option<SessionRef>,
     timeouts: n00n_providers::Timeouts,
+    openai_options: OpenAiOptions,
     file_tracker: Arc<FileReadTracker>,
     prompt_slots: Arc<crate::prompt::ResolvedSlots>,
     subagent_cancels: Arc<crate::cancel::CancelMap<String>>,
@@ -152,6 +126,7 @@ pub struct Agent<'h> {
 }
 
 impl<'h> Agent<'h> {
+    #[must_use]
     pub fn new(params: AgentParams, run: AgentRunParams<'h>) -> Self {
         Self {
             provider: params.provider,
@@ -160,6 +135,7 @@ impl<'h> Agent<'h> {
             tool_output_lines: params.tool_output_lines,
             permissions: params.permissions,
             timeouts: params.timeouts,
+            openai_options: params.openai_options,
             history: run.history,
             system: run.system,
             event_tx: run.event_tx,
@@ -169,12 +145,15 @@ impl<'h> Agent<'h> {
             interrupt_source: None,
             cancel: CancelToken::none(),
             total_usage: TokenUsage::default(),
+            total_cost: 0.0,
             context_size: 0,
             num_turns: 0,
             recent_calls: RecentCalls::new(),
             auto_compact: compaction::auto_compact_enabled(),
             loaded_instructions: LoadedInstructions::new(),
-            rollback_len: 0,
+            pre_dispatch_rollback_len: None,
+            rollback_len: None,
+            pre_dispatch_gate: None,
             mcp: None,
             reauth_attempts: 0,
             post_tool_empty_retried: false,
@@ -190,11 +169,13 @@ impl<'h> Agent<'h> {
         }
     }
 
+    #[must_use]
     pub fn with_mcp(mut self, mcp: Option<McpHandle>) -> Self {
         self.mcp = mcp;
         self
     }
 
+    #[must_use]
     pub fn with_user_response_rx(
         mut self,
         rx: Arc<async_lock::Mutex<flume::Receiver<String>>>,
@@ -203,35 +184,67 @@ impl<'h> Agent<'h> {
         self
     }
 
+    #[must_use]
     pub fn with_interrupt_source(mut self, source: Arc<dyn InterruptSource>) -> Self {
         self.interrupt_source = Some(source);
         self
     }
 
+    #[must_use]
     pub fn with_cancel(mut self, cancel: CancelToken) -> Self {
         self.cancel = cancel;
         self
     }
 
+    #[must_use]
+    pub fn with_pre_dispatch_gate(mut self, gate: Arc<PreDispatchGate>) -> Self {
+        self.pre_dispatch_gate = Some(gate);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pre_dispatch_rollback_len(mut self, rollback_len: usize) -> Self {
+        self.pre_dispatch_rollback_len = Some(rollback_len);
+        self
+    }
+
+    #[must_use]
     pub fn with_local_tools(mut self, local_tools: LocalTools) -> Self {
         self.local_tools = local_tools;
         self
     }
 
+    #[must_use]
     pub fn with_loaded_instructions(mut self, loaded: LoadedInstructions) -> Self {
         self.loaded_instructions = loaded;
         self
     }
 
-    fn check_token_budget(&self) -> Option<&'static str> {
-        TokenBudget::from_config(&self.config).check(&self.total_usage, self.context_size)
+    #[must_use]
+    pub fn total_usage(&self) -> TokenUsage {
+        self.total_usage
     }
 
+    #[must_use]
+    pub fn total_cost(&self) -> f64 {
+        self.total_cost
+    }
+
+    /// Runs the agent loop with the given input.
+    ///
+    /// # Errors
+    /// Returns an error if the agent loop fails due to provider errors,
+    /// tool execution failures, or cancellation.
     pub async fn run(&mut self, input: AgentInput) -> Result<(), AgentError> {
-        self.rollback_len = self.history.len();
+        let rollback_len = self.rollback_len.unwrap_or_else(|| self.history.len());
+        self.rollback_len = Some(rollback_len);
+        let pre_dispatch_rollback_len = self
+            .pre_dispatch_rollback_len
+            .unwrap_or_else(|| rollback_len);
         let msg = Message::user_with_images(input.message.clone(), input.images);
         self.history.push(msg);
-        self.context_size = estimate_message_tokens(self.history.as_slice());
+        self.context_size =
+            estimate_message_tokens(self.history.as_slice()) + estimate_tool_tokens(&self.tools);
         self.mode = input.mode;
         self.workflow = input.workflow;
         self.opts = RequestOptions {
@@ -246,10 +259,23 @@ impl<'h> Agent<'h> {
             "agent run started"
         );
 
-        let result = self.run_loop().await;
+        let result = async {
+            self.try_auto_compact().await?;
+            self.run_loop().await
+        }
+        .await;
 
         if matches!(result, Err(AgentError::Cancelled)) {
-            sanitize_cancelled_history(self.history, self.rollback_len);
+            if self
+                .pre_dispatch_gate
+                .as_ref()
+                .is_some_and(|gate| gate.is_cancelled())
+            {
+                self.history.truncate(pre_dispatch_rollback_len);
+            } else {
+                let rollback_len = self.rollback_len.unwrap_or_else(|| self.history.len());
+                sanitize_cancelled_history(self.history, rollback_len);
+            }
         }
 
         result
@@ -273,13 +299,15 @@ impl<'h> Agent<'h> {
         }
     }
 
+    fn commit_pre_dispatch(&self) -> bool {
+        self.pre_dispatch_gate
+            .as_ref()
+            .is_none_or(|gate| gate.try_commit())
+    }
+
     async fn turn(&mut self) -> Result<TurnOutcome, AgentError> {
-        if self.cancel.is_cancelled() {
+        if self.cancel.is_cancelled() || !self.commit_pre_dispatch() {
             return Err(AgentError::Cancelled);
-        }
-        if let Some(reason) = self.check_token_budget() {
-            warn!(reason, "stopping before provider call");
-            return Ok(TurnOutcome::Done(None));
         }
         let response = match stream_with_retry(
             &*self.provider,
@@ -322,26 +350,18 @@ impl<'h> Agent<'h> {
             "API response received"
         );
 
-        self.emit_turn_complete(&response)?;
         let usage = response.usage;
-        self.total_usage += usage;
-        self.context_size = usage.total_input();
-
-        if let Some(reason) = self.check_token_budget() {
-            warn!(reason, "stopping after provider response");
-            return Ok(TurnOutcome::Done(None));
-        }
+        let cost = usage.cost(&self.model.pricing, self.opts.fast);
+        self.record_usage(usage, cost);
+        self.context_size = usage.context_tokens();
+        self.emit_turn_complete(&response)?;
 
         if has_tools {
             let history_len_before = self.history.len();
             self.process_tool_calls(response).await?;
+            let tool_results_start = history_len_before.saturating_add(1);
             self.context_size +=
-                estimate_message_tokens(&self.history.as_slice()[history_len_before..]);
-
-            if let Some(reason) = self.check_token_budget() {
-                warn!(reason, "stopping after tool output");
-                return Ok(TurnOutcome::Done(None));
-            }
+                estimate_message_tokens(&self.history.as_slice()[tool_results_start..]);
         } else {
             let is_empty = response.message.content.is_empty();
 
@@ -362,6 +382,12 @@ impl<'h> Agent<'h> {
                     self.num_turns,
                     "response truncated (max_tokens), re-prompting"
                 );
+                self.history
+                    .push(Message::synthetic(MAX_TOKENS_CONTINUE_PROMPT.into()));
+                self.context_size += estimate_message_tokens(
+                    &self.history.as_slice()[self.history.len().saturating_sub(1)..],
+                );
+                self.try_auto_compact().await?;
                 return Ok(TurnOutcome::Continue);
             }
         }
@@ -410,6 +436,11 @@ impl<'h> Agent<'h> {
             }
             Err(_) => Err(AgentError::Cancelled),
         }
+    }
+
+    fn record_usage(&mut self, usage: TokenUsage, cost: f64) {
+        self.total_usage += usage;
+        self.total_cost += cost;
     }
 
     fn emit_turn_complete(&self, response: &StreamResponse) -> Result<(), AgentError> {
@@ -466,6 +497,7 @@ impl<'h> Agent<'h> {
             tool_output_lines: self.tool_output_lines,
             permissions: Arc::clone(&self.permissions),
             timeouts: self.timeouts,
+            openai_options: self.openai_options,
             file_tracker: Arc::clone(&self.file_tracker),
             prompt_slots: Arc::clone(&self.prompt_slots),
             opts: self.opts,
@@ -498,9 +530,16 @@ impl<'h> Agent<'h> {
     }
 
     async fn do_compact(&mut self) -> Result<(), AgentError> {
-        let (compact_provider, compact_model) =
-            resolve_compaction_model(&self.provider, &self.model, self.timeouts);
-        self.total_usage += compaction::compact_history(
+        if !self.commit_pre_dispatch() {
+            return Err(AgentError::Cancelled);
+        }
+        let (compact_provider, compact_model) = resolve_compaction_model(
+            &self.provider,
+            &self.model,
+            self.timeouts,
+            self.openai_options,
+        );
+        let usage = compaction::compact_history(
             &*compact_provider,
             &compact_model,
             self.history,
@@ -508,11 +547,14 @@ impl<'h> Agent<'h> {
             &self.cancel,
         )
         .await?;
-        self.rollback_len = self.history.len();
+        let cost = usage.cost(&compact_model.pricing, false);
+        self.record_usage(usage, cost);
+        self.rollback_len = Some(self.history.len());
         self.event_tx.send(AgentEvent::CompactionDone)?;
         self.history
             .push(Message::synthetic(CONTINUE_AFTER_COMPACT.into()));
-        self.context_size = estimate_message_tokens(self.history.as_slice());
+        self.context_size =
+            estimate_message_tokens(self.history.as_slice()) + estimate_tool_tokens(&self.tools);
         Ok(())
     }
 
@@ -549,41 +591,133 @@ impl<'h> Agent<'h> {
     }
 }
 
-const CHARS_PER_TOKEN: usize = 4;
+#[must_use]
+#[allow(clippy::manual_unwrap_or)]
+fn u32_from_usize(value: usize) -> u32 {
+    match u32::try_from(value) {
+        Ok(n) => n,
+        Err(_) => u32::MAX,
+    }
+}
 
+#[must_use]
 pub fn estimate_message_tokens(messages: &[Message]) -> u32 {
     if messages.is_empty() {
         return 0;
     }
-    let total_bytes: usize = messages
+    let total: usize = messages
         .iter()
         .flat_map(|m| &m.content)
-        .filter_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.len()),
-            ContentBlock::ToolResult { content, .. } => Some(content.len()),
-            ContentBlock::ToolUse { input, .. } => Some(input.to_string().len()),
-            _ => None,
+        .map(|b| match b {
+            ContentBlock::Text { text } => count_tokens(text),
+            ContentBlock::Thinking {
+                thinking,
+                signature,
+            } => count_tokens(thinking) + signature.as_ref().map_or(0, |s| count_tokens(s)),
+            ContentBlock::RedactedThinking { data } => count_tokens(data),
+            ContentBlock::ToolResult { content, .. } => count_tokens(content),
+            ContentBlock::ToolUse { input, .. } => count_json(input),
+            ContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE,
         })
         .sum();
-    (total_bytes.max(CHARS_PER_TOKEN) / CHARS_PER_TOKEN) as u32
+    u32_from_usize(total)
+}
+
+#[must_use]
+pub fn estimate_tool_tokens(tools: &Value) -> u32 {
+    u32_from_usize(count_json(tools))
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     use n00n_providers::provider::{BoxFuture, Provider};
     use n00n_providers::{
-        ContentBlock, Message, Model, ProviderEvent, RequestOptions, Role, StopReason,
-        StreamResponse, TokenUsage,
+        ContentBlock, ImageMediaType, ImageSource, Message, Model, ProviderEvent, RequestOptions,
+        Role, StopReason, StreamResponse, TokenUsage,
     };
+    use n00n_storage::sessions::TranscriptEntry;
     use serde_json::Value;
     use test_case::test_case;
 
     use super::*;
     use crate::Envelope;
     use crate::permissions::PermissionManager;
+
+    const COST_EPSILON: f64 = 1e-12;
+
+    #[test]
+    fn estimate_message_tokens_counts_content_blocks() {
+        let messages = vec![Message::user("hello world".into())];
+        let tokens = estimate_message_tokens(&messages);
+        assert!(tokens > 0, "expected positive token count for messages");
+    }
+
+    #[test]
+    fn estimate_tool_tokens_counts_json() {
+        let tools = serde_json::json!([{"name": "skill", "description": "A tool"}]);
+        let tokens = estimate_tool_tokens(&tools);
+        assert!(tokens > 0, "expected positive token count for tools");
+    }
+
+    #[test]
+    fn estimate_message_tokens_empty_is_zero() {
+        assert_eq!(estimate_message_tokens(&[]), 0);
+    }
+
+    #[test]
+    fn estimate_message_tokens_counts_each_content_block() {
+        let messages = vec![Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::Text { text: "hi".into() },
+                ContentBlock::Image {
+                    source: ImageSource {
+                        media_type: ImageMediaType::Png,
+                        data: Arc::from("data"),
+                    },
+                },
+            ],
+            ..Default::default()
+        }];
+        let tokens = estimate_message_tokens(&messages);
+        assert!(
+            tokens >= u32_from_usize(IMAGE_TOKEN_ESTIMATE),
+            "image blocks should add {IMAGE_TOKEN_ESTIMATE} tokens"
+        );
+    }
+
+    #[test]
+    fn estimate_message_tokens_counts_thinking_and_signature() {
+        let messages = vec![Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Thinking {
+                    thinking: "thinking text".into(),
+                    signature: Some("sig".into()),
+                },
+                ContentBlock::RedactedThinking {
+                    data: "redacted".into(),
+                },
+            ],
+            ..Default::default()
+        }];
+        let tokens = estimate_message_tokens(&messages);
+        assert!(
+            tokens > 0,
+            "thinking and redacted blocks should contribute tokens"
+        );
+    }
+
+    #[test]
+    fn estimate_tool_tokens_empty_array_costs_one() {
+        assert_eq!(estimate_tool_tokens(&serde_json::json!([])), 1);
+    }
 
     struct MockInterruptSource {
         commands: Mutex<VecDeque<ExtractedCommand>>,
@@ -605,12 +739,40 @@ mod tests {
 
     struct MockProvider {
         responses: Mutex<Vec<StreamResponse>>,
+        requests: Arc<Mutex<Vec<Vec<Message>>>>,
+        cancel_on_request: Option<usize>,
+        calls: AtomicUsize,
     }
 
     impl MockProvider {
         fn new(responses: Vec<StreamResponse>) -> Self {
             Self {
                 responses: Mutex::new(responses),
+                requests: Arc::new(Mutex::new(Vec::new())),
+                cancel_on_request: None,
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn recording(responses: Vec<StreamResponse>) -> (Self, Arc<Mutex<Vec<Vec<Message>>>>) {
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    responses: Mutex::new(responses),
+                    requests: Arc::clone(&requests),
+                    cancel_on_request: None,
+                    calls: AtomicUsize::new(0),
+                },
+                requests,
+            )
+        }
+
+        fn cancel_on_request(responses: Vec<StreamResponse>, request: usize) -> Self {
+            Self {
+                responses: Mutex::new(responses),
+                requests: Arc::new(Mutex::new(Vec::new())),
+                cancel_on_request: Some(request),
+                calls: AtomicUsize::new(0),
             }
         }
     }
@@ -619,7 +781,7 @@ mod tests {
         fn stream_message<'a>(
             &'a self,
             _: &'a Model,
-            _: &'a [Message],
+            messages: &'a [Message],
             _: &'a str,
             _: &'a Value,
             _: &'a flume::Sender<ProviderEvent>,
@@ -627,6 +789,11 @@ mod tests {
             _: Option<&'a SessionRef>,
         ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
             Box::pin(async {
+                let request = self.calls.fetch_add(1, Ordering::Relaxed);
+                if self.cancel_on_request == Some(request) {
+                    return Err(AgentError::Cancelled);
+                }
+                self.requests.lock().unwrap().push(messages.to_vec());
                 let mut responses = self.responses.lock().unwrap();
                 assert!(!responses.is_empty(), "MockProvider: no more responses");
                 Ok(responses.remove(0))
@@ -634,7 +801,7 @@ mod tests {
         }
 
         fn list_models(&self) -> BoxFuture<'_, Result<Vec<n00n_providers::ModelInfo>, AgentError>> {
-            Box::pin(async { unimplemented!() })
+            Box::pin(async { Ok(vec![]) })
         }
     }
 
@@ -704,6 +871,7 @@ mod tests {
                 )),
                 session_id: None,
                 timeouts: n00n_providers::Timeouts::default(),
+                openai_options: OpenAiOptions::default(),
                 file_tracker: FileReadTracker::fresh(),
                 prompt_slots: Arc::new(crate::prompt::ResolvedSlots::default()),
                 subagent_cancels: Arc::new(crate::cancel::CancelMap::new()),
@@ -726,7 +894,7 @@ mod tests {
             mode: AgentMode::Build,
             images: Vec::new(),
             preamble: Vec::new(),
-            thinking: Default::default(),
+            thinking: n00n_providers::ThinkingConfig::default(),
             fast: false,
             workflow: false,
             prompt: None,
@@ -815,6 +983,102 @@ mod tests {
         });
     }
 
+    #[test]
+    fn max_tokens_continuation_adds_incremental_prompt() {
+        smol::block_on(async {
+            let (provider, requests) = MockProvider::recording(vec![
+                text_response(StopReason::MaxTokens),
+                text_response(StopReason::EndTurn),
+            ]);
+            let mut history = History::new(Vec::new());
+            let (mut agent, _event_rx) = make_agent(provider, &mut history);
+
+            agent.run(default_input()).await.unwrap();
+
+            let requests = requests.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            assert!(matches!(
+                requests[1].last(),
+                Some(message)
+                    if message.first_text_content() == Some(MAX_TOKENS_CONTINUE_PROMPT)
+            ));
+        });
+    }
+
+    #[test]
+    fn charged_usage_survives_event_delivery_failure() {
+        smol::block_on(async {
+            let charged = TokenUsage {
+                input: 100,
+                output: 50,
+                cache_creation: 30,
+                cache_read: 20,
+            };
+            let mut response = text_response(StopReason::EndTurn);
+            response.usage = charged;
+            let mut history = History::new(Vec::new());
+            let (mut agent, event_rx) = make_agent(MockProvider::new(vec![response]), &mut history);
+            drop(event_rx);
+
+            assert!(agent.run(default_input()).await.is_err());
+            assert_eq!(agent.total_usage(), charged);
+            let expected_cost = charged.cost(&default_model().pricing, false);
+            assert!((agent.total_cost() - expected_cost).abs() < COST_EPSILON);
+        });
+    }
+
+    #[test]
+    fn mixed_model_usage_preserves_per_call_cost() {
+        let mut history = History::new(Vec::new());
+        let (mut agent, _event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
+        let main_model = default_model();
+        let compact_model = Model::from_spec("anthropic/claude-haiku-4-5").unwrap();
+        let main_usage = TokenUsage {
+            input: 1_000_000,
+            output: 100_000,
+            ..Default::default()
+        };
+        let compact_usage = TokenUsage {
+            input: 200_000,
+            output: 20_000,
+            ..Default::default()
+        };
+        let main_cost = main_usage.cost(&main_model.pricing, true);
+        let compact_cost = compact_usage.cost(&compact_model.pricing, false);
+
+        agent.record_usage(main_usage, main_cost);
+        agent.record_usage(compact_usage, compact_cost);
+
+        let mut expected_usage = main_usage;
+        expected_usage += compact_usage;
+        assert_eq!(agent.total_usage(), expected_usage);
+        assert!((agent.total_cost() - (main_cost + compact_cost)).abs() < COST_EPSILON);
+        let incorrectly_repriced = agent.total_usage().cost(&main_model.pricing, true);
+        assert!(
+            (agent.total_cost() - incorrectly_repriced).abs() > COST_EPSILON,
+            "mixed usage must not be repriced as one main-model fast request"
+        );
+    }
+
+    #[test]
+    fn response_context_includes_output_tokens() {
+        smol::block_on(async {
+            let mut response = text_response(StopReason::EndTurn);
+            response.usage = TokenUsage {
+                input: 100,
+                output: 50,
+                ..Default::default()
+            };
+            let mut history = History::new(Vec::new());
+            let (mut agent, _event_rx) =
+                make_agent(MockProvider::new(vec![response]), &mut history);
+
+            agent.run(default_input()).await.unwrap();
+
+            assert_eq!(agent.context_size, 150);
+        });
+    }
+
     #[test_case(Some(true),  true,  true  ; "after_tool_use_turn")]
     #[test_case(Some(false), true,  true  ; "after_text_only_turn")]
     #[test_case(None,        false, false ; "channel_empty")]
@@ -829,7 +1093,7 @@ mod tests {
                 None
             };
 
-            let tool_use = queued.unwrap_or(true);
+            let tool_use = queued.unwrap_or_else(|| true);
             let responses = if tool_use {
                 vec![
                     tool_call_response("glob", "t1"),
@@ -889,6 +1153,28 @@ mod tests {
         });
     }
 
+    #[test]
+    fn oversized_initial_context_compacts_before_normal_request() {
+        smol::block_on(async {
+            let prior = vec![Message::user("x".repeat(680_000))];
+            let mut history = History::new(prior);
+            let (provider, requests) = MockProvider::recording(vec![
+                text_response(StopReason::EndTurn),
+                text_response(StopReason::EndTurn),
+            ]);
+            let (mut agent, event_rx) = make_agent(provider, &mut history);
+            agent.model = Arc::new(small_context_model(200_000, 8_192));
+
+            agent.run(default_input()).await.unwrap();
+
+            assert_eq!(requests.lock().unwrap().len(), 2);
+            assert!(has_event(&drain_events(&event_rx), |event| matches!(
+                event,
+                AgentEvent::AutoCompacting
+            )));
+        });
+    }
+
     #[test_case(true,  170_000, true  ; "enabled_and_over_threshold")]
     #[test_case(true,  150_000, false ; "enabled_but_below_threshold")]
     #[test_case(false, 170_000, false ; "disabled_even_over_threshold")]
@@ -942,7 +1228,7 @@ mod tests {
                     &self,
                 ) -> BoxFuture<'_, Result<Vec<n00n_providers::ModelInfo>, AgentError>>
                 {
-                    Box::pin(async { unimplemented!() })
+                    Box::pin(async { Ok(vec![]) })
                 }
             }
 
@@ -967,6 +1253,7 @@ mod tests {
                     )),
                     session_id: None,
                     timeouts: n00n_providers::Timeouts::default(),
+                    openai_options: OpenAiOptions::default(),
                     file_tracker: FileReadTracker::fresh(),
                     prompt_slots: Arc::new(crate::prompt::ResolvedSlots::default()),
                     subagent_cancels: Arc::new(crate::cancel::CancelMap::new()),
@@ -986,6 +1273,52 @@ mod tests {
             assert!(matches!(result, Err(AgentError::Cancelled)));
             drop(agent);
             assert_ends_with_cancel_marker(&history);
+        });
+    }
+
+    #[test]
+    fn post_compaction_cancellation_keeps_compaction_transcript_and_cleanup() {
+        smol::block_on(async {
+            let mut history = History::new(vec![Message::user("x".repeat(680_000))]);
+            let (mut agent, _event_rx) = make_agent(
+                MockProvider::cancel_on_request(vec![text_response(StopReason::EndTurn)], 1),
+                &mut history,
+            );
+            agent.model = Arc::new(small_context_model(200_000, 8_192));
+
+            let result = agent.run(default_input()).await;
+
+            assert!(matches!(result, Err(AgentError::Cancelled)));
+            drop(agent);
+            assert!(
+                history
+                    .transcript()
+                    .iter()
+                    .any(|entry| matches!(entry, TranscriptEntry::Compaction { .. }))
+            );
+            assert_ends_with_cancel_marker(&history);
+        });
+    }
+
+    #[test]
+    fn pre_dispatch_cancellation_rolls_back_without_provider_call() {
+        smol::block_on(async {
+            let (provider, requests) =
+                MockProvider::recording(vec![text_response(StopReason::EndTurn)]);
+            let mut history = History::new(Vec::new());
+            let (mut agent, _event_rx) = make_agent(provider, &mut history);
+            let gate = Arc::new(PreDispatchGate::new());
+            assert!(gate.try_cancel());
+            agent = agent
+                .with_pre_dispatch_gate(gate)
+                .with_pre_dispatch_rollback_len(0);
+
+            let result = agent.run(default_input()).await;
+
+            assert!(matches!(result, Err(AgentError::Cancelled)));
+            drop(agent);
+            assert_eq!(history.len(), 0);
+            assert_eq!(requests.lock().unwrap().len(), 0);
         });
     }
 
@@ -1067,105 +1400,6 @@ mod tests {
                 })
                 .expect("expected Done event");
             assert_eq!(done, expected_turns);
-        });
-    }
-
-    #[test]
-    fn token_budget_check_detects_exceeded_limits() {
-        let input_budget = TokenBudget {
-            max_input: Some(100),
-            ..Default::default()
-        };
-        let usage = TokenUsage {
-            input: 80,
-            output: 30,
-            cache_creation: 0,
-            cache_read: 30,
-        };
-        assert_eq!(
-            input_budget.check(&usage, 140),
-            Some("input token budget exceeded")
-        );
-
-        let output_budget = TokenBudget {
-            max_output: Some(50),
-            ..Default::default()
-        };
-        let usage = TokenUsage {
-            input: 80,
-            output: 60,
-            cache_creation: 0,
-            cache_read: 0,
-        };
-        assert_eq!(
-            output_budget.check(&usage, 140),
-            Some("output token budget exceeded")
-        );
-
-        let total_budget = TokenBudget {
-            max_total: Some(200),
-            ..Default::default()
-        };
-        let usage = TokenUsage {
-            input: 80,
-            output: 130,
-            cache_creation: 0,
-            cache_read: 0,
-        };
-        assert_eq!(
-            total_budget.check(&usage, 140),
-            Some("total token budget exceeded")
-        );
-
-        let context_budget = TokenBudget {
-            max_context: Some(150),
-            ..Default::default()
-        };
-        let usage = TokenUsage {
-            input: 80,
-            output: 30,
-            cache_creation: 0,
-            cache_read: 0,
-        };
-        assert_eq!(
-            context_budget.check(&usage, 160),
-            Some("context token budget exceeded")
-        );
-    }
-
-    #[test]
-    fn agent_stops_when_input_budget_exceeded() {
-        smol::block_on(async {
-            let response = StreamResponse {
-                message: Message {
-                    role: Role::Assistant,
-                    content: vec![ContentBlock::Text {
-                        text: "response".into(),
-                    }],
-                    ..Default::default()
-                },
-                usage: TokenUsage {
-                    input: 2,
-                    output: 0,
-                    cache_creation: 0,
-                    cache_read: 0,
-                },
-                stop_reason: Some(StopReason::EndTurn),
-            };
-
-            let mut history = History::new(Vec::new());
-            let (mut agent, event_rx) = make_agent(MockProvider::new(vec![response]), &mut history);
-            agent.config.max_input_tokens = Some(1);
-            let _ = agent.run(default_input()).await;
-            let events = drain_events(&event_rx);
-
-            assert!(events.iter().any(|e| matches!(
-                e.event,
-                AgentEvent::Done {
-                    stop_reason: None,
-                    ..
-                }
-            )));
         });
     }
 }

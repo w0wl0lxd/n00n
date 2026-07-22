@@ -34,6 +34,7 @@ pub struct DiffHunk {
     pub lines: Vec<DiffLine>,
 }
 
+#[must_use]
 pub fn compute_hunks(before: &str, after: &str) -> Vec<DiffHunk> {
     let diff = TextDiff::from_lines(before, after);
     let mut hunks = Vec::new();
@@ -73,6 +74,7 @@ pub fn compute_hunks(before: &str, after: &str) -> Vec<DiffHunk> {
     hunks
 }
 
+#[must_use]
 pub fn unified_text(before: &str, after: &str, summary: &str, display_path: &str) -> String {
     let mut out = format!("{summary}\n--- {display_path}\n+++ {display_path}");
     let write_change = |out: &mut String, prefix: &str, spans: &[DiffSpan]| {

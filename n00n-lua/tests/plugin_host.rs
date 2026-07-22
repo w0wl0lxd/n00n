@@ -1,22 +1,106 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::needless_pass_by_value
+)]
+
+use std::collections::{HashMap, VecDeque};
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use n00n_agent::tools::{ToolRegistry, ToolSource, timeout_annotation};
+use n00n_agent::template::env_vars;
+use n00n_agent::tools::{
+    DescriptionContext, ToolAudience, ToolFilter, ToolRegistry, ToolSource, timeout_annotation,
+};
 use n00n_config::{AlwaysThinking, PluginsConfig, ToolOutputLines};
 use n00n_lua::{PluginError, PluginHost, WARM_TOOL_CAP};
-use std::path::Path;
+use n00n_providers::provider::{BoxFuture, Provider};
+use n00n_providers::{
+    AgentError, ContentBlock, Message, Model, ProviderEvent, RequestOptions, Role, StopReason,
+    StreamResponse, TokenUsage,
+};
+use n00n_storage::id::SessionRef;
+
+const TOOL_DEFINITIONS_BYTE_BUDGET: usize = 42_000;
 
 fn fresh_registry() -> Arc<ToolRegistry> {
     Arc::new(ToolRegistry::new())
 }
 
+struct NetworkSessionProbe {
+    address: std::net::SocketAddr,
+    sessions: flume::Sender<Option<SessionRef>>,
+}
+
+impl Provider for NetworkSessionProbe {
+    fn stream_message<'a>(
+        &'a self,
+        _: &'a Model,
+        _: &'a [Message],
+        _: &'a str,
+        _: &'a serde_json::Value,
+        _: &'a flume::Sender<ProviderEvent>,
+        _: RequestOptions,
+        session_id: Option<&'a SessionRef>,
+    ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
+        Box::pin(async move {
+            let _stream = smol::net::TcpStream::connect(self.address).await?;
+            self.sessions.send_async(session_id.cloned()).await?;
+            Ok(StreamResponse {
+                message: Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::Text {
+                        text: "network reached".into(),
+                    }],
+                    display_text: None,
+                },
+                usage: TokenUsage::default(),
+                stop_reason: Some(StopReason::EndTurn),
+            })
+        })
+    }
+
+    fn list_models(
+        &self,
+    ) -> BoxFuture<'_, Result<Vec<n00n_providers::model::ModelInfo>, AgentError>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+}
+
 fn builtins_host() -> (Arc<ToolRegistry>, PluginHost) {
     let reg = fresh_registry();
     let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
-    host.load_builtins(&PluginsConfig::from_plugins(HashMap::new()))
+    host.load_builtins(&PluginsConfig::from_plugins(&HashMap::new()))
         .unwrap();
     (reg, host)
+}
+
+#[test]
+fn builtin_main_tool_definitions_stay_within_prompt_budget() {
+    let (registry, _host) = builtins_host();
+    let definitions = registry.definitions(
+        &env_vars(),
+        &DescriptionContext {
+            filter: &ToolFilter::All,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        },
+        true,
+    );
+    let bytes = serde_json::to_vec_pretty(&definitions).unwrap().len() + 1;
+
+    for required in ["task", "team", "workflow", "agent_control"] {
+        assert!(
+            registry.has(required),
+            "required tool disappeared: {required}"
+        );
+    }
+    assert!(
+        bytes <= TOOL_DEFINITIONS_BYTE_BUDGET,
+        "builtin main tool definitions use {bytes} bytes; budget is {TOOL_DEFINITIONS_BYTE_BUDGET}"
+    );
 }
 
 fn exec_tool(reg: &ToolRegistry, name: &str, input: serde_json::Value) -> Result<String, String> {
@@ -355,6 +439,123 @@ fn handler_state_flows_to_tool_output_and_serde() {
     let json = serde_json::to_string(&out).unwrap();
     let parsed: n00n_agent::ToolOutput = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.state(), Some(&expected), "state must survive serde");
+}
+
+#[test]
+fn handler_usage_metadata_flows_to_tool_output_without_private_fields() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "usage_metadata",
+            description = "t",
+            schema = {MINIMAL_SCHEMA},
+            handler = function()
+                return {{
+                    llm_output = "done",
+                    cost = 0.125,
+                    usage = {{
+                        fresh_input_tokens = 5,
+                        cache_read_tokens = 7,
+                        cache_write_tokens = 11,
+                        input_tokens = 23,
+                        output_tokens = 13,
+                        raw_prompt = "PRIVATE_PROMPT",
+                    }},
+                    raw_payload = "PRIVATE_PAYLOAD",
+                    state = {{ restore = "kept" }},
+                }}
+            end
+        }})"#,
+    );
+    host.load_source("usage_metadata_plugin", &src).unwrap();
+
+    let output = exec_tool_output(&reg, "usage_metadata", serde_json::json!({})).unwrap();
+    let expected = serde_json::json!({
+        "cost": 0.125,
+        "usage": {
+            "fresh_input_tokens": 5,
+            "cache_read_tokens": 7,
+            "cache_write_tokens": 11,
+            "input_tokens": 23,
+            "output_tokens": 13,
+        },
+    });
+    assert_eq!(serde_json::to_value(output.telemetry()).unwrap(), expected);
+    assert_eq!(
+        output.state(),
+        Some(&serde_json::json!({ "restore": "kept" })),
+        "telemetry must not replace restore state"
+    );
+
+    let serialized = serde_json::to_string(&output).unwrap();
+    let _: n00n_agent::ToolTelemetry = serde_json::from_value(expected.clone())
+        .unwrap_or_else(|error| panic!("failed to restore telemetry {expected}: {error}"));
+    let restored: n00n_agent::ToolOutput = serde_json::from_str(&serialized)
+        .unwrap_or_else(|error| panic!("failed to restore {serialized}: {error}"));
+    assert_eq!(
+        serde_json::to_value(restored.telemetry()).unwrap(),
+        expected,
+        "telemetry must survive serde"
+    );
+    assert_eq!(
+        restored.state(),
+        Some(&serde_json::json!({ "restore": "kept" }))
+    );
+}
+
+#[test]
+fn image_and_diff_outputs_preserve_first_class_telemetry() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "telemetry_image",
+            description = "t",
+            schema = {MINIMAL_SCHEMA},
+            handler = function()
+                return {{
+                    llm_output = "caption",
+                    image = {{ media_type = "image/png", data = "aGVsbG8=" }},
+                    cost = 0.25,
+                }}
+            end
+        }})
+        n00n.api.register_tool({{
+            name = "telemetry_diff",
+            description = "t",
+            schema = {MINIMAL_SCHEMA},
+            handler = function()
+                return {{
+                    llm_output = "changed",
+                    diff_path = "src/lib.rs",
+                    diff_before = "old",
+                    diff_after = "new",
+                    usage = {{ input_tokens = 9, output_tokens = 3 }},
+                }}
+            end
+        }})"#,
+    );
+    host.load_source("telemetry_variants", &src).unwrap();
+
+    let image = exec_tool_output(&reg, "telemetry_image", serde_json::json!({})).unwrap();
+    assert!(matches!(image, n00n_agent::ToolOutput::Image { .. }));
+    assert_eq!(image.telemetry().and_then(|value| value.cost), Some(0.25));
+
+    let diff = exec_tool_output(&reg, "telemetry_diff", serde_json::json!({})).unwrap();
+    assert!(matches!(diff, n00n_agent::ToolOutput::Diff { .. }));
+    assert_eq!(
+        diff.telemetry()
+            .and_then(|value| value.usage.as_ref())
+            .map(|usage| (usage.input_tokens, usage.output_tokens)),
+        Some((9, 3))
+    );
+
+    for output in [image, diff] {
+        let serialized = serde_json::to_string(&output).unwrap();
+        let restored: n00n_agent::ToolOutput = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(restored.telemetry(), output.telemetry());
+    }
 }
 
 /// Restores `tool` from `src` and returns the snapshot's concatenated text.
@@ -1564,6 +1765,85 @@ fn warm_fifo_evicts_oldest_runtime_side() {
     );
 }
 
+#[test]
+fn explore_result_live_click_and_warm_eviction_fallback_preserve_card_contract() {
+    const TOOL: &str = "explore_probe";
+    const OUTPUT: &str = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight";
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"
+local ExploreResult = require("n00n.explore_result")
+n00n.api.register_tool({{
+    name = "{TOOL}",
+    description = "shared explore card probe",
+    schema = {MINIMAL_SCHEMA},
+    audiences = {{ "main" }},
+    handler = function(input, ctx)
+        local card, err = ExploreResult.live(ctx)
+        if not card then
+            return {{ llm_output = tostring(err), is_error = true }}
+        end
+        card:update("one\ntwo\nthree\nfour\nfive\nsix\nseven\neight")
+        return {{ llm_output = "done", body = card.buf }}
+    end,
+    restore = function(input, output)
+        return ExploreResult.restore(output)
+    end,
+}})
+"#,
+    );
+    host.load_source("explore_probe_plugin", &src).unwrap();
+
+    let mut bodies = Vec::with_capacity(WARM_TOOL_CAP + 1);
+    for i in 0..=WARM_TOOL_CAP {
+        let id = format!("explore-{i}");
+        let (ctx, rx) = warm_ctx(&id);
+        exec_warm_tool(&reg, TOOL, &ctx).expect("tool output");
+        bodies.push(recv_live_buf(&rx, &id).expect("live explore card"));
+    }
+    assert_eq!(bodies[0].read().len(), 6, "five rows plus expand hint");
+
+    let evicted_id = "explore-0";
+    let item = n00n_lua::RestoreItem {
+        tool: Arc::from(TOOL),
+        tool_use_id: evicted_id.to_owned(),
+        output: OUTPUT.to_owned(),
+        input: serde_json::json!({}),
+        is_error: false,
+        tool_output_lines: ToolOutputLines::default(),
+        theme_gen: None,
+        clicks: vec![0],
+        state: None,
+    };
+    let (tx, rx) = flume::unbounded();
+    let event_handle = host.event_handle().expect("event handle");
+    event_handle.request_click_with_fallback(
+        evicted_id.to_owned(),
+        0,
+        item,
+        n00n_agent::EventSender::new(tx, 0),
+    );
+    event_handle.request_click(format!("explore-{WARM_TOOL_CAP}"), 0);
+    barrier(&host);
+
+    assert_eq!(
+        bodies[0].read().len(),
+        6,
+        "evicted live card must not receive the click"
+    );
+    assert_eq!(
+        bodies[WARM_TOOL_CAP].read().len(),
+        8,
+        "a still-warm live card must expand in place"
+    );
+    assert_eq!(
+        snapshot_texts(&rx, evicted_id),
+        vec![OUTPUT.replace('\n', "")],
+        "fallback restore must replay the click and publish the expanded card"
+    );
+}
+
 /// After a plugin (re)load the old handlers are gone, so stale warm
 /// clicks must be dropped, never run.
 #[test]
@@ -1582,7 +1862,7 @@ fn warm_map_cleared_by_load_source() {
     assert_eq!(body.read()[0].spans[0].text, WARM_INITIAL_LINE);
 }
 
-/// LoadSource's drain barrier spawns and awaits queued async jobs, so
+/// `LoadSource`'s drain barrier spawns and awaits queued async jobs, so
 /// jobs a warm click enqueues land before the barrier returns.
 #[test]
 fn warm_click_runs_async_jobs() {
@@ -1799,7 +2079,7 @@ fn setup_happy_path() {
 }
 
 #[test_case::test_case(
-    r#"n00n.setup({ agent = { compaction_buffer = 10000 } })"#,
+    r"n00n.setup({ agent = { compaction_buffer = 10000 } })",
     n00n_config::CompactionBuffer::Tokens(10_000)
     ; "compaction_buffer_tokens"
 )]
@@ -1997,7 +2277,7 @@ fn register_options_rejects_bad_user_opts(opts: serde_json::Value, expected: &st
 }
 
 #[test_case::test_case(
-    r#"n00n.api.register_options({ timeout_secs = { default = 120 } })"#,
+    r"n00n.api.register_options({ timeout_secs = { default = 120 } })",
     OPTION_DESC_ERR
     ; "missing_desc"
 )]
@@ -2060,7 +2340,7 @@ fn builtin_opts_flow_from_setup_plugins() {
         )
         .unwrap()
         .expect("expected Some(RawConfig)");
-    host.load_builtins(&PluginsConfig::from_plugins(raw.plugins))
+    host.load_builtins(&PluginsConfig::from_plugins(&raw.plugins))
         .unwrap();
 
     let options = host.plugin_options().unwrap();
@@ -2119,7 +2399,7 @@ fn undeclared_opts_fail_the_load() {
 fn opts_for_unknown_plugin_fail_load_builtins() {
     let reg = fresh_registry();
     let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
-    let mut config = PluginsConfig::from_plugins(HashMap::new());
+    let mut config = PluginsConfig::from_plugins(&HashMap::new());
     config.opts.insert(
         "bsah".to_owned(),
         json_obj(serde_json::json!({ "timeout_secs": 5 })),
@@ -2138,7 +2418,7 @@ fn opts_for_unknown_plugin_fail_load_builtins() {
 fn unknown_plugin_name_fails_load_builtins() {
     let reg = fresh_registry();
     let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
-    let mut config = PluginsConfig::from_plugins(HashMap::new());
+    let mut config = PluginsConfig::from_plugins(&HashMap::new());
     config.names.push("gerp".to_string());
     let err = host
         .load_builtins(&config)
@@ -2400,7 +2680,7 @@ fn restore_tool_async_ordering_and_delivery() {
 
     handle.request_restore(unknown_item, event_tx.clone());
     handle.request_restore(bash_item("a"), event_tx.clone());
-    handle.request_restore(bash_item("b"), event_tx.clone());
+    handle.request_restore(bash_item("b"), event_tx);
 
     handle.wait_restore_complete_for_test();
 
@@ -3059,6 +3339,169 @@ fn call_tool_resolves_lua_tool_and_reports_unknown() {
     host.unload("echo_plugin").unwrap();
 }
 
+struct ScriptedSessionProvider {
+    responses: Mutex<VecDeque<Result<StreamResponse, AgentError>>>,
+}
+
+impl ScriptedSessionProvider {
+    fn new(responses: impl IntoIterator<Item = Result<StreamResponse, AgentError>>) -> Self {
+        Self {
+            responses: Mutex::new(responses.into_iter().collect()),
+        }
+    }
+}
+
+impl Provider for ScriptedSessionProvider {
+    fn stream_message<'a>(
+        &'a self,
+        _: &'a Model,
+        _: &'a [Message],
+        _: &'a str,
+        _: &'a serde_json::Value,
+        _: &'a flume::Sender<ProviderEvent>,
+        _: RequestOptions,
+        _: Option<&'a SessionRef>,
+    ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
+        Box::pin(async {
+            self.responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("scripted session provider exhausted")
+        })
+    }
+
+    fn list_models(&self) -> BoxFuture<'_, Result<Vec<n00n_providers::ModelInfo>, AgentError>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+}
+
+fn session_response(
+    content: Vec<ContentBlock>,
+    usage: TokenUsage,
+    stop_reason: StopReason,
+) -> StreamResponse {
+    StreamResponse {
+        message: Message {
+            role: Role::Assistant,
+            content,
+            ..Message::default()
+        },
+        usage,
+        stop_reason: Some(stop_reason),
+    }
+}
+
+fn run_session_usage_probe(provider: ScriptedSessionProvider, fast: bool) -> serde_json::Value {
+    let registry = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&registry)).unwrap();
+    let source = format!(
+        r#"n00n.api.register_tool({{
+            name = "session_usage_probe",
+            description = "test",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                local sess, session_err = n00n.agent.session(ctx, {{ fast = {fast} }})
+                if session_err then return session_err end
+                local result, prompt_err = sess:prompt("measure this")
+                sess:close()
+                local encoded, encode_err = n00n.json.encode({{ result = result, error = prompt_err }})
+                if encode_err then return encode_err end
+                return encoded
+            end
+        }})"#,
+    );
+    host.load_source("session_usage_plugin", &source).unwrap();
+
+    let entry = registry.get("session_usage_probe").unwrap();
+    let invocation = entry.tool.parse(&serde_json::json!({})).unwrap();
+    let (event_tx, event_rx) = flume::unbounded();
+    let event_tx = n00n_agent::EventSender::new(event_tx, 0);
+    let mut ctx = n00n_agent::tools::test_support::stub_ctx_with(
+        &n00n_agent::AgentMode::Build,
+        Some(&event_tx),
+        None,
+    );
+    ctx.provider = Arc::new(provider);
+    ctx.model = Arc::new(Model::from_spec("anthropic/claude-opus-4-8").unwrap());
+    ctx.registry = Arc::clone(&registry);
+
+    let output = smol::block_on(invocation.execute(&ctx))
+        .output
+        .expect("session usage probe failed");
+    drop(event_rx);
+    serde_json::from_str(&output.as_text()).expect("session usage probe returned invalid JSON")
+}
+
+#[test]
+fn session_prompt_returns_current_usage_on_normal_completion() {
+    let usage = TokenUsage {
+        input: 2,
+        output: 7,
+        cache_creation: 5,
+        cache_read: 3,
+    };
+    let output = run_session_usage_probe(
+        ScriptedSessionProvider::new([Ok(session_response(
+            vec![ContentBlock::Text {
+                text: "finished".to_owned(),
+            }],
+            usage,
+            StopReason::EndTurn,
+        ))]),
+        true,
+    );
+
+    assert_eq!(output["error"], serde_json::Value::Null);
+    assert_eq!(output["result"]["text"], "finished");
+    assert_eq!(output["result"]["fresh_input_tokens"], usage.input);
+    assert_eq!(output["result"]["cache_read_tokens"], usage.cache_read);
+    assert_eq!(output["result"]["cache_write_tokens"], usage.cache_creation);
+    assert_eq!(output["result"]["input_tokens"], usage.total_input());
+    assert_eq!(output["result"]["output_tokens"], usage.output);
+    assert_eq!(output["result"]["fast"], true);
+    let model = Model::from_spec("anthropic/claude-opus-4-8").unwrap();
+    assert_eq!(output["result"]["cost"], usage.cost(&model.pricing, true));
+}
+
+#[test]
+fn session_prompt_returns_charged_usage_with_later_error() {
+    let usage = TokenUsage {
+        input: 17,
+        output: 29,
+        cache_creation: 23,
+        cache_read: 19,
+    };
+    let output = run_session_usage_probe(
+        ScriptedSessionProvider::new([
+            Ok(session_response(
+                vec![ContentBlock::ToolUse {
+                    id: "charged-call".to_owned(),
+                    name: "missing_tool".to_owned(),
+                    input: serde_json::json!({}),
+                }],
+                usage,
+                StopReason::ToolUse,
+            )),
+            Err(AgentError::Config {
+                message: "charged failure".to_owned(),
+            }),
+        ]),
+        false,
+    );
+
+    assert_eq!(output["error"], "charged failure");
+    assert_eq!(output["result"]["fresh_input_tokens"], usage.input);
+    assert_eq!(output["result"]["cache_read_tokens"], usage.cache_read);
+    assert_eq!(output["result"]["cache_write_tokens"], usage.cache_creation);
+    assert_eq!(output["result"]["input_tokens"], usage.total_input());
+    assert_eq!(output["result"]["output_tokens"], usage.output);
+    assert_eq!(output["result"]["fast"], false);
+    let model = Model::from_spec("anthropic/claude-opus-4-8").unwrap();
+    assert_eq!(output["result"]["cost"], usage.cost(&model.pricing, false));
+}
+
 #[test]
 fn session_close_idempotent_and_prompt_after_close_errors() {
     let reg = fresh_registry();
@@ -3082,55 +3525,6 @@ fn session_close_idempotent_and_prompt_after_close_errors() {
     host.load_source("session_plugin", &src).unwrap();
     let out = exec_tool(&reg, "session_probe", serde_json::json!({})).unwrap();
     assert_eq!(out, SESSION_CLOSED_ERR);
-}
-
-#[test]
-fn session_progress_exposes_typed_privacy_safe_projection() {
-    let reg = fresh_registry();
-    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
-    let src = format!(
-        r#"n00n.api.register_tool({{
-            name = "session_progress_probe",
-            description = "test",
-            schema = {MINIMAL_SCHEMA},
-            audiences = {{ "main" }},
-            handler = function(input, ctx)
-                local sess, session_err = n00n.agent.session(ctx, {{}})
-                if session_err then return session_err end
-                local progress, progress_err = sess:get_progress()
-                sess:close()
-                if progress_err then return progress_err end
-                local encoded, encode_err = n00n.json.encode({{
-                    session_id = progress.session_id,
-                    actions_type = type(progress.actions),
-                    action_count = progress.actions and #progress.actions or -1,
-                    has_recent_tools = type(progress.recent_tools) == "table",
-                    has_completed_count = type(progress.completed_count) == "number",
-                }})
-                return encode_err or encoded
-            end
-        }})"#
-    );
-    host.load_source("session_progress_plugin", &src).unwrap();
-
-    let out = exec_tool(&reg, "session_progress_probe", serde_json::json!({})).unwrap();
-    let progress: serde_json::Value = serde_json::from_str(&out).expect("progress must be JSON");
-    assert!(
-        progress["session_id"]
-            .as_str()
-            .is_some_and(|id| !id.is_empty()),
-        "progress must expose its unique child session_id: {progress}"
-    );
-    assert_eq!(
-        progress["actions_type"], "table",
-        "progress actions must be an ordered Lua array"
-    );
-    assert_eq!(
-        progress["action_count"], 0,
-        "new sessions start with no actions"
-    );
-    assert_eq!(progress["has_recent_tools"], true);
-    assert_eq!(progress["has_completed_count"], true);
 }
 
 #[test]
@@ -3177,6 +3571,50 @@ fn subagent_plugins_use_shared_live_privacy_safe_activity(plugin: &str, source: 
         !source.contains("raw_input") && !source.contains("progress.log("),
         "{plugin} activity path must not transport raw input or workflow logs"
     );
+=======
+fn lua_subagent_keeps_generated_session_ref_when_provider_reaches_network() {
+    smol::block_on(async {
+        let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (session_tx, session_rx) = flume::bounded(1);
+        let network = smol::spawn(async move { listener.accept().await.unwrap() });
+        let reg = fresh_registry();
+        let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+        let src = format!(
+            r#"n00n.api.register_tool({{
+                name = "session_network_probe",
+                description = "test",
+                schema = {MINIMAL_SCHEMA},
+                audiences = {{ "main" }},
+                handler = function(input, ctx)
+                    local sess, open_err = n00n.agent.session(ctx, {{}})
+                    if open_err then return open_err end
+                    local result, prompt_err = sess:prompt("reach the provider")
+                    if prompt_err then return prompt_err end
+                    return result.text
+                end
+            }})"#
+        );
+        host.load_source("session_network_plugin", &src).unwrap();
+        let entry = reg.get("session_network_probe").unwrap();
+        let invocation = entry.tool.parse(&serde_json::json!({})).unwrap();
+        let mut ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
+        ctx.provider = Arc::new(NetworkSessionProbe {
+            address,
+            sessions: session_tx,
+        });
+
+        let result = invocation.execute(&ctx).await.output.unwrap();
+        let n00n_agent::ToolOutput::Plain(output) = result else {
+            panic!("expected plain output");
+        };
+        let session_id = session_rx.recv_async().await.unwrap();
+        let _connection = network.await;
+
+        assert_eq!(output.text, "network reached");
+        assert!(session_id.is_some());
+    });
+>>>>>>> origin/main
 }
 
 #[test_case::test_case("{ audience = 'wurkflow' }", "unknown audience: wurkflow" ; "unknown_audience")]
@@ -3227,7 +3665,7 @@ fn lua_tool_image_reply_maps_to_image_output() {
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
     load_img_tool(&host);
     let out = exec_tool_output(&reg, "img_probe", serde_json::json!({})).unwrap();
-    let n00n_agent::ToolOutput::Image { source, text } = out else {
+    let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
         panic!("expected Image output, got {out:?}");
     };
     assert_eq!(source.media_type, n00n_agent::ImageMediaType::Png);
@@ -3289,7 +3727,7 @@ fn view_image_tool_returns_image_output() {
         serde_json::json!({"path": path.to_str().unwrap()}),
     )
     .unwrap();
-    let n00n_agent::ToolOutput::Image { source, text } = out else {
+    let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
         panic!("expected Image output, got {out:?}");
     };
     assert_eq!(source.media_type, n00n_agent::ImageMediaType::Png);
@@ -3299,6 +3737,15 @@ fn view_image_tool_returns_image_output() {
         .decode(&*source.data)
         .unwrap();
     assert_eq!(decoded, std::fs::read(&path).unwrap());
+}
+
+#[cfg(unix)]
+#[test]
+fn view_image_rejects_non_regular_file_before_reading() {
+    let (reg, _host) = builtins_host();
+    let err =
+        exec_tool_output(&reg, "view_image", serde_json::json!({"path": "/dev/zero"})).unwrap_err();
+    assert!(err.contains("not a regular file"), "got: {err}");
 }
 
 #[test]
@@ -3329,12 +3776,76 @@ fn probe_output(data: &str) -> (image::ImageFormat, u32, u32) {
     (format, w, h)
 }
 
+const ANIMATED_WEBP_BASE64: &str = "UklGRp4AAABXRUJQVlA4WAoAAAASAAAAAQAAAQAAQU5JTQYAAAD/////AABBTk1GNgAAAAAAAAAAAAEAAAEAAPQBAAJWUDhMHgAAAC8BQAAAFzD/AoIi/0eb//kPNAsK27ZBYXEQ0f/IA0FOTUY0AAAAAAAAAAAAAQAAAQAA9AEAAFZQOEwcAAAALwFAABAXIBBIYZM//wKCIv9Hm/+AvcEYRPQ/BA==";
+
+fn animated_gif_fixture() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
+    encoder
+        .encode_frames([
+            image::Frame::new(image::RgbaImage::from_pixel(
+                2,
+                2,
+                image::Rgba([255, 0, 0, 255]),
+            )),
+            image::Frame::new(image::RgbaImage::from_pixel(
+                2,
+                2,
+                image::Rgba([0, 0, 255, 255]),
+            )),
+        ])
+        .unwrap();
+    drop(encoder);
+    bytes
+}
+
+fn test_crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFF_u32;
+    for &byte in data {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ ((crc & 1) * 0xEDB8_8320);
+        }
+    }
+    !crc
+}
+
 #[test]
-fn view_image_downscales_oversized_png_with_honest_caption() {
+fn view_image_rejects_decode_bomb_before_shipping_bytes() {
     let (reg, _host) = builtins_host();
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("wide.png");
-    image::DynamicImage::new_rgb8(2000, 100)
+    let path = dir.path().join("pixel-bomb.png");
+    image::DynamicImage::new_rgb8(1, 1)
+        .save_with_format(&path, image::ImageFormat::Png)
+        .unwrap();
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[16..20].copy_from_slice(&10_000_u32.to_be_bytes());
+    bytes[20..24].copy_from_slice(&10_000_u32.to_be_bytes());
+    let crc = test_crc32(&bytes[12..29]);
+    bytes[29..33].copy_from_slice(&crc.to_be_bytes());
+    std::fs::write(&path, bytes).unwrap();
+
+    let err = exec_tool_output(
+        &reg,
+        "view_image",
+        serde_json::json!({"path": path.to_str().unwrap()}),
+    )
+    .unwrap_err();
+    assert!(err.contains("10000x10000"), "got: {err}");
+    assert!(err.contains("limit 50000000 pixels"), "got: {err}");
+}
+
+#[test]
+fn view_image_tall_png_returns_first_lossless_tile_with_schema_guidance() {
+    use base64::Engine as _;
+
+    let (reg, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tall.png");
+    let mut source_image = image::GrayImage::new(1440, 12_079);
+    source_image.put_pixel(0, 0, image::Luma([1]));
+    source_image.put_pixel(0, 2_000, image::Luma([2]));
+    source_image
         .save_with_format(&path, image::ImageFormat::Png)
         .unwrap();
 
@@ -3344,56 +3855,40 @@ fn view_image_downscales_oversized_png_with_honest_caption() {
         serde_json::json!({"path": path.to_str().unwrap()}),
     )
     .unwrap();
-    let n00n_agent::ToolOutput::Image { source, text } = out else {
+    let n00n_agent::ToolOutput::Image {
+        source: output,
+        text,
+        ..
+    } = out
+    else {
         panic!("expected Image output, got {out:?}");
     };
-    assert_eq!(source.media_type, n00n_agent::ImageMediaType::Png);
-    assert!(text.contains("downscaled from 2000x100"), "caption: {text}");
-
-    let (format, w, h) = probe_output(&source.data);
-    assert_eq!(format, image::ImageFormat::Png);
-    assert_eq!(w, 1568, "long edge must land exactly on the API limit");
-    assert!(h <= 79, "aspect ratio broken: {w}x{h}");
-    // Caption must report the dimensions actually shipped, not the original.
-    assert!(text.contains(&format!("{w}x{h}")), "caption: {text}");
-}
-
-#[test]
-fn view_image_oversized_gif_reencodes_to_png_first_frame() {
-    let (reg, _host) = builtins_host();
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("banner.gif");
-    image::DynamicImage::new_rgb8(2000, 8)
-        .save_with_format(&path, image::ImageFormat::Gif)
+    assert_eq!(output.media_type, n00n_agent::ImageMediaType::Png);
+    assert!(text.contains("1440x12079"), "caption: {text}");
+    assert!(text.contains("tile 1/7"), "caption: {text}");
+    assert!(text.contains("tile_index=2..7"), "caption: {text}");
+    assert!(!text.contains("downscaled"), "caption: {text}");
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&*output.data)
         .unwrap();
-
-    let out = exec_tool_output(
-        &reg,
-        "view_image",
-        serde_json::json!({"path": path.to_str().unwrap()}),
-    )
-    .unwrap();
-    let n00n_agent::ToolOutput::Image { source, text } = out else {
-        panic!("expected Image output, got {out:?}");
-    };
-    // gif encoding is unsupported, so downscaling forces png; the caption
-    // must confess the downscale and the lost animation.
-    assert_eq!(source.media_type, n00n_agent::ImageMediaType::Png);
-    assert!(text.contains("downscaled from 2000x8"), "caption: {text}");
-    assert!(text.contains("first frame only"), "caption: {text}");
-    assert_eq!(probe_output(&source.data).0, image::ImageFormat::Png);
+    let tile = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+        .unwrap()
+        .to_luma8();
+    assert_eq!(tile.dimensions(), (1440, 2000));
+    assert_eq!(tile.get_pixel(0, 0), source_image.get_pixel(0, 0));
 }
 
 #[test]
-fn view_image_small_gif_passes_through_unchanged() {
+fn view_image_provider_safe_tall_png_passes_through_byte_for_byte() {
     use base64::Engine as _;
 
     let (reg, _host) = builtins_host();
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("tiny.gif");
-    image::DynamicImage::new_rgb8(4, 2)
-        .save_with_format(&path, image::ImageFormat::Gif)
+    let path = dir.path().join("provider-safe-tall.png");
+    image::GrayImage::new(1440, 8000)
+        .save_with_format(&path, image::ImageFormat::Png)
         .unwrap();
+    let original = std::fs::read(&path).unwrap();
 
     let out = exec_tool_output(
         &reg,
@@ -3401,21 +3896,329 @@ fn view_image_small_gif_passes_through_unchanged() {
         serde_json::json!({"path": path.to_str().unwrap()}),
     )
     .unwrap();
-    let n00n_agent::ToolOutput::Image { source, text } = out else {
+    let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
         panic!("expected Image output, got {out:?}");
     };
-    assert_eq!(source.media_type, n00n_agent::ImageMediaType::Gif);
-    assert!(
-        !text.contains("first frame only"),
-        "pass-through keeps animation, caption must not claim otherwise: {text}"
-    );
-    let decoded = base64::engine::general_purpose::STANDARD
+    assert_eq!(source.media_type, n00n_agent::ImageMediaType::Png);
+    assert!(text.contains("1440x8000"), "caption: {text}");
+    let shipped = base64::engine::general_purpose::STANDARD
         .decode(&*source.data)
         .unwrap();
+    assert_eq!(shipped, original);
+}
+
+#[test]
+fn view_image_over_transport_limit_returns_lossless_tile_without_jpeg_fallback() {
+    let (reg, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("oversized.png");
+    image::DynamicImage::new_rgb8(1, 1)
+        .save_with_format(&path, image::ImageFormat::Png)
+        .unwrap();
+    let mut original = std::fs::read(&path).unwrap();
+    original.resize(4 * 1024 * 1024, 0);
+    std::fs::write(&path, &original).unwrap();
+
+    let tile = exec_tool_output(
+        &reg,
+        "view_image",
+        serde_json::json!({"path": path.to_str().unwrap()}),
+    )
+    .unwrap();
+    let n00n_agent::ToolOutput::Image { source, text, .. } = tile else {
+        panic!("expected Image output, got {tile:?}");
+    };
+    assert_eq!(source.media_type, n00n_agent::ImageMediaType::Png);
+    assert!(text.contains("tile 1/1"), "caption: {text}");
+    assert!(text.contains("byte transport limit"), "caption: {text}");
+    assert_eq!(probe_output(&source.data).0, image::ImageFormat::Png);
     assert_eq!(
-        decoded,
         std::fs::read(&path).unwrap(),
-        "under-limit gif must ship byte-identical, not re-encoded"
+        original,
+        "tiling changed source file"
+    );
+}
+
+#[test]
+fn view_image_lossless_tiles_cover_source_once_without_gaps() {
+    use base64::Engine as _;
+
+    let (reg, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("grid.png");
+    let mut source_image = image::RgbaImage::new(5, 4);
+    for y in 0_u8..4 {
+        for x in 0_u8..5 {
+            source_image.put_pixel(
+                u32::from(x),
+                u32::from(y),
+                image::Rgba([x, y, x + 10 * y, 255]),
+            );
+        }
+    }
+    source_image
+        .save_with_format(&path, image::ImageFormat::Png)
+        .unwrap();
+    let original = std::fs::read(&path).unwrap();
+    let bounds = [(0, 0, 3, 2), (3, 0, 5, 2), (0, 2, 3, 4), (3, 2, 5, 4)];
+    let mut coverage = [0_u8; 20];
+
+    for (offset, &(x0, y0, x1, y1)) in bounds.iter().enumerate() {
+        let tile_index = offset + 1;
+        let out = exec_tool_output(
+            &reg,
+            "view_image",
+            serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "tile_index": tile_index,
+                "tile_width": 3,
+                "tile_height": 2,
+            }),
+        )
+        .unwrap();
+        let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
+            panic!("expected Image output, got {out:?}");
+        };
+        assert_eq!(source.media_type, n00n_agent::ImageMediaType::Png);
+        assert!(
+            text.contains(&format!("tile {tile_index}/4")),
+            "caption: {text}"
+        );
+        assert!(
+            text.contains(&format!("source bounds x=[{x0},{x1}) y=[{y0},{y1})")),
+            "caption: {text}"
+        );
+
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&*source.data)
+            .unwrap();
+        let tile = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+            .unwrap()
+            .to_rgba8();
+        assert_eq!(tile.dimensions(), (x1 - x0, y1 - y0));
+        for tile_y in 0..tile.height() {
+            for tile_x in 0..tile.width() {
+                let source_x = x0 + tile_x;
+                let source_y = y0 + tile_y;
+                assert_eq!(
+                    tile.get_pixel(tile_x, tile_y),
+                    source_image.get_pixel(source_x, source_y)
+                );
+                coverage[(source_y * 5 + source_x) as usize] += 1;
+            }
+        }
+    }
+
+    assert!(
+        coverage.iter().all(|&count| count == 1),
+        "coverage: {coverage:?}"
+    );
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        original,
+        "tiling changed source file"
+    );
+}
+
+#[test]
+fn view_image_rejects_crop_area_before_allocating_or_encoding() {
+    let (reg, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("crop-limit.png");
+    image::DynamicImage::new_rgb8(5, 4)
+        .save_with_format(&path, image::ImageFormat::Png)
+        .unwrap();
+
+    let err = exec_tool_output(
+        &reg,
+        "view_image",
+        serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "crop": [0, 0, 8000, 8000],
+        }),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("crop area must be at most 4000000 pixels"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn view_image_rejects_incompressible_tile_at_bounded_encode_limit() {
+    let (reg, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("incompressible.png");
+    let mut image = image::RgbaImage::new(1000, 1000);
+    let mut state = 0x1234_5678_u32;
+    for pixel in image.pixels_mut() {
+        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        *pixel = image::Rgba(state.to_le_bytes());
+    }
+    image
+        .save_with_format(&path, image::ImageFormat::Png)
+        .unwrap();
+
+    let err = exec_tool_output(
+        &reg,
+        "view_image",
+        serde_json::json!({"path": path.to_str().unwrap()}),
+    )
+    .unwrap_err();
+    assert!(err.contains("bounded"), "got: {err}");
+    assert!(err.contains("retry with smaller"), "got: {err}");
+}
+
+#[test]
+fn view_image_lossless_crop_reports_exact_source_bounds() {
+    let (reg, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("crop.png");
+    image::DynamicImage::new_rgb8(5, 4)
+        .save_with_format(&path, image::ImageFormat::Png)
+        .unwrap();
+
+    let out = exec_tool_output(
+        &reg,
+        "view_image",
+        serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "crop": [1, 1, 3, 2],
+        }),
+    )
+    .unwrap();
+    let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
+        panic!("expected Image output, got {out:?}");
+    };
+    assert_eq!(source.media_type, n00n_agent::ImageMediaType::Png);
+    assert!(
+        text.contains("crop source bounds x=[1,4) y=[1,3)"),
+        "caption: {text}"
+    );
+    assert_eq!(probe_output(&source.data), (image::ImageFormat::Png, 3, 2));
+}
+
+#[test]
+fn view_image_unicode_path_passes_through_unchanged() {
+    use base64::Engine as _;
+
+    let (reg, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("截图 100% [原始].png");
+    image::DynamicImage::new_rgb8(4, 2)
+        .save_with_format(&path, image::ImageFormat::Png)
+        .unwrap();
+    let original = std::fs::read(&path).unwrap();
+
+    let out = exec_tool_output(
+        &reg,
+        "view_image",
+        serde_json::json!({"path": path.to_str().unwrap()}),
+    )
+    .unwrap();
+    let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
+        panic!("expected Image output, got {out:?}");
+    };
+    assert!(text.contains("截图 100% [原始].png"), "caption: {text}");
+    let shipped = base64::engine::general_purpose::STANDARD
+        .decode(&*source.data)
+        .unwrap();
+    assert_eq!(shipped, original);
+}
+
+#[test]
+fn view_image_animated_gif_requires_explicit_capability_or_static_opt_in() {
+    use base64::Engine as _;
+    use image::AnimationDecoder as _;
+
+    let (reg, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("animated.gif");
+    let fixture = animated_gif_fixture();
+    let frames = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(&fixture))
+        .unwrap()
+        .into_frames()
+        .count();
+    assert_eq!(frames, 2, "fixture must contain multiple GIF frames");
+    std::fs::write(&path, &fixture).unwrap();
+
+    let err = exec_tool_output(
+        &reg,
+        "view_image",
+        serde_json::json!({"path": path.to_str().unwrap()}),
+    )
+    .unwrap_err();
+    assert!(err.contains("GIF"), "got: {err}");
+    assert!(err.contains("allow_gif_animation=true"), "got: {err}");
+
+    let raw = exec_tool_output(
+        &reg,
+        "view_image",
+        serde_json::json!({"path": path.to_str().unwrap(), "allow_gif_animation": true}),
+    )
+    .unwrap();
+    let n00n_agent::ToolOutput::Image { source, .. } = raw else {
+        panic!("expected Image output, got {raw:?}");
+    };
+    assert_eq!(source.media_type, n00n_agent::ImageMediaType::Gif);
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(&*source.data)
+            .unwrap(),
+        fixture
+    );
+
+    let out = exec_tool_output(
+        &reg,
+        "view_image",
+        serde_json::json!({"path": path.to_str().unwrap(), "static_image": true}),
+    )
+    .unwrap();
+    let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
+        panic!("expected Image output, got {out:?}");
+    };
+    assert_eq!(source.media_type, n00n_agent::ImageMediaType::Png);
+    assert!(
+        text.contains("explicit static first frame"),
+        "caption: {text}"
+    );
+}
+
+#[test]
+fn view_image_animated_webp_requires_explicit_static_opt_in() {
+    use base64::Engine as _;
+
+    let (reg, _host) = builtins_host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("animated.webp");
+    let fixture = base64::engine::general_purpose::STANDARD
+        .decode(ANIMATED_WEBP_BASE64)
+        .unwrap();
+    assert!(fixture.windows(4).any(|chunk| chunk == b"ANMF"));
+    std::fs::write(&path, fixture).unwrap();
+
+    let err = exec_tool_output(
+        &reg,
+        "view_image",
+        serde_json::json!({"path": path.to_str().unwrap()}),
+    )
+    .unwrap_err();
+    assert!(err.contains("animated webp"), "got: {err}");
+    assert!(err.contains("static_image=true"), "got: {err}");
+
+    let out = exec_tool_output(
+        &reg,
+        "view_image",
+        serde_json::json!({"path": path.to_str().unwrap(), "static_image": true}),
+    )
+    .unwrap();
+    let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
+        panic!("expected Image output, got {out:?}");
+    };
+    assert_eq!(source.media_type, n00n_agent::ImageMediaType::Png);
+    assert!(
+        text.contains("explicit static first frame"),
+        "caption: {text}"
     );
 }
 
@@ -3797,4 +4600,44 @@ fn job_callbacks_fire_while_command_handler_parked() {
         .recv_timeout(Duration::from_secs(5))
         .expect("job callbacks starved while command handler was parked");
     assert!(matches!(action, n00n_lua::UiAction::Flash(msg) if msg == "job:hi"));
+}
+
+#[test]
+fn skill_tool_list_returns_catalog() {
+    let (reg, _host) = builtins_host();
+    let out = exec_tool(&reg, "skill", serde_json::json!({"list": true})).unwrap();
+    assert!(
+        out.contains("<available_skills>"),
+        "list=true should return skill catalog"
+    );
+}
+
+#[test]
+fn skill_tool_missing_name_returns_available_names() {
+    let (reg, _host) = builtins_host();
+    let out = exec_tool(&reg, "skill", serde_json::json!({})).unwrap_err();
+    assert!(out.contains("error:"), "missing name should be an error");
+    assert!(
+        out.contains("Available skills"),
+        "missing name should list available skills"
+    );
+}
+
+#[test]
+fn skill_tool_unknown_name_returns_available_names() {
+    let (reg, _host) = builtins_host();
+    let out = exec_tool(
+        &reg,
+        "skill",
+        serde_json::json!({"name": "nonexistent-skill"}),
+    )
+    .unwrap_err();
+    assert!(
+        out.contains("skill not found"),
+        "unknown skill should be reported"
+    );
+    assert!(
+        out.contains("Available skills"),
+        "unknown skill should list available skills"
+    );
 }

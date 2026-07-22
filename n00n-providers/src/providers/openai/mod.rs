@@ -3,7 +3,7 @@ mod platform;
 pub(crate) mod responses;
 pub(crate) mod websocket;
 
-pub use platform::OpenAi;
+pub use platform::{OpenAi, OpenAiOptions};
 
 use crate::model::{ModelEntry, ModelFamily, ModelPricing, ModelTier};
 
@@ -22,6 +22,7 @@ inventory::submit!(n00n_config::providers::BuiltInProvider {
     needs_url: false,
 });
 
+#[allow(clippy::too_many_lines)]
 pub(crate) fn models() -> &'static [ModelEntry] {
     &[
         ModelEntry {
@@ -308,6 +309,7 @@ mod tests {
     #[test_case("gpt-5.6-luna", ModelTier::Weak, 1.0, 0.1, 1.25, 6.0)]
     #[test_case("gpt-5.6-terra", ModelTier::Medium, 2.5, 0.25, 3.125, 15.0)]
     #[test_case("gpt-5.6-sol", ModelTier::Strong, 5.0, 0.5, 6.25, 30.0)]
+    #[allow(clippy::float_cmp)]
     fn gpt_5_6_models_have_expected_tier_and_short_context_pricing(
         model_id: &str,
         tier: ModelTier,

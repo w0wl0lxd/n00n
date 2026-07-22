@@ -79,6 +79,11 @@ fn discover_token() -> Result<ProviderCredentials, AgentError> {
     })
 }
 
+/// Authenticate with Copilot.
+///
+/// # Errors
+///
+/// Returns an `AgentError` if token discovery or credential storage fails.
 pub fn login(dir: &StateDir) -> Result<(), AgentError> {
     if load_token().is_ok() {
         println!("Already authenticated with Copilot.");
@@ -86,12 +91,17 @@ pub fn login(dir: &StateDir) -> Result<(), AgentError> {
     }
 
     let creds = discover_token()?;
-    let host = creds.host.as_deref().unwrap_or(DEFAULT_HOST);
+    let host = creds.host.as_deref().unwrap_or_else(|| DEFAULT_HOST);
     println!("Copilot token imported from gh CLI / Copilot client config ({host}).");
     save_provider_credentials(dir, PROVIDER, &creds)?;
     Ok(())
 }
 
+/// Clear Copilot credentials.
+///
+/// # Errors
+///
+/// Returns an `AgentError` if credential deletion fails.
 pub fn logout(dir: &StateDir) -> Result<(), AgentError> {
     if delete_provider_credentials(dir, PROVIDER)? {
         println!("Logged out of Copilot.");
@@ -106,16 +116,16 @@ fn is_github_host(host: &str) -> bool {
 }
 
 fn copilot_config_paths() -> Vec<PathBuf> {
-    config_dir()
-        .map(|config| config.join("github-copilot"))
-        .map(|base| vec![base.join("hosts.json"), base.join("apps.json")])
-        .unwrap_or_default()
+    config_dir().map_or_else(Default::default, |config| {
+        let base = config.join("github-copilot");
+        vec![base.join("hosts.json"), base.join("apps.json")]
+    })
 }
 
 fn gh_config_paths() -> Vec<PathBuf> {
-    config_dir()
-        .map(|config| vec![config.join("gh").join("hosts.yml")])
-        .unwrap_or_default()
+    config_dir().map_or_else(Default::default, |config| {
+        vec![config.join("gh").join("hosts.yml")]
+    })
 }
 
 fn config_dir() -> Option<PathBuf> {

@@ -44,10 +44,10 @@ fn parse_frontmatter(content: &str) -> (Frontmatter, &str) {
         return (Frontmatter::default(), content);
     };
 
-    let yaml = &rest[1..end + 1];
+    let yaml = &rest[1..=end];
     let body = rest[end + 4..].trim();
 
-    let fm = serde_yaml::from_str(yaml).unwrap_or_default();
+    let fm = serde_yaml::from_str(yaml).unwrap_or_else(|_| Frontmatter::default());
     (fm, body)
 }
 
@@ -67,6 +67,7 @@ pub struct CustomCommand {
 }
 
 impl CustomCommand {
+    #[must_use]
     pub fn display_name(&self) -> String {
         let prefix = match self.scope {
             CommandScope::Project => "/project",
@@ -75,15 +76,18 @@ impl CustomCommand {
         format!("{prefix}:{}", self.name)
     }
 
+    #[must_use]
     pub fn has_args(&self) -> bool {
         self.accepts_args
     }
 
+    #[must_use]
     pub fn render(&self, args: &str) -> String {
         self.content.replace(ARGUMENTS_PLACEHOLDER, args)
     }
 }
 
+#[must_use]
 pub fn discover_commands(cwd: &Path) -> Vec<CustomCommand> {
     discover_commands_inner(
         cwd,
@@ -100,17 +104,17 @@ fn discover_commands_inner(
     let mut commands: HashMap<String, CustomCommand> = HashMap::new();
 
     for dir in n00n_storage::paths::user_config_dirs(home, xdg_config, "commands") {
-        scan_command_dir(&dir, CommandScope::User, &mut commands);
+        scan_command_dir(&dir, &CommandScope::User, &mut commands);
     }
     if let Some(home) = home {
         for dir in GLOBAL_THIRD_PARTY_COMMAND_DIRS {
-            scan_command_dir(&home.join(dir), CommandScope::User, &mut commands);
+            scan_command_dir(&home.join(dir), &CommandScope::User, &mut commands);
         }
     }
 
     for dir in find_project_ancestor_dirs(cwd) {
         for cmd_dir in PROJECT_COMMAND_DIRS {
-            scan_command_dir(&dir.join(cmd_dir), CommandScope::Project, &mut commands);
+            scan_command_dir(&dir.join(cmd_dir), &CommandScope::Project, &mut commands);
         }
     }
 
@@ -122,7 +126,7 @@ fn discover_commands_inner(
 
 fn scan_command_dir(
     dir: &Path,
-    scope: CommandScope,
+    scope: &CommandScope,
     commands: &mut HashMap<String, CustomCommand>,
 ) {
     let Ok(entries) = fs::read_dir(dir) else {
@@ -155,7 +159,10 @@ fn parse_command(content: &str, path: &Path, scope: CommandScope) -> Option<Cust
     let (fm, body) = parse_frontmatter(content);
 
     if body.is_empty() {
-        let name = fm.name.as_deref().unwrap_or(&name_from_file);
+        let name = fm
+            .name
+            .as_deref()
+            .map_or_else(|| name_from_file.as_str(), |v| v);
         warn!(command = name, path = ?path, "command file has no content, skipping");
         return None;
     }
@@ -163,8 +170,8 @@ fn parse_command(content: &str, path: &Path, scope: CommandScope) -> Option<Cust
     let accepts_args = fm.argument_hint.is_some() || body.contains(ARGUMENTS_PLACEHOLDER);
 
     Some(CustomCommand {
-        name: fm.name.unwrap_or(name_from_file),
-        description: fm.description.unwrap_or_default(),
+        name: fm.name.unwrap_or_else(|| name_from_file.clone()),
+        description: fm.description.unwrap_or_else(String::new),
         content: body.to_string(),
         scope,
         accepts_args,

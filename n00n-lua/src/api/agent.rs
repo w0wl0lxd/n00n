@@ -1,12 +1,11 @@
 //! `n00n.agent` exposes subagent primitives to Lua plugins. Policy (retries,
 //! validation, concurrency) lives in the task plugin, not here.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque, hash_map::Entry};
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use async_lock::Mutex as AsyncMutex;
@@ -22,7 +21,7 @@ use n00n_agent::tools::{
 };
 use n00n_agent::{
     Agent, AgentEvent, AgentInput, AgentMode, AgentParams, AgentRunParams, Envelope, EventSender,
-    History, SubagentInfo, SubagentPrompt, ToolDoneEvent,
+    History, SubagentInfo, SubagentPrompt, ToolDoneEvent, ToolStartEvent,
 };
 use n00n_lua_macro::{lua_class, lua_fn, lua_table};
 use n00n_providers::model::ModelTier;
@@ -40,8 +39,24 @@ use crate::api::util::ctx::{AgentContext, LuaCtx};
 const SESSION_CLOSED_ERR: &str = "session closed";
 const DEFAULT_SESSION_AUDIENCE: ToolAudience = ToolAudience::GENERAL_SUB;
 const PROGRESS_MAX_RECENT: usize = 5;
-const ACTIVITY_TOOL_MAX_BYTES: usize = 64;
-const ACTIVITY_ID_MAX_BYTES: usize = 128;
+const ACTIVITY_MESSAGE_MAX_CHARS: usize = 80;
+const REDACTED: &str = "[REDACTED]";
+const SAFE_ACTIVITY_DESCRIPTION_TOOLS: &[&str] = &[
+    "batch",
+    "code_execution",
+    "edit",
+    "glob",
+    "grep",
+    "index",
+    "memory",
+    "multiedit",
+    "question",
+    "read",
+    "skill",
+    "todo_write",
+    "view_image",
+    "write",
+];
 const PROGRESS_TIMEOUT_MS: u64 = 500;
 const STEERING_QUEUE_CAPACITY: usize = 32;
 
@@ -56,7 +71,7 @@ fn resolve_model_from_ctx(ctx: &AgentContext, tier: Option<&str>) -> Result<Mode
     }
     let map = n00n_providers::model_registry::model_registry()
         .read()
-        .unwrap();
+        .map_err(|e| format!("model registry lock poisoned: {e}"))?;
     ctx.model
         .dynamic_slug
         .is_none()
@@ -64,15 +79,17 @@ fn resolve_model_from_ctx(ctx: &AgentContext, tier: Option<&str>) -> Result<Mode
         .flatten()
         .or_else(|| map.spec_for_tier_any(effective))
         .and_then(|s| Model::from_spec(&s).ok())
-        .map(Ok)
-        .unwrap_or_else(|| {
-            Model::from_tier_dynamic(
-                ctx.model.provider,
-                effective,
-                ctx.model.dynamic_slug.as_deref(),
-            )
-            .map_err(|e| e.to_string())
-        })
+        .map_or_else(
+            || {
+                Model::from_tier_dynamic(
+                    ctx.model.provider,
+                    effective,
+                    ctx.model.dynamic_slug.as_deref(),
+                )
+                .map_err(|e| e.to_string())
+            },
+            Ok,
+        )
 }
 
 fn model_to_lua_table(lua: &Lua, model: &Model) -> LuaResult<Table> {
@@ -91,6 +108,7 @@ fn dispatch_ctx<'a>(ctx: &'a LuaCtx, method: &str) -> Result<&'a AgentContext, S
 
 type Pair<T> = (Option<T>, Option<String>);
 
+#[allow(clippy::needless_pass_by_value)]
 fn err_pair<T>(err: impl ToString) -> Pair<T> {
     (None, Some(err.to_string()))
 }
@@ -126,8 +144,9 @@ macro_rules! try_pair {
 /// if err then error(err) end
 /// print(model.spec, model.tier)
 #[lua_fn]
-async fn resolve_model(
-    lua: Lua,
+#[allow(clippy::needless_pass_by_value)]
+fn resolve_model(
+    lua: &Lua,
     ctx: mlua::UserDataRef<LuaCtx>,
     opts: Option<Table>,
 ) -> LuaResult<Pair<Table>> {
@@ -143,37 +162,110 @@ async fn resolve_model(
         Some(ref spec) => try_pair!(Model::from_spec(spec)),
         None => try_pair!(resolve_model_from_ctx(agent, tier_str.as_deref())),
     };
-    Ok((Some(model_to_lua_table(&lua, &model)?), None))
+    Ok((Some(model_to_lua_table(lua, &model)?), None))
+}
+
+fn fresh_input_from_legacy_total(
+    total: u32,
+    fresh: Option<u32>,
+    cache_read: u32,
+    cache_write: u32,
+) -> Result<u32, String> {
+    let cached = cache_read.checked_add(cache_write).ok_or_else(|| {
+        "cache_read_tokens + cache_write_tokens exceeds the token counter range".to_owned()
+    })?;
+    let conserved_fresh = total.checked_sub(cached).ok_or_else(|| {
+        format!(
+            "input token categories do not conserve total: cache_read_tokens ({cache_read}) + \
+             cache_write_tokens ({cache_write}) exceeds input_tokens ({total})"
+        )
+    })?;
+
+    if let Some(fresh) = fresh
+        && fresh != conserved_fresh
+    {
+        return Err(format!(
+            "input token categories do not conserve total: fresh_input_tokens ({fresh}) + \
+             cache_read_tokens ({cache_read}) + cache_write_tokens ({cache_write}) != \
+             input_tokens ({total})"
+        ));
+    }
+
+    Ok(conserved_fresh)
 }
 
 /// Estimate the dollar cost of a completion from its model spec and token
-/// counts. Uses the provider's published pricing (input/output/cache write/
-/// read), so orchestrators like Team can report cost without bundling a
-/// price table.
+/// counts. Uses the provider's published pricing for fresh input, cache reads,
+/// cache writes, and output. Without {breakdown}, input and fast-tier pricing
+/// retain the legacy three-argument behavior.
 ///
 /// @param spec string Model spec, e.g. `"anthropic/claude-haiku-4-5"`.
-/// @param input_tokens integer Prompt tokens.
+/// @param input_tokens integer Total prompt tokens across all input categories.
 /// @param output_tokens integer Completion tokens.
+/// @param breakdown table? Optional input categories. Fields:
+///   `fresh_input_tokens` (integer?) - non-cached input; when present, it must
+///     conserve `input_tokens` together with the cache categories.
+///   `cache_read_tokens` (integer?) - input tokens read from cache; default 0.
+///   `cache_write_tokens` (integer?) - input tokens written to cache; default 0.
+///   `fast` (boolean?) - whether this completion used fast-tier pricing; default false.
 /// @return (number?, string?) Estimated USD cost, or `(nil, err)` on failure.
 /// @example
-/// local cost, err = n00n.agent.usage_cost("anthropic/claude-haiku-4-5", 1200, 300)
+/// local cost, err = n00n.agent.usage_cost("anthropic/claude-haiku-4-5", 1200, 300, {
+///   fresh_input_tokens = 900,
+///   cache_read_tokens = 200,
+///   cache_write_tokens = 100,
+/// })
 /// if err then error(err) end
 /// print(string.format("$%.4f", cost))
 #[lua_fn]
+#[allow(clippy::needless_pass_by_value)]
 fn usage_cost(
     _lua: &Lua,
     spec: String,
     input_tokens: u32,
     output_tokens: u32,
+    breakdown: Option<Table>,
 ) -> LuaResult<Pair<f64>> {
     let model = try_pair!(Model::from_spec(&spec));
-    let usage = TokenUsage {
-        input: input_tokens,
-        output: output_tokens,
-        cache_creation: 0,
-        cache_read: 0,
+    let (fresh, cache_read, cache_write, fast) = match breakdown {
+        Some(breakdown) => {
+            let fresh =
+                try_pair!(breakdown.get::<Option<u32>>("fresh_input_tokens").map_err(
+                    |error| format!("invalid breakdown field 'fresh_input_tokens': {error}")
+                ));
+            let cache_read =
+                try_pair!(breakdown.get::<Option<u32>>("cache_read_tokens").map_err(
+                    |error| format!("invalid breakdown field 'cache_read_tokens': {error}")
+                ))
+                .map_or(0, |tokens| tokens);
+            let cache_write =
+                try_pair!(breakdown.get::<Option<u32>>("cache_write_tokens").map_err(
+                    |error| format!("invalid breakdown field 'cache_write_tokens': {error}")
+                ))
+                .map_or(0, |tokens| tokens);
+            let fast = try_pair!(
+                breakdown
+                    .get::<Option<bool>>("fast")
+                    .map_err(|error| format!("invalid breakdown field 'fast': {error}"))
+            )
+            .is_some_and(|fast| fast);
+            (fresh, cache_read, cache_write, fast)
+        }
+        None => (None, 0, 0, model.supports_fast()),
     };
-    let cost = usage.cost(&model.pricing, model.supports_fast());
+    let fresh_input = try_pair!(fresh_input_from_legacy_total(
+        input_tokens,
+        fresh,
+        cache_read,
+        cache_write,
+    ));
+    let usage = TokenUsage {
+        input: fresh_input,
+        output: output_tokens,
+        cache_creation: cache_write,
+        cache_read,
+    };
+    let cost = usage.cost(&model.pricing, fast);
     Ok((Some(cost), None))
 }
 
@@ -196,6 +288,7 @@ fn usage_cost(
 /// })
 /// if err then error(err) end
 #[lua_fn]
+#[allow(clippy::needless_pass_by_value)]
 async fn system_prompt(
     _lua: Lua,
     ctx: mlua::UserDataRef<LuaCtx>,
@@ -249,7 +342,8 @@ async fn system_prompt(
 /// if err then error(err) end
 /// print(#defs .. " tools available")
 #[lua_fn]
-async fn tools(lua: Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pair<LuaValue>> {
+#[allow(clippy::needless_pass_by_value)]
+fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pair<LuaValue>> {
     let agent = try_pair!(dispatch_ctx(&ctx, "tools"));
     let audience_str: String = opts.get("audience")?;
     let audience = try_pair!(
@@ -259,14 +353,18 @@ async fn tools(lua: Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResu
 
     let only: Option<Vec<String>> = opts.get("only")?;
     let except: Option<Vec<String>> = opts.get("except")?;
-    let include_mcp: bool = opts.get::<Option<bool>>("include_mcp")?.unwrap_or(true);
-    let workflow: bool = opts.get::<Option<bool>>("workflow")?.unwrap_or(false);
+    let include_mcp: bool = opts.get::<Option<bool>>("include_mcp")?.map_or(true, |v| v);
+    let workflow: bool = opts.get::<Option<bool>>("workflow")?.map_or(false, |v| v);
     let spec_str: Option<String> = opts.get("spec")?;
 
     let parsed = spec_str
         .as_deref()
         .and_then(|spec| Model::from_spec(spec).ok());
-    let model = parsed.as_ref().unwrap_or(&agent.model);
+    let model = if let Some(ref m) = parsed {
+        m
+    } else {
+        &agent.model
+    };
 
     let base = match (only, except) {
         (Some(o), _) => ToolFilter::Only(o),
@@ -296,7 +394,7 @@ async fn tools(lua: Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResu
         mcp.extend_tools(&mut defs);
     }
 
-    Ok((Some(json_to_lua(&lua, &defs)?), None))
+    Ok((Some(json_to_lua(lua, &defs)?), None))
 }
 
 /// Run a tool by name and wait for the result. This is how you call built-in
@@ -406,6 +504,8 @@ async fn call_tool(
 /// local result = sess:prompt("Summarize this file.")
 /// sess:close()
 #[lua_fn]
+#[allow(clippy::too_many_lines)]
+#[allow(clippy::cast_possible_truncation)]
 async fn session(
     lua: Lua,
     ctx: mlua::UserDataRef<LuaCtx>,
@@ -425,14 +525,21 @@ async fn session(
         }
         None => DEFAULT_SESSION_AUDIENCE,
     };
-    let fast: bool = opts
+    let requested_fast: bool = opts
         .get::<Option<bool>>("fast")?
-        .unwrap_or(agent_ctx.opts.fast);
+        .map_or(agent_ctx.opts.fast, |v| v);
 
     let (model, provider): (Model, Arc<dyn provider::Provider>) = if let Some(ref spec) = model_spec
     {
         let mut m = try_pair!(Model::from_spec(spec));
-        let p = try_pair!(provider::from_model_async(&mut m, agent_ctx.timeouts).await);
+        let p = try_pair!(
+            provider::from_model_async_with_openai_options(
+                &mut m,
+                agent_ctx.timeouts,
+                agent_ctx.openai_options,
+            )
+            .await
+        );
         (m, Arc::from(p))
     } else {
         (
@@ -440,6 +547,7 @@ async fn session(
             Arc::clone(&agent_ctx.provider),
         )
     };
+    let fast = requested_fast && model.supports_fast();
     // A standalone task shows its model via SubagentInfo on the header;
     // a dispatching caller (batch) gets the same thing as a live annotation.
     if let Some(sink) = &agent_ctx.live_sink {
@@ -459,7 +567,9 @@ async fn session(
 
     let mut local_map: HashMap<String, LocalToolFn> = HashMap::new();
     if let Some(tbl) = local_tools_tbl {
-        let defs = tools_json.as_array_mut().expect("checked above");
+        let defs = tools_json
+            .as_array_mut()
+            .unwrap_or_else(|| unreachable!("tools_json is always an array here"));
         for pair in tbl.pairs::<String, Table>() {
             let (name, spec) = pair?;
             let description = try_pair!(
@@ -495,7 +605,9 @@ async fn session(
             _ => return Ok(err_pair(format!("invalid thinking budget: {n}"))),
         },
         Some(LuaValue::Number(n)) if n >= 1.0 && n <= f64::from(u32::MAX) => {
-            ThinkingConfig::Budget(n as u32)
+            let tokens = u32::try_from(n as i64)
+                .map_err(|_| mlua::Error::runtime(format!("invalid thinking budget: {n}")))?;
+            ThinkingConfig::Budget(tokens)
         }
         Some(LuaValue::Number(n)) => {
             return Ok(err_pair(format!("invalid thinking budget: {n}")));
@@ -516,28 +628,25 @@ async fn session(
     let progress = Arc::new(Progress::new(start, child_id.clone()));
 
     let subagent_info: Arc<OnceLock<SubagentInfo>> = Arc::new(OnceLock::new());
-    let total_input = Arc::new(AtomicU32::new(0));
-    let total_output = Arc::new(AtomicU32::new(0));
+    let usage = TokenUsage::default();
+    let cost = 0.0;
 
     {
         let info = Arc::clone(&subagent_info);
-        let ti = Arc::clone(&total_input);
-        let to = Arc::clone(&total_output);
         let progress = Arc::clone(&progress);
         let parent_tx = parent_tx.clone();
         smol::spawn(async move {
             while let Ok(mut envelope) = sub_rx.recv_async().await {
                 match &envelope.event {
-                    AgentEvent::Done { usage, .. } => {
-                        ti.fetch_add(usage.total_input(), Ordering::Relaxed);
-                        to.fetch_add(usage.output, Ordering::Relaxed);
+                    AgentEvent::Done { .. } => {
+                        progress.record_forwarder_barrier();
                         continue;
                     }
                     AgentEvent::ToolStart(e) => {
-                        progress.start_action(&e.id, &e.tool);
+                        progress.record_start(e);
                     }
                     AgentEvent::ToolDone(e) => {
-                        progress.finish_action(&e.id, &e.tool, e.is_error);
+                        progress.record_done(e);
                     }
                     AgentEvent::Error { .. }
                     | AgentEvent::ToolOutput { .. }
@@ -557,7 +666,7 @@ async fn session(
         .subagent_cancels
         .insert(child_id.clone(), child_trigger);
 
-    let name = name.unwrap_or_default();
+    let name = name.unwrap_or_else(|| format!("session-{child_id}"));
     info!(name = %name, model = %model.id, "subagent session opened");
 
     let state = SessionState {
@@ -569,13 +678,14 @@ async fn session(
             permissions: Arc::clone(&agent_ctx.permissions),
             session_id: Some(session_id.into()),
             timeouts: agent_ctx.timeouts,
+            openai_options: agent_ctx.openai_options,
             file_tracker: FileReadTracker::fresh(),
             prompt_slots: Arc::clone(&agent_ctx.prompt_slots),
             subagent_cancels: Arc::new(CancelMap::new()),
             registry: Arc::clone(n00n_agent::tools::ToolRegistry::global_arc()),
             audience,
         },
-        system: system.unwrap_or_default(),
+        system: system.unwrap_or_else(String::new),
         tools: tools_json,
         thinking,
         fast,
@@ -594,8 +704,8 @@ async fn session(
         subagent_info,
         local_tools: Arc::new(local_map),
         name,
-        total_input,
-        total_output,
+        usage,
+        cost,
         start,
         closed: false,
         failed: false,
@@ -645,8 +755,8 @@ struct LiveCallbacks<'a> {
 impl LiveCallbacks<'_> {
     async fn deliver(&self, ev: ToolLive) {
         let res = match ev {
-            ToolLive::Buf(buf) => call_opt(&self.on_buf, BufHandle::foreign(buf)).await,
-            ToolLive::Annotation(ann) => call_opt(&self.on_ann, ann).await,
+            ToolLive::Buf(buf) => call_opt(self.on_buf.as_ref(), BufHandle::foreign(buf)).await,
+            ToolLive::Annotation(ann) => call_opt(self.on_ann.as_ref(), ann).await,
         };
         if let Some(Err(e)) = res {
             tracing::warn!(tool = self.tool, error = %e, "call_tool callback failed");
@@ -654,7 +764,7 @@ impl LiveCallbacks<'_> {
     }
 }
 
-async fn call_opt(f: &Option<Function>, arg: impl IntoLuaMulti) -> Option<LuaResult<()>> {
+async fn call_opt(f: Option<&Function>, arg: impl IntoLuaMulti) -> Option<LuaResult<()>> {
     match f {
         Some(f) => Some(f.call_async::<()>(arg).await),
         None => None,
@@ -699,37 +809,159 @@ async fn dispatch_racing_live(
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+fn activity_message(event: &ToolStartEvent) -> Option<String> {
+    if !SAFE_ACTIVITY_DESCRIPTION_TOOLS.contains(&event.tool.as_ref()) {
+        return None;
+    }
+    let rendered_header = event
+        .render_header
+        .as_ref()
+        .map(n00n_agent::BufferSnapshot::first_line_text);
+    rendered_header
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+        .or_else(|| (!event.summary.trim().is_empty()).then_some(event.summary.as_str()))
+        .or_else(|| {
+            event
+                .annotation
+                .as_deref()
+                .filter(|text| !text.trim().is_empty())
+        })
+        .map(sanitize_activity_message)
+}
+
+fn sanitize_activity_message(raw: &str) -> String {
+    let words = raw.split_whitespace().collect::<Vec<_>>();
+    let mut sanitized = Vec::with_capacity(words.len());
+    let mut index = 0;
+    while index < words.len() {
+        let word = words[index];
+        if word.eq_ignore_ascii_case("bearer") {
+            sanitized.push(format!("Bearer {REDACTED}"));
+            index = index.saturating_add(2);
+            continue;
+        }
+
+        let separator = word.find(['=', ':']);
+        let key = separator.map_or(word, |position| &word[..position]);
+        if is_sensitive_key(key) || is_sensitive_key(word) {
+            let separator_char =
+                separator.map_or('=', |position| word.as_bytes()[position] as char);
+            sanitized.push(format!("{key}{separator_char}{REDACTED}"));
+            let inline_value = separator.and_then(|position| word.get(position + 1..));
+            index += 1;
+            if inline_value.is_some_and(|value| value.eq_ignore_ascii_case("bearer")) {
+                index = index.saturating_add(1).min(words.len());
+            } else if inline_value.is_none_or(str::is_empty) {
+                if words
+                    .get(index)
+                    .is_some_and(|next| *next == "=" || *next == ":")
+                {
+                    index += 1;
+                }
+                if words
+                    .get(index)
+                    .is_some_and(|next| next.eq_ignore_ascii_case("bearer"))
+                {
+                    index += 1;
+                }
+                if index < words.len() {
+                    index += 1;
+                }
+            }
+            continue;
+        }
+
+        let secret_value = separator.map_or(word, |position| &word[position + 1..]);
+        if is_secret_token(secret_value) {
+            let prefix = separator.map_or("", |position| &word[..=position]);
+            sanitized.push(format!("{prefix}{REDACTED}"));
+        } else {
+            sanitized.push(word.to_owned());
+        }
+        index += 1;
+    }
+    truncate_activity_message(&sanitized.join(" "))
+}
+
+fn is_sensitive_key(value: &str) -> bool {
+    let normalized: String = value
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .flat_map(char::to_lowercase)
+        .collect();
+    [
+        "apikey",
+        "accesstoken",
+        "authtoken",
+        "authorization",
+        "password",
+        "passwd",
+        "secret",
+        "privatekey",
+        "clientsecret",
+    ]
+    .iter()
+    .any(|key| normalized.contains(key))
+}
+
+fn is_secret_token(value: &str) -> bool {
+    let lower = value
+        .trim_matches(|character: char| !character.is_ascii_alphanumeric())
+        .to_ascii_lowercase();
+    ["sk-", "ghp_", "github_pat_", "glpat-", "xoxb-", "xoxp-"]
+        .iter()
+        .any(|prefix| lower.contains(prefix))
+        || lower.starts_with("akia")
+        || lower.starts_with("aiza")
+}
+
+fn truncate_activity_message(message: &str) -> String {
+    if message.chars().count() <= ACTIVITY_MESSAGE_MAX_CHARS {
+        return message.to_owned();
+    }
+    let mut truncated: String = message
+        .chars()
+        .take(ACTIVITY_MESSAGE_MAX_CHARS.saturating_sub(1))
+        .collect();
+    truncated.push('…');
+    truncated
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ActivityStatus {
     Running,
-    Done,
-    Failed,
+    Success,
+    Error,
 }
 
 impl ActivityStatus {
     const fn as_str(self) -> &'static str {
         match self {
             Self::Running => "running",
-            Self::Done => "done",
-            Self::Failed => "failed",
+            Self::Success => "success",
+            Self::Error => "error",
         }
     }
 }
 
-struct ActivityAction {
-    tool_call_id: String,
-    sequence: u64,
+#[derive(Debug, Clone)]
+struct Activity {
+    id: String,
     tool: String,
+    message: Option<String>,
     status: ActivityStatus,
 }
 
 struct ProgressState {
     current: Option<String>,
     recent: VecDeque<String>,
-    actions: VecDeque<ActivityAction>,
-    next_sequence: u64,
+    activities: VecDeque<Activity>,
     done: bool,
     completed_count: u64,
+    active_activity_counts: HashMap<String, usize>,
+    turn_id: u64,
+    forwarded_barriers: u64,
 }
 
 struct Progress {
@@ -738,6 +970,8 @@ struct Progress {
     state: Mutex<ProgressState>,
     tx: flume::Sender<()>,
     rx: flume::Receiver<()>,
+    barrier_tx: flume::Sender<()>,
+    barrier_rx: flume::Receiver<()>,
 }
 
 fn sanitize_activity_value(value: &str, max_bytes: usize, fallback: &str) -> String {
@@ -760,105 +994,208 @@ fn sanitize_activity_value(value: &str, max_bytes: usize, fallback: &str) -> Str
 impl Progress {
     fn new(start: Instant, session_id: String) -> Self {
         let (tx, rx) = flume::unbounded();
+        let (barrier_tx, barrier_rx) = flume::bounded(1);
         Self {
             session_id,
             start,
             state: Mutex::new(ProgressState {
                 current: None,
                 recent: VecDeque::new(),
-                actions: VecDeque::new(),
-                next_sequence: 1,
+                activities: VecDeque::new(),
                 done: false,
                 completed_count: 0,
+                active_activity_counts: HashMap::new(),
+                turn_id: 0,
+                forwarded_barriers: 0,
             }),
             tx,
             rx,
+            barrier_tx,
+            barrier_rx,
         }
     }
 
     fn notify(&self) {
-        let _ = self.tx.send(());
+        let _ = self.tx.try_send(());
     }
 
-    fn start_action(&self, tool_call_id: &str, tool: &str) {
-        let id = sanitize_activity_value(tool_call_id, ACTIVITY_ID_MAX_BYTES, "call");
-        let tool = sanitize_activity_value(tool, ACTIVITY_TOOL_MAX_BYTES, "tool");
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.current = Some(tool.clone());
-        if let Some(action) = state
-            .actions
-            .iter_mut()
-            .find(|action| action.tool_call_id == id)
-        {
-            action.status = ActivityStatus::Running;
-            action.tool = tool;
-        } else {
-            if state.actions.len() >= PROGRESS_MAX_RECENT {
-                state.actions.pop_front();
+    fn begin_turn(&self) -> u64 {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.turn_id = state.turn_id.saturating_add(1);
+        state.done = false;
+        state.current = None;
+        let turn_id = state.turn_id;
+        drop(state);
+        self.notify();
+        turn_id
+    }
+
+    fn next_forwarder_barrier(&self) -> u64 {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .forwarded_barriers
+            .saturating_add(1)
+    }
+
+    fn record_forwarder_barrier(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.forwarded_barriers = state.forwarded_barriers.saturating_add(1);
+        drop(state);
+        let _ = self.barrier_tx.try_send(());
+    }
+
+    async fn wait_for_forwarder_barrier(&self, target: u64) {
+        loop {
+            let reached = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .forwarded_barriers
+                >= target;
+            if reached || self.barrier_rx.recv_async().await.is_err() {
+                return;
             }
-            let sequence = state.next_sequence;
-            state.next_sequence = state.next_sequence.saturating_add(1);
-            state.actions.push_back(ActivityAction {
-                tool_call_id: id,
-                sequence,
-                tool,
-                status: ActivityStatus::Running,
-            });
         }
+    }
+
+    fn record_start(&self, event: &ToolStartEvent) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let active_count = state
+            .active_activity_counts
+            .entry(event.id.clone())
+            .or_insert(0);
+        *active_count = active_count.saturating_add(1);
+        if state.activities.len() >= PROGRESS_MAX_RECENT {
+            state.activities.pop_front();
+        }
+        state.activities.push_back(Activity {
+            id: event.id.clone(),
+            tool: event.tool.to_string(),
+            message: activity_message(event),
+            status: ActivityStatus::Running,
+        });
+        state.current = Some(event.tool.to_string());
         drop(state);
         self.notify();
     }
 
-    fn finish_action(&self, tool_call_id: &str, tool: &str, is_error: bool) {
-        let id = sanitize_activity_value(tool_call_id, ACTIVITY_ID_MAX_BYTES, "call");
-        let tool = sanitize_activity_value(tool, ACTIVITY_TOOL_MAX_BYTES, "tool");
-        let status = if is_error {
-            ActivityStatus::Failed
-        } else {
-            ActivityStatus::Done
-        };
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(action) = state
-            .actions
-            .iter_mut()
-            .find(|action| action.tool_call_id == id)
-        {
-            action.status = status;
-        } else {
-            if state.actions.len() >= PROGRESS_MAX_RECENT {
-                state.actions.pop_front();
+    fn record_done(&self, event: &ToolDoneEvent) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match state.active_activity_counts.entry(event.id.clone()) {
+            Entry::Occupied(mut entry) if *entry.get() > 1 => {
+                *entry.get_mut() = entry.get().saturating_sub(1);
             }
-            let sequence = state.next_sequence;
-            state.next_sequence = state.next_sequence.saturating_add(1);
-            state.actions.push_back(ActivityAction {
-                tool_call_id: id,
-                sequence,
-                tool: tool.clone(),
-                status,
-            });
+            Entry::Occupied(entry) => {
+                entry.remove();
+            }
+            Entry::Vacant(_) => return,
         }
-        state.current = state
-            .actions
-            .iter()
-            .rev()
-            .find(|action| action.status == ActivityStatus::Running)
-            .map(|action| action.tool.clone());
+        if let Some(activity) = state
+            .activities
+            .iter_mut()
+            .find(|activity| activity.id == event.id && activity.status == ActivityStatus::Running)
+        {
+            activity.status = if event.is_error {
+                ActivityStatus::Error
+            } else {
+                ActivityStatus::Success
+            };
+        }
         state.completed_count = state.completed_count.saturating_add(1);
         if state.recent.len() >= PROGRESS_MAX_RECENT {
             state.recent.pop_front();
         }
-        state.recent.push_back(tool);
+        state.recent.push_back(event.tool.to_string());
+        state.current = state
+            .activities
+            .iter()
+            .rev()
+            .find(|activity| activity.status == ActivityStatus::Running)
+            .map(|activity| activity.tool.clone());
         drop(state);
         self.notify();
     }
 
-    fn set_done(&self) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+    fn set_current_done(&self) {
+        let turn_id = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .turn_id;
+        self.set_done(turn_id);
+    }
+
+    fn set_done(&self, turn_id: u64) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.turn_id != turn_id {
+            return;
+        }
         state.done = true;
         state.current = None;
         drop(state);
         self.notify();
     }
+}
+
+fn set_usage_fields(table: &Table, usage: TokenUsage) -> LuaResult<()> {
+    table.set("input_tokens", usage.total_input())?;
+    table.set("output_tokens", usage.output)?;
+    table.set("fresh_input_tokens", usage.input)?;
+    table.set("cache_read_tokens", usage.cache_read)?;
+    table.set("cache_write_tokens", usage.cache_creation)?;
+    Ok(())
+}
+
+fn prompt_result_table(
+    lua: &Lua,
+    duration_ms: u64,
+    usage: TokenUsage,
+    cost: f64,
+    fast: bool,
+    text: Option<String>,
+) -> LuaResult<Table> {
+    let table = lua.create_table()?;
+    if let Some(text) = text {
+        table.set("text", text)?;
+    }
+    table.set("duration_ms", duration_ms)?;
+    table.set("cost", cost)?;
+    table.set("fast", fast)?;
+    set_usage_fields(&table, usage)?;
+    Ok(table)
+}
+
+fn latest_assistant_text(history: &History) -> String {
+    history
+        .as_slice()
+        .iter()
+        .rev()
+        .filter(|message| matches!(message.role, Role::Assistant))
+        .flat_map(|message| message.content.iter())
+        .find_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .map_or_else(
+            || "(no response)".to_owned(),
+            std::borrow::ToOwned::to_owned,
+        )
 }
 
 struct SessionState {
@@ -882,8 +1219,8 @@ struct SessionState {
     subagent_info: Arc<OnceLock<SubagentInfo>>,
     local_tools: LocalTools,
     name: String,
-    total_input: Arc<AtomicU32>,
-    total_output: Arc<AtomicU32>,
+    usage: TokenUsage,
+    cost: f64,
     start: Instant,
     closed: bool,
     failed: bool,
@@ -891,12 +1228,13 @@ struct SessionState {
 }
 
 impl SessionState {
+    #[allow(clippy::cast_possible_truncation)]
     fn close(&mut self) {
         if self.closed {
             return;
         }
         self.closed = true;
-        self.progress.set_done();
+        self.progress.set_current_done();
         self.parent_cancels.remove(&self.child_id);
         let messages = std::mem::replace(&mut self.history, History::new(Vec::new())).into_vec();
         let _ = self.parent_event_tx.send(AgentEvent::SubagentHistory {
@@ -904,11 +1242,16 @@ impl SessionState {
             messages,
             is_error: self.failed,
         });
+        let duration_ms = self.start.elapsed().as_millis() as u64;
         info!(
             name = %self.name,
-            duration_ms = self.start.elapsed().as_millis() as u64,
-            input_tokens = self.total_input.load(Ordering::Relaxed),
-            output_tokens = self.total_output.load(Ordering::Relaxed),
+            duration_ms,
+            input_tokens = self.usage.total_input(),
+            fresh_input_tokens = self.usage.input,
+            cache_read_tokens = self.usage.cache_read,
+            cache_write_tokens = self.usage.cache_creation,
+            output_tokens = self.usage.output,
+            cost = self.cost,
             "subagent session closed",
         );
     }
@@ -947,14 +1290,13 @@ struct LuaSession {
 
 impl Drop for LuaSession {
     fn drop(&mut self) {
-        match self.inner.try_lock() {
-            Some(mut s) => s.close(),
+        if let Some(mut s) = self.inner.try_lock() {
+            s.close();
+        } else {
             // Prompt still in flight: close asynchronously so history
             // and cancel entry are never silently leaked.
-            None => {
-                let inner = Arc::clone(&self.inner);
-                smol::spawn(async move { inner.lock().await.close() }).detach();
-            }
+            let inner = Arc::clone(&self.inner);
+            smol::spawn(async move { inner.lock().await.close() }).detach();
         }
     }
 }
@@ -963,17 +1305,26 @@ impl Drop for LuaSession {
 /// loop runs to completion, calling tools as needed. Conversation history is
 /// kept across calls, so you can have a multi-turn conversation.
 ///
-/// The returned table has fields: `text` (string), `duration_ms` (integer),
-/// `input_tokens` (integer), `output_tokens` (integer).
+/// The success table has fields: `text` (string), `duration_ms` (integer),
+/// `input_tokens` (integer), `fresh_input_tokens` (integer),
+/// `cache_read_tokens` (integer), `cache_write_tokens` (integer),
+/// `output_tokens` (integer), actual `fast` state (boolean), and aggregate
+/// `cost` (number). The cost is summed
+/// per request using that request's model and fast tier, including compaction.
+/// If execution fails after incurring usage, the
+/// result table omits `text` and contains only `duration_ms` plus these
+/// sanitized numeric usage fields. Check `err` before reading `text`.
 ///
 /// @param message string User message to send.
-/// @return (table?, string?) Result table on success, or `(nil, err)` on failure.
+/// @return (table?, string?) `(result, nil)` on success; charged failures return
+///   `(sanitized_usage, err)`. Session-state failures can return `(nil, err)`.
 /// @example
 /// local r, err = sess:prompt("What files are in this project?")
 /// if err then error(err) end
 /// print(r.text)
 /// print(r.input_tokens .. " input, " .. r.output_tokens .. " output tokens")
 #[lua_fn]
+#[allow(clippy::cast_possible_truncation)]
 async fn prompt(
     lua: Lua,
     this: mlua::UserDataRef<LuaSession>,
@@ -986,6 +1337,7 @@ async fn prompt(
     if s.closed {
         return Ok((None, Some(SESSION_CLOSED_ERR.to_owned())));
     }
+    let progress_turn = s.progress.begin_turn();
     if s.subagent_info.get().is_none() {
         let _ = s.subagent_info.set(SubagentInfo {
             parent_tool_use_id: s.parent_tool_use_id.clone(),
@@ -1014,7 +1366,6 @@ async fn prompt(
         .with_user_response_rx(Arc::clone(&s.answer_rx))
         .with_interrupt_source(Arc::new(PromptInterruptSource {
             rx: s.prompt_rx.clone(),
-            thinking: s.thinking,
             fast: s.fast,
         }))
         .with_cancel(s.child_cancel.clone())
@@ -1031,37 +1382,56 @@ async fn prompt(
             workflow: false,
             prompt: None,
         };
+        let barrier_target = s.progress.next_forwarder_barrier();
         let result = agent.run(input).await;
+        s.usage += agent.total_usage();
+        s.cost += agent.total_cost();
         drop(agent);
+        if result.is_err()
+            && let Err(barrier_error) = s.sub_event_tx.send(AgentEvent::Done {
+                usage: TokenUsage::default(),
+                num_turns: 0,
+                stop_reason: None,
+            })
+        {
+            s.failed = true;
+            s.progress.set_done(progress_turn);
+            return Ok((
+                None,
+                Some(format!(
+                    "subagent event forwarder barrier failed: {barrier_error}"
+                )),
+            ));
+        }
+        s.progress.wait_for_forwarder_barrier(barrier_target).await;
         if let Err(e) = result {
             s.failed = true;
-            s.progress.set_done();
-            return Ok((None, Some(e.to_string())));
+            s.progress.set_done(progress_turn);
+            let table = prompt_result_table(
+                &lua,
+                s.start.elapsed().as_millis() as u64,
+                s.usage,
+                s.cost,
+                s.fast,
+                None,
+            )?;
+            return Ok((Some(table), Some(e.to_string())));
         }
         next_message = s.prompt_rx.try_recv().ok();
     }
-    s.progress.set_done();
+    s.progress.set_done(progress_turn);
 
-    let text = s
-        .history
-        .as_slice()
-        .iter()
-        .rev()
-        .filter(|m| matches!(m.role, Role::Assistant))
-        .flat_map(|m| m.content.iter())
-        .find_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .unwrap_or("(no response)")
-        .to_owned();
+    let text = latest_assistant_text(&s.history);
 
-    let tbl = lua.create_table()?;
-    tbl.set("text", text)?;
-    tbl.set("duration_ms", s.start.elapsed().as_millis() as u64)?;
-    tbl.set("input_tokens", s.total_input.load(Ordering::Relaxed))?;
-    tbl.set("output_tokens", s.total_output.load(Ordering::Relaxed))?;
-    Ok((Some(tbl), None))
+    let table = prompt_result_table(
+        &lua,
+        s.start.elapsed().as_millis() as u64,
+        s.usage,
+        s.cost,
+        s.fast,
+        Some(text),
+    )?;
+    Ok((Some(table), None))
 }
 
 /// Poll the session for a progress snapshot while a prompt is running.
@@ -1070,12 +1440,16 @@ async fn prompt(
 ///   `elapsed_ms` (integer): time since the session was created.
 ///   `current_tool` (string?): name of the tool currently running, if any.
 ///   `recent_tools` (table): names of the last few finished tools, oldest first.
+///   `activities` (table): up to five safe rendered tool summaries, oldest first.
 ///   `completed_count` (integer): total number of finished tools so far.
-///   `done` (bool): true once the prompt has completed.
+///   `turn_id` (integer): increases before each `prompt` call.
+///   `done` (bool): true once the current prompt call has completed.
 ///
 /// The call returns at most every `PROGRESS_TIMEOUT_MS` milliseconds, or
 /// immediately when a tool starts or finishes.
 #[lua_fn]
+#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::cast_possible_truncation)]
 async fn get_progress(lua: Lua, this: mlua::UserDataRef<LuaSession>) -> LuaResult<Pair<Table>> {
     let progress = Arc::clone(&this.progress);
     let notify = pin!(progress.rx.recv_async());
@@ -1084,7 +1458,10 @@ async fn get_progress(lua: Lua, this: mlua::UserDataRef<LuaSession>) -> LuaResul
     )));
     let _ = select(notify, timeout).await;
 
-    let state = progress.state.lock().unwrap_or_else(|e| e.into_inner());
+    let state = progress
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let elapsed = progress.start.elapsed().as_millis() as u64;
     let tbl = lua.create_table()?;
     tbl.set("session_id", progress.session_id.as_str())?;
@@ -1092,6 +1469,7 @@ async fn get_progress(lua: Lua, this: mlua::UserDataRef<LuaSession>) -> LuaResul
     tbl.set("current_tool", state.current.as_deref())?;
     tbl.set("done", state.done)?;
     tbl.set("completed_count", state.completed_count)?;
+    tbl.set("turn_id", state.turn_id)?;
 
     let recent = lua.create_table()?;
     for (i, tool) in state.recent.iter().enumerate() {
@@ -1099,18 +1477,16 @@ async fn get_progress(lua: Lua, this: mlua::UserDataRef<LuaSession>) -> LuaResul
     }
     tbl.set("recent_tools", recent)?;
 
-    let actions = lua.create_table()?;
-    for (i, action) in state.actions.iter().enumerate() {
+    let activities = lua.create_table()?;
+    for (i, activity) in state.activities.iter().enumerate() {
         let item = lua.create_table()?;
-        item.set("session_id", progress.session_id.as_str())?;
-        item.set("tool_call_id", action.tool_call_id.as_str())?;
-        item.set("sequence", action.sequence)?;
-        item.set("tool", action.tool.as_str())?;
-        item.set("status", action.status.as_str())?;
-        item.set("message", action.status.as_str())?;
-        actions.set(i + 1, item)?;
+        item.set("id", activity.id.as_str())?;
+        item.set("tool", activity.tool.as_str())?;
+        item.set("message", activity.message.as_deref())?;
+        item.set("status", activity.status.as_str())?;
+        activities.set(i + 1, item)?;
     }
-    tbl.set("actions", actions)?;
+    tbl.set("activities", activities)?;
     Ok((Some(tbl), None))
 }
 
@@ -1165,46 +1541,411 @@ fn call_local_tool(
 
 #[cfg(test)]
 mod tests {
+    use n00n_agent::ToolOutput;
     use serde_json::json;
 
     use super::*;
     use n00n_agent::{ExtractedCommand, InterruptPoint, InterruptSource};
 
-    fn call(src: &str, input: JsonValue) -> Result<String, String> {
+    fn call(src: &str, input: &JsonValue) -> Result<String, String> {
         let lua = Lua::new();
         let f: Function = lua.load(src).eval().unwrap();
-        call_local_tool(&lua.weak(), &f, &input)
+        call_local_tool(&lua.weak(), &f, input)
+    }
+
+    fn progress_start(id: &str, summary: &str) -> ToolStartEvent {
+        ToolStartEvent {
+            id: id.into(),
+            tool: Arc::from("read"),
+            summary: summary.into(),
+            render_header: None,
+            annotation: None,
+            input: None,
+            raw_input: Some(json!({"secret": "must not be read"})),
+            output: Some(ToolOutput::Plain("must not be read".into())),
+        }
+    }
+
+    fn progress_done(id: &str, is_error: bool) -> ToolDoneEvent {
+        ToolDoneEvent {
+            id: id.into(),
+            tool: Arc::from("read"),
+            output: ToolOutput::Plain("must not be read".into()),
+            is_error,
+            annotation: Some("must not be read".into()),
+            written_path: None,
+        }
     }
 
     #[test]
-    fn usage_cost_accepts_spec_without_context() {
+    fn progress_updates_start_in_place_and_retains_status() {
+        let progress = Progress::new(Instant::now());
+        progress.record_start(&progress_start("one", "cargo test"));
+        progress.record_done(&progress_done("one", true));
+        progress.record_done(&progress_done("one", true));
+
+        let state = progress
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(state.completed_count, 1);
+        assert_eq!(state.activities.len(), 1);
+        assert_eq!(state.activities[0].message.as_deref(), Some("cargo test"));
+        assert_eq!(state.activities[0].status, ActivityStatus::Error);
+        assert!(state.active_activity_counts.is_empty());
+    }
+
+    #[test]
+    fn progress_tracks_reused_activity_ids_in_order() {
+        let progress = Progress::new(Instant::now());
+        progress.record_start(&progress_start("call_read", "first"));
+        progress.record_start(&progress_start("call_read", "second"));
+        progress.record_done(&progress_done("call_read", false));
+        progress.record_done(&progress_done("call_read", true));
+
+        let state = progress
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(state.completed_count, 2);
+        assert_eq!(state.activities.len(), 2);
+        assert_eq!(state.activities[0].message.as_deref(), Some("first"));
+        assert_eq!(state.activities[0].status, ActivityStatus::Success);
+        assert_eq!(state.activities[1].message.as_deref(), Some("second"));
+        assert_eq!(state.activities[1].status, ActivityStatus::Error);
+        assert!(state.active_activity_counts.is_empty());
+    }
+
+    #[test]
+    fn progress_keeps_latest_five_activity_rows() {
+        let progress = Progress::new(Instant::now());
+        for i in 0..7 {
+            let id = i.to_string();
+            progress.record_start(&progress_start(&id, &format!("message {i}")));
+            progress.record_done(&progress_done(&id, false));
+        }
+
+        let state = progress
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(state.activities.len(), PROGRESS_MAX_RECENT);
+        assert_eq!(state.activities[0].message.as_deref(), Some("message 2"));
+        assert_eq!(state.activities[4].message.as_deref(), Some("message 6"));
+        assert!(
+            state
+                .activities
+                .iter()
+                .all(|activity| activity.status == ActivityStatus::Success)
+        );
+    }
+
+    #[test]
+    fn progress_activity_message_is_sanitized_and_truncated() {
+        let progress = Progress::new(Instant::now());
+        let long_secret = format!("API_KEY=super-secret\n{}", "é".repeat(100));
+        progress.record_start(&progress_start("secret", &long_secret));
+
+        let state = progress
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let message = state.activities[0].message.as_deref().unwrap();
+        assert!(!message.contains("super-secret"));
+        assert!(!message.contains('\n'));
+        assert!(message.ends_with('…'));
+        assert!(message.chars().count() <= ACTIVITY_MESSAGE_MAX_CHARS);
+    }
+
+    #[test]
+    fn progress_counts_done_events_for_evicted_activity_rows() {
+        let progress = Progress::new(Instant::now());
+        for i in 0..7 {
+            progress.record_start(&progress_start(&i.to_string(), "running"));
+        }
+        for i in 0..7 {
+            progress.record_done(&progress_done(&i.to_string(), false));
+        }
+
+        let state = progress
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(state.completed_count, 7);
+        assert_eq!(state.recent.len(), PROGRESS_MAX_RECENT);
+        assert!(
+            state
+                .activities
+                .iter()
+                .all(|activity| activity.status == ActivityStatus::Success)
+        );
+    }
+
+    #[test]
+    fn forwarder_barrier_observes_prior_tool_done() {
+        smol::block_on(async {
+            let progress = Arc::new(Progress::new(Instant::now()));
+            progress.record_start(&progress_start("one", "reading"));
+            let target = progress.next_forwarder_barrier();
+            let forwarded = Arc::clone(&progress);
+            let worker = smol::spawn(async move {
+                forwarded.record_done(&progress_done("one", false));
+                forwarded.record_forwarder_barrier();
+            });
+
+            progress.wait_for_forwarder_barrier(target).await;
+            worker.await;
+            let state = progress
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert_eq!(state.activities[0].status, ActivityStatus::Success);
+        });
+    }
+
+    #[test]
+    fn progress_redacts_separated_credentials() {
+        let sanitized = sanitize_activity_message(
+            "API_KEY = first Authorization: Bearer second --password third foo=sk-secret",
+        );
+        assert_eq!(
+            sanitized,
+            "API_KEY=[REDACTED] Authorization:[REDACTED] --password=[REDACTED] foo=[REDACTED]"
+        );
+    }
+
+    #[test]
+    fn progress_redacts_adjacent_bearer_scheme_and_token() {
+        let sanitized = sanitize_activity_message("Authorization:Bearer visible-token trailing");
+        assert_eq!(sanitized, "Authorization:[REDACTED] trailing");
+    }
+
+    #[test]
+    fn progress_redacts_credentials_embedded_in_urls_and_tokens() {
+        let sanitized = sanitize_activity_message(
+            "https://host.test/path?api_key=visible glpat-visible prefix-ghp_visible",
+        );
+        assert_eq!(sanitized, "https:[REDACTED] [REDACTED] [REDACTED]");
+    }
+
+    #[test]
+    fn progress_notifications_are_coalesced() {
+        let progress = Progress::new(Instant::now());
+        for _ in 0..100 {
+            progress.notify();
+            progress.record_forwarder_barrier();
+        }
+        assert_eq!(progress.rx.len(), 1);
+        assert_eq!(progress.barrier_rx.len(), 1);
+    }
+
+    #[test]
+    fn progress_hides_bash_and_unknown_tool_headers() {
+        for tool in ["bash", "custom_plugin"] {
+            let mut event = progress_start(tool, "API_KEY=visible");
+            event.tool = Arc::from(tool);
+            event.render_header = Some(n00n_agent::BufferSnapshot::plain_text(
+                "Authorization: Bearer rendered-secret".into(),
+            ));
+            assert_eq!(activity_message(&event), None);
+        }
+    }
+
+    #[test]
+    fn progress_done_is_turn_safe() {
+        let progress = Progress::new(Instant::now());
+        let first = progress.begin_turn();
+        let second = progress.begin_turn();
+        progress.set_done(first);
+        assert!(!progress.state.lock().unwrap().done);
+        progress.set_done(second);
+        assert!(progress.state.lock().unwrap().done);
+    }
+
+    #[test]
+    fn usage_cost_three_argument_api_retains_legacy_fast_pricing() {
         let lua = Lua::new();
         let usage_cost: Function = create_agent_table(&lua).unwrap().get("usage_cost").unwrap();
         let (cost, err): Pair<f64> = usage_cost
-            .call(("anthropic/claude-haiku-4-5", 1_200_u32, 300_u32))
+            .call(("anthropic/claude-opus-4-8", 1_200_u32, 300_u32))
             .unwrap();
-        assert!(cost.is_some());
         assert_eq!(err, None);
+
+        let model = Model::from_spec("anthropic/claude-opus-4-8").unwrap();
+        assert!(model.supports_fast());
+        let expected = TokenUsage {
+            input: 1_200,
+            output: 300,
+            cache_creation: 0,
+            cache_read: 0,
+        }
+        .cost(&model.pricing, true);
+        let actual = cost.unwrap();
+        assert!((actual - expected).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn usage_cost_prices_fresh_read_write_and_output_categories() {
+        let lua = Lua::new();
+        let usage_cost: Function = create_agent_table(&lua).unwrap().get("usage_cost").unwrap();
+        let breakdown = lua.create_table().unwrap();
+        breakdown.set("fresh_input_tokens", 400_000_u32).unwrap();
+        breakdown.set("cache_read_tokens", 400_000_u32).unwrap();
+        breakdown.set("cache_write_tokens", 200_000_u32).unwrap();
+        breakdown.set("fast", true).unwrap();
+
+        let (cost, err): Pair<f64> = usage_cost
+            .call((
+                "anthropic/claude-opus-4-8",
+                1_000_000_u32,
+                100_000_u32,
+                breakdown,
+            ))
+            .unwrap();
+        assert_eq!(err, None);
+
+        let model = Model::from_spec("anthropic/claude-opus-4-8").unwrap();
+        assert!(model.supports_fast());
+        let expected = TokenUsage {
+            input: 400_000,
+            output: 100_000,
+            cache_creation: 200_000,
+            cache_read: 400_000,
+        }
+        .cost(&model.pricing, true);
+        let actual = cost.unwrap();
+        assert!(
+            (actual - expected).abs() < f64::EPSILON,
+            "four-category price mismatch: expected {expected}, got {actual}"
+        );
+    }
+
+    #[test]
+    fn usage_cost_rejects_nonconserving_input_categories() {
+        let lua = Lua::new();
+        let usage_cost: Function = create_agent_table(&lua).unwrap().get("usage_cost").unwrap();
+        let breakdown = lua.create_table().unwrap();
+        breakdown.set("fresh_input_tokens", 500_u32).unwrap();
+        breakdown.set("cache_read_tokens", 400_u32).unwrap();
+        breakdown.set("cache_write_tokens", 200_u32).unwrap();
+
+        let (cost, err): Pair<f64> = usage_cost
+            .call(("anthropic/claude-haiku-4-5", 1_000_u32, 100_u32, breakdown))
+            .unwrap();
+
+        assert_eq!(cost, None);
+        assert!(err.is_some_and(|message| message.contains("do not conserve total")));
+    }
+
+    #[test]
+    fn usage_cost_returns_pair_error_for_malformed_breakdown() {
+        let lua = Lua::new();
+        let usage_cost: Function = create_agent_table(&lua).unwrap().get("usage_cost").unwrap();
+        let breakdown = lua.create_table().unwrap();
+        breakdown.set("cache_read_tokens", "not-a-count").unwrap();
+
+        let (cost, err): Pair<f64> = usage_cost
+            .call(("anthropic/claude-haiku-4-5", 1_000_u32, 100_u32, breakdown))
+            .expect("malformed telemetry must use the documented pair error");
+
+        assert_eq!(cost, None);
+        assert!(err.is_some_and(|message| message.contains("cache_read_tokens")));
+    }
+
+    #[test]
+    fn session_usage_aggregates_all_categories_and_legacy_total() {
+        let mut usage = TokenUsage::default();
+        usage += TokenUsage {
+            input: 100,
+            output: 20,
+            cache_creation: 30,
+            cache_read: 40,
+        };
+        usage += TokenUsage {
+            input: 10,
+            output: 5,
+            cache_creation: 3,
+            cache_read: 4,
+        };
+
+        let lua = Lua::new();
+        let table = lua.create_table().unwrap();
+        set_usage_fields(&table, usage).unwrap();
+
+        let fresh = table.get::<u32>("fresh_input_tokens").unwrap();
+        let cache_read = table.get::<u32>("cache_read_tokens").unwrap();
+        let cache_write = table.get::<u32>("cache_write_tokens").unwrap();
+        assert_eq!((fresh, cache_read, cache_write), (110, 44, 33));
+        assert_eq!(table.get::<u32>("output_tokens").unwrap(), 25);
+        assert_eq!(
+            table.get::<u32>("input_tokens").unwrap(),
+            fresh + cache_read + cache_write
+        );
+    }
+
+    #[test]
+    fn session_usage_defaults_missing_cache_categories_to_zero() {
+        let usage = TokenUsage {
+            input: 120,
+            output: 30,
+            ..TokenUsage::default()
+        };
+
+        let lua = Lua::new();
+        let table = lua.create_table().unwrap();
+        set_usage_fields(&table, usage).unwrap();
+
+        assert_eq!(table.get::<u32>("fresh_input_tokens").unwrap(), 120);
+        assert_eq!(table.get::<u32>("cache_read_tokens").unwrap(), 0);
+        assert_eq!(table.get::<u32>("cache_write_tokens").unwrap(), 0);
+        assert_eq!(table.get::<u32>("input_tokens").unwrap(), 120);
+        assert_eq!(table.get::<u32>("output_tokens").unwrap(), 30);
+    }
+
+    #[test]
+    fn prompt_result_exposes_actual_fast_state() {
+        let lua = Lua::new();
+        let fast = prompt_result_table(
+            &lua,
+            1,
+            TokenUsage::default(),
+            0.0,
+            true,
+            Some("done".to_owned()),
+        )
+        .unwrap();
+        let standard = prompt_result_table(
+            &lua,
+            1,
+            TokenUsage::default(),
+            0.0,
+            false,
+            Some("done".to_owned()),
+        )
+        .unwrap();
+
+        assert!(fast.get::<bool>("fast").unwrap());
+        assert!(!standard.get::<bool>("fast").unwrap());
     }
 
     #[test]
     fn local_tool_handler_result_conventions() {
         let input = json!({"x": "1"});
         assert_eq!(
-            call("function(v) return 'ok:' .. v.x end", input.clone()),
+            call("function(v) return 'ok:' .. v.x end", &input),
             Ok("ok:1".into())
         );
         assert_eq!(
-            call("function() return nil, 'bad' end", input.clone()),
+            call("function() return nil, 'bad' end", &input),
             Err("bad".into())
         );
         assert_eq!(
-            call("function() end", input.clone()),
+            call("function() end", &input),
             Err(crate::api::util::convert::NIL_TOOL_RESULT_ERR.into())
         );
-        let raised = call("function() error('boom') end", input.clone()).unwrap_err();
+        let raised = call("function() error('boom') end", &input).unwrap_err();
         assert!(raised.contains("boom"), "got: {raised}");
-        let wrong = call("function() return 42 end", input).unwrap_err();
+        let wrong = call("function() return 42 end", &input).unwrap_err();
         assert!(wrong.contains("expected string"), "got: {wrong}");
     }
 

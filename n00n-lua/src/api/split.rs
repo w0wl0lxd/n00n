@@ -40,10 +40,19 @@ fn split(lua: &Lua, s: mlua::String, sep: mlua::String, opts: Option<Value>) -> 
         if j < start {
             return Err(mlua::Error::runtime(INFINITE_LOOP_MSG));
         }
-        parts.push(lua.create_string(&bytes[start as usize - 1..i as usize - 1])?);
+        let start_usize = usize::try_from(start)
+            .map_err(|_| mlua::Error::runtime("split index out of range"))?
+            .saturating_sub(1);
+        let i_usize = usize::try_from(i)
+            .map_err(|_| mlua::Error::runtime("split index out of range"))?
+            .saturating_sub(1);
+        parts.push(lua.create_string(&bytes[start_usize..i_usize])?);
         start = j + 1;
     }
-    parts.push(lua.create_string(&bytes[start as usize - 1..])?);
+    let start_usize = usize::try_from(start)
+        .map_err(|_| mlua::Error::runtime("split index out of range"))?
+        .saturating_sub(1);
+    parts.push(lua.create_string(&bytes[start_usize..])?);
 
     if trimempty {
         while parts.last().is_some_and(|p| p.as_bytes().is_empty()) {
@@ -60,8 +69,8 @@ fn parse_opts(opts: Option<Value>) -> LuaResult<(bool, bool)> {
         None | Some(Value::Nil) => Ok((false, false)),
         Some(Value::Boolean(plain)) => Ok((plain, false)),
         Some(Value::Table(t)) => Ok((
-            t.get::<bool>("plain").unwrap_or(false),
-            t.get::<bool>("trimempty").unwrap_or(false),
+            t.get::<bool>("plain").unwrap_or_else(|_| false),
+            t.get::<bool>("trimempty").unwrap_or_else(|_| false),
         )),
         Some(_) => Err(mlua::Error::runtime(OPTS_TYPE_MSG)),
     }

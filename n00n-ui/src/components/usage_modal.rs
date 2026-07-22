@@ -92,7 +92,7 @@ impl UsageModal {
         let theme = theme::current();
         let lines = build_lines(ctx, &theme);
 
-        let total = lines.len() as u16;
+        let total = u16::try_from(lines.len()).unwrap_or_else(|_| u16::MAX);
         let modal = Modal {
             title: TITLE,
             width_percent: 60,
@@ -114,7 +114,7 @@ impl UsageModal {
             Span::styled("Ctrl+R", theme.keybind_key),
             Span::styled(" reload ", theme.tool_dim),
         ]);
-        let hint_w = hint.width() as u16;
+        let hint_w = u16::try_from(hint.width()).unwrap_or_else(|_| u16::MAX);
         let hint_area = Rect {
             x: popup.x + popup.width.saturating_sub(hint_w + 1),
             y: popup.y + popup.height.saturating_sub(1),
@@ -153,6 +153,12 @@ fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line
         Some(ctx.total.cost(&ctx.model.pricing, ctx.fast))
     };
     lines.push(Line::from(totals_row(ctx.total, total_cost, theme)));
+    lines.push(Line::from(Span::styled(
+        format!(
+            "{PREFIX}Local token counts include cached context; they are not ChatGPT subscription quota."
+        ),
+        theme.status_dim,
+    )));
 
     if let Some(state) = ctx.quota {
         lines.push(Line::default());
@@ -174,7 +180,7 @@ fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line
         .iter()
         .map(|(id, _)| id.chars().count())
         .max()
-        .unwrap_or(0)
+        .unwrap_or_else(|| 0)
         .max(MODEL_COL_MIN);
 
     lines.push(Line::default());
@@ -237,11 +243,13 @@ fn header_row(model_w: usize, theme: &crate::theme::Theme) -> Vec<Span<'static>>
             theme.status_dim,
         ),
         gap(),
-        h("in"),
+        h("fresh"),
         gap(),
         h("out"),
         gap(),
-        h("cache"),
+        h("read"),
+        gap(),
+        h("write"),
         gap(),
         h("total"),
         gap(),
@@ -269,6 +277,8 @@ fn model_row(
         gap(),
         num(usage.cache_read),
         gap(),
+        num(usage.cache_creation),
+        gap(),
         num(usage.total()),
         gap(),
         match cost {
@@ -284,7 +294,7 @@ impl crate::components::Overlay for UsageModal {
     }
 
     fn close(&mut self) {
-        self.close()
+        self.close();
     }
 }
 
@@ -316,7 +326,7 @@ fn quota_lines(state: &UsageFetchState, theme: &crate::theme::Theme) -> Vec<Line
                 .iter()
                 .map(|l| l.label.chars().count())
                 .max()
-                .unwrap_or(0);
+                .unwrap_or_else(|| 0);
             for limit in &usage.limits {
                 let mut spans = vec![
                     Span::styled(format!("{PREFIX}{:<label_w$}", limit.label), fg),
@@ -340,7 +350,7 @@ fn quota_lines(state: &UsageFetchState, theme: &crate::theme::Theme) -> Vec<Line
 }
 
 fn format_reset(epoch_ms: u64, tz: &TimeZone) -> String {
-    let secs = (epoch_ms / 1000) as i64;
+    let secs = (epoch_ms / 1000).cast_signed();
     let Ok(ts) = Timestamp::from_second(secs) else {
         return epoch_ms.to_string();
     };
@@ -472,6 +482,32 @@ mod tests {
         let err = quota_lines(&UsageFetchState::Error("nope".into()), &theme);
         assert_eq!(err.len(), 1);
         assert!(err[0].spans.iter().any(|s| s.content.contains("nope")));
+    }
+
+    #[test]
+    fn usage_columns_keep_fresh_and_cached_tokens_separate() {
+        let theme = crate::theme::current();
+        let header = header_row(10, &theme)
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(header.contains("fresh"));
+        assert!(header.contains("read"));
+        assert!(header.contains("write"));
+
+        let usage = StoredTokenUsage {
+            input: 10,
+            output: 20,
+            cache_read: 30,
+            cache_creation: 40,
+        };
+        let row = model_row("gpt", &usage, None, 10, Style::new(), Style::new())
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        for value in ["10", "20", "30", "40"] {
+            assert!(row.contains(value));
+        }
     }
 
     #[test]

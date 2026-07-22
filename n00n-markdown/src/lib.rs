@@ -301,13 +301,14 @@ pub fn block_prefix(kind: &BlockKind) -> Option<String> {
     }
 }
 
+#[allow(clippy::result_map_or_into_option)]
 fn parse_heading(line: &str) -> Option<(u8, &str)> {
     let hashes = line.bytes().take_while(|&b| b == b'#').count();
     if hashes == 0 || hashes > MAX_HEADING_LEVEL as usize {
         return None;
     }
     let rest = &line[hashes..];
-    let level = hashes as u8;
+    let level = u8::try_from(hashes).map_or(None, Some)?;
     if let Some(stripped) = rest.strip_prefix(' ') {
         Some((level, stripped.trim_end()))
     } else if rest.is_empty() {
@@ -369,8 +370,8 @@ fn is_separator_row(line: &str) -> bool {
 
 fn parse_table_cells(line: &str) -> Vec<String> {
     let t = line.trim();
-    let inner = t.strip_prefix('|').unwrap_or(t);
-    let inner = inner.strip_suffix('|').unwrap_or(inner);
+    let inner = t.strip_prefix('|').map_or(t, |s| s);
+    let inner = inner.strip_suffix('|').map_or(inner, |s| s);
 
     let bytes = inner.as_bytes();
     let mut cells = Vec::new();
@@ -395,7 +396,7 @@ fn parse_table_cells(line: &str) -> Vec<String> {
             current = String::new();
             i += 1;
         } else {
-            let ch = inner[i..].chars().next().unwrap();
+            let ch = inner[i..].chars().next().map_or('\0', |c| c);
             current.push(ch);
             i += ch.len_utf8();
         }
@@ -957,7 +958,7 @@ mod tests {
 
     #[test]
     fn parse_inline_never_panics_on_arbitrary_unicode() {
-        let mut rng = fastrand::Rng::with_seed(0xC0FFEE);
+        let mut rng = fastrand::Rng::with_seed(0x00C0_FFEE);
         for _ in 0..500 {
             let n = rng.usize(0..200);
             let mut s = String::with_capacity(n);

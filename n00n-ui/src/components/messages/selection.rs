@@ -21,7 +21,7 @@ pub(super) fn extract_selection_text(
 
     for (i, &h) in heights.iter().enumerate() {
         let seg_start = doc_row;
-        let seg_end = doc_row + h as u32;
+        let seg_end = doc_row + u32::from(h);
         doc_row = seg_end;
 
         if seg_end <= doc_start.row || seg_start > doc_end.row {
@@ -63,20 +63,23 @@ pub(super) fn extract_selection_text(
         }
 
         if seg.lines().is_empty() {
+            if let Some(raw) = &seg.raw_text {
+                out.push_str(raw);
+            }
             continue;
         }
 
         let content_width = width.saturating_sub(inset.saturating_mul(2)).max(1);
-        let tmp_area = Rect::new(0, 0, content_width, h.saturating_sub(inset));
+        let tmp_area = Rect::new(0, 0, content_width, h);
         let mut tmp = Buffer::empty(tmp_area);
         Paragraph::new(seg.lines().to_vec())
             .wrap(Wrap { trim: false })
             .render(tmp_area, &mut tmp);
 
         let ss = ScreenSelection {
-            start_row: (rel_start as u16).saturating_sub(inset / 2),
+            start_row: u16::try_from(rel_start).unwrap_or_else(|_| u16::MAX),
             start_col,
-            end_row: (rel_end.saturating_sub(1) as u16).saturating_sub(inset / 2),
+            end_row: u16::try_from(rel_end.saturating_sub(1)).unwrap_or_else(|_| u16::MAX),
             end_col,
         };
 
@@ -84,9 +87,9 @@ pub(super) fn extract_selection_text(
         selection::append_rows(
             &tmp,
             tmp_area,
-            &ss,
-            (rel_start as u16).saturating_sub(inset / 2),
-            (rel_end as u16).saturating_sub(inset / 2),
+            ss,
+            u16::try_from(rel_start).unwrap_or_else(|_| u16::MAX),
+            u16::try_from(rel_end).unwrap_or_else(|_| u16::MAX),
             &mut out,
             &breaks,
         );

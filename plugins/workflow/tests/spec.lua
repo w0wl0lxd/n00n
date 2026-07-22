@@ -155,6 +155,40 @@ case("workflow_sandbox_primitives_compose", function()
   eq(fn(), "agent:one,agent:two|xab,yab", "agent/parallel/pipeline must compose inside the sandbox")
 end)
 
+case("workflow_saga_compensations_run_in_reverse_on_error", function()
+  local env = { table = table, ipairs = ipairs, tostring = tostring, error = error, ran = {} }
+  local compensations = {}
+  env.compensate = function(fn)
+    table.insert(compensations, fn)
+  end
+  env.on_error = function(fn)
+    assert(type(fn) == "function", "on_error must accept a function")
+  end
+  env.agent = function()
+    error("agent failed", 0)
+  end
+  local fn, err = n00n.workflow.compile(
+    [[compensate(function() table.insert(ran, "first") end)
+      compensate(function() table.insert(ran, "second") end)
+      agent({ prompt = "fail" })
+      return table.concat(ran, ",")]],
+    env
+  )
+  eq(err, nil, "script must compile, got: " .. tostring(err))
+  local ok, result = pcall(fn)
+  eq(ok, false, "failing agent must raise")
+  assert(tostring(result):find("agent failed", 1, true), "original error must propagate")
+  eq(#compensations, 2, "both compensations must be registered")
+
+  -- Simulate the saga rollback handler: run compensations LIFO.
+  for i = #compensations, 1, -1 do
+    compensations[i]()
+  end
+  eq(#env.ran, 2, "both compensations ran")
+  eq(env.ran[1], "second", "second compensation must run first (LIFO)")
+  eq(env.ran[2], "first", "first compensation must run second")
+end)
+
 case("workflow_schema_validator_available", function()
   local validator, err = n00n.json.schema_validator({
     type = "object",
@@ -241,18 +275,32 @@ case("workflow_run_id_allowlist_rejects_path_segments", function()
 end)
 
 case("workflow_parallel_concurrency_is_clamped_and_type_safe", function()
-  local max_concurrent = 8
+  local hard_max = 8
+  local configured = math.min(4, hard_max)
   local function clamp(requested)
     if type(requested) ~= "number" then
-      return max_concurrent
+      return configured
     end
-    return math.max(1, math.min(requested, max_concurrent))
+    return math.max(1, math.min(requested, configured))
   end
-  eq(clamp(nil), 8)
-  eq(clamp("two"), 8)
+  eq(configured, 4)
+  eq(math.min(100, hard_max), 8)
+  eq(clamp(nil), 4)
+  eq(clamp("two"), 4)
   eq(clamp(0), 1)
   eq(clamp(3), 3)
-  eq(clamp(100), 8)
+  eq(clamp(100), 4)
+end)
+
+case("workflow_agent_budget_has_default_and_hard_ceiling", function()
+  local default_budget = 24
+  local hard_max = 32
+  local function configured(value)
+    return math.min(value or default_budget, hard_max)
+  end
+  eq(configured(nil), 24)
+  eq(configured(12), 12)
+  eq(configured(1000), 32)
 end)
 
 case("workflow_agent_label_truncation_preserves_utf8", function()

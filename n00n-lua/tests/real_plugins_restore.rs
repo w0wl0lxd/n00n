@@ -1,3 +1,10 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::needless_pass_by_value
+)]
+
 //! Exercises real plugins (bash, grep, batch) through `request_restore`.
 //! A broken restore silently falls back to raw LLM output, so we assert
 //! things only the real views produce (gutters, command headers, truncation).
@@ -10,11 +17,13 @@ use n00n_config::ToolOutputLines;
 use n00n_lua::PluginHost;
 use serde_json::{Value, json};
 
+const ARBOR_SRC: &str = include_str!("../../plugins/arbor/init.lua");
 const BASH_SRC: &str = include_str!("../../plugins/bash/init.lua");
-const GREP_SRC: &str = include_str!("../../plugins/grep/init.lua");
 const BATCH_SRC: &str = include_str!("../../plugins/batch/init.lua");
+const CODEGRAPH_SRC: &str = include_str!("../../plugins/codegraph/init.lua");
+const GREP_SRC: &str = include_str!("../../plugins/grep/init.lua");
 
-/// Only the real ToolView emits this when collapsed.
+/// Only the real `ToolView` emits this when collapsed.
 const EXPAND_HINT: &str = "click to expand";
 /// Fixed cap so truncation tests don't depend on the product default.
 const VIEW_CAP: usize = 3;
@@ -30,9 +39,11 @@ const BATCH_INPUT_GREP_BASH: &str = r#"{ "tool_calls": [
 fn load_host() -> PluginHost {
     let reg = Arc::new(ToolRegistry::new());
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    host.load_source("arbor", ARBOR_SRC).unwrap();
     host.load_source("bash", BASH_SRC).unwrap();
-    host.load_source("grep", GREP_SRC).unwrap();
     host.load_source("batch", BATCH_SRC).unwrap();
+    host.load_source("codegraph", CODEGRAPH_SRC).unwrap();
+    host.load_source("grep", GREP_SRC).unwrap();
     host
 }
 
@@ -91,6 +102,72 @@ fn restore(
         }
     }
     out
+}
+
+#[test_case::test_case(
+    "codegraph",
+    json!({ "query": "where is session restore", "projectPath": "/tmp/project" }),
+    "where is session restore",
+    "/tmp/project";
+    "codegraph"
+)]
+#[test_case::test_case(
+    "arbor",
+    json!({ "command": "callers", "symbol": "restore_item", "project": "/tmp/project" }),
+    "callers restore_item",
+    "/tmp/project";
+    "arbor"
+)]
+fn explore_restore_uses_shared_five_line_clickable_card(
+    tool: &str,
+    input: Value,
+    header_text: &str,
+    project: &str,
+) {
+    let host = load_host();
+    let output = (1..=8)
+        .map(|line| format!("result {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let collapsed = restore(&host, tool, input.clone(), &output, None, Vec::new());
+
+    assert!(
+        collapsed.header.contains(header_text),
+        "header: {}",
+        collapsed.header
+    );
+    assert!(
+        collapsed.header.contains(project),
+        "header: {}",
+        collapsed.header
+    );
+    assert!(
+        collapsed.body.contains("result 5"),
+        "body: {}",
+        collapsed.body
+    );
+    assert!(
+        !collapsed.body.contains("result 6"),
+        "body: {}",
+        collapsed.body
+    );
+    assert!(
+        collapsed.body.contains(EXPAND_HINT),
+        "body: {}",
+        collapsed.body
+    );
+
+    let expanded = restore(&host, tool, input, &output, None, vec![0]);
+    assert!(
+        expanded.body.contains("result 8"),
+        "body: {}",
+        expanded.body
+    );
+    assert!(
+        !expanded.body.contains(EXPAND_HINT),
+        "body: {}",
+        expanded.body
+    );
 }
 
 #[test]

@@ -7,6 +7,7 @@ use n00n_agent::{
     GrepFileEntry, GrepMatchGroup, SnapshotLine, SnapshotSpan, SpanStyle, ToolInput, ToolOutput,
 };
 use ratatui::backend::TestBackend;
+use ratatui::text::Line;
 use ratatui_image::picker::Picker;
 use std::sync::Arc;
 use test_case::test_case;
@@ -429,6 +430,14 @@ fn scrollbar_visibility(line_count: usize, expected: bool) {
     assert_eq!(has_scrollbar_thumb(&terminal), expected);
 }
 
+fn first_segment_text(panel: &MessagesPanel) -> String {
+    panel.cache.segments()[0]
+        .lines()
+        .iter()
+        .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+        .collect()
+}
+
 fn seg_text(panel: &MessagesPanel, tool_id: &str) -> String {
     panel
         .cache
@@ -440,6 +449,34 @@ fn seg_text(panel: &MessagesPanel, tool_id: &str) -> String {
         .iter()
         .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
         .collect()
+}
+
+fn truncation_source_line(panel: &MessagesPanel, tool_id: &str) -> usize {
+    let segment = panel
+        .cache
+        .segments()
+        .iter()
+        .find(|segment| segment.tool_id.as_deref() == Some(tool_id))
+        .unwrap();
+    (0..segment.lines().len())
+        .find(|&line| segment.truncation_action(line).is_some())
+        .unwrap()
+}
+
+fn section_truncation_source_line(
+    panel: &MessagesPanel,
+    tool_id: &str,
+    section: SectionFlags,
+) -> usize {
+    let segment = panel
+        .cache
+        .segments()
+        .iter()
+        .find(|segment| segment.tool_id.as_deref() == Some(tool_id))
+        .unwrap();
+    (0..segment.lines().len())
+        .find(|&line| segment.truncation_action(line) == Some(section))
+        .unwrap()
 }
 
 fn msg_status(panel: &MessagesPanel, tool_id: &str) -> ToolStatus {
@@ -632,6 +669,7 @@ fn search_text_diff_output_includes_hunks() {
             before: "old\n".into(),
             after: "new\n".into(),
             summary: "1 edit".into(),
+            telemetry: None,
         },
         is_error: false,
         annotation: None,
@@ -657,6 +695,152 @@ fn search_text_bash_with_code_input() {
     rebuild(&mut panel);
     let text = seg_search(&panel, "t1");
     assert!(text.contains("echo hello") && text.contains("hello"));
+}
+
+#[test]
+fn expanded_compaction_card_renders_stored_tool_output_once() {
+    let mut tool = DisplayMessage::new(
+        DisplayRole::Tool(Box::new(ToolRole {
+            id: "tool-1".into(),
+            status: ToolStatus::Success,
+            name: Arc::from("bash"),
+        })),
+        "Run command".into(),
+    );
+    tool.tool_output = Some(Arc::new(ToolOutput::Plain("reviewer output body".into())));
+    let compaction_id = "compaction:0";
+    let mut panel = test_panel();
+    panel.push(DisplayMessage::compaction(CompactionDisplay {
+        id: compaction_id.into(),
+        depth: 1,
+        message_count: 1,
+        summary: Some("summary".into()),
+        entries: vec![tool],
+    }));
+    panel.expanded_compactions.insert(compaction_id.into());
+    rebuild(&mut panel);
+
+    let card = first_segment_text(&panel);
+    assert!(card.contains("reviewer output body"), "card: {card}");
+    assert_eq!(card.matches("reviewer output body").count(), 1);
+}
+
+#[test]
+fn expanded_compaction_card_caps_stored_tool_output() {
+    let mut tool = DisplayMessage::new(
+        DisplayRole::Tool(Box::new(ToolRole {
+            id: "tool-1".into(),
+            status: ToolStatus::Success,
+            name: Arc::from("bash"),
+        })),
+        "Run command".into(),
+    );
+    tool.tool_output = Some(Arc::new(ToolOutput::Plain(
+        "line 0\nline 1\nline 2\nline 3\nline 4\nline 5".into(),
+    )));
+    let compaction_id = "compaction:0";
+    let mut ui_config = UiConfig::default();
+    ui_config.tool_output_lines.bash = 2;
+    let mut panel = test_panel_with_config(ui_config);
+    panel.push(DisplayMessage::compaction(CompactionDisplay {
+        id: compaction_id.into(),
+        depth: 1,
+        message_count: 1,
+        summary: Some("summary".into()),
+        entries: vec![tool],
+    }));
+    panel.expanded_compactions.insert(compaction_id.into());
+    rebuild(&mut panel);
+
+    let card = first_segment_text(&panel);
+    assert!(card.contains("line 0"), "card: {card}");
+    assert!(card.contains("line 1"), "card: {card}");
+    assert!(!card.contains("line 2"), "card: {card}");
+    assert!(!card.contains("line 5"), "card: {card}");
+}
+
+#[test]
+fn nested_compaction_cards_expand_collapse_at_narrow_width() {
+    let inner = DisplayMessage::compaction(CompactionDisplay {
+        id: "compaction:0.0".into(),
+        depth: 2,
+        message_count: 1,
+        summary: Some("inner summary".into()),
+        entries: vec![DisplayMessage::new(
+            DisplayRole::User,
+            "original request".into(),
+        )],
+    });
+    let outer = DisplayMessage::compaction(CompactionDisplay {
+        id: "compaction:0".into(),
+        depth: 1,
+        message_count: 2,
+        summary: Some("outer summary with narrow wrapping".into()),
+        entries: vec![
+            inner,
+            DisplayMessage::new(DisplayRole::Assistant, "inner summary".into()),
+        ],
+    });
+    let mut panel = test_panel();
+    panel.push(outer);
+    let area = Rect::new(0, 0, 24, 20);
+
+    let collapsed = buffer_text(&render(&mut panel, area.width, area.height));
+    let collapsed_card = first_segment_text(&panel);
+    assert!(collapsed_card.contains("depth 1"), "card: {collapsed_card}");
+    assert!(
+        collapsed_card.contains("2 messages"),
+        "card: {collapsed_card}"
+    );
+    assert!(
+        collapsed_card.contains("outer summary"),
+        "card: {collapsed_card}"
+    );
+    assert!(
+        !collapsed_card.contains("depth 2"),
+        "card: {collapsed_card}"
+    );
+    assert!(
+        collapsed.contains("wrapping"),
+        "rendered buffer: {collapsed}"
+    );
+
+    let outer_row = panel.cache.segments()[0]
+        .compaction_action_row("compaction:0", panel.viewport_width)
+        .unwrap();
+    assert!(panel.toggle_expansion_at(outer_row, area));
+    let expanded = buffer_text(&render(&mut panel, area.width, area.height));
+    let expanded_card = first_segment_text(&panel);
+    assert!(expanded_card.contains("depth 2"), "card: {expanded_card}");
+    assert!(
+        !expanded_card.contains("original request"),
+        "card: {expanded_card}"
+    );
+    assert!(expanded.contains("inner"), "rendered buffer: {expanded}");
+
+    let inner_row = panel.cache.segments()[0]
+        .compaction_action_row("compaction:0.0", panel.viewport_width)
+        .unwrap();
+    assert!(
+        panel.toggle_expansion_at(inner_row, area),
+        "inner_row={inner_row} scroll_top={} width={}",
+        panel.scroll_top,
+        panel.viewport_width
+    );
+    render(&mut panel, area.width, area.height);
+    let nested_card = first_segment_text(&panel);
+    assert!(
+        nested_card.contains("original request"),
+        "card: {nested_card}"
+    );
+
+    assert!(panel.toggle_expansion_at(outer_row, area));
+    render(&mut panel, area.width, area.height);
+    let recollapsed_card = first_segment_text(&panel);
+    assert!(
+        !recollapsed_card.contains("depth 2"),
+        "card: {recollapsed_card}"
+    );
 }
 
 #[test]
@@ -884,13 +1068,17 @@ const N00N_PREFIX_LEN: u16 = 6;
 
 fn make_sel(area: Rect, anchor: (u32, u16), cursor: (u32, u16)) -> Selection {
     let mut sel = Selection::start(
-        area.y + anchor.0 as u16,
+        area.y + u16::try_from(anchor.0).unwrap_or_else(|_| u16::MAX),
         anchor.1,
         area,
         SelectionZone::Messages,
         0,
     );
-    sel.update(area.y + cursor.0 as u16, cursor.1, 0);
+    sel.update(
+        area.y + u16::try_from(cursor.0).unwrap_or_else(|_| u16::MAX),
+        cursor.1,
+        0,
+    );
     sel
 }
 
@@ -907,10 +1095,24 @@ fn panel_with_msgs(texts: &[&str], width: u16, height: u16) -> MessagesPanel {
 fn extract_partial_column_selection() {
     let panel = panel_with_msgs(&["Hello world"], 80, 24);
     let area = Rect::new(0, 0, 80, 24);
-    let world_start = N00N_PREFIX_LEN + "Hello ".len() as u16;
+    let world_start = N00N_PREFIX_LEN + u16::try_from("Hello ".len()).unwrap_or_else(|_| u16::MAX);
     let sel = make_sel(area, (0, world_start), (0, world_start + 4));
     let text = panel.extract_selection_text(&sel, area);
     assert_eq!(text, "world");
+}
+
+#[test]
+fn extract_user_partial_selection_accounts_for_frame_inset() {
+    let mut panel = test_panel();
+    panel.push(DisplayMessage::new(DisplayRole::User, "hello world".into()));
+    render(&mut panel, 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    const USER_PREFIX_LEN: u16 = 6;
+    const FRAME_INSET: u16 = 2;
+    let text_start = FRAME_INSET + USER_PREFIX_LEN;
+    let sel = make_sel(area, (0, text_start), (0, text_start + 4));
+    let text = panel.extract_selection_text(&sel, area);
+    assert_eq!(text, "hello");
 }
 
 #[test]
@@ -920,7 +1122,7 @@ fn extract_skips_out_of_range_segments() {
     let total: u16 = heights.iter().sum();
     let mid = total / 2;
     let area = Rect::new(0, 0, 80, 24);
-    let sel = make_sel(area, (mid as u32, 0), (mid as u32, 79));
+    let sel = make_sel(area, (u32::from(mid), 0), (u32::from(mid), 79));
     let text = panel.extract_selection_text(&sel, area);
     assert!(text.contains("seg1"));
     assert!(!text.contains("seg0"));
@@ -940,7 +1142,7 @@ fn extract_off_screen_rows_via_temp_buffer() {
     let total: u16 = panel.segment_heights().iter().sum();
     assert!(total > 5, "content must exceed viewport");
     let sel_area = Rect::new(0, 0, 80, total);
-    let sel = make_sel(sel_area, (1, 0), ((total - 1) as u32, 79));
+    let sel = make_sel(sel_area, (1, 0), (u32::from(total - 1), 79));
 
     let extracted = panel.extract_selection_text(&sel, sel_area);
     assert!(!extracted.contains("line 0"), "first line excluded");
@@ -950,10 +1152,10 @@ fn extract_off_screen_rows_via_temp_buffer() {
 #[test]
 fn extract_mixed_fully_enclosed_and_partial() {
     let panel = panel_with_msgs(&["full segment", "partial here"], 80, 24);
-    let heights = panel.segment_heights().to_vec();
+    let heights = panel.segment_heights();
     let area = Rect::new(0, 0, 80, 24);
     let seg1_start = heights[0] + heights[1];
-    let sel = make_sel(area, (0, 0), (seg1_start as u32, N00N_PREFIX_LEN + 6));
+    let sel = make_sel(area, (0, 0), (u32::from(seg1_start), N00N_PREFIX_LEN + 6));
     let text = panel.extract_selection_text(&sel, area);
     assert!(text.contains("full segment"));
     assert!(text.contains("partial"));
@@ -969,8 +1171,8 @@ fn extract_partial_col_symmetric(msgs: &[&str], expect_start: &str, expect_end: 
     render(&mut panel, 80, 24);
     let total: u16 = panel.segment_heights().iter().sum();
     let area = Rect::new(0, 0, 80, 24);
-    let down = make_sel(area, (0, N00N_PREFIX_LEN), ((total - 1) as u32, 79));
-    let up = make_sel(area, ((total - 1) as u32, 79), (0, N00N_PREFIX_LEN));
+    let down = make_sel(area, (0, N00N_PREFIX_LEN), (u32::from(total - 1), 79));
+    let up = make_sel(area, (u32::from(total - 1), 79), (0, N00N_PREFIX_LEN));
     let text_down = panel.extract_selection_text(&down, area);
     let text_up = panel.extract_selection_text(&up, area);
     assert!(text_down.contains(expect_start));
@@ -988,7 +1190,7 @@ fn extract_wrapped_no_soft_breaks(template: &str, anchor: (u32, u16)) {
     render(&mut panel, 40, 30);
     let total: u16 = panel.segment_heights().iter().sum();
     let area = Rect::new(0, 0, 40, 30);
-    let sel = make_sel(area, anchor, ((total - 1) as u32, 39));
+    let sel = make_sel(area, anchor, (u32::from(total - 1), 39));
     let text = panel.extract_selection_text(&sel, area);
     assert!(
         text.contains(&long),
@@ -1007,7 +1209,7 @@ fn extract_fully_selected_message_copies_raw_text() {
 
     let total: u16 = panel.segment_heights().iter().sum();
     let area = Rect::new(0, 0, 80, 24);
-    let sel = make_sel(area, (0, 0), ((total - 1) as u32, 79));
+    let sel = make_sel(area, (0, 0), (u32::from(total - 1), 79));
     let text = panel.extract_selection_text(&sel, area);
 
     assert_eq!(text, "some **markdown** text");
@@ -1030,7 +1232,7 @@ fn extract_fully_selected_tool_copies_raw_output() {
 
     let total: u16 = panel.segment_heights().iter().sum();
     let area = Rect::new(0, 0, 80, 24);
-    let sel = make_sel(area, (0, 0), ((total - 1) as u32, 79));
+    let sel = make_sel(area, (0, 0), (u32::from(total - 1), 79));
     let text = panel.extract_selection_text(&sel, area);
 
     assert!(
@@ -1053,7 +1255,7 @@ fn extract_partial_last_line_truncated() {
     render(&mut panel, 80, 24);
     let total: u16 = panel.segment_heights().iter().sum();
     let area = Rect::new(0, 0, 80, 24);
-    let last_row = (total - 1) as u32;
+    let last_row = u32::from(total - 1);
     let sel = make_sel(area, (0, 0), (last_row, 3));
     let text = panel.extract_selection_text(&sel, area);
     assert_eq!(text.lines().last().unwrap(), "ABCD");
@@ -1136,7 +1338,7 @@ fn extract_selection_copies_visible_content_only() {
     let panel = panel_with_long_tool(200);
     let area = Rect::new(0, 0, 80, 24);
     let total: u16 = panel.segment_heights().iter().sum();
-    let sel = make_sel(area, (0, 0), ((total - 1) as u32, 79));
+    let sel = make_sel(area, (0, 0), (u32::from(total - 1), 79));
     let text = panel.extract_selection_text(&sel, area);
     assert!(
         !text.contains("line 50"),
@@ -1364,7 +1566,7 @@ fn toggle_instruction_segment_expands_and_collapses() {
     let collapsed = seg_line_count(&panel, inst_id);
 
     panel.toggle_expansion(inst_id);
-    assert!(seg_line_count(&panel, &inst_id) > collapsed);
+    assert!(seg_line_count(&panel, inst_id) > collapsed);
 
     panel.toggle_expansion(inst_id);
     assert_eq!(seg_line_count(&panel, inst_id), collapsed);
@@ -1409,14 +1611,77 @@ fn task_tool_id_at_only_routes_header() {
 
     assert_eq!(panel.tool_id_at(0, area), Some("task1"));
     assert_eq!(panel.tool_id_at(1, area), None);
-    let truncation_row = panel.cache.segments()[0]
-        .lines()
-        .iter()
-        .position(|line| line.spans.iter().any(|span| span.content.contains("›")))
-        .unwrap() as u16;
+    let truncation_row =
+        u16::try_from(truncation_source_line(&panel, "task1")).unwrap_or_else(|_| u16::MAX);
     assert_eq!(panel.tool_id_at(truncation_row, area), None);
     assert!(panel.handle_click(truncation_row, area));
     assert!(!seg_text(&panel, "task1").contains("›"));
+}
+
+#[test]
+fn row_truncation_actions_expand_only_their_section_in_mixed_states() {
+    const SCRIPT: SectionFlags = SectionFlags {
+        script: true,
+        output: false,
+    };
+    const OUTPUT: SectionFlags = SectionFlags {
+        script: false,
+        output: true,
+    };
+
+    fn panel_with_truncated_script_and_output() -> MessagesPanel {
+        let mut panel = test_panel();
+        bash_code_start(&mut panel, "t1", &"script line\n".repeat(200));
+        panel.tool_done(ToolDoneEvent {
+            id: "t1".into(),
+            tool: BASH_TOOL_NAME.into(),
+            output: ToolOutput::ReadCode {
+                path: "output.rs".into(),
+                start_line: 1,
+                lines: vec!["output line".into(); 200],
+                total_lines: 200,
+                instructions: None,
+            },
+            is_error: false,
+            annotation: None,
+            written_path: None,
+        });
+        render(&mut panel, 120, 240);
+        panel
+    }
+
+    let area = Rect::new(0, 0, 120, 240);
+    let mut output_first = panel_with_truncated_script_and_output();
+    let output_row = u16::try_from(section_truncation_source_line(&output_first, "t1", OUTPUT))
+        .unwrap_or_else(|_| u16::MAX);
+    assert!(output_first.handle_click(output_row, area));
+    assert_eq!(output_first.expanded_tools.get("t1"), Some(&OUTPUT));
+    let script_row = u16::try_from(section_truncation_source_line(&output_first, "t1", SCRIPT))
+        .unwrap_or_else(|_| u16::MAX);
+    assert!(output_first.handle_click(script_row, area));
+    assert_eq!(
+        output_first.expanded_tools.get("t1"),
+        Some(&SectionFlags {
+            script: true,
+            output: true,
+        })
+    );
+
+    let mut script_first = panel_with_truncated_script_and_output();
+    let script_row = u16::try_from(section_truncation_source_line(&script_first, "t1", SCRIPT))
+        .unwrap_or_else(|_| u16::MAX);
+    assert!(script_first.handle_click(script_row, area));
+    assert_eq!(script_first.expanded_tools.get("t1"), Some(&SCRIPT));
+    let output_row = u16::try_from(section_truncation_source_line(&script_first, "t1", OUTPUT))
+        .unwrap_or_else(|_| u16::MAX);
+    assert!(script_first.handle_click(output_row, area));
+    assert_eq!(
+        script_first.expanded_tools.get("t1"),
+        Some(&SectionFlags {
+            script: true,
+            output: true,
+        })
+    );
 }
 
 #[test]
@@ -1439,27 +1704,38 @@ fn snapshot_tool_native_truncation_expands_but_snapshot_row_routes_lua() {
     panel.tool_done(done("t1"));
     render(&mut panel, 80, 80);
     let area = Rect::new(0, 0, 80, 80);
-    let segment = &panel.cache.segments()[0];
-    let truncation_row = segment
-        .lines()
-        .iter()
-        .position(|line| line.spans.iter().any(|span| span.content.contains("›")))
-        .unwrap() as u16;
+    let truncation_line = truncation_source_line(&panel, "t1");
+    assert!(
+        panel.cache.segments()[0].lines()[truncation_line]
+            .spans
+            .iter()
+            .any(|span| span.content.contains('›'))
+    );
 
-    assert!(panel.handle_click(truncation_row, area));
+    let mut renamed_lines = panel.cache.segments()[0].lines().to_vec();
+    renamed_lines[truncation_line] = Line::from("  wording changed");
+    panel.cache.segments_mut()[0].set_lines(renamed_lines);
+
+    assert!(panel.handle_click(
+        u16::try_from(truncation_line).unwrap_or_else(|_| u16::MAX),
+        area
+    ));
     assert!(panel.lua_clicks.is_empty());
     assert!(!seg_text(&panel, "t1").contains("›"));
 
     render(&mut panel, 80, 240);
-    let snapshot_row = panel.cache.segments()[0]
-        .lines()
-        .iter()
-        .position(|line| {
-            line.spans
-                .iter()
-                .any(|span| span.content.contains("lua snapshot row"))
-        })
-        .unwrap() as u16;
+    let snapshot_row = u16::try_from(
+        panel.cache.segments()[0]
+            .lines()
+            .iter()
+            .position(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.content.contains("lua snapshot row"))
+            })
+            .unwrap(),
+    )
+    .unwrap_or_else(|_| u16::MAX);
     assert!(panel.handle_click(snapshot_row, Rect::new(0, 0, 80, 240)));
     assert_eq!(panel.lua_clicks.get("t1"), Some(&vec![1]));
 }
@@ -1485,6 +1761,38 @@ fn handle_click_on_done_tool_records_click_row() {
     let area = Rect::new(0, 0, 80, 24);
     assert!(panel.handle_click(area.y, area));
     assert_eq!(panel.lua_clicks.get("t1").map(Vec::len), Some(1));
+}
+
+#[test]
+fn running_live_tool_native_truncation_expands_but_header_routes_lua() {
+    const SCRIPT: SectionFlags = SectionFlags {
+        script: true,
+        output: false,
+    };
+
+    let mut panel = test_panel();
+    bash_code_start(&mut panel, "t1", &"echo line\n".repeat(200));
+    let live = Arc::new(n00n_agent::SharedBuf::new());
+    live.set_lines(vec![snap_line("streaming")]);
+    panel.register_live_buf("t1".into(), live);
+    panel.tool_snapshot(
+        "t1",
+        BufferSnapshot::from_arc(Arc::new(vec![snap_line("streaming")])),
+        None,
+    );
+    let (handle, probe) = n00n_lua::test_support::probed_event_handle();
+    panel.lua_event_handle = Some(handle);
+    render(&mut panel, 80, 240);
+    let area = Rect::new(0, 0, 80, 240);
+    let truncation_row = u16::try_from(section_truncation_source_line(&panel, "t1", SCRIPT))
+        .unwrap_or_else(|_| u16::MAX);
+
+    assert!(panel.handle_click(truncation_row, area));
+    assert_eq!(panel.expanded_tools.get("t1"), Some(&SCRIPT));
+    assert_eq!(probe.try_recv(), None);
+
+    assert!(panel.handle_click(area.y, area));
+    assert_eq!(probe.try_recv(), Some(("click", vec![])));
 }
 
 #[test]
@@ -1603,7 +1911,7 @@ fn tool_done_removes_live_buf_and_snapshots_dirty() {
 }
 
 /// The handler's buf must supersede the `start` preview: the UI keeps only
-/// the last registered buf per tool_use_id.
+/// the last registered buf per `tool_use_id`.
 #[test]
 fn second_register_live_buf_replaces_first() {
     let preview = Arc::new(n00n_agent::SharedBuf::new());
@@ -1662,6 +1970,96 @@ fn tool_done_moves_live_buf_to_watched_polled_but_not_animating() {
     assert_eq!(
         msg.render_snapshot.as_ref().unwrap().first_line_text(),
         "after"
+    );
+}
+
+#[test]
+fn live_snapshot_update_preserves_manual_scroll_anchor_at_narrow_width() {
+    let mut panel = test_panel();
+    let buf = Arc::new(n00n_agent::SharedBuf::new());
+    buf.set_lines(vec![snap_line("short")]);
+    panel.tool_start(start("t1", "codegraph"));
+    panel.register_live_buf("t1".into(), Arc::clone(&buf));
+    panel.poll_live_bufs();
+    for i in 0..20 {
+        panel.push(DisplayMessage::new(
+            DisplayRole::Assistant,
+            format!("message {i}"),
+        ));
+    }
+    render(&mut panel, 18, 8);
+    panel.restore_scroll(8, false);
+
+    let old_scroll = panel.scroll_top();
+    let old_height = panel.segment_heights()[0];
+    buf.set_lines(
+        (1..=6)
+            .map(|i| snap_line(&format!("result {i} wraps across the narrow viewport")))
+            .collect(),
+    );
+    panel.poll_live_bufs();
+    let new_height = panel.segment_heights()[0];
+
+    assert!(new_height > old_height);
+    assert_eq!(
+        panel.scroll_top(),
+        old_scroll + (new_height - old_height),
+        "content below a live card must remain visually anchored"
+    );
+    assert!(!panel.auto_scroll());
+}
+
+#[test]
+fn live_snapshot_update_keeps_auto_scroll_at_bottom_without_intermediate_churn() {
+    let mut panel = test_panel();
+    let buf = Arc::new(n00n_agent::SharedBuf::new());
+    buf.set_lines(
+        (1..=6)
+            .map(|i| snap_line(&format!("initial result {i} wraps at narrow widths")))
+            .collect(),
+    );
+    panel.tool_start(start("t1", "codegraph"));
+    panel.register_live_buf("t1".into(), Arc::clone(&buf));
+    for _ in 0..20 {
+        render(&mut panel, 18, 6);
+    }
+    assert!(panel.auto_scroll());
+
+    let old_scroll = panel.scroll_top();
+    let old_height = panel.segment_heights()[0];
+    buf.set_lines(
+        (1..=10)
+            .map(|i| snap_line(&format!("updated result {i} wraps at narrow widths")))
+            .collect(),
+    );
+    panel.poll_live_bufs();
+    let new_height = panel.segment_heights()[0];
+
+    assert!(new_height > old_height);
+    assert_eq!(panel.scroll_top(), old_scroll + (new_height - old_height));
+    assert!(panel.auto_scroll());
+}
+
+#[test]
+fn live_snapshot_reflows_when_viewport_becomes_narrow_without_republication() {
+    let mut panel = test_panel();
+    let buf = Arc::new(n00n_agent::SharedBuf::new());
+    buf.set_lines(vec![snap_line(
+        "a complete explore result line that must reflow when the viewport narrows",
+    )]);
+    panel.tool_start(start("t1", "codegraph"));
+    panel.register_live_buf("t1".into(), Arc::clone(&buf));
+    render(&mut panel, 80, 20);
+    let wide_height = panel.segment_heights()[0];
+    assert!(buf.read_if_dirty().is_none());
+
+    render(&mut panel, 16, 20);
+    let narrow_height = panel.segment_heights()[0];
+
+    assert!(narrow_height > wide_height);
+    assert!(
+        buf.read_if_dirty().is_none(),
+        "resize must not republish the Lua buffer"
     );
 }
 
@@ -1733,7 +2131,7 @@ fn tool_done_without_live_buf_is_not_watched_and_click_restores() {
     assert_eq!(probe.try_recv(), None);
 }
 
-/// The stale-run_id filter drops ToolDone events after a cancel, so the
+/// The stale-run_id filter drops `ToolDone` events after a cancel, so the
 /// cancel path itself must retire live bufs: no `is_animating` pin, and
 /// the tool stays clickable through the warm path.
 #[test]
@@ -2261,18 +2659,13 @@ fn assert_cache_equal(a: &MessagesPanel, b: &MessagesPanel) {
     assert_eq!(at, bt, "tool_ids");
 }
 
-#[test_case(0, 4, 0, vec![] ; "empty")]
-#[test_case(3, 4, 3, vec![] ; "below_batch_all_initial")]
-#[test_case(4, 4, 4, vec![] ; "exactly_batch_all_initial")]
-#[test_case(5, 4, 4, vec![1] ; "one_over_batch_one_backlog")]
-#[test_case(10, 4, 4, vec![4, 2] ; "two_batches")]
-#[test_case(12, 4, 4, vec![4, 4] ; "even_split")]
-fn restore_plan_splits_recent_first(
-    total: usize,
-    batch: usize,
-    initial: usize,
-    batches: Vec<usize>,
-) {
+#[test_case(0, 4, 0, &[] ; "empty")]
+#[test_case(3, 4, 3, &[] ; "below_batch_all_initial")]
+#[test_case(4, 4, 4, &[] ; "exactly_batch_all_initial")]
+#[test_case(5, 4, 4, &[1] ; "one_over_batch_one_backlog")]
+#[test_case(10, 4, 4, &[4, 2] ; "two_batches")]
+#[test_case(12, 4, 4, &[4, 4] ; "even_split")]
+fn restore_plan_splits_recent_first(total: usize, batch: usize, initial: usize, batches: &[usize]) {
     let plan = restore_plan(total, batch);
     assert_eq!(plan.initial, initial);
     assert_eq!(plan.prepend_batches, batches);

@@ -24,6 +24,7 @@ const DOOM_LOOP_THRESHOLD: usize = 3;
 const DOOM_LOOP_MESSAGE: &str = "You have called this tool with identical input 3 times in a row. You are stuck in a loop. Break out and try a different approach.";
 const MCP_BLOCKED_IN_PLAN: &str = "MCP tools are not available in plan mode";
 const UNKNOWN_TOOL_PREFIX: &str = "unknown tool";
+const TOOL_AUDIENCE_DENIED: &str = "tool is not available to this agent audience";
 
 pub(super) struct RecentCalls(VecDeque<(String, u64)>);
 
@@ -59,6 +60,7 @@ impl RecentCalls {
 
 /// Parse errors and unknown tools skip the start event so the UI never
 /// shows a phantom spinner.
+#[allow(clippy::too_many_lines)]
 pub async fn run(
     registry: &ToolRegistry,
     mcp: Option<&McpHandle>,
@@ -69,7 +71,7 @@ pub async fn run(
     emit: Emit,
 ) -> ToolDoneEvent {
     // GPT-5.6 was likely trained on Codex sessions where tools are `functions.<name>`
-    let name = name.strip_prefix("functions.").unwrap_or(name);
+    let name = name.strip_prefix("functions.").map_or_else(|| name, |v| v);
     if let Some(local) = ctx.local_tools.get(name) {
         return run_local_tool(local, id, name, input, ctx, emit);
     }
@@ -99,6 +101,13 @@ pub async fn run(
         annotation: None,
         written_path: None,
     };
+
+    if entry
+        .as_ref()
+        .is_some_and(|entry| !entry.tool.audience().contains(ctx.audience))
+    {
+        return done_error(TOOL_AUDIENCE_DENIED.into());
+    }
 
     if let Some(entry) = entry {
         let invocation = match entry.tool.parse(input) {
@@ -161,9 +170,13 @@ pub async fn run(
                 debug!(
                     tool = %name,
                     source = %entry.source.as_log_field(),
-                    elapsed_ms = elapsed.as_millis() as u64,
+                    elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or_else(|_| u64::MAX),
                     "tool ok"
                 );
+                let output = match result.telemetry {
+                    Some(telemetry) => output.with_telemetry(Some(telemetry)),
+                    None => output,
+                };
                 ToolDoneEvent {
                     id,
                     tool: tool_id,
@@ -177,11 +190,23 @@ pub async fn run(
                 warn!(
                     tool = %name,
                     source = %entry.source.as_log_field(),
-                    elapsed_ms = elapsed.as_millis() as u64,
+                    elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or_else(|_| u64::MAX),
                     error = %message,
                     "tool failed"
                 );
-                done_error(message)
+                ToolDoneEvent {
+                    id,
+                    tool: tool_id,
+                    output: ToolOutput::Plain(crate::TextOutput {
+                        text: message,
+                        instructions: None,
+                        state: None,
+                        telemetry: result.telemetry,
+                    }),
+                    is_error: true,
+                    annotation: result.annotation,
+                    written_path: None,
+                }
             }
         }
     } else if mcp.is_some_and(|m| m.has_tool(mcp_lookup)) {
@@ -443,8 +468,7 @@ async fn dispatch_mcp(
     let tool_id = ctx
         .mcp
         .as_ref()
-        .map(|m| m.interned_name(tool_name))
-        .unwrap_or_else(|| Arc::from(UNKNOWN_MCP));
+        .map_or_else(|| Arc::from(UNKNOWN_MCP), |m| m.interned_name(tool_name));
     execute_mcp_tool(ctx, id, tool_id, tool_name, input).await
 }
 
@@ -641,14 +665,11 @@ mod tests {
             );
 
             let registry = ToolRegistry::new();
-            registry
-                .register(
-                    Arc::new(GuardedMock),
-                    ToolSource::Lua {
-                        plugin: "test".into(),
-                    },
-                )
-                .unwrap();
+            let tool = Arc::new(GuardedMock);
+            let source = ToolSource::Lua {
+                plugin: "test".into(),
+            };
+            registry.register(tool, source).unwrap();
 
             let done = run(
                 &registry,
@@ -703,7 +724,7 @@ mod tests {
                 "probe".into(),
             ))))
         }
-        fn execute<'a>(self: Box<Self>, _ctx: &'a ToolContext) -> ExecFuture<'a> {
+        fn execute(self: Box<Self>, _ctx: &ToolContext) -> ExecFuture<'_> {
             self.executed.store(true, Ordering::SeqCst);
             Box::pin(async {
                 ToolExecResult::from(Ok::<_, String>(ToolOutput::Plain("ok".into())))
@@ -721,12 +742,49 @@ mod tests {
         fn schema(&self) -> Value {
             serde_json::json!({"type": "object", "properties": {}, "additionalProperties": false})
         }
+        fn audience(&self) -> crate::tools::ToolAudience {
+            crate::tools::ToolAudience::MAIN
+        }
         fn parse(&self, _input: &Value) -> Result<Box<dyn ToolInvocation>, ParseError> {
             Ok(Box::new(StartProbeInvocation {
                 started: Arc::clone(&self.started),
                 executed: Arc::clone(&self.executed),
             }))
         }
+    }
+
+    #[test]
+    fn hidden_audience_tool_is_not_dispatched() {
+        smol::block_on(async {
+            let mut ctx = crate::tools::test_support::stub_ctx(&AgentMode::Build);
+            ctx.audience = crate::tools::ToolAudience::GENERAL_SUB;
+            let probe = StartProbe::default();
+            let started = Arc::clone(&probe.started);
+            let registry = ToolRegistry::new();
+            registry
+                .register(
+                    Arc::new(probe),
+                    ToolSource::Lua {
+                        plugin: "test".into(),
+                    },
+                )
+                .unwrap();
+
+            let done = run(
+                &registry,
+                None,
+                "t1".into(),
+                START_PROBE_NAME,
+                &serde_json::json!({}),
+                &ctx,
+                Emit::Silent,
+            )
+            .await;
+
+            assert!(done.is_error);
+            assert!(done.output.as_text().contains(TOOL_AUDIENCE_DENIED));
+            assert!(!started.load(Ordering::SeqCst));
+        });
     }
 
     /// A denied tool should still get its preview, but never its `execute`.
@@ -751,14 +809,11 @@ mod tests {
             let probe = StartProbe::default();
             let (started, executed) = (Arc::clone(&probe.started), Arc::clone(&probe.executed));
             let registry = ToolRegistry::new();
-            registry
-                .register(
-                    Arc::new(probe),
-                    ToolSource::Lua {
-                        plugin: "test".into(),
-                    },
-                )
-                .unwrap();
+            let tool = Arc::new(probe);
+            let source = ToolSource::Lua {
+                plugin: "test".into(),
+            };
+            registry.register(tool, source).unwrap();
 
             let done = run(
                 &registry,

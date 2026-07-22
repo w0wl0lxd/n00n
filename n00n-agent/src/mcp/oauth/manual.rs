@@ -43,8 +43,7 @@ fn parse_pasted(input: &str, expected_state: &str) -> Result<Outcome, String> {
         let desc = params
             .iter()
             .find(|(k, _)| k == "error_description")
-            .map(|(_, v)| v.as_str())
-            .unwrap_or(error);
+            .map_or_else(|| error.as_str(), |(_, v)| v.as_str());
         return Err(format!("OAuth error: {desc}"));
     }
 
@@ -70,7 +69,7 @@ fn parse_pasted(input: &str, expected_state: &str) -> Result<Outcome, String> {
 }
 
 fn extract_query(input: &str) -> &str {
-    let no_fragment = input.split('#').next().unwrap_or(input);
+    let no_fragment = input.split('#').next().unwrap_or_else(|| input);
     match no_fragment.split_once('?') {
         Some((_, query)) => query,
         None => no_fragment,

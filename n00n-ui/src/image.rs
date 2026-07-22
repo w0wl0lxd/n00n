@@ -18,6 +18,7 @@ const IMAGE_EXTENSIONS: &[(&str, ImageMediaType)] = &[
     ("webp", ImageMediaType::Webp),
 ];
 
+#[must_use]
 pub fn media_type_for(path: &Path) -> Option<ImageMediaType> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     IMAGE_EXTENSIONS
@@ -49,6 +50,11 @@ pub(crate) fn try_parse_image_path(text: &str) -> Option<(PathBuf, ImageMediaTyp
     Some((path, media_type))
 }
 
+/// Load an image from disk and base64-encode it for transmission.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be read or is larger than [`MAX_IMAGE_BYTES`].
 pub fn load_file_image(path: &Path, media_type: ImageMediaType) -> Result<ImageSource, String> {
     let bytes = fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     if bytes.len() > MAX_IMAGE_BYTES {
@@ -68,7 +74,11 @@ pub(crate) fn load_clipboard_image() -> Result<ImageSource, String> {
     if pixels > MAX_IMAGE_PIXELS {
         return Err(format!("Image too large ({}x{})", img.width, img.height));
     }
-    let png_bytes = encode_rgba_to_png(img.width as u32, img.height as u32, &img.bytes)?;
+    let png_bytes = encode_rgba_to_png(
+        u32::try_from(img.width).unwrap_or_else(|_| u32::MAX),
+        u32::try_from(img.height).unwrap_or_else(|_| u32::MAX),
+        &img.bytes,
+    )?;
     if png_bytes.len() > MAX_IMAGE_BYTES {
         return Err("Encoded image exceeds 20MB limit".into());
     }
