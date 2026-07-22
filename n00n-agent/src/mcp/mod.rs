@@ -462,8 +462,7 @@ async fn initialize_deferred(
                 InitializationWake::Complete
             },
             async {
-                #[allow(clippy::result_map_or_into_option)]
-                let command = cmd_rx.recv_async().await.map_or(None, Some);
+                let command = cmd_rx.recv_async().await.ok();
                 InitializationWake::Command(command)
             },
         )
@@ -833,10 +832,8 @@ fn spawn_persist_enabled(path: PathBuf, name: String, enabled: bool) {
 #[allow(unsafe_code)]
 pub fn kill_process_groups(pids: &[u32]) {
     for &pid in pids {
-        #[allow(clippy::cast_possible_wrap)]
-        unsafe {
-            libc::killpg(pid as i32, libc::SIGKILL)
-        };
+        let pid_i32 = i32::try_from(pid).unwrap_or_else(|_| i32::MAX);
+        unsafe { libc::killpg(pid_i32, libc::SIGKILL) };
     }
 }
 

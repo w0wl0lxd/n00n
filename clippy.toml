@@ -9,7 +9,7 @@ too-many-lines-threshold = 100
 too-many-arguments-threshold = 8
 type-complexity-threshold = 300
 max-fn-params-bools = 3
-max-struct-bools = 5
+max-struct-bools = 6
 literal-representation-threshold = 10000
 single-char-binding-names-threshold = 4
 

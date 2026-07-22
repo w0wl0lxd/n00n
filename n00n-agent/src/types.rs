@@ -1106,10 +1106,14 @@ pub enum SpanStyle {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[allow(clippy::struct_excessive_bools)]
 pub struct InlineStyle {
     pub fg: Option<(u8, u8, u8)>,
     pub bg: Option<(u8, u8, u8)>,
+    pub bits: StyleBits,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct StyleBits {
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
@@ -1233,7 +1237,6 @@ mod tests {
     #[test_case(&ToolOutput::WriteCode { path: "a.rs".into(), byte_count: 99, lines: vec![] }, Some("99 bytes") ; "write_code_bytes")]
     #[test_case(&ToolOutput::GrepResult { entries: vec![GrepFileEntry { path: "a.rs".into(), groups: vec![GrepMatchGroup::single(1, "hit")] }] }, Some("1 matches in 1 file") ; "grep_file_count")]
     #[test_case(&ToolOutput::Diff { path: "a.rs".into(), before: String::new(), after: String::new(), summary: "ok".into(), telemetry: None }, None ; "diff_no_annotation")]
-    #[allow(clippy::needless_pass_by_value)]
     fn annotation_cases(output: &ToolOutput, expected: Option<&str>) {
         assert_eq!(output.annotation().as_deref(), expected);
     }
@@ -1358,7 +1361,6 @@ mod tests {
     #[test_case(&ToolOutput::WriteCode { path: "src/lib.rs".into(), byte_count: 10, lines: vec![] }, Some("src/lib.rs") ; "write_code")]
     #[test_case(&ToolOutput::Diff { path: "src/lib.rs".into(), before: String::new(), after: String::new(), summary: String::new(), telemetry: None }, Some("src/lib.rs") ; "diff")]
     #[test_case(&ToolOutput::Plain("ok".into()), None ; "non_write_variant")]
-    #[allow(clippy::needless_pass_by_value)]
     fn output_written_path(output: &ToolOutput, expected: Option<&str>) {
         assert_eq!(output.written_path(), expected);
     }
@@ -1615,12 +1617,14 @@ mod tests {
     #[test_case(SpanStyle::Inline(InlineStyle {
         fg: Some((255, 0, 0)),
         bg: None,
-        bold: true,
-        italic: false,
-        underline: true,
-        dim: false,
-        strikethrough: false,
-        reversed: true,
+        bits: StyleBits {
+            bold: true,
+            italic: false,
+            underline: true,
+            dim: false,
+            strikethrough: false,
+            reversed: true,
+        },
     }) ; "inline")]
     fn snapshot_span_serde_roundtrip(style: SpanStyle) {
         let span = SnapshotSpan {

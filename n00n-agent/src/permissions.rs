@@ -39,6 +39,17 @@ fn builtin_rules(cwd: &Path) -> Vec<PermissionRule> {
 pub const BOUNDARY_UNVERIFIABLE_PREFIX: &str = "Cannot verify project boundary for";
 
 #[derive(Debug)]
+pub struct PermissionCheckContext<'a> {
+    pub tool: &'a ToolKey,
+    pub scopes: &'a crate::tools::PermissionScopes,
+    pub event_tx: &'a EventSender,
+    pub user_response_rx: Option<&'a async_lock::Mutex<flume::Receiver<String>>>,
+    pub request_id: &'a str,
+    pub cancel: &'a crate::CancelToken,
+    pub plan_path: Option<&'a Path>,
+}
+
+#[derive(Debug)]
 pub enum PermissionCheck {
     Allowed,
     Denied,
@@ -208,7 +219,6 @@ impl PermissionManager {
     /// rules plus the current yolo state, but owns empty session rules so
     /// restoring one session never clobbers another's grants.
     #[must_use]
-    #[allow(clippy::return_self_not_must_use)]
     pub fn fork(&self) -> Self {
         Self {
             session_rules: Mutex::new(Vec::new()),
@@ -451,65 +461,60 @@ impl PermissionManager {
     /// # Errors
     ///
     /// Returns `PermissionError` if the tool is not allowed.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn enforce(
-        &self,
-        tool: &ToolKey,
-        scopes: &crate::tools::PermissionScopes,
-        event_tx: &EventSender,
-        user_response_rx: Option<&async_lock::Mutex<flume::Receiver<String>>>,
-        request_id: &str,
-        cancel: &crate::CancelToken,
-        plan_path: Option<&Path>,
-    ) -> Result<(), PermissionError> {
-        let scope_refs: Vec<&str> = scopes
+    pub async fn enforce(&self, ctx: PermissionCheckContext<'_>) -> Result<(), PermissionError> {
+        let scope_refs: Vec<&str> = ctx
+            .scopes
             .scopes
             .iter()
             .map(std::string::String::as_str)
             .collect();
-        let tool_string = tool.to_string();
-        let scope_display = || scopes.scopes.join("; ");
+        let tool_string = ctx.tool.to_string();
+        let scope_display = || ctx.scopes.scopes.join("; ");
         let deny = |guidance: Option<String>| match guidance {
             Some(g) => PermissionError::with_guidance(&tool_string, &scope_display(), g),
             None => PermissionError::new(&tool_string, &scope_display()),
         };
 
-        let (pt, ps, force_prompt) =
-            match self.check_inner(tool, &scope_refs, scopes.force_prompt, plan_path) {
-                PermissionCheck::Allowed => return Ok(()),
-                PermissionCheck::Denied => return Err(deny(None)),
-                PermissionCheck::NeedsPrompt {
-                    tool,
-                    scopes,
-                    force_prompt,
-                } => (tool, scopes, force_prompt),
-            };
+        let (pt, ps, force_prompt) = match self.check_inner(
+            ctx.tool,
+            &scope_refs,
+            ctx.scopes.force_prompt,
+            ctx.plan_path,
+        ) {
+            PermissionCheck::Allowed => return Ok(()),
+            PermissionCheck::Denied => return Err(deny(None)),
+            PermissionCheck::NeedsPrompt {
+                tool,
+                scopes,
+                force_prompt,
+            } => (tool, scopes, force_prompt),
+        };
 
-        let Some(rx) = user_response_rx else {
-            warn!(tool = %tool, scope = %scope_display(), "no permission response channel");
+        let Some(rx) = ctx.user_response_rx else {
+            warn!(tool = %ctx.tool, scope = %scope_display(), "no permission response channel");
             return Err(deny(None));
         };
 
         let guard = rx.lock().await;
         let refs: Vec<&str> = ps.iter().map(std::string::String::as_str).collect();
-        let (t2, s2) = match self.check_inner(&pt, &refs, force_prompt, plan_path) {
+        let (t2, s2) = match self.check_inner(&pt, &refs, force_prompt, ctx.plan_path) {
             PermissionCheck::Allowed => return Ok(()),
             PermissionCheck::Denied => return Err(deny(None)),
             PermissionCheck::NeedsPrompt { tool, scopes, .. } => (tool, scopes),
         };
 
-        let _ = event_tx.send(AgentEvent::PermissionRequest {
-            id: request_id.to_owned(),
+        let _ = ctx.event_tx.send(AgentEvent::PermissionRequest {
+            id: ctx.request_id.to_owned(),
             tool: t2.clone(),
             scopes: s2.clone(),
         });
-        let response = cancel.race(guard.recv_async()).await;
+        let response = ctx.cancel.race(guard.recv_async()).await;
         drop(guard);
 
         let answer = match response {
             Ok(Ok(a)) => a,
             Ok(Err(_)) => {
-                warn!(tool = %tool, scope = %scope_display(), "permission channel closed");
+                warn!(tool = %ctx.tool, scope = %scope_display(), "permission channel closed");
                 return Err(deny(None));
             }
             Err(_) => return Err(deny(None)),
@@ -1213,12 +1218,11 @@ mod tests {
         assert_eq!(mgr.session_rules_snapshot().len(), 1);
     }
 
-    #[test_case(PermissionAnswer::AllowOnce ; "allow_once")]
-    #[test_case(PermissionAnswer::Deny ; "deny_once")]
-    #[allow(clippy::needless_pass_by_value)]
-    fn once_decisions_add_no_session_rules(answer: PermissionAnswer) {
+    #[test_case(&PermissionAnswer::AllowOnce ; "allow_once")]
+    #[test_case(&PermissionAnswer::Deny ; "deny_once")]
+    fn once_decisions_add_no_session_rules(answer: &PermissionAnswer) {
         let mgr = default_mgr();
-        mgr.apply_decision(&ToolKey::native("bash"), &["cargo test".into()], &answer);
+        mgr.apply_decision(&ToolKey::native("bash"), &["cargo test".into()], answer);
         assert!(mgr.session_rules_snapshot().is_empty());
     }
 

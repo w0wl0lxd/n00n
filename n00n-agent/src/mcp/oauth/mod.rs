@@ -49,7 +49,6 @@ pub enum Interaction {
 /// # Errors
 ///
 /// Returns an error if discovery, registration, code exchange, or token refresh fails.
-#[allow(clippy::too_many_lines)]
 pub async fn authenticate(
     server_name: &str,
     server_url: &str,
@@ -79,68 +78,21 @@ pub async fn authenticate(
         }
     }
 
-    let www_auth = www_authenticate.and_then(parse_www_authenticate);
+    let auth_server =
+        discover_and_validate_auth_server(&client, server_url, www_authenticate, &wrap).await?;
 
-    let resource_meta =
-        discovery::discover_resource_metadata(&client, server_url, www_auth.as_ref())
-            .await
-            .map_err(&wrap)?;
+    let (callback, reg, pkce, state, scope) = prepare_oauth_flow(
+        &client,
+        storage,
+        server_name,
+        server_url,
+        &auth_server,
+        www_authenticate,
+        &wrap,
+    )
+    .await?;
 
-    let auth_server_url = resource_meta
-        .authorization_servers
-        .first()
-        .cloned()
-        .unwrap_or_else(|| discovery::server_origin(server_url));
-
-    let auth_server = discovery::discover_auth_server(&client, &auth_server_url)
-        .await
-        .map_err(&wrap)?;
-
-    if !auth_server.code_challenge_methods_supported.is_empty()
-        && !auth_server
-            .code_challenge_methods_supported
-            .iter()
-            .any(|m| m == "S256")
-    {
-        return Err(wrap(OAuthError::Other(
-            "server does not support S256 PKCE".into(),
-        )));
-    }
-
-    let callback = CallbackServer::bind()
-        .await
-        .map_err(|e| wrap(OAuthError::Other(e)))?;
     let redirect_uri = callback.redirect_uri();
-
-    let reg = if let Some(existing) = load_mcp_auth(storage, server_name, server_url)
-        && existing.redirect_uri.as_deref() == Some(&redirect_uri)
-    {
-        registration::ClientRegistration {
-            client_id: existing.client_id,
-            client_secret: existing.client_secret,
-            client_secret_expires_at: existing.client_secret_expires_at,
-        }
-    } else if let Some(endpoint) = &auth_server.registration_endpoint {
-        registration::register_client(&client, endpoint, &redirect_uri)
-            .await
-            .map_err(&wrap)?
-    } else {
-        return Err(wrap(OAuthError::Other(
-            "no stored client and server has no registration endpoint".into(),
-        )));
-    };
-
-    let pkce = pkce::generate().map_err(&wrap)?;
-
-    let mut state_buf = [0u8; 16];
-    getrandom::fill(&mut state_buf)
-        .map_err(|e| wrap(OAuthError::Other(format!("CSPRNG unavailable: {e}"))))?;
-    let state = URL_SAFE_NO_PAD.encode(state_buf);
-
-    let scope = www_auth
-        .as_ref()
-        .and_then(|w| w.scope.clone())
-        .or_else(|| resource_meta.scopes_supported.as_ref().map(|s| s.join(" ")));
 
     let auth_url = build_authorization_url(
         &auth_server.authorization_endpoint,
@@ -153,47 +105,18 @@ pub async fn authenticate(
     );
 
     info!(server = server_name, endpoint = %auth_server.authorization_endpoint, "starting OAuth authorization");
-    let result = match interaction {
-        Interaction::Cli => {
-            eprintln!("\nOpen this URL in your browser:\n\n  {auth_url}\n");
-
-            if is_headless() {
-                info!(
-                    server = server_name,
-                    "no display detected, skipping browser open"
-                );
-            } else if let Err(e) = open::that(&auth_url) {
-                warn!(server = server_name, error = %e, "failed to open browser");
-            }
-
-            eprintln!("Waiting for callback on 127.0.0.1:{}...", callback.port);
-            eprintln!("If this machine has no browser, log in on another device and paste");
-            eprintln!("the full redirect URL ({redirect_uri}?...) here:");
-
-            let callback_or_paste = future::race(
-                callback.wait_for_callback(&state),
-                manual::wait_for_paste(&state),
-            );
-
-            future::race(callback_or_paste, auth_timeout()).await
-        }
-        Interaction::Background => {
-            let cause = if is_headless() {
-                Some("no display to open a browser".to_string())
-            } else {
-                open::that(&auth_url)
-                    .err()
-                    .map(|e| format!("failed to open browser: {e}"))
-            };
-            match cause {
-                Some(cause) => Err(format!("{cause}; run 'n00n mcp auth {server_name}'")),
-                None => future::race(callback.wait_for_callback(&state), auth_timeout()).await,
-            }
-        }
-    }
+    let result = run_oauth_flow(
+        server_name,
+        &auth_url,
+        callback,
+        &redirect_uri,
+        &state,
+        interaction,
+    )
+    .await
     .map_err(|e| wrap(OAuthError::Other(e)))?;
 
-    let tokens = token::exchange_code(
+    let tokens = exchange_token(
         &client,
         &auth_server.token_endpoint,
         &result.code,
@@ -219,6 +142,195 @@ pub async fn authenticate(
         .map_err(|e| wrap(OAuthError::Other(e.to_string())))?;
     info!(server = server_name, "OAuth authentication complete");
     Ok(data)
+}
+
+async fn discover_and_validate_auth_server(
+    client: &HttpClient,
+    server_url: &str,
+    www_authenticate: Option<&str>,
+    wrap: &impl Fn(OAuthError) -> McpError,
+) -> Result<discovery::AuthServerMetadata, McpError> {
+    let www_auth = www_authenticate.and_then(parse_www_authenticate);
+
+    let resource_meta =
+        discovery::discover_resource_metadata(client, server_url, www_auth.as_ref())
+            .await
+            .map_err(wrap)?;
+
+    let auth_server_url = resource_meta
+        .authorization_servers
+        .first()
+        .cloned()
+        .unwrap_or_else(|| discovery::server_origin(server_url));
+
+    let auth_server = discovery::discover_auth_server(client, &auth_server_url)
+        .await
+        .map_err(wrap)?;
+
+    if !auth_server.code_challenge_methods_supported.is_empty()
+        && !auth_server
+            .code_challenge_methods_supported
+            .iter()
+            .any(|m| m == "S256")
+    {
+        return Err(wrap(OAuthError::Other(
+            "server does not support S256 PKCE".into(),
+        )));
+    }
+
+    Ok(auth_server)
+}
+
+async fn prepare_oauth_flow(
+    client: &HttpClient,
+    storage: &StateDir,
+    server_name: &str,
+    server_url: &str,
+    auth_server: &discovery::AuthServerMetadata,
+    www_authenticate: Option<&str>,
+    wrap: &impl Fn(OAuthError) -> McpError,
+) -> Result<
+    (
+        CallbackServer,
+        registration::ClientRegistration,
+        pkce::PkceChallenge,
+        String,
+        Option<String>,
+    ),
+    McpError,
+> {
+    let callback = CallbackServer::bind()
+        .await
+        .map_err(|e| wrap(OAuthError::Other(e)))?;
+    let redirect_uri = callback.redirect_uri();
+
+    let reg = obtain_client_registration(
+        client,
+        storage,
+        server_name,
+        server_url,
+        &redirect_uri,
+        auth_server.registration_endpoint.as_ref(),
+        wrap,
+    )
+    .await?;
+
+    let pkce = pkce::generate().map_err(wrap)?;
+
+    let mut state_buf = [0u8; 16];
+    getrandom::fill(&mut state_buf)
+        .map_err(|e| wrap(OAuthError::Other(format!("CSPRNG unavailable: {e}"))))?;
+    let state = URL_SAFE_NO_PAD.encode(state_buf);
+
+    let www_auth = www_authenticate.and_then(parse_www_authenticate);
+    let resource_meta =
+        discovery::discover_resource_metadata(client, server_url, www_auth.as_ref())
+            .await
+            .map_err(wrap)?;
+    let scope = resource_meta.scopes_supported.as_ref().map(|s| s.join(" "));
+
+    Ok((callback, reg, pkce, state, scope))
+}
+
+async fn exchange_token(
+    client: &HttpClient,
+    token_endpoint: &str,
+    code: &str,
+    redirect_uri: &str,
+    code_verifier: &str,
+    client_id: &str,
+    client_secret: Option<&str>,
+    resource: &str,
+) -> Result<n00n_storage::auth::OAuthTokens, OAuthError> {
+    let exchange_ctx = token::OAuthCodeExchange {
+        client,
+        token_endpoint,
+        code,
+        redirect_uri,
+        code_verifier,
+        client_id,
+        client_secret,
+        resource,
+    };
+    token::exchange_code(exchange_ctx).await
+}
+
+async fn obtain_client_registration(
+    client: &HttpClient,
+    storage: &StateDir,
+    server_name: &str,
+    server_url: &str,
+    redirect_uri: &str,
+    registration_endpoint: Option<&String>,
+    wrap: &impl Fn(OAuthError) -> McpError,
+) -> Result<registration::ClientRegistration, McpError> {
+    if let Some(existing) = load_mcp_auth(storage, server_name, server_url)
+        && existing.redirect_uri.as_deref() == Some(redirect_uri)
+    {
+        return Ok(registration::ClientRegistration {
+            client_id: existing.client_id,
+            client_secret: existing.client_secret,
+            client_secret_expires_at: existing.client_secret_expires_at,
+        });
+    }
+
+    if let Some(endpoint) = registration_endpoint {
+        return registration::register_client(client, endpoint, redirect_uri)
+            .await
+            .map_err(wrap);
+    }
+
+    Err(wrap(OAuthError::Other(
+        "no stored client and server has no registration endpoint".into(),
+    )))
+}
+
+async fn run_oauth_flow(
+    server_name: &str,
+    auth_url: &str,
+    callback: CallbackServer,
+    redirect_uri: &str,
+    state: &str,
+    interaction: Interaction,
+) -> Result<CallbackResult, String> {
+    match interaction {
+        Interaction::Cli => {
+            eprintln!("\nOpen this URL in your browser:\n\n  {auth_url}\n");
+
+            if is_headless() {
+                info!(
+                    server = server_name,
+                    "no display detected, skipping browser open"
+                );
+            } else if let Err(e) = open::that(auth_url) {
+                warn!(server = server_name, error = %e, "failed to open browser");
+            }
+
+            eprintln!("Waiting for callback on 127.0.0.1:{}...", callback.port);
+            eprintln!("If this machine has no browser, log in on another device and paste");
+            eprintln!("the full redirect URL ({redirect_uri}?...) here:");
+
+            let callback_or_paste = future::race(
+                callback.wait_for_callback(state),
+                manual::wait_for_paste(state),
+            );
+
+            future::race(callback_or_paste, auth_timeout()).await
+        }
+        Interaction::Background => {
+            let cause = if is_headless() {
+                Some("no display to open a browser".to_string())
+            } else {
+                open::that(auth_url)
+                    .err()
+                    .map(|e| format!("failed to open browser: {e}"))
+            };
+            match cause {
+                Some(cause) => Err(format!("{cause}; run 'n00n mcp auth {server_name}'")),
+                None => future::race(callback.wait_for_callback(state), auth_timeout()).await,
+            }
+        }
+    }
 }
 
 /// Refresh stored tokens without any user interaction. `Ok(None)` means an
