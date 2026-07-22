@@ -1269,7 +1269,9 @@ mod tests {
                 let mut socket = async_tungstenite::accept_async(stream).await.unwrap();
                 assert!(matches!(socket.next().await, Some(Ok(WsMessage::Text(_)))));
                 for sequence in 0..40 {
-                    Timer::after(Duration::from_millis(10)).await;
+                    if sequence > 0 {
+                        Timer::after(Duration::from_millis(10)).await;
+                    }
                     if socket
                         .send(WsMessage::Text(
                             json!({
