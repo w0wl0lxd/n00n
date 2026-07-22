@@ -987,23 +987,6 @@ struct Progress {
     barrier_rx: flume::Receiver<()>,
 }
 
-fn sanitize_activity_value(value: &str, max_bytes: usize, fallback: &str) -> String {
-    let mut out = String::with_capacity(value.len().min(max_bytes));
-    for byte in value.bytes() {
-        if out.len() >= max_bytes {
-            break;
-        }
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b':' | b'/' | b'-') {
-            out.push(char::from(byte));
-        }
-    }
-    if out.is_empty() {
-        fallback.to_owned()
-    } else {
-        out
-    }
-}
-
 impl Progress {
     fn new(start: Instant, session_id: String) -> Self {
         let (tx, rx) = flume::unbounded();
@@ -1337,6 +1320,7 @@ impl Drop for LuaSession {
 /// if err then error(err) end
 /// print(r.text)
 /// print(r.input_tokens .. " input, " .. r.output_tokens .. " output tokens")
+#[allow(clippy::too_many_lines)]
 #[lua_fn]
 #[allow(clippy::cast_possible_truncation)]
 async fn prompt(
@@ -1381,6 +1365,7 @@ async fn prompt(
         .with_user_response_rx(Arc::clone(&s.answer_rx))
         .with_interrupt_source(Arc::new(PromptInterruptSource {
             rx: s.prompt_rx.clone(),
+            thinking: s.thinking,
             fast: s.fast,
         }))
         .with_cancel(s.child_cancel.clone())
@@ -1594,7 +1579,7 @@ mod tests {
 
     #[test]
     fn progress_updates_start_in_place_and_retains_status() {
-        let progress = Progress::new(Instant::now());
+        let progress = Progress::new(Instant::now(), String::new());
         progress.record_start(&progress_start("one", "cargo test"));
         progress.record_done(&progress_done("one", true));
         progress.record_done(&progress_done("one", true));
@@ -1612,7 +1597,7 @@ mod tests {
 
     #[test]
     fn progress_tracks_reused_activity_ids_in_order() {
-        let progress = Progress::new(Instant::now());
+        let progress = Progress::new(Instant::now(), String::new());
         progress.record_start(&progress_start("call_read", "first"));
         progress.record_start(&progress_start("call_read", "second"));
         progress.record_done(&progress_done("call_read", false));
@@ -1633,7 +1618,7 @@ mod tests {
 
     #[test]
     fn progress_keeps_latest_five_activity_rows() {
-        let progress = Progress::new(Instant::now());
+        let progress = Progress::new(Instant::now(), String::new());
         for i in 0..7 {
             let id = i.to_string();
             progress.record_start(&progress_start(&id, &format!("message {i}")));
@@ -1657,7 +1642,7 @@ mod tests {
 
     #[test]
     fn progress_activity_message_is_sanitized_and_truncated() {
-        let progress = Progress::new(Instant::now());
+        let progress = Progress::new(Instant::now(), String::new());
         let long_secret = format!("API_KEY=super-secret\n{}", "é".repeat(100));
         progress.record_start(&progress_start("secret", &long_secret));
 
@@ -1674,7 +1659,7 @@ mod tests {
 
     #[test]
     fn progress_counts_done_events_for_evicted_activity_rows() {
-        let progress = Progress::new(Instant::now());
+        let progress = Progress::new(Instant::now(), String::new());
         for i in 0..7 {
             progress.record_start(&progress_start(&i.to_string(), "running"));
         }
@@ -1699,7 +1684,7 @@ mod tests {
     #[test]
     fn forwarder_barrier_observes_prior_tool_done() {
         smol::block_on(async {
-            let progress = Arc::new(Progress::new(Instant::now()));
+            let progress = Arc::new(Progress::new(Instant::now(), String::new()));
             progress.record_start(&progress_start("one", "reading"));
             let target = progress.next_forwarder_barrier();
             let forwarded = Arc::clone(&progress);
@@ -1745,7 +1730,7 @@ mod tests {
 
     #[test]
     fn progress_notifications_are_coalesced() {
-        let progress = Progress::new(Instant::now());
+        let progress = Progress::new(Instant::now(), String::new());
         for _ in 0..100 {
             progress.notify();
             progress.record_forwarder_barrier();
@@ -1768,7 +1753,7 @@ mod tests {
 
     #[test]
     fn progress_done_is_turn_safe() {
-        let progress = Progress::new(Instant::now());
+        let progress = Progress::new(Instant::now(), String::new());
         let first = progress.begin_turn();
         let second = progress.begin_turn();
         progress.set_done(first);

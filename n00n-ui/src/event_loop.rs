@@ -375,6 +375,7 @@ fn restore_session(app: &mut App, handles: &AgentHandles) {
 }
 
 impl<'t> EventLoop<'t> {
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn new(
         terminal: &'t mut ratatui::DefaultTerminal,
         params: EventLoopParams,
@@ -771,6 +772,7 @@ impl<'t> EventLoop<'t> {
     /// `List` replies from a background task (the scan can be slow); every
     /// other request is answered synchronously by the event loop, which owns
     /// the live runtimes.
+    #[allow(clippy::too_many_lines)]
     fn handle_session_request(
         &mut self,
         req: SessionRequest,
@@ -1158,6 +1160,7 @@ impl<'t> EventLoop<'t> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn handle_action(&mut self, idx: usize, action: Action) {
         match action {
             Action::SendMessage(mut dispatch) => {
@@ -1217,7 +1220,7 @@ impl<'t> EventLoop<'t> {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = loaded.tool_outputs;
             }
-            Action::ChangeModel(spec) => self.change_model(spec),
+            Action::ChangeModel(spec) => self.change_model(&spec),
             Action::RefreshProvider { slug } => self.refresh_provider(&slug),
             Action::AssignTier(spec, tier) => {
                 n00n_providers::model_registry::set_and_persist(spec, tier, &self.ctx.storage);
@@ -1284,8 +1287,8 @@ impl<'t> EventLoop<'t> {
         }
     }
 
-    fn change_model(&mut self, spec: String) {
-        match Model::from_spec(&spec) {
+    fn change_model(&mut self, spec: &str) {
+        match Model::from_spec(spec) {
             Ok(mut new_model) => match from_model_with_openai_options(
                 &mut new_model,
                 self.ctx.timeouts,
@@ -1357,7 +1360,7 @@ impl<'t> EventLoop<'t> {
                 }));
             }
         } else if let Some(builtin) = n00n_config::providers::builtin_provider(slug) {
-            self.change_model(builtin.default_model.to_string());
+            self.change_model(builtin.default_model);
         }
     }
 
@@ -1467,9 +1470,9 @@ mod tests {
 
     struct FailingBackend(TestBackend);
 
-    fn infallible<T>(result: Result<T, std::convert::Infallible>) -> io::Result<T> {
+    fn infallible<T>(result: Result<T, std::convert::Infallible>) -> T {
         match result {
-            Ok(value) => Ok(value),
+            Ok(value) => value,
             Err(error) => match error {},
         }
     }
@@ -1484,39 +1487,45 @@ mod tests {
         }
 
         fn hide_cursor(&mut self) -> io::Result<()> {
-            infallible(self.0.hide_cursor())
+            infallible(self.0.hide_cursor());
+            Ok(())
         }
 
         fn show_cursor(&mut self) -> io::Result<()> {
-            infallible(self.0.show_cursor())
+            infallible(self.0.show_cursor());
+            Ok(())
         }
 
         fn get_cursor_position(&mut self) -> io::Result<Position> {
-            infallible(self.0.get_cursor_position())
+            Ok(infallible(self.0.get_cursor_position()))
         }
 
         fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
-            infallible(self.0.set_cursor_position(position))
+            infallible(self.0.set_cursor_position(position));
+            Ok(())
         }
 
         fn clear(&mut self) -> io::Result<()> {
-            infallible(self.0.clear())
+            infallible(self.0.clear());
+            Ok(())
         }
 
         fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
-            infallible(self.0.clear_region(clear_type))
+            infallible(self.0.clear_region(clear_type));
+            Ok(())
         }
 
         fn size(&self) -> io::Result<Size> {
-            infallible(self.0.size())
+            Ok(infallible(self.0.size()))
         }
 
         fn window_size(&mut self) -> io::Result<WindowSize> {
-            infallible(self.0.window_size())
+            Ok(infallible(self.0.window_size()))
         }
 
         fn flush(&mut self) -> io::Result<()> {
-            infallible(self.0.flush())
+            infallible(self.0.flush());
+            Ok(())
         }
     }
 

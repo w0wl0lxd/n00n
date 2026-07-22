@@ -1103,12 +1103,12 @@ fn extract_partial_column_selection() {
 
 #[test]
 fn extract_user_partial_selection_accounts_for_frame_inset() {
+    const USER_PREFIX_LEN: u16 = 6;
+    const FRAME_INSET: u16 = 2;
     let mut panel = test_panel();
     panel.push(DisplayMessage::new(DisplayRole::User, "hello world".into()));
     render(&mut panel, 80, 24);
     let area = Rect::new(0, 0, 80, 24);
-    const USER_PREFIX_LEN: u16 = 6;
-    const FRAME_INSET: u16 = 2;
     let text_start = FRAME_INSET + USER_PREFIX_LEN;
     let sel = make_sel(area, (0, text_start), (0, text_start + 4));
     let text = panel.extract_selection_text(&sel, area);

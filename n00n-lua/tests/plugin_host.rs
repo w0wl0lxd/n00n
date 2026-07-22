@@ -3561,7 +3561,7 @@ fn lua_sessions_under_one_parent_use_unique_identity_everywhere() {
     include_str!("../../plugins/workflow/init.lua")
     ; "workflow"
 )]
-#[ignore]
+#[ignore = "requires plugin system refactoring"]
 fn subagent_plugins_use_shared_live_privacy_safe_activity(plugin: &str, source: &str) {
     assert!(
         source.contains("require(\"n00n.session_activity\")"),
@@ -3575,7 +3575,9 @@ fn subagent_plugins_use_shared_live_privacy_safe_activity(plugin: &str, source: 
         !source.contains("raw_input") && !source.contains("progress.log("),
         "{plugin} activity path must not transport raw input or workflow logs"
     );
-=======
+}
+
+#[test]
 fn lua_subagent_keeps_generated_session_ref_when_provider_reaches_network() {
     smol::block_on(async {
         let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3618,7 +3620,6 @@ fn lua_subagent_keeps_generated_session_ref_when_provider_reaches_network() {
         assert_eq!(output.text, "network reached");
         assert!(session_id.is_some());
     });
->>>>>>> origin/main
 }
 
 #[test_case::test_case("{ audience = 'wurkflow' }", "unknown audience: wurkflow" ; "unknown_audience")]
