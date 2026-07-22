@@ -5100,6 +5100,16 @@ end
 return M
 ```
 
+### `require("n00n.explore_result")`
+
+```lua
+function Card:update(output)
+function ExploreResult.new(opts)
+function ExploreResult.live(ctx, opts)
+function ExploreResult.header(label, project)
+function ExploreResult.restore(output, ctx, opts)
+```
+
 ### `require("n00n.fuzzy_replace")`
 
 ```lua
@@ -5284,6 +5294,11 @@ function ToolView:set_header(lines)
 function ToolView:clear()
 function ToolView:append(line)
 function ToolView:append_text(text)
+
+-- Replace the logical result in one publication. Expansion is view state,
+-- so it survives live-result updates while readers never observe a partial card.
+function ToolView:replace_lines(lines)
+function ToolView:replace_text(text)
 
 -- Append {content} with line numbers, then syntax-highlight it for {ext}
 -- asynchronously. Returns false when {content} is empty.
