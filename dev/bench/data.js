@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784711968796,
+  "lastUpdate": 1784712245493,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -755,6 +755,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 159919,
             "range": "± 11280",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6d2fdd1bd7b09b88d691746b58457f527876fb87",
+          "message": "Merge pull request #64 from w0wl0lxd/fix/lossless-image-viewing\n\nfix(images): preserve full-resolution inputs",
+          "timestamp": "2026-07-22T05:18:28-04:00",
+          "tree_id": "39ee83c3b997376afb541e6ceb2db35f775b3174",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/6d2fdd1bd7b09b88d691746b58457f527876fb87"
+        },
+        "date": 1784712244860,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 7958148,
+            "range": "± 273463",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2209761,
+            "range": "± 5772",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2274300,
+            "range": "± 14767",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8778073,
+            "range": "± 146298",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3555445,
+            "range": "± 17892",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3550878,
+            "range": "± 4757",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 802983,
+            "range": "± 1062",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 108497,
+            "range": "± 958",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 108496,
+            "range": "± 191",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1150234,
+            "range": "± 17243",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 496528,
+            "range": "± 1622",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 496680,
+            "range": "± 2076",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 63094,
+            "range": "± 165",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 113709,
+            "range": "± 10576",
             "unit": "ns/iter"
           }
         ]
