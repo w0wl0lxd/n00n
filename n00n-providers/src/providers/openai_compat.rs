@@ -553,21 +553,259 @@ struct ToolAccumulator {
     arguments: String,
 }
 
-#[allow(clippy::too_many_lines)]
+struct SseAccumulator {
+    text: String,
+    reasoning_text: String,
+    tool_accumulators: Vec<ToolAccumulator>,
+    usage: TokenUsage,
+    stop_reason: Option<StopReason>,
+    is_first_content: bool,
+}
+
+impl SseAccumulator {
+    fn new() -> Self {
+        Self {
+            text: String::new(),
+            reasoning_text: String::new(),
+            tool_accumulators: Vec::new(),
+            usage: TokenUsage::default(),
+            stop_reason: None,
+            is_first_content: true,
+        }
+    }
+
+    fn apply_usage(&mut self, usage: &ChunkUsage) {
+        let (cache_read, input) = if let Some(hit_tokens) = usage.prompt_cache_hit_tokens {
+            let miss_tokens = usage
+                .prompt_cache_miss_tokens
+                .unwrap_or_else(|| usage.prompt_tokens.saturating_sub(hit_tokens));
+            (hit_tokens, miss_tokens)
+        } else {
+            let cached = usage
+                .prompt_tokens_details
+                .as_ref()
+                .map_or(0, |d| d.cached_tokens);
+            let cache_write = usage
+                .prompt_tokens_details
+                .as_ref()
+                .map_or(0, |d| d.cache_write_tokens);
+            (
+                cached,
+                usage
+                    .prompt_tokens
+                    .saturating_sub(cached)
+                    .saturating_sub(cache_write),
+            )
+        };
+        let cache_write = usage
+            .prompt_tokens_details
+            .as_ref()
+            .map_or(0, |d| d.cache_write_tokens);
+        self.usage = TokenUsage {
+            input,
+            output: usage.completion_tokens,
+            cache_read,
+            cache_creation: cache_write,
+        };
+    }
+
+    async fn emit_content(
+        &mut self,
+        content: String,
+        event_tx: &Sender<ProviderEvent>,
+    ) -> Result<(), AgentError> {
+        if !content.is_empty() {
+            self.text.push_str(&content);
+            event_tx
+                .send_async(ProviderEvent::TextDelta { text: content })
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn apply_delta_content(
+        &mut self,
+        content: Option<ContentDelta>,
+        reasoning_content: Option<String>,
+        event_tx: &Sender<ProviderEvent>,
+    ) -> Result<(), AgentError> {
+        if let Some(reasoning) = reasoning_content
+            && !reasoning.is_empty()
+        {
+            self.reasoning_text.push_str(&reasoning);
+            event_tx
+                .send_async(ProviderEvent::ThinkingDelta { text: reasoning })
+                .await?;
+        }
+
+        match content {
+            Some(ContentDelta::String(content_str)) if !content_str.is_empty() => {
+                let content = if self.is_first_content {
+                    self.is_first_content = false;
+                    content_str.trim_start().to_string()
+                } else {
+                    content_str
+                };
+                self.emit_content(content, event_tx).await?;
+            }
+            Some(ContentDelta::Array(content_array)) => {
+                for part in content_array {
+                    match part {
+                        ContentDeltaPart::Thinking { thinking } => {
+                            for thinking_block in thinking {
+                                let content = match thinking_block {
+                                    ThinkingDelta::Block(ThinkingDeltaBlock::Text {
+                                        text: content_str,
+                                    })
+                                    | ThinkingDelta::String(content_str) => content_str,
+                                };
+                                if content.is_empty() {
+                                    continue;
+                                }
+                                self.reasoning_text.push_str(&content);
+                                event_tx
+                                    .send_async(ProviderEvent::ThinkingDelta { text: content })
+                                    .await?;
+                            }
+                        }
+                        ContentDeltaPart::Text { text: content_str } => {
+                            let content = if self.is_first_content {
+                                self.is_first_content = false;
+                                content_str.trim_start().to_string()
+                            } else {
+                                content_str
+                            };
+                            self.emit_content(content, event_tx).await?;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn apply_tool_calls(
+        &mut self,
+        tool_calls: Vec<ToolCallDelta>,
+        event_tx: &Sender<ProviderEvent>,
+    ) -> Result<(), AgentError> {
+        for tc in tool_calls {
+            while self.tool_accumulators.len() <= tc.index {
+                self.tool_accumulators.push(ToolAccumulator {
+                    id: String::new(),
+                    name: String::new(),
+                    arguments: String::new(),
+                });
+            }
+            let acc = &mut self.tool_accumulators[tc.index];
+            let was_unnamed = acc.name.is_empty();
+            if let Some(id) = tc.id {
+                acc.id = id;
+            }
+            if let Some(func) = tc.function {
+                if let Some(name) = func.name {
+                    acc.name = name;
+                }
+                if let Some(args) = func.arguments {
+                    acc.arguments.push_str(&args);
+                }
+            }
+            if was_unnamed && !acc.name.is_empty() {
+                event_tx
+                    .send_async(ProviderEvent::ToolUseStart {
+                        id: acc.id.clone(),
+                        name: acc.name.clone(),
+                    })
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn apply_choice(
+        &mut self,
+        choice: ChunkChoice,
+        event_tx: &Sender<ProviderEvent>,
+    ) -> Result<(), AgentError> {
+        if let Some(reason) = choice.finish_reason {
+            self.stop_reason = Some(StopReason::from_openai(&reason));
+        }
+        if let Some(ChunkDelta {
+            content,
+            reasoning_content,
+            tool_calls,
+        }) = choice.delta
+        {
+            self.apply_delta_content(content, reasoning_content, event_tx)
+                .await?;
+            if let Some(tc_deltas) = tool_calls {
+                self.apply_tool_calls(tc_deltas, event_tx).await?;
+            }
+        }
+        Ok(())
+    }
+
+    fn into_stream_response(self) -> StreamResponse {
+        let mut content_blocks: Vec<ContentBlock> = Vec::new();
+
+        if !self.reasoning_text.is_empty() {
+            content_blocks.push(ContentBlock::Thinking {
+                thinking: self.reasoning_text,
+                signature: None,
+            });
+        }
+
+        if !self.text.is_empty() {
+            content_blocks.push(ContentBlock::Text { text: self.text });
+        }
+
+        for (idx, acc) in self.tool_accumulators.into_iter().enumerate() {
+            let input: Value = match serde_json::from_str(&acc.arguments) {
+                Ok(v) => {
+                    debug!(tool = %acc.name, json = %acc.arguments, "tool input JSON");
+                    v
+                }
+                Err(e) => {
+                    warn!(error = %e, tool = %acc.name, json = %acc.arguments, "malformed tool JSON, falling back to {{}}");
+                    Value::Object(serde_json::Map::default())
+                }
+            };
+            let id = if acc.id.is_empty() {
+                warn!(raw_name = %acc.name, raw_args = %acc.arguments, "provider sent empty tool_use id; substituting placeholder");
+                format!("n00n_unnamed_{idx}")
+            } else {
+                acc.id
+            };
+            let name = if acc.name.is_empty() {
+                warn!(%id, raw_args = %acc.arguments, "provider sent empty tool_use name; substituting placeholder");
+                "n00n_unknown_tool".to_owned()
+            } else {
+                acc.name
+            };
+            content_blocks.push(ContentBlock::ToolUse { id, name, input });
+        }
+
+        StreamResponse {
+            message: Message {
+                role: Role::Assistant,
+                content: content_blocks,
+                ..Default::default()
+            },
+            usage: self.usage,
+            stop_reason: self.stop_reason,
+        }
+    }
+}
+
 pub async fn parse_sse(
     reader: impl AsyncBufRead + Unpin,
     event_tx: &Sender<ProviderEvent>,
     stream_timeout: Duration,
 ) -> Result<StreamResponse, AgentError> {
     let mut lines = reader.lines();
-
-    let mut text = String::new();
-    let mut reasoning_text = String::new();
-    let mut tool_accumulators: Vec<ToolAccumulator> = Vec::new();
-    let mut usage = TokenUsage::default();
-    let mut stop_reason: Option<StopReason> = None;
-    let mut is_first_content = true;
     let mut deadline = Instant::now() + stream_timeout;
+    let mut acc = SseAccumulator::new();
 
     while let Some(line) = super::next_sse_line(&mut lines, &mut deadline, stream_timeout).await? {
         let data = match line.strip_prefix("data:") {
@@ -594,202 +832,16 @@ pub async fn parse_sse(
             }
         };
 
-        if let Some(u) = chunk.usage {
-            let (cache_read, input) = if let Some(hit_tokens) = u.prompt_cache_hit_tokens {
-                let miss_tokens = u
-                    .prompt_cache_miss_tokens
-                    .unwrap_or_else(|| u.prompt_tokens.saturating_sub(hit_tokens));
-                (hit_tokens, miss_tokens)
-            } else {
-                let cached = u
-                    .prompt_tokens_details
-                    .as_ref()
-                    .map_or(0, |d| d.cached_tokens);
-                let cache_write = u
-                    .prompt_tokens_details
-                    .as_ref()
-                    .map_or(0, |d| d.cache_write_tokens);
-                (
-                    cached,
-                    u.prompt_tokens
-                        .saturating_sub(cached)
-                        .saturating_sub(cache_write),
-                )
-            };
-            let cache_write = u
-                .prompt_tokens_details
-                .as_ref()
-                .map_or(0, |d| d.cache_write_tokens);
-            usage = TokenUsage {
-                input,
-                output: u.completion_tokens,
-                cache_read,
-                cache_creation: cache_write,
-            };
+        if let Some(ref usage) = chunk.usage {
+            acc.apply_usage(usage);
         }
 
-        let Some(choice) = chunk.choices.into_iter().next() else {
-            continue;
-        };
-
-        if let Some(reason) = choice.finish_reason {
-            stop_reason = Some(StopReason::from_openai(&reason));
-        }
-
-        let Some(delta) = choice.delta else {
-            continue;
-        };
-
-        if let Some(reasoning) = delta.reasoning_content
-            && !reasoning.is_empty()
-        {
-            reasoning_text.push_str(&reasoning);
-            event_tx
-                .send_async(ProviderEvent::ThinkingDelta { text: reasoning })
-                .await?;
-        }
-
-        match delta.content {
-            Some(ContentDelta::String(content_str)) if !content_str.is_empty() => {
-                let content = if is_first_content {
-                    is_first_content = false;
-                    content_str.trim_start().to_string()
-                } else {
-                    content_str
-                };
-
-                if !content.is_empty() {
-                    text.push_str(&content);
-                    event_tx
-                        .send_async(ProviderEvent::TextDelta { text: content })
-                        .await?;
-                }
-            }
-            Some(ContentDelta::Array(content_array)) => {
-                for part in content_array {
-                    match part {
-                        ContentDeltaPart::Thinking { thinking } => {
-                            for thinking_block in thinking {
-                                let content = match thinking_block {
-                                    ThinkingDelta::Block(ThinkingDeltaBlock::Text {
-                                        text: content_str,
-                                    })
-                                    | ThinkingDelta::String(content_str) => content_str,
-                                };
-
-                                if content.is_empty() {
-                                    continue;
-                                }
-
-                                reasoning_text.push_str(&content);
-                                event_tx
-                                    .send_async(ProviderEvent::ThinkingDelta { text: content })
-                                    .await?;
-                            }
-                        }
-                        ContentDeltaPart::Text { text: content_str } => {
-                            let content = if is_first_content {
-                                is_first_content = false;
-                                content_str.trim_start().to_string()
-                            } else {
-                                content_str
-                            };
-
-                            if !content.is_empty() {
-                                text.push_str(&content);
-                                event_tx
-                                    .send_async(ProviderEvent::TextDelta { text: content })
-                                    .await?;
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-
-        if let Some(tc_deltas) = delta.tool_calls {
-            for tc in tc_deltas {
-                while tool_accumulators.len() <= tc.index {
-                    tool_accumulators.push(ToolAccumulator {
-                        id: String::new(),
-                        name: String::new(),
-                        arguments: String::new(),
-                    });
-                }
-                let acc = &mut tool_accumulators[tc.index];
-                let was_unnamed = acc.name.is_empty();
-                if let Some(id) = tc.id {
-                    acc.id = id;
-                }
-                if let Some(func) = tc.function {
-                    if let Some(name) = func.name {
-                        acc.name = name;
-                    }
-                    if let Some(args) = func.arguments {
-                        acc.arguments.push_str(&args);
-                    }
-                }
-                if was_unnamed && !acc.name.is_empty() {
-                    event_tx
-                        .send_async(ProviderEvent::ToolUseStart {
-                            id: acc.id.clone(),
-                            name: acc.name.clone(),
-                        })
-                        .await?;
-                }
-            }
+        if let Some(choice) = chunk.choices.into_iter().next() {
+            acc.apply_choice(choice, event_tx).await?;
         }
     }
 
-    let mut content_blocks: Vec<ContentBlock> = Vec::new();
-
-    if !reasoning_text.is_empty() {
-        content_blocks.push(ContentBlock::Thinking {
-            thinking: reasoning_text,
-            signature: None,
-        });
-    }
-
-    if !text.is_empty() {
-        content_blocks.push(ContentBlock::Text { text });
-    }
-
-    for (idx, acc) in tool_accumulators.into_iter().enumerate() {
-        let input: Value = match serde_json::from_str(&acc.arguments) {
-            Ok(v) => {
-                debug!(tool = %acc.name, json = %acc.arguments, "tool input JSON");
-                v
-            }
-            Err(e) => {
-                warn!(error = %e, tool = %acc.name, json = %acc.arguments, "malformed tool JSON, falling back to {{}}");
-                Value::Object(serde_json::Map::default())
-            }
-        };
-        let id = if acc.id.is_empty() {
-            warn!(raw_name = %acc.name, raw_args = %acc.arguments, "provider sent empty tool_use id; substituting placeholder");
-            format!("n00n_unnamed_{idx}")
-        } else {
-            acc.id
-        };
-        let name = if acc.name.is_empty() {
-            warn!(%id, raw_args = %acc.arguments, "provider sent empty tool_use name; substituting placeholder");
-            "n00n_unknown_tool".to_owned()
-        } else {
-            acc.name
-        };
-        content_blocks.push(ContentBlock::ToolUse { id, name, input });
-    }
-
-    Ok(StreamResponse {
-        message: Message {
-            role: Role::Assistant,
-            content: content_blocks,
-            ..Default::default()
-        },
-        usage,
-        stop_reason,
-    })
+    Ok(acc.into_stream_response())
 }
 
 #[cfg(test)]
