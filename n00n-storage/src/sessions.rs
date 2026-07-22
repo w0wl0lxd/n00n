@@ -668,23 +668,8 @@ impl SessionLog {
             }
         }
 
-        let mut new_sub_counts: Vec<(String, usize)> = Vec::new();
-        for (sub_id, msgs) in &session.subagent_messages {
-            #[allow(clippy::disallowed_methods)]
-            let saved = self.saved_sub_msg_counts.get(sub_id).copied().unwrap_or(0);
-            for msg in &msgs[saved..] {
-                append_record(
-                    &mut buf,
-                    &LogRecord::<&M, &U, &T>::SubMsg {
-                        sub: sub_id.clone(),
-                        d: msg,
-                    },
-                )?;
-            }
-            if msgs.len() > saved {
-                new_sub_counts.push((sub_id.clone(), msgs.len()));
-            }
-        }
+        let new_sub_counts =
+            self.append_subagent_records::<M, U, T>(&mut buf, &session.subagent_messages)?;
 
         for entry in &session.transcript[self.saved_transcript.len()..] {
             append_record(
@@ -732,6 +717,39 @@ impl SessionLog {
         self.saved_title.clone_from(&session.title);
 
         Ok(())
+    }
+
+    fn append_subagent_records<M, U, T>(
+        &self,
+        buf: &mut Vec<u8>,
+        subagent_messages: &HashMap<String, Vec<M>>,
+    ) -> Result<Vec<(String, usize)>, SessionError>
+    where
+        M: Serialize,
+        U: Serialize,
+        T: Serialize,
+    {
+        let mut new_sub_counts = Vec::new();
+        for (sub_id, msgs) in subagent_messages {
+            let saved = self
+                .saved_sub_msg_counts
+                .get(sub_id)
+                .copied()
+                .unwrap_or_else(|| 0);
+            for msg in &msgs[saved..] {
+                append_record(
+                    buf,
+                    &LogRecord::<&M, &U, &T>::SubMsg {
+                        sub: sub_id.clone(),
+                        d: msg,
+                    },
+                )?;
+            }
+            if msgs.len() > saved {
+                new_sub_counts.push((sub_id.clone(), msgs.len()));
+            }
+        }
+        Ok(new_sub_counts)
     }
 
     /// # Errors
