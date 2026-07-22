@@ -1,0 +1,1 @@
+Removed additional `#[allow(clippy::...)]` attributes from small crates and refactored `n00n-storage` `append` into helpers.

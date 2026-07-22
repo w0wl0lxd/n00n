@@ -944,7 +944,6 @@ impl ToolOutputLines {
         ("other", Self::DEFAULT.other),
     ];
 
-    #[allow(clippy::unwrap_or_default)]
     fn from_file(f: Option<ToolOutputLinesFile>) -> Self {
         let d = Self::DEFAULT;
         let f = f.unwrap_or_else(ToolOutputLinesFile::default);
@@ -1647,7 +1646,6 @@ fn load_permissions_inner(cwd: &Path, global_dirs: &[PathBuf]) -> PermissionsCon
         }
     }
 
-    #[allow(clippy::unwrap_or_default)]
     let project_perms = read_permissions_file(&cwd.join(PROJECT_DIR).join(PERMISSIONS_FILE))
         .unwrap_or_else(PermissionsFileConfig::default);
 

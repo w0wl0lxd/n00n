@@ -70,8 +70,7 @@ fn parse_doc(lines: &[String], span: proc_macro2::Span) -> syn::Result<ParsedDoc
             let ty = it
                 .next()
                 .ok_or_else(|| syn::Error::new(span, format!("malformed @param line: `{line}`")))?;
-            #[allow(clippy::disallowed_methods)]
-            let d = it.next().unwrap_or("");
+            let d = it.next().unwrap_or_else(|| "");
             if name.is_empty() || ty.is_empty() {
                 return Err(syn::Error::new(
                     span,
@@ -363,6 +362,7 @@ fn generate_doc_const(
     }
 }
 
+#[derive(Clone, Copy)]
 struct MethodImplArgs<'a> {
     func: &'a ItemFn,
     doc_const: &'a TokenStream2,
@@ -378,7 +378,6 @@ struct MethodImplArgs<'a> {
     ctx: &'a [(Ident, Type)],
 }
 
-#[allow(clippy::needless_pass_by_value)]
 fn generate_method_impl(args: MethodImplArgs<'_>) -> syn::Result<TokenStream2> {
     let MethodImplArgs {
         func,
