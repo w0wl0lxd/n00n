@@ -31,6 +31,48 @@ const NUDGE_PROMPT: &str = "You just executed tool calls but returned an empty r
 const MAX_TOKENS_CONTINUE_PROMPT: &str = "Continue exactly where you stopped.";
 const IMAGE_TOKEN_ESTIMATE: usize = 2_048;
 
+pub(super) fn filter_tool_result(content: &str) -> String {
+    let mut lines = Vec::new();
+    let mut last_was_blank = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() {
+            if !last_was_blank {
+                lines.push(String::new());
+                last_was_blank = true;
+            }
+            continue;
+        }
+
+        last_was_blank = false;
+
+        let is_progress = trimmed.starts_with("...")
+            || trimmed.starts_with("==>")
+            || trimmed.starts_with("-->")
+            || trimmed.contains('%')
+            || trimmed.contains("progress")
+            || trimmed.contains("Processing")
+            || trimmed.contains("Downloading")
+            || trimmed.contains("Installing")
+            || trimmed.contains("Building")
+            || trimmed.contains("Compiling");
+
+        if is_progress {
+            continue;
+        }
+
+        lines.push(trimmed.to_string());
+    }
+
+    while lines.last().map_or(false, String::is_empty) {
+        lines.pop();
+    }
+
+    lines.join("\n")
+}
+
 /// Resolves the model to use for compaction.
 ///
 /// # Panics

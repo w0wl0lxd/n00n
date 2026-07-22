@@ -11,7 +11,38 @@ use super::streaming::stream_with_retry;
 use crate::cancel::CancelToken;
 use crate::{AgentError, AgentEvent, EventSender, TurnCompleteEvent};
 
-pub(super) const CONTINUE_AFTER_COMPACT: &str = "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed. If the summary contains a todo list, restore it with todo_write and keep it updated. If you learned important project context during this session, consider saving it to memory before it's lost.";
+pub(super) const CONTINUE_AFTER_COMPACT: &str = "Continue if you have next steps, or stop and ask for clarification if unsure. Restore todo lists with todo_write. Save important context to memory before it's lost.";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactionTier {
+    Normal,
+    Aggressive,
+    Minimal,
+}
+
+impl CompactionTier {
+    #[must_use]
+    pub fn from_remaining_context(remaining: u32, context_window: u32) -> Self {
+        let ratio = f64::from(remaining) / f64::from(context_window);
+        if ratio < 0.2 {
+            Self::Minimal
+        } else if ratio < 0.4 {
+            Self::Aggressive
+        } else {
+            Self::Normal
+        }
+    }
+
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub fn token_budget(self, context_window: u32) -> u32 {
+        match self {
+            Self::Normal => (f64::from(context_window) * 0.15) as u32,
+            Self::Aggressive => (f64::from(context_window) * 0.10) as u32,
+            Self::Minimal => (f64::from(context_window) * 0.05) as u32,
+        }
+    }
+}
 const IMAGE_PLACEHOLDER: &str = "[image]";
 
 pub(super) async fn compact_history(
@@ -26,7 +57,22 @@ pub(super) async fn compact_history(
     strip_images(&mut compaction_history);
     strip_thinking(&mut compaction_history);
     strip_old_tool_results(&mut compaction_history);
-    compaction_history.push(Message::user(crate::prompt::COMPACTION_USER.to_string()));
+
+    let context_window = model.context_window;
+    let current_usage = crate::agent::run::estimate_message_tokens(&compaction_history);
+    let remaining = context_window.saturating_sub(current_usage);
+    let tier = CompactionTier::from_remaining_context(remaining, context_window);
+    let budget = tier.token_budget(context_window);
+
+    let user_prompt = format!(
+        "{}\n\nToken budget: {} tokens (tier: {:?}, remaining: {}/{} context)",
+        crate::prompt::COMPACTION_USER,
+        budget,
+        tier,
+        remaining,
+        context_window
+    );
+    compaction_history.push(Message::user(user_prompt));
 
     let empty_tools = serde_json::json!([]);
     let max_attempts = 3;
