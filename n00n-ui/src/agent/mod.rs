@@ -25,7 +25,7 @@ use tracing::{info, warn};
 
 use crate::app::App;
 
-use self::agent_loop::AgentLoop;
+use self::agent_loop::{AgentLoop, AgentLoopInit};
 use self::command_router::spawn_command_router;
 pub(crate) use self::shared_queue::{QueueSender, QueuedMessage};
 
@@ -60,7 +60,6 @@ pub(crate) struct AgentHandles {
 impl AgentHandles {
     /// MCP is shared across sessions and agent respawns; the event loop starts it
     /// once and shuts it down at exit. Only the agent loop task lives here.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn spawn(
         model_slot: &Arc<ArcSwap<ModelSlot>>,
         initial_history: Vec<Message>,
@@ -123,7 +122,6 @@ impl AgentHandles {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn respawn(
         &mut self,
         history: Vec<Message>,
@@ -195,7 +193,6 @@ pub(crate) fn join_all(tasks: Vec<smol::Task<()>>, timeout: Duration) {
     });
 }
 
-#[allow(clippy::too_many_arguments)]
 fn spawn_agent_internal(
     model_slot: &Arc<ArcSwap<ModelSlot>>,
     initial_history: Vec<Message>,
@@ -242,20 +239,20 @@ fn spawn_agent_internal(
         Arc::clone(&subagent_cancels),
     );
 
-    let agent_loop = AgentLoop::new(
-        Arc::clone(model_slot),
+    let agent_loop = AgentLoop::new(AgentLoopInit {
+        model_slot: Arc::clone(model_slot),
         config,
         tool_output_lines,
         initial_history,
         initial_transcript,
-        Arc::clone(&shared_history),
-        Arc::clone(&shared_transcript),
-        Arc::clone(&btw_system),
-        mcp_handle.clone(),
-        Arc::clone(permissions),
+        shared_history: Arc::clone(&shared_history),
+        shared_transcript: Arc::clone(&shared_transcript),
+        btw_system: Arc::clone(&btw_system),
+        mcp_handle: mcp_handle.clone(),
+        permissions: Arc::clone(permissions),
         agent_tx,
         answer_rx,
-        queue_rx,
+        queue: queue_rx,
         cancel_map,
         init_cancel,
         session_id,
@@ -263,7 +260,7 @@ fn spawn_agent_internal(
         openai_options,
         lua_handle,
         subagent_cancels,
-    );
+    });
 
     let task = smol::spawn(agent_loop.run());
 

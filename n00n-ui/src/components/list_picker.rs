@@ -1,9 +1,3 @@
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss
-)]
-
 use std::collections::HashSet;
 
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
@@ -373,8 +367,8 @@ impl<T: PickerItem> ListPicker<T> {
                 match idx {
                     Some(idx) => {
                         if let Some(mut state) = self.state.take() {
-                            #[allow(clippy::disallowed_methods)]
-                            return PickerAction::Select(idx, state.items.swap_remove(idx));
+                            let item = state.items.remove(idx);
+                            return PickerAction::Select(idx, item);
                         }
                         PickerAction::Consumed
                     }
@@ -442,7 +436,9 @@ impl<T: PickerItem> ListPicker<T> {
             return;
         };
         if delta > 0 {
-            s.scroll_offset = s.scroll_offset.saturating_sub(delta as usize);
+            s.scroll_offset = s
+                .scroll_offset
+                .saturating_sub(usize::try_from(delta).unwrap_or_else(|_| usize::MAX));
         } else {
             let total_visual = visual_rows_in_range(&s.filtered, &s.items, 0, s.filtered.len());
             let max_offset = if total_visual <= s.viewport_height {
@@ -481,7 +477,6 @@ impl<T: PickerItem> Overlay for ListPicker<T> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_ready<T: PickerItem>(
     frame: &mut Frame,
     area: Rect,
@@ -496,7 +491,13 @@ fn render_ready<T: PickerItem>(
     let content_rows = if s.filtered.is_empty() {
         1
     } else {
-        let rows = visual_rows_in_range(&s.filtered, &s.items, 0, s.filtered.len()) as u16;
+        let rows = u16::try_from(visual_rows_in_range(
+            &s.filtered,
+            &s.items,
+            0,
+            s.filtered.len(),
+        ))
+        .unwrap_or_else(|_| u16::MAX);
         match max_visible {
             Some(max) => rows.min(max),
             None => rows,
@@ -578,13 +579,13 @@ fn render_ready<T: PickerItem>(
     }
 
     let total_visual = visual_rows_in_range(&s.filtered, &s.items, 0, s.filtered.len());
-    if total_visual as u16 > viewport_h {
+    if u16::try_from(total_visual).unwrap_or_else(|_| u16::MAX) > viewport_h {
         let visual_offset = visual_rows_in_range(&s.filtered, &s.items, 0, s.scroll_offset);
         render_vertical_scrollbar(
             frame,
             list_area,
-            total_visual as u16,
-            visual_offset as u16,
+            u16::try_from(total_visual).unwrap_or_else(|_| u16::MAX),
+            u16::try_from(visual_offset).unwrap_or_else(|_| u16::MAX),
             None,
         );
     }
@@ -667,7 +668,6 @@ fn truncate_label(label: &str, max_width: usize) -> String {
     result
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn render_list<T: PickerItem>(
     frame: &mut Frame,
     area: Rect,
@@ -754,10 +754,12 @@ fn render_list<T: PickerItem>(
         let suffix_w = suffix.map_or(0, unicode_width::UnicodeWidthStr::width);
         let trailing_gap = suffix_w + if suffix_w > 0 { suffix_gap } else { 0 };
         let line = if let Some(detail) = detail {
-            let max_label = area
-                .width
-                .saturating_sub(detail.width() as u16 + trailing_gap as u16 + 1 + DETAIL_RIGHT_PAD)
-                as usize;
+            let max_label = area.width.saturating_sub(
+                u16::try_from(detail.width()).unwrap_or_else(|_| u16::MAX)
+                    + u16::try_from(trailing_gap).unwrap_or_else(|_| u16::MAX)
+                    + 1
+                    + DETAIL_RIGHT_PAD,
+            ) as usize;
             let label = truncate_label(&label, max_label);
             let pad = (area.width as usize).saturating_sub(
                 label.width() + trailing_gap + detail.width() + DETAIL_RIGHT_PAD as usize + 1,
@@ -1130,9 +1132,12 @@ mod tests {
 
         let end_col = |label: &str, suffix_w: usize| -> usize {
             let trailing = suffix_w + if suffix_w > 0 { suffix_gap } else { 0 };
-            let max_label = width
-                .saturating_sub(detail.width() as u16 + trailing as u16 + 1 + DETAIL_RIGHT_PAD)
-                as usize;
+            let max_label = width.saturating_sub(
+                u16::try_from(detail.width()).unwrap_or_else(|_| u16::MAX)
+                    + u16::try_from(trailing).unwrap_or_else(|_| u16::MAX)
+                    + 1
+                    + DETAIL_RIGHT_PAD,
+            ) as usize;
             let t = truncate_label(label, max_label);
             let pad = (width as usize).saturating_sub(
                 t.width() + trailing + detail.width() + DETAIL_RIGHT_PAD as usize + 1,

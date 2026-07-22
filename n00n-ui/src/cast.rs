@@ -3,68 +3,73 @@
 //! Terminal coordinates and animation progress are bounded by the screen size,
 //! so the casts below clamp before truncating and explicitly acknowledge the
 //! unavoidable precision loss when converting integer widths/counts to floats.
+//!
+//! Float-to-integer conversions inherently lose precision and may truncate;
+//! these are clamped to valid ranges before conversion for UI safety where
+//! the exact values are bounded by terminal dimensions (typically < 10,000).
 
-#[allow(clippy::cast_precision_loss, dead_code)]
+#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_sign_loss)]
+
 pub(crate) const fn usize_to_f32(v: usize) -> f32 {
     v as f32
 }
 
-#[allow(clippy::cast_precision_loss)]
 pub(crate) const fn usize_to_f64(v: usize) -> f64 {
     v as f64
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub(crate) fn f64_to_usize(v: f64) -> usize {
-    v.max(0.0) as usize
+    let v = v.max(0.0);
+    if v > usize::MAX as f64 {
+        usize::MAX
+    } else {
+        v as usize
+    }
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub(crate) fn f32_to_usize(v: f32) -> usize {
-    v.max(0.0) as usize
+    let v = v.max(0.0);
+    if v > usize::MAX as f32 {
+        usize::MAX
+    } else {
+        v as usize
+    }
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub(crate) fn f64_to_u16(v: f64) -> u16 {
     v.clamp(0.0, f64::from(u16::MAX)) as u16
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub(crate) fn f64_to_u32(v: f64) -> u32 {
     v.clamp(0.0, f64::from(u32::MAX)) as u32
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub(crate) fn f32_to_u8(v: f32) -> u8 {
     v.clamp(0.0, f32::from(u8::MAX)) as u8
 }
 
-#[allow(clippy::cast_possible_truncation)]
 pub(crate) fn usize_to_u16(v: usize) -> u16 {
-    v.min(u16::MAX as usize) as u16
+    u16::try_from(v).unwrap_or_else(|_| u16::MAX)
 }
 
-#[allow(clippy::cast_possible_truncation)]
 pub(crate) fn u32_to_u16(v: u32) -> u16 {
-    v.min(u32::from(u16::MAX)) as u16
+    u16::try_from(v).unwrap_or_else(|_| u16::MAX)
 }
 
-#[allow(clippy::cast_possible_truncation)]
 pub(crate) fn usize_to_u32(v: usize) -> u32 {
-    v.min(u32::MAX as usize) as u32
+    u32::try_from(v).unwrap_or_else(|_| u32::MAX)
 }
 
-#[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
 pub(crate) fn u32_to_isize(v: u32) -> isize {
-    v.min(isize::MAX as u32) as isize
+    isize::try_from(v).unwrap_or_else(|_| isize::MAX)
 }
 
-#[allow(clippy::cast_possible_wrap)]
 pub(crate) fn usize_to_isize(v: usize) -> isize {
-    v.min(isize::MAX as usize) as isize
+    isize::try_from(v).unwrap_or_else(|_| isize::MAX)
 }
 
-#[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
 pub(crate) fn isize_to_usize(v: isize) -> usize {
-    v.max(0) as usize
+    usize::try_from(v).unwrap_or_else(|_| 0)
 }
