@@ -479,7 +479,7 @@ fn prompt_error_maps_to_sub_agent_error_with_charged_telemetry() {
 }
 
 #[test]
-fn plain_path_returns_text_and_sanitized_usage_without_local_tools() {
+fn plain_path_returns_text_and_sanitized_usage_with_done_local_tool() {
     let (reg, _host) = load_task_host();
     let output = exec_tool_output(&reg, TASK_TOOL, task_input(SCENARIO_PLAIN, None)).unwrap();
     assert_eq!(output.as_text(), PLAIN_TEXT);
