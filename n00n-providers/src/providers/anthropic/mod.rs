@@ -155,15 +155,13 @@ fn limit_label(l: &ApiLimit) -> String {
     }
 }
 
-#[allow(clippy::cast_possible_truncation)]
 fn percentage(value: f64) -> u32 {
     const DEFAULT_PERCENTAGE: u32 = 100;
-    let clamped = value.clamp(0.0, 100.0);
-    let rounded = clamped.round();
-    // SAFETY: clamped to [0, 100], rounded is within u32 range
-    u32::try_from(rounded as i64)
-        .ok()
-        .unwrap_or_else(|| DEFAULT_PERCENTAGE)
+    let rounded = value.clamp(0.0, 100.0).round();
+    let as_int = format!("{rounded:.0}")
+        .parse::<i64>()
+        .unwrap_or_else(|_| i64::from(DEFAULT_PERCENTAGE));
+    u32::try_from(as_int).unwrap_or_else(|_| DEFAULT_PERCENTAGE)
 }
 
 fn credits_limit(u: &OauthUsage) -> Option<UsageLimit> {

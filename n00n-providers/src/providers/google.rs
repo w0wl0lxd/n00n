@@ -697,14 +697,13 @@ struct SseFunctionCall {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct SseUsageMetadata {
-    #[serde(default)]
-    prompt_token_count: u32,
-    #[serde(default)]
-    candidates_token_count: u32,
-    #[serde(default)]
-    cached_content_token_count: Option<u32>,
+    #[serde(default, rename = "promptTokenCount")]
+    input: u32,
+    #[serde(default, rename = "candidatesTokenCount")]
+    output: u32,
+    #[serde(default, rename = "cachedContentTokenCount")]
+    cached_content: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -756,9 +755,9 @@ async fn parse_sse(
         };
 
         if let Some(meta) = chunk.usage_metadata {
-            usage.input = meta.prompt_token_count;
-            usage.output = meta.candidates_token_count;
-            if let Some(cached) = meta.cached_content_token_count {
+            usage.input = meta.input;
+            usage.output = meta.output;
+            if let Some(cached) = meta.cached_content {
                 usage.cache_read = cached;
             }
         }
