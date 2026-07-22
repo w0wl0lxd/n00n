@@ -12,7 +12,6 @@ const NO_UI_ERR: &str = "no interactive UI attached";
 
 type Pair = (Value, Option<String>);
 
-#[allow(clippy::needless_pass_by_value)]
 fn err_pair(err: impl ToString) -> Pair {
     (Value::Nil, Some(err.to_string()))
 }

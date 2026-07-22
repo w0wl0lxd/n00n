@@ -190,9 +190,14 @@ impl GrepSink<'_> {
         let text = String::from_utf8_lossy(bytes);
         let text = text.strip_suffix('\n').unwrap_or_else(|| &*text);
         let text = text.strip_suffix('\r').unwrap_or_else(|| text);
-        #[allow(clippy::expect_used)]
+        let line_nr = if let Ok(v) = usize::try_from(line_nr) {
+            v
+        } else {
+            eprintln!("Warning: line number exceeds usize, using MAX");
+            usize::MAX
+        };
         self.current_group.push(GrepLine {
-            line_nr: usize::try_from(line_nr).expect("line number exceeds usize"),
+            line_nr,
             text: truncate_bytes(text, self.max_line_bytes),
             is_match,
         });

@@ -550,13 +550,10 @@ impl MessagesPanel {
         let tl = build_instructions_lines(blocks, self.viewport_width, exp.output);
 
         if let Some(seg_idx) = self.cache.find_instructions(parent_id) {
-            #[allow(clippy::expect_used)]
-            let seg = self
-                .cache
-                .get_mut(seg_idx)
-                .expect("segment index from find_instructions must be valid");
-            seg.search_text.clone_from(&tl.search_text);
-            seg.update_with_reuse(tl, &self.hl_worker);
+            if let Some(seg) = self.cache.get_mut(seg_idx) {
+                seg.search_text.clone_from(&tl.search_text);
+                seg.update_with_reuse(tl, &self.hl_worker);
+            }
         } else {
             let mut seg = Segment::with_instructions(parent_id.to_owned());
             seg.search_text.clone_from(&tl.search_text);
@@ -1669,10 +1666,10 @@ impl MessagesPanel {
             .as_deref()
             .and_then(n00n_agent::ToolOutput::owned_instructions);
 
-        #[allow(clippy::unwrap_used)]
-        let seg = self.cache.get_mut(seg_idx).unwrap();
-        seg.search_text.clone_from(&tl.search_text);
-        seg.update_with_reuse(tl, &self.hl_worker);
+        if let Some(seg) = self.cache.get_mut(seg_idx) {
+            seg.search_text.clone_from(&tl.search_text);
+            seg.update_with_reuse(tl, &self.hl_worker);
+        }
 
         if let Some(blocks) = instructions {
             self.upsert_instruction_segment(tool_id, &blocks, seg_idx);

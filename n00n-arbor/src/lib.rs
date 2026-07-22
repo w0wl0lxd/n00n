@@ -17,13 +17,11 @@ pub struct Relation {
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct CallersResponse {
     pub callers: Vec<Relation>,
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct CalleesResponse {
     pub callees: Vec<Relation>,
 }
@@ -45,10 +43,11 @@ pub struct MapEntry {
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct MapResponse {
     entries: Vec<MapEntry>,
+    #[allow(dead_code)]
     files_total: u64,
+    #[allow(dead_code)]
     symbols_total: u64,
 }
 
@@ -62,9 +61,10 @@ pub struct DiffImpact {
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct DiffResponse {
+    #[allow(dead_code)]
     changed_files: Vec<String>,
+    #[allow(dead_code)]
     changed_symbols: u64,
     impact: DiffImpact,
 }

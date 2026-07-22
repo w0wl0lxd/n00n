@@ -308,11 +308,11 @@ mod tests {
     use test_case::test_case;
 
     #[test_case(
-        json!([
+        &json!([
             {"role": "system", "content": "sys"},
             {"role": "assistant", "content": "text", "reasoning_content": "thinking"}
         ]),
-        json!([
+        &json!([
             {"role": "system", "content": "sys"},
             {
                 "role": "assistant",
@@ -325,11 +325,11 @@ mod tests {
         ; "assistant_text_and_thinking"
     )]
     #[test_case(
-        json!([
+        &json!([
             {"role": "system", "content": "sys"},
             {"role": "assistant", "content": "", "reasoning_content": "thinking"}
         ]),
-        json!([
+        &json!([
             {"role": "system", "content": "sys"},
             {
                 "role": "assistant",
@@ -339,11 +339,11 @@ mod tests {
         ; "assistant_empty_content_with_thinking"
     )]
     #[test_case(
-        json!([
+        &json!([
             {"role": "system", "content": "sys"},
             {"role": "assistant", "reasoning_content": "thinking"}
         ]),
-        json!([
+        &json!([
             {"role": "system", "content": "sys"},
             {
                 "role": "assistant",
@@ -352,22 +352,21 @@ mod tests {
         ])
         ; "assistant_no_content_with_thinking"
     )]
-    #[allow(clippy::needless_pass_by_value)]
     #[test_case(
-        json!([
+        &json!([
             {"role": "system", "content": "sys"},
             {"role": "assistant", "content": "text"}
         ]),
-        json!([
+        &json!([
             {"role": "system", "content": "sys"},
             {"role": "assistant", "content": "text"}
         ])
         ; "assistant_text_only_no_thinking"
     )]
-    fn convert_assistant_messages_in_place_test(input: Value, expected: Value) {
-        let mut input_clone = input;
+    fn convert_assistant_messages_in_place_test(input: &Value, expected: &Value) {
+        let mut input_clone = input.clone();
         convert_assistant_messages_in_place(&mut input_clone);
-        assert_eq!(input_clone, expected);
+        assert_eq!(input_clone, *expected);
     }
 
     #[test_case("mistral/ministral-14b-latest", false ; "ministral_no_thinking")]

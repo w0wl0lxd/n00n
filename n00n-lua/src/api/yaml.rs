@@ -15,11 +15,11 @@ use super::util::convert::err_pair;
 fn encode(lua: &Lua, value: Value) -> LuaResult<(Value, Value)> {
     let serde_val: serde_yaml::Value = match lua.from_value(value) {
         Ok(v) => v,
-        Err(e) => return err_pair(lua, e),
+        Err(e) => return err_pair(lua, &e),
     };
     match serde_yaml::to_string(&serde_val) {
         Ok(s) => Ok((Value::String(lua.create_string(&s)?), Value::Nil)),
-        Err(e) => err_pair(lua, e),
+        Err(e) => err_pair(lua, &e),
     }
 }
 
@@ -35,7 +35,7 @@ fn encode(lua: &Lua, value: Value) -> LuaResult<(Value, Value)> {
 fn decode(lua: &Lua, str: String) -> LuaResult<(Value, Value)> {
     match serde_yaml::from_str::<serde_yaml::Value>(&str) {
         Ok(v) => Ok((lua.to_value(&v)?, Value::Nil)),
-        Err(e) => err_pair(lua, e),
+        Err(e) => err_pair(lua, &e),
     }
 }
 

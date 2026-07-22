@@ -1266,7 +1266,7 @@ impl<'t> EventLoop<'t> {
                     Err(e) => Err(e),
                 };
                 match result {
-                    Ok(edited) => self.sessions[idx].app.input_box.set_input(edited),
+                    Ok(edited) => self.sessions[idx].app.input_box.set_input(&edited),
                     Err(e) => self.sessions[idx].app.flash(e),
                 }
             }
@@ -1448,10 +1448,12 @@ fn take_painted_submissions<T>(
 }
 
 fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
+    let lines = crate::cast::u32_to_isize(lines);
+    let n = i32::try_from(lines).unwrap_or_else(|_| i32::MAX);
     if kind == MouseEventKind::ScrollUp {
-        lines.cast_signed()
+        n
     } else {
-        -lines.cast_signed()
+        -n
     }
 }
 

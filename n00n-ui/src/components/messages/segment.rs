@@ -426,7 +426,8 @@ impl Segment {
             let new_end = start + indented.len();
             self.lines.splice(start..end, indented);
             self.highlight_range = Some((start, new_end));
-            self.shift_after(end, new_end.cast_signed() - end.cast_signed());
+            let delta = crate::cast::usize_to_isize(new_end) - crate::cast::usize_to_isize(end);
+            self.shift_after(end, delta);
             self.invalidate_height();
         }
         self.pending_highlight = None;
