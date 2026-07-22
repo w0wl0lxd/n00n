@@ -230,7 +230,7 @@ local function load_image(path, input)
         .. " is animated webp. Animation/provider capability is unavailable; use static_image=true to send an explicit first-frame PNG"
     )
   end
-  if allow_gif_animation and mode ~= "original" then
+  if info.format == "gif" and allow_gif_animation and mode ~= "original" then
     return fail(
       "lossless GIF animation cannot be tiled or cropped; use static_image=true for an explicit first-frame PNG region"
     )
@@ -238,7 +238,7 @@ local function load_image(path, input)
   local original_fits_transport = base64_size(size) <= MAX_BASE64_BYTES
   local original_fits_dimensions = info.width <= MAX_PROVIDER_EDGE and info.height <= MAX_PROVIDER_EDGE
   local needs_default_tile = mode == "original" and (not original_fits_transport or not original_fits_dimensions)
-  if allow_gif_animation and needs_default_tile then
+  if info.format == "gif" and allow_gif_animation and needs_default_tile then
     return fail(
       path
         .. " exceeds a common image limit and cannot preserve GIF animation as one image; use static_image=true for explicit first-frame tiles"

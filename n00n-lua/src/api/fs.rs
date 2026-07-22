@@ -172,7 +172,7 @@ async fn read_regular_file_limited(
             break;
         }
         bytes
-            .try_reserve_exact(read)
+            .try_reserve(read)
             .map_err(|_| ReadBytesLimitedError::Allocation)?;
         bytes.extend_from_slice(&chunk[..read]);
     }
