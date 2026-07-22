@@ -31,61 +31,6 @@ const NUDGE_PROMPT: &str = "You just executed tool calls but returned an empty r
 const MAX_TOKENS_CONTINUE_PROMPT: &str = "Continue exactly where you stopped.";
 const IMAGE_TOKEN_ESTIMATE: usize = 2_048;
 
-pub(super) fn filter_tool_result(content: &str) -> String {
-    let mut lines = Vec::new();
-    let mut last_was_blank = false;
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-
-        if trimmed.is_empty() {
-            if !last_was_blank {
-                lines.push(String::new());
-                last_was_blank = true;
-            }
-            continue;
-        }
-
-        last_was_blank = false;
-
-        if is_progress_line(trimmed) {
-            continue;
-        }
-
-        lines.push(line.to_string());
-    }
-
-    while lines.last().map_or(false, String::is_empty) {
-        lines.pop();
-    }
-
-    lines.join("\n")
-}
-
-fn is_progress_line(trimmed: &str) -> bool {
-    if trimmed.starts_with("...")
-        || trimmed.starts_with("==>")
-        || trimmed.starts_with("-->")
-        || trimmed.contains("progress")
-        || trimmed.contains("Processing")
-        || trimmed.contains("Downloading")
-        || trimmed.contains("Installing")
-        || trimmed.contains("Building")
-        || trimmed.contains("Compiling")
-    {
-        return true;
-    }
-
-    if let Some(prefix) = trimmed.strip_suffix('%') {
-        let without_pct = prefix.trim();
-        if !without_pct.is_empty() && without_pct.chars().all(|c| c.is_ascii_digit() || c == '.') {
-            return true;
-        }
-    }
-
-    false
-}
-
 /// Resolves the model to use for compaction.
 ///
 /// # Panics
@@ -257,8 +202,8 @@ impl<'h> Agent<'h> {
         self.rollback_len = self.history.len();
         let msg = Message::user_with_images(input.message.clone(), input.images);
         self.history.push(msg);
-        self.context_size =
-            estimate_message_tokens(self.history.as_slice()) + estimate_tool_tokens(&self.tools);
+        self.context_size = estimate_message_tokens(self.history.as_slice())
+            .saturating_add(estimate_tool_tokens(&self.tools));
         self.mode = input.mode;
         self.workflow = input.workflow;
         self.opts = RequestOptions {
@@ -358,8 +303,9 @@ impl<'h> Agent<'h> {
             let history_len_before = self.history.len();
             self.process_tool_calls(response).await?;
             let tool_results_start = history_len_before.saturating_add(1);
-            self.context_size +=
-                estimate_message_tokens(&self.history.as_slice()[tool_results_start..]);
+            self.context_size = self.context_size.saturating_add(estimate_message_tokens(
+                &self.history.as_slice()[tool_results_start..],
+            ));
         } else {
             let is_empty = response.message.content.is_empty();
 
@@ -382,9 +328,9 @@ impl<'h> Agent<'h> {
                 );
                 self.history
                     .push(Message::synthetic(MAX_TOKENS_CONTINUE_PROMPT.into()));
-                self.context_size += estimate_message_tokens(
+                self.context_size = self.context_size.saturating_add(estimate_message_tokens(
                     &self.history.as_slice()[self.history.len().saturating_sub(1)..],
-                );
+                ));
                 self.try_auto_compact().await?;
                 return Ok(TurnOutcome::Continue);
             }
@@ -536,8 +482,8 @@ impl<'h> Agent<'h> {
         self.event_tx.send(AgentEvent::CompactionDone)?;
         self.history
             .push(Message::synthetic(CONTINUE_AFTER_COMPACT.into()));
-        self.context_size =
-            estimate_message_tokens(self.history.as_slice()) + estimate_tool_tokens(&self.tools);
+        self.context_size = estimate_message_tokens(self.history.as_slice())
+            .saturating_add(estimate_tool_tokens(&self.tools));
         Ok(())
     }
 

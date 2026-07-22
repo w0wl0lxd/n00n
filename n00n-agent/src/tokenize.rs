@@ -1,5 +1,6 @@
 use serde_json::Value;
 use tiktoken_rs::cl100k_base_singleton;
+use tracing::warn;
 
 const TIKTOKEN_MAX_CHARS: usize = 4_096;
 const BYTES_PER_TOKEN_ESTIMATE: usize = 4;
@@ -16,7 +17,10 @@ pub fn count_tokens(text: &str) -> usize {
 pub fn count_json(value: &Value) -> usize {
     match serde_json::to_string(value) {
         Ok(text) => count_tokens(&text),
-        Err(_) => 0,
+        Err(e) => {
+            warn!(error = %e, "failed to serialize JSON for token count; using byte fallback");
+            count_tokens(&value.to_string())
+        }
     }
 }
 
@@ -93,7 +97,7 @@ mod tests {
     }
 
     #[test]
-    fn count_json_falls_back_for_non_serializable() {
+    fn count_json_null_is_one_token() {
         let value = Value::Null;
         let tokens = count_json(&value);
         assert_eq!(tokens, 1, "null serializes to one token-ish string");
