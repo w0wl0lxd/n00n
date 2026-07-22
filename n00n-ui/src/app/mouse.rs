@@ -73,9 +73,7 @@ impl App {
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 if let Some(SelectionState::Dragging { sel, .. }) = self.selection_state {
-                    if !sel.is_empty() {
-                        self.selection_state = Some(SelectionState::PendingCopy { sel });
-                    } else {
+                    if sel.is_empty() {
                         let zone = sel.zone;
                         self.selection_state = None;
                         if zone == SelectionZone::Messages {
@@ -86,20 +84,11 @@ impl App {
                             {
                                 self.copy_text(&text, format!("Copied {label}"));
                             } else {
-                                let session = self.chats[render_chat]
-                                    .tool_id_at(event.row, area)
-                                    .and_then(|id| {
-                                        self.chats.iter().position(|chat| {
-                                            chat.tool_use_id.as_deref() == Some(id)
-                                        })
-                                    });
-                                if let Some(idx) = session {
-                                    self.active_chat = idx;
-                                    return;
-                                }
                                 self.chats[render_chat].handle_click(event.row, area);
                             }
                         }
+                    } else {
+                        self.selection_state = Some(SelectionState::PendingCopy { sel });
                     }
                 }
             }

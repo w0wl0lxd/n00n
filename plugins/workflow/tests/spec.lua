@@ -256,7 +256,7 @@ case("workflow_parallel_concurrency_is_clamped_and_type_safe", function()
 end)
 
 case("workflow_agent_label_truncation_preserves_utf8", function()
-  local truncated = n00n.ui.truncate_text(string.rep("é", 40), 40)
+  local truncated = n00n.ui.truncate_text(string.rep("é", 41), 40)
   assert(utf8.len(truncated.head), "label truncation must not split UTF-8")
   assert(truncated.tail ~= "", "long labels must report a tail")
 end)
