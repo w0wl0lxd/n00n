@@ -86,6 +86,15 @@ fn mouse_event(kind: MouseEventKind, column: u16, row: u16) -> Msg {
     })
 }
 
+fn ctrl_mouse_event(kind: MouseEventKind, column: u16, row: u16) -> Msg {
+    Msg::Mouse(MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::CONTROL,
+    })
+}
+
 fn agent_msg(event: AgentEvent) -> Msg {
     agent_msg_with_run_id(event, 1)
 }
@@ -1148,12 +1157,12 @@ fn task_picker_preview_tool_click_uses_rendered_chat() {
     select_subagent_preview(&mut app);
     set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 0, 80, 20));
 
-    app.update(mouse_event(
+    app.update(ctrl_mouse_event(
         MouseEventKind::Down(MouseButton::Left),
         1,
         tool_row,
     ));
-    app.update(mouse_event(
+    app.update(ctrl_mouse_event(
         MouseEventKind::Up(MouseButton::Left),
         1,
         tool_row,

@@ -7,7 +7,7 @@ use n00n_markdown::render::{self, Line as RLine, LineKind, Span as RSpan, StyleT
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-pub const TRUNCATION_PREFIX: &str = "...";
+pub const TRUNCATION_PREFIX: &str = "›";
 const MIN_TRUNCATABLE_LINES: usize = 2;
 
 /// Add `over`'s modifiers on top of `base`, keeping `base`'s colors.
