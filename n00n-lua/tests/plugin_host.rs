@@ -1725,6 +1725,85 @@ fn warm_fifo_evicts_oldest_runtime_side() {
     );
 }
 
+#[test]
+fn explore_result_live_click_and_warm_eviction_fallback_preserve_card_contract() {
+    const TOOL: &str = "explore_probe";
+    const OUTPUT: &str = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight";
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"
+local ExploreResult = require("n00n.explore_result")
+n00n.api.register_tool({{
+    name = "{TOOL}",
+    description = "shared explore card probe",
+    schema = {MINIMAL_SCHEMA},
+    audiences = {{ "main" }},
+    handler = function(input, ctx)
+        local card, err = ExploreResult.live(ctx)
+        if not card then
+            return {{ llm_output = tostring(err), is_error = true }}
+        end
+        card:update("one\ntwo\nthree\nfour\nfive\nsix\nseven\neight")
+        return {{ llm_output = "done", body = card.buf }}
+    end,
+    restore = function(input, output)
+        return ExploreResult.restore(output)
+    end,
+}})
+"#,
+    );
+    host.load_source("explore_probe_plugin", &src).unwrap();
+
+    let mut bodies = Vec::with_capacity(WARM_TOOL_CAP + 1);
+    for i in 0..=WARM_TOOL_CAP {
+        let id = format!("explore-{i}");
+        let (ctx, rx) = warm_ctx(&id);
+        exec_warm_tool(&reg, TOOL, &ctx).expect("tool output");
+        bodies.push(recv_live_buf(&rx, &id).expect("live explore card"));
+    }
+    assert_eq!(bodies[0].read().len(), 6, "five rows plus expand hint");
+
+    let evicted_id = "explore-0";
+    let item = n00n_lua::RestoreItem {
+        tool: Arc::from(TOOL),
+        tool_use_id: evicted_id.to_owned(),
+        output: OUTPUT.to_owned(),
+        input: serde_json::json!({}),
+        is_error: false,
+        tool_output_lines: ToolOutputLines::default(),
+        theme_gen: None,
+        clicks: vec![0],
+        state: None,
+    };
+    let (tx, rx) = flume::unbounded();
+    let event_handle = host.event_handle().expect("event handle");
+    event_handle.request_click_with_fallback(
+        evicted_id.to_owned(),
+        0,
+        item,
+        n00n_agent::EventSender::new(tx, 0),
+    );
+    event_handle.request_click(format!("explore-{WARM_TOOL_CAP}"), 0);
+    barrier(&host);
+
+    assert_eq!(
+        bodies[0].read().len(),
+        6,
+        "evicted live card must not receive the click"
+    );
+    assert_eq!(
+        bodies[WARM_TOOL_CAP].read().len(),
+        8,
+        "a still-warm live card must expand in place"
+    );
+    assert_eq!(
+        snapshot_texts(&rx, evicted_id),
+        vec![OUTPUT.replace('\n', "")],
+        "fallback restore must replay the click and publish the expanded card"
+    );
+}
+
 /// After a plugin (re)load the old handlers are gone, so stale warm
 /// clicks must be dropped, never run.
 #[test]
