@@ -179,6 +179,12 @@ to decide when to use the tool), a JSON Schema for the input, and a handler
 function. The handler receives `(input, ctx)` and returns either a plain
 string or a table with richer output fields.
 
+`cost` and `usage` are accounting metadata. n00n exposes only a finite,
+non-negative cost and the allowlisted numeric token counts. If
+`is_error = true` after usage was charged, this sanitized metadata is
+returned alongside the error; provider payloads and extra usage fields are
+discarded.
+
 **Parameters:**
 
 - `{spec}` (`table`) Tool specification:
@@ -201,6 +207,8 @@ string or a table with richer output fields.
     - `image` (`table`) { media_type: string, data: string } base64 image.
     - `instructions` (`table`) Array of { path, content } blocks injected as context.
     - `state` (`any`) Serializable state forwarded to restore.
+    - `cost` (`number`) Non-negative estimated cost attached as sanitized tool telemetry.
+    - `usage` (`table`) Token counts: fresh_input_tokens, cache_read_tokens, cache_write_tokens, input_tokens, output_tokens.
   - `audiences` (`string[]`) Which model audiences see the tool. Values: "main", "sub", "all". Default: all audiences.
   - `kind` (`string`) Optional grouping label (e.g. "filesystem").
   - `timeout` (`number`) Execution timeout in seconds. 0 or false disables. Default: inherits agent deadline.
@@ -819,26 +827,36 @@ sess:close()
 ### `n00n.agent.usage_cost()` {#n00n-agent-usage_cost}
 
 ```lua
-n00n.agent.usage_cost({spec}, {input_tokens}, {output_tokens})
+n00n.agent.usage_cost({spec}, {input_tokens}, {output_tokens}, {breakdown?})
 ```
 
 Estimate the dollar cost of a completion from its model spec and token
-counts. Uses the provider's published pricing (input/output/cache write/
-read), so orchestrators like Team can report cost without bundling a
-price table.
+counts. Uses the provider's published pricing for fresh input, cache reads,
+cache writes, and output. Without {breakdown}, input and fast-tier pricing
+retain the legacy three-argument behavior.
 
 **Parameters:**
 
 - `{spec}` (`string`) Model spec, e.g. `"anthropic/claude-haiku-4-5"`.
-- `{input_tokens}` (`integer`) Prompt tokens.
+- `{input_tokens}` (`integer`) Total prompt tokens across all input categories.
 - `{output_tokens}` (`integer`) Completion tokens.
+- `{breakdown?}` (`table?`) Optional input categories. Fields:
+  - `fresh_input_tokens` (`integer?`) non-cached input; when present, it must
+    conserve `input_tokens` together with the cache categories.
+  - `cache_read_tokens` (`integer?`) input tokens read from cache; default 0.
+  - `cache_write_tokens` (`integer?`) input tokens written to cache; default 0.
+  - `fast` (`boolean?`) whether this completion used fast-tier pricing; default false.
 
 **Returns:** (`number?`, `string?`) Estimated USD cost, or `(nil, err)` on failure.
 
 **Example:**
 
 ```lua
-local cost, err = n00n.agent.usage_cost("anthropic/claude-haiku-4-5", 1200, 300)
+local cost, err = n00n.agent.usage_cost("anthropic/claude-haiku-4-5", 1200, 300, {
+  fresh_input_tokens = 900,
+  cache_read_tokens = 200,
+  cache_write_tokens = 100,
+})
 if err then error(err) end
 print(string.format("$%.4f", cost))
 ```
@@ -865,14 +883,22 @@ Send a message to the subagent and wait for its full response. The agent
 loop runs to completion, calling tools as needed. Conversation history is
 kept across calls, so you can have a multi-turn conversation.
 
-The returned table has fields: `text` (string), `duration_ms` (integer),
-`input_tokens` (integer), `output_tokens` (integer).
+The success table has fields: `text` (string), `duration_ms` (integer),
+`input_tokens` (integer), `fresh_input_tokens` (integer),
+`cache_read_tokens` (integer), `cache_write_tokens` (integer),
+`output_tokens` (integer), actual `fast` state (boolean), and aggregate
+`cost` (number). The cost is summed
+per request using that request's model and fast tier, including compaction.
+If execution fails after incurring usage, the
+result table omits `text` and contains only `duration_ms` plus these
+sanitized numeric usage fields. Check `err` before reading `text`.
 
 **Parameters:**
 
 - `{message}` (`string`) User message to send.
 
-**Returns:** (`table?`, `string?`) Result table on success, or `(nil, err)` on failure.
+**Returns:** (`table?`, `string?`) `(result, nil)` on success; charged failures return
+  `(sanitized_usage, err)`. Session-state failures can return `(nil, err)`.
 
 **Example:**
 
@@ -5311,5 +5337,13 @@ local function truncate(text, max_lines, max_bytes)
 end
 
 return truncate
+```
+
+### `require("n00n.usage")`
+
+```lua
+function M.normalize(result)
+function M.add(total, value)
+function M.price(model_spec, result)
 ```
 
