@@ -13,6 +13,13 @@ use crate::{AgentError, AgentEvent, EventSender, TurnCompleteEvent};
 
 pub(super) const CONTINUE_AFTER_COMPACT: &str = "Continue if you have next steps, or stop and ask for clarification if unsure. Restore todo lists with todo_write. Save important context to memory before it's lost.";
 
+const MINIMAL_CONTEXT_RATIO: f64 = 0.2;
+const AGGRESSIVE_CONTEXT_RATIO: f64 = 0.4;
+const NORMAL_BUDGET_RATIO: f64 = 0.15;
+const AGGRESSIVE_BUDGET_RATIO: f64 = 0.10;
+const MINIMAL_BUDGET_RATIO: f64 = 0.05;
+const MIN_COMPACTION_BUDGET: u32 = 1;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompactionTier {
     Normal,
@@ -23,10 +30,13 @@ pub enum CompactionTier {
 impl CompactionTier {
     #[must_use]
     pub fn from_remaining_context(remaining: u32, context_window: u32) -> Self {
+        if context_window == 0 {
+            return Self::Normal;
+        }
         let ratio = f64::from(remaining) / f64::from(context_window);
-        if ratio < 0.2 {
+        if ratio < MINIMAL_CONTEXT_RATIO {
             Self::Minimal
-        } else if ratio < 0.4 {
+        } else if ratio < AGGRESSIVE_CONTEXT_RATIO {
             Self::Aggressive
         } else {
             Self::Normal
@@ -36,11 +46,15 @@ impl CompactionTier {
     #[must_use]
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub fn token_budget(self, context_window: u32) -> u32 {
-        match self {
-            Self::Normal => (f64::from(context_window) * 0.15) as u32,
-            Self::Aggressive => (f64::from(context_window) * 0.10) as u32,
-            Self::Minimal => (f64::from(context_window) * 0.05) as u32,
+        if context_window == 0 {
+            return 0;
         }
+        let ratio = match self {
+            Self::Normal => NORMAL_BUDGET_RATIO,
+            Self::Aggressive => AGGRESSIVE_BUDGET_RATIO,
+            Self::Minimal => MINIMAL_BUDGET_RATIO,
+        };
+        ((f64::from(context_window) * ratio) as u32).max(MIN_COMPACTION_BUDGET)
     }
 }
 const IMAGE_PLACEHOLDER: &str = "[image]";
@@ -330,6 +344,31 @@ mod tests {
         let mut model = default_model();
         model.context_window = context_window;
         model
+    }
+
+    #[test_case(0,   0,   CompactionTier::Normal    ; "zero_context_window_defaults_normal")]
+    #[test_case(0,   100, CompactionTier::Minimal    ; "empty_remaining_is_minimal")]
+    #[test_case(10,  100, CompactionTier::Minimal    ; "low_ratio_minimal")]
+    #[test_case(30,  100, CompactionTier::Aggressive ; "mid_ratio_aggressive")]
+    #[test_case(50,  100, CompactionTier::Normal     ; "high_ratio_normal")]
+    fn compaction_tier_from_remaining(
+        remaining: u32,
+        context_window: u32,
+        expected: CompactionTier,
+    ) {
+        assert_eq!(
+            CompactionTier::from_remaining_context(remaining, context_window),
+            expected
+        );
+    }
+
+    #[test_case(CompactionTier::Normal,     100, 15 ; "normal_budget")]
+    #[test_case(CompactionTier::Aggressive, 100, 10 ; "aggressive_budget")]
+    #[test_case(CompactionTier::Minimal,    100,  5 ; "minimal_budget")]
+    #[test_case(CompactionTier::Minimal,      1,  1 ; "tiny_window_minimum_budget")]
+    #[test_case(CompactionTier::Normal,       0,  0 ; "zero_window_zero_budget")]
+    fn compaction_tier_budget(tier: CompactionTier, context_window: u32, expected: u32) {
+        assert_eq!(tier.token_budget(context_window), expected);
     }
 
     fn text_response(stop_reason: StopReason) -> StreamResponse {

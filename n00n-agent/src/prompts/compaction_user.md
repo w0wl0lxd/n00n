@@ -19,6 +19,9 @@ Use this template:
 ## Constraints
 [Key user instructions or preferences]
 
+## Todo list
+[All open todo items, if any, so they can be restored with todo_write]
+
 ## Next
 [What to do next]
 ---
