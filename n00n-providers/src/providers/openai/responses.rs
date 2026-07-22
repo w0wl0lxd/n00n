@@ -846,8 +846,11 @@ pub(crate) async fn parse_sse(
     Ok((response_id, acc.into_stream_response()))
 }
 
+// map_or_else is required here to apply try_from conversion; unwrap_or would skip the conversion
 #[allow(clippy::manual_unwrap_or)]
 fn parse_usage(u: &Value) -> TokenUsage {
+    // unwrap_or is disallowed; manual implementation with map_or_else is required for try_from conversion
+    #[allow(clippy::manual_unwrap_or)]
     let input_tokens = u["input_tokens"].as_u64().map_or_else(
         || 0,
         |v| match u32::try_from(v) {
@@ -855,6 +858,8 @@ fn parse_usage(u: &Value) -> TokenUsage {
             Err(_) => u32::MAX,
         },
     );
+    // unwrap_or is disallowed; manual implementation with map_or_else is required for try_from conversion
+    #[allow(clippy::manual_unwrap_or)]
     let output_tokens = u["output_tokens"].as_u64().map_or_else(
         || 0,
         |v| match u32::try_from(v) {
@@ -863,6 +868,8 @@ fn parse_usage(u: &Value) -> TokenUsage {
         },
     );
 
+    // unwrap_or is disallowed; manual implementation with map_or_else is required for try_from conversion
+    #[allow(clippy::manual_unwrap_or)]
     let cached = u["input_tokens_details"]["cached_tokens"]
         .as_u64()
         .map_or_else(
@@ -872,6 +879,8 @@ fn parse_usage(u: &Value) -> TokenUsage {
                 Err(_) => u32::MAX,
             },
         );
+    // unwrap_or is disallowed; manual implementation with map_or_else is required for try_from conversion
+    #[allow(clippy::manual_unwrap_or)]
     let cache_write = u["input_tokens_details"]["cache_write_tokens"]
         .as_u64()
         .map_or_else(

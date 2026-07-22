@@ -216,7 +216,6 @@ fn open_credentials_lock(path: &Path) -> Result<File, AgentError> {
     Ok(file)
 }
 
-#[allow(clippy::manual_unwrap_or)]
 fn lock_credentials_with_timeout(
     dir: &StateDir,
     timeout: Duration,
@@ -229,6 +228,8 @@ fn lock_credentials_with_timeout(
         match file.try_lock() {
             Ok(()) => return Ok((CredentialsLock { _file: file }, started.elapsed())),
             Err(TryLockError::WouldBlock) if started.elapsed() >= timeout => {
+                // unwrap_or is disallowed; manual implementation with match is required
+                #[allow(clippy::manual_unwrap_or)]
                 let millis = match u64::try_from(timeout.as_millis()) {
                     Ok(millis) => millis,
                     Err(_) => u64::MAX,
@@ -445,6 +446,7 @@ pub(crate) fn acquire_coding_plan_admission(
             }
         }
         if started.elapsed() >= CODING_PLAN_ADMISSION_WAIT_TIMEOUT {
+            // unwrap_or is disallowed; manual implementation with match is required
             #[allow(clippy::manual_unwrap_or)]
             let millis = match u64::try_from(CODING_PLAN_ADMISSION_WAIT_TIMEOUT.as_millis()) {
                 Ok(millis) => millis,
@@ -619,6 +621,7 @@ fn into_oauth_tokens(
 ) -> Result<OAuthTokens, AgentError> {
     let account_id = extract_account_id_from_tokens(&resp)
         .or_else(|| previous_account_id.map(ToOwned::to_owned));
+    // unwrap_or is disallowed; manual implementation with match is required
     #[allow(clippy::manual_unwrap_or)]
     let expires_in = match resp.expires_in {
         Some(expires_in) => expires_in,

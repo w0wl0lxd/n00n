@@ -611,6 +611,7 @@ impl SessionLog {
     /// # Errors
     /// Returns `SessionError` if the session ID does not match, the cursor is ahead,
     /// or the append operation fails.
+    #[allow(clippy::too_many_lines)] // Function handles multiple append operations with early returns; extraction would fragment logic
     pub fn append<M, U, T>(&mut self, session: &Session<M, U, T>) -> Result<(), SessionError>
     where
         M: Serialize + Clone,

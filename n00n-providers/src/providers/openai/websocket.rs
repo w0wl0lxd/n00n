@@ -740,6 +740,7 @@ fn error_from_event(event: &Value) -> AgentError {
     };
 
     let status = if let Some(s) = event.get("status").and_then(Value::as_u64) {
+        // unwrap_or is disallowed; manual implementation with match is required for try_from conversion
         #[allow(clippy::manual_unwrap_or)]
         match u16::try_from(s) {
             Ok(v) => v,

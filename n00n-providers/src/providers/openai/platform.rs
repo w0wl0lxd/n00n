@@ -589,6 +589,7 @@ impl OpenAi {
                 return Ok(lock);
             }
             if started.elapsed() >= RESPONSE_CHAIN_LOCK_WAIT_TIMEOUT {
+                // unwrap_or is disallowed; manual implementation with match is required for try_from conversion
                 #[allow(clippy::manual_unwrap_or)]
                 let millis = match u64::try_from(RESPONSE_CHAIN_LOCK_WAIT_TIMEOUT.as_millis()) {
                     Ok(millis) => millis,
