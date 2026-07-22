@@ -78,8 +78,9 @@ pub async fn authenticate(
         }
     }
 
-    let auth_server =
-        discover_and_validate_auth_server(&client, server_url, www_authenticate, &wrap).await?;
+    let www_auth = www_authenticate.and_then(parse_www_authenticate);
+    let (auth_server, resource_meta) =
+        discover_and_validate_auth_server(&client, server_url, www_auth.as_ref(), &wrap).await?;
 
     let (callback, reg, pkce, state, scope) = prepare_oauth_flow(
         &client,
@@ -87,7 +88,8 @@ pub async fn authenticate(
         server_name,
         server_url,
         &auth_server,
-        www_authenticate,
+        &resource_meta,
+        www_auth.as_ref(),
         &wrap,
     )
     .await?;
@@ -147,15 +149,12 @@ pub async fn authenticate(
 async fn discover_and_validate_auth_server(
     client: &HttpClient,
     server_url: &str,
-    www_authenticate: Option<&str>,
+    www_auth: Option<&discovery::WwwAuthenticateInfo>,
     wrap: &impl Fn(OAuthError) -> McpError,
-) -> Result<discovery::AuthServerMetadata, McpError> {
-    let www_auth = www_authenticate.and_then(parse_www_authenticate);
-
-    let resource_meta =
-        discovery::discover_resource_metadata(client, server_url, www_auth.as_ref())
-            .await
-            .map_err(wrap)?;
+) -> Result<(discovery::AuthServerMetadata, discovery::ResourceMetadata), McpError> {
+    let resource_meta = discovery::discover_resource_metadata(client, server_url, www_auth)
+        .await
+        .map_err(wrap)?;
 
     let auth_server_url = resource_meta
         .authorization_servers
@@ -178,7 +177,7 @@ async fn discover_and_validate_auth_server(
         )));
     }
 
-    Ok(auth_server)
+    Ok((auth_server, resource_meta))
 }
 
 async fn prepare_oauth_flow(
@@ -187,7 +186,8 @@ async fn prepare_oauth_flow(
     server_name: &str,
     server_url: &str,
     auth_server: &discovery::AuthServerMetadata,
-    www_authenticate: Option<&str>,
+    resource_meta: &discovery::ResourceMetadata,
+    www_auth: Option<&discovery::WwwAuthenticateInfo>,
     wrap: &impl Fn(OAuthError) -> McpError,
 ) -> Result<
     (
@@ -222,12 +222,9 @@ async fn prepare_oauth_flow(
         .map_err(|e| wrap(OAuthError::Other(format!("CSPRNG unavailable: {e}"))))?;
     let state = URL_SAFE_NO_PAD.encode(state_buf);
 
-    let www_auth = www_authenticate.and_then(parse_www_authenticate);
-    let resource_meta =
-        discovery::discover_resource_metadata(client, server_url, www_auth.as_ref())
-            .await
-            .map_err(wrap)?;
-    let scope = resource_meta.scopes_supported.as_ref().map(|s| s.join(" "));
+    let scope = www_auth
+        .and_then(|w| w.scope.clone())
+        .or_else(|| resource_meta.scopes_supported.as_ref().map(|s| s.join(" ")));
 
     Ok((callback, reg, pkce, state, scope))
 }
