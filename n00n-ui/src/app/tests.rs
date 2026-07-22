@@ -63,7 +63,7 @@ fn build_app(dir: StateDir, writer: Arc<StorageWriter>) -> App {
 
 fn test_app() -> App {
     let dir = StateDir::from_path(env::temp_dir());
-    let mut app = build_app(dir.clone(), Arc::new(StorageWriter::new(dir)));
+    let mut app = build_app(dir.clone(), Arc::new(StorageWriter::new(dir).unwrap()));
     let (shared_queue, _rx) = shared_queue::queue();
     app.queue.set_shared(shared_queue);
     app
@@ -72,7 +72,7 @@ fn test_app() -> App {
 fn tempdir_app() -> (TempDir, StateDir, Arc<StorageWriter>, App) {
     let tmp = TempDir::new().unwrap();
     let dir = StateDir::from_path(tmp.path().to_path_buf());
-    let writer = Arc::new(StorageWriter::new(dir.clone()));
+    let writer = Arc::new(StorageWriter::new(dir.clone()).unwrap());
     let app = build_app(dir.clone(), Arc::clone(&writer));
     (tmp, dir, writer, app)
 }
@@ -139,7 +139,7 @@ fn subagent_msg_with_run_id(
 ) -> Msg {
     Msg::Agent(Box::new(Envelope {
         event,
-        subagent: Some(subagent_info(parent_id, name.unwrap_or("Agent"))),
+        subagent: Some(subagent_info(parent_id, name.unwrap_or_else(|| "Agent"))),
         run_id,
     }))
 }
@@ -150,7 +150,7 @@ fn subagent_msg_with_prompt(
     name: Option<&str>,
     prompt: Option<&str>,
 ) -> Msg {
-    let mut info = subagent_info(parent_id, name.unwrap_or("Agent"));
+    let mut info = subagent_info(parent_id, name.unwrap_or_else(|| "Agent"));
     info.prompt = prompt.map(String::from);
     Msg::Agent(Box::new(Envelope {
         event,
@@ -450,7 +450,7 @@ fn submit_prompt_rejects(mk: fn() -> App, text: &str, expected: &str) {
 
 fn streaming_app_without_queue() -> App {
     let dir = StateDir::from_path(env::temp_dir());
-    let mut app = build_app(dir.clone(), Arc::new(StorageWriter::new(dir)));
+    let mut app = build_app(dir.clone(), Arc::new(StorageWriter::new(dir).unwrap()));
     app.status = Status::Streaming;
     app
 }
@@ -753,7 +753,7 @@ fn turn_complete_tracks_usage_and_context_per_chat() {
     };
     app.update(agent_msg(AgentEvent::TurnComplete(Box::new(
         TurnCompleteEvent {
-            message: Default::default(),
+            message: Message::default(),
             usage: main_usage,
             model: "test".into(),
             context_size: None,
@@ -767,7 +767,7 @@ fn turn_complete_tracks_usage_and_context_per_chat() {
     };
     app.update(subagent_msg(
         AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
-            message: Default::default(),
+            message: Message::default(),
             usage: sub_usage,
             model: "test".into(),
             context_size: None,
@@ -871,7 +871,7 @@ fn turn_complete_accumulates_usage_by_model() {
 
     app.update(agent_msg(AgentEvent::TurnComplete(Box::new(
         TurnCompleteEvent {
-            message: Default::default(),
+            message: Message::default(),
             usage: TokenUsage {
                 input: 100,
                 output: 50,
@@ -884,7 +884,7 @@ fn turn_complete_accumulates_usage_by_model() {
     ))));
     app.update(subagent_msg(
         AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
-            message: Default::default(),
+            message: Message::default(),
             usage: TokenUsage {
                 input: 200,
                 output: 75,
@@ -1484,7 +1484,7 @@ fn edge_scroll_direction(zone: Rect, down: (u16, u16), drag: (u16, u16), expecte
     let state = app.selection_state.as_ref().unwrap();
     let edge_dir = match state {
         SelectionState::Dragging { edge_scroll, .. } => edge_scroll.as_ref().map(|es| es.dir),
-        _ => None,
+        SelectionState::PendingCopy { .. } => None,
     };
     assert_eq!(edge_dir, expected);
 }

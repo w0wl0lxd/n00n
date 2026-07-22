@@ -737,13 +737,13 @@ impl<'t> EventLoop<'t> {
             SessionRequest::Status { id } => self.handle_session_status(id, reply_tx),
             SessionRequest::Current => self.handle_current_session(reply_tx),
             SessionRequest::New { prompt, focus } => {
-                self.handle_new_session(prompt, focus, reply_tx)
+                self.handle_new_session(prompt, focus, reply_tx);
             }
             SessionRequest::Prompt { id, text } => self.handle_session_prompt(id, text, reply_tx),
             SessionRequest::Cancel { id } => self.handle_cancel_session(id, reply_tx),
             SessionRequest::Focus { id } => self.handle_focus_session(id, reply_tx),
             SessionRequest::SetTitle { id, title } => {
-                self.handle_set_session_title(id, title, reply_tx)
+                self.handle_set_session_title(id, title, reply_tx);
             }
         }
     }

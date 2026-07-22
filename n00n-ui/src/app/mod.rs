@@ -1404,7 +1404,7 @@ impl App {
                     self.chats[chat_idx]
                         .push(DisplayMessage::new(DisplayRole::Error, message.clone()));
                     for chat in &mut self.chats {
-                        chat.fail_in_progress_with_message(&message);
+                        chat.fail_in_progress_with_message(message.as_str());
                     }
                     self.fire_session_autocmd(
                         "TurnError",

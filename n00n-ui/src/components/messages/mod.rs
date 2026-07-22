@@ -2063,10 +2063,8 @@ fn append_compaction_entry(
     }
     if let Some(output) = message.tool_output.as_deref() {
         let output = output.as_display_text();
-        let truncated = truncate_output(
-            &output,
-            tool_output_lines.get(message.role.tool_name().unwrap_or_else(|| "")),
-        );
+        let tool_name = message.role.tool_name().unwrap_or_else(|| "");
+        let truncated = truncate_output(&output, tool_output_lines.get(tool_name));
         if !truncated.kept.is_empty() && !message.text.contains(truncated.kept.as_ref()) {
             for line in truncated.kept.lines() {
                 lines.push(Line::from(vec![
