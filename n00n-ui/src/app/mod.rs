@@ -1053,10 +1053,10 @@ impl App {
                 .iter()
                 .find(|&(_, &idx)| idx == self.active_chat)
                 .map(|(id, _)| id.clone());
-            if let Some(subagent_id) = subagent_id {
-                if !self.send_subagent_prompt(&subagent_id, sub.text) {
-                    self.flash(STEERING_UNAVAILABLE_MSG.into());
-                }
+            if let Some(subagent_id) = subagent_id
+                && !self.send_subagent_prompt(&subagent_id, sub.text)
+            {
+                self.flash(STEERING_UNAVAILABLE_MSG.into());
             }
             return vec![];
         }
