@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784747278010,
+  "lastUpdate": 1784749214458,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -1511,6 +1511,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 145906,
             "range": "± 23198",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a3c9b2e5109d97aa8f239806d20a1771450fd7d2",
+          "message": "fix(task): restore done tool for tasks without output_schema\n\nRestored the done tool for task subagents when no output_schema is set so plain tasks can signal completion with a final answer.\\n\\nAlso regenerated docs and fixed a missing closing +++ in generated commands frontmatter.",
+          "timestamp": "2026-07-22T15:34:14-04:00",
+          "tree_id": "d7f0f58174cbae54ffeec14e5f0d4c255420f276",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/a3c9b2e5109d97aa8f239806d20a1771450fd7d2"
+        },
+        "date": 1784749213068,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6687292,
+            "range": "± 157499",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2375753,
+            "range": "± 9452",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2243221,
+            "range": "± 7826",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 9229100,
+            "range": "± 79006",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4314221,
+            "range": "± 14104",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4270550,
+            "range": "± 22548",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 591694,
+            "range": "± 5487",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191330,
+            "range": "± 323",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191255,
+            "range": "± 635",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1348338,
+            "range": "± 18449",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 704453,
+            "range": "± 2690",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 704359,
+            "range": "± 1678",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 66454,
+            "range": "± 6265",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 177555,
+            "range": "± 12259",
             "unit": "ns/iter"
           }
         ]
