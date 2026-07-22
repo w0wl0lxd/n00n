@@ -501,7 +501,6 @@ fn llama_cpp_is_configured(has_host: bool, has_api_key: bool, has_provider_confi
 ///
 /// # Panics
 /// Panics if the model registry mutex is poisoned.
-#[allow(clippy::too_many_lines)]
 pub async fn fetch_all_models(
     mut on_ready: impl FnMut(ModelBatch),
     on_done: Option<Box<dyn FnOnce() + Send>>,
@@ -509,13 +508,28 @@ pub async fn fetch_all_models(
     let (tx, rx) = flume::unbounded();
     let timeouts = Timeouts::default();
 
+    spawn_builtin_providers(&tx, timeouts);
+    spawn_dynamic_providers(&tx, timeouts);
+    spawn_custom_providers(&tx, timeouts);
+
+    drop(tx);
+
+    while let Ok(batch) = rx.recv_async().await {
+        on_ready(batch);
+    }
+    if let Some(done) = on_done {
+        done();
+    }
+}
+
+fn spawn_builtin_providers(tx: &flume::Sender<ModelBatch>, timeouts: Timeouts) {
     for kind in ProviderKind::iter().filter(|kind| should_discover(*kind)) {
-        let Ok(provider) = smol::unblock(move || kind.create(timeouts)).await else {
-            warn!(provider = %kind, "failed to create provider, skipping");
-            continue;
-        };
         let tx = tx.clone();
         smol::spawn(async move {
+            let Ok(provider) = smol::unblock(move || kind.create(timeouts)).await else {
+                warn!(provider = %kind, "failed to create provider, skipping");
+                return;
+            };
             let batch = match provider.list_models().await {
                 Ok(models) => {
                     if kind.accepts_arbitrary_models() {
@@ -559,7 +573,9 @@ pub async fn fetch_all_models(
         })
         .detach();
     }
+}
 
+fn spawn_dynamic_providers(tx: &flume::Sender<ModelBatch>, timeouts: Timeouts) {
     for slug in dynamic::discovered_slugs() {
         let tx = tx.clone();
         let slug = slug.to_string();
@@ -589,13 +605,14 @@ pub async fn fetch_all_models(
         })
         .detach();
     }
+}
 
-    let custom_timeouts = timeouts;
-    let tx_custom = tx.clone();
+fn spawn_custom_providers(tx: &flume::Sender<ModelBatch>, timeouts: Timeouts) {
+    let tx = tx.clone();
     smol::spawn(async move {
         let declared = crate::providers::custom::declared_model_specs();
         if !declared.is_empty() {
-            let _ = tx_custom
+            let _ = tx
                 .send_async(ModelBatch {
                     models: declared,
                     warnings: Vec::new(),
@@ -603,9 +620,9 @@ pub async fn fetch_all_models(
                 .await;
         }
         let custom_specs =
-            smol::unblock(move || crate::providers::custom::discover_models(custom_timeouts)).await;
+            smol::unblock(move || crate::providers::custom::discover_models(timeouts)).await;
         if !custom_specs.is_empty() {
-            let _ = tx_custom
+            let _ = tx
                 .send_async(ModelBatch {
                     models: custom_specs,
                     warnings: Vec::new(),
@@ -614,15 +631,6 @@ pub async fn fetch_all_models(
         }
     })
     .detach();
-
-    drop(tx);
-
-    while let Ok(batch) = rx.recv_async().await {
-        on_ready(batch);
-    }
-    if let Some(done) = on_done {
-        done();
-    }
 }
 
 #[cfg(test)]
