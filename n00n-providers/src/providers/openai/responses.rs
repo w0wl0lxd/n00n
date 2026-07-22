@@ -548,7 +548,8 @@ impl ResponseAccumulator {
                     } else {
                         String::new()
                     };
-                    let acc = if let Some(idx) = data["output_index"].as_u64() {
+                    let idx = data["output_index"].as_u64();
+                    let acc = if let Some(idx) = idx {
                         self.tool_accumulators
                             .iter_mut()
                             .find(|acc| acc.output_index == idx)
@@ -586,7 +587,8 @@ impl ResponseAccumulator {
                                 .await?;
                         }
                         self.tool_accumulators.push(ToolAccumulator {
-                            output_index: self.tool_accumulators.len() as u64,
+                            output_index: idx
+                                .unwrap_or_else(|| self.tool_accumulators.len() as u64),
                             call_id,
                             name,
                             arguments,
@@ -1559,6 +1561,28 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             );
             assert!(
                 matches!(&resp.message.content[2], ContentBlock::RedactedThinking { data } if data.contains("two"))
+            );
+        });
+    }
+
+    #[test]
+    fn parse_sse_preserves_out_of_order_reasoning_and_tool_order() {
+        smol::block_on(async {
+            // The tool has output_index 2 but arrives before the second reasoning
+            // (output_index 1). The parser must use the event's output_index so the
+            // final order is sorted correctly; stable sort alone would place the
+            // tool too early if it defaulted to the current accumulator length.
+            let sse = "event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"encrypted_content\":\"one\",\"summary\":[]}}\n\nevent: response.output_item.done\ndata: {\"output_index\":2,\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"one\\\"}\"}}\n\nevent: response.output_item.done\ndata: {\"output_index\":1,\"item\":{\"id\":\"rs_2\",\"type\":\"reasoning\",\"encrypted_content\":\"two\",\"summary\":[]}}\n\nevent: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n";
+            let (resp, _) = run_sse(sse).await;
+            let (_, resp) = resp.unwrap();
+            assert!(
+                matches!(&resp.message.content[0], ContentBlock::RedactedThinking { data } if data.contains("one"))
+            );
+            assert!(
+                matches!(&resp.message.content[1], ContentBlock::RedactedThinking { data } if data.contains("two"))
+            );
+            assert!(
+                matches!(&resp.message.content[2], ContentBlock::ToolUse { id, .. } if id == "c1")
             );
         });
     }

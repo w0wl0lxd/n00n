@@ -301,14 +301,15 @@ pub fn block_prefix(kind: &BlockKind) -> Option<String> {
     }
 }
 
-#[allow(clippy::result_map_or_into_option)]
 fn parse_heading(line: &str) -> Option<(u8, &str)> {
     let hashes = line.bytes().take_while(|&b| b == b'#').count();
     if hashes == 0 || hashes > MAX_HEADING_LEVEL as usize {
         return None;
     }
     let rest = &line[hashes..];
-    let level = u8::try_from(hashes).map_or(None, Some)?;
+    let Ok(level) = u8::try_from(hashes) else {
+        return None;
+    };
     if let Some(stripped) = rest.strip_prefix(' ') {
         Some((level, stripped.trim_end()))
     } else if rest.is_empty() {
