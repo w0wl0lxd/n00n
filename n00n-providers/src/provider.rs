@@ -24,7 +24,10 @@ use crate::providers::openrouter::OpenRouter;
 use crate::providers::synthetic::Synthetic;
 use crate::providers::tensorx::TensorX;
 use crate::providers::zai::Zai;
-use crate::{AgentError, Message, ProviderEvent, ProviderUsage, RequestOptions, StreamResponse};
+use crate::{
+    AgentError, Message, OpenAiOptions, ProviderEvent, ProviderUsage, RequestOptions,
+    StreamResponse,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, EnumIter)]
 #[strum(serialize_all = "kebab-case")]
@@ -226,6 +229,21 @@ impl ProviderKind {
     /// Returns an error if the provider's configuration is missing or invalid
     /// (e.g., missing API key, invalid base URL, or provider-specific setup failure).
     pub fn create(self, timeouts: Timeouts) -> Result<Box<dyn Provider>, AgentError> {
+        if self == Self::OpenAi {
+            return Ok(Box::new(OpenAi::new(timeouts)?));
+        }
+        self.create_with_openai_options(timeouts, OpenAiOptions::default())
+    }
+
+    /// Creates a provider with OpenAI-specific runtime options.
+    ///
+    /// # Errors
+    /// Returns an error if the provider configuration is missing or invalid.
+    pub fn create_with_openai_options(
+        self,
+        timeouts: Timeouts,
+        openai_options: OpenAiOptions,
+    ) -> Result<Box<dyn Provider>, AgentError> {
         match self {
             Self::Anthropic => {
                 if bedrock::is_enabled() {
@@ -234,7 +252,10 @@ impl ProviderKind {
                     Ok(Box::new(Anthropic::new(timeouts)?))
                 }
             }
-            Self::OpenAi => Ok(Box::new(OpenAi::new(timeouts)?)),
+            Self::OpenAi => Ok(Box::new(OpenAi::new_with_options(
+                timeouts,
+                openai_options,
+            )?)),
             Self::Google => Ok(Box::new(Google::new(timeouts)?)),
             Self::Copilot => Ok(Box::new(Copilot::new(timeouts)?)),
             Self::Ollama => Ok(Box::new(LocalEndpoint::new(&OLLAMA, timeouts)?)),

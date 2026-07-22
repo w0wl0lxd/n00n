@@ -3,7 +3,7 @@ mod platform;
 pub(crate) mod responses;
 pub(crate) mod websocket;
 
-pub use platform::OpenAi;
+pub use platform::{OpenAi, OpenAiOptions};
 
 use crate::model::{ModelEntry, ModelFamily, ModelPricing, ModelTier};
 

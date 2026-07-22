@@ -15,6 +15,14 @@ use crate::{
 };
 
 const RESPONSES_PATH: &str = "/responses";
+const RESPONSE_IN_FLIGHT_TIMEOUT_MULTIPLIER: u32 = 6;
+const MAX_RESPONSE_IN_FLIGHT_TIMEOUT: Duration = Duration::from_mins(30);
+
+pub(crate) fn response_in_flight_timeout(stream_timeout: Duration) -> Duration {
+    stream_timeout
+        .saturating_mul(RESPONSE_IN_FLIGHT_TIMEOUT_MULTIPLIER)
+        .min(MAX_RESPONSE_IN_FLIGHT_TIMEOUT)
+}
 
 pub(crate) fn build_body(
     model: &crate::model::Model,
@@ -278,7 +286,20 @@ pub(crate) async fn do_stream(
         .await
         .map_err(suppress_retry_after_response)
     } else {
-        Err(AgentError::from_response(response).await)
+        let retry_after = super::websocket::retry_after(
+            response
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok()),
+        );
+        let error = AgentError::from_response(response).await;
+        if auth.base_url.as_deref() == Some(super::auth::CODING_PLAN_BASE_URL)
+            && matches!(&error, AgentError::Api { status: 403, message } if message.trim().is_empty())
+        {
+            Err(AgentError::CodingPlanAdmission { retry_after })
+        } else {
+            Err(error)
+        }
     }
 }
 
@@ -742,9 +763,11 @@ pub(crate) async fn parse_sse(
 
     let mut acc = ResponseAccumulator::new();
     let mut deadline = Instant::now() + stream_timeout;
+    let response_deadline = Instant::now() + response_in_flight_timeout(stream_timeout);
     let mut current_event = String::new();
 
     loop {
+        deadline = deadline.min(response_deadline);
         let line = match crate::providers::next_sse_line(&mut lines, &mut deadline, stream_timeout)
             .await
         {

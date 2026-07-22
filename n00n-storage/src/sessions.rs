@@ -7,8 +7,10 @@
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::UNIX_EPOCH;
@@ -128,7 +130,19 @@ pub struct StoredOpenAiResponseChain {
 }
 
 pub struct OpenAiResponseChainLock {
-    _file: File,
+    file: File,
+}
+
+impl OpenAiResponseChainLock {
+    /// Create another handle to the held lock for a blocking task.
+    ///
+    /// # Errors
+    /// Returns an error if the lock handle cannot be duplicated.
+    pub fn try_clone(&self) -> Result<Self, StorageError> {
+        Ok(Self {
+            file: self.file.try_clone()?,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1067,14 +1081,60 @@ pub fn lock_openai_response_chain(
     session_id: N00nId,
 ) -> Result<OpenAiResponseChainLock, StorageError> {
     let sessions_dir = state_dir.ensure_subdir(SESSIONS_DIR)?;
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(openai_response_chain_lock_path(&sessions_dir, session_id))?;
+    lock_openai_response_chain_in(&sessions_dir, session_id)
+}
+
+fn lock_openai_response_chain_in(
+    sessions_dir: &Path,
+    session_id: N00nId,
+) -> Result<OpenAiResponseChainLock, StorageError> {
+    let file = open_openai_response_chain_lock(sessions_dir, session_id)?;
     file.lock()?;
-    Ok(OpenAiResponseChainLock { _file: file })
+    Ok(OpenAiResponseChainLock { file })
+}
+
+/// Try to acquire the cross-process lock for one session's `OpenAI` continuation state.
+///
+/// A contended lock returns `Ok(None)` immediately so callers can apply a bounded retry policy
+/// without blocking an executor thread.
+///
+/// # Errors
+/// Returns an error when the sessions directory or lock file cannot be opened or locked.
+pub fn try_lock_openai_response_chain(
+    state_dir: &StateDir,
+    session_id: N00nId,
+) -> Result<Option<OpenAiResponseChainLock>, StorageError> {
+    let sessions_dir = state_dir.ensure_subdir(SESSIONS_DIR)?;
+    let file = open_openai_response_chain_lock(&sessions_dir, session_id)?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(OpenAiResponseChainLock { file })),
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Error(error)) => Err(error.into()),
+    }
+}
+
+fn open_openai_response_chain_lock(
+    sessions_dir: &Path,
+    session_id: N00nId,
+) -> Result<File, StorageError> {
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(false).read(true).write(true);
+    #[cfg(unix)]
+    options
+        .mode(OPENAI_RESPONSE_CHAIN_FILE_MODE)
+        .custom_flags(libc::O_NOFOLLOW);
+    let file = options.open(openai_response_chain_lock_path(sessions_dir, session_id))?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            "OpenAI response-chain lock is not a regular file",
+        )
+        .into());
+    }
+    #[cfg(unix)]
+    file.set_permissions(fs::Permissions::from_mode(OPENAI_RESPONSE_CHAIN_FILE_MODE))?;
+    Ok(file)
 }
 
 /// Return whether the parent session log still exists.
@@ -1099,15 +1159,18 @@ pub fn openai_response_chain_parent_exists(
 pub fn load_openai_response_chain(
     state_dir: &StateDir,
     session_id: N00nId,
+    lock: &OpenAiResponseChainLock,
 ) -> Result<Option<StoredOpenAiResponseChain>, StorageError> {
-    load_openai_response_chain_at(state_dir, session_id, now_epoch())
+    load_openai_response_chain_at(state_dir, session_id, now_epoch(), lock)
 }
 
 fn load_openai_response_chain_at(
     state_dir: &StateDir,
     session_id: N00nId,
     now: u64,
+    lock: &OpenAiResponseChainLock,
 ) -> Result<Option<StoredOpenAiResponseChain>, StorageError> {
+    let _ = lock;
     let sessions_dir = state_dir.ensure_subdir(SESSIONS_DIR)?;
     let path = openai_response_chain_path(&sessions_dir, session_id);
     let data = match fs::read(&path) {
@@ -1131,7 +1194,9 @@ pub fn save_openai_response_chain(
     state_dir: &StateDir,
     session_id: N00nId,
     chain: &StoredOpenAiResponseChain,
+    lock: &OpenAiResponseChainLock,
 ) -> Result<(), StorageError> {
+    let _ = lock;
     let sessions_dir = state_dir.ensure_subdir(SESSIONS_DIR)?;
     let path = openai_response_chain_path(&sessions_dir, session_id);
     atomic_write_permissions(
@@ -1153,7 +1218,9 @@ pub fn save_openai_response_chain(
 pub fn delete_openai_response_chain(
     state_dir: &StateDir,
     session_id: N00nId,
+    lock: &OpenAiResponseChainLock,
 ) -> Result<(), StorageError> {
+    let _ = lock;
     let sessions_dir = state_dir.ensure_subdir(SESSIONS_DIR)?;
     try_remove(&openai_response_chain_path(&sessions_dir, session_id))?;
     Ok(())
@@ -1528,14 +1595,7 @@ where
     /// # Errors
     /// Returns `SessionError` if the session file cannot be found or removed.
     pub fn delete_from(id: N00nId, dir: &Path) -> Result<(), SessionError> {
-        let lock_file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(openai_response_chain_lock_path(dir, id))
-            .map_err(StorageError::from)?;
-        lock_file.lock().map_err(StorageError::from)?;
+        let _lock = lock_openai_response_chain_in(dir, id)?;
         let Some(path) = locate_session_file(dir, id) else {
             return Err(StorageError::NotFound(id.to_string()).into());
         };
@@ -1563,8 +1623,9 @@ mod tests {
     };
     use super::{
         OPENAI_RESPONSE_CHAIN_TTL_SECONDS, SESSIONS_DIR, StoredOpenAiResponseChain,
-        delete_openai_response_chain, load_openai_response_chain_at, lock_openai_response_chain,
-        openai_response_chain_path, save_openai_response_chain,
+        delete_openai_response_chain, load_openai_response_chain, load_openai_response_chain_at,
+        lock_openai_response_chain, openai_response_chain_path, save_openai_response_chain,
+        try_lock_openai_response_chain,
     };
     use super::{
         SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError, TitleSource,
@@ -2023,12 +2084,68 @@ mod tests {
             SessionError::Storage(StorageError::NotFound(_))
         ));
         assert!(TestSession::list_in("/project", dir).unwrap().is_empty());
+
         let err = TestSession::delete_from(session.id, dir).unwrap_err();
         assert!(matches!(
             err,
             SessionError::Storage(StorageError::NotFound(_))
         ));
         assert!(jsonl.exists());
+    }
+
+    #[test]
+    fn response_chain_try_lock_is_contended_across_processes() {
+        const CHILD_ENV: &str = "N00N_RESPONSE_CHAIN_LOCK_CHILD";
+        const DIR_ENV: &str = "N00N_RESPONSE_CHAIN_LOCK_DIR";
+        const READY_ENV: &str = "N00N_RESPONSE_CHAIN_LOCK_READY";
+        const SESSION_ID: &str = "01965087-4c71-7f00-8000-000000000000";
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let dir = std::env::var_os(DIR_ENV)
+                .map(std::path::PathBuf::from)
+                .unwrap();
+            let ready = std::env::var_os(READY_ENV)
+                .map(std::path::PathBuf::from)
+                .unwrap();
+            let state_dir = StateDir::from_path(dir);
+            let session_id = SESSION_ID.parse::<N00nId>().unwrap();
+            let _lock = lock_openai_response_chain(&state_dir, session_id).unwrap();
+            fs::write(ready, b"ready").unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            return;
+        }
+
+        let temp = TempDir::new().unwrap();
+        let state_dir = StateDir::from_path(temp.path().to_path_buf());
+        let ready = temp.path().join("ready");
+        let executable = std::env::current_exe().unwrap();
+        let mut child = std::process::Command::new(executable)
+            .args([
+                "--exact",
+                "sessions::tests::response_chain_try_lock_is_contended_across_processes",
+            ])
+            .env(CHILD_ENV, "1")
+            .env(DIR_ENV, state_dir.path())
+            .env(READY_ENV, &ready)
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !ready.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(ready.exists());
+        let session_id = SESSION_ID.parse::<N00nId>().unwrap();
+        assert!(
+            try_lock_openai_response_chain(&state_dir, session_id)
+                .unwrap()
+                .is_none()
+        );
+        assert!(child.wait().unwrap().success());
+        assert!(
+            try_lock_openai_response_chain(&state_dir, session_id)
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
@@ -2048,16 +2165,18 @@ mod tests {
             expires_at: now + OPENAI_RESPONSE_CHAIN_TTL_SECONDS,
         };
 
-        save_openai_response_chain(&state_dir, session_id, &chain).unwrap();
+        let lock = lock_openai_response_chain(&state_dir, session_id).unwrap();
+        save_openai_response_chain(&state_dir, session_id, &chain, &lock).unwrap();
         assert_eq!(
-            load_openai_response_chain_at(&state_dir, session_id, now).unwrap(),
+            load_openai_response_chain_at(&state_dir, session_id, now, &lock).unwrap(),
             Some(chain)
         );
         assert!(
             load_openai_response_chain_at(
                 &state_dir,
                 session_id,
-                now + OPENAI_RESPONSE_CHAIN_TTL_SECONDS
+                now + OPENAI_RESPONSE_CHAIN_TTL_SECONDS,
+                &lock
             )
             .unwrap()
             .is_none()
@@ -2071,8 +2190,9 @@ mod tests {
         let state_dir = StateDir::from_path(tmp.path().to_path_buf());
         let session_id = N00nId::generate();
 
-        delete_openai_response_chain(&state_dir, session_id).unwrap();
-        delete_openai_response_chain(&state_dir, session_id).unwrap();
+        let lock = lock_openai_response_chain(&state_dir, session_id).unwrap();
+        delete_openai_response_chain(&state_dir, session_id, &lock).unwrap();
+        delete_openai_response_chain(&state_dir, session_id, &lock).unwrap();
     }
 
     #[test]
@@ -2089,7 +2209,8 @@ mod tests {
             expires_at: now_epoch() + OPENAI_RESPONSE_CHAIN_TTL_SECONDS,
         };
 
-        assert!(save_openai_response_chain(&state_dir, session_id, &chain).is_err());
+        let lock = lock_openai_response_chain(&state_dir, session_id).unwrap();
+        assert!(save_openai_response_chain(&state_dir, session_id, &chain, &lock).is_err());
         assert!(!openai_response_chain_path(&tmp.path().join(SESSIONS_DIR), session_id).exists());
     }
 
@@ -2120,6 +2241,52 @@ mod tests {
             .unwrap();
         drop(join.join().unwrap());
     }
+    #[test]
+    fn response_chain_clear_cannot_delete_a_later_update() {
+        let tmp = TempDir::new().unwrap();
+        let state_dir = StateDir::from_path(tmp.path().to_path_buf());
+        let mut session: TestSession = Session::new("model", "/project");
+        session.save(&state_dir).unwrap();
+        let session_id = session.id;
+        let updated = StoredOpenAiResponseChain {
+            response_id: "resp_new".into(),
+            message_count: 2,
+            tools_hash: "tools".into(),
+            messages_hash: "messages".into(),
+            auth_scope_hash: "account".into(),
+            expires_at: now_epoch() + OPENAI_RESPONSE_CHAIN_TTL_SECONDS,
+        };
+        let clear_lock = lock_openai_response_chain(&state_dir, session_id).unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (updated_tx, updated_rx) = std::sync::mpsc::channel();
+        let writer_dir = state_dir.clone();
+        let writer = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let lock = lock_openai_response_chain(&writer_dir, session_id).unwrap();
+            save_openai_response_chain(&writer_dir, session_id, &updated, &lock).unwrap();
+            updated_tx.send(()).unwrap();
+        });
+
+        started_rx.recv().unwrap();
+        delete_openai_response_chain(&state_dir, session_id, &clear_lock).unwrap();
+        assert!(matches!(
+            updated_rx.recv_timeout(std::time::Duration::from_millis(50)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        drop(clear_lock);
+        updated_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        writer.join().unwrap();
+
+        let lock = lock_openai_response_chain(&state_dir, session_id).unwrap();
+        assert_eq!(
+            load_openai_response_chain(&state_dir, session_id, &lock)
+                .unwrap()
+                .map(|chain| chain.response_id),
+            Some("resp_new".into())
+        );
+    }
 
     #[test]
     fn deleting_session_removes_openai_response_chain() {
@@ -2135,7 +2302,9 @@ mod tests {
             auth_scope_hash: "account".into(),
             expires_at: now_epoch() + OPENAI_RESPONSE_CHAIN_TTL_SECONDS,
         };
-        save_openai_response_chain(&state_dir, session.id, &chain).unwrap();
+        let lock = lock_openai_response_chain(&state_dir, session.id).unwrap();
+        save_openai_response_chain(&state_dir, session.id, &chain, &lock).unwrap();
+        drop(lock);
 
         TestSession::delete(session.id, &state_dir).unwrap();
 

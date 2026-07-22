@@ -1,0 +1,1 @@
+Fixed OpenAI session continuity by serializing OAuth refreshes across processes, preserving valid credentials on refresh failures, keeping ephemeral subagent chains in memory, and replacing stale Responses WebSockets before sending.
