@@ -1,6 +1,5 @@
+local ExploreResult = require("n00n.explore_result")
 local truncate = require("n00n.truncate")
-local ToolView = require("n00n.tool_view")
-local shorten_path = require("n00n.shorten_path")
 local output_limits = require("n00n.output_limits")
 
 local cwd = n00n.uv.cwd() or "."
@@ -66,14 +65,11 @@ Requires the codegraph CLI and a .codegraph/ index in the project root.]],
   },
 
   header = function(input)
-    local buf = n00n.ui.buf()
-    local spans = { { input.query or "", "tool" } }
-    if input.projectPath then
-      spans[#spans + 1] = { " in ", "dim" }
-      spans[#spans + 1] = { shorten_path(input.projectPath), "path" }
-    end
-    buf:line(spans)
-    return buf
+    return ExploreResult.header(input.query, input.projectPath)
+  end,
+
+  restore = function(_input, output, _is_error, ctx)
+    return ExploreResult.restore(output, ctx)
   end,
 
   handler = function(input, ctx)
@@ -100,6 +96,10 @@ Requires the codegraph CLI and a .codegraph/ index in the project root.]],
     end
 
     local max_lines, max_bytes = output_limits.resolve(opts, ctx)
+    local card, live_err = ExploreResult.live(ctx)
+    if not card then
+      return { llm_output = "error: failed to publish codegraph results: " .. tostring(live_err), is_error = true }
+    end
 
     local id = n00n.fn.jobstart("codegraph explore -- " .. shell_quote(input.query) .. " " .. shell_quote(project_path))
     local result = n00n.fn.jobwait(id, CG_TIMEOUT_SECS * 1000)
@@ -122,15 +122,8 @@ Requires the codegraph CLI and a .codegraph/ index in the project root.]],
 
     local output = (result.stdout or ""):gsub("\n+$", "")
     local llm_output = truncate(output, max_lines, max_bytes)
+    card:update(output)
 
-    local buf
-    if output ~= "" then
-      buf = n00n.ui.buf()
-      local view = ToolView.new(buf, { max_lines = 5, keep = "head" })
-      view:append_text(output)
-      view:finish()
-    end
-
-    return { llm_output = llm_output, body = buf }
+    return { llm_output = llm_output, body = card.buf }
   end,
 })
