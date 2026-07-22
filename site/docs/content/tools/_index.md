@@ -198,7 +198,7 @@ supervised returns a plan; autonomous executes it with optional validator quorum
 | `model_tier` | string | no |  | Supervisor/model tier (weak/medium/strong). Defaults to strong when model is omitted. |
 | `quorum` | boolean | no |  | Require validator quorum for autonomous validation and swarm acceptance. |
 | `max_steps` | integer | no | 6, maximum 8 | Maximum supervisor plan steps to execute. |
-| `max_concurrent` | integer | no | and maximum 4 | Swarm concurrency. |
+| `max_concurrent` | integer | no | 4 | Swarm concurrency. Maximum 4. |
 | `ibn_gate` | boolean | no |  | Use the information-bottleneck fan-out gate in swarm mode. |
 | `max_rounds` | integer | no | 2, maximum 4 | Swarm mode only: max coordination rounds. |
 | `goal` | string | yes |  | High-level SDLC goal, e.g. 'Add a retry helper and cover it with tests.' |

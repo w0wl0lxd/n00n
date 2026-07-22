@@ -901,6 +901,7 @@ mod tests {
             before: String::new(),
             after: String::new(),
             summary: String::new(),
+            telemetry: None,
         }
     }
 
@@ -1222,6 +1223,7 @@ mod tests {
                     before: "x\n".into(),
                     after: "y\n".into(),
                     summary: "edited a".into(),
+                    telemetry: None,
                 },
             ),
             (

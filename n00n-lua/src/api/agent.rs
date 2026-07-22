@@ -6,7 +6,6 @@ use std::pin::pin;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use async_lock::Mutex as AsyncMutex;
@@ -166,17 +165,56 @@ fn resolve_model(
     Ok((Some(model_to_lua_table(lua, &model)?), None))
 }
 
+fn fresh_input_from_legacy_total(
+    total: u32,
+    fresh: Option<u32>,
+    cache_read: u32,
+    cache_write: u32,
+) -> Result<u32, String> {
+    let cached = cache_read.checked_add(cache_write).ok_or_else(|| {
+        "cache_read_tokens + cache_write_tokens exceeds the token counter range".to_owned()
+    })?;
+    let conserved_fresh = total.checked_sub(cached).ok_or_else(|| {
+        format!(
+            "input token categories do not conserve total: cache_read_tokens ({cache_read}) + \
+             cache_write_tokens ({cache_write}) exceeds input_tokens ({total})"
+        )
+    })?;
+
+    if let Some(fresh) = fresh
+        && fresh != conserved_fresh
+    {
+        return Err(format!(
+            "input token categories do not conserve total: fresh_input_tokens ({fresh}) + \
+             cache_read_tokens ({cache_read}) + cache_write_tokens ({cache_write}) != \
+             input_tokens ({total})"
+        ));
+    }
+
+    Ok(conserved_fresh)
+}
+
 /// Estimate the dollar cost of a completion from its model spec and token
-/// counts. Uses the provider's published pricing (input/output/cache write/
-/// read), so orchestrators like Team can report cost without bundling a
-/// price table.
+/// counts. Uses the provider's published pricing for fresh input, cache reads,
+/// cache writes, and output. Without {breakdown}, input and fast-tier pricing
+/// retain the legacy three-argument behavior.
 ///
 /// @param spec string Model spec, e.g. `"anthropic/claude-haiku-4-5"`.
-/// @param input_tokens integer Prompt tokens.
+/// @param input_tokens integer Total prompt tokens across all input categories.
 /// @param output_tokens integer Completion tokens.
+/// @param breakdown table? Optional input categories. Fields:
+///   `fresh_input_tokens` (integer?) - non-cached input; when present, it must
+///     conserve `input_tokens` together with the cache categories.
+///   `cache_read_tokens` (integer?) - input tokens read from cache; default 0.
+///   `cache_write_tokens` (integer?) - input tokens written to cache; default 0.
+///   `fast` (boolean?) - whether this completion used fast-tier pricing; default false.
 /// @return (number?, string?) Estimated USD cost, or `(nil, err)` on failure.
 /// @example
-/// local cost, err = n00n.agent.usage_cost("anthropic/claude-haiku-4-5", 1200, 300)
+/// local cost, err = n00n.agent.usage_cost("anthropic/claude-haiku-4-5", 1200, 300, {
+///   fresh_input_tokens = 900,
+///   cache_read_tokens = 200,
+///   cache_write_tokens = 100,
+/// })
 /// if err then error(err) end
 /// print(string.format("$%.4f", cost))
 #[lua_fn]
@@ -186,15 +224,48 @@ fn usage_cost(
     spec: String,
     input_tokens: u32,
     output_tokens: u32,
+    breakdown: Option<Table>,
 ) -> LuaResult<Pair<f64>> {
     let model = try_pair!(Model::from_spec(&spec));
-    let usage = TokenUsage {
-        input: input_tokens,
-        output: output_tokens,
-        cache_creation: 0,
-        cache_read: 0,
+    let (fresh, cache_read, cache_write, fast) = match breakdown {
+        Some(breakdown) => {
+            let fresh =
+                try_pair!(breakdown.get::<Option<u32>>("fresh_input_tokens").map_err(
+                    |error| format!("invalid breakdown field 'fresh_input_tokens': {error}")
+                ));
+            let cache_read =
+                try_pair!(breakdown.get::<Option<u32>>("cache_read_tokens").map_err(
+                    |error| format!("invalid breakdown field 'cache_read_tokens': {error}")
+                ))
+                .map_or(0, |tokens| tokens);
+            let cache_write =
+                try_pair!(breakdown.get::<Option<u32>>("cache_write_tokens").map_err(
+                    |error| format!("invalid breakdown field 'cache_write_tokens': {error}")
+                ))
+                .map_or(0, |tokens| tokens);
+            let fast = try_pair!(
+                breakdown
+                    .get::<Option<bool>>("fast")
+                    .map_err(|error| format!("invalid breakdown field 'fast': {error}"))
+            )
+            .is_some_and(|fast| fast);
+            (fresh, cache_read, cache_write, fast)
+        }
+        None => (None, 0, 0, model.supports_fast()),
     };
-    let cost = usage.cost(&model.pricing, model.supports_fast());
+    let fresh_input = try_pair!(fresh_input_from_legacy_total(
+        input_tokens,
+        fresh,
+        cache_read,
+        cache_write,
+    ));
+    let usage = TokenUsage {
+        input: fresh_input,
+        output: output_tokens,
+        cache_creation: cache_write,
+        cache_read,
+    };
+    let cost = usage.cost(&model.pricing, fast);
     Ok((Some(cost), None))
 }
 
@@ -454,7 +525,7 @@ async fn session(
         }
         None => DEFAULT_SESSION_AUDIENCE,
     };
-    let fast: bool = opts
+    let requested_fast: bool = opts
         .get::<Option<bool>>("fast")?
         .map_or(agent_ctx.opts.fast, |v| v);
 
@@ -469,6 +540,7 @@ async fn session(
             Arc::clone(&agent_ctx.provider),
         )
     };
+    let fast = requested_fast && model.supports_fast();
     // A standalone task shows its model via SubagentInfo on the header;
     // a dispatching caller (batch) gets the same thing as a live annotation.
     if let Some(sink) = &agent_ctx.live_sink {
@@ -552,21 +624,17 @@ async fn session(
     let progress = Arc::new(Progress::new(start));
 
     let subagent_info: Arc<OnceLock<SubagentInfo>> = Arc::new(OnceLock::new());
-    let total_input = Arc::new(AtomicU32::new(0));
-    let total_output = Arc::new(AtomicU32::new(0));
+    let usage = TokenUsage::default();
+    let cost = 0.0;
 
     {
         let info = Arc::clone(&subagent_info);
-        let ti = Arc::clone(&total_input);
-        let to = Arc::clone(&total_output);
         let progress = Arc::clone(&progress);
         let parent_tx = parent_tx.clone();
         smol::spawn(async move {
             while let Ok(mut envelope) = sub_rx.recv_async().await {
                 match &envelope.event {
-                    AgentEvent::Done { usage, .. } => {
-                        ti.fetch_add(usage.total_input(), Ordering::Relaxed);
-                        to.fetch_add(usage.output, Ordering::Relaxed);
+                    AgentEvent::Done { .. } => {
                         progress.record_forwarder_barrier();
                         continue;
                     }
@@ -631,8 +699,8 @@ async fn session(
         subagent_info,
         local_tools: Arc::new(local_map),
         name,
-        total_input,
-        total_output,
+        usage,
+        cost,
         start,
         closed: false,
         failed: false,
@@ -1061,6 +1129,51 @@ impl Progress {
     }
 }
 
+fn set_usage_fields(table: &Table, usage: TokenUsage) -> LuaResult<()> {
+    table.set("input_tokens", usage.total_input())?;
+    table.set("output_tokens", usage.output)?;
+    table.set("fresh_input_tokens", usage.input)?;
+    table.set("cache_read_tokens", usage.cache_read)?;
+    table.set("cache_write_tokens", usage.cache_creation)?;
+    Ok(())
+}
+
+fn prompt_result_table(
+    lua: &Lua,
+    duration_ms: u64,
+    usage: TokenUsage,
+    cost: f64,
+    fast: bool,
+    text: Option<String>,
+) -> LuaResult<Table> {
+    let table = lua.create_table()?;
+    if let Some(text) = text {
+        table.set("text", text)?;
+    }
+    table.set("duration_ms", duration_ms)?;
+    table.set("cost", cost)?;
+    table.set("fast", fast)?;
+    set_usage_fields(&table, usage)?;
+    Ok(table)
+}
+
+fn latest_assistant_text(history: &History) -> String {
+    history
+        .as_slice()
+        .iter()
+        .rev()
+        .filter(|message| matches!(message.role, Role::Assistant))
+        .flat_map(|message| message.content.iter())
+        .find_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .map_or_else(
+            || "(no response)".to_owned(),
+            std::borrow::ToOwned::to_owned,
+        )
+}
+
 struct SessionState {
     params: AgentParams,
     system: String,
@@ -1082,8 +1195,8 @@ struct SessionState {
     subagent_info: Arc<OnceLock<SubagentInfo>>,
     local_tools: LocalTools,
     name: String,
-    total_input: Arc<AtomicU32>,
-    total_output: Arc<AtomicU32>,
+    usage: TokenUsage,
+    cost: f64,
     start: Instant,
     closed: bool,
     failed: bool,
@@ -1109,8 +1222,12 @@ impl SessionState {
         info!(
             name = %self.name,
             duration_ms,
-            input_tokens = self.total_input.load(Ordering::Relaxed),
-            output_tokens = self.total_output.load(Ordering::Relaxed),
+            input_tokens = self.usage.total_input(),
+            fresh_input_tokens = self.usage.input,
+            cache_read_tokens = self.usage.cache_read,
+            cache_write_tokens = self.usage.cache_creation,
+            output_tokens = self.usage.output,
+            cost = self.cost,
             "subagent session closed",
         );
     }
@@ -1118,6 +1235,7 @@ impl SessionState {
 
 struct PromptInterruptSource {
     rx: flume::Receiver<String>,
+    fast: bool,
 }
 
 impl n00n_agent::InterruptSource for PromptInterruptSource {
@@ -1130,7 +1248,7 @@ impl n00n_agent::InterruptSource for PromptInterruptSource {
                     images: Vec::new(),
                     preamble: Vec::new(),
                     thinking: ThinkingConfig::default(),
-                    fast: false,
+                    fast: self.fast,
                     workflow: false,
                     prompt: None,
                 },
@@ -1162,11 +1280,19 @@ impl Drop for LuaSession {
 /// loop runs to completion, calling tools as needed. Conversation history is
 /// kept across calls, so you can have a multi-turn conversation.
 ///
-/// The returned table has fields: `text` (string), `duration_ms` (integer),
-/// `input_tokens` (integer), `output_tokens` (integer).
+/// The success table has fields: `text` (string), `duration_ms` (integer),
+/// `input_tokens` (integer), `fresh_input_tokens` (integer),
+/// `cache_read_tokens` (integer), `cache_write_tokens` (integer),
+/// `output_tokens` (integer), actual `fast` state (boolean), and aggregate
+/// `cost` (number). The cost is summed
+/// per request using that request's model and fast tier, including compaction.
+/// If execution fails after incurring usage, the
+/// result table omits `text` and contains only `duration_ms` plus these
+/// sanitized numeric usage fields. Check `err` before reading `text`.
 ///
 /// @param message string User message to send.
-/// @return (table?, string?) Result table on success, or `(nil, err)` on failure.
+/// @return (table?, string?) `(result, nil)` on success; charged failures return
+///   `(sanitized_usage, err)`. Session-state failures can return `(nil, err)`.
 /// @example
 /// local r, err = sess:prompt("What files are in this project?")
 /// if err then error(err) end
@@ -1212,6 +1338,7 @@ async fn prompt(
         .with_user_response_rx(Arc::clone(&s.answer_rx))
         .with_interrupt_source(Arc::new(PromptInterruptSource {
             rx: s.prompt_rx.clone(),
+            fast: s.fast,
         }))
         .with_cancel(s.child_cancel.clone())
         .with_mcp(s.mcp.clone())
@@ -1229,6 +1356,8 @@ async fn prompt(
         };
         let barrier_target = s.progress.next_forwarder_barrier();
         let result = agent.run(input).await;
+        s.usage += agent.total_usage();
+        s.cost += agent.total_cost();
         drop(agent);
         if result.is_err()
             && let Err(barrier_error) = s.sub_event_tx.send(AgentEvent::Done {
@@ -1250,35 +1379,31 @@ async fn prompt(
         if let Err(e) = result {
             s.failed = true;
             s.progress.set_done(progress_turn);
-            return Ok((None, Some(e.to_string())));
+            let table = prompt_result_table(
+                &lua,
+                s.start.elapsed().as_millis() as u64,
+                s.usage,
+                s.cost,
+                s.fast,
+                None,
+            )?;
+            return Ok((Some(table), Some(e.to_string())));
         }
         next_message = s.prompt_rx.try_recv().ok();
     }
     s.progress.set_done(progress_turn);
 
-    let text = s
-        .history
-        .as_slice()
-        .iter()
-        .rev()
-        .filter(|m| matches!(m.role, Role::Assistant))
-        .flat_map(|m| m.content.iter())
-        .find_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .map_or_else(
-            || "(no response)".to_owned(),
-            std::borrow::ToOwned::to_owned,
-        );
+    let text = latest_assistant_text(&s.history);
 
-    let duration_ms = s.start.elapsed().as_millis() as u64;
-    let tbl = lua.create_table()?;
-    tbl.set("text", text)?;
-    tbl.set("duration_ms", duration_ms)?;
-    tbl.set("input_tokens", s.total_input.load(Ordering::Relaxed))?;
-    tbl.set("output_tokens", s.total_output.load(Ordering::Relaxed))?;
-    Ok((Some(tbl), None))
+    let table = prompt_result_table(
+        &lua,
+        s.start.elapsed().as_millis() as u64,
+        s.usage,
+        s.cost,
+        s.fast,
+        Some(text),
+    )?;
+    Ok((Some(table), None))
 }
 
 /// Poll the session for a progress snapshot while a prompt is running.
@@ -1608,14 +1733,169 @@ mod tests {
     }
 
     #[test]
-    fn usage_cost_accepts_spec_without_context() {
+    fn usage_cost_three_argument_api_retains_legacy_fast_pricing() {
         let lua = Lua::new();
         let usage_cost: Function = create_agent_table(&lua).unwrap().get("usage_cost").unwrap();
         let (cost, err): Pair<f64> = usage_cost
-            .call(("anthropic/claude-haiku-4-5", 1_200_u32, 300_u32))
+            .call(("anthropic/claude-opus-4-8", 1_200_u32, 300_u32))
             .unwrap();
-        assert!(cost.is_some());
         assert_eq!(err, None);
+
+        let model = Model::from_spec("anthropic/claude-opus-4-8").unwrap();
+        assert!(model.supports_fast());
+        let expected = TokenUsage {
+            input: 1_200,
+            output: 300,
+            cache_creation: 0,
+            cache_read: 0,
+        }
+        .cost(&model.pricing, true);
+        let actual = cost.unwrap();
+        assert!((actual - expected).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn usage_cost_prices_fresh_read_write_and_output_categories() {
+        let lua = Lua::new();
+        let usage_cost: Function = create_agent_table(&lua).unwrap().get("usage_cost").unwrap();
+        let breakdown = lua.create_table().unwrap();
+        breakdown.set("fresh_input_tokens", 400_000_u32).unwrap();
+        breakdown.set("cache_read_tokens", 400_000_u32).unwrap();
+        breakdown.set("cache_write_tokens", 200_000_u32).unwrap();
+        breakdown.set("fast", true).unwrap();
+
+        let (cost, err): Pair<f64> = usage_cost
+            .call((
+                "anthropic/claude-opus-4-8",
+                1_000_000_u32,
+                100_000_u32,
+                breakdown,
+            ))
+            .unwrap();
+        assert_eq!(err, None);
+
+        let model = Model::from_spec("anthropic/claude-opus-4-8").unwrap();
+        assert!(model.supports_fast());
+        let expected = TokenUsage {
+            input: 400_000,
+            output: 100_000,
+            cache_creation: 200_000,
+            cache_read: 400_000,
+        }
+        .cost(&model.pricing, true);
+        let actual = cost.unwrap();
+        assert!(
+            (actual - expected).abs() < f64::EPSILON,
+            "four-category price mismatch: expected {expected}, got {actual}"
+        );
+    }
+
+    #[test]
+    fn usage_cost_rejects_nonconserving_input_categories() {
+        let lua = Lua::new();
+        let usage_cost: Function = create_agent_table(&lua).unwrap().get("usage_cost").unwrap();
+        let breakdown = lua.create_table().unwrap();
+        breakdown.set("fresh_input_tokens", 500_u32).unwrap();
+        breakdown.set("cache_read_tokens", 400_u32).unwrap();
+        breakdown.set("cache_write_tokens", 200_u32).unwrap();
+
+        let (cost, err): Pair<f64> = usage_cost
+            .call(("anthropic/claude-haiku-4-5", 1_000_u32, 100_u32, breakdown))
+            .unwrap();
+
+        assert_eq!(cost, None);
+        assert!(err.is_some_and(|message| message.contains("do not conserve total")));
+    }
+
+    #[test]
+    fn usage_cost_returns_pair_error_for_malformed_breakdown() {
+        let lua = Lua::new();
+        let usage_cost: Function = create_agent_table(&lua).unwrap().get("usage_cost").unwrap();
+        let breakdown = lua.create_table().unwrap();
+        breakdown.set("cache_read_tokens", "not-a-count").unwrap();
+
+        let (cost, err): Pair<f64> = usage_cost
+            .call(("anthropic/claude-haiku-4-5", 1_000_u32, 100_u32, breakdown))
+            .expect("malformed telemetry must use the documented pair error");
+
+        assert_eq!(cost, None);
+        assert!(err.is_some_and(|message| message.contains("cache_read_tokens")));
+    }
+
+    #[test]
+    fn session_usage_aggregates_all_categories_and_legacy_total() {
+        let mut usage = TokenUsage::default();
+        usage += TokenUsage {
+            input: 100,
+            output: 20,
+            cache_creation: 30,
+            cache_read: 40,
+        };
+        usage += TokenUsage {
+            input: 10,
+            output: 5,
+            cache_creation: 3,
+            cache_read: 4,
+        };
+
+        let lua = Lua::new();
+        let table = lua.create_table().unwrap();
+        set_usage_fields(&table, usage).unwrap();
+
+        let fresh = table.get::<u32>("fresh_input_tokens").unwrap();
+        let cache_read = table.get::<u32>("cache_read_tokens").unwrap();
+        let cache_write = table.get::<u32>("cache_write_tokens").unwrap();
+        assert_eq!((fresh, cache_read, cache_write), (110, 44, 33));
+        assert_eq!(table.get::<u32>("output_tokens").unwrap(), 25);
+        assert_eq!(
+            table.get::<u32>("input_tokens").unwrap(),
+            fresh + cache_read + cache_write
+        );
+    }
+
+    #[test]
+    fn session_usage_defaults_missing_cache_categories_to_zero() {
+        let usage = TokenUsage {
+            input: 120,
+            output: 30,
+            ..TokenUsage::default()
+        };
+
+        let lua = Lua::new();
+        let table = lua.create_table().unwrap();
+        set_usage_fields(&table, usage).unwrap();
+
+        assert_eq!(table.get::<u32>("fresh_input_tokens").unwrap(), 120);
+        assert_eq!(table.get::<u32>("cache_read_tokens").unwrap(), 0);
+        assert_eq!(table.get::<u32>("cache_write_tokens").unwrap(), 0);
+        assert_eq!(table.get::<u32>("input_tokens").unwrap(), 120);
+        assert_eq!(table.get::<u32>("output_tokens").unwrap(), 30);
+    }
+
+    #[test]
+    fn prompt_result_exposes_actual_fast_state() {
+        let lua = Lua::new();
+        let fast = prompt_result_table(
+            &lua,
+            1,
+            TokenUsage::default(),
+            0.0,
+            true,
+            Some("done".to_owned()),
+        )
+        .unwrap();
+        let standard = prompt_result_table(
+            &lua,
+            1,
+            TokenUsage::default(),
+            0.0,
+            false,
+            Some("done".to_owned()),
+        )
+        .unwrap();
+
+        assert!(fast.get::<bool>("fast").unwrap());
+        assert!(!standard.get::<bool>("fast").unwrap());
     }
 
     #[test]

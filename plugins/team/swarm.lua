@@ -154,7 +154,9 @@ function M.run(ctx, goal, opts)
   local event = { kind = "goal", vec = event_vec(goal), task = goal }
   local consolidated = {}
   local total_cost = 0.0
+  local total_usage = roles.usage()
   local accepted_in_round = false
+  local step_errors = {}
   local rounds = 0
 
   for round = 1, max_rounds do
@@ -195,18 +197,21 @@ function M.run(ctx, goal, opts)
     end
 
     local contributions = {}
-    local step_errors = {}
     local results = n00n.async.gather(tasks)
     for i, res in ipairs(results) do
       if res.ok then
         local a = res.value.agent
         local r = res.value.result
+        total_cost = total_cost ~= nil and r.cost ~= nil and total_cost + r.cost or nil
+        total_usage = roles.add_usage(total_usage, r.usage)
         if r.ok then
           contributions[#contributions + 1] = { agent = a, text = r.text or "" }
-          total_cost = total_cost + (r.cost or 0)
         else
           step_errors[#step_errors + 1] = a.slot .. ": " .. (r.error or "unknown error")
         end
+      else
+        total_cost = nil
+        step_errors[#step_errors + 1] = "agent task failed: " .. tostring(res.err)
       end
     end
 
@@ -219,8 +224,17 @@ function M.run(ctx, goal, opts)
 
     -- Validation quorum gates acceptance of this round's worker output.
     local verdict = opts.quorum == false
-        and { accepted = #workers_output > 0, issues = {}, confidence = 1, diverse = false }
+        and {
+          accepted = #workers_output > 0,
+          issues = {},
+          confidence = 1,
+          diverse = false,
+          cost = 0.0,
+          usage = roles.usage(),
+        }
       or validate_round(ctx, workers_output, opts)
+    total_cost = total_cost ~= nil and verdict.cost ~= nil and total_cost + verdict.cost or nil
+    total_usage = roles.add_usage(total_usage, verdict.usage)
     if verdict.accepted then
       accepted_in_round = true
       for _, c in ipairs(contributions) do
@@ -250,10 +264,17 @@ function M.run(ctx, goal, opts)
   local text = #consolidated > 0 and table.concat(consolidated, "\n\n---\n\n") or nil
   if not text then
     local err = #step_errors > 0 and table.concat(step_errors, "; ") or "Swarm produced no accepted contribution."
-    return { ok = false, error = err }
+    return { ok = false, error = err, cost = total_cost, usage = total_usage, rounds = rounds }
   end
 
-  return { ok = true, text = text, cost = total_cost, model = "swarm", rounds = rounds }
+  return {
+    ok = true,
+    text = text,
+    cost = total_cost,
+    usage = total_usage,
+    model = "swarm",
+    rounds = rounds,
+  }
 end
 
 return M
