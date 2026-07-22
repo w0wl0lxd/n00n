@@ -353,6 +353,7 @@ impl InputBox {
         lines_above + wrap_row
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn view(
         &mut self,
         frame: &mut Frame,
