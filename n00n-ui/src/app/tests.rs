@@ -1223,6 +1223,26 @@ fn picker_enter_stays_at_navigated() {
     assert_eq!(app.active_chat, 1);
 }
 
+#[test]
+fn picker_navigate_to_subagent_then_type_routes_prompt_to_subagent() {
+    let (mut app, prompt_rx) = app_with_steerable_subagent("child-a");
+    app.active_chat = 0;
+
+    app.update(Msg::Key(kb::TASKS.to_key_event()));
+    app.update(Msg::Key(key(KeyCode::Down)));
+    app.update(Msg::Key(key(KeyCode::Enter)));
+
+    assert!(!app.task_picker.is_open());
+    assert_eq!(app.active_chat, 1);
+
+    app.update(Msg::Key(key(KeyCode::Char('h'))));
+    app.update(Msg::Key(key(KeyCode::Enter)));
+
+    assert_eq!(prompt_rx.try_recv().unwrap(), "h");
+    assert_eq!(app.chats[1].last_message_text(), "h");
+    assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::User));
+}
+
 const OVERLAY_BLOCKED_KEYS: &[KeyEvent] = &[
     kb::NEXT_CHAT.to_key_event(),
     kb::PREV_CHAT.to_key_event(),
