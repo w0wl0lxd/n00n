@@ -3016,6 +3016,7 @@ dependencies = [
  "include_dir",
  "isahc",
  "jsonschema",
+ "libc",
  "mlua",
  "n00n-agent",
  "n00n-arbor",
