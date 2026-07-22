@@ -27,19 +27,19 @@ jobs:
     name: Criterion
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae  # v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc  # v2.9.1
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable
         with:
           components: rustfmt
       - name: Run benchmarks
-        run: cargo bench --workspace --bench luau_perf --bench splash -- --output-format bencher | tee criterion-output.txt
+        run: cargo bench --workspace --bench luau_perf --bench splash -- --output-format bencher | tee criterion.txt
       - name: Store / report results
         uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba  # v1
         with:
           name: Criterion
           tool: cargo
-          output-file-path: criterion-output.txt
+          output-file-path: criterion.txt
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: ${{ github.event_name != 'pull_request' }}
           save-data-file: ${{ github.event_name != 'pull_request' }}
