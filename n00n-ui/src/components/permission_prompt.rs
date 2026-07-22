@@ -358,7 +358,7 @@ impl PermissionPrompt {
         let inner_width = width.saturating_sub(2);
         let lines = self.build_lines();
         let para = Paragraph::new(lines).wrap(Wrap { trim: false });
-        para.line_count(inner_width) as u16 + 2
+        u16::try_from(para.line_count(inner_width)).unwrap_or_else(|_| u16::MAX) + 2
     }
 }
 

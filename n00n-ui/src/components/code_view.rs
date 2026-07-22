@@ -156,7 +156,7 @@ fn render_diff(
     syntax: Option<&'static SyntaxReference>,
     before: &str,
     after: &str,
-    theme: Arc<Theme>,
+    theme: &Arc<Theme>,
 ) -> Vec<Line<'static>> {
     let hunks = compute_hunks(before, after);
     let Some(last) = hunks.last() else {
@@ -171,8 +171,8 @@ fn render_diff(
 
     let mut walkers = syntax.map(|s| {
         (
-            FileWalker::new(before, s, Arc::clone(&theme)),
-            FileWalker::new(after, s, Arc::clone(&theme)),
+            FileWalker::new(before, s, Arc::clone(theme)),
+            FileWalker::new(after, s, Arc::clone(theme)),
         )
     });
 
@@ -298,7 +298,7 @@ fn render_grep_results(
                 .flat_map(|g| g.lines.iter().map(|l| l.line_nr))
         })
         .max()
-        .unwrap_or(1);
+        .unwrap_or_else(|| 1);
     let w = nr_width(global_max_nr);
     let multi = entries.len() > 1;
     let dim = theme::current().tool_dim;
@@ -516,15 +516,18 @@ pub fn render_tool_content(
             before,
             after,
             ..
-        }) => (
-            render_diff(
-                highlight.then(|| n00n_highlight::syntax_for_path(path)),
-                before,
-                after,
-                n00n_highlight::theme(),
-            ),
-            false,
-        ),
+        }) => {
+            let theme = n00n_highlight::theme();
+            (
+                render_diff(
+                    highlight.then(|| n00n_highlight::syntax_for_path(path)),
+                    before,
+                    after,
+                    &theme,
+                ),
+                false,
+            )
+        }
         Some(ToolOutput::GrepResult { entries }) => {
             render_grep_results(entries, limits.output, highlight)
         }
@@ -534,7 +537,6 @@ pub fn render_tool_content(
                 render_instructions(blocks, &mut instruction_lines, limits.output, highlight);
             (instruction_lines, trunc)
         }
-        Some(ToolOutput::ReadDir(_)) => (Vec::new(), false),
         _ => (Vec::new(), false),
     };
     truncation.output = output_trunc;
@@ -579,25 +581,26 @@ fn merge_syntax_with_diff(
     let mut current_style: Option<Style> = None;
 
     for (syn_char, syn_style) in syn_iter {
-        let bg = diff_iter.next().unwrap_or(base);
+        let bg = diff_iter.next().unwrap_or_else(|| base);
         let combined = syn_style.patch(bg);
 
         if current_style == Some(combined) {
             current_text.push(syn_char);
         } else {
-            if !current_text.is_empty() {
-                result.push(Span::styled(
-                    std::mem::take(&mut current_text),
-                    current_style.unwrap(),
-                ));
+            if !current_text.is_empty()
+                && let Some(style) = current_style
+            {
+                result.push(Span::styled(std::mem::take(&mut current_text), style));
             }
             current_text.push(syn_char);
             current_style = Some(combined);
         }
     }
 
-    if !current_text.is_empty() {
-        result.push(Span::styled(current_text, current_style.unwrap()));
+    if !current_text.is_empty()
+        && let Some(style) = current_style
+    {
+        result.push(Span::styled(current_text, style));
     }
 
     result
@@ -688,7 +691,7 @@ mod tests {
             Some(n00n_highlight::syntax_for_path("test.rs")),
             before,
             after,
-            Arc::clone(&theme),
+            &theme,
         );
 
         let expected = fg_in_context(
@@ -713,7 +716,7 @@ mod tests {
             Some(n00n_highlight::syntax_for_path("test.rs")),
             before,
             after,
-            Arc::clone(&theme),
+            &theme,
         );
 
         let expected = fg_in_context("test.rs", "/*\ndoc\n", "fn x() {}", "fn", theme);
@@ -792,8 +795,10 @@ mod tests {
         assert!(texts.iter().any(|t| t.contains("a.rs")));
         assert!(texts.iter().any(|t| t.contains("b.rs")));
 
-        let gutter_width =
-            |line: &str| line.find(|c: char| c.is_alphabetic()).unwrap_or(usize::MAX);
+        let gutter_width = |line: &str| {
+            line.find(|c: char| c.is_alphabetic())
+                .unwrap_or_else(|| usize::MAX)
+        };
         let content_gutters: Vec<usize> = texts
             .iter()
             .filter(|t| !t.contains(".rs"))

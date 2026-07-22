@@ -1,10 +1,6 @@
-local description = [[Control background agents started by task or team.
+local description = [[Control background agents started by task, team, or workflow.
 
-Actions:
-- list: list every live agent and its status.
-- status: inspect one live agent by agent_id.
-- message: queue steering instructions for an agent.
-- stop: cancel an agent's current run without deleting its session.]]
+Actions: list, status, message, pause, resume, stop.]]
 
 local schema = {
   type = "object",
@@ -13,16 +9,16 @@ local schema = {
   properties = {
     action = {
       type = "string",
-      enum = { "list", "status", "message", "stop" },
+      enum = { "list", "status", "message", "pause", "resume", "stop" },
       description = "Control action.",
     },
     agent_id = {
       type = "string",
-      description = "Background agent id. Required for status, message, and stop.",
+      description = "Background agent id.",
     },
     message = {
       type = "string",
-      description = "Steering instructions. Required for message.",
+      description = "Steering instructions.",
     },
   },
 }
@@ -61,15 +57,23 @@ local function handler(input)
     return n00n.json.encode(agent)
   end
 
-  if input.action == "message" then
+  if input.action == "message" or input.action == "resume" then
     if not input.message or input.message == "" then
-      return { llm_output = "message is required for message", is_error = true }
+      return { llm_output = "message is required for " .. input.action, is_error = true }
     end
     local state, err = n00n.session.prompt(input.message, { session = input.agent_id })
     if not state then
       return { llm_output = err, is_error = true }
     end
-    return n00n.json.encode({ agent_id = input.agent_id, state = state })
+    return n00n.json.encode({ agent_id = input.agent_id, action = input.action, state = state })
+  end
+
+  if input.action == "pause" then
+    local stopped, err = n00n.session.cancel(input.agent_id)
+    if not stopped then
+      return { llm_output = err, is_error = true }
+    end
+    return n00n.json.encode({ agent_id = input.agent_id, paused = true })
   end
 
   local stopped, err = n00n.session.cancel(input.agent_id)

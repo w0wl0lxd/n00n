@@ -4,6 +4,7 @@ use std::sync::Arc;
 use async_lock::Mutex;
 use flume::Receiver;
 use n00n_providers::Message;
+use n00n_providers::OpenAiOptions;
 use n00n_providers::Timeouts;
 use n00n_providers::TokenUsage;
 use n00n_providers::model::Model;
@@ -73,6 +74,7 @@ pub struct HeadlessParams {
     pub config: AgentConfig,
     pub permissions_config: PermissionsConfig,
     pub timeouts: Timeouts,
+    pub openai_options: OpenAiOptions,
     pub prompt: String,
     pub images: Vec<ImageSource>,
     pub prompt_slots: ResolvedSlots,
@@ -196,17 +198,22 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
         async move {
             let event_tx = EventSender::new(raw_tx, 0);
             let mut model = params.model;
-            let provider: Arc<dyn Provider> =
-                match provider::from_model_async(&mut model, params.timeouts).await {
-                    Ok(p) => Arc::from(p),
-                    Err(e) => {
-                        error!(error = %e, "provider error");
-                        let _ = event_tx.send(AgentEvent::Error {
-                            message: e.user_message(),
-                        });
-                        return;
-                    }
-                };
+            let provider: Arc<dyn Provider> = match provider::from_model_async_with_openai_options(
+                &mut model,
+                params.timeouts,
+                params.openai_options,
+            )
+            .await
+            {
+                Ok(p) => Arc::from(p),
+                Err(e) => {
+                    error!(error = %e, "provider error");
+                    let _ = event_tx.send(AgentEvent::Error {
+                        message: e.user_message(),
+                    });
+                    return;
+                }
+            };
             let error_tx = event_tx.clone();
             let mut history = History::new(Vec::new());
             let model_spec = model.spec();
@@ -224,6 +231,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                     )),
                     session_id: Some(session_ref_clone.clone()),
                     timeouts: params.timeouts,
+                    openai_options: params.openai_options,
                     file_tracker: FileReadTracker::fresh(),
                     prompt_slots: Arc::new(params.prompt_slots),
                     subagent_cancels: Arc::new(CancelMap::new()),
@@ -286,6 +294,7 @@ pub struct InteractiveParams {
     pub config: AgentConfig,
     pub permissions_config: PermissionsConfig,
     pub timeouts: Timeouts,
+    pub openai_options: OpenAiOptions,
     pub prompt_slots: Arc<ResolvedSlots>,
     pub excluded_tools: Vec<&'static str>,
     pub mcp_handle: Option<McpHandle>,
@@ -359,7 +368,13 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
         async move {
             let mut model = params.model;
             let mut provider: Arc<dyn Provider> =
-                match provider::from_model_async(&mut model, params.timeouts).await {
+                match provider::from_model_async_with_openai_options(
+                    &mut model,
+                    params.timeouts,
+                    params.openai_options,
+                )
+                .await
+                {
                     Ok(p) => Arc::from(p),
                     Err(e) => {
                         error!(error = %e, "provider error");
@@ -382,7 +397,13 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                 if let Some(mut new_model) = model_rx.try_iter().last()
                     && new_model.spec() != model.spec()
                 {
-                    match provider::from_model_async(&mut new_model, params.timeouts).await {
+                    match provider::from_model_async_with_openai_options(
+                        &mut new_model,
+                        params.timeouts,
+                        params.openai_options,
+                    )
+                    .await
+                    {
                         Ok(p) => {
                             provider = Arc::from(p);
                             let (new_tools, new_filter) = tool_definitions(
@@ -444,6 +465,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                         permissions: Arc::clone(&permissions),
                         session_id: Some(session_ref_clone.clone()),
                         timeouts: params.timeouts,
+                        openai_options: params.openai_options,
                         file_tracker: Arc::clone(&file_tracker),
                         prompt_slots: Arc::clone(&params.prompt_slots),
                         subagent_cancels: Arc::new(CancelMap::new()),

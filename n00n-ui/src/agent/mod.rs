@@ -20,7 +20,7 @@ use n00n_storage::sessions::TranscriptEntry;
 
 use self::cancel_map::new_run_cancel_map;
 use n00n_providers::provider::Provider;
-use n00n_providers::{Message, Model};
+use n00n_providers::{Message, Model, OpenAiOptions};
 use tracing::{info, warn};
 
 use crate::app::App;
@@ -53,6 +53,7 @@ pub(crate) struct AgentHandles {
     pub(crate) mcp_config_errors: McpConfigErrors,
     pub(crate) queue: QueueSender,
     pub(crate) timeouts: n00n_providers::Timeouts,
+    openai_options: OpenAiOptions,
     task: smol::Task<()>,
 }
 
@@ -69,6 +70,7 @@ impl AgentHandles {
         permissions: &Arc<PermissionManager>,
         session_id: Option<SessionRef>,
         timeouts: n00n_providers::Timeouts,
+        openai_options: OpenAiOptions,
         lua_handle: Option<EventHandle>,
         mcp_handle: Option<McpHandle>,
         mcp_config_errors: McpConfigErrors,
@@ -84,6 +86,7 @@ impl AgentHandles {
             mcp_config_errors,
             session_id,
             timeouts,
+            openai_options,
             lua_handle,
         )
     }
@@ -147,6 +150,7 @@ impl AgentHandles {
             self.mcp_config_errors.clone(),
             Some(SessionRef::from(app.state.session.id)),
             self.timeouts,
+            self.openai_options,
             lua_handle,
         );
         let old = mem::replace(self, new);
@@ -203,6 +207,7 @@ fn spawn_agent_internal(
     mcp_config_errors: McpConfigErrors,
     session_id: Option<SessionRef>,
     timeouts: n00n_providers::Timeouts,
+    openai_options: OpenAiOptions,
     lua_handle: Option<EventHandle>,
 ) -> AgentHandles {
     let (agent_tx, agent_rx) = flume::unbounded::<Envelope>();
@@ -255,6 +260,7 @@ fn spawn_agent_internal(
         init_cancel,
         session_id,
         timeouts,
+        openai_options,
         lua_handle,
         subagent_cancels,
     );
@@ -274,6 +280,7 @@ fn spawn_agent_internal(
         mcp_config_errors,
         queue: queue_tx,
         timeouts,
+        openai_options,
         task,
     }
 }
