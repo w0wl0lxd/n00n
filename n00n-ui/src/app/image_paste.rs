@@ -46,7 +46,7 @@ impl App {
                 i += 1;
                 continue;
             };
-            self.image_paste_rx.swap_remove(i);
+            self.image_paste_rx.remove(i);
             match result {
                 Ok(source) => {
                     if self.state.model.supports_vision() {

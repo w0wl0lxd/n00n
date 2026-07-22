@@ -156,7 +156,7 @@ pub(crate) fn open_in_editor(
     resume(terminal);
 
     match result {
-        Ok(status) => Ok(status.code().unwrap_or(-1)),
+        Ok(status) => Ok(status.code().unwrap_or_else(|| -1)),
         Err(e) => Err(format!(
             "Failed to open {editor}: {e} - set $VISUAL or $EDITOR"
         )),
