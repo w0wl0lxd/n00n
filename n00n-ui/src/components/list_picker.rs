@@ -1,3 +1,9 @@
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
+
 use std::collections::HashSet;
 
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
@@ -15,7 +21,7 @@ use crate::theme;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -313,6 +319,7 @@ impl<T: PickerItem> ListPicker<T> {
         self.handle_ready_key(key)
     }
 
+    #[allow(clippy::expect_used)]
     fn handle_ready_key(&mut self, key: KeyEvent) -> PickerAction<T> {
         let s = self
             .state
@@ -367,7 +374,9 @@ impl<T: PickerItem> ListPicker<T> {
                 }
                 match idx {
                     Some(idx) => {
+                        #[allow(clippy::unwrap_used, clippy::disallowed_methods)]
                         let mut state = self.state.take().unwrap();
+                        #[allow(clippy::disallowed_methods)]
                         PickerAction::Select(idx, state.items.swap_remove(idx))
                     }
                     None => PickerAction::Consumed,
@@ -648,7 +657,7 @@ fn truncate_label(label: &str, max_width: usize) -> String {
     let mut width = 0;
     let mut result = String::with_capacity(label.len());
     for ch in label.chars() {
-        let cw = ch.width().unwrap_or(0);
+        let cw = ch.width().unwrap_or_else(|| 0);
         if width + cw > target {
             break;
         }
@@ -659,7 +668,7 @@ fn truncate_label(label: &str, max_width: usize) -> String {
     result
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn render_list<T: PickerItem>(
     frame: &mut Frame,
     area: Rect,
@@ -715,7 +724,9 @@ fn render_list<T: PickerItem>(
         let t = theme::current();
         let (style, detail_style) = match (i == selected, highlighted) {
             (true, true) => {
-                let s = t.item_selected.fg(t.accent.fg.unwrap_or_default());
+                let s = t
+                    .item_selected
+                    .fg(t.accent.fg.map_or(Color::default(), |c| c));
                 (s, theme::dim_style(s, 0.4))
             }
             (true, false) => (t.item_selected, t.item_selected),
@@ -789,7 +800,7 @@ fn render_search(frame: &mut Frame, area: Rect, search: &TextBuffer) {
     let cursor_x = search.x();
     let chars: Vec<char> = query.chars().collect();
     let before: String = chars[..cursor_x].iter().collect();
-    let cursor_char = chars.get(cursor_x).copied().unwrap_or(' ');
+    let cursor_char = chars.get(cursor_x).copied().unwrap_or_else(|| ' ');
     let after_start = cursor_x.saturating_add(1).min(chars.len());
     let after: String = chars[after_start..].iter().collect();
 
