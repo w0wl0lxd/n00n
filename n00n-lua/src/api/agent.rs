@@ -989,7 +989,7 @@ struct Progress {
 
 impl Progress {
     fn new(start: Instant, session_id: String) -> Self {
-        let (tx, rx) = flume::unbounded();
+        let (tx, rx) = flume::bounded(1);
         let (barrier_tx, barrier_rx) = flume::bounded(1);
         Self {
             session_id,
