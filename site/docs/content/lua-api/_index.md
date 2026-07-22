@@ -935,8 +935,10 @@ Returns a table with:
   `elapsed_ms` (integer): time since the session was created.
   `current_tool` (string?): name of the tool currently running, if any.
   `recent_tools` (table): names of the last few finished tools, oldest first.
+  `activities` (table): up to five safe rendered tool summaries, oldest first.
   `completed_count` (integer): total number of finished tools so far.
-  `done` (bool): true once the prompt has completed.
+  `turn_id` (integer): increases before each `prompt` call.
+  `done` (bool): true once the current prompt call has completed.
 
 The call returns at most every `PROGRESS_TIMEOUT_MS` milliseconds, or
 immediately when a tool starts or finishes.
@@ -5061,6 +5063,16 @@ print(t.name) -- n00n
 These ship inside n00n; `require` them from any plugin. Small modules are
 shown as full source, larger ones as their public interface.
 
+### `require("n00n.activity_preview")`
+
+```lua
+function ActivityPreview.new(ctx, description, opts)
+function ActivityPreview:render()
+function ActivityPreview:set_row(key, label, message, status)
+function ActivityPreview:update(progress, label, session_key)
+function ActivityPreview:prompt(sess, message, label)
+```
+
 ### `require("n00n.color")`
 
 ```lua
@@ -5265,7 +5277,8 @@ function TextInput:render(prefix, prefix_width, width)
 
 -- opts: max_lines (default 80) shown while collapsed, keep "head"|"tail"
 -- (default "tail"), max_expand_lines (default 2000) kept for expansion,
--- max_line_bytes (optional) per-line byte cap applied at render time.
+-- max_line_bytes and max_width (optional) cap each complete rendered row,
+-- and hide_collapsed (default false) reveals body lines only after a click.
 function ToolView.new(buf, opts)
 function ToolView:set_header(lines)
 function ToolView:clear()

@@ -1399,7 +1399,9 @@ fn optional_nonnegative_integer(table: &mlua::Table, field: &str) -> Result<Opti
         .map_err(|error| format!("invalid tool usage field '{field}': {error}"))?;
     match value {
         LuaValue::Nil => Ok(None),
-        LuaValue::Integer(value) if value >= 0 => Ok(Some(value as u64)),
+        LuaValue::Integer(value) if (0..=MAX_SAFE_INTEGER_I64).contains(&value) => {
+            Ok(Some(value as u64))
+        }
         LuaValue::Number(value)
             if value.is_finite()
                 && value >= 0.0
@@ -2080,6 +2082,23 @@ mod tests {
 
         assert!(reply.result.is_err_and(|error| {
             error.contains("input_tokens") && error.contains("finite nonnegative integer")
+        }));
+        assert_eq!(reply.telemetry, None);
+    }
+
+    #[test]
+    fn from_lua_value_rejects_integer_usage_count_above_safe_range() {
+        let lua = Lua::new();
+        let usage = lua.create_table().unwrap();
+        usage.set(INPUT_TOKENS_FIELD, i64::MAX).unwrap();
+        let output = lua.create_table().unwrap();
+        output.set("llm_output", "done").unwrap();
+        output.set(USAGE_COUNTS_FIELD, usage).unwrap();
+
+        let reply = ToolCallReply::from_lua_value(&lua, &LuaValue::Table(output));
+
+        assert!(reply.result.is_err_and(|error| {
+            error.contains(INPUT_TOKENS_FIELD) && error.contains("finite nonnegative integer")
         }));
         assert_eq!(reply.telemetry, None);
     }
