@@ -329,10 +329,7 @@ fn render_line_block(lb: &LineBlock, lines: &mut Vec<Line>, ctx: &RenderCtx) {
     // Otherwise it shares row 1 and continuations indent to align.
     let (first_row_marker, cont_indent, content_width) = if marker_width >= width {
         if let Some(mut mk) = marker {
-            #[allow(clippy::assigning_clones)]
-            {
-                mk.text = mk.text.trim_start_matches(' ').to_owned();
-            }
+            mk.text = String::from(mk.text.trim_start_matches(' '));
             lines.push(Line {
                 kind: kind.clone(),
                 spans: vec![mk],
