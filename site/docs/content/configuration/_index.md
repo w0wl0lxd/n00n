@@ -84,7 +84,7 @@ How many lines of output to show per tool in the UI. All values are `usize` with
 | `workflow` | 8 |
 | `index` | 3 |
 | `grep` | 3 |
-| `explore` | 3 |
+| `explore` | 5 |
 | `read` | 3 |
 | `write` | 7 |
 | `web` | 3 |

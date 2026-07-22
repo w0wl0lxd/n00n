@@ -13,6 +13,10 @@ M.ROLES = {
     tier = "weak",
     system = "You are a product manager. Clarify scope, acceptance criteria, and risks. Be concise; output a short bullet list.",
   },
+  sprint = {
+    tier = "weak",
+    system = "You are a Sprint Agent. Refine the goal into a concrete scope, acceptance criteria, and an effort estimate. Keep output short and actionable.",
+  },
   planner = {
     tier = "medium",
     system = "You are a sprint planner. Break the goal into ordered, concrete implementation steps with file:line references where possible.",
