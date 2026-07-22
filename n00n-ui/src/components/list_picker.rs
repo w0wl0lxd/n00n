@@ -314,10 +314,9 @@ impl<T: PickerItem> ListPicker<T> {
     }
 
     fn handle_ready_key(&mut self, key: KeyEvent) -> PickerAction<T> {
-        let s = self
-            .state
-            .as_mut()
-            .expect("handle_ready_key called without state");
+        let Some(s) = self.state.as_mut() else {
+            return PickerAction::Consumed;
+        };
 
         if key::QUIT.matches(key) {
             self.state = None;
@@ -367,8 +366,15 @@ impl<T: PickerItem> ListPicker<T> {
                 }
                 match idx {
                     Some(idx) => {
-                        let mut state = self.state.take().unwrap();
-                        PickerAction::Select(idx, state.items.swap_remove(idx))
+                        let Some(mut state) = self.state.take() else {
+                            return PickerAction::Consumed;
+                        };
+                        if idx < state.items.len() {
+                            let item = state.items.remove(idx);
+                            PickerAction::Select(idx, item)
+                        } else {
+                            PickerAction::Consumed
+                        }
                     }
                     None => PickerAction::Consumed,
                 }
@@ -648,7 +654,7 @@ fn truncate_label(label: &str, max_width: usize) -> String {
     let mut width = 0;
     let mut result = String::with_capacity(label.len());
     for ch in label.chars() {
-        let cw = ch.width().unwrap_or(0);
+        let cw = ch.width().unwrap_or_else(|| 0);
         if width + cw > target {
             break;
         }
@@ -715,7 +721,9 @@ fn render_list<T: PickerItem>(
         let t = theme::current();
         let (style, detail_style) = match (i == selected, highlighted) {
             (true, true) => {
-                let s = t.item_selected.fg(t.accent.fg.unwrap_or_default());
+                let s = t
+                    .item_selected
+                    .fg(t.accent.fg.unwrap_or_else(ratatui::style::Color::default));
                 (s, theme::dim_style(s, 0.4))
             }
             (true, false) => (t.item_selected, t.item_selected),
@@ -789,7 +797,7 @@ fn render_search(frame: &mut Frame, area: Rect, search: &TextBuffer) {
     let cursor_x = search.x();
     let chars: Vec<char> = query.chars().collect();
     let before: String = chars[..cursor_x].iter().collect();
-    let cursor_char = chars.get(cursor_x).copied().unwrap_or(' ');
+    let cursor_char = chars.get(cursor_x).copied().unwrap_or_else(|| ' ');
     let after_start = cursor_x.saturating_add(1).min(chars.len());
     let after: String = chars[after_start..].iter().collect();
 

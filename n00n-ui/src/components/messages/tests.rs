@@ -1134,7 +1134,7 @@ fn extract_off_screen_rows_via_temp_buffer() {
 #[test]
 fn extract_mixed_fully_enclosed_and_partial() {
     let panel = panel_with_msgs(&["full segment", "partial here"], 80, 24);
-    let heights = panel.segment_heights().clone();
+    let heights = panel.segment_heights();
     let area = Rect::new(0, 0, 80, 24);
     let seg1_start = heights[0] + heights[1];
     let sel = make_sel(area, (0, 0), (u32::from(seg1_start), N00N_PREFIX_LEN + 6));

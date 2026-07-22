@@ -114,7 +114,7 @@ impl FilePickerModal {
                     .build_parallel()
                     .run(|| {
                         let injector = injector.clone();
-                        let cancel = cancel.clone();
+                        let cancel = Arc::clone(&cancel);
                         let root = root.clone();
                         Box::new(move |entry| {
                             if cancel.load(Ordering::Relaxed) {
@@ -508,7 +508,7 @@ fn build_highlighted_line<'a>(
     let mut width = 0usize;
 
     for (i, ch) in text.chars().enumerate() {
-        let cw = ch.width().unwrap_or(0);
+        let cw = ch.width().unwrap_or_else(|| 0);
         if width + cw > max_width {
             break;
         }

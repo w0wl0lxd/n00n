@@ -155,14 +155,14 @@ impl ModelPicker {
                 entries.push(e);
             }
         }
-        let full: Vec<ModelEntry> = specs
-            .map(|s| s.iter().filter_map(|s| parse_model_entry(s)).collect())
-            .unwrap_or_default();
+        let full: Vec<ModelEntry> = specs.map_or_else(Vec::new, |s| {
+            s.iter().filter_map(|s| parse_model_entry(s)).collect()
+        });
         entries.extend(full);
         let idx = entries
             .iter()
             .position(|e| e.spec == self.current_spec)
-            .unwrap_or(0);
+            .unwrap_or_else(|| 0);
         (entries, idx)
     }
 
@@ -234,7 +234,7 @@ fn parse_model_entry(spec: &str) -> Option<ModelEntry> {
         n00n_config::providers::resolve_display_name(provider_str, config.get(provider_str))
     };
 
-    let map = model_registry::model_registry().read().unwrap();
+    let map = model_registry::model_registry().read().ok()?;
     let override_tiers: Vec<ModelTier> = [
         ModelTier::Strong,
         ModelTier::Medium,
@@ -294,7 +294,7 @@ mod tests {
         models.store(Some(Arc::new(vec![
             "anthropic/claude-sonnet-4-20250514".into(),
         ])));
-        let mut p = ModelPicker::new(models.clone());
+        let mut p = ModelPicker::new(std::sync::Arc::clone(&models));
         p.open("");
 
         p.handle_key(key(KeyCode::Char('o')));
@@ -356,7 +356,7 @@ mod tests {
     #[test]
     fn refresh_preserves_selection_for_current_model() {
         let models = Arc::new(ArcSwapOption::empty());
-        let mut p = ModelPicker::new(models.clone());
+        let mut p = ModelPicker::new(std::sync::Arc::clone(&models));
         p.open("anthropic/claude-opus-4-6-20260101");
 
         models.store(Some(Arc::new(vec![

@@ -1372,7 +1372,11 @@ impl MessagesPanel {
                 continue;
             }
             if let Some(mut item) = crate::chat::restore_item_for(msg, tol, current_gen) {
-                item.clicks = self.lua_clicks.get(&role.id).cloned().unwrap_or_default();
+                item.clicks = self
+                    .lua_clicks
+                    .get(&role.id)
+                    .cloned()
+                    .unwrap_or_else(Vec::new);
                 eh.request_restore(item, tx.clone());
                 requested.push(role.id.clone());
             }
@@ -1801,7 +1805,11 @@ impl MessagesPanel {
                     &self.tool_output_lines,
                 ));
             } else if let DisplayRole::Tool(t) = &msg.role {
-                let exp = self.expanded_tools.get(&t.id).copied().unwrap_or_default();
+                let exp = self
+                    .expanded_tools
+                    .get(&t.id)
+                    .copied()
+                    .unwrap_or_else(SectionFlags::default);
                 let status = t.status;
                 let tl = Self::build_tool_segment_lines(msg, status, &self.rctx(), exp);
                 let id = t.id.clone();
@@ -1859,7 +1867,7 @@ impl MessagesPanel {
                     .content_width(self.viewport_width)
                     .saturating_sub(prefix.width() as u16)
                     .max(1);
-                let picker = self.picker.clone();
+                let picker = std::sync::Arc::clone(&self.picker);
                 let picker_ref = &*picker;
                 let mut lines = if style.use_markdown {
                     text_to_lines(
@@ -2037,10 +2045,11 @@ fn append_compaction_entry(
     }
     if let Some(output) = message.tool_output.as_deref() {
         let output = output.as_display_text();
-        let truncated = truncate_output(
-            &output,
-            tool_output_lines.get(message.role.tool_name().unwrap_or("")),
-        );
+        let tool_name = message.role.tool_name().unwrap_or_else(|| {
+            // Fallback for non-tool roles or roles without a tool name
+            ""
+        });
+        let truncated = truncate_output(&output, tool_output_lines.get(tool_name));
         if !truncated.kept.is_empty() && !message.text.contains(truncated.kept.as_ref()) {
             for line in truncated.kept.lines() {
                 lines.push(Line::from(vec![

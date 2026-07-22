@@ -306,8 +306,9 @@ impl InputBox {
             Some(i) => i - 1,
         };
         self.history_index = Some(new_index);
-        let entry = self.history.get(new_index).unwrap().to_string();
-        self.set_input(entry);
+        if let Some(entry) = self.history.get(new_index) {
+            self.set_input(entry.to_string());
+        }
         self.buffer.move_to_end();
     }
 
@@ -317,8 +318,9 @@ impl InputBox {
         };
         if i + 1 < self.history.len() {
             self.history_index = Some(i + 1);
-            let entry = self.history.get(i + 1).unwrap().to_string();
-            self.set_input(entry);
+            if let Some(entry) = self.history.get(i + 1) {
+                self.set_input(entry.to_string());
+            }
         } else {
             self.history_index = None;
             let draft = mem::take(&mut self.draft);
@@ -340,9 +342,9 @@ impl InputBox {
             let cursor_col: usize = line
                 .chars()
                 .take(self.buffer.x())
-                .map(|c| c.width().unwrap_or(1))
+                .map(|c| c.width().unwrap_or_else(|| 1))
                 .sum();
-            cursor_col.checked_div(ew).unwrap_or(0) as u16
+            cursor_col.checked_div(ew).unwrap_or_else(|| 0) as u16
         };
 
         lines_above + wrap_row
@@ -512,7 +514,10 @@ fn wrap_line(
     shell_spans: Option<&[Span<'static>]>,
 ) -> Vec<Line<'static>> {
     let chars: Vec<char> = line.chars().collect();
-    let widths: Vec<usize> = chars.iter().map(|c| c.width().unwrap_or(1)).collect();
+    let widths: Vec<usize> = chars
+        .iter()
+        .map(|c| c.width().unwrap_or_else(|| 1))
+        .collect();
     let row_width = ew.max(1);
 
     let mut row_ranges: Vec<(usize, usize)> = Vec::new();
