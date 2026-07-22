@@ -353,7 +353,6 @@ impl InputBox {
         lines_above + wrap_row
     }
 
-    #[allow(clippy::too_many_lines)] // terminal rendering layout; extraction would fragment coordinates
     pub fn view(
         &mut self,
         frame: &mut Frame,
@@ -375,8 +374,8 @@ impl InputBox {
             }
         }
 
-        #[allow(clippy::cast_possible_truncation)]
-        let mut total_vl = total_visual_lines(&self.buffer, ew, focused) as u16;
+        let mut total_vl = u16::try_from(total_visual_lines(&self.buffer, ew, focused))
+            .unwrap_or_else(|_| u16::MAX);
         if !self.pending_images.is_empty() {
             total_vl += 1;
         }

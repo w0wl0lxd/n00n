@@ -608,14 +608,15 @@ pub fn mcp_logout(server: &str, storage: &StateDir) -> Result<()> {
     Ok(())
 }
 
-#[allow(clippy::fn_params_excessive_bools)]
-pub fn prompt(
-    variant: &crate::cli::PromptVariant,
-    plan: bool,
-    tools: bool,
-    names: bool,
-    no_jit: bool,
-) -> Result<()> {
+#[derive(Clone, Copy)]
+pub struct PromptFlags {
+    pub plan: bool,
+    pub tools: bool,
+    pub names: bool,
+    pub no_jit: bool,
+}
+
+pub fn prompt(variant: &crate::cli::PromptVariant, flags: PromptFlags) -> Result<()> {
     use crate::cli::PromptVariant;
     use n00n_agent::agent::{build_system_prompt, load_instruction_text};
     use n00n_agent::prompt::{PromptId, assemble};
@@ -623,7 +624,7 @@ pub fn prompt(
     use n00n_agent::tools::{DescriptionContext, ToolAudience, ToolFilter, ToolRegistry};
     use n00n_providers::Model;
 
-    if plan && !matches!(variant, PromptVariant::System) {
+    if flags.plan && !matches!(variant, PromptVariant::System) {
         bail!("--plan can only be used with the 'system' prompt variant");
     }
 
@@ -632,8 +633,8 @@ pub fn prompt(
 
     let vars = template::env_vars();
     let reg = ToolRegistry::global_arc();
-    let mut host =
-        PluginHost::with_jit(Arc::clone(reg), !no_jit).context("initialize lua plugin host")?;
+    let mut host = PluginHost::with_jit(Arc::clone(reg), !flags.no_jit)
+        .context("initialize lua plugin host")?;
     let raw_config = host.load_init_files(&cwd).context("load init.lua files")?;
     let config = raw_config
         .unwrap_or_else(Default::default)
@@ -643,14 +644,14 @@ pub fn prompt(
     host.load_builtins(&config.plugins)
         .context("load builtin plugins")?;
 
-    if tools {
+    if flags.tools {
         let ctx = DescriptionContext {
             filter: &ToolFilter::All,
             audience: ToolAudience::MAIN,
             workflow: false,
         };
         let defs = reg.definitions(&vars, &ctx, true);
-        if names {
+        if flags.names {
             for name in defs
                 .as_array()
                 .into_iter()
@@ -673,7 +674,7 @@ pub fn prompt(
 
     let output = match variant {
         PromptVariant::System => {
-            let mode = if plan {
+            let mode = if flags.plan {
                 n00n_agent::AgentMode::Plan(std::path::PathBuf::from("plan.md"))
             } else {
                 n00n_agent::AgentMode::Build

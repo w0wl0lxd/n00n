@@ -200,7 +200,6 @@ pub(crate) fn spawn_shell(
     .detach();
 }
 #[allow(unsafe_code)]
-#[allow(clippy::too_many_lines)]
 async fn run_command(
     command: &str,
     id: &str,

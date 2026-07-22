@@ -376,7 +376,6 @@ impl FloatManager {
         }
         self.render_window(frame, idx, rect);
     }
-    #[allow(clippy::too_many_lines)]
     fn render_window(&mut self, frame: &mut Frame, idx: usize, popup: Rect) {
         let t = theme::current();
         let win = &mut self.windows[idx];

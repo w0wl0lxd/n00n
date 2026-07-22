@@ -686,17 +686,23 @@ impl Theme {
             })
     }
 
-    #[allow(clippy::expect_used)]
     fn load_or_bundled() -> Self {
         if let Some(name) = read_theme_name()
             && let Ok(theme) = load_by_name(&name)
         {
             return theme;
         }
-        Self::from_toml(BUNDLED_THEMES[0].toml).expect("bundled theme must parse")
+        let mut last_error = String::new();
+        for entry in BUNDLED_THEMES {
+            match Self::from_toml(entry.toml) {
+                Ok(theme) => return theme,
+                Err(e) => last_error = e,
+            }
+        }
+        eprintln!("Failed to load any bundled theme. Last error: {last_error}");
+        std::process::exit(1)
     }
 
-    #[allow(clippy::too_many_lines)]
     fn build_theme(
         style: &impl Fn(&str) -> Style,
         derived_color: &impl Fn(&str, &[&str]) -> Color,
@@ -707,10 +713,33 @@ impl Theme {
         palette: &HashMap<String, Color>,
         syntax: syntect::highlighting::Theme,
     ) -> Self {
-        Self {
-            background: color("background"),
-            foreground: color("foreground"),
+        let mut theme = Self::build_chat_theme(
+            style,
+            derived_color,
+            derived_style,
+            color,
+            bold_style,
+            ui,
+            palette,
+        );
+        theme.background = color("background");
+        theme.foreground = color("foreground");
+        theme.syntax = syntax;
+        theme
+    }
 
+    fn build_chat_theme(
+        style: &impl Fn(&str) -> Style,
+        derived_color: &impl Fn(&str, &[&str]) -> Color,
+        derived_style: &impl Fn(&str, &[&str], Modifier) -> Style,
+        color: &impl Fn(&str) -> Color,
+        bold_style: Style,
+        ui: &HashMap<String, StyleDef>,
+        palette: &HashMap<String, Color>,
+    ) -> Self {
+        Self {
+            background: Color::default(),
+            foreground: Color::default(),
             user: style("user"),
             assistant: style("assistant"),
             assistant_prefix: style("assistant_prefix"),
@@ -776,39 +805,19 @@ impl Theme {
             item_selected: style("item_selected"),
             item: style("item"),
             item_desc: style("item_desc"),
-            item_match: {
-                let s = style("item_match");
-                if s == Style::default() {
-                    style("item")
-                        .fg(style("accent").fg.map_or(Color::default(), |c| c))
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    s
-                }
-            },
-            item_match_selected: {
-                let s = style("item_match_selected");
-                if s == Style::default() {
-                    style("item_selected")
-                        .fg(style("accent").fg.map_or(Color::default(), |c| c))
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    s
-                }
-            },
+            item_match: Self::build_fallback_style(style, "item_match", "item", "accent"),
+            item_match_selected: Self::build_fallback_style(
+                style,
+                "item_match_selected",
+                "item_selected",
+                "accent",
+            ),
             panel_border: style("panel_border"),
             panel_title: style("panel_title"),
             cursor: style("cursor"),
             input_border: style("input_border"),
             accent: style("accent"),
-            active: {
-                let s = style("active");
-                if s == Style::default() {
-                    style("accent")
-                } else {
-                    s
-                }
-            },
+            active: Self::build_simple_fallback(style, "active", "accent"),
             keybind_key: style("keybind_key"),
             keybind_desc: style("keybind_desc"),
             keybind_section: style("keybind_section"),
@@ -832,15 +841,37 @@ impl Theme {
             index_line_nr: derived_style("index_line_nr", &["comment"], Modifier::empty()),
             index_keyword: derived_style("index_keyword", &["keyword"], Modifier::empty()),
             shell_prefix: derived_style("shell_prefix", &["string"], Modifier::BOLD),
-            progress_bar: {
-                let s = style("progress_bar");
-                if s == Style::default() {
-                    style("accent")
-                } else {
-                    s
-                }
-            },
-            syntax,
+            progress_bar: Self::build_simple_fallback(style, "progress_bar", "accent"),
+            syntax: syntect::highlighting::Theme::default(),
+        }
+    }
+
+    fn build_fallback_style(
+        style: &impl Fn(&str) -> Style,
+        primary: &str,
+        fallback_base: &str,
+        accent: &str,
+    ) -> Style {
+        let s = style(primary);
+        if s == Style::default() {
+            style(fallback_base)
+                .fg(style(accent).fg.map_or(Color::default(), |c| c))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            s
+        }
+    }
+
+    fn build_simple_fallback(
+        style: &impl Fn(&str) -> Style,
+        primary: &str,
+        fallback: &str,
+    ) -> Style {
+        let s = style(primary);
+        if s == Style::default() {
+            style(fallback)
+        } else {
+            s
         }
     }
 }

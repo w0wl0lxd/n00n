@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use color_eyre::Result;
 use color_eyre::eyre::bail;
 
@@ -23,45 +23,38 @@ pub enum InputFormat {
     StreamJson,
 }
 
-#[derive(Parser)]
-#[command(name = "n00n", version, about = "AI coding agent for the terminal")]
-#[allow(clippy::struct_excessive_bools)]
-pub struct Cli {
-    #[command(subcommand)]
-    pub command: Option<Command>,
-
+#[derive(Args)]
+pub struct RunFlags {
     /// Non-interactive mode. Runs the prompt and exits. Compatible with Claude Code's --print flag
     #[arg(short, long)]
     pub print: bool,
-
-    /// Attach an image to the prompt in --print mode as vision content (repeatable)
-    #[arg(long = "image", value_name = "PATH")]
-    pub images: Vec<PathBuf>,
-
-    /// Model spec (provider/model-id). Defaults to last used model, or claude-opus-4-6
-    #[arg(short, long)]
-    pub model: Option<String>,
 
     /// Include full turn-by-turn messages in --print output
     #[arg(long)]
     pub verbose: bool,
 
+    /// Exit after the agent completes (for automation workflows)
+    #[arg(long)]
+    pub exit_on_done: bool,
+
+    /// Include partial streaming messages in SDK output
+    #[arg(long)]
+    pub include_partial_messages: bool,
+}
+
+#[derive(Args)]
+pub struct SessionFlags {
     /// Resume the most recent session in this directory
     #[arg(short = 'c', long = "continue")]
     pub continue_session: bool,
 
-    /// Resume a specific session by its ID
-    #[arg(short = 's', long, alias = "resume")]
-    pub session: Option<String>,
+    /// Fork the loaded session under a new ID
+    #[arg(long)]
+    pub fork_session: bool,
+}
 
-    /// Output format for --print mode
-    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
-    pub output_format: OutputFormat,
-
-    /// Input format (text or stream-json for SDK mode)
-    #[arg(long, value_enum, default_value_t = InputFormat::Text)]
-    pub input_format: InputFormat,
-
+#[derive(Args)]
+pub struct PluginFlags {
     /// Skip loading custom commands from .n00n/commands, .claude/commands, etc.
     #[arg(long)]
     pub no_commands: bool,
@@ -77,14 +70,55 @@ pub struct Cli {
     /// Run plugin Lua on the interpreter with full debug info (no native codegen)
     #[arg(long)]
     pub no_jit: bool,
+}
 
+#[derive(Args)]
+pub struct PermissionFlags {
     /// Skip all permission prompts (allow everything)
     #[arg(long, alias = "dangerously-skip-permissions")]
     pub yolo: bool,
 
-    /// Exit after the agent completes (for automation workflows)
-    #[arg(long)]
-    pub exit_on_done: bool,
+    /// Accepted but ignored, so Claude Code SDK callers don't break.
+    #[arg(long, hide = true)]
+    pub strict_mcp_config: bool,
+    #[arg(long, hide = true)]
+    pub include_hook_events: bool,
+}
+
+#[derive(Parser)]
+#[command(name = "n00n", version, about = "AI coding agent for the terminal")]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
+    #[command(flatten)]
+    pub run_flags: RunFlags,
+
+    /// Attach an image to the prompt in --print mode as vision content (repeatable)
+    #[arg(long = "image", value_name = "PATH")]
+    pub images: Vec<PathBuf>,
+
+    /// Model spec (provider/model-id). Defaults to last used model, or claude-opus-4-6
+    #[arg(short, long)]
+    pub model: Option<String>,
+
+    #[command(flatten)]
+    pub session_flags: SessionFlags,
+
+    /// Resume a specific session by its ID
+    #[arg(short = 's', long, alias = "resume")]
+    pub session: Option<String>,
+
+    /// Output format for --print mode
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    pub output_format: OutputFormat,
+
+    /// Input format (text or stream-json for SDK mode)
+    #[arg(long, value_enum, default_value_t = InputFormat::Text)]
+    pub input_format: InputFormat,
+
+    #[command(flatten)]
+    pub plugin_flags: PluginFlags,
 
     /// Pre-approve tools (comma-separated). Accepts `PascalCase` (Claude Code) or `snake_case`.
     #[arg(long, value_delimiter = ',', visible_alias = "allowedTools")]
@@ -97,10 +131,6 @@ pub struct Cli {
     /// Session ID for SDK mode
     #[arg(long)]
     pub session_id: Option<String>,
-
-    /// Fork the loaded session under a new ID
-    #[arg(long)]
-    pub fork_session: bool,
 
     /// Maximum number of agent turns
     #[arg(long)]
@@ -118,9 +148,8 @@ pub struct Cli {
     #[arg(long)]
     pub permission_mode: Option<String>,
 
-    /// Include partial streaming messages in SDK output
-    #[arg(long)]
-    pub include_partial_messages: bool,
+    #[command(flatten)]
+    pub permission_flags: PermissionFlags,
 
     /// Permission prompt tool (accepted for compat, used in SDK mode)
     #[arg(long, hide = true)]
@@ -135,10 +164,6 @@ pub struct Cli {
     pub setting_sources: Option<String>,
     #[arg(long, hide = true)]
     pub add_dir: Option<String>,
-    #[arg(long, hide = true)]
-    pub strict_mcp_config: bool,
-    #[arg(long, hide = true)]
-    pub include_hook_events: bool,
     #[arg(long, hide = true)]
     pub mcp_config: Option<String>,
     #[arg(long, hide = true)]
@@ -170,8 +195,11 @@ impl Cli {
             ("settings", self.settings.is_some()),
             ("setting-sources", self.setting_sources.is_some()),
             ("add-dir", self.add_dir.is_some()),
-            ("strict-mcp-config", self.strict_mcp_config),
-            ("include-hook-events", self.include_hook_events),
+            ("strict-mcp-config", self.permission_flags.strict_mcp_config),
+            (
+                "include-hook-events",
+                self.permission_flags.include_hook_events,
+            ),
             ("mcp-config", self.mcp_config.is_some()),
             ("tools", self.tools.is_some()),
             ("betas", self.betas.is_some()),
@@ -190,7 +218,7 @@ impl Cli {
     }
 
     pub fn is_sdk_mode(&self) -> bool {
-        self.print && matches!(self.input_format, InputFormat::StreamJson)
+        self.run_flags.print && matches!(self.input_format, InputFormat::StreamJson)
     }
 }
 

@@ -40,7 +40,7 @@ use tracing::warn;
 use crate::AppSession;
 use crate::agent::{AgentCommand, AgentHandles, ModelSlot, shared_queue::QueueItem};
 use crate::app::shell::{ShellEvent, spawn_shell};
-use crate::app::{App, Msg, QueuedMessage, SubmitOutcome};
+use crate::app::{App, AppInit, Msg, QueuedMessage, SubmitOutcome};
 use crate::components::input::Submission;
 use crate::components::usage_modal::UsageFetchState;
 use crate::components::{
@@ -179,23 +179,23 @@ impl SpawnCtx {
             self.mcp_handle.clone(),
             self.mcp_config_errors.clone(),
         );
-        let mut app = App::new(
-            &self.model_slot.load().model,
+        let mut app = App::new(AppInit {
+            model: self.model_slot.load().model.clone(),
             session,
-            self.storage.clone(),
-            Arc::clone(&self.available_models),
-            handles.mcp_reader(),
-            handles.mcp_config_errors.clone(),
-            self.lua_command_reader.clone(),
-            self.keymap_reader.clone(),
-            self.hint_reader.clone(),
-            Arc::clone(&self.storage_writer),
-            self.ui_config,
-            self.input_history_size,
+            storage: self.storage.clone(),
+            available_models: Arc::clone(&self.available_models),
+            mcp_reader: handles.mcp_reader(),
+            mcp_config_errors: handles.mcp_config_errors.clone(),
+            lua_command_reader: self.lua_command_reader.clone(),
+            keymap_reader: self.keymap_reader.clone(),
+            hint_reader: self.hint_reader.clone(),
+            storage_writer: Arc::clone(&self.storage_writer),
+            ui_config: self.ui_config,
+            input_history_size: self.input_history_size,
             permissions,
-            Arc::clone(&self.custom_commands),
-            Arc::clone(&self.picker),
-        );
+            custom_commands: Arc::clone(&self.custom_commands),
+            picker: Arc::clone(&self.picker),
+        });
         app.lua_event_handle.clone_from(&self.lua_event_handle);
         handles.apply_to_app(&mut app);
         if resumed {
@@ -375,7 +375,6 @@ fn restore_session(app: &mut App, handles: &AgentHandles) {
 }
 
 impl<'t> EventLoop<'t> {
-    #[allow(clippy::too_many_lines)]
     pub(crate) fn new(
         terminal: &'t mut ratatui::DefaultTerminal,
         params: EventLoopParams,
@@ -772,7 +771,6 @@ impl<'t> EventLoop<'t> {
     /// `List` replies from a background task (the scan can be slow); every
     /// other request is answered synchronously by the event loop, which owns
     /// the live runtimes.
-    #[allow(clippy::too_many_lines)]
     fn handle_session_request(
         &mut self,
         req: SessionRequest,
@@ -1160,7 +1158,6 @@ impl<'t> EventLoop<'t> {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     fn handle_action(&mut self, idx: usize, action: Action) {
         match action {
             Action::SendMessage(mut dispatch) => {

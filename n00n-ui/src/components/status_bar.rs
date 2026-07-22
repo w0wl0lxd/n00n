@@ -106,7 +106,6 @@ impl StatusBar {
         }
     }
 
-    #[allow(clippy::too_many_lines)] // status-bar rendering assembly; layout is sequential
     pub fn view(&self, frame: &mut Frame, area: Rect, ctx: &StatusBarContext) {
         let mut left_spans = Vec::new();
 

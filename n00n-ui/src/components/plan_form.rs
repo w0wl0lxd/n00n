@@ -48,10 +48,7 @@ const MENU: &[MenuItem] = &[
     },
 ];
 
-// 2 borders + 1 empty line + 1 hint bar
-const CHROME_LINES: u16 = 4;
-#[allow(clippy::cast_possible_truncation)]
-const FORM_HEIGHT: u16 = MENU.len() as u16 + CHROME_LINES;
+const FORM_HEIGHT: u16 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PlanFormAction {

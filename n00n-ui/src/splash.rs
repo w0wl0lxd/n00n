@@ -39,8 +39,7 @@ const LOGO_DELAY: f32 = 0.2;
 const LOGO_RAMP: f32 = 0.8;
 /// Ascii chars mapped to increasing wave intensity (first must be space).
 const FIELD_SYMS: &[&str] = &[" ", ".", ":", "+", "*"];
-#[allow(clippy::cast_precision_loss)]
-const FIELD_CHAR_MAX: f32 = (FIELD_SYMS.len() - 1) as f32;
+const FIELD_CHAR_MAX: f32 = 4.0;
 /// Number of overlapping sine wave layers in the background field.
 const WAVE_LAYERS: usize = 3;
 /// Peak brightness multiplier for the field. Lower = subtler background.
@@ -56,8 +55,7 @@ const PI: f32 = std::f32::consts::PI;
 const FRAC_PI_2: f32 = std::f32::consts::FRAC_PI_2;
 const BHASKARA_B: f32 = 4.0 / (PI * PI);
 
-#[allow(clippy::inline_always)]
-#[inline(always)]
+#[inline]
 fn fast_sin(x: f32) -> f32 {
     let x = x - (x * INV_TAU).floor() * TAU;
     let (x, sign) = if x > PI { (x - PI, -1.0_f32) } else { (x, 1.0) };
@@ -65,8 +63,7 @@ fn fast_sin(x: f32) -> f32 {
     sign * (4.0 * raw) / (5.0 - raw)
 }
 
-#[allow(clippy::inline_always)]
-#[inline(always)]
+#[inline]
 fn fast_sincos(x: f32) -> (f32, f32) {
     (fast_sin(x), fast_sin(x + FRAC_PI_2))
 }
@@ -79,7 +76,6 @@ pub struct ColorTransition {
 
 impl ColorTransition {
     #[must_use]
-    #[allow(clippy::unwrap_used, clippy::missing_panics_doc)]
     pub fn new(color: Color) -> Self {
         let rgb = extract_rgb(color, (100, 140, 255));
         let start = Instant::now()
@@ -144,14 +140,16 @@ impl Default for Splash {
 
 impl Splash {
     #[must_use]
-    #[allow(clippy::cast_precision_loss)]
     pub fn new(animate: bool) -> Self {
         let mut rng = [0u8; 8];
         getrandom::fill(&mut rng).ok();
         let tip_idx = u32::from_le_bytes([rng[4], rng[5], rng[6], rng[7]]) as usize % TIPS.len();
+        let field_offset = crate::cast::usize_to_f32(
+            u32::from_le_bytes([rng[0], rng[1], rng[2], rng[3]]) as usize % 10_000,
+        );
         Self {
             start: Instant::now(),
-            field_offset: (u64::from_le_bytes(rng) % 10_000) as f32,
+            field_offset,
             animate,
             tip_idx,
         }
@@ -173,7 +171,7 @@ impl Splash {
             ease_out_cubic(t / FADE_DURATION)
         };
         if self.animate {
-            self.render_field(area, buf, t + self.field_offset, fade, accent);
+            Self::render_field(area, buf, t + self.field_offset, fade, accent);
         }
     }
 
@@ -204,8 +202,7 @@ impl Splash {
         render_version(area, buf, fade, version_y, new_version);
     }
 
-    #[allow(clippy::too_many_lines, clippy::unused_self)]
-    fn render_field(&self, area: Rect, buf: &mut Buffer, t: f32, fade: f32, accent: Color) {
+    fn render_field(area: Rect, buf: &mut Buffer, t: f32, fade: f32, accent: Color) {
         let theme = theme::current();
         let (ac_r, ac_g, ac_b) = extract_rgb(accent, (100, 140, 255));
         let (bg_r, bg_g, bg_b) = extract_rgb(theme.background, (15, 15, 25));
@@ -218,56 +215,16 @@ impl Splash {
         let inv_w = 1.0 / crate::cast::usize_to_f32(width);
         let inv_h = 1.0 / crate::cast::usize_to_f32(height);
 
-        let layers: [(f32, f32, f32, f32); WAVE_LAYERS] = std::array::from_fn(|i| {
-            let lf = crate::cast::usize_to_f32(i);
-            (
-                2.0 + lf * 1.8,
-                1.5 + lf * 1.2,
-                t * (0.3 + lf * 0.15) + lf * 2.094,
-                1.0 / (1.5 + lf * 0.5),
-            )
-        });
-
+        let layers = Self::compute_wave_layers(t);
         let weight_sum: f32 = layers.iter().map(|l| l.3).sum();
         let half_weight_sum = weight_sum * 0.5;
         let val_scale = (fade * INTENSITY_SCALE) / half_weight_sum;
 
-        let style_lut: [(&str, Style); 4] = std::array::from_fn(|i| {
-            let idx = i + 1;
-            let frac = crate::cast::usize_to_f32(idx) / FIELD_CHAR_MAX;
-            let t = FIELD_BASE_OPACITY + frac * (1.0 - FIELD_BASE_OPACITY);
-            (
-                FIELD_SYMS[idx],
-                Style::new().fg(Color::Rgb(
-                    lerp_u8(bg_r, ac_r, t * 0.25),
-                    lerp_u8(bg_g, ac_g, t * 0.175),
-                    lerp_u8(bg_b, ac_b, t * 0.325),
-                )),
-            )
-        });
+        let style_lut = Self::compute_style_lut(bg_r, bg_g, bg_b, ac_r, ac_g, ac_b);
 
         let vignette_inv = 1.0 / VIGNETTE_SCALE;
 
-        // Single allocation for all per-column data: vx | sin0 | cos0 | sin1 | cos1 | sin2 | cos2
-        // Contiguous SoA layout enables LLVM auto-vectorization of the inner wave loops.
-        let mut col_data = vec![0.0_f32; width * (1 + WAVE_LAYERS * 2)];
-        for col in 0..width {
-            let nx = crate::cast::usize_to_f32(col) * inv_w;
-            let d = (nx - 0.5) * 2.0;
-            col_data[col] = d * d;
-            for i in 0..WAVE_LAYERS {
-                let (s, c) = fast_sincos(nx * layers[i].0);
-                col_data[width + i * 2 * width + col] = s * layers[i].3;
-                col_data[width + (i * 2 + 1) * width + col] = c * layers[i].3;
-            }
-        }
-        let vx = &col_data[..width];
-        let col_sin: [&[f32]; WAVE_LAYERS] = std::array::from_fn(|i| {
-            &col_data[width + i * 2 * width..width + i * 2 * width + width]
-        });
-        let col_cos: [&[f32]; WAVE_LAYERS] = std::array::from_fn(|i| {
-            &col_data[width + (i * 2 + 1) * width..width + (i * 2 + 2) * width]
-        });
+        let (vx, col_sin, col_cos) = Self::compute_column_data(width, inv_w, &layers);
 
         let col_start = vx.partition_point(|&v| v > vignette_inv);
         let col_end = width
@@ -336,10 +293,71 @@ impl Splash {
                 let (sym, style) = &style_lut[idx.min(FIELD_SYMS.len() - 1) - 1];
 
                 if let Some(cell) = content.get_mut(row_offset + rc_start + j) {
-                    cell.set_symbol(sym).set_style(*style);
+                    cell.set_symbol(sym.as_str()).set_style(*style);
                 }
             }
         }
+    }
+
+    fn compute_wave_layers(t: f32) -> [(f32, f32, f32, f32); WAVE_LAYERS] {
+        std::array::from_fn(|i| {
+            let lf = crate::cast::usize_to_f32(i);
+            (
+                2.0 + lf * 1.8,
+                1.5 + lf * 1.2,
+                t * (0.3 + lf * 0.15) + lf * 2.094,
+                1.0 / (1.5 + lf * 0.5),
+            )
+        })
+    }
+
+    fn compute_style_lut(
+        bg_r: u8,
+        bg_g: u8,
+        bg_b: u8,
+        ac_r: u8,
+        ac_g: u8,
+        ac_b: u8,
+    ) -> [(String, Style); 4] {
+        std::array::from_fn(|i| {
+            let idx = i + 1;
+            let frac = crate::cast::usize_to_f32(idx) / FIELD_CHAR_MAX;
+            let t = FIELD_BASE_OPACITY + frac * (1.0 - FIELD_BASE_OPACITY);
+            (
+                FIELD_SYMS[idx].to_string(),
+                Style::new().fg(Color::Rgb(
+                    lerp_u8(bg_r, ac_r, t * 0.25),
+                    lerp_u8(bg_g, ac_g, t * 0.175),
+                    lerp_u8(bg_b, ac_b, t * 0.325),
+                )),
+            )
+        })
+    }
+
+    fn compute_column_data(
+        width: usize,
+        inv_w: f32,
+        layers: &[(f32, f32, f32, f32); WAVE_LAYERS],
+    ) -> (Vec<f32>, Vec<Vec<f32>>, Vec<Vec<f32>>) {
+        let mut col_data = vec![0.0_f32; width * (1 + WAVE_LAYERS * 2)];
+        for col in 0..width {
+            let nx = crate::cast::usize_to_f32(col) * inv_w;
+            let d = (nx - 0.5) * 2.0;
+            col_data[col] = d * d;
+            for i in 0..WAVE_LAYERS {
+                let (s, c) = fast_sincos(nx * layers[i].0);
+                col_data[width + i * 2 * width + col] = s * layers[i].3;
+                col_data[width + (i * 2 + 1) * width + col] = c * layers[i].3;
+            }
+        }
+        let vx = col_data[..width].to_vec();
+        let col_sin: Vec<Vec<f32>> = (0..WAVE_LAYERS)
+            .map(|i| col_data[width + i * 2 * width..width + i * 2 * width + width].to_vec())
+            .collect();
+        let col_cos: Vec<Vec<f32>> = (0..WAVE_LAYERS)
+            .map(|i| col_data[width + (i * 2 + 1) * width..width + (i * 2 + 2) * width].to_vec())
+            .collect();
+        (vx, col_sin, col_cos)
     }
 
     fn render_logo(area: Rect, buf: &mut Buffer, t: f32, fade: f32, top_y: u16, accent: Color) {
