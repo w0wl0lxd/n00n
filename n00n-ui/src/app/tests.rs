@@ -2962,10 +2962,7 @@ fn typing_in_read_only_subagent_flashes_explanation() {
     app.update(Msg::Key(key(KeyCode::Char('h'))));
     app.update(Msg::Key(key(KeyCode::Enter)));
 
-    assert_eq!(
-        app.status_bar.flash_text(),
-        Some("This agent cannot receive follow-up messages")
-    );
+    assert_eq!(app.status_bar.flash_text(), Some(STEERING_UNAVAILABLE_MSG));
 }
 
 fn app_with_subagent_tx(id: &str) -> (App, flume::Receiver<String>, flume::Receiver<String>) {
@@ -3181,7 +3178,7 @@ fn stale_auth_required_after_cancel_is_dropped() {
 }
 
 #[test]
-fn send_to_agent_unknown_subagent_falls_back_to_main() {
+fn send_to_agent_unknown_subagent_does_not_fallback_to_main() {
     let (main_tx, main_rx) = flume::unbounded();
     let mut app = test_app();
     app.status = Status::Streaming;
@@ -3193,7 +3190,7 @@ fn send_to_agent_unknown_subagent_falls_back_to_main() {
     };
     app.update(Msg::Key(key(KeyCode::Enter)));
 
-    assert_eq!(main_rx.try_recv().unwrap(), "");
+    assert!(main_rx.try_recv().is_err());
     assert_eq!(app.pending_input, PendingInput::None);
 }
 
