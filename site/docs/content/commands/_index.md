@@ -3,7 +3,6 @@ title = "Commands"
 weight = 5
 [extra]
 group = "Reference"
-+++
 
 # Commands
 
