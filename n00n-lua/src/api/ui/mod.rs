@@ -1277,13 +1277,13 @@ mod tests {
         underline: bool,
         expected: &str,
     ) {
-        let e = n00n_markdown::Emphasis {
+        let emphasis = n00n_markdown::Emphasis {
             bold,
             italic,
             strike,
             underline,
         };
-        assert_eq!(emphasis_style_name(e), expected);
+        assert_eq!(emphasis_style_name(emphasis), expected);
     }
 
     #[test]

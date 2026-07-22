@@ -65,7 +65,6 @@ mod tests {
     use mlua::Value;
 
     #[test]
-    #[allow(clippy::many_single_char_names)]
     fn compile_sandbox_blocks_unlisted_globals() {
         let lua = Lua::new();
         let t = create_workflow_table(&lua).unwrap();
@@ -75,13 +74,19 @@ mod tests {
             .call((r"return n00n, os, io, require, print", env))
             .unwrap();
         assert!(err.is_none(), "compile failed: {err:?}");
-        let (n, o, i, r, p): (Value, Value, Value, Value, Value) = func.unwrap().call(()).unwrap();
+        let (n00n_val, os_val, io_val, require_val, print_val): (
+            Value,
+            Value,
+            Value,
+            Value,
+            Value,
+        ) = func.unwrap().call(()).unwrap();
         for (name, v) in [
-            ("n00n", n),
-            ("os", o),
-            ("io", i),
-            ("require", r),
-            ("print", p),
+            ("n00n", n00n_val),
+            ("os", os_val),
+            ("io", io_val),
+            ("require", require_val),
+            ("print", print_val),
         ] {
             assert!(v.is_nil(), "{name} leaked into the sandbox");
         }

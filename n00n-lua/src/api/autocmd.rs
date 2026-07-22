@@ -63,7 +63,6 @@ fn pattern_matches(patterns: Option<&[String]>, fired: Option<&str>) -> bool {
 /// `data` is shared across callbacks (nvim does the same), but each callback
 /// gets its own `ev` table, so one plugin's mutation cannot leak into the
 /// next.
-#[allow(clippy::needless_pass_by_value)]
 pub(crate) fn dispatch(lua: &Lua, event: &str, pattern: Option<&str>, data: Value) {
     let Ok(_guard) = DepthGuard::enter(lua, "autocmd", event) else {
         tracing::warn!(event, "autocmd dispatch exceeded max depth, skipping");

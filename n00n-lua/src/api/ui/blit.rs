@@ -69,50 +69,55 @@ pub(crate) fn parse_format(name: &str) -> Result<&'static FormatSpec, BlitError>
         })
 }
 
-#[allow(clippy::many_single_char_names)]
 pub(crate) fn render(
     bytes: &[u8],
-    w: usize,
-    h: usize,
-    fmt: &FormatSpec,
+    width: usize,
+    height: usize,
+    format: &FormatSpec,
     cell: &str,
 ) -> Result<Vec<SnapshotLine>, BlitError> {
-    if w == 0 || h == 0 {
-        return Err(BlitError::ZeroDimension { w, h });
+    if width == 0 || height == 0 {
+        return Err(BlitError::ZeroDimension {
+            w: width,
+            h: height,
+        });
     }
     if cell.width() != 1 {
         return Err(BlitError::BadCell {
             got: cell.to_owned(),
         });
     }
-    let expected = w
-        .checked_mul(h)
-        .and_then(|px| px.checked_mul(fmt.bpp))
-        .ok_or(BlitError::Overflow { w, h })?;
+    let expected = width
+        .checked_mul(height)
+        .and_then(|px| px.checked_mul(format.bpp))
+        .ok_or(BlitError::Overflow {
+            w: width,
+            h: height,
+        })?;
     if bytes.len() != expected {
         return Err(BlitError::SizeMismatch {
             got: bytes.len(),
             expected,
-            w,
-            h,
-            format: fmt.name,
+            w: width,
+            h: height,
+            format: format.name,
         });
     }
 
     let pixel = |x: usize, y: usize| -> Rgb {
-        let base = (y * w + x) * fmt.bpp;
-        let [r, g, b] = fmt.rgb_offsets;
+        let base = (y * width + x) * format.bpp;
+        let [r, g, b] = format.rgb_offsets;
         (bytes[base + r], bytes[base + g], bytes[base + b])
     };
 
-    let mut lines = Vec::with_capacity(h.div_ceil(2));
-    for pair in 0..h.div_ceil(2) {
+    let mut lines = Vec::with_capacity(height.div_ceil(2));
+    for pair in 0..height.div_ceil(2) {
         let (top, bottom) = (pair * 2, pair * 2 + 1);
         let mut spans = Vec::new();
         let mut run: Option<Run> = None;
-        for x in 0..w {
+        for x in 0..width {
             let fg = pixel(x, top);
-            let bg = (bottom < h).then(|| pixel(x, bottom));
+            let bg = (bottom < height).then(|| pixel(x, bottom));
             match &mut run {
                 Some((rf, rb, count)) if (*rf, *rb) == (fg, bg) => *count += 1,
                 _ => {

@@ -563,7 +563,14 @@ fn eval_set(args: &[QueryPredicateArg], metadata: &mut HashMap<String, String>) 
 fn lua_to_usize(v: LuaValue) -> Option<usize> {
     match v {
         LuaValue::Integer(n) => usize::try_from(n).ok(),
-        LuaValue::Number(n) => usize::try_from(n as i64).ok(),
+        LuaValue::Number(n) => {
+            let n_i64 = n as i64;
+            if n_i64 >= 0 {
+                usize::try_from(n_i64).ok()
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }

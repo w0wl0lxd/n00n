@@ -373,7 +373,6 @@ pub(crate) fn create_async_table(lua: &Lua) -> LuaResult<Table> {
 }
 
 #[cfg(test)]
-#[allow(clippy::cast_possible_wrap)]
 mod tests {
     use std::pin::pin;
     use std::sync::Mutex;
@@ -449,8 +448,7 @@ mod tests {
             );
 
             let result = lua.load(&code).eval_async::<i64>().await.unwrap();
-            #[allow(clippy::cast_possible_wrap)]
-            assert_eq!(result, expected_pos as i64);
+            assert_eq!(result, i64::try_from(expected_pos).unwrap());
         });
     }
 

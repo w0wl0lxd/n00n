@@ -44,7 +44,6 @@ impl JobStore {
         }
     }
 
-    #[allow(clippy::needless_pass_by_value)]
     pub fn start(
         &mut self,
         cmd: &str,
@@ -260,7 +259,6 @@ fn kill_job(meta: &mut JobMeta) {
 ///   on_exit = function(_, code) print("exit: " .. code) end,
 /// })
 #[lua_fn(guard = Run)]
-#[allow(clippy::needless_pass_by_value)]
 fn jobstart(lua: &Lua, cmd: String, opts: Option<Table>) -> LuaResult<u32> {
     let (cwd, env, on_stdout, on_stderr, on_exit) = match opts {
         Some(ref opts) => {

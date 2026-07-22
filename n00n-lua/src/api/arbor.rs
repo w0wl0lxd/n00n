@@ -16,7 +16,6 @@ fn value_or_err<T: serde::Serialize>(
     lua.to_value(&json)
 }
 
-#[allow(clippy::similar_names)]
 pub(crate) fn create_arbor_table(lua: &Lua) -> LuaResult<Table> {
     let t = lua.create_table()?;
 
@@ -40,13 +39,13 @@ pub(crate) fn create_arbor_table(lua: &Lua) -> LuaResult<Table> {
     })?;
     t.set("callers", callers)?;
 
-    let callees = lua.create_function(|lua, (symbol, project): (String, String)| {
+    let callees_fn = lua.create_function(|lua, (symbol, project): (String, String)| {
         value_or_err(
             lua,
             Client::callees(&symbol, std::path::Path::new(&project)),
         )
     })?;
-    t.set("callees", callees)?;
+    t.set("callees", callees_fn)?;
 
     let map_fn = lua.create_function(|lua, (project, token_budget): (String, Option<u64>)| {
         value_or_err(
