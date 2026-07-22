@@ -1972,4 +1972,61 @@ mod tests {
         assert!(matches!(input.thinking, ThinkingConfig::Budget(1234)));
         assert!(input.fast);
     }
+
+    #[test]
+    fn progress_tracks_current_tool_recent_tools_and_completed_count() {
+        let progress = Progress::new(Instant::now(), String::new());
+
+        progress.record_start(&progress_start("a", "first"));
+        progress.record_start(&progress_start("b", "second"));
+
+        {
+            let state = progress
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert_eq!(state.current.as_deref(), Some("read"));
+            assert_eq!(state.completed_count, 0);
+            assert!(state.recent.is_empty());
+        }
+
+        progress.record_done(&progress_done("a", false));
+
+        {
+            let state = progress
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert_eq!(state.current.as_deref(), Some("read"));
+            assert_eq!(state.completed_count, 1);
+            assert_eq!(state.recent, ["read"]);
+            assert_eq!(state.activities[0].status, ActivityStatus::Success);
+            assert_eq!(state.activities[1].status, ActivityStatus::Running);
+        }
+
+        progress.record_done(&progress_done("b", true));
+
+        let state = progress
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(state.current.is_none());
+        assert_eq!(state.completed_count, 2);
+        assert_eq!(state.recent, ["read", "read"]);
+        assert_eq!(state.activities[0].status, ActivityStatus::Success);
+        assert_eq!(state.activities[1].status, ActivityStatus::Error);
+    }
+
+    #[test]
+    fn progress_notifies_waiters_on_each_start_and_done() {
+        let progress = Progress::new(Instant::now(), String::new());
+
+        progress.record_start(&progress_start("a", "first"));
+        assert!(progress.rx.try_recv().is_ok());
+        assert!(progress.rx.try_recv().is_err());
+
+        progress.record_done(&progress_done("a", false));
+        assert!(progress.rx.try_recv().is_ok());
+        assert!(progress.rx.try_recv().is_err());
+    }
 }

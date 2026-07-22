@@ -69,7 +69,8 @@ impl App {
                 self.handle_drag(event.row, event.column);
             }
             MouseEventKind::Moved => {
-                self.chats[self.active_chat].on_mouse(event.column, event.row);
+                let chat_idx = self.resolve_render_chat();
+                self.chats[chat_idx].on_mouse(event.column, event.row);
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 if let Some(SelectionState::Dragging { sel, .. }) = self.selection_state {
