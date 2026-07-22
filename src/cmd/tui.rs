@@ -242,6 +242,7 @@ pub fn run(mut cli: Cli) -> Result<()> {
     warn_stale_config_toml(&cwd);
 
     let (mut stack, _) = build_stack(&cli, &cwd, &storage, None)?;
+    let openai_options = n00n_providers::OpenAiOptions::from(&stack.config.provider);
 
     setup::init_logging(&stack.config.storage);
     setup::install_panic_log_hook();
@@ -259,6 +260,7 @@ pub fn run(mut cli: Cli) -> Result<()> {
             config: stack.config.agent,
             permissions_config: stack.config.permissions,
             timeouts,
+            openai_options,
             prompt_slots,
             fast,
             workflow: stack.config.always_workflow,
@@ -278,6 +280,7 @@ pub fn run(mut cli: Cli) -> Result<()> {
             stack.config.agent,
             stack.config.permissions,
             timeouts,
+            openai_options,
             stack.plugin_host.event_handle().as_ref(),
             fast,
             stack.config.always_workflow,
@@ -300,6 +303,7 @@ pub fn run(mut cli: Cli) -> Result<()> {
     let mut teardown = Teardown::default();
 
     loop {
+        let openai_options = n00n_providers::OpenAiOptions::from(&stack.config.provider);
         for session in &mut tabs {
             if session.messages.is_empty() {
                 session.meta.fast |= stack.config.always_fast;
@@ -333,6 +337,7 @@ pub fn run(mut cli: Cli) -> Result<()> {
                     cwd.clone(),
                 )),
                 timeouts: stack.timeouts(),
+                openai_options,
                 exit_on_done: cli.exit_on_done,
                 lua_command_reader: stack.plugin_host.command_reader(),
                 keymap_reader: stack.plugin_host.keymap_reader(),

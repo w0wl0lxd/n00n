@@ -16,7 +16,7 @@ use n00n_agent::{
     PromptRole, ToolOutputLines,
 };
 use n00n_lua::EventHandle;
-use n00n_providers::{AgentError, Message, Model, TokenUsage};
+use n00n_providers::{AgentError, Message, Model, OpenAiOptions, TokenUsage};
 use n00n_storage::id::SessionRef;
 use n00n_storage::sessions::TranscriptEntry;
 use serde_json::Value;
@@ -46,6 +46,7 @@ pub(super) struct AgentLoop {
     queue: Arc<QueueReceiver>,
     session_id: Option<SessionRef>,
     timeouts: n00n_providers::Timeouts,
+    openai_options: OpenAiOptions,
     lua_handle: Option<EventHandle>,
     subagent_cancels: Arc<CancelMap<String>>,
     tools_cache: Option<ToolsCache>,
@@ -81,6 +82,7 @@ impl AgentLoop {
         init_cancel: CancelToken,
         session_id: Option<SessionRef>,
         timeouts: n00n_providers::Timeouts,
+        openai_options: OpenAiOptions,
         lua_handle: Option<EventHandle>,
         subagent_cancels: Arc<CancelMap<String>>,
     ) -> Self {
@@ -106,6 +108,7 @@ impl AgentLoop {
             queue,
             session_id,
             timeouts,
+            openai_options,
             lua_handle,
             subagent_cancels,
             tools_cache: None,
@@ -174,8 +177,12 @@ impl AgentLoop {
 
     async fn do_compact(&mut self, event_tx: &EventSender) -> Result<(), AgentError> {
         let slot = self.model_slot.load();
-        let (provider, model) =
-            agent::resolve_compaction_model(&slot.provider, &slot.model, self.timeouts);
+        let (provider, model) = agent::resolve_compaction_model(
+            &slot.provider,
+            &slot.model,
+            self.timeouts,
+            self.openai_options,
+        );
         agent::compact(&*provider, &model, &mut self.history, event_tx).await
     }
 
@@ -252,6 +259,7 @@ impl AgentLoop {
                 permissions: Arc::clone(&self.permissions),
                 session_id: self.session_id.clone(),
                 timeouts: self.timeouts,
+                openai_options: self.openai_options,
                 file_tracker: Arc::clone(&self.file_tracker),
                 prompt_slots: Arc::new(prompt_slots),
                 subagent_cancels: Arc::clone(&self.subagent_cancels),

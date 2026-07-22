@@ -641,6 +641,13 @@ pub fn history_to_display<S: std::hash::BuildHasher>(
     for msg in messages {
         match msg.role {
             Role::User => {
+                if msg
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
+                {
+                    continue;
+                }
                 let images: Vec<_> = msg
                     .content
                     .iter()

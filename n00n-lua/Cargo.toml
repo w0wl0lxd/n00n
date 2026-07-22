@@ -36,6 +36,15 @@ futures-lite = { workspace = true }
 libc = { workspace = true }
 pin-project-lite = { workspace = true }
 tree-sitter = { workspace = true }
+tree-sitter-astro-next = { workspace = true }
+tree-sitter-containerfile = { workspace = true }
+tree-sitter-css = { workspace = true }
+tree-sitter-hcl = { workspace = true }
+tree-sitter-json = { workspace = true }
+tree-sitter-make = { workspace = true }
+tree-sitter-scss = { workspace = true }
+tree-sitter-svelte-ng = { workspace = true }
+tree-sitter-vue-next = { workspace = true }
 unicode-width = { workspace = true }
 regex = { workspace = true }
 include_dir = { workspace = true }

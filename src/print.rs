@@ -19,7 +19,7 @@ use n00n_agent::tools::QUESTION_TOOL_NAME;
 use n00n_agent::{AgentConfig, AgentEvent, Envelope, ImageSource, PermissionsConfig};
 use n00n_lua::EventHandle;
 use n00n_providers::model::Model;
-use n00n_providers::{StopReason, TokenUsage};
+use n00n_providers::{OpenAiOptions, StopReason, TokenUsage};
 use n00n_storage::id::SessionRef;
 use serde::Serialize;
 use serde_json::Value;
@@ -146,6 +146,7 @@ pub fn run(
     config: AgentConfig,
     permissions_config: PermissionsConfig,
     timeouts: n00n_providers::Timeouts,
+    openai_options: OpenAiOptions,
     lua_handle: Option<&EventHandle>,
     fast: bool,
     workflow: bool,
@@ -173,6 +174,7 @@ pub fn run(
         config,
         permissions_config,
         timeouts,
+        openai_options,
         prompt,
         images,
         prompt_slots,

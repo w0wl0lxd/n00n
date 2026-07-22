@@ -29,6 +29,46 @@ fn fresh_registry() -> Arc<ToolRegistry> {
     Arc::new(ToolRegistry::new())
 }
 
+struct NetworkSessionProbe {
+    address: std::net::SocketAddr,
+    sessions: flume::Sender<Option<SessionRef>>,
+}
+
+impl Provider for NetworkSessionProbe {
+    fn stream_message<'a>(
+        &'a self,
+        _: &'a Model,
+        _: &'a [Message],
+        _: &'a str,
+        _: &'a serde_json::Value,
+        _: &'a flume::Sender<ProviderEvent>,
+        _: RequestOptions,
+        session_id: Option<&'a SessionRef>,
+    ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
+        Box::pin(async move {
+            let _stream = smol::net::TcpStream::connect(self.address).await?;
+            self.sessions.send_async(session_id.cloned()).await?;
+            Ok(StreamResponse {
+                message: Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::Text {
+                        text: "network reached".into(),
+                    }],
+                    display_text: None,
+                },
+                usage: TokenUsage::default(),
+                stop_reason: Some(StopReason::EndTurn),
+            })
+        })
+    }
+
+    fn list_models(
+        &self,
+    ) -> BoxFuture<'_, Result<Vec<n00n_providers::model::ModelInfo>, AgentError>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+}
+
 fn builtins_host() -> (Arc<ToolRegistry>, PluginHost) {
     let reg = fresh_registry();
     let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
@@ -1725,6 +1765,85 @@ fn warm_fifo_evicts_oldest_runtime_side() {
     );
 }
 
+#[test]
+fn explore_result_live_click_and_warm_eviction_fallback_preserve_card_contract() {
+    const TOOL: &str = "explore_probe";
+    const OUTPUT: &str = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight";
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"
+local ExploreResult = require("n00n.explore_result")
+n00n.api.register_tool({{
+    name = "{TOOL}",
+    description = "shared explore card probe",
+    schema = {MINIMAL_SCHEMA},
+    audiences = {{ "main" }},
+    handler = function(input, ctx)
+        local card, err = ExploreResult.live(ctx)
+        if not card then
+            return {{ llm_output = tostring(err), is_error = true }}
+        end
+        card:update("one\ntwo\nthree\nfour\nfive\nsix\nseven\neight")
+        return {{ llm_output = "done", body = card.buf }}
+    end,
+    restore = function(input, output)
+        return ExploreResult.restore(output)
+    end,
+}})
+"#,
+    );
+    host.load_source("explore_probe_plugin", &src).unwrap();
+
+    let mut bodies = Vec::with_capacity(WARM_TOOL_CAP + 1);
+    for i in 0..=WARM_TOOL_CAP {
+        let id = format!("explore-{i}");
+        let (ctx, rx) = warm_ctx(&id);
+        exec_warm_tool(&reg, TOOL, &ctx).expect("tool output");
+        bodies.push(recv_live_buf(&rx, &id).expect("live explore card"));
+    }
+    assert_eq!(bodies[0].read().len(), 6, "five rows plus expand hint");
+
+    let evicted_id = "explore-0";
+    let item = n00n_lua::RestoreItem {
+        tool: Arc::from(TOOL),
+        tool_use_id: evicted_id.to_owned(),
+        output: OUTPUT.to_owned(),
+        input: serde_json::json!({}),
+        is_error: false,
+        tool_output_lines: ToolOutputLines::default(),
+        theme_gen: None,
+        clicks: vec![0],
+        state: None,
+    };
+    let (tx, rx) = flume::unbounded();
+    let event_handle = host.event_handle().expect("event handle");
+    event_handle.request_click_with_fallback(
+        evicted_id.to_owned(),
+        0,
+        item,
+        n00n_agent::EventSender::new(tx, 0),
+    );
+    event_handle.request_click(format!("explore-{WARM_TOOL_CAP}"), 0);
+    barrier(&host);
+
+    assert_eq!(
+        bodies[0].read().len(),
+        6,
+        "evicted live card must not receive the click"
+    );
+    assert_eq!(
+        bodies[WARM_TOOL_CAP].read().len(),
+        8,
+        "a still-warm live card must expand in place"
+    );
+    assert_eq!(
+        snapshot_texts(&rx, evicted_id),
+        vec![OUTPUT.replace('\n', "")],
+        "fallback restore must replay the click and publish the expanded card"
+    );
+}
+
 /// After a plugin (re)load the old handlers are gone, so stale warm
 /// clicks must be dropped, never run.
 #[test]
@@ -3408,6 +3527,51 @@ fn session_close_idempotent_and_prompt_after_close_errors() {
     assert_eq!(out, SESSION_CLOSED_ERR);
 }
 
+#[test]
+fn lua_subagent_keeps_generated_session_ref_when_provider_reaches_network() {
+    smol::block_on(async {
+        let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (session_tx, session_rx) = flume::bounded(1);
+        let network = smol::spawn(async move { listener.accept().await.unwrap() });
+        let reg = fresh_registry();
+        let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+        let src = format!(
+            r#"n00n.api.register_tool({{
+                name = "session_network_probe",
+                description = "test",
+                schema = {MINIMAL_SCHEMA},
+                audiences = {{ "main" }},
+                handler = function(input, ctx)
+                    local sess, open_err = n00n.agent.session(ctx, {{}})
+                    if open_err then return open_err end
+                    local result, prompt_err = sess:prompt("reach the provider")
+                    if prompt_err then return prompt_err end
+                    return result.text
+                end
+            }})"#
+        );
+        host.load_source("session_network_plugin", &src).unwrap();
+        let entry = reg.get("session_network_probe").unwrap();
+        let invocation = entry.tool.parse(&serde_json::json!({})).unwrap();
+        let mut ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
+        ctx.provider = Arc::new(NetworkSessionProbe {
+            address,
+            sessions: session_tx,
+        });
+
+        let result = invocation.execute(&ctx).await.output.unwrap();
+        let n00n_agent::ToolOutput::Plain(output) = result else {
+            panic!("expected plain output");
+        };
+        let session_id = session_rx.recv_async().await.unwrap();
+        let _connection = network.await;
+
+        assert_eq!(output.text, "network reached");
+        assert!(session_id.is_some());
+    });
+}
+
 #[test_case::test_case("{ audience = 'wurkflow' }", "unknown audience: wurkflow" ; "unknown_audience")]
 #[test_case::test_case("{ local_tools = { foo = { handler = function() return '' end } } }", "local_tools.foo: 'description' is required" ; "local_tool_missing_description")]
 #[test_case::test_case("{ local_tools = { foo = { description = 'd' } } }", "local_tools.foo: 'handler' is required" ; "local_tool_missing_handler")]
@@ -4391,4 +4555,44 @@ fn job_callbacks_fire_while_command_handler_parked() {
         .recv_timeout(Duration::from_secs(5))
         .expect("job callbacks starved while command handler was parked");
     assert!(matches!(action, n00n_lua::UiAction::Flash(msg) if msg == "job:hi"));
+}
+
+#[test]
+fn skill_tool_list_returns_catalog() {
+    let (reg, _host) = builtins_host();
+    let out = exec_tool(&reg, "skill", serde_json::json!({"list": true})).unwrap();
+    assert!(
+        out.contains("<available_skills>"),
+        "list=true should return skill catalog"
+    );
+}
+
+#[test]
+fn skill_tool_missing_name_returns_available_names() {
+    let (reg, _host) = builtins_host();
+    let out = exec_tool(&reg, "skill", serde_json::json!({})).unwrap_err();
+    assert!(out.contains("error:"), "missing name should be an error");
+    assert!(
+        out.contains("Available skills"),
+        "missing name should list available skills"
+    );
+}
+
+#[test]
+fn skill_tool_unknown_name_returns_available_names() {
+    let (reg, _host) = builtins_host();
+    let out = exec_tool(
+        &reg,
+        "skill",
+        serde_json::json!({"name": "nonexistent-skill"}),
+    )
+    .unwrap_err();
+    assert!(
+        out.contains("skill not found"),
+        "unknown skill should be reported"
+    );
+    assert!(
+        out.contains("Available skills"),
+        "unknown skill should list available skills"
+    );
 }
