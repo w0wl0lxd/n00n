@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784730468305,
+  "lastUpdate": 1784730784465,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -1187,6 +1187,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 120845,
             "range": "± 12496",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "712e0ed7c0644d53de914fcea3fb8f73b06131f8",
+          "message": "Merge pull request #69 from w0wl0lxd/fix/clippy-allows\n\ntest(ui): align subagent fallback and steering messages with current behavior",
+          "timestamp": "2026-07-22T10:26:59-04:00",
+          "tree_id": "75540d623c8230a05e9f2b4d4102e4050554a570",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/712e0ed7c0644d53de914fcea3fb8f73b06131f8"
+        },
+        "date": 1784730783581,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 4886447,
+            "range": "± 26056",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1936174,
+            "range": "± 9428",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1926294,
+            "range": "± 15890",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 5811144,
+            "range": "± 18479",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3140118,
+            "range": "± 4001",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 2898668,
+            "range": "± 4191",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 430112,
+            "range": "± 1745",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 130358,
+            "range": "± 314",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 130283,
+            "range": "± 493",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 810587,
+            "range": "± 8200",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 470996,
+            "range": "± 14259",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 471166,
+            "range": "± 7361",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 57812,
+            "range": "± 1375",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 91645,
+            "range": "± 8920",
             "unit": "ns/iter"
           }
         ]
