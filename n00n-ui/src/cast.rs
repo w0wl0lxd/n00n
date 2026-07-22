@@ -64,7 +64,7 @@ pub(crate) fn usize_to_u32(v: usize) -> u32 {
     v.min(u32::MAX as usize) as u32
 }
 
-#[allow(clippy::cast_possible_wrap)]
+#[allow(clippy::cast_possible_wrap, dead_code)]
 pub(crate) fn cast_signed(v: u32) -> i32 {
     v.min(i32::MAX as u32) as i32
 }

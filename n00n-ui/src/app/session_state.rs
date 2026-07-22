@@ -113,7 +113,7 @@ impl SessionState {
                 .is_none_or(|saved| !Arc::ptr_eq(saved, &snapshot));
             if changed {
                 self.transcript_revision = self.transcript_revision.saturating_add(1);
-                self.session.transcript = Vec::clone(&snapshot);
+                Clone::clone_from(&mut self.session.transcript, &snapshot);
                 self.shared_transcript_snapshot = Some(snapshot);
             }
             self.session

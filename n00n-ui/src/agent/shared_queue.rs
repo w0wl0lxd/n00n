@@ -17,9 +17,6 @@ use n00n_agent::{
     AgentInput, ExtractedCommand, ImageSource, InterruptPoint, InterruptSource, PreDispatchGate,
 };
 
-#[cfg(test)]
-use n00n_agent::{AgentMode, ThinkingConfig};
-
 use crate::components::input::Submission;
 use crate::components::queue_panel::QueueEntry;
 use crate::theme;
