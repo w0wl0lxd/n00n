@@ -3084,6 +3084,100 @@ fn session_close_idempotent_and_prompt_after_close_errors() {
     assert_eq!(out, SESSION_CLOSED_ERR);
 }
 
+#[test]
+fn session_progress_exposes_typed_privacy_safe_projection() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "session_progress_probe",
+            description = "test",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                local sess, session_err = n00n.agent.session(ctx, {{}})
+                if session_err then return session_err end
+                local progress, progress_err = sess:get_progress()
+                sess:close()
+                if progress_err then return progress_err end
+                local encoded, encode_err = n00n.json.encode({{
+                    session_id = progress.session_id,
+                    actions_type = type(progress.actions),
+                    action_count = progress.actions and #progress.actions or -1,
+                    has_recent_tools = type(progress.recent_tools) == "table",
+                    has_completed_count = type(progress.completed_count) == "number",
+                }})
+                return encode_err or encoded
+            end
+        }})"#
+    );
+    host.load_source("session_progress_plugin", &src).unwrap();
+
+    let out = exec_tool(&reg, "session_progress_probe", serde_json::json!({})).unwrap();
+    let progress: serde_json::Value = serde_json::from_str(&out).expect("progress must be JSON");
+    assert!(
+        progress["session_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()),
+        "progress must expose its unique child session_id: {progress}"
+    );
+    assert_eq!(
+        progress["actions_type"], "table",
+        "progress actions must be an ordered Lua array"
+    );
+    assert_eq!(
+        progress["action_count"], 0,
+        "new sessions start with no actions"
+    );
+    assert_eq!(progress["has_recent_tools"], true);
+    assert_eq!(progress["has_completed_count"], true);
+}
+
+#[test]
+fn lua_sessions_under_one_parent_use_unique_identity_everywhere() {
+    let source = include_str!("../src/api/agent.rs");
+    assert!(
+        source.contains("let parent_tool_use_id = child_id.clone();"),
+        "SubagentInfo must carry generated child_id, not the containing task/team/workflow tool-call id"
+    );
+    assert!(
+        source.contains(".insert(child_id.clone(), child_trigger)")
+            && source.contains("parent_cancels.remove(&self.child_id)")
+            && source.contains("tool_use_id: self.child_id.clone()"),
+        "cancellation and SubagentHistory must use the same generated child_id"
+    );
+}
+
+#[test_case::test_case(
+    "task",
+    include_str!("../../plugins/task/init.lua")
+    ; "task"
+)]
+#[test_case::test_case(
+    "team",
+    include_str!("../../plugins/team/init.lua")
+    ; "team"
+)]
+#[test_case::test_case(
+    "workflow",
+    include_str!("../../plugins/workflow/init.lua")
+    ; "workflow"
+)]
+fn subagent_plugins_use_shared_live_privacy_safe_activity(plugin: &str, source: &str) {
+    assert!(
+        source.contains("require(\"n00n.session_activity\")"),
+        "{plugin} must use the shared session activity renderer"
+    );
+    assert!(
+        source.contains("SessionActivity.new"),
+        "{plugin} must construct the shared activity card for its subagent sessions"
+    );
+    assert!(
+        !source.contains("raw_input") && !source.contains("progress.log("),
+        "{plugin} activity path must not transport raw input or workflow logs"
+    );
+}
+
 #[test_case::test_case("{ audience = 'wurkflow' }", "unknown audience: wurkflow" ; "unknown_audience")]
 #[test_case::test_case("{ local_tools = { foo = { handler = function() return '' end } } }", "local_tools.foo: 'description' is required" ; "local_tool_missing_description")]
 #[test_case::test_case("{ local_tools = { foo = { description = 'd' } } }", "local_tools.foo: 'handler' is required" ; "local_tool_missing_handler")]
