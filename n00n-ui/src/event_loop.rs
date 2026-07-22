@@ -25,8 +25,11 @@ use n00n_lua::{
     EventHandle, HintReader, KeymapReader, LuaCommandReader, SessionReply, SessionRequest, UiAction,
 };
 use n00n_providers::Timeouts;
-use n00n_providers::provider::{Provider, fetch_all_models, from_model};
-use n00n_providers::{Message, Model};
+use n00n_providers::provider::{
+    Provider, fetch_all_models, from_model_fallback_with_openai_options,
+    from_model_with_openai_options,
+};
+use n00n_providers::{Message, Model, OpenAiOptions};
 use n00n_storage::StateDir;
 use n00n_storage::StorageError;
 use n00n_storage::id::{N00nId, N00nIdParseError, SessionRef};
@@ -80,6 +83,7 @@ pub struct EventLoopParams {
     pub input_history_size: usize,
     pub permissions: Arc<PermissionManager>,
     pub timeouts: Timeouts,
+    pub openai_options: OpenAiOptions,
     pub exit_on_done: bool,
     pub lua_command_reader: LuaCommandReader,
     pub keymap_reader: KeymapReader,
@@ -143,6 +147,7 @@ struct SpawnCtx {
     /// rules stay per-session.
     permissions: Arc<PermissionManager>,
     timeouts: Timeouts,
+    openai_options: OpenAiOptions,
     custom_commands: Arc<[CustomCommand]>,
     lua_command_reader: LuaCommandReader,
     keymap_reader: KeymapReader,
@@ -169,6 +174,7 @@ impl SpawnCtx {
             &permissions,
             Some(SessionRef::from(session.id)),
             self.timeouts,
+            self.openai_options,
             self.lua_event_handle.clone(),
             self.mcp_handle.clone(),
             self.mcp_config_errors.clone(),
@@ -301,7 +307,11 @@ fn merge_batch(
     available.store(Some(Arc::new(merged)));
 }
 
-fn spawn_model_fetch(model_slot: &Arc<ArcSwap<ModelSlot>>, timeouts: Timeouts) -> BackgroundModels {
+fn spawn_model_fetch(
+    model_slot: &Arc<ArcSwap<ModelSlot>>,
+    timeouts: Timeouts,
+    openai_options: OpenAiOptions,
+) -> BackgroundModels {
     let available: Arc<ArcSwapOption<Vec<String>>> = Arc::new(ArcSwapOption::empty());
     let bg = Arc::clone(&available);
     let (warn_tx, warn_rx) = flume::unbounded::<String>();
@@ -318,7 +328,11 @@ fn spawn_model_fetch(model_slot: &Arc<ArcSwap<ModelSlot>>, timeouts: Timeouts) -
                     return;
                 }
             };
-            let provider = match from_model(&mut resolved, timeouts) {
+            let provider = match from_model_with_openai_options(
+                &mut resolved,
+                timeouts,
+                openai_options,
+            ) {
                 Ok(p) => p,
                 Err(e) => {
                     warn!(spec = %spec, error = %e, "failed to create provider after discovery");
@@ -374,6 +388,7 @@ impl<'t> EventLoop<'t> {
             input_history_size,
             permissions,
             timeouts,
+            openai_options,
             exit_on_done,
             lua_command_reader,
             keymap_reader,
@@ -388,22 +403,27 @@ impl<'t> EventLoop<'t> {
             crate::update::spawn_check();
         });
 
-        let storage_writer = Arc::new(StorageWriter::new(storage.clone()));
+        let storage_writer = Arc::new(StorageWriter::new(storage.clone())?);
         let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
         let (mcp_handle, mcp_config_errors) = smol::block_on(mcp::start(&cwd));
 
         let provider: Arc<dyn Provider> = if needs_login {
-            Arc::from(n00n_providers::provider::from_model_fallback(
-                &mut model, timeouts,
+            Arc::from(from_model_fallback_with_openai_options(
+                &mut model,
+                timeouts,
+                openai_options,
             ))
         } else {
-            Arc::from(from_model(&mut model, timeouts).context("create provider")?)
+            Arc::from(
+                from_model_with_openai_options(&mut model, timeouts, openai_options)
+                    .context("create provider")?,
+            )
         };
         let model_slot = Arc::new(ArcSwap::from_pointee(ModelSlot {
             model: model.clone(),
             provider,
         }));
-        let bg = spawn_model_fetch(&model_slot, timeouts);
+        let bg = spawn_model_fetch(&model_slot, timeouts, openai_options);
 
         let picker = Arc::new(terminal_image::picker());
 
@@ -414,6 +434,7 @@ impl<'t> EventLoop<'t> {
             input_history_size,
             permissions,
             timeouts,
+            openai_options,
             custom_commands: Arc::from(commands),
             lua_command_reader,
             keymap_reader,
@@ -454,7 +475,7 @@ impl<'t> EventLoop<'t> {
             sessions: runtimes,
             focused,
             ctx,
-            input: InputReader::spawn(),
+            input: InputReader::spawn()?,
             warn_rx: bg.warn_rx,
             warn_tx: bg.warn_tx,
             ui_action_rx,
@@ -690,11 +711,12 @@ impl<'t> EventLoop<'t> {
                 let app = self.focused_app();
                 app.float_mgr.open(buf, config, focus, event_tx, cmd_rx);
                 if focus {
-                    app.transition_plan(crate::app::mode::PlanTrigger::InteractivePrompt);
+                    app.transition_plan(&crate::app::mode::PlanTrigger::InteractivePrompt);
                 }
             }
             UiAction::PickModel { current, reply_tx } => {
-                self.focused_app().pick_model_for_lua(current, reply_tx);
+                self.focused_app()
+                    .pick_model_for_lua(current.as_deref(), reply_tx);
                 self.handle_action(self.focused, Action::RefreshModels);
             }
             UiAction::Session { req, reply_tx } => {
@@ -1171,7 +1193,11 @@ impl<'t> EventLoop<'t> {
                 let loaded = *loaded;
                 if loaded.model_spec != self.ctx.model_slot.load().model.spec()
                     && let Ok(mut new_model) = Model::from_spec(&loaded.model_spec)
-                    && let Ok(new_provider) = from_model(&mut new_model, self.ctx.timeouts)
+                    && let Ok(new_provider) = from_model_with_openai_options(
+                        &mut new_model,
+                        self.ctx.timeouts,
+                        self.ctx.openai_options,
+                    )
                 {
                     self.sessions[idx].app.usage_slot.store(None);
                     self.ctx.model_slot.store(Arc::new(ModelSlot {
@@ -1219,7 +1245,7 @@ impl<'t> EventLoop<'t> {
                     visible,
                     rt.shell_tx.clone(),
                     cancel,
-                    self.ctx.config.clone(),
+                    &self.ctx.config,
                 );
             }
             Action::OpenEditor(path) => {
@@ -1239,7 +1265,7 @@ impl<'t> EventLoop<'t> {
             Action::Btw(question) => {
                 let slot = self.ctx.model_slot.load();
                 self.sessions[idx].app.start_btw(
-                    question,
+                    &question,
                     Arc::clone(&slot.provider),
                     slot.model.clone(),
                 );
@@ -1255,7 +1281,11 @@ impl<'t> EventLoop<'t> {
 
     fn change_model(&mut self, spec: String) {
         match Model::from_spec(&spec) {
-            Ok(mut new_model) => match from_model(&mut new_model, self.ctx.timeouts) {
+            Ok(mut new_model) => match from_model_with_openai_options(
+                &mut new_model,
+                self.ctx.timeouts,
+                self.ctx.openai_options,
+            ) {
                 Ok(new_provider) => {
                     let app = self.focused_app();
                     app.update_model(&new_model);
