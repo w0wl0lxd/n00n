@@ -165,6 +165,10 @@ fn sync_dir(path: &Path) -> std::io::Result<()> {
     {
         fs::File::open(path)?.sync_all()?;
     }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
     Ok(())
 }
 

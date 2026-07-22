@@ -5,6 +5,7 @@
 
 pub mod animation;
 pub mod app;
+pub(crate) mod cast;
 pub mod chat;
 mod clipboard;
 mod components;
@@ -53,6 +54,11 @@ pub enum RunOutcome {
     },
 }
 
+/// Run the n00n UI event loop.
+///
+/// # Errors
+///
+/// Returns an error if the terminal or event loop cannot be initialized.
 pub fn run(params: EventLoopParams, initial_prompt: Option<String>) -> Result<RunOutcome> {
     let report = {
         let (_guard, mut terminal) = terminal::TerminalGuard::init()?;

@@ -122,12 +122,10 @@ impl McpPicker {
         match self.picker.handle_key(key) {
             PickerAction::Consumed => McpPickerAction::Consumed,
             PickerAction::Toggle(idx, enabled) => {
-                let server_name = self
-                    .picker
-                    .item(idx)
-                    .expect("toggle idx valid")
-                    .name
-                    .clone();
+                let Some(item) = self.picker.item(idx) else {
+                    return McpPickerAction::Consumed;
+                };
+                let server_name = item.name.clone();
                 McpPickerAction::Toggle {
                     server_name,
                     enabled,
