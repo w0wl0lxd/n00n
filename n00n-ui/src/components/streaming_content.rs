@@ -18,14 +18,14 @@ const STREAMING_MAX_LINE_BYTES: usize = 5_000;
 /// alongside the hash because hashing alone could in principle collide;
 /// requiring both makes accidental reuse on different buffers
 /// astronomically unlikely.
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct StreamingCache {
     key: Option<CacheKey>,
     lines: Vec<Line<'static>>,
     rendered_height: Option<(u16, u16)>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct CacheKey {
     generation: u64,
     visible_len: usize,
@@ -80,7 +80,7 @@ impl StreamingCache {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum RenderMode {
     Plain,
     Markdown,
@@ -92,7 +92,6 @@ enum RenderMode {
 /// text, avoiding a full resplit/rescopy of the visible buffer on every
 /// 16ms tick. Completed lines are left untouched; only the last partial
 /// line is mutated in place.
-#[derive(Debug)]
 struct PlainState {
     completed_count: usize,
     rendered_byte_offset: usize,
@@ -320,8 +319,8 @@ impl StreamingContent {
     pub fn height(&mut self, width: u16) -> u16 {
         self.render_lines(width);
         match self.mode {
-            RenderMode::Plain => self.plain.rendered_height.map_or_else(|| 0, |(_, h)| h),
-            RenderMode::Markdown => self.cache.rendered_height.map_or_else(|| 0, |(_, h)| h),
+            RenderMode::Plain => self.plain.rendered_height.map_or(0, |(_, h)| h),
+            RenderMode::Markdown => self.cache.rendered_height.map_or(0, |(_, h)| h),
         }
     }
 
@@ -344,13 +343,7 @@ impl std::fmt::Debug for StreamingContent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StreamingContent")
             .field("typewriter", &self.typewriter)
-            .field("cache", &self.cache)
-            .field("plain", &self.plain)
-            .field("renderer", &self.renderer)
             .field("prefix", &self.prefix)
-            .field("text_style", &self.text_style)
-            .field("prefix_style", &self.prefix_style)
-            .field("mode", &self.mode)
             .finish()
     }
 }

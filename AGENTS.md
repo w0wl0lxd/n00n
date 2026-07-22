@@ -1,6 +1,6 @@
-# N00n Agent Guide
+# n00n Agent Guide
 
-N00n is an AI coding agent (like Claude Code and opencode), built bottom up to optimize costs and number of tokens used, while not sacrificing performance too much.
+n00n is an AI coding agent (like Claude Code and opencode), built bottom up to optimize costs and number of tokens used, while not sacrificing performance too much.
 
 This file is the canonical source of truth for agent behavior in this repo. Prefer it over generic Rust advice.
 

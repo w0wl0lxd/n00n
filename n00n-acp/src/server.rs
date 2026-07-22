@@ -8,8 +8,8 @@ use agent_client_protocol_schema::{
     NewSessionRequest, Notification, PromptRequest, PromptResponse, Request, RequestId,
     RequestPermissionRequest, RequestPermissionResponse, Response, SessionId, SessionModeId,
     SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
-    SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, TextContent,
-    ToolCallId, ToolCallUpdate, ToolCallUpdateFields,
+    SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, StopReason,
+    TextContent, ToolCallId, ToolCallUpdate, ToolCallUpdateFields,
 };
 use color_eyre::eyre::Context;
 use flume::{Receiver, Sender};
@@ -29,7 +29,13 @@ use crate::{AcpParams, methods, permissions, translate};
 
 const FIRST_OUTGOING_REQUEST_ID: i64 = 1000;
 
-type PendingPrompt = Arc<Mutex<Option<RequestId>>>;
+type PendingPrompt = Arc<Mutex<PendingPromptState>>;
+
+#[derive(Default)]
+struct PendingPromptState {
+    id: Option<RequestId>,
+    cancel_requested: bool,
+}
 
 struct SessionState {
     handle: InteractiveHandle,
@@ -188,7 +194,7 @@ fn spawn_session(
 }
 
 fn install_session(srv: &mut Server, handle: InteractiveHandle, current_model: String) {
-    let pending = PendingPrompt::default();
+    let pending = Arc::new(Mutex::new(PendingPromptState::default()));
     start_event_pump(
         handle.event_rx.clone(),
         handle.session_id.clone(),
@@ -239,16 +245,19 @@ fn handle_prompt(srv: &mut Server, raw: &Value, id: &RequestId) -> Result<(), Ac
         prompt: None,
     };
 
-    session
-        .handle
-        .input_tx
-        .send(input)
-        .map_err(|_| AcpError::new(-32603, "session ended"))?;
     let mut pending = session
         .pending_prompt
         .lock()
-        .map_err(|_| AcpError::internal_error().data(Value::String("lock poisoned".to_string())))?;
-    *pending = Some(id.clone());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if pending.id.is_some() {
+        return Err(AcpError::new(-32600, "a prompt is already running"));
+    }
+    pending.id = Some(id.clone());
+    pending.cancel_requested = false;
+    if session.handle.input_tx.send(input).is_err() {
+        pending.id = None;
+        return Err(AcpError::new(-32603, "session ended"));
+    }
     Ok(())
 }
 
@@ -302,7 +311,14 @@ fn handle_set_config(srv: &mut Server, raw: &Value) -> Result<AgentResponse, Acp
 fn handle_notification(srv: &Server, method: &str) {
     if method == "session/cancel" {
         if let Some(session) = &srv.session {
-            let _ = session.handle.cancel_tx.try_send(());
+            let mut pending = session
+                .pending_prompt
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if pending.id.is_some() {
+                pending.cancel_requested = true;
+                let _ = session.handle.cancel_tx.try_send(());
+            }
         }
     } else {
         debug!(method, "unknown notification");
@@ -408,9 +424,7 @@ fn start_event_pump(
                     continue;
                 }
                 AgentEvent::Done { stop_reason, .. } => {
-                    if let Ok(mut guard) = pending.lock()
-                        && let Some(id) = guard.take()
-                    {
+                    if let Some((id, _)) = take_pending(&pending) {
                         let resp = PromptResponse::new(translate::map_stop_reason(stop_reason));
                         send(
                             &out_tx,
@@ -420,11 +434,17 @@ fn start_event_pump(
                     continue;
                 }
                 AgentEvent::Error { message } => {
-                    if let Ok(mut guard) = pending.lock()
-                        && let Some(id) = guard.take()
-                    {
-                        let error = AcpError::internal_error().data(Value::String(message));
-                        send(&out_tx, Response::<AgentResponse>::new(id, Err(error)));
+                    if let Some((id, cancel_requested)) = take_pending(&pending) {
+                        if cancel_requested {
+                            let resp = PromptResponse::new(StopReason::Cancelled);
+                            send(
+                                &out_tx,
+                                Response::new(id, Ok(AgentResponse::PromptResponse(resp))),
+                            );
+                        } else {
+                            let error = AcpError::internal_error().data(Value::String(message));
+                            send(&out_tx, Response::<AgentResponse>::new(id, Err(error)));
+                        }
                     }
                     continue;
                 }
@@ -434,6 +454,16 @@ fn start_event_pump(
         }
     })
     .detach();
+}
+
+fn take_pending(pending: &PendingPrompt) -> Option<(RequestId, bool)> {
+    let mut pending = pending
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    pending
+        .id
+        .take()
+        .map(|id| (id, std::mem::take(&mut pending.cancel_requested)))
 }
 
 fn send(out_tx: &Sender<Value>, msg: impl Serialize) {

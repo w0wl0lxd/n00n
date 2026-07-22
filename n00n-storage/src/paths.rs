@@ -359,6 +359,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unsafe_code)]
     fn user_config_dirs_neither_depends_on_process_env() {
         let home_a = tempfile::tempdir().unwrap();
         let xdg_a = home_a.path().join(".config").join(APP_NAME);

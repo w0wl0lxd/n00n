@@ -54,9 +54,11 @@ pub const MIN_STREAM_TIMEOUT_SECS: u64 = 10;
 
 pub const DEFAULT_BUILTINS: &[&str] = &[
     "agent_control",
+    "arbor",
     "bash",
     "batch",
     "code_execution",
+    "codegraph",
     "edit",
     "glob",
     "grep",
@@ -352,6 +354,7 @@ pub struct ToolOutputLinesFile {
     pub workflow: Option<usize>,
     pub index: Option<usize>,
     pub grep: Option<usize>,
+    pub explore: Option<usize>,
     pub read: Option<usize>,
     pub write: Option<usize>,
     pub web: Option<usize>,
@@ -369,6 +372,7 @@ impl ToolOutputLinesFile {
             workflow,
             index,
             grep,
+            explore,
             read,
             write,
             web,
@@ -838,7 +842,7 @@ pub struct UiConfig {
     pub show_thinking: bool,
 
     #[config(
-        default = true,
+        default = false,
         desc = "Show the n00n mascot on the idle splash screen"
     )]
     pub mascot: bool,
@@ -893,6 +897,7 @@ pub struct ToolOutputLines {
     pub workflow: usize,
     pub index: usize,
     pub grep: usize,
+    pub explore: usize,
     pub read: usize,
     pub write: usize,
     pub web: usize,
@@ -907,6 +912,7 @@ impl ToolOutputLines {
         workflow: 8,
         index: 3,
         grep: 3,
+        explore: 3,
         read: 3,
         write: 7,
         web: 3,
@@ -920,6 +926,7 @@ impl ToolOutputLines {
         ("workflow", Self::DEFAULT.workflow),
         ("index", Self::DEFAULT.index),
         ("grep", Self::DEFAULT.grep),
+        ("explore", Self::DEFAULT.explore),
         ("read", Self::DEFAULT.read),
         ("write", Self::DEFAULT.write),
         ("web", Self::DEFAULT.web),
@@ -937,6 +944,7 @@ impl ToolOutputLines {
             workflow: f.workflow.map_or(d.workflow, |v| v),
             index: f.index.map_or(d.index, |v| v),
             grep: f.grep.map_or(d.grep, |v| v),
+            explore: f.explore.map_or(d.explore, |v| v),
             read: f.read.map_or(d.read, |v| v),
             write: f.write.map_or(d.write, |v| v),
             web: f.web.map_or(d.web, |v| v),
@@ -944,7 +952,7 @@ impl ToolOutputLines {
         }
     }
 
-    fn fields(&self) -> [(&'static str, usize); 10] {
+    fn fields(&self) -> [(&'static str, usize); 11] {
         [
             ("bash", self.bash),
             ("code_execution", self.code_execution),
@@ -952,6 +960,7 @@ impl ToolOutputLines {
             ("workflow", self.workflow),
             ("index", self.index),
             ("grep", self.grep),
+            ("explore", self.explore),
             ("read", self.read),
             ("write", self.write),
             ("web", self.web),
@@ -986,6 +995,7 @@ impl ToolOutputLines {
             "workflow" => self.workflow,
             "index" => self.index,
             "grep" | "glob" => self.grep,
+            "arbor" | "codegraph" | "explore" => self.explore,
             "read" => self.read,
             "memory" => self.write,
             name if FILE_WRITE_TOOLS.contains(&name) => self.write,

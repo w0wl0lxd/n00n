@@ -153,6 +153,12 @@ fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line
         Some(ctx.total.cost(&ctx.model.pricing, ctx.fast))
     };
     lines.push(Line::from(totals_row(ctx.total, total_cost, theme)));
+    lines.push(Line::from(Span::styled(
+        format!(
+            "{PREFIX}Local token counts include cached context; they are not ChatGPT subscription quota."
+        ),
+        theme.status_dim,
+    )));
 
     if let Some(state) = ctx.quota {
         lines.push(Line::default());
@@ -237,11 +243,13 @@ fn header_row(model_w: usize, theme: &crate::theme::Theme) -> Vec<Span<'static>>
             theme.status_dim,
         ),
         gap(),
-        h("in"),
+        h("fresh"),
         gap(),
         h("out"),
         gap(),
-        h("cache"),
+        h("read"),
+        gap(),
+        h("write"),
         gap(),
         h("total"),
         gap(),
@@ -268,6 +276,8 @@ fn model_row(
         num(usage.output),
         gap(),
         num(usage.cache_read),
+        gap(),
+        num(usage.cache_creation),
         gap(),
         num(usage.total()),
         gap(),
@@ -472,6 +482,32 @@ mod tests {
         let err = quota_lines(&UsageFetchState::Error("nope".into()), &theme);
         assert_eq!(err.len(), 1);
         assert!(err[0].spans.iter().any(|s| s.content.contains("nope")));
+    }
+
+    #[test]
+    fn usage_columns_keep_fresh_and_cached_tokens_separate() {
+        let theme = crate::theme::current();
+        let header = header_row(10, &theme)
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(header.contains("fresh"));
+        assert!(header.contains("read"));
+        assert!(header.contains("write"));
+
+        let usage = StoredTokenUsage {
+            input: 10,
+            output: 20,
+            cache_read: 30,
+            cache_creation: 40,
+        };
+        let row = model_row("gpt", &usage, None, 10, Style::new(), Style::new())
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        for value in ["10", "20", "30", "40"] {
+            assert!(row.contains(value));
+        }
     }
 
     #[test]

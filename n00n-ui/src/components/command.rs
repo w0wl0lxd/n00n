@@ -301,9 +301,9 @@ impl CommandPalette {
         if mcp_snap.generation != self.mcp_generation || lua_snap.generation != self.lua_generation
         {
             self.mcp_generation = mcp_snap.generation;
-            self.mcp_prompts.clone_from(&mcp_snap.prompts);
+            self.mcp_prompts = mcp_snap.prompts.clone();
             self.lua_generation = lua_snap.generation;
-            self.lua_commands.clone_from(&lua_snap.commands);
+            self.lua_commands = lua_snap.commands.clone();
             self.nucleo = Self::build_nucleo(&self.custom, &self.mcp_prompts, &self.lua_commands);
         }
         let Some(stripped) = input.strip_prefix('/') else {
@@ -313,7 +313,7 @@ impl CommandPalette {
         };
 
         let parts: Vec<&str> = stripped.split_whitespace().collect();
-        let cmd_word = parts.first().copied().unwrap_or_else(|| stripped);
+        let cmd_word = parts.first().copied().unwrap_or(stripped);
         let trailing_space = stripped.ends_with(char::is_whitespace);
 
         self.current_arg_count = if trailing_space {
@@ -437,7 +437,7 @@ impl CommandPalette {
         let args = input
             .strip_prefix('/')
             .and_then(|s| s.split_once(char::is_whitespace))
-            .map_or_else(|| "", |(_, a)| a.trim());
+            .map_or("", |(_, a)| a.trim());
         Some(ParsedCommand {
             name,
             args: args.to_string(),
@@ -460,31 +460,29 @@ impl CommandPalette {
     }
 
     pub fn view(&self, frame: &mut Frame, input_area: Rect) -> Option<Rect> {
-        const GAP: usize = 2;
-        const PAD: usize = 1;
         let filtered = &self.filtered;
         if filtered.is_empty() {
             return None;
         }
 
-        let popup_height = u16::try_from(filtered.len())
-            .unwrap_or_else(|_| u16::MAX)
-            .min(input_area.y);
+        let popup_height = (filtered.len() as u16).min(input_area.y);
         if popup_height == 0 {
             return None;
         }
+
+        const GAP: usize = 2;
         let max_name = filtered
             .iter()
             .map(|item| self.item_name(item).len())
             .max()
-            .unwrap_or_else(|| 0);
+            .unwrap_or(0);
         let max_desc = filtered
             .iter()
             .map(|item| self.item_description(item).len())
             .max()
-            .unwrap_or_else(|| 0);
-        let popup_width =
-            u16::try_from(PAD + max_name + GAP + max_desc + PAD).unwrap_or_else(|_| u16::MAX);
+            .unwrap_or(0);
+        const PAD: usize = 1;
+        let popup_width = (PAD + max_name + GAP + max_desc + PAD) as u16;
 
         let popup = Rect {
             x: input_area.x,
@@ -505,7 +503,7 @@ impl CommandPalette {
 
                 if selected {
                     let s = t.item_selected;
-                    let highlighted_name = Self::build_highlighted_spans(&name, &m.indices, s);
+                    let highlighted_name = self.build_highlighted_spans(&name, &m.indices, s);
                     let mut spans = vec![Span::styled(" ".repeat(PAD), s)];
                     spans.extend(highlighted_name);
                     spans.push(Span::styled(" ".repeat(name_pad), s));
@@ -513,7 +511,7 @@ impl CommandPalette {
                     spans.push(Span::styled(" ".repeat(PAD), s));
                     Line::from(spans)
                 } else {
-                    let highlighted_name = Self::build_highlighted_spans(&name, &m.indices, t.item);
+                    let highlighted_name = self.build_highlighted_spans(&name, &m.indices, t.item);
                     let mut spans = vec![Span::raw(" ".repeat(PAD))];
                     spans.extend(highlighted_name);
                     spans.push(Span::raw(" ".repeat(name_pad)));
@@ -533,14 +531,14 @@ impl CommandPalette {
         Some(popup)
     }
 
-    fn build_highlighted_spans(text: &str, indices: &[u32], base: Style) -> Vec<Span<'static>> {
+    fn build_highlighted_spans(&self, text: &str, indices: &[u32], base: Style) -> Vec<Span<'_>> {
         if indices.is_empty() {
             return vec![Span::styled(text.to_string(), base)];
         }
 
         let t = theme::current();
         let highlight = base
-            .fg(t.accent.fg.unwrap_or_else(Default::default))
+            .fg(t.accent.fg.unwrap_or_default())
             .add_modifier(Modifier::BOLD);
 
         let mut spans = Vec::new();
@@ -548,16 +546,14 @@ impl CommandPalette {
         let mut run = String::new();
 
         for (i, ch) in text.chars().enumerate() {
-            let matched = indices
-                .binary_search(&u32::try_from(i).unwrap_or_else(|_| u32::MAX))
-                .is_ok();
-            if matched != in_match && !run.is_empty() {
+            let is_match = indices.binary_search(&(i as u32)).is_ok();
+            if is_match != in_match && !run.is_empty() {
                 spans.push(Span::styled(
                     mem::take(&mut run),
                     if in_match { highlight } else { base },
                 ));
             }
-            in_match = matched;
+            in_match = is_match;
             run.push(ch);
         }
 

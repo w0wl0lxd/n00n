@@ -595,18 +595,18 @@ fn build_syntax_theme(
 }
 
 impl Theme {
-    #[allow(clippy::too_many_lines)]
     fn from_toml(toml_str: &str) -> Result<Self, String> {
         let full_table: toml::Table = toml::from_str(toml_str).map_err(|e| e.to_string())?;
 
         let raw_palette: HashMap<String, String> = full_table
             .get("palette")
             .and_then(|v| v.as_table())
-            .map_or_else(Default::default, |t| {
+            .map(|t| {
                 t.iter()
                     .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_owned())))
                     .collect()
-            });
+            })
+            .unwrap_or_default();
 
         let palette: HashMap<String, Color> = raw_palette
             .iter()
@@ -616,18 +616,20 @@ impl Theme {
         let ui: HashMap<String, StyleDef> = full_table
             .get("ui")
             .and_then(|v| v.as_table())
-            .map_or_else(Default::default, |t| {
+            .map(|t| {
                 t.iter()
                     .filter_map(|(k, v)| {
                         let def: StyleDef = v.clone().try_into().ok()?;
                         Some((k.clone(), def))
                     })
                     .collect()
-            });
+            })
+            .unwrap_or_default();
 
         let style = |key: &str| -> Style {
             ui.get(key)
-                .map_or_else(Default::default, |d| resolve_style(d, &palette))
+                .map(|d| resolve_style(d, &palette))
+                .unwrap_or_default()
         };
 
         let derived_color = |ui_key: &str, scopes: &[&str]| -> Color {
@@ -656,8 +658,7 @@ impl Theme {
 
         let syntax = build_syntax_theme(&full_table, &raw_palette);
 
-        let color =
-            |key: &str| -> Color { palette.get(key).copied().unwrap_or_else(|| Color::Reset) };
+        let color = |key: &str| -> Color { palette.get(key).copied().unwrap_or(Color::Reset) };
 
         let bold_style = derived_style(
             "bold",
@@ -738,7 +739,7 @@ impl Theme {
                 let s = style("item_match");
                 if s == Style::default() {
                     style("item")
-                        .fg(style("accent").fg.unwrap_or_else(Default::default))
+                        .fg(style("accent").fg.unwrap_or_default())
                         .add_modifier(Modifier::BOLD)
                 } else {
                     s
@@ -748,7 +749,7 @@ impl Theme {
                 let s = style("item_match_selected");
                 if s == Style::default() {
                     style("item_selected")
-                        .fg(style("accent").fg.unwrap_or_else(Default::default))
+                        .fg(style("accent").fg.unwrap_or_default())
                         .add_modifier(Modifier::BOLD)
                 } else {
                     s
@@ -802,7 +803,6 @@ impl Theme {
         })
     }
 
-    #[allow(clippy::expect_used)]
     fn load_or_bundled() -> Self {
         if let Some(name) = read_theme_name()
             && let Ok(theme) = load_by_name(&name)
@@ -814,7 +814,7 @@ impl Theme {
 }
 
 pub(crate) fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
-    crate::cast::f32_to_u8(f32::from(a) + (f32::from(b) - f32::from(a)) * t.clamp(0.0, 1.0))
+    (f32::from(a) + (f32::from(b) - f32::from(a)) * t.clamp(0.0, 1.0)) as u8
 }
 
 pub(crate) fn dim_style(style: Style, factor: f32) -> Style {

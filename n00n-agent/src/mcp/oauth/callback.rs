@@ -1,8 +1,10 @@
 use futures_lite::AsyncWriteExt;
 use smol::net::TcpListener;
+use std::time::Duration;
 
 const PREFERRED_PORT: u16 = 19876;
 const MAX_HEADER_SIZE: usize = 8192;
+const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const CALLBACK_PATH: &str = "/mcp/oauth/callback";
 const SUCCESS_HTML: &str =
     "<html><body><h1>Authentication successful</h1><p>You can close this tab.</p></body></html>";
@@ -53,20 +55,15 @@ impl CallbackServer {
                 .await
                 .map_err(|e| format!("accept failed: {e}"))?;
 
-            let mut buf = Vec::with_capacity(1024);
-            let mut tmp = [0u8; 1024];
-            loop {
-                let n = futures_lite::AsyncReadExt::read(&mut stream, &mut tmp)
-                    .await
-                    .map_err(|e| format!("read failed: {e}"))?;
-                if n == 0 {
-                    break;
-                }
-                buf.extend_from_slice(&tmp[..n]);
-                if buf.len() >= MAX_HEADER_SIZE || buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                    break;
-                }
-            }
+            let Ok(buf) = smol::future::race(read_headers(&mut stream), async {
+                smol::Timer::after(HEADER_READ_TIMEOUT).await;
+                Err("request header timed out".to_owned())
+            })
+            .await
+            else {
+                let _ = respond(&mut stream, 408, "Request Timeout").await;
+                continue;
+            };
             let request = String::from_utf8_lossy(&buf);
 
             let path = match request.lines().next() {
@@ -82,6 +79,20 @@ impl CallbackServer {
             let query = path.split('?').nth(1).map_or_else(|| "", |v| v);
             let params = parse_query(query);
 
+            let state = params
+                .iter()
+                .find(|(k, _)| k == "state")
+                .map(|(_, v)| v.clone());
+            let Some(state) = state else {
+                let _ = respond(&mut stream, 400, "Missing state").await;
+                continue;
+            };
+
+            if state != expected_state {
+                let _ = respond(&mut stream, 403, "State mismatch").await;
+                continue;
+            }
+
             if let Some(error) = params.iter().find(|(k, _)| k == "error") {
                 let desc = params
                     .iter()
@@ -91,27 +102,34 @@ impl CallbackServer {
                 return Err(format!("OAuth error: {desc}"));
             }
 
-            let state = params
-                .iter()
-                .find(|(k, _)| k == "state")
-                .map(|(_, v)| v.clone());
             let code = params
                 .iter()
                 .find(|(k, _)| k == "code")
                 .map(|(_, v)| v.clone());
-
-            let (Some(state), Some(code)) = (state, code) else {
-                let _ = respond(&mut stream, 400, "Missing code or state").await;
+            let Some(code) = code else {
+                let _ = respond(&mut stream, 400, "Missing code").await;
                 continue;
             };
 
-            if state != expected_state {
-                let _ = respond(&mut stream, 403, "State mismatch").await;
-                continue;
-            }
-
             let _ = respond(&mut stream, 200, SUCCESS_HTML).await;
             return Ok(CallbackResult { code });
+        }
+    }
+}
+
+async fn read_headers(stream: &mut smol::net::TcpStream) -> Result<Vec<u8>, String> {
+    let mut buf = Vec::with_capacity(1024);
+    let mut tmp = [0u8; 1024];
+    loop {
+        let n = futures_lite::AsyncReadExt::read(stream, &mut tmp)
+            .await
+            .map_err(|e| format!("read failed: {e}"))?;
+        if n == 0 {
+            return Ok(buf);
+        }
+        buf.extend_from_slice(&tmp[..n]);
+        if buf.len() >= MAX_HEADER_SIZE || buf.windows(4).any(|w| w == b"\r\n\r\n") {
+            return Ok(buf);
         }
     }
 }

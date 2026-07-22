@@ -23,7 +23,7 @@ pub async fn register_client(
     redirect_uri: &str,
 ) -> Result<ClientRegistration, OAuthError> {
     let body = json!({
-        "client_name": "N00n",
+        "client_name": "n00n",
         "redirect_uris": [redirect_uri],
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],

@@ -88,11 +88,10 @@ fn finish_compact(
         context_size: Some(response.usage.output),
     })));
 
-    let new_history = vec![
+    history.compact_boundary(
         Message::user("What did we do so far?".into()),
         response.message,
-    ];
-    history.compact_boundary(new_history);
+    );
     #[allow(clippy::unnecessary_lazy_evaluations)]
     let duration_ms =
         u64::try_from(compact_start.elapsed().as_millis()).unwrap_or_else(|_| u64::MAX);
@@ -117,6 +116,7 @@ pub async fn compact(
 ) -> Result<(), AgentError> {
     let cancel = CancelToken::none();
     let usage = compact_history(provider, model, history, event_tx, &cancel).await?;
+    event_tx.send(AgentEvent::CompactionDone)?;
 
     event_tx.send(AgentEvent::Done {
         usage,

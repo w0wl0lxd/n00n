@@ -3,6 +3,7 @@
 -- (product_manager, planner, developer, tester, reviewer); each runs as its own
 -- subagent on a cost-aware model tier. Built entirely on n00n.agent.* and the
 -- existing provider/model-tier machinery — no core changes.
+local ActivityPreview = require("n00n.activity_preview")
 local memory = require("mem")
 local retrieve = require("retrieve")
 local roles = require("roles")
@@ -14,8 +15,25 @@ local MAX_PLAN_STEPS = 8
 local DEFAULT_PLAN_STEPS = 6
 local DEFAULT_SWARM_ROUNDS = 2
 local MAX_SWARM_ROUNDS = 4
+local DEFAULT_TEAM_AGENTS = 16
+local MAX_TEAM_AGENTS = 24
+local MAX_TEAM_CONCURRENT = 4
 local TEAM_TIMEOUT_SECS = 1800
 local MAX_RELAY_BYTES = 12000
+
+local function add_cost(total, value)
+  if total == nil or value == nil then
+    return nil
+  end
+  return total + value
+end
+
+local function cost_label(cost, model)
+  if cost == nil then
+    return " (cost unavailable, " .. (model or "?") .. ")"
+  end
+  return string.format(" (~$%.4f, %s)", cost, model or "?")
+end
 
 local PLANNER_OUTPUT = {
   type = "object",
@@ -40,33 +58,8 @@ local PLANNER_OUTPUT = {
 }
 
 local description =
-  [[Launch a team of agents led by a supervisor (ALMAS). The supervisor decomposes an SDLC goal into role agents and runs each as its own subagent on a cost-aware model tier:
-
-- product_manager: scope & acceptance (weak)
-- planner: step breakdown (medium)
-- developer: implementation (strong)
-- tester: validate (medium)
-- reviewer: critique the diff (medium)
-
-Modes:
-- supervised (default): return the supervisor's plan for review.
-- autonomous: run the centralized team plan to completion; tester/reviewer
-  steps are gated by a diversity-aware validator quorum.
-- swarm: decentralized SwarmSys rounds (Explorers/Workers/Validators) with a
-  pheromone reinforcement loop, gated by an information-bottleneck β check
-  that decides whether fanning out helps (and how much context to relay).
-
-Notes:
-1. The supervisor returns a plan; each step runs independently.
-2. Agents are routed by cost-aware tiers by default. Set model for an exact model,
-   model_tier for a fixed tier, or auto_tier=false to disable adaptive routing.
-3. With use_retrieval, steps are grounded in repo context (PR-H).
-4. With compact (opt-in), retrieved context is TOON-encoded to save tokens (PR-C).
-5. swarm mode runs bounded rounds (max_rounds); the β gate may fall back to a
-   single strong-agent pass when coordination would not help.
-6. Set background=true to start a non-blocking Team run and receive an agent_id.
-   Use agent_control to inspect, steer, or stop it.
-]]
+  [[Run a bounded ALMAS team for an SDLC goal. Roles cover scope, planning, implementation, testing, and review on cost-aware tiers.
+supervised returns a plan; autonomous executes it with optional validator quorum; swarm runs bounded explorer/worker/validator rounds with an information-bottleneck fan-out gate. model overrides tiers; auto_tier routes by task. use_retrieval grounds work, compact TOON-encodes that context, and background returns an agent_id for agent_control. Default/hard budgets are 16/24 agents and 4 concurrent.]]
 
 local schema = {
   type = "object",
@@ -92,8 +85,14 @@ local schema = {
     max_concurrent = {
       type = "integer",
       minimum = 1,
-      maximum = 8,
-      description = "Swarm mode only: max concurrent subagents per round (default 8).",
+      maximum = MAX_TEAM_CONCURRENT,
+      description = "Swarm concurrency (default 4). Maximum 4.",
+    },
+    max_agents = {
+      type = "integer",
+      minimum = 1,
+      maximum = MAX_TEAM_AGENTS,
+      description = "Total team agent-call budget (default 16, hard maximum 24).",
     },
     max_steps = {
       type = "integer",
@@ -146,6 +145,21 @@ local schema = {
 
 local NUDGE = "You have not called structured_output. Call it now with the plan object."
 
+local function new_agent_budget(requested)
+  local limit = math.min(requested or DEFAULT_TEAM_AGENTS, MAX_TEAM_AGENTS)
+  return {
+    limit = limit,
+    used = 0,
+    consume = function(self)
+      if self.used >= self.limit then
+        return nil, "team agent-call budget exhausted (" .. self.limit .. "; hard maximum " .. MAX_TEAM_AGENTS .. ")"
+      end
+      self.used = self.used + 1
+      return true
+    end,
+  }
+end
+
 local function plan_prompt(goal)
   return "Decompose this goal into ordered SDLC steps. Assign each step exactly one role "
     .. "from: product_manager, planner, developer, tester, reviewer. "
@@ -154,6 +168,10 @@ local function plan_prompt(goal)
 end
 
 local function run_supervisor(ctx, goal, opts)
+  local budget_ok, budget_err = opts._agent_budget:consume()
+  if not budget_ok then
+    return nil, budget_err
+  end
   local validator, verr = n00n.json.schema_validator(PLANNER_OUTPUT)
   if verr then
     return nil, "planner schema invalid: " .. verr
@@ -201,16 +219,24 @@ local function run_supervisor(ctx, goal, opts)
     return nil, sess_err
   end
 
-  local res, rerr = sess:prompt(plan_prompt(goal))
+  local res, rerr = opts._preview:prompt(sess, plan_prompt(goal), "supervisor")
   if not rerr and not captured then
-    res, rerr = sess:prompt(NUDGE)
+    local nudged
+    nudged, rerr = opts._preview:prompt(sess, NUDGE, "supervisor")
+    if nudged then
+      res = nudged
+    end
   end
   sess:close()
+  local usage, cost, metrics_err = roles.metrics(model.spec, res)
+  if metrics_err then
+    return nil, "supervisor usage pricing failed: " .. metrics_err, nil, usage
+  end
   if rerr then
-    return nil, "supervisor failed: " .. rerr
+    return nil, "supervisor failed: " .. rerr, cost, usage
   end
   if not captured then
-    return nil, "supervisor produced no plan"
+    return nil, "supervisor produced no plan", cost, usage
   end
   local max_steps = math.min(opts.max_steps or DEFAULT_PLAN_STEPS, MAX_PLAN_STEPS)
   local steps = {}
@@ -218,9 +244,9 @@ local function run_supervisor(ctx, goal, opts)
     steps[i] = captured.steps[i]
   end
   if #steps == 0 then
-    return nil, "supervisor produced an empty plan"
+    return nil, "supervisor produced an empty plan", cost, usage
   end
-  return steps, nil
+  return steps, nil, cost, usage
 end
 
 local function run_step(ctx, step, goal, input, relay_k, prior_results)
@@ -245,29 +271,44 @@ local function run_step(ctx, step, goal, input, relay_k, prior_results)
     end
   end
 
-  local role_opts =
-    { model = input.model, model_tier = step.tier, auto_tier = input.auto_tier, thinking = input.thinking }
+  local role_opts = {
+    model = input.model,
+    model_tier = step.tier,
+    auto_tier = input.auto_tier,
+    thinking = input.thinking,
+    budget = input._agent_budget,
+    preview = input._preview,
+  }
   return roles.run(ctx, step.role, step_prompt, role_opts)
 end
 
 local function run_autonomous(ctx, goal, input, steps, relay_k)
   local results = {}
   local total_cost = 0.0
+  local total_usage = roles.usage()
   local failures = 0
   for i, step in ipairs(steps) do
     local r = run_step(ctx, step, goal, input, relay_k, results)
+    total_cost = add_cost(total_cost, r.cost)
+    total_usage = roles.add_usage(total_usage, r.usage)
     if not r.ok then
       failures = failures + 1
       results[#results + 1] = string.format("[%d] %s: ERROR %s", i, step.role, r.error)
       break
     else
-      local cost_line = string.format(" (~$%.4f, %s)", r.cost or 0, r.model or "?")
+      local cost_line = cost_label(r.cost, r.model)
       results[#results + 1] = string.format("[%d] %s%s:\n%s", i, step.role, cost_line, r.text or "")
-      total_cost = total_cost + (r.cost or 0)
 
       if input.quorum ~= false and (step.role == "tester" or step.role == "reviewer") then
-        local verdict =
-          quorum.validate(ctx, table.concat(results, "\n\n"), { n = 3, model = input.model, thinking = input.thinking })
+        local verdict = quorum.validate(ctx, table.concat(results, "\n\n"), {
+          n = 3,
+          model = input.model,
+          thinking = input.thinking,
+          budget = input._agent_budget,
+          preview = input._preview,
+        })
+        total_cost = add_cost(total_cost, verdict.cost)
+        total_usage = roles.add_usage(total_usage, verdict.usage)
         if not verdict.accepted then
           results[#results + 1] = string.format(
             "[quorum] %s output not endorsed by diverse validators (confidence %.2f):\n%s",
@@ -279,7 +320,7 @@ local function run_autonomous(ctx, goal, input, steps, relay_k)
       end
     end
   end
-  return results, total_cost, failures
+  return results, total_cost, failures, total_usage
 end
 
 -- Information-bottleneck fallback: a single strong-agent pass when fanning out
@@ -288,26 +329,28 @@ end
 local function run_single_pass(ctx, goal, input, steps, relay_k)
   local results = {}
   local total_cost = 0.0
+  local total_usage = roles.usage()
   local failures = 0
   for i, step in ipairs(steps) do
     local r = run_step(ctx, step, goal, input, relay_k, results)
     r.model = r.model or "strong"
+    total_cost = add_cost(total_cost, r.cost)
+    total_usage = roles.add_usage(total_usage, r.usage)
     if not r.ok then
       failures = failures + 1
       results[#results + 1] = string.format("[%d] %s: ERROR %s", i, step.role, r.error)
       break
     else
-      local cost_line = string.format(" (~$%.4f, %s)", r.cost or 0, r.model or "?")
+      local cost_line = cost_label(r.cost, r.model)
       results[#results + 1] = string.format("[%d] %s%s:\n%s", i, step.role, cost_line, r.text or "")
-      total_cost = total_cost + (r.cost or 0)
     end
   end
-  return results, total_cost, failures
+  return results, total_cost, failures, total_usage
 end
 
 local finish_run
 
-local function handler(input, ctx)
+local function run_team(input, ctx)
   if input.background then
     local forwarded = {}
     for key, value in pairs(input) do
@@ -330,6 +373,7 @@ local function handler(input, ctx)
   if input.thinking == nil then
     input.thinking = "adaptive"
   end
+  input._agent_budget = new_agent_budget(input.max_agents)
   local goal = input.goal
 
   local slug = memory.slug(input.goal)
@@ -338,9 +382,10 @@ local function handler(input, ctx)
     goal = goal .. "\n\nPrior learnings for this goal:\n" .. prior
   end
 
-  local steps, perr = run_supervisor(ctx, goal, input)
+  local steps, perr, supervisor_cost, supervisor_usage = run_supervisor(ctx, goal, input)
+  supervisor_usage = roles.usage(supervisor_usage)
   if perr then
-    return { llm_output = perr, is_error = true }
+    return { llm_output = perr, is_error = true, cost = supervisor_cost, usage = supervisor_usage }
   end
 
   if input.mode == "supervised" then
@@ -352,13 +397,15 @@ local function handler(input, ctx)
       llm_output = table.concat(plan, "\n")
         .. '\n\nReview the plan, then run `team` again with `mode = "autonomous"` or `mode = "swarm"` to execute it.',
       format = "markdown",
+      cost = supervisor_cost,
+      usage = supervisor_usage,
     }
   end
 
   -- Information-bottleneck β gate: decide fan-out + relay budget (offline).
   local ibn_tier, model_err = ibn.resolve_tier(ctx, input.model, input.model_tier)
   if model_err then
-    return { llm_output = model_err, is_error = true }
+    return { llm_output = model_err, is_error = true, cost = supervisor_cost, usage = supervisor_usage }
   end
   local gate = input.ibn_gate == false and { fan_out = true, relay_k = 6, reason = "IBN gate disabled" }
     or ibn.decide(ctx, goal, ibn_tier)
@@ -369,40 +416,81 @@ local function handler(input, ctx)
       local out = swarm.run(ctx, goal, {
         relay_k = relay_k,
         max_rounds = math.min(input.max_rounds or DEFAULT_SWARM_ROUNDS, MAX_SWARM_ROUNDS),
-        max_concurrent = math.min(input.max_concurrent or 8, 8),
+        max_concurrent = math.min(input.max_concurrent or MAX_TEAM_CONCURRENT, MAX_TEAM_CONCURRENT),
         model = input.model,
+        budget = input._agent_budget,
         thinking = input.thinking,
         quorum = input.quorum,
+        preview = input._preview,
       })
+      local total_cost = add_cost(supervisor_cost, out.cost)
+      local total_usage = roles.add_usage(supervisor_usage, out.usage)
       if not out.ok then
-        return { llm_output = "swarm failed: " .. (out.error or "unknown"), is_error = true }
+        return {
+          llm_output = "swarm failed: " .. (out.error or "unknown"),
+          is_error = true,
+          cost = total_cost,
+          usage = total_usage,
+        }
       end
       local results = { string.format("[swarm] β gate: %s\n\n%s", gate.reason, out.text or "") }
-      return finish_run(ctx, input, results, out.cost or 0, out.rounds or 0, "rounds", slug)
+      return finish_run(ctx, input, results, total_cost, out.rounds or 0, "rounds", slug, nil, total_usage)
     end
 
     -- β gate says don't fan out: single strong-agent pass, log the reason.
-    local results, total_cost, failures = run_single_pass(ctx, goal, input, steps, relay_k)
+    local results, total_cost, failures, total_usage = run_single_pass(ctx, goal, input, steps, relay_k)
+    total_cost = add_cost(supervisor_cost, total_cost)
+    total_usage = roles.add_usage(supervisor_usage, total_usage)
     results[1] = "[swarm] β gate: " .. gate.reason .. "\n" .. (results[1] or "")
-    return finish_run(ctx, input, results, total_cost, #results, "steps", slug, failures)
+    return finish_run(ctx, input, results, total_cost, #results, "steps", slug, failures, total_usage)
   end
 
-  local results, total_cost, failures = run_autonomous(ctx, goal, input, steps, relay_k)
-  return finish_run(ctx, input, results, total_cost, #results, "steps", slug, failures)
+  local results, total_cost, failures, total_usage = run_autonomous(ctx, goal, input, steps, relay_k)
+  total_cost = add_cost(supervisor_cost, total_cost)
+  total_usage = roles.add_usage(supervisor_usage, total_usage)
+  return finish_run(ctx, input, results, total_cost, #results, "steps", slug, failures, total_usage)
 end
 
-finish_run = function(ctx, input, results, total_cost, completed, unit, slug, failures)
+local function handler(input, ctx)
+  if input.background then
+    return run_team(input, ctx)
+  end
+  local preview, preview_err = ActivityPreview.new(ctx, "team: " .. (input.goal or "team"), { session_rows = true })
+  if not preview then
+    return { llm_output = "failed to publish team preview: " .. tostring(preview_err), is_error = true }
+  end
+  input._preview = preview
+  local ok, result = pcall(run_team, input, ctx)
+  if not ok then
+    return { llm_output = "team failed: " .. tostring(result), is_error = true, body = preview.view.buf }
+  end
+  result.body = preview.view.buf
+  return result
+end
+
+finish_run = function(ctx, input, results, total_cost, completed, unit, slug, failures, usage)
   local report = table.concat(results, "\n\n")
   local failed = failures or 0
   local successful = math.max(completed - failed, 0)
-  local summary = string.format("\n\n---\nTeam complete: %d %s, ~$%.4f estimated cost.", successful, unit, total_cost)
+  local summary
+  if total_cost == nil then
+    summary = string.format("\n\n---\nTeam complete: %d %s. Cost estimate unavailable.", successful, unit)
+  else
+    summary = string.format("\n\n---\nTeam complete: %d %s, ~$%.4f estimated cost.", successful, unit, total_cost)
+  end
   if failed > 0 then
     summary = summary .. string.format(" %d step(s) failed; the run is incomplete.", failed)
   end
 
   memory.save(ctx, slug, report .. summary)
 
-  return { llm_output = report .. summary, format = "markdown", is_error = failed > 0 }
+  return {
+    llm_output = report .. summary,
+    format = "markdown",
+    is_error = failed > 0,
+    cost = total_cost,
+    usage = roles.usage(usage),
+  }
 end
 
 local function header(input)

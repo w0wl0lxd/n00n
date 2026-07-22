@@ -18,6 +18,7 @@ use n00n_agent::{
 use n00n_lua::EventHandle;
 use n00n_providers::{AgentError, Message, Model, TokenUsage};
 use n00n_storage::id::SessionRef;
+use n00n_storage::sessions::TranscriptEntry;
 use serde_json::Value;
 use tracing::error;
 
@@ -67,6 +68,7 @@ impl AgentLoop {
         config: AgentConfig,
         tool_output_lines: ToolOutputLines,
         initial_history: Vec<Message>,
+        initial_transcript: Vec<TranscriptEntry<Message>>,
         shared_history: Arc<ArcSwap<Vec<Message>>>,
         shared_transcript: n00n_agent::SharedTranscript,
         btw_system: Arc<ArcSwap<String>>,
@@ -90,7 +92,7 @@ impl AgentLoop {
             instructions: Instructions::default(),
             tools: Value::Null,
             mcp_handle,
-            history: History::restored(initial_history)
+            history: History::restored_with_transcript(initial_history, initial_transcript)
                 .with_mirror(shared_history)
                 .with_transcript_mirror(shared_transcript),
             btw_system,

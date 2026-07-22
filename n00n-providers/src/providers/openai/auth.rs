@@ -8,7 +8,7 @@ use isahc::config::Configurable;
 use n00n_storage::StateDir;
 use n00n_storage::auth::{OAuthTokens, delete_tokens, load_tokens, now_millis, save_tokens};
 use serde::Deserialize;
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 use crate::AgentError;
 use crate::providers::{ResolvedAuth, urlenc};
@@ -269,30 +269,18 @@ pub(crate) fn is_oauth(dir: &StateDir) -> bool {
     load_tokens(dir, PROVIDER).is_some()
 }
 
-/// Resolve `OpenAI` authentication for the current session.
+/// Resolve cached `OpenAI` authentication without network access.
 ///
 /// # Errors
 ///
 /// Returns an `AgentError` if no API key or valid OAuth tokens are available.
-pub fn resolve(dir: &StateDir) -> Result<ResolvedAuth, AgentError> {
+pub fn resolve_cached(dir: &StateDir) -> Result<ResolvedAuth, AgentError> {
     if let Some(tokens) = load_tokens(dir, PROVIDER) {
-        if !tokens.is_expired() {
-            debug!("using OpenAI OAuth authentication");
-            return Ok(build_oauth_resolved(&tokens));
-        }
-        match refresh_tokens(&tokens) {
-            Ok(fresh) => {
-                save_tokens(dir, PROVIDER, &fresh)?;
-                debug!("using OpenAI OAuth authentication (refreshed)");
-                return Ok(build_oauth_resolved(&fresh));
-            }
-            Err(e) => {
-                warn!(error = %e, "OpenAI OAuth refresh failed, clearing stale tokens");
-                if let Err(err) = delete_tokens(dir, PROVIDER) {
-                    warn!(error = %err, "failed to clear stale OpenAI tokens");
-                }
-            }
-        }
+        debug!(
+            expired = tokens.is_expired(),
+            "using cached OpenAI OAuth authentication"
+        );
+        return Ok(build_oauth_resolved(&tokens));
     }
 
     if let Ok(key) = env::var("OPENAI_API_KEY") {
@@ -361,6 +349,29 @@ pub fn logout(dir: &StateDir) -> Result<(), AgentError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_resolution_uses_expired_oauth_without_refreshing() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = StateDir::from_path(temp.path().to_path_buf());
+        let tokens = OAuthTokens {
+            access: "cached-access".into(),
+            refresh: "cached-refresh".into(),
+            expires: 0,
+            account_id: Some("cached-account".into()),
+        };
+        save_tokens(&dir, PROVIDER, &tokens).unwrap();
+
+        let resolved = resolve_cached(&dir).unwrap();
+
+        assert_eq!(
+            resolved.headers,
+            vec![("authorization".into(), "Bearer cached-access".into())]
+        );
+        let persisted = load_tokens(&dir, PROVIDER).unwrap();
+        assert_eq!(persisted.refresh, "cached-refresh");
+        assert_eq!(persisted.expires, 0);
+    }
 
     #[test]
     fn extract_account_id_from_jwt() {

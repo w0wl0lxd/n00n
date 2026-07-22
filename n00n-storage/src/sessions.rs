@@ -20,7 +20,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use zstd::stream::{Decoder, Encoder};
 
-use crate::{StateDir, StorageError, atomic_write, now_epoch};
+use crate::{StateDir, StorageError, atomic_write, atomic_write_permissions, now_epoch};
 
 const SESSION_VERSION: u32 = 1;
 const LOG_FORMAT_VERSION: u32 = 3;
@@ -30,6 +30,10 @@ const CWD_INDEX_FILE: &str = "cwd_latest.json";
 const SCAN_CACHE_FILE: &str = "scan_cache_v2.json";
 const DEFAULT_TITLE: &str = "New session";
 const MAX_TITLE_LEN: usize = 60;
+const OPENAI_RESPONSE_CHAIN_SUFFIX: &str = "openai-response.json";
+const OPENAI_RESPONSE_CHAIN_LOCK_SUFFIX: &str = "openai-response.lock";
+const OPENAI_RESPONSE_CHAIN_FILE_MODE: u32 = 0o600;
+pub const OPENAI_RESPONSE_CHAIN_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
@@ -113,10 +117,29 @@ pub struct SessionMeta {
     pub usage_by_model: HashMap<String, StoredTokenUsage>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredOpenAiResponseChain {
+    pub response_id: String,
+    pub message_count: usize,
+    pub tools_hash: String,
+    pub messages_hash: String,
+    pub auth_scope_hash: String,
+    pub expires_at: u64,
+}
+
+pub struct OpenAiResponseChainLock {
+    _file: File,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TranscriptEntry<M> {
     Message(M),
-    Compaction { entries: Vec<TranscriptEntry<M>> },
+    GeneratedMessage(M),
+    Compaction {
+        entries: Vec<TranscriptEntry<M>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        generated_summary: Option<M>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -407,13 +430,35 @@ pub struct SessionLog {
     session_id: N00nId,
     dir: PathBuf,
     file: File,
-    saved_msg_count: usize,
+    saved_messages: MessageCursor,
     saved_tool_ids: HashSet<String>,
     saved_sub_msg_counts: HashMap<String, usize>,
     /// Serialized trailing meta record; lets `append` persist meta-only
     /// changes (title, draft, `updated_at`) instead of dropping them.
     saved_meta: Vec<u8>,
     saved_title: String,
+}
+
+struct MessageCursor {
+    identities: Vec<Vec<u8>>,
+}
+
+impl MessageCursor {
+    fn capture<M: Serialize>(messages: &[M]) -> Result<Self, SessionError> {
+        let identities = messages
+            .iter()
+            .map(|message| serde_json::to_vec(message).map_err(StorageError::from))
+            .collect::<Result<_, _>>()?;
+        Ok(Self { identities })
+    }
+
+    fn len(&self) -> usize {
+        self.identities.len()
+    }
+
+    fn is_prefix_of(&self, current: &Self) -> bool {
+        current.identities.starts_with(&self.identities)
+    }
 }
 
 fn sub_msg_snapshot<M>(map: &HashMap<String, Vec<M>>) -> HashMap<String, usize> {
@@ -431,7 +476,7 @@ impl SessionLog {
     {
         let file = write_session_file(dir, session)?;
         update_cwd_index(dir, &session.cwd, session.id)?;
-        Ok(Self::cursor_from(dir, session, file))
+        Self::cursor_from(dir, session, file)
     }
 
     /// # Errors
@@ -462,7 +507,7 @@ impl SessionLog {
             .append(true)
             .open(&path)
             .map_err(StorageError::from)?;
-        let log = Self::cursor_from(dir, &session, file);
+        let log = Self::cursor_from(dir, &session, file)?;
         Ok((session, log))
     }
 
@@ -487,20 +532,24 @@ impl SessionLog {
             return self.compact(&dir, session);
         }
 
+        let current_messages = MessageCursor::capture(&session.messages)?;
+        if !self.saved_messages.is_prefix_of(&current_messages) {
+            let dir = self.dir.clone();
+            return self.compact(&dir, session);
+        }
+
         if self.cursor_ahead(session) {
             return Err(SessionError::CursorAhead {
-                saved: self.saved_msg_count,
+                saved: self.saved_messages.len(),
                 actual: session.messages.len(),
             });
         }
 
         let mut buf = Vec::new();
-        let mut new_msg_count = self.saved_msg_count;
         let mut new_tool_ids = Vec::new();
 
-        for msg in &session.messages[self.saved_msg_count..] {
+        for msg in &session.messages[self.saved_messages.len()..] {
             append_record(&mut buf, &LogRecord::<&M, &U, &T>::Msg { d: msg })?;
-            new_msg_count += 1;
         }
 
         for (id, output) in &session.tool_outputs {
@@ -556,7 +605,7 @@ impl SessionLog {
             return Err(e.into());
         }
 
-        self.saved_msg_count = new_msg_count;
+        self.saved_messages = current_messages;
         self.saved_tool_ids.extend(new_tool_ids);
         for (sub_id, count) in new_sub_counts {
             self.saved_sub_msg_counts.insert(sub_id, count);
@@ -591,28 +640,31 @@ impl SessionLog {
             .append(true)
             .open(&path)
             .map_err(StorageError::from)?;
-        *self = Self::cursor_from(dir, session, file);
+        *self = Self::cursor_from(dir, session, file)?;
 
         Ok(())
     }
 
-    fn cursor_from<M, U, T>(dir: &Path, session: &Session<M, U, T>, file: File) -> Self
+    fn cursor_from<M, U, T>(
+        dir: &Path,
+        session: &Session<M, U, T>,
+        file: File,
+    ) -> Result<Self, SessionError>
     where
         M: Serialize + Clone,
         U: Serialize,
         T: Serialize,
     {
-        Self {
+        Ok(Self {
             session_id: session.id,
             dir: dir.to_path_buf(),
             file,
-            saved_msg_count: session.messages.len(),
+            saved_messages: MessageCursor::capture(&session.messages)?,
             saved_tool_ids: session.tool_outputs.keys().cloned().collect(),
             saved_sub_msg_counts: sub_msg_snapshot(&session.subagent_messages),
-            #[allow(clippy::disallowed_methods)]
-            saved_meta: meta_record_bytes(session).unwrap_or_default(),
+            saved_meta: meta_record_bytes(session)?,
             saved_title: session.title.clone(),
-        }
+        })
     }
 
     fn require_same_id<M, U, T>(&self, session: &Session<M, U, T>) -> Result<(), SessionError> {
@@ -626,7 +678,7 @@ impl SessionLog {
     }
 
     fn cursor_ahead<M, U, T>(&self, session: &Session<M, U, T>) -> bool {
-        self.saved_msg_count > session.messages.len()
+        self.saved_messages.len() > session.messages.len()
             || self
                 .saved_tool_ids
                 .iter()
@@ -998,6 +1050,115 @@ fn jsonl_path(dir: &Path, id: N00nId) -> PathBuf {
     dir.join(format!("{id}.jsonl"))
 }
 
+fn openai_response_chain_path(dir: &Path, id: N00nId) -> PathBuf {
+    dir.join(format!("{id}.{OPENAI_RESPONSE_CHAIN_SUFFIX}"))
+}
+
+fn openai_response_chain_lock_path(dir: &Path, id: N00nId) -> PathBuf {
+    dir.join(format!("{id}.{OPENAI_RESPONSE_CHAIN_LOCK_SUFFIX}"))
+}
+
+/// Acquire the cross-process lock for one session's `OpenAI` continuation state.
+///
+/// # Errors
+/// Returns an error when the sessions directory or lock file cannot be opened or locked.
+pub fn lock_openai_response_chain(
+    state_dir: &StateDir,
+    session_id: N00nId,
+) -> Result<OpenAiResponseChainLock, StorageError> {
+    let sessions_dir = state_dir.ensure_subdir(SESSIONS_DIR)?;
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(openai_response_chain_lock_path(&sessions_dir, session_id))?;
+    file.lock()?;
+    Ok(OpenAiResponseChainLock { _file: file })
+}
+
+/// Return whether the parent session log still exists.
+///
+/// # Errors
+/// Returns an error when the sessions directory cannot be opened.
+pub fn openai_response_chain_parent_exists(
+    state_dir: &StateDir,
+    session_id: N00nId,
+) -> Result<bool, StorageError> {
+    let sessions_dir = state_dir.ensure_subdir(SESSIONS_DIR)?;
+    Ok(locate_session_file(&sessions_dir, session_id).is_some())
+}
+
+/// Load the durable `OpenAI` Responses continuation state for a session.
+///
+/// Expired state is removed instead of being returned to the provider.
+///
+/// # Errors
+/// Returns an error when the sessions directory cannot be opened, the state is invalid,
+/// or an expired state file cannot be removed.
+pub fn load_openai_response_chain(
+    state_dir: &StateDir,
+    session_id: N00nId,
+) -> Result<Option<StoredOpenAiResponseChain>, StorageError> {
+    load_openai_response_chain_at(state_dir, session_id, now_epoch())
+}
+
+fn load_openai_response_chain_at(
+    state_dir: &StateDir,
+    session_id: N00nId,
+    now: u64,
+) -> Result<Option<StoredOpenAiResponseChain>, StorageError> {
+    let sessions_dir = state_dir.ensure_subdir(SESSIONS_DIR)?;
+    let path = openai_response_chain_path(&sessions_dir, session_id);
+    let data = match fs::read(&path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let chain: StoredOpenAiResponseChain = serde_json::from_slice(&data)?;
+    if chain.expires_at <= now {
+        try_remove(&path)?;
+        return Ok(None);
+    }
+    Ok(Some(chain))
+}
+
+/// Persist the `OpenAI` Responses continuation state for a session atomically.
+///
+/// # Errors
+/// Returns an error when the sessions directory cannot be created or the state cannot be written.
+pub fn save_openai_response_chain(
+    state_dir: &StateDir,
+    session_id: N00nId,
+    chain: &StoredOpenAiResponseChain,
+) -> Result<(), StorageError> {
+    let sessions_dir = state_dir.ensure_subdir(SESSIONS_DIR)?;
+    let path = openai_response_chain_path(&sessions_dir, session_id);
+    atomic_write_permissions(
+        &path,
+        &serde_json::to_vec(chain)?,
+        OPENAI_RESPONSE_CHAIN_FILE_MODE,
+    )?;
+    if locate_session_file(&sessions_dir, session_id).is_none() {
+        try_remove(&path)?;
+        return Err(StorageError::NotFound(session_id.to_string()));
+    }
+    Ok(())
+}
+
+/// Remove any `OpenAI` Responses continuation state for a session.
+///
+/// # Errors
+/// Returns an error when the sessions directory cannot be opened or the file cannot be removed.
+pub fn delete_openai_response_chain(
+    state_dir: &StateDir,
+    session_id: N00nId,
+) -> Result<(), StorageError> {
+    let sessions_dir = state_dir.ensure_subdir(SESSIONS_DIR)?;
+    try_remove(&openai_response_chain_path(&sessions_dir, session_id))?;
+    Ok(())
+}
+
 fn file_is_zst(path: &Path) -> bool {
     let Ok(mut file) = File::open(path) else {
         return false;
@@ -1367,10 +1528,19 @@ where
     /// # Errors
     /// Returns `SessionError` if the session file cannot be found or removed.
     pub fn delete_from(id: N00nId, dir: &Path) -> Result<(), SessionError> {
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(openai_response_chain_lock_path(dir, id))
+            .map_err(StorageError::from)?;
+        lock_file.lock().map_err(StorageError::from)?;
         let Some(path) = locate_session_file(dir, id) else {
             return Err(StorageError::NotFound(id.to_string()).into());
         };
         try_remove(&path)?;
+        try_remove(&openai_response_chain_path(dir, id))?;
         remove_from_cwd_index(dir, id)?;
         Ok(())
     }
@@ -1391,7 +1561,16 @@ mod tests {
         SESSION_VERSION, StoredSubagent, append_record, encode_frame, generate_title, jsonl_path,
         load_cwd_index, now_epoch, update_cwd_index,
     };
-    use super::{SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError, TitleSource};
+    use super::{
+        OPENAI_RESPONSE_CHAIN_TTL_SECONDS, SESSIONS_DIR, StoredOpenAiResponseChain,
+        delete_openai_response_chain, load_openai_response_chain_at, lock_openai_response_chain,
+        openai_response_chain_path, save_openai_response_chain,
+    };
+    use super::{
+        SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError, TitleSource,
+        TranscriptEntry,
+    };
+    use crate::StateDir;
     use crate::id::N00nId;
     use serde_json::Value;
     use std::collections::HashMap;
@@ -1486,6 +1665,14 @@ mod tests {
         let mut session: TestSession =
             Session::new("anthropic/claude-sonnet-4", "/home/test/project");
         session.messages.push(user_message("hello"));
+        session.transcript = vec![
+            TranscriptEntry::Compaction {
+                entries: vec![TranscriptEntry::Message(user_message("before compaction"))],
+                generated_summary: Some(assistant_message("generated summary")),
+            },
+            TranscriptEntry::GeneratedMessage(user_message("summary prompt")),
+            TranscriptEntry::GeneratedMessage(assistant_message("generated summary")),
+        ];
         session.subagent_messages.insert(
             "tool-1".into(),
             vec![user_message("sub-prompt"), assistant_message("sub-reply")],
@@ -1499,6 +1686,33 @@ mod tests {
         assert_eq!(loaded.messages.len(), 1);
         assert_eq!(loaded.version, SESSION_VERSION);
         assert_eq!(loaded.subagent_messages["tool-1"].len(), 2);
+        assert!(matches!(
+            loaded.transcript.as_slice(),
+            [
+                TranscriptEntry::Compaction {
+                    generated_summary: Some(summary),
+                    ..
+                },
+                TranscriptEntry::GeneratedMessage(_),
+                TranscriptEntry::GeneratedMessage(_),
+            ] if summary == &assistant_message("generated summary")
+        ));
+    }
+
+    #[test]
+    fn legacy_compaction_without_summary_metadata_deserializes() {
+        let entry: TranscriptEntry<Value> = serde_json::from_value(serde_json::json!({
+            "Compaction": { "entries": [] }
+        }))
+        .unwrap();
+
+        assert!(matches!(
+            entry,
+            TranscriptEntry::Compaction {
+                generated_summary: None,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1569,6 +1783,78 @@ mod tests {
         assert!(loaded.tool_outputs.contains_key("tool-1"));
         assert_eq!(loaded.subagent_messages["sub-1"].len(), 2);
         assert_eq!(loaded.subagent_messages["sub-2"].len(), 1);
+    }
+
+    #[test]
+    fn append_rewrites_equal_length_replacement() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.messages = vec![user_message("old prompt"), assistant_message("old reply")];
+        let mut log = SessionLog::create(dir, &session).unwrap();
+
+        session.messages = vec![user_message("new prompt"), assistant_message("new reply")];
+        log.append(&session).unwrap();
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert_eq!(loaded.messages, session.messages);
+    }
+
+    #[test]
+    fn append_rewrites_longer_replacement() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.messages = vec![user_message("old prompt"), assistant_message("old reply")];
+        let mut log = SessionLog::create(dir, &session).unwrap();
+
+        session.messages = vec![
+            user_message("replacement prompt"),
+            assistant_message("replacement reply"),
+            user_message("new tail"),
+        ];
+        log.append(&session).unwrap();
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert_eq!(loaded.messages, session.messages);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn append_only_messages_keep_append_fast_path() {
+        use std::os::unix::fs::MetadataExt;
+
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.messages.push(user_message("first"));
+        let mut log = SessionLog::create(dir, &session).unwrap();
+        let path = jsonl_path(dir, session.id);
+        let inode = fs::metadata(&path).unwrap().ino();
+
+        session.messages.push(assistant_message("reply"));
+        log.append(&session).unwrap();
+
+        assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert_eq!(loaded.messages, session.messages);
+    }
+
+    #[test]
+    fn reopened_log_rewrites_mutated_saved_prefix() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.messages.push(user_message("old"));
+        let log = SessionLog::create(dir, &session).unwrap();
+        drop(log);
+
+        let (_loaded, mut log) = SessionLog::open::<Value, Value, Value>(dir, session.id).unwrap();
+        session.messages = vec![user_message("replacement"), assistant_message("new tail")];
+        log.append(&session).unwrap();
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert_eq!(loaded.messages, session.messages);
     }
 
     #[test]
@@ -1743,6 +2029,118 @@ mod tests {
             SessionError::Storage(StorageError::NotFound(_))
         ));
         assert!(jsonl.exists());
+    }
+
+    #[test]
+    fn openai_response_chain_round_trips_and_expires_after_thirty_days() {
+        let tmp = TempDir::new().unwrap();
+        let state_dir = StateDir::from_path(tmp.path().to_path_buf());
+        let mut session: TestSession = Session::new("model", "/project");
+        session.save(&state_dir).unwrap();
+        let session_id = session.id;
+        let now = 1_000;
+        let chain = StoredOpenAiResponseChain {
+            response_id: "resp_1".into(),
+            message_count: 3,
+            tools_hash: "tools".into(),
+            messages_hash: "messages".into(),
+            auth_scope_hash: "account".into(),
+            expires_at: now + OPENAI_RESPONSE_CHAIN_TTL_SECONDS,
+        };
+
+        save_openai_response_chain(&state_dir, session_id, &chain).unwrap();
+        assert_eq!(
+            load_openai_response_chain_at(&state_dir, session_id, now).unwrap(),
+            Some(chain)
+        );
+        assert!(
+            load_openai_response_chain_at(
+                &state_dir,
+                session_id,
+                now + OPENAI_RESPONSE_CHAIN_TTL_SECONDS
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert!(!openai_response_chain_path(&tmp.path().join(SESSIONS_DIR), session_id).exists());
+    }
+
+    #[test]
+    fn deleting_openai_response_chain_is_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        let state_dir = StateDir::from_path(tmp.path().to_path_buf());
+        let session_id = N00nId::generate();
+
+        delete_openai_response_chain(&state_dir, session_id).unwrap();
+        delete_openai_response_chain(&state_dir, session_id).unwrap();
+    }
+
+    #[test]
+    fn response_chain_write_cannot_recreate_a_deleted_session_sidecar() {
+        let tmp = TempDir::new().unwrap();
+        let state_dir = StateDir::from_path(tmp.path().to_path_buf());
+        let session_id = N00nId::generate();
+        let chain = StoredOpenAiResponseChain {
+            response_id: "resp_1".into(),
+            message_count: 1,
+            tools_hash: "tools".into(),
+            messages_hash: "messages".into(),
+            auth_scope_hash: "account".into(),
+            expires_at: now_epoch() + OPENAI_RESPONSE_CHAIN_TTL_SECONDS,
+        };
+
+        assert!(save_openai_response_chain(&state_dir, session_id, &chain).is_err());
+        assert!(!openai_response_chain_path(&tmp.path().join(SESSIONS_DIR), session_id).exists());
+    }
+
+    #[test]
+    fn response_chain_lock_serializes_same_session_across_file_handles() {
+        let tmp = TempDir::new().unwrap();
+        let state_dir = StateDir::from_path(tmp.path().to_path_buf());
+        let session_id = N00nId::generate();
+        let first = lock_openai_response_chain(&state_dir, session_id).unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+        let second_dir = state_dir;
+        let join = std::thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            let second = lock_openai_response_chain(&second_dir, session_id).unwrap();
+            acquired_tx.send(()).unwrap();
+            second
+        });
+
+        ready_rx.recv().unwrap();
+        assert!(matches!(
+            acquired_rx.recv_timeout(std::time::Duration::from_millis(50)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        drop(first);
+        acquired_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        drop(join.join().unwrap());
+    }
+
+    #[test]
+    fn deleting_session_removes_openai_response_chain() {
+        let tmp = TempDir::new().unwrap();
+        let state_dir = StateDir::from_path(tmp.path().to_path_buf());
+        let mut session: TestSession = Session::new("model", "/project");
+        session.save(&state_dir).unwrap();
+        let chain = StoredOpenAiResponseChain {
+            response_id: "resp_1".into(),
+            message_count: 1,
+            tools_hash: "tools".into(),
+            messages_hash: "messages".into(),
+            auth_scope_hash: "account".into(),
+            expires_at: now_epoch() + OPENAI_RESPONSE_CHAIN_TTL_SECONDS,
+        };
+        save_openai_response_chain(&state_dir, session.id, &chain).unwrap();
+
+        TestSession::delete(session.id, &state_dir).unwrap();
+
+        let sessions_dir = tmp.path().join(SESSIONS_DIR);
+        assert!(!openai_response_chain_path(&sessions_dir, session.id).exists());
     }
 
     #[test]

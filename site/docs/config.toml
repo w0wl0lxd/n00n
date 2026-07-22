@@ -1,5 +1,5 @@
 base_url = "/docs"
-title = "N00n Docs"
+title = "n00n Docs"
 compile_sass = true
 build_search_index = false
 

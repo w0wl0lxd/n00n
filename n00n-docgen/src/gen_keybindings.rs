@@ -184,7 +184,7 @@ fn write_overrides(out: &mut String) {
     );
     out.push_str("### Recovering from a bad keymap\n\n");
     out.push_str(
-        "If an override leaves N00n stuck (a rebound `Ctrl+C`, a modal \
+        "If an override leaves n00n stuck (a rebound `Ctrl+C`, a modal \
          that won't close, a plugin that throws on load), boot without \
          plugins:\n\n",
     );

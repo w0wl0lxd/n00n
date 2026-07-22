@@ -314,9 +314,10 @@ impl<T: PickerItem> ListPicker<T> {
     }
 
     fn handle_ready_key(&mut self, key: KeyEvent) -> PickerAction<T> {
-        let Some(s) = self.state.as_mut() else {
-            return PickerAction::Close;
-        };
+        let s = self
+            .state
+            .as_mut()
+            .expect("handle_ready_key called without state");
 
         if key::QUIT.matches(key) {
             self.state = None;
@@ -366,13 +367,8 @@ impl<T: PickerItem> ListPicker<T> {
                 }
                 match idx {
                     Some(idx) => {
-                        let Some(mut state) = self.state.take() else {
-                            return PickerAction::Close;
-                        };
-                        if idx >= state.items.len() {
-                            return PickerAction::Close;
-                        }
-                        PickerAction::Select(idx, state.items.remove(idx))
+                        let mut state = self.state.take().unwrap();
+                        PickerAction::Select(idx, state.items.swap_remove(idx))
                     }
                     None => PickerAction::Consumed,
                 }
@@ -438,9 +434,7 @@ impl<T: PickerItem> ListPicker<T> {
             return;
         };
         if delta > 0 {
-            s.scroll_offset = s
-                .scroll_offset
-                .saturating_sub(delta.unsigned_abs() as usize);
+            s.scroll_offset = s.scroll_offset.saturating_sub(delta as usize);
         } else {
             let total_visual = visual_rows_in_range(&s.filtered, &s.items, 0, s.filtered.len());
             let max_offset = if total_visual <= s.viewport_height {
@@ -494,13 +488,7 @@ fn render_ready<T: PickerItem>(
     let content_rows = if s.filtered.is_empty() {
         1
     } else {
-        let rows = u16::try_from(visual_rows_in_range(
-            &s.filtered,
-            &s.items,
-            0,
-            s.filtered.len(),
-        ))
-        .unwrap_or_else(|_| u16::MAX);
+        let rows = visual_rows_in_range(&s.filtered, &s.items, 0, s.filtered.len()) as u16;
         match max_visible {
             Some(max) => rows.min(max),
             None => rows,
@@ -582,13 +570,13 @@ fn render_ready<T: PickerItem>(
     }
 
     let total_visual = visual_rows_in_range(&s.filtered, &s.items, 0, s.filtered.len());
-    if u16::try_from(total_visual).unwrap_or_else(|_| u16::MAX) > viewport_h {
+    if total_visual as u16 > viewport_h {
         let visual_offset = visual_rows_in_range(&s.filtered, &s.items, 0, s.scroll_offset);
         render_vertical_scrollbar(
             frame,
             list_area,
-            u16::try_from(total_visual).unwrap_or_else(|_| u16::MAX),
-            u16::try_from(visual_offset).unwrap_or_else(|_| u16::MAX),
+            total_visual as u16,
+            visual_offset as u16,
             None,
         );
     }
@@ -660,7 +648,7 @@ fn truncate_label(label: &str, max_width: usize) -> String {
     let mut width = 0;
     let mut result = String::with_capacity(label.len());
     for ch in label.chars() {
-        let cw = ch.width().unwrap_or_else(|| 0);
+        let cw = ch.width().unwrap_or(0);
         if width + cw > target {
             break;
         }
@@ -670,8 +658,8 @@ fn truncate_label(label: &str, max_width: usize) -> String {
     result.push('\u{2026}');
     result
 }
+
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_lines)]
 fn render_list<T: PickerItem>(
     frame: &mut Frame,
     area: Rect,
@@ -727,9 +715,7 @@ fn render_list<T: PickerItem>(
         let t = theme::current();
         let (style, detail_style) = match (i == selected, highlighted) {
             (true, true) => {
-                let s = t
-                    .item_selected
-                    .fg(t.accent.fg.unwrap_or_else(Default::default));
+                let s = t.item_selected.fg(t.accent.fg.unwrap_or_default());
                 (s, theme::dim_style(s, 0.4))
             }
             (true, false) => (t.item_selected, t.item_selected),
@@ -755,15 +741,13 @@ fn render_list<T: PickerItem>(
             item.detail()
         };
         let suffix_gap = 2usize;
-        let suffix_w = suffix.map_or_else(|| 0, unicode_width::UnicodeWidthStr::width);
+        let suffix_w = suffix.map_or(0, unicode_width::UnicodeWidthStr::width);
         let trailing_gap = suffix_w + if suffix_w > 0 { suffix_gap } else { 0 };
         let line = if let Some(detail) = detail {
-            let max_label = area.width.saturating_sub(
-                u16::try_from(detail.width()).unwrap_or_else(|_| u16::MAX)
-                    + u16::try_from(trailing_gap).unwrap_or_else(|_| u16::MAX)
-                    + 1
-                    + DETAIL_RIGHT_PAD,
-            ) as usize;
+            let max_label = area
+                .width
+                .saturating_sub(detail.width() as u16 + trailing_gap as u16 + 1 + DETAIL_RIGHT_PAD)
+                as usize;
             let label = truncate_label(&label, max_label);
             let pad = (area.width as usize).saturating_sub(
                 label.width() + trailing_gap + detail.width() + DETAIL_RIGHT_PAD as usize + 1,
@@ -805,7 +789,7 @@ fn render_search(frame: &mut Frame, area: Rect, search: &TextBuffer) {
     let cursor_x = search.x();
     let chars: Vec<char> = query.chars().collect();
     let before: String = chars[..cursor_x].iter().collect();
-    let cursor_char = chars.get(cursor_x).copied().unwrap_or_else(|| ' ');
+    let cursor_char = chars.get(cursor_x).copied().unwrap_or(' ');
     let after_start = cursor_x.saturating_add(1).min(chars.len());
     let after: String = chars[after_start..].iter().collect();
 
@@ -1136,12 +1120,9 @@ mod tests {
 
         let end_col = |label: &str, suffix_w: usize| -> usize {
             let trailing = suffix_w + if suffix_w > 0 { suffix_gap } else { 0 };
-            let max_label = width.saturating_sub(
-                u16::try_from(detail.width()).unwrap_or_else(|_| u16::MAX)
-                    + u16::try_from(trailing).unwrap_or_else(|_| u16::MAX)
-                    + 1
-                    + DETAIL_RIGHT_PAD,
-            ) as usize;
+            let max_label = width
+                .saturating_sub(detail.width() as u16 + trailing as u16 + 1 + DETAIL_RIGHT_PAD)
+                as usize;
             let t = truncate_label(label, max_label);
             let pad = (width as usize).saturating_sub(
                 t.width() + trailing + detail.width() + DETAIL_RIGHT_PAD as usize + 1,

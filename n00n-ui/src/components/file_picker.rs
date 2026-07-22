@@ -96,27 +96,25 @@ impl FilePickerModal {
         let nucleo = Nucleo::new(Config::DEFAULT.match_paths(), notify, None, 1);
         let injector = nucleo.injector();
         let cancel = Arc::new(AtomicBool::new(false));
-        let cancel_clone = Arc::clone(&cancel);
+        let cancel_clone = cancel.clone();
         let (done_tx, done_rx) = flume::bounded(1);
 
         let root = PathBuf::from(cwd);
         if let Err(e) = thread::Builder::new()
             .name("file-walker".into())
             .spawn(move || {
-                let mut overrides_builder = OverrideBuilder::new(&root);
-                if overrides_builder.add("!.git").is_err() {
-                    return;
-                }
-                let Ok(overrides) = overrides_builder.build() else {
-                    return;
-                };
+                let overrides = OverrideBuilder::new(&root)
+                    .add("!.git")
+                    .unwrap()
+                    .build()
+                    .unwrap();
                 WalkBuilder::new(&root)
                     .hidden(false)
                     .overrides(overrides)
                     .build_parallel()
                     .run(|| {
                         let injector = injector.clone();
-                        let cancel = Arc::clone(&cancel);
+                        let cancel = cancel.clone();
                         let root = root.clone();
                         Box::new(move |entry| {
                             if cancel.load(Ordering::Relaxed) {
@@ -131,10 +129,7 @@ impl FilePickerModal {
                             {
                                 return ignore::WalkState::Continue;
                             }
-                            let path = entry
-                                .path()
-                                .strip_prefix(&root)
-                                .unwrap_or_else(|_| entry.path());
+                            let path = entry.path().strip_prefix(&root).unwrap_or(entry.path());
                             let mut name = path.to_string_lossy().into_owned();
                             if entry.file_type().is_some_and(|ft| ft.is_dir()) {
                                 name.push(std::path::MAIN_SEPARATOR);
@@ -204,12 +199,9 @@ impl FilePickerModal {
     pub fn scroll(&mut self, delta: i32) {
         let Some(s) = &mut self.session else { return };
         if delta > 0 {
-            move_selection(s, -isize::try_from(delta).unwrap_or_else(|_| isize::MAX));
+            move_selection(s, -(delta as isize));
         } else {
-            move_selection(
-                s,
-                isize::try_from(delta.unsigned_abs()).unwrap_or_else(|_| isize::MAX),
-            );
+            move_selection(s, delta.unsigned_abs() as isize);
         }
     }
 
@@ -253,10 +245,10 @@ impl FilePickerModal {
                 reparse_pattern(s);
             }
             _ if key::SCROLL_HALF_UP.matches(key) => {
-                move_selection(s, -(s.viewport_height / 2).max(1).cast_signed());
+                move_selection(s, -((s.viewport_height / 2).max(1) as isize));
             }
             _ if key::SCROLL_HALF_DOWN.matches(key) => {
-                move_selection(s, (s.viewport_height / 2).max(1).cast_signed());
+                move_selection(s, (s.viewport_height / 2).max(1) as isize);
             }
             _ if key::SCROLL_LINE_UP.matches(key) => move_selection(s, -1),
             _ if key::SCROLL_LINE_DOWN.matches(key) => move_selection(s, 1),
@@ -315,7 +307,7 @@ impl FilePickerModal {
             _ => return Rect::default(),
         };
 
-        let match_count = u16::try_from(s.matches.len()).unwrap_or_else(|_| u16::MAX);
+        let match_count = s.matches.len() as u16;
         let title = if s.walking { TITLE_WALKING } else { TITLE };
 
         let has_query_without_matches = s.matches.is_empty() && !s.search.value().is_empty();
@@ -342,14 +334,8 @@ impl FilePickerModal {
         render_list(frame, list_area, s);
         render_search(frame, search_area, s);
 
-        if match_count > u16::try_from(s.viewport_height).unwrap_or_else(|_| u16::MAX) {
-            render_vertical_scrollbar(
-                frame,
-                list_area,
-                match_count,
-                u16::try_from(s.scroll_offset).unwrap_or_else(|_| u16::MAX),
-                None,
-            );
+        if match_count > s.viewport_height as u16 {
+            render_vertical_scrollbar(frame, list_area, match_count, s.scroll_offset as u16, None);
         }
 
         popup
@@ -408,8 +394,8 @@ fn move_selection(s: &mut Session, delta: isize) {
     if s.matches.is_empty() {
         return;
     }
-    let new = (s.selected.cast_signed() + delta).clamp(0, s.matches.len().cast_signed() - 1);
-    s.selected = new.cast_unsigned();
+    let new = (s.selected as isize + delta).clamp(0, s.matches.len() as isize - 1);
+    s.selected = new as usize;
     ensure_visible(s);
 }
 
@@ -454,12 +440,9 @@ fn render_list(frame: &mut Frame, area: Rect, s: &Session) {
     let more = s.total_matches > MAX_MATERIALIZED;
     let at_bottom = s.scroll_offset + s.viewport_height >= s.matches.len();
     let hint_row = usize::from(more && at_bottom);
-    let visible_rows = s.viewport_height - hint_row;
+    let visible_rows = s.viewport_height.saturating_sub(hint_row);
 
-    let max_label_width = area
-        .width
-        .saturating_sub(u16::try_from(LABEL_INDENT.len()).unwrap_or_else(|_| u16::MAX))
-        as usize;
+    let max_label_width = area.width.saturating_sub(LABEL_INDENT.len() as u16) as usize;
     let end = (s.scroll_offset + visible_rows).min(s.matches.len());
 
     let mut lines: Vec<Line> = s.matches[s.scroll_offset..end]
@@ -488,7 +471,7 @@ fn render_search(frame: &mut Frame, area: Rect, s: &Session) {
     let cursor_byte = TextBuffer::char_to_byte(&query, s.search.x());
     let (before, rest) = query.split_at(cursor_byte);
     let mut chars = rest.chars();
-    let cursor_char = chars.next().unwrap_or_else(|| ' ');
+    let cursor_char = chars.next().unwrap_or(' ');
     let after = chars.as_str();
 
     let mut spans = vec![super::chevron_span()];
@@ -516,7 +499,7 @@ fn build_highlighted_line<'a>(
 ) -> Line<'a> {
     let base = if selected { t.item_selected } else { t.item };
     let highlight = base
-        .fg(t.accent.fg.unwrap_or_else(Default::default))
+        .fg(t.accent.fg.unwrap_or_default())
         .add_modifier(Modifier::BOLD);
 
     let mut spans = vec![Span::styled(LABEL_INDENT, base)];
@@ -525,22 +508,20 @@ fn build_highlighted_line<'a>(
     let mut width = 0usize;
 
     for (i, ch) in text.chars().enumerate() {
-        let cw = ch.width().unwrap_or_else(|| 0);
+        let cw = ch.width().unwrap_or(0);
         if width + cw > max_width {
             break;
         }
         width += cw;
 
-        let matched = indices
-            .binary_search(&u32::try_from(i).unwrap_or_else(|_| u32::MAX))
-            .is_ok();
-        if matched != in_match && !run.is_empty() {
+        let is_match = indices.binary_search(&(i as u32)).is_ok();
+        if is_match != in_match && !run.is_empty() {
             spans.push(Span::styled(
                 mem::take(&mut run),
                 if in_match { highlight } else { base },
             ));
         }
-        in_match = matched;
+        in_match = is_match;
         run.push(ch);
     }
 
@@ -690,7 +671,7 @@ mod tests {
                 indices: Vec::new(),
             })
             .collect();
-        s.total_matches = u32::try_from(n).unwrap_or_else(|_| u32::MAX);
+        s.total_matches = n as u32;
         picker
     }
 

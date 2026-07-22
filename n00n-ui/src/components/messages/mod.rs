@@ -5,7 +5,7 @@ mod selection;
 mod tests;
 
 use self::render::RenderCursor;
-use self::segment::{Segment, SegmentCache, Surface};
+use self::segment::{MessageAction, Segment, SegmentCache, Surface};
 
 pub(crate) use self::segment::wrapped_line_count;
 
@@ -15,18 +15,20 @@ use super::tool_display::{
     thinking_style, truncate_to_header, user_style,
 };
 use super::{
-    DisplayMessage, DisplayRole, ToolRole, ToolStatus, apply_scroll_delta, code_view::SectionFlags,
+    CompactionDisplay, DisplayMessage, DisplayMetadata, DisplayRole, ToolRole, ToolStatus,
+    apply_scroll_delta, code_view::SectionFlags,
 };
 use crate::animation::spinner_str;
 use crate::components::keybindings::key;
 use crate::markdown::{hr_line, plain_lines, text_to_lines, truncate_output};
+use crate::mascot::Mascot;
 use crate::render_worker::RenderWorker;
 use crate::selection::Selection;
 use crate::splash::{ColorTransition, Splash};
 use crate::theme;
 use n00n_config::{ToolOutputLines, UiConfig};
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -77,8 +79,10 @@ pub struct MessagesPanel {
     theme_generation: u64,
     highlight_segment: Option<usize>,
     idle_splash: Splash,
+    mascot: Mascot,
     accent: ColorTransition,
     expanded_tools: HashMap<String, SectionFlags>,
+    expanded_compactions: HashSet<String>,
     /// Per-tool log of post-completion click rows, replayed on restore.
     lua_clicks: HashMap<String, Vec<usize>>,
     live_bufs: HashMap<String, Arc<SharedBuf>>,
@@ -161,8 +165,10 @@ impl MessagesPanel {
             theme_generation: theme::generation(),
             highlight_segment: None,
             idle_splash: Splash::new(ui_config.splash_animation),
+            mascot: Mascot::new(ui_config.mascot),
             accent: ColorTransition::new(theme::current().mode_build),
             expanded_tools: HashMap::new(),
+            expanded_compactions: HashSet::new(),
             lua_clicks: HashMap::new(),
             live_bufs: HashMap::new(),
             watched_bufs: VecDeque::new(),
@@ -194,6 +200,45 @@ impl MessagesPanel {
         self.messages.push(msg);
     }
 
+    pub fn set_pending_compaction_summary(&mut self, summary: String) {
+        if let Some(message) = self.messages.iter_mut().rev().find(|message| {
+            matches!(
+                message.metadata.as_ref(),
+                Some(DisplayMetadata::CompactionPending)
+            )
+        }) {
+            message.annotation = Some(summary);
+        }
+    }
+
+    pub fn complete_pending_compaction(&mut self) -> bool {
+        let Some(message_index) = self.messages.iter().rposition(|message| {
+            matches!(
+                message.metadata.as_ref(),
+                Some(DisplayMetadata::CompactionPending)
+            )
+        }) else {
+            return false;
+        };
+        let streamed_summary = self.streaming_text.take_all();
+        self.streaming_thinking.clear();
+        self.thinking_collapsed = false;
+        self.thinking_started = None;
+        let summary = self.messages[message_index]
+            .annotation
+            .take()
+            .or_else(|| (!streamed_summary.is_empty()).then_some(streamed_summary));
+        self.messages[message_index] = DisplayMessage::compaction(CompactionDisplay {
+            id: format!("live-compaction:{message_index}"),
+            depth: 1,
+            message_count: 0,
+            summary,
+            entries: Vec::new(),
+        });
+        self.cache.invalidate_from_msg_count();
+        true
+    }
+
     pub fn load_messages(&mut self, mut msgs: Vec<DisplayMessage>) {
         if !self.show_thinking {
             for msg in &mut msgs {
@@ -205,6 +250,7 @@ impl MessagesPanel {
         self.messages = msgs;
         self.cache.clear();
         self.expanded_tools.clear();
+        self.expanded_compactions.clear();
         self.lua_clicks.clear();
         self.live_bufs.clear();
         self.watched_bufs.clear();
@@ -282,9 +328,9 @@ impl MessagesPanel {
         self.cache.prepend(built, n);
         self.messages.splice(0..0, msgs);
         if !self.auto_scroll {
-            self.scroll_top = self.scroll_top.saturating_add(
-                u16::try_from(added_height.min(u32::from(u16::MAX))).unwrap_or_else(|_| u16::MAX),
-            );
+            self.scroll_top = self
+                .scroll_top
+                .saturating_add(added_height.min(u32::from(u16::MAX)) as u16);
         }
     }
 
@@ -373,7 +419,7 @@ impl MessagesPanel {
         else {
             return;
         };
-        let tool_name = msg.role.tool_name().unwrap_or_else(|| "");
+        let tool_name = msg.role.tool_name().unwrap_or("");
         truncate_to_header(&mut msg.text);
         let truncated = truncate_output(content, self.tool_output_lines.get(tool_name));
         msg.truncated_lines = truncated.skipped;
@@ -433,7 +479,7 @@ impl MessagesPanel {
     }
 
     pub fn update_tool_summary(&mut self, tool_id: &str, summary: &str) {
-        self.update_tool(tool_id, |msg| summary.clone_into(&mut msg.text));
+        self.update_tool(tool_id, |msg| msg.text = summary.to_owned());
     }
 
     pub fn update_tool_model(&mut self, tool_id: &str, model: &str) {
@@ -488,18 +534,16 @@ impl MessagesPanel {
             .expanded_tools
             .get(&inst_id)
             .copied()
-            .unwrap_or_else(Default::default);
+            .unwrap_or_default();
         let tl = build_instructions_lines(blocks, self.viewport_width, exp.output);
 
         if let Some(seg_idx) = self.cache.find_instructions(parent_id) {
-            let Some(seg) = self.cache.get_mut(seg_idx) else {
-                return;
-            };
-            seg.search_text.clone_from(&tl.search_text);
+            let seg = self.cache.get_mut(seg_idx).unwrap();
+            seg.search_text = tl.search_text.clone();
             seg.update_with_reuse(tl, &self.hl_worker);
         } else {
             let mut seg = Segment::with_instructions(parent_id.to_owned());
-            seg.search_text.clone_from(&tl.search_text);
+            seg.search_text = tl.search_text.clone();
             seg.apply_highlight(tl, &self.hl_worker);
             self.cache.insert(parent_idx + 1, Segment::spacer());
             self.cache.insert(parent_idx + 2, seg);
@@ -522,7 +566,7 @@ impl MessagesPanel {
         self.cancel_in_progress();
     }
 
-    pub fn fail_in_progress_with_message(&mut self, message: &str) {
+    pub fn fail_in_progress_with_message(&mut self, message: String) {
         let ids: Vec<(String, Arc<str>)> = self
             .messages
             .iter()
@@ -540,7 +584,7 @@ impl MessagesPanel {
             self.tool_done(ToolDoneEvent {
                 id,
                 tool,
-                output: ToolOutput::Plain(message.into()),
+                output: ToolOutput::Plain(message.clone().into()),
                 is_error: true,
                 annotation: None,
                 written_path: None,
@@ -603,7 +647,7 @@ impl MessagesPanel {
             .expanded_tools
             .get(tool_id)
             .copied()
-            .unwrap_or_else(Default::default);
+            .unwrap_or_default();
         if !seg.truncation.any() && !exp.any() {
             return false;
         }
@@ -638,12 +682,9 @@ impl MessagesPanel {
         if old_start < u32::from(self.scroll_top) {
             let delta = i32::from(new_height) - i32::from(old_height);
             self.scroll_top = if delta >= 0 {
-                self.scroll_top
-                    .saturating_add(u16::try_from(delta).unwrap_or_else(|_| u16::MAX))
+                self.scroll_top.saturating_add(delta as u16)
             } else {
-                self.scroll_top.saturating_sub(
-                    u16::try_from(delta.unsigned_abs()).unwrap_or_else(|_| u16::MAX),
-                )
+                self.scroll_top.saturating_sub(delta.unsigned_abs() as u16)
             };
         }
     }
@@ -655,7 +696,7 @@ impl MessagesPanel {
 
     #[cfg(test)]
     pub fn last_message_text(&self) -> &str {
-        self.messages.last().map_or_else(|| "", |m| m.text.as_str())
+        self.messages.last().map_or("", |m| m.text.as_str())
     }
 
     #[cfg(test)]
@@ -736,16 +777,14 @@ impl MessagesPanel {
 
     pub fn scroll_to_segment(&mut self, segment_index: usize) {
         let width = self.viewport_width;
-        let offset = u16::try_from(
-            self.cache
-                .segments()
-                .iter()
-                .take(segment_index)
-                .map(|s| u32::from(s.height(width)))
-                .sum::<u32>()
-                .min(u32::from(u16::MAX)),
-        )
-        .unwrap_or_else(|_| u16::MAX);
+        let offset = self
+            .cache
+            .segments()
+            .iter()
+            .take(segment_index)
+            .map(|s| u32::from(s.height(width)))
+            .sum::<u32>()
+            .min(u32::from(u16::MAX)) as u16;
         self.scroll_top = offset.min(self.max_scroll());
         self.auto_scroll = false;
     }
@@ -814,18 +853,27 @@ impl MessagesPanel {
         let Some((_, seg, seg_start)) = self.cache.segment_at_row(doc_row, width) else {
             return self.try_toggle_collapsed_thinking(doc_row, width);
         };
+        let rel = u16::try_from(doc_row - seg_start).unwrap_or(u16::MAX);
+        let source_line = seg.source_line_at(rel, width);
+        if let Some(MessageAction::ToggleCompaction(id)) = source_line
+            .and_then(|line| seg.message_action(line))
+            .cloned()
+        {
+            return self.toggle_compaction(&id);
+        }
         let Some(tool_id) = seg.tool_id.clone() else {
             let msg_idx = seg.msg_index;
             return self.try_toggle_cached_thinking(msg_idx, width);
         };
         let truncation = seg.truncation;
+        if let Some(action) = source_line.and_then(|line| seg.truncation_action(line)) {
+            return self.toggle_tool_section(&tool_id, action);
+        }
 
         if self.tool_in_progress(&tool_id) && self.live_bufs.contains_key(&tool_id) {
             self.auto_scroll = false;
             let buf_row = if self.has_snapshot(&tool_id) {
-                let rel = u16::try_from(doc_row - seg_start).unwrap_or_else(|_| u16::MAX);
-                seg.source_line_at(rel, width)
-                    .map_or(0, |line| seg.buf_row(line))
+                source_line.map_or(0, |line| seg.buf_row(line))
             } else {
                 0
             };
@@ -836,13 +884,6 @@ impl MessagesPanel {
         }
 
         if self.has_snapshot(&tool_id) {
-            let rel = u16::try_from(doc_row - seg_start).unwrap_or_else(|_| u16::MAX);
-            let source_line = seg.source_line_at(rel, width);
-            if source_line
-                .is_some_and(|line| !seg.is_snapshot_line(line) && seg.is_truncation_line(line))
-            {
-                return self.toggle_tool_expansion(&tool_id, truncation);
-            }
             self.auto_scroll = false;
             let buf_row = source_line.map_or(0, |line| seg.buf_row(line));
             // Recorded even when the warm path serves the click: theme
@@ -852,7 +893,7 @@ impl MessagesPanel {
                 .or_default()
                 .push(buf_row);
             let item = self.lua_restore_item(&tool_id).map(|mut item| {
-                item.clicks.clone_from(&self.lua_clicks[&tool_id]);
+                item.clicks = self.lua_clicks[&tool_id].clone();
                 item
             });
             let (Some(eh), Some(tx)) =
@@ -879,15 +920,44 @@ impl MessagesPanel {
             .expanded_tools
             .get(&tool_id)
             .copied()
-            .unwrap_or_else(Default::default);
+            .unwrap_or_default();
         if !truncation.any() && !exp.any() {
             return false;
         }
         self.toggle_tool_expansion(&tool_id, truncation)
     }
 
-    #[allow(clippy::unused_self)]
-    pub fn on_mouse(&mut self, _column: u16, _row: u16) {}
+    pub fn on_mouse(&mut self, column: u16, row: u16) {
+        self.mascot.on_mouse(column, row);
+    }
+
+    fn toggle_compaction(&mut self, id: &str) -> bool {
+        if !self.expanded_compactions.remove(id) {
+            self.expanded_compactions.insert(id.to_owned());
+        }
+        self.cache.invalidate_from_msg_count();
+        self.rebuild_line_cache();
+        self.auto_scroll = false;
+        true
+    }
+
+    fn toggle_tool_section(&mut self, tool_id: &str, section: SectionFlags) -> bool {
+        if section.script == section.output {
+            return false;
+        }
+        let tool_id = tool_id.to_owned();
+        let (old_start, old_height) = self.segment_position(&tool_id);
+        let entry = self.expanded_tools.entry(tool_id.clone()).or_default();
+        if section.script {
+            entry.script = !entry.script;
+        } else {
+            entry.output = !entry.output;
+        }
+        self.rebuild_expanded_tool(&tool_id);
+        self.preserve_anchor(old_start, old_height, &tool_id);
+        self.auto_scroll = false;
+        true
+    }
 
     fn toggle_tool_expansion(&mut self, tool_id: &str, truncation: SectionFlags) -> bool {
         let tool_id = tool_id.to_owned();
@@ -952,7 +1022,7 @@ impl MessagesPanel {
             && self.streaming_thinking.is_empty()
             && self.streaming_text.is_empty()
     }
-    #[allow(clippy::too_many_lines)]
+
     pub fn view(&mut self, frame: &mut Frame, area: Rect, has_selection: bool, _is_working: bool) {
         self.viewport_height = area.height;
         let width = area.width.saturating_sub(1);
@@ -969,7 +1039,13 @@ impl MessagesPanel {
 
         if self.show_idle_splash() {
             let accent = self.accent.resolve();
-            self.idle_splash.render(area, frame.buffer_mut(), accent);
+            let theme = theme::current();
+            if self.mascot.enabled() && area.height > 18 {
+                self.mascot.tick(area);
+                self.mascot.render(area, frame.buffer_mut(), &theme, accent);
+            } else {
+                self.idle_splash.render(area, frame.buffer_mut(), accent);
+            }
             return;
         }
 
@@ -1013,8 +1089,7 @@ impl MessagesPanel {
             if cached_count > 0 || !streaming_heights.is_empty() {
                 streaming_heights.push(1);
             }
-            streaming_heights
-                .push(u16::try_from(collapsed_thinking_lines.len()).unwrap_or_else(|_| u16::MAX));
+            streaming_heights.push(collapsed_thinking_lines.len() as u16);
         } else if !self.streaming_thinking.is_empty() {
             let h = self.streaming_thinking.height(width);
             if cached_count > 0 || !streaming_heights.is_empty() {
@@ -1033,9 +1108,7 @@ impl MessagesPanel {
 
         let cached_height = self.cache.total_height(width);
         let streaming_sum: u32 = streaming_heights.iter().map(|&h| u32::from(h)).sum();
-        let total_lines: u16 =
-            u16::try_from((cached_height + streaming_sum).min(u32::from(u16::MAX)))
-                .unwrap_or_else(|_| u16::MAX);
+        let total_lines: u16 = (cached_height + streaming_sum).min(u32::from(u16::MAX)) as u16;
         self.last_total_lines = total_lines;
         let max_scroll = total_lines.saturating_sub(self.viewport_height);
         self.scroll_top = self.scroll_top.min(max_scroll);
@@ -1104,9 +1177,9 @@ impl MessagesPanel {
             && pp.total > 0
         {
             let ratio = f64::from(pp.processed) / f64::from(pp.total);
-            let bar_width = crate::cast::f64_to_u16((f64::from(width) * 0.1).round());
+            let bar_width = (f64::from(width) * 0.1).round() as u16;
             let label = " Processing ";
-            let label_width = u16::try_from(label.len()).unwrap_or_else(|_| u16::MAX);
+            let label_width = label.len() as u16;
             let total_width = label_width + bar_width;
             let bar_x = area.x + width.saturating_sub(total_width);
             let bar_y = area.y + area.height.saturating_sub(1);
@@ -1151,7 +1224,7 @@ impl MessagesPanel {
             Span::raw(JUMP_TO_BOTTOM_KEY_GAP),
             Span::styled(key::SCROLL_BOTTOM.label, keybind_style),
         ]);
-        let text_width = u16::try_from(line.width()).unwrap_or_else(|_| u16::MAX);
+        let text_width = line.width() as u16;
 
         let block = Block::default()
             .borders(Borders::ALL)
@@ -1299,11 +1372,7 @@ impl MessagesPanel {
                 continue;
             }
             if let Some(mut item) = crate::chat::restore_item_for(msg, tol, current_gen) {
-                item.clicks = self
-                    .lua_clicks
-                    .get(&role.id)
-                    .cloned()
-                    .unwrap_or_else(Default::default);
+                item.clicks = self.lua_clicks.get(&role.id).cloned().unwrap_or_default();
                 eh.request_restore(item, tx.clone());
                 requested.push(role.id.clone());
             }
@@ -1442,7 +1511,11 @@ impl MessagesPanel {
         thinking_indicator(self.streaming_thinking.line_count(), None)
     }
 
-    fn build_cached_thinking_indicator(text: &str, duration: Option<&str>) -> Vec<Line<'static>> {
+    fn build_cached_thinking_indicator(
+        &self,
+        text: &str,
+        duration: Option<&str>,
+    ) -> Vec<Line<'static>> {
         thinking_indicator(logical_line_count(text), duration)
     }
 
@@ -1453,8 +1526,7 @@ impl MessagesPanel {
         let cached_height = self.cache.total_height(width);
         let spacer = u32::from(self.cache.len() > 0);
         let thinking_start = cached_height + spacer;
-        let height = u32::try_from(self.build_streaming_collapsed_lines().len())
-            .unwrap_or_else(|_| u32::MAX);
+        let height = self.build_streaming_collapsed_lines().len() as u32;
         if doc_row >= thinking_start && doc_row < thinking_start + height {
             self.thinking_collapsed = false;
             self.auto_scroll = false;
@@ -1486,7 +1558,7 @@ impl MessagesPanel {
             return;
         };
         let lines = if collapsed {
-            Self::build_cached_thinking_indicator(&text, duration.as_deref())
+            self.build_cached_thinking_indicator(&text, duration.as_deref())
         } else {
             let style = thinking_style();
             text_to_lines(
@@ -1554,7 +1626,7 @@ impl MessagesPanel {
             .expanded_tools
             .get(tool_id)
             .copied()
-            .unwrap_or_else(Default::default);
+            .unwrap_or_default();
         let rctx = self.rctx();
         let tl = Self::build_tool_segment_lines(msg, status, &rctx, exp);
 
@@ -1563,29 +1635,31 @@ impl MessagesPanel {
             .as_deref()
             .and_then(n00n_agent::ToolOutput::owned_instructions);
 
-        let Some(seg) = self.cache.get_mut(seg_idx) else {
-            return;
-        };
-        seg.search_text.clone_from(&tl.search_text);
+        let seg = self.cache.get_mut(seg_idx).unwrap();
+        seg.search_text = tl.search_text.clone();
         seg.update_with_reuse(tl, &self.hl_worker);
 
         if let Some(blocks) = instructions {
             self.upsert_instruction_segment(tool_id, &blocks, seg_idx);
         }
     }
-    #[allow(clippy::too_many_lines)]
+
     fn build_segments_for_msg(&self, msg: &DisplayMessage, msg_index: usize) -> Vec<Segment> {
+        if let Some(DisplayMetadata::Compaction(compaction)) = &msg.metadata {
+            return vec![build_compaction_segment(
+                compaction,
+                msg_index,
+                &self.expanded_compactions,
+                &self.tool_output_lines,
+            )];
+        }
         if let DisplayRole::Tool(t) = &msg.role {
-            let exp = self
-                .expanded_tools
-                .get(&t.id)
-                .copied()
-                .unwrap_or_else(Default::default);
+            let exp = self.expanded_tools.get(&t.id).copied().unwrap_or_default();
             let status = t.status;
             let tl = Self::build_tool_segment_lines(msg, status, &self.rctx(), exp);
             let id = t.id.clone();
             let mut seg = Segment::with_tool(id.clone());
-            seg.search_text.clone_from(&tl.search_text);
+            seg.search_text = tl.search_text.clone();
             seg.apply_highlight(tl, &self.hl_worker);
             let mut out = vec![seg];
             let blocks = msg
@@ -1600,10 +1674,10 @@ impl MessagesPanel {
                     .expanded_tools
                     .get(&inst_id)
                     .copied()
-                    .unwrap_or_else(Default::default);
+                    .unwrap_or_default();
                 let tl = build_instructions_lines(&blocks, self.viewport_width, exp.output);
                 let mut inst_seg = Segment::with_instructions(id);
-                inst_seg.search_text.clone_from(&tl.search_text);
+                inst_seg.search_text = tl.search_text.clone();
                 inst_seg.apply_highlight(tl, &self.hl_worker);
                 out.push(Segment::spacer());
                 out.push(inst_seg);
@@ -1612,7 +1686,7 @@ impl MessagesPanel {
         }
         if matches!(&msg.role, DisplayRole::Thinking) && msg.thinking_collapsed {
             let text = msg.text.clone();
-            let lines = Self::build_cached_thinking_indicator(&text, msg.annotation.as_deref());
+            let lines = self.build_cached_thinking_indicator(&text, msg.annotation.as_deref());
             let search_text = format!("thinking> {text}");
             return vec![Segment::with_lines(
                 lines,
@@ -1642,9 +1716,9 @@ impl MessagesPanel {
         };
         let content_width = surface
             .content_width(self.viewport_width)
-            .saturating_sub(u16::try_from(prefix.width()).unwrap_or_else(|_| u16::MAX))
+            .saturating_sub(prefix.width() as u16)
             .max(1);
-        let picker = Arc::clone(&self.picker);
+        let picker = self.picker.clone();
         let picker_ref = &*picker;
         let mut lines = if style.use_markdown {
             text_to_lines(
@@ -1681,7 +1755,7 @@ impl MessagesPanel {
                 theme::current().tool_dim,
             )));
         }
-        let prefix_width = u16::try_from(prefix.width()).unwrap_or_else(|_| u16::MAX);
+        let prefix_width = prefix.width() as u16;
         let search_text = format!("{}> {}", role_name(&msg.role), msg.text);
         let mut segment = Segment::with_lines(
             lines,
@@ -1709,7 +1783,7 @@ impl MessagesPanel {
         }
         out
     }
-    #[allow(clippy::too_many_lines)]
+
     fn rebuild_line_cache(&mut self) {
         let _start = self.cache.msg_count();
         if !self.cache.needs_rebuild(self.messages.len()) {
@@ -1718,12 +1792,16 @@ impl MessagesPanel {
         for i in self.cache.msg_count()..self.messages.len() {
             let msg = &self.messages[i];
 
-            if let DisplayRole::Tool(t) = &msg.role {
-                let exp = self
-                    .expanded_tools
-                    .get(&t.id)
-                    .copied()
-                    .unwrap_or_else(Default::default);
+            if let Some(DisplayMetadata::Compaction(compaction)) = &msg.metadata {
+                self.cache.push_spacer_if_needed();
+                self.cache.push(build_compaction_segment(
+                    compaction,
+                    i,
+                    &self.expanded_compactions,
+                    &self.tool_output_lines,
+                ));
+            } else if let DisplayRole::Tool(t) = &msg.role {
+                let exp = self.expanded_tools.get(&t.id).copied().unwrap_or_default();
                 let status = t.status;
                 let tl = Self::build_tool_segment_lines(msg, status, &self.rctx(), exp);
                 let id = t.id.clone();
@@ -1747,7 +1825,7 @@ impl MessagesPanel {
                 if matches!(&msg.role, DisplayRole::Thinking) && msg.thinking_collapsed {
                     let text = msg.text.clone();
                     let lines =
-                        Self::build_cached_thinking_indicator(&text, msg.annotation.as_deref());
+                        self.build_cached_thinking_indicator(&text, msg.annotation.as_deref());
                     let search_text = format!("thinking> {text}");
                     self.cache.push_spacer_if_needed();
                     self.cache.push(Segment::with_lines(
@@ -1779,9 +1857,9 @@ impl MessagesPanel {
                 };
                 let content_width = surface
                     .content_width(self.viewport_width)
-                    .saturating_sub(u16::try_from(prefix.width()).unwrap_or_else(|_| u16::MAX))
+                    .saturating_sub(prefix.width() as u16)
                     .max(1);
-                let picker = Arc::clone(&self.picker);
+                let picker = self.picker.clone();
                 let picker_ref = &*picker;
                 let mut lines = if style.use_markdown {
                     text_to_lines(
@@ -1819,7 +1897,7 @@ impl MessagesPanel {
                     )));
                 }
 
-                let prefix_width = u16::try_from(prefix.width()).unwrap_or_else(|_| u16::MAX);
+                let prefix_width = prefix.width() as u16;
                 let search_text = format!("{}> {}", role_name(&msg.role), msg.text);
                 self.cache.push_spacer_if_needed();
                 if !msg.text.is_empty() || msg.plan_path.is_some() || msg.images.is_empty() {
@@ -1848,6 +1926,138 @@ impl MessagesPanel {
             }
         }
         self.cache.mark_built(self.messages.len());
+    }
+}
+
+fn build_compaction_segment(
+    compaction: &CompactionDisplay,
+    msg_index: usize,
+    expanded: &HashSet<String>,
+    tool_output_lines: &ToolOutputLines,
+) -> Segment {
+    let mut lines = Vec::new();
+    let mut actions = Vec::new();
+    append_compaction_lines(
+        compaction,
+        expanded,
+        tool_output_lines,
+        0,
+        &mut lines,
+        &mut actions,
+    );
+    let search_text = format!(
+        "compaction> depth {} {} messages {}",
+        compaction.depth,
+        compaction.message_count,
+        compaction_summary_text(compaction)
+    );
+    Segment::with_compaction(lines, search_text, msg_index, actions)
+}
+
+fn compaction_summary_text(compaction: &CompactionDisplay) -> &str {
+    match compaction.summary.as_deref() {
+        Some(summary) => summary,
+        None => "Summary unavailable",
+    }
+}
+
+fn append_compaction_lines(
+    compaction: &CompactionDisplay,
+    expanded: &HashSet<String>,
+    tool_output_lines: &ToolOutputLines,
+    indent: usize,
+    lines: &mut Vec<Line<'static>>,
+    actions: &mut Vec<(usize, String)>,
+) {
+    let is_expanded = expanded.contains(&compaction.id);
+    actions.push((lines.len(), compaction.id.clone()));
+    let marker = if is_expanded { '▾' } else { '▸' };
+    let count_label = if compaction.message_count == 1 {
+        "message"
+    } else {
+        "messages"
+    };
+    lines.push(Line::from(vec![
+        Span::raw(" ".repeat(indent)),
+        Span::styled(
+            format!(
+                "{marker} Compaction · depth {} · {} {count_label}",
+                compaction.depth, compaction.message_count
+            ),
+            theme::current().tool_dim,
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw(" ".repeat(indent + 2)),
+        Span::styled("Summary: ", theme::current().assistant_prefix),
+        Span::styled(
+            compaction_summary_text(compaction).to_owned(),
+            theme::current().assistant,
+        ),
+    ]));
+    if !is_expanded {
+        return;
+    }
+    for entry in &compaction.entries {
+        if let Some(DisplayMetadata::Compaction(child)) = &entry.metadata {
+            append_compaction_lines(
+                child,
+                expanded,
+                tool_output_lines,
+                indent + 2,
+                lines,
+                actions,
+            );
+        } else {
+            append_compaction_entry(entry, tool_output_lines, indent + 2, lines);
+        }
+    }
+}
+
+fn append_compaction_entry(
+    message: &DisplayMessage,
+    tool_output_lines: &ToolOutputLines,
+    indent: usize,
+    lines: &mut Vec<Line<'static>>,
+) {
+    let label = role_name(&message.role);
+    let mut text_lines = message.text.lines();
+    if let Some(first) = text_lines.next() {
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(indent)),
+            Span::styled(format!("{label}> "), theme::current().tool_dim),
+            Span::raw(first.to_owned()),
+        ]));
+        for line in text_lines {
+            lines.push(Line::from(vec![
+                Span::raw(" ".repeat(indent + label.len() + 2)),
+                Span::raw(line.to_owned()),
+            ]));
+        }
+    }
+    if let Some(output) = message.tool_output.as_deref() {
+        let output = output.as_display_text();
+        let truncated = truncate_output(
+            &output,
+            tool_output_lines.get(message.role.tool_name().unwrap_or("")),
+        );
+        if !truncated.kept.is_empty() && !message.text.contains(truncated.kept.as_ref()) {
+            for line in truncated.kept.lines() {
+                lines.push(Line::from(vec![
+                    Span::raw(" ".repeat(indent + label.len() + 2)),
+                    Span::raw(line.to_owned()),
+                ]));
+            }
+        }
+    }
+    if !message.images.is_empty() {
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(indent)),
+            Span::styled(
+                format!("{label}> [{} image(s)]", message.images.len()),
+                theme::current().tool_dim,
+            ),
+        ]));
     }
 }
 

@@ -9,8 +9,6 @@ use std::sync::Arc;
 
 use n00n_lua::{OptionType, PluginHost};
 
-type GenResult<T> = Result<T, String>;
-
 const DATE_PLACEHOLDER: &str = "YYYY-MM-DD";
 
 const SECTIONS: &[(&str, &[&str])] = &[
@@ -28,6 +26,8 @@ const SECTIONS: &[(&str, &[&str])] = &[
             "grep",
             "index",
             "view_image",
+            "codegraph",
+            "arbor",
         ],
     ),
     (
@@ -83,7 +83,7 @@ fn extract_default(desc: &str) -> (String, String) {
 }
 
 fn first_paragraph(desc: &str) -> &str {
-    desc.split("\n\n").next().unwrap_or_else(|| desc)
+    desc.split("\n\n").next().unwrap_or(desc)
 }
 
 fn schema_type(schema: &Value) -> String {
@@ -110,15 +110,15 @@ fn schema_type(schema: &Value) -> String {
 }
 
 fn extract_params(schema: &Value) -> Vec<Param> {
-    let Some(properties) = schema.get("properties").and_then(|p| p.as_object()) else {
-        return Vec::new();
+    let properties = match schema.get("properties").and_then(|p| p.as_object()) {
+        Some(p) => p,
+        None => return Vec::new(),
     };
     let required: Vec<&str> = schema
         .get("required")
         .and_then(|r| r.as_array())
-        .map_or_else(Vec::new, |arr| {
-            arr.iter().filter_map(|v| v.as_str()).collect()
-        });
+        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
 
     let mut params = Vec::new();
     for (name, prop) in properties {
@@ -126,7 +126,7 @@ fn extract_params(schema: &Value) -> Vec<Param> {
         let raw_desc = prop
             .get("description")
             .and_then(|d| d.as_str())
-            .unwrap_or_else(|| "");
+            .unwrap_or("");
         let is_required = required.contains(&name.as_str());
         let (default, description) = extract_default(raw_desc);
         params.push(Param {
@@ -147,18 +147,19 @@ fn write_param_table(out: &mut String, params: &[Param]) {
     } else {
         "| Parameter | Type | Required | Description |\n|-----------|------|----------|-------------|"
     };
-    let _ = writeln!(out, "{header}");
+    writeln!(out, "{header}").unwrap();
     for p in params {
         let desc = p.description.replace('\n', "<br>");
         let required = if p.required { "yes" } else { "no" };
         if has_defaults {
-            let _ = writeln!(
+            writeln!(
                 out,
                 "| `{}` | {} | {} | {} | {} |",
                 p.name, p.ty, required, p.default, desc
-            );
+            )
+            .unwrap();
         } else {
-            let _ = writeln!(out, "| `{}` | {} | {} | {} |", p.name, p.ty, required, desc);
+            writeln!(out, "| `{}` | {} | {} | {} |", p.name, p.ty, required, desc).unwrap();
         }
     }
 }
@@ -175,24 +176,20 @@ fn write_tool_entry(out: &mut String, name: &str, info: &ToolInfo, opt_in: &Hash
         .def
         .get("description")
         .and_then(|d| d.as_str())
-        .unwrap_or_else(|| "");
-    let schema = info
-        .def
-        .get("input_schema")
-        .cloned()
-        .unwrap_or_else(|| Value::Null);
+        .unwrap_or("");
+    let schema = info.def.get("input_schema").cloned().unwrap_or(Value::Null);
     let params = extract_params(&schema);
     let summary = first_paragraph(description);
 
-    let _ = writeln!(out);
+    writeln!(out).unwrap();
     let mut badge_text = source_label(&info.source).to_string();
     if opt_in.contains(name) {
         badge_text.push_str(", opt-in");
     }
-    let _ = writeln!(out, "### `{name}` *({badge_text})*");
-    let _ = writeln!(out);
-    let _ = writeln!(out, "{summary}");
-    let _ = writeln!(out);
+    writeln!(out, "### `{name}` *({badge_text})*").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "{summary}").unwrap();
+    writeln!(out).unwrap();
     write_param_table(out, &params);
 }
 
@@ -210,65 +207,61 @@ fn redact_path(input: &str, target: &str, placeholder: &str) -> String {
 /// `os.date("%Y-%m-%d")`. Scrub both so `gen-docs-check` is stable across
 /// machines and days. CWD is replaced before HOME so a cwd nested under ~
 /// doesn't get partially mangled.
-fn redact_env_and_dates(input: &str) -> GenResult<String> {
+fn redact_env_and_dates(input: &str) -> String {
     let cwd = std::env::current_dir()
         .ok()
         .and_then(|c| c.to_str().map(str::to_owned))
-        .unwrap_or_else(String::new);
+        .unwrap_or_default();
     let mut out = redact_path(input, &cwd, "<cwd>");
     if let Ok(home) = std::env::var("HOME")
         && !home.is_empty()
     {
         out = redact_path(&out, &home, "~");
     }
-    let re = get_date_re()?;
-    Ok(re.replace_all(&out, DATE_PLACEHOLDER).into_owned())
+    DATE_RE.replace_all(&out, DATE_PLACEHOLDER).into_owned()
 }
 
-fn redact_def(def: &Value) -> GenResult<Value> {
+fn redact_def(def: &Value) -> Value {
     let Some(d) = def.get("description").and_then(|v| v.as_str()) else {
-        return Ok(def.clone());
+        return def.clone();
     };
-    let redacted = redact_env_and_dates(d)?;
+    let redacted = redact_env_and_dates(d);
     if redacted == d {
-        Ok(def.clone())
+        def.clone()
     } else {
         let mut out = def.clone();
         out["description"] = Value::String(redacted);
-        Ok(out)
+        out
     }
 }
 
 fn write_front_matter(out: &mut String) {
-    let _ = writeln!(out, "+++");
-    let _ = writeln!(out, "title = \"Tools\"");
-    let _ = writeln!(out, "weight = 3");
-    let _ = writeln!(out, "[extra]");
-    let _ = writeln!(out, "group = \"Reference\"");
-    let _ = writeln!(out, "+++");
+    writeln!(out, "+++").unwrap();
+    writeln!(out, "title = \"Tools\"").unwrap();
+    writeln!(out, "weight = 3").unwrap();
+    writeln!(out, "[extra]").unwrap();
+    writeln!(out, "group = \"Reference\"").unwrap();
+    writeln!(out, "+++").unwrap();
 }
 
 fn collect_tool_info(
     def_map: &HashMap<String, &Value>,
     entry: &n00n_agent::tools::RegisteredTool,
-) -> GenResult<Option<ToolInfo>> {
+) -> Option<ToolInfo> {
     let name = entry.name();
-    let Some(def) = def_map.get(name) else {
-        return Ok(None);
-    };
-    Ok(Some(ToolInfo {
-        def: redact_def(def)?,
+    let def = def_map.get(name)?;
+    Some(ToolInfo {
+        def: redact_def(def),
         source: entry.source.clone(),
-    }))
+    })
 }
 
 /// Loads every builtin with all sub-tools on, so the reference documents
 /// opt-in tools too. "Opt-in" means the plugin declares the tool as a boolean
 /// option defaulting to false, so the badge cannot drift from the defaults.
-fn load_registry_with_builtins() -> GenResult<(Arc<ToolRegistry>, HashSet<String>)> {
+fn load_registry_with_builtins() -> (Arc<ToolRegistry>, HashSet<String>) {
     let registry = Arc::new(ToolRegistry::new());
-    let mut host = PluginHost::new(Arc::clone(&registry))
-        .map_err(|e| format!("failed to create plugin host: {e}"))?;
+    let mut host = PluginHost::new(Arc::clone(&registry)).expect("plugin host");
 
     let mut plugins = HashMap::new();
     let mut edit = PluginFileConfig::default();
@@ -277,27 +270,26 @@ fn load_registry_with_builtins() -> GenResult<(Arc<ToolRegistry>, HashSet<String
     }
     plugins.insert("edit".to_owned(), edit);
     host.load_builtins(&PluginsConfig::from_plugins(&plugins))
-        .map_err(|e| format!("failed to load builtin plugins: {e}"))?;
+        .expect("loading builtin plugins");
 
     let opt_in = host
         .plugin_options()
-        .map_err(|e| format!("failed to collect plugin options: {e}"))?
+        .expect("collecting plugin options")
         .into_values()
         .flatten()
         .filter(|o| o.ty == OptionType::Boolean && o.default == Some(Value::Bool(false)))
         .map(|o| o.name)
         .collect();
-    Ok((registry, opt_in))
+    (registry, opt_in)
 }
 
-#[allow(clippy::too_many_lines)]
-pub fn generate() -> GenResult<String> {
+pub fn generate() -> String {
     let vars = Vars::new()
         .set("{cwd}", "<cwd>")
         .set("{platform}", "linux")
         .set("{date}", "YYYY-MM-DD");
 
-    let (registry, opt_in) = load_registry_with_builtins()?;
+    let (registry, opt_in) = load_registry_with_builtins();
     let defs = registry.definitions(
         &vars,
         &DescriptionContext {
@@ -307,10 +299,9 @@ pub fn generate() -> GenResult<String> {
         },
         false,
     );
-    let Some(defs_array) = defs.as_array() else {
-        return Err("definitions should be an array".to_string());
-    };
-    let def_map: HashMap<String, &Value> = defs_array
+    let def_map: HashMap<String, &Value> = defs
+        .as_array()
+        .expect("definitions should be an array")
         .iter()
         .filter_map(|t| {
             t.get("name")
@@ -322,7 +313,7 @@ pub fn generate() -> GenResult<String> {
     let snapshot = registry.iter();
     let mut tools: HashMap<&str, ToolInfo> = HashMap::new();
     for entry in &snapshot {
-        if let Some(info) = collect_tool_info(&def_map, entry)? {
+        if let Some(info) = collect_tool_info(&def_map, entry) {
             tools.insert(entry.name(), info);
         }
     }
@@ -330,13 +321,14 @@ pub fn generate() -> GenResult<String> {
     let total = tools.len();
     let mut out = String::new();
     write_front_matter(&mut out);
-    let _ = writeln!(out);
-    let _ = writeln!(out, "# Tools");
-    let _ = writeln!(out);
-    let _ = writeln!(
+    writeln!(out).unwrap();
+    writeln!(out, "# Tools").unwrap();
+    writeln!(out).unwrap();
+    writeln!(
         out,
-        "N00n ships with {total} built-in tools. This is the full reference."
-    );
+        "n00n ships with {total} built-in tools. This is the full reference."
+    )
+    .unwrap();
 
     let mut rendered: HashSet<&str> = HashSet::new();
 
@@ -349,12 +341,10 @@ pub fn generate() -> GenResult<String> {
         if present.is_empty() {
             continue;
         }
-        let _ = writeln!(out);
-        let _ = writeln!(out, "## {section_name}");
+        writeln!(out).unwrap();
+        writeln!(out, "## {section_name}").unwrap();
         for name in present {
-            let Some(info) = tools.get(name) else {
-                return Err(format!("tool '{name}' not found in tools map"));
-            };
+            let info = tools.get(name).expect("checked above");
             write_tool_entry(&mut out, name, info, &opt_in);
             rendered.insert(name);
         }
@@ -367,12 +357,10 @@ pub fn generate() -> GenResult<String> {
         .collect();
     leftovers.sort_unstable();
     if !leftovers.is_empty() {
-        let _ = writeln!(out);
-        let _ = writeln!(out, "## Additional tools");
+        writeln!(out).unwrap();
+        writeln!(out, "## Additional tools").unwrap();
         for name in leftovers {
-            let Some(info) = tools.get(name) else {
-                return Err(format!("tool '{name}' not found in tools map"));
-            };
+            let info = tools.get(name).expect("checked above");
             write_tool_entry(&mut out, name, info, &opt_in);
         }
     }
@@ -380,17 +368,11 @@ pub fn generate() -> GenResult<String> {
     if out.ends_with('\n') {
         out.pop();
     }
-    Ok(out)
+    out
 }
 
-static DATE_RE: std::sync::LazyLock<Result<Regex, regex::Error>> =
-    std::sync::LazyLock::new(|| Regex::new(r"\d{4}-\d{2}-\d{2}"));
-
-fn get_date_re() -> GenResult<&'static Regex> {
-    DATE_RE
-        .as_ref()
-        .map_err(|e| format!("invalid date regex: {e}"))
-}
+static DATE_RE: std::sync::LazyLock<Regex> =
+    std::sync::LazyLock::new(|| Regex::new(r"\d{4}-\d{2}-\d{2}").expect("valid date regex"));
 
 #[cfg(test)]
 mod tests {
@@ -407,10 +389,7 @@ mod tests {
         // redact_env_and_dates also scrubs HOME/cwd; isolate date logic by
         // calling the regex replacement directly.
         assert_eq!(
-            get_date_re()
-                .unwrap()
-                .replace_all(input, DATE_PLACEHOLDER)
-                .as_ref(),
+            DATE_RE.replace_all(input, DATE_PLACEHOLDER).as_ref(),
             expected
         );
     }
@@ -434,21 +413,21 @@ mod tests {
         assert!(cleaned.starts_with(remaining_prefix), "cleaned: {cleaned}");
     }
 
-    #[test_case(&serde_json::json!({ "type": "string" }), "string"; "single")]
-    #[test_case(&serde_json::json!({ "type": ["string", "integer"] }), "string/integer"; "type union")]
+    #[test_case(serde_json::json!({ "type": "string" }), "string"; "single")]
+    #[test_case(serde_json::json!({ "type": ["string", "integer"] }), "string/integer"; "type union")]
     #[test_case(
-        &serde_json::json!({ "anyOf": [{ "type": "string" }, { "type": "integer" }] }),
+        serde_json::json!({ "anyOf": [{ "type": "string" }, { "type": "integer" }] }),
         "string/integer";
         "any_of_union"
     )]
-    #[test_case(&serde_json::json!({}), "string"; "missing")]
-    fn formats_schema_type(input: &Value, expected: &str) {
-        assert_eq!(schema_type(input), expected);
+    #[test_case(serde_json::json!({}), "string"; "missing")]
+    fn formats_schema_type(input: Value, expected: &str) {
+        assert_eq!(schema_type(&input), expected);
     }
 
     #[test]
     fn sections_partition_registered_tools() {
-        let (registry, _) = load_registry_with_builtins().unwrap();
+        let (registry, _) = load_registry_with_builtins();
         let snapshot = registry.iter();
         let registered: HashSet<&str> = snapshot
             .iter()

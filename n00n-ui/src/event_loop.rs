@@ -30,7 +30,7 @@ use n00n_providers::{Message, Model};
 use n00n_storage::StateDir;
 use n00n_storage::StorageError;
 use n00n_storage::id::{N00nId, N00nIdParseError, SessionRef};
-use n00n_storage::sessions::{SessionError, normalize_title};
+use n00n_storage::sessions::{SessionError, TranscriptEntry, normalize_title};
 use serde_json::json;
 use tracing::warn;
 
@@ -45,6 +45,7 @@ use crate::input::InputReader;
 
 use crate::storage_writer::StorageWriter;
 use crate::terminal;
+use crate::terminal_image;
 use ratatui_image::picker::Picker;
 
 const ANIMATION_INTERVAL_MS: u64 = 16;
@@ -55,7 +56,6 @@ const DRAIN_BUDGET: usize = 256;
 const AGENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 const DELETE_FOCUSED_ERR: &str = "cannot delete the focused session";
 const NOT_LIVE_ERR: &str = "session not live";
-static PROCESS_WARMUP: std::sync::Once = std::sync::Once::new();
 
 /// Tabs carry their in-memory sessions so `/reload` reopens them without a
 /// disk round-trip; `session_has_content` tells which ones were saved.
@@ -161,6 +161,7 @@ impl SpawnCtx {
         let handles = AgentHandles::spawn(
             &self.model_slot,
             session.messages.clone(),
+            session.transcript.clone(),
             self.config.clone(),
             self.ui_config.tool_output_lines,
             &permissions,
@@ -187,7 +188,7 @@ impl SpawnCtx {
             Arc::clone(&self.custom_commands),
             Arc::clone(&self.picker),
         );
-        app.lua_event_handle.clone_from(&self.lua_event_handle);
+        app.lua_event_handle = self.lua_event_handle.clone();
         handles.apply_to_app(&mut app);
         if resumed {
             restore_session(&mut app, &handles);
@@ -279,11 +280,7 @@ fn merge_batch(
     if batch.models.is_empty() {
         return;
     }
-    let mut merged = available
-        .load()
-        .as_deref()
-        .cloned()
-        .unwrap_or_else(Default::default);
+    let mut merged = available.load().as_deref().cloned().unwrap_or_default();
     for spec in &batch.models {
         if !merged.contains(spec) {
             merged.push(spec.clone());
@@ -336,11 +333,11 @@ fn restore_session(app: &mut App, handles: &AgentHandles) {
         .load_session_rules(crate::app::session_state::stored_to_rules(
             &app.state.session.meta.session_rules,
         ));
-    (*handles
+    *handles
         .tool_outputs
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner))
-    .clone_from(&app.state.session.tool_outputs);
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        app.state.session.tool_outputs.clone();
     app.restore_display();
     for w in app.state.warnings.drain(..) {
         app.status_bar.flash(w);
@@ -372,13 +369,14 @@ impl<'t> EventLoop<'t> {
             ui_action_rx,
             lua_event_handle,
         } = params;
+
+        static PROCESS_WARMUP: std::sync::Once = std::sync::Once::new();
         PROCESS_WARMUP.call_once(|| {
             std::thread::spawn(crate::highlight::warmup);
             crate::update::spawn_check();
         });
 
-        let storage_writer =
-            Arc::new(StorageWriter::new(storage.clone()).context("spawn storage writer")?);
+        let storage_writer = Arc::new(StorageWriter::new(storage.clone()));
         let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
         let (mcp_handle, mcp_config_errors) = smol::block_on(mcp::start(&cwd));
 
@@ -395,13 +393,7 @@ impl<'t> EventLoop<'t> {
         }));
         let bg = spawn_model_fetch(&model_slot, timeouts);
 
-        let picker = match Picker::from_query_stdio() {
-            Ok(p) => Arc::new(p),
-            Err(err) => {
-                warn!(%err, "terminal image detection failed; falling back to halfblocks");
-                Arc::new(Picker::halfblocks())
-            }
-        };
+        let picker = Arc::new(terminal_image::picker());
 
         let ctx = SpawnCtx {
             storage,
@@ -449,7 +441,7 @@ impl<'t> EventLoop<'t> {
             sessions: runtimes,
             focused,
             ctx,
-            input: InputReader::spawn().context("spawn input reader")?,
+            input: InputReader::spawn(),
             warn_rx: bg.warn_rx,
             warn_tx: bg.warn_tx,
             ui_action_rx,
@@ -608,7 +600,7 @@ impl<'t> EventLoop<'t> {
             return;
         }
         let app = &mut self.sessions[self.focused].app;
-        if app.status != Status::Streaming || !app.has_content() {
+        if app.status != Status::Streaming {
             return;
         }
         app.save_session();
@@ -672,12 +664,11 @@ impl<'t> EventLoop<'t> {
                 let app = self.focused_app();
                 app.float_mgr.open(buf, config, focus, event_tx, cmd_rx);
                 if focus {
-                    app.transition_plan(&crate::app::mode::PlanTrigger::InteractivePrompt);
+                    app.transition_plan(crate::app::mode::PlanTrigger::InteractivePrompt);
                 }
             }
             UiAction::PickModel { current, reply_tx } => {
-                self.focused_app()
-                    .pick_model_for_lua(current.as_deref(), reply_tx);
+                self.focused_app().pick_model_for_lua(current, reply_tx);
                 self.handle_action(self.focused, Action::RefreshModels);
             }
             UiAction::Session { req, reply_tx } => {
@@ -689,9 +680,9 @@ impl<'t> EventLoop<'t> {
     /// Exits with the editor's status code; `-1` (flashed on the session's
     /// app) when the editor could not be launched.
     fn open_editor(&mut self, idx: usize, path: &std::path::Path) -> i32 {
-        let result = {
-            let _pause = self.input.pause();
-            terminal::open_in_editor(path, self.terminal)
+        let result = match self.input.pause() {
+            Ok(_pause) => terminal::open_in_editor(path, self.terminal),
+            Err(e) => Err(e),
         };
         match result {
             Ok(code) => code,
@@ -723,10 +714,10 @@ impl<'t> EventLoop<'t> {
             );
         }
     }
+
     /// `List` replies from a background task (the scan can be slow); every
     /// other request is answered synchronously by the event loop, which owns
     /// the live runtimes.
-    #[allow(clippy::too_many_lines)]
     fn handle_session_request(
         &mut self,
         req: SessionRequest,
@@ -736,8 +727,7 @@ impl<'t> EventLoop<'t> {
             SessionRequest::List => {
                 let storage = self.ctx.storage.clone();
                 smol::unblock(move || {
-                    let cwd =
-                        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::default());
+                    let cwd = std::env::current_dir().unwrap_or_default();
                     let reply = AppSession::list(&cwd.to_string_lossy(), &storage)
                         .map_err(|e| e.to_string())
                         .and_then(|list| serde_json::to_value(list).map_err(|e| e.to_string()));
@@ -971,6 +961,7 @@ impl<'t> EventLoop<'t> {
                 (None, None)
             }
             Event::Key(key) if key.kind == KeyEventKind::Press => (Some(Msg::Key(key)), None),
+            Event::Key(_) => (None, None),
             Event::Paste(text) => (Some(Msg::Paste(text)), None),
             Event::Mouse(mouse) => self.translate_mouse(mouse),
             _ => (None, None),
@@ -1047,12 +1038,18 @@ impl<'t> EventLoop<'t> {
         }
     }
 
-    fn respawn_agent(&mut self, idx: usize, history: Vec<Message>) {
+    fn respawn_agent(
+        &mut self,
+        idx: usize,
+        history: Vec<Message>,
+        transcript: Vec<TranscriptEntry<Message>>,
+    ) {
         let rt = &mut self.sessions[idx];
         let lua_handle = rt.app.lua_event_handle.clone();
         let permissions = Arc::clone(&rt.app.permissions);
         rt.handles.respawn(
             history,
+            transcript,
             &self.ctx.model_slot,
             self.ctx.config.clone(),
             self.ctx.ui_config.tool_output_lines,
@@ -1061,11 +1058,26 @@ impl<'t> EventLoop<'t> {
             lua_handle,
         );
     }
-    #[allow(clippy::too_many_lines)]
+
     fn handle_action(&mut self, idx: usize, action: Action) {
         match action {
             Action::SendMessage(input) => {
                 let rt = &mut self.sessions[idx];
+                match n00n_storage::sessions::openai_response_chain_parent_exists(
+                    &rt.app.storage,
+                    rt.app.state.session.id,
+                ) {
+                    Ok(false) => {
+                        let mut initial_session = rt.app.state.session.clone();
+                        if let Err(error) = initial_session.save(&rt.app.storage) {
+                            warn!(%error, "failed to persist session before provider request");
+                        }
+                    }
+                    Err(error) => {
+                        warn!(%error, "failed to check session persistence before provider request");
+                    }
+                    Ok(true) => {}
+                }
                 let mut input = *input;
                 input.preamble = rt.app.shell.drain_results();
                 let run_id = rt.app.run_id;
@@ -1091,7 +1103,7 @@ impl<'t> EventLoop<'t> {
                     .try_send(AgentCommand::CancelSubagent { tool_use_id });
             }
             Action::NewSession => {
-                self.respawn_agent(idx, Vec::new());
+                self.respawn_agent(idx, Vec::new(), Vec::new());
             }
             Action::LoadSession(loaded) => {
                 let loaded = *loaded;
@@ -1105,15 +1117,15 @@ impl<'t> EventLoop<'t> {
                         provider: Arc::from(new_provider),
                     }));
                 }
-                self.respawn_agent(idx, loaded.messages);
+                self.respawn_agent(idx, loaded.messages, loaded.transcript);
                 *self.sessions[idx]
                     .handles
                     .tool_outputs
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = loaded.tool_outputs;
             }
-            Action::ChangeModel(spec) => self.change_model(&spec),
-            Action::RefreshProvider { slug } => self.refresh_provider(&slug),
+            Action::ChangeModel(spec) => self.change_model(spec),
+            Action::RefreshProvider { slug } => self.refresh_provider(slug),
             Action::AssignTier(spec, tier) => {
                 n00n_providers::model_registry::set_and_persist(spec, tier, &self.ctx.storage);
             }
@@ -1145,7 +1157,7 @@ impl<'t> EventLoop<'t> {
                     visible,
                     rt.shell_tx.clone(),
                     cancel,
-                    &self.ctx.config,
+                    self.ctx.config.clone(),
                 );
             }
             Action::OpenEditor(path) => {
@@ -1153,9 +1165,9 @@ impl<'t> EventLoop<'t> {
             }
             Action::EditInputInEditor => {
                 let current_text = self.sessions[idx].app.input_box.buffer.value();
-                let result = {
-                    let _pause = self.input.pause();
-                    terminal::edit_temp_content(&current_text, self.terminal)
+                let result = match self.input.pause() {
+                    Ok(_pause) => terminal::edit_temp_content(&current_text, self.terminal),
+                    Err(e) => Err(e),
                 };
                 match result {
                     Ok(edited) => self.sessions[idx].app.input_box.set_input(edited),
@@ -1165,27 +1177,27 @@ impl<'t> EventLoop<'t> {
             Action::Btw(question) => {
                 let slot = self.ctx.model_slot.load();
                 self.sessions[idx].app.start_btw(
-                    &question,
+                    question,
                     Arc::clone(&slot.provider),
                     slot.model.clone(),
                 );
             }
-            Action::Suspend => {
-                let _pause = self.input.pause();
-                terminal::suspend(self.terminal);
-            }
+            Action::Suspend => match self.input.pause() {
+                Ok(_pause) => terminal::suspend(self.terminal),
+                Err(e) => self.sessions[idx].app.flash(e),
+            },
             Action::RefreshModels => self.refresh_models(),
             Action::RefreshUsage => self.refresh_usage(),
         }
     }
 
-    fn change_model(&mut self, spec: &str) {
-        match Model::from_spec(spec) {
+    fn change_model(&mut self, spec: String) {
+        match Model::from_spec(&spec) {
             Ok(mut new_model) => match from_model(&mut new_model, self.ctx.timeouts) {
                 Ok(new_provider) => {
                     let app = self.focused_app();
                     app.update_model(&new_model);
-                    app.record_recent_model(spec);
+                    app.record_recent_model(&spec);
                     app.usage_slot.store(None);
                     self.ctx.model_slot.store(Arc::new(ModelSlot {
                         model: new_model,
@@ -1235,7 +1247,7 @@ impl<'t> EventLoop<'t> {
         .detach();
     }
 
-    fn refresh_provider(&mut self, slug: &str) {
+    fn refresh_provider(&mut self, slug: String) {
         let mut model = self.ctx.model_slot.load().model.clone();
         if model.provider.to_string() == slug {
             if let Ok(provider) =
@@ -1247,8 +1259,8 @@ impl<'t> EventLoop<'t> {
                     provider: Arc::from(provider),
                 }));
             }
-        } else if let Some(builtin) = n00n_config::providers::builtin_provider(slug) {
-            self.change_model(builtin.default_model);
+        } else if let Some(builtin) = n00n_config::providers::builtin_provider(&slug) {
+            self.change_model(builtin.default_model.to_string());
         }
     }
 
@@ -1292,9 +1304,9 @@ impl<'t> EventLoop<'t> {
 
 fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
     if kind == MouseEventKind::ScrollUp {
-        lines.cast_signed()
+        lines as i32
     } else {
-        -lines.cast_signed()
+        -(lines as i32)
     }
 }
 
