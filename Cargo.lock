@@ -3180,6 +3180,7 @@ dependencies = [
  "syntect",
  "tempfile",
  "test-case",
+ "thiserror 2.0.19",
  "toml",
  "tracing",
  "unicode-width 0.2.0",

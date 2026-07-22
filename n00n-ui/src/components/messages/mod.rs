@@ -1747,12 +1747,12 @@ impl MessagesPanel {
             DisplayRole::Assistant => Surface::Assistant,
             _ => Surface::Plain,
         };
-        let content_width = surface
-            .content_width(self.viewport_width)
+        let base_width = surface.content_width(self.viewport_width).max(1);
+        let content_width = base_width
             .saturating_sub(u16::try_from(prefix.width()).unwrap_or_else(|_| u16::MAX))
             .max(1);
-        let picker = Arc::clone(&self.picker);
-        let picker_ref = &*picker;
+        let image_width = base_width;
+        let picker_ref = &*self.picker;
         let mut lines = if style.use_markdown {
             text_to_lines(
                 &msg.text,
@@ -1809,7 +1809,7 @@ impl MessagesPanel {
             out.push(Segment::with_image(
                 source,
                 picker_ref,
-                content_width,
+                image_width,
                 surface,
                 Some(msg_index),
             ));
@@ -1893,12 +1893,12 @@ impl MessagesPanel {
                     DisplayRole::Assistant => Surface::Assistant,
                     _ => Surface::Plain,
                 };
-                let content_width = surface
-                    .content_width(self.viewport_width)
+                let base_width = surface.content_width(self.viewport_width).max(1);
+                let content_width = base_width
                     .saturating_sub(u16::try_from(prefix.width()).unwrap_or_else(|_| u16::MAX))
                     .max(1);
-                let picker = Arc::clone(&self.picker);
-                let picker_ref = &*picker;
+                let image_width = base_width;
+                let picker_ref = &*self.picker;
                 let mut lines = if style.use_markdown {
                     text_to_lines(
                         &msg.text,
@@ -1956,7 +1956,7 @@ impl MessagesPanel {
                     self.cache.push(Segment::with_image(
                         source,
                         picker_ref,
-                        content_width,
+                        image_width,
                         surface,
                         Some(i),
                     ));
