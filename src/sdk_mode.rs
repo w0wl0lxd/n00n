@@ -26,7 +26,7 @@ use n00n_agent::{
     AgentConfig, AgentEvent, AgentInput, AgentMode, Envelope, PermissionsConfig, ToolOutput,
 };
 use n00n_providers::model::Model;
-use n00n_providers::{ImageSource, Message, StopReason, Timeouts, TokenUsage};
+use n00n_providers::{ImageSource, Message, OpenAiOptions, StopReason, Timeouts, TokenUsage};
 use n00n_storage::StateDir;
 use n00n_storage::id::SessionRef;
 use n00n_storage::sessions::Session;
@@ -443,6 +443,7 @@ pub struct SdkParams {
     pub config: AgentConfig,
     pub permissions_config: PermissionsConfig,
     pub timeouts: Timeouts,
+    pub openai_options: OpenAiOptions,
     pub prompt_slots: ResolvedSlots,
     pub fast: bool,
     pub workflow: bool,
@@ -463,6 +464,7 @@ pub fn run(params: SdkParams) -> Result<()> {
         mut config,
         permissions_config,
         timeouts,
+        openai_options,
         prompt_slots,
         fast,
         workflow,
@@ -488,6 +490,7 @@ pub fn run(params: SdkParams) -> Result<()> {
         config,
         permissions_config,
         timeouts,
+        openai_options,
         prompt_slots: Arc::new(prompt_slots),
         excluded_tools: vec![QUESTION_TOOL_NAME],
         mcp_handle,

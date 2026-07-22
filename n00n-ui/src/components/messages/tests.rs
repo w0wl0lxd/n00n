@@ -1102,6 +1102,20 @@ fn extract_partial_column_selection() {
 }
 
 #[test]
+fn extract_user_partial_selection_accounts_for_frame_inset() {
+    let mut panel = test_panel();
+    panel.push(DisplayMessage::new(DisplayRole::User, "hello world".into()));
+    render(&mut panel, 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    const USER_PREFIX_LEN: u16 = 6;
+    const FRAME_INSET: u16 = 2;
+    let text_start = FRAME_INSET + USER_PREFIX_LEN;
+    let sel = make_sel(area, (0, text_start), (0, text_start + 4));
+    let text = panel.extract_selection_text(&sel, area);
+    assert_eq!(text, "hello");
+}
+
+#[test]
 fn extract_skips_out_of_range_segments() {
     let panel = panel_with_msgs(&["seg0", "seg1", "seg2"], 80, 24);
     let heights = panel.segment_heights();
@@ -1956,6 +1970,96 @@ fn tool_done_moves_live_buf_to_watched_polled_but_not_animating() {
     assert_eq!(
         msg.render_snapshot.as_ref().unwrap().first_line_text(),
         "after"
+    );
+}
+
+#[test]
+fn live_snapshot_update_preserves_manual_scroll_anchor_at_narrow_width() {
+    let mut panel = test_panel();
+    let buf = Arc::new(n00n_agent::SharedBuf::new());
+    buf.set_lines(vec![snap_line("short")]);
+    panel.tool_start(start("t1", "codegraph"));
+    panel.register_live_buf("t1".into(), Arc::clone(&buf));
+    panel.poll_live_bufs();
+    for i in 0..20 {
+        panel.push(DisplayMessage::new(
+            DisplayRole::Assistant,
+            format!("message {i}"),
+        ));
+    }
+    render(&mut panel, 18, 8);
+    panel.restore_scroll(8, false);
+
+    let old_scroll = panel.scroll_top();
+    let old_height = panel.segment_heights()[0];
+    buf.set_lines(
+        (1..=6)
+            .map(|i| snap_line(&format!("result {i} wraps across the narrow viewport")))
+            .collect(),
+    );
+    panel.poll_live_bufs();
+    let new_height = panel.segment_heights()[0];
+
+    assert!(new_height > old_height);
+    assert_eq!(
+        panel.scroll_top(),
+        old_scroll + (new_height - old_height),
+        "content below a live card must remain visually anchored"
+    );
+    assert!(!panel.auto_scroll());
+}
+
+#[test]
+fn live_snapshot_update_keeps_auto_scroll_at_bottom_without_intermediate_churn() {
+    let mut panel = test_panel();
+    let buf = Arc::new(n00n_agent::SharedBuf::new());
+    buf.set_lines(
+        (1..=6)
+            .map(|i| snap_line(&format!("initial result {i} wraps at narrow widths")))
+            .collect(),
+    );
+    panel.tool_start(start("t1", "codegraph"));
+    panel.register_live_buf("t1".into(), Arc::clone(&buf));
+    for _ in 0..20 {
+        render(&mut panel, 18, 6);
+    }
+    assert!(panel.auto_scroll());
+
+    let old_scroll = panel.scroll_top();
+    let old_height = panel.segment_heights()[0];
+    buf.set_lines(
+        (1..=10)
+            .map(|i| snap_line(&format!("updated result {i} wraps at narrow widths")))
+            .collect(),
+    );
+    panel.poll_live_bufs();
+    let new_height = panel.segment_heights()[0];
+
+    assert!(new_height > old_height);
+    assert_eq!(panel.scroll_top(), old_scroll + (new_height - old_height));
+    assert!(panel.auto_scroll());
+}
+
+#[test]
+fn live_snapshot_reflows_when_viewport_becomes_narrow_without_republication() {
+    let mut panel = test_panel();
+    let buf = Arc::new(n00n_agent::SharedBuf::new());
+    buf.set_lines(vec![snap_line(
+        "a complete explore result line that must reflow when the viewport narrows",
+    )]);
+    panel.tool_start(start("t1", "codegraph"));
+    panel.register_live_buf("t1".into(), Arc::clone(&buf));
+    render(&mut panel, 80, 20);
+    let wide_height = panel.segment_heights()[0];
+    assert!(buf.read_if_dirty().is_none());
+
+    render(&mut panel, 16, 20);
+    let narrow_height = panel.segment_heights()[0];
+
+    assert!(narrow_height > wide_height);
+    assert!(
+        buf.read_if_dirty().is_none(),
+        "resize must not republish the Lua buffer"
     );
 }
 
