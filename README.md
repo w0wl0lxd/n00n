@@ -1,7 +1,7 @@
 # n00n
 
 > n00n is an opinionated experimental fork of [maki](https://github.com/tontinton/maki): currently testing lossless [TOON](https://github.com/w0wl0lxd/tooned)
-re-encoding of tool-call data, and [ALMAS](https://arxiv.org/abs/2510.03463) agent orchestration, and a strict clippy re-write
+re-encoding of tool-call data, and [ALMAS](https://arxiv.org/abs/2510.03463) agent orchestration, and a strict clippy/no-unsafe re-write
 
 ## Quick start
 
@@ -14,7 +14,9 @@ cd your-project && n00n
 With Nix: `nix run github:w0wl0lxd/n00n`  
 Or grab a binary from [releases](https://github.com/w0wl0lxd/n00n/releases/latest).
 
-Type a prompt and press **Enter** — the agent reads, edits, searches, and runs code.
+Type a prompt and press **Enter** — the agent reads, edits, searches, and runs code. `n00n` also has inline images! (for supported terminals)
+
+<img width="937" height="987" alt="image" src="https://github.com/user-attachments/assets/5c33e266-ebee-44a4-8a89-5ffd25a3b7ab" />
 
 ## Why n00n
 

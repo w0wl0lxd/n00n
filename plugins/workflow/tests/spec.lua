@@ -155,6 +155,40 @@ case("workflow_sandbox_primitives_compose", function()
   eq(fn(), "agent:one,agent:two|xab,yab", "agent/parallel/pipeline must compose inside the sandbox")
 end)
 
+case("workflow_saga_compensations_run_in_reverse_on_error", function()
+  local env = { table = table, ipairs = ipairs, tostring = tostring, error = error, ran = {} }
+  local compensations = {}
+  env.compensate = function(fn)
+    table.insert(compensations, fn)
+  end
+  env.on_error = function(fn)
+    assert(type(fn) == "function", "on_error must accept a function")
+  end
+  env.agent = function()
+    error("agent failed", 0)
+  end
+  local fn, err = n00n.workflow.compile(
+    [[compensate(function() table.insert(ran, "first") end)
+      compensate(function() table.insert(ran, "second") end)
+      agent({ prompt = "fail" })
+      return table.concat(ran, ",")]],
+    env
+  )
+  eq(err, nil, "script must compile, got: " .. tostring(err))
+  local ok, result = pcall(fn)
+  eq(ok, false, "failing agent must raise")
+  assert(tostring(result):find("agent failed", 1, true), "original error must propagate")
+  eq(#compensations, 2, "both compensations must be registered")
+
+  -- Simulate the saga rollback handler: run compensations LIFO.
+  for i = #compensations, 1, -1 do
+    compensations[i]()
+  end
+  eq(#env.ran, 2, "both compensations ran")
+  eq(env.ran[1], "second", "second compensation must run first (LIFO)")
+  eq(env.ran[2], "first", "first compensation must run second")
+end)
+
 case("workflow_schema_validator_available", function()
   local validator, err = n00n.json.schema_validator({
     type = "object",
