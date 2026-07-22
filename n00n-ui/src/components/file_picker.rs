@@ -15,7 +15,7 @@ use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use tracing::{error, warn};
+use tracing::warn;
 use unicode_width::UnicodeWidthChar;
 
 use crate::animation::spinner_frame;

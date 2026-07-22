@@ -347,7 +347,10 @@ impl<'h> Agent<'h> {
             }
         };
         self.num_turns += 1;
+        self.finish_turn(response).await
+    }
 
+    async fn finish_turn(&mut self, response: StreamResponse) -> Result<TurnOutcome, AgentError> {
         let has_tools = response.message.has_tool_calls();
         let stop_reason = response.stop_reason;
         info!(

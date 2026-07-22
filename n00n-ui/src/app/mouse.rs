@@ -79,15 +79,13 @@ impl App {
                         if zone == SelectionZone::Messages {
                             let area = self.msg_area();
                             let render_chat = self.resolve_render_chat();
-                            if event.modifiers.contains(KeyModifiers::CONTROL) {
-                                if let Some(tool_id) =
+                            if event.modifiers.contains(KeyModifiers::CONTROL)
+                                && let Some(tool_id) =
                                     self.chats[render_chat].tool_id_at(event.row, area)
-                                {
-                                    if let Some(&idx) = self.chat_index.get(tool_id) {
-                                        self.active_chat = idx;
-                                        return;
-                                    }
-                                }
+                                && let Some(&idx) = self.chat_index.get(tool_id)
+                            {
+                                self.active_chat = idx;
+                                return;
                             }
                             if let Some((text, label)) =
                                 self.chats[render_chat].copy_at(event.row, event.column, area)
