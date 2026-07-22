@@ -1,3 +1,12 @@
+#![allow(
+    clippy::disallowed_methods,
+    clippy::expect_used,
+    clippy::manual_let_else,
+    clippy::needless_pass_by_value,
+    clippy::too_many_lines,
+    clippy::unwrap_used
+)]
+
 mod gen_commands;
 mod gen_config;
 mod gen_keybindings;
@@ -65,21 +74,6 @@ fn main() -> ExitCode {
             )
             .await
         });
-
-    let tools = match tools {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("Error generating tools: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let config = match config {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Error generating config: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
 
     let outputs = [
         (page_path("tools"), tools),
