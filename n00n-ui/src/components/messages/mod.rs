@@ -282,9 +282,9 @@ impl MessagesPanel {
         self.cache.prepend(built, n);
         self.messages.splice(0..0, msgs);
         if !self.auto_scroll {
-            self.scroll_top = self
-                .scroll_top
-                .saturating_add(added_height.min(u32::from(u16::MAX)) as u16);
+            self.scroll_top = self.scroll_top.saturating_add(
+                u16::try_from(added_height.min(u32::from(u16::MAX))).unwrap_or_else(|_| u16::MAX),
+            );
         }
     }
 
@@ -433,7 +433,7 @@ impl MessagesPanel {
     }
 
     pub fn update_tool_summary(&mut self, tool_id: &str, summary: &str) {
-        self.update_tool(tool_id, |msg| msg.text = summary.to_owned());
+        self.update_tool(tool_id, |msg| summary.clone_into(&mut msg.text));
     }
 
     pub fn update_tool_model(&mut self, tool_id: &str, model: &str) {
@@ -495,11 +495,11 @@ impl MessagesPanel {
             let Some(seg) = self.cache.get_mut(seg_idx) else {
                 return;
             };
-            seg.search_text = tl.search_text.clone();
+            seg.search_text.clone_from(&tl.search_text);
             seg.update_with_reuse(tl, &self.hl_worker);
         } else {
             let mut seg = Segment::with_instructions(parent_id.to_owned());
-            seg.search_text = tl.search_text.clone();
+            seg.search_text.clone_from(&tl.search_text);
             seg.apply_highlight(tl, &self.hl_worker);
             self.cache.insert(parent_idx + 1, Segment::spacer());
             self.cache.insert(parent_idx + 2, seg);
@@ -522,7 +522,7 @@ impl MessagesPanel {
         self.cancel_in_progress();
     }
 
-    pub fn fail_in_progress_with_message(&mut self, message: String) {
+    pub fn fail_in_progress_with_message(&mut self, message: &str) {
         let ids: Vec<(String, Arc<str>)> = self
             .messages
             .iter()
@@ -540,7 +540,7 @@ impl MessagesPanel {
             self.tool_done(ToolDoneEvent {
                 id,
                 tool,
-                output: ToolOutput::Plain(message.clone().into()),
+                output: ToolOutput::Plain(message.into()),
                 is_error: true,
                 annotation: None,
                 written_path: None,
@@ -638,9 +638,12 @@ impl MessagesPanel {
         if old_start < u32::from(self.scroll_top) {
             let delta = i32::from(new_height) - i32::from(old_height);
             self.scroll_top = if delta >= 0 {
-                self.scroll_top.saturating_add(delta as u16)
+                self.scroll_top
+                    .saturating_add(u16::try_from(delta).unwrap_or_else(|_| u16::MAX))
             } else {
-                self.scroll_top.saturating_sub(delta.unsigned_abs() as u16)
+                self.scroll_top.saturating_sub(
+                    u16::try_from(delta.unsigned_abs()).unwrap_or_else(|_| u16::MAX),
+                )
             };
         }
     }
@@ -733,14 +736,16 @@ impl MessagesPanel {
 
     pub fn scroll_to_segment(&mut self, segment_index: usize) {
         let width = self.viewport_width;
-        let offset = self
-            .cache
-            .segments()
-            .iter()
-            .take(segment_index)
-            .map(|s| u32::from(s.height(width)))
-            .sum::<u32>()
-            .min(u32::from(u16::MAX)) as u16;
+        let offset = u16::try_from(
+            self.cache
+                .segments()
+                .iter()
+                .take(segment_index)
+                .map(|s| u32::from(s.height(width)))
+                .sum::<u32>()
+                .min(u32::from(u16::MAX)),
+        )
+        .unwrap_or_else(|_| u16::MAX);
         self.scroll_top = offset.min(self.max_scroll());
         self.auto_scroll = false;
     }
@@ -847,7 +852,7 @@ impl MessagesPanel {
                 .or_default()
                 .push(buf_row);
             let item = self.lua_restore_item(&tool_id).map(|mut item| {
-                item.clicks = self.lua_clicks[&tool_id].clone();
+                item.clicks.clone_from(&self.lua_clicks[&tool_id]);
                 item
             });
             let (Some(eh), Some(tx)) =
@@ -881,6 +886,7 @@ impl MessagesPanel {
         self.toggle_tool_expansion(&tool_id, truncation)
     }
 
+    #[allow(clippy::unused_self)]
     pub fn on_mouse(&mut self, _column: u16, _row: u16) {}
 
     fn toggle_tool_expansion(&mut self, tool_id: &str, truncation: SectionFlags) -> bool {
@@ -946,7 +952,7 @@ impl MessagesPanel {
             && self.streaming_thinking.is_empty()
             && self.streaming_text.is_empty()
     }
-
+    #[allow(clippy::too_many_lines)]
     pub fn view(&mut self, frame: &mut Frame, area: Rect, has_selection: bool, _is_working: bool) {
         self.viewport_height = area.height;
         let width = area.width.saturating_sub(1);
@@ -1007,7 +1013,8 @@ impl MessagesPanel {
             if cached_count > 0 || !streaming_heights.is_empty() {
                 streaming_heights.push(1);
             }
-            streaming_heights.push(collapsed_thinking_lines.len() as u16);
+            streaming_heights
+                .push(u16::try_from(collapsed_thinking_lines.len()).unwrap_or_else(|_| u16::MAX));
         } else if !self.streaming_thinking.is_empty() {
             let h = self.streaming_thinking.height(width);
             if cached_count > 0 || !streaming_heights.is_empty() {
@@ -1026,7 +1033,9 @@ impl MessagesPanel {
 
         let cached_height = self.cache.total_height(width);
         let streaming_sum: u32 = streaming_heights.iter().map(|&h| u32::from(h)).sum();
-        let total_lines: u16 = (cached_height + streaming_sum).min(u32::from(u16::MAX)) as u16;
+        let total_lines: u16 =
+            u16::try_from((cached_height + streaming_sum).min(u32::from(u16::MAX)))
+                .unwrap_or_else(|_| u16::MAX);
         self.last_total_lines = total_lines;
         let max_scroll = total_lines.saturating_sub(self.viewport_height);
         self.scroll_top = self.scroll_top.min(max_scroll);
@@ -1095,9 +1104,9 @@ impl MessagesPanel {
             && pp.total > 0
         {
             let ratio = f64::from(pp.processed) / f64::from(pp.total);
-            let bar_width = (f64::from(width) * 0.1).round() as u16;
+            let bar_width = crate::cast::f64_to_u16((f64::from(width) * 0.1).round());
             let label = " Processing ";
-            let label_width = label.len() as u16;
+            let label_width = u16::try_from(label.len()).unwrap_or_else(|_| u16::MAX);
             let total_width = label_width + bar_width;
             let bar_x = area.x + width.saturating_sub(total_width);
             let bar_y = area.y + area.height.saturating_sub(1);
@@ -1142,7 +1151,7 @@ impl MessagesPanel {
             Span::raw(JUMP_TO_BOTTOM_KEY_GAP),
             Span::styled(key::SCROLL_BOTTOM.label, keybind_style),
         ]);
-        let text_width = line.width() as u16;
+        let text_width = u16::try_from(line.width()).unwrap_or_else(|_| u16::MAX);
 
         let block = Block::default()
             .borders(Borders::ALL)
@@ -1433,11 +1442,7 @@ impl MessagesPanel {
         thinking_indicator(self.streaming_thinking.line_count(), None)
     }
 
-    fn build_cached_thinking_indicator(
-        &self,
-        text: &str,
-        duration: Option<&str>,
-    ) -> Vec<Line<'static>> {
+    fn build_cached_thinking_indicator(text: &str, duration: Option<&str>) -> Vec<Line<'static>> {
         thinking_indicator(logical_line_count(text), duration)
     }
 
@@ -1448,7 +1453,8 @@ impl MessagesPanel {
         let cached_height = self.cache.total_height(width);
         let spacer = u32::from(self.cache.len() > 0);
         let thinking_start = cached_height + spacer;
-        let height = self.build_streaming_collapsed_lines().len() as u32;
+        let height = u32::try_from(self.build_streaming_collapsed_lines().len())
+            .unwrap_or_else(|_| u32::MAX);
         if doc_row >= thinking_start && doc_row < thinking_start + height {
             self.thinking_collapsed = false;
             self.auto_scroll = false;
@@ -1480,7 +1486,7 @@ impl MessagesPanel {
             return;
         };
         let lines = if collapsed {
-            self.build_cached_thinking_indicator(&text, duration.as_deref())
+            Self::build_cached_thinking_indicator(&text, duration.as_deref())
         } else {
             let style = thinking_style();
             text_to_lines(
@@ -1560,14 +1566,14 @@ impl MessagesPanel {
         let Some(seg) = self.cache.get_mut(seg_idx) else {
             return;
         };
-        seg.search_text = tl.search_text.clone();
+        seg.search_text.clone_from(&tl.search_text);
         seg.update_with_reuse(tl, &self.hl_worker);
 
         if let Some(blocks) = instructions {
             self.upsert_instruction_segment(tool_id, &blocks, seg_idx);
         }
     }
-
+    #[allow(clippy::too_many_lines)]
     fn build_segments_for_msg(&self, msg: &DisplayMessage, msg_index: usize) -> Vec<Segment> {
         if let DisplayRole::Tool(t) = &msg.role {
             let exp = self
@@ -1579,7 +1585,7 @@ impl MessagesPanel {
             let tl = Self::build_tool_segment_lines(msg, status, &self.rctx(), exp);
             let id = t.id.clone();
             let mut seg = Segment::with_tool(id.clone());
-            seg.search_text = tl.search_text.clone();
+            seg.search_text.clone_from(&tl.search_text);
             seg.apply_highlight(tl, &self.hl_worker);
             let mut out = vec![seg];
             let blocks = msg
@@ -1597,7 +1603,7 @@ impl MessagesPanel {
                     .unwrap_or_else(Default::default);
                 let tl = build_instructions_lines(&blocks, self.viewport_width, exp.output);
                 let mut inst_seg = Segment::with_instructions(id);
-                inst_seg.search_text = tl.search_text.clone();
+                inst_seg.search_text.clone_from(&tl.search_text);
                 inst_seg.apply_highlight(tl, &self.hl_worker);
                 out.push(Segment::spacer());
                 out.push(inst_seg);
@@ -1606,7 +1612,7 @@ impl MessagesPanel {
         }
         if matches!(&msg.role, DisplayRole::Thinking) && msg.thinking_collapsed {
             let text = msg.text.clone();
-            let lines = self.build_cached_thinking_indicator(&text, msg.annotation.as_deref());
+            let lines = Self::build_cached_thinking_indicator(&text, msg.annotation.as_deref());
             let search_text = format!("thinking> {text}");
             return vec![Segment::with_lines(
                 lines,
@@ -1636,7 +1642,7 @@ impl MessagesPanel {
         };
         let content_width = surface
             .content_width(self.viewport_width)
-            .saturating_sub(prefix.width() as u16)
+            .saturating_sub(u16::try_from(prefix.width()).unwrap_or_else(|_| u16::MAX))
             .max(1);
         let picker = Arc::clone(&self.picker);
         let picker_ref = &*picker;
@@ -1675,7 +1681,7 @@ impl MessagesPanel {
                 theme::current().tool_dim,
             )));
         }
-        let prefix_width = prefix.width() as u16;
+        let prefix_width = u16::try_from(prefix.width()).unwrap_or_else(|_| u16::MAX);
         let search_text = format!("{}> {}", role_name(&msg.role), msg.text);
         let mut segment = Segment::with_lines(
             lines,
@@ -1703,7 +1709,7 @@ impl MessagesPanel {
         }
         out
     }
-
+    #[allow(clippy::too_many_lines)]
     fn rebuild_line_cache(&mut self) {
         let _start = self.cache.msg_count();
         if !self.cache.needs_rebuild(self.messages.len()) {
@@ -1741,7 +1747,7 @@ impl MessagesPanel {
                 if matches!(&msg.role, DisplayRole::Thinking) && msg.thinking_collapsed {
                     let text = msg.text.clone();
                     let lines =
-                        self.build_cached_thinking_indicator(&text, msg.annotation.as_deref());
+                        Self::build_cached_thinking_indicator(&text, msg.annotation.as_deref());
                     let search_text = format!("thinking> {text}");
                     self.cache.push_spacer_if_needed();
                     self.cache.push(Segment::with_lines(
@@ -1773,7 +1779,7 @@ impl MessagesPanel {
                 };
                 let content_width = surface
                     .content_width(self.viewport_width)
-                    .saturating_sub(prefix.width() as u16)
+                    .saturating_sub(u16::try_from(prefix.width()).unwrap_or_else(|_| u16::MAX))
                     .max(1);
                 let picker = Arc::clone(&self.picker);
                 let picker_ref = &*picker;
@@ -1813,7 +1819,7 @@ impl MessagesPanel {
                     )));
                 }
 
-                let prefix_width = prefix.width() as u16;
+                let prefix_width = u16::try_from(prefix.width()).unwrap_or_else(|_| u16::MAX);
                 let search_text = format!("{}> {}", role_name(&msg.role), msg.text);
                 self.cache.push_spacer_if_needed();
                 if !msg.text.is_empty() || msg.plan_path.is_some() || msg.images.is_empty() {

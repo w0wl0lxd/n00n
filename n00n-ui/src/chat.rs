@@ -7,6 +7,7 @@ use crate::components::tool_display::append_annotation;
 use crate::components::{DisplayMessage, DisplayRole, ToolRole, ToolStatus};
 use crate::markdown::truncate_output;
 use std::collections::HashMap;
+use std::hash::BuildHasher;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -90,7 +91,7 @@ impl Chat {
         self.messages_panel
             .set_restore_channel(event_handle, event_tx);
     }
-
+    #[allow(clippy::too_many_lines)]
     pub fn handle_event(&mut self, event: AgentEvent, plan_path: Option<&Path>) -> ChatEventResult {
         match event {
             AgentEvent::ThinkingDelta { text } => {
@@ -112,7 +113,7 @@ impl Chat {
                 self.messages_panel.tool_done(*e);
                 if let Some(pp) = plan_write {
                     let content = if is_full_write {
-                        std::fs::read_to_string(pp).unwrap_or_else(|_| Default::default())
+                        std::fs::read_to_string(pp).unwrap_or_else(|_| String::default())
                     } else {
                         String::new()
                     };
@@ -120,7 +121,7 @@ impl Chat {
                         .push(DisplayMessage::plan(content, pp.display().to_string()));
                 }
             }
-            AgentEvent::TurnComplete(_) => {}
+            AgentEvent::TurnComplete(_) | AgentEvent::SubagentHistory { .. } => {}
             AgentEvent::ToolResultsSubmitted { .. } => {
                 if let Some(usage) = self.pending_turn_usage.take() {
                     self.messages_panel.set_turn_usage_on_last_tool(usage);
@@ -187,7 +188,6 @@ impl Chat {
                     "Model stalled after tool calls, nudging...".into(),
                 ));
             }
-            AgentEvent::SubagentHistory { .. } => {}
             AgentEvent::LiveToolBuf { id, body } => {
                 self.messages_panel.register_live_buf(id, body);
             }
@@ -353,7 +353,7 @@ impl Chat {
         self.messages_panel.cancel_in_progress();
     }
 
-    pub fn fail_in_progress_with_message(&mut self, message: String) {
+    pub fn fail_in_progress_with_message(&mut self, message: &str) {
         self.messages_panel.fail_in_progress_with_message(message);
     }
 
@@ -487,10 +487,10 @@ impl Chat {
         self.messages_panel.streaming_thinking_is_empty()
     }
 }
-
-pub fn history_to_display(
+#[allow(clippy::too_many_lines)]
+pub fn history_to_display<S: BuildHasher>(
     messages: &[Message],
-    tool_outputs: &HashMap<String, ToolOutput>,
+    tool_outputs: &HashMap<String, ToolOutput, S>,
     tool_output_lines: &ToolOutputLines,
 ) -> (Vec<DisplayMessage>, Vec<n00n_lua::RestoreItem>) {
     let results = build_tool_results_map(messages);

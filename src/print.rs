@@ -40,7 +40,7 @@ fn load_images(paths: &[PathBuf]) -> Result<Vec<ImageSource>> {
         .collect()
 }
 
-#[derive(Clone, ValueEnum)]
+#[derive(Clone, Copy, ValueEnum)]
 pub enum OutputFormat {
     Text,
     Json,
@@ -134,34 +134,31 @@ impl VerboseOutput {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 pub fn run(
     model: &Model,
     prompt_arg: Option<String>,
-    image_paths: Vec<PathBuf>,
+    image_paths: &[PathBuf],
     format: OutputFormat,
     verbose: bool,
     config: AgentConfig,
     permissions_config: PermissionsConfig,
     timeouts: n00n_providers::Timeouts,
-    lua_handle: Option<EventHandle>,
+    lua_handle: Option<&EventHandle>,
     fast: bool,
     workflow: bool,
 ) -> Result<()> {
-    let prompt = match prompt_arg {
-        Some(p) => p,
-        None => {
-            let mut buf = String::new();
-            io::stdin().read_to_string(&mut buf).context("read stdin")?;
-            buf
-        }
+    let prompt = if let Some(p) = prompt_arg {
+        p
+    } else {
+        let mut buf = String::new();
+        io::stdin().read_to_string(&mut buf).context("read stdin")?;
+        buf
     };
 
-    let images = load_images(&image_paths)?;
+    let images = load_images(image_paths)?;
 
-    let prompt_slots = lua_handle
-        .as_ref()
-        .map(|h| h.collect_prompt_slots())
-        .unwrap_or_default();
+    let prompt_slots = lua_handle.map_or_else(Default::default, EventHandle::collect_prompt_slots);
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let (mcp_handle, mcp_config_errors) = smol::block_on(n00n_agent::mcp::start(&cwd));
@@ -230,8 +227,8 @@ pub fn run(
                     result_text.push_str(text);
                 }
             }
-            AgentEvent::ThinkingDelta { .. } => {}
-            AgentEvent::ToolPending { .. }
+            AgentEvent::ThinkingDelta { .. }
+            | AgentEvent::ToolPending { .. }
             | AgentEvent::ToolStart(_)
             | AgentEvent::ToolOutput { .. }
             | AgentEvent::ToolDone(_)
@@ -305,7 +302,7 @@ pub fn run(
             }
             AgentEvent::Error { message } => {
                 is_error = true;
-                result_text = message.clone();
+                result_text.clone_from(message);
                 break;
             }
         }

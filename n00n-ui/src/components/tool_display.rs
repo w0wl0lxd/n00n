@@ -222,6 +222,7 @@ pub fn append_right_info(
     }
 }
 
+#[derive(Clone, Copy)]
 enum Indicator {
     InProgress,
     Success,
@@ -389,7 +390,7 @@ impl ToolLineBuilder {
         self.search_text.push_str(text);
     }
 
-    fn prepend_indicator(&mut self, indicator: Indicator, started_at: Instant) {
+    fn prepend_indicator(&mut self, indicator: Indicator, started_at: &Instant) {
         if self.lines.is_empty() {
             return;
         }
@@ -459,7 +460,7 @@ impl ToolLineBuilder {
 
     fn push_markdown_body(&mut self, text: &str) {
         let style = theme::current().assistant;
-        let indent = TOOL_BODY_INDENT.len() as u16;
+        let indent = u16::try_from(TOOL_BODY_INDENT.len()).unwrap_or_else(|_| u16::MAX);
         let md_lines = text_to_lines(
             text,
             "",
@@ -632,7 +633,7 @@ pub fn build_tool_lines(
         msg.annotation.as_deref(),
         msg.render_header.as_ref(),
     );
-    b.prepend_indicator(status.into(), rctx.started_at);
+    b.prepend_indicator(status.into(), &rctx.started_at);
     let has_snapshot = msg.render_snapshot.is_some();
     b.push_code_content(
         msg.tool_input.as_deref(),
@@ -723,7 +724,7 @@ pub fn build_instructions_lines(
     };
     let mut b = ToolLineBuilder::new(width, exp, code_view::instruction_limit(expanded));
     b.push_header("load", header, annotation.as_deref(), None);
-    b.prepend_indicator(Indicator::Success, Instant::now());
+    b.prepend_indicator(Indicator::Success, &Instant::now());
 
     let start = b.lines.len();
     let has_truncation =
@@ -774,6 +775,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::unnecessary_wraps)]
     fn code_input() -> Option<ToolInput> {
         Some(ToolInput::Code {
             language: "sh".into(),
@@ -781,6 +783,7 @@ mod tests {
         })
     }
 
+    #[allow(clippy::unnecessary_wraps)]
     fn code_output() -> Option<ToolOutput> {
         Some(ToolOutput::ReadCode {
             path: "test.rs".into(),
@@ -791,6 +794,7 @@ mod tests {
         })
     }
 
+    #[allow(clippy::unnecessary_wraps)]
     fn plain_output() -> Option<ToolOutput> {
         Some(ToolOutput::Plain("ok".into()))
     }
@@ -1062,7 +1066,10 @@ mod tests {
 
     #[test]
     fn index_output_truncated_at_max_lines() {
-        let body: String = (0..150).map(|i| format!("  line_{i}\n")).collect();
+        let mut body = String::new();
+        for i in 0..150 {
+            let _ = writeln!(body, "  line_{i}");
+        }
         let msg = index_msg(&body);
         let tl = build_tool_lines(
             &msg,
@@ -1300,40 +1307,40 @@ mod tests {
     #[test_case(None,       None,    "bash",  false ; "none_output_none_body")]
     #[test_case(None,       Some("hello"), "bash", true ; "none_output_with_body")]
     #[test_case(
-        Some(ToolOutput::Plain("world".into())), None, "bash", true
+        Some(&ToolOutput::Plain("world".into())), None, "bash", true
         ; "plain_no_body_uses_plain"
     )]
     #[test_case(
-        Some(ToolOutput::Plain("world".into())), Some("override"), "bash", true
+        Some(&ToolOutput::Plain("world".into())), Some("override"), "bash", true
         ; "body_takes_priority_over_plain"
     )]
     #[test_case(
-        Some(ToolOutput::Plain(String::new().into())), None, "bash", false
+        Some(&ToolOutput::Plain(String::new().into())), None, "bash", false
         ; "empty_plain_resolves_to_none"
     )]
     #[test_case(
-        Some(ToolOutput::Batch { text: "legacy batch text".into() }),
+        Some(&ToolOutput::Batch { text: "legacy batch text".into() }),
         None, "batch", true
         ; "legacy_batch_falls_back_to_text"
     )]
     #[test_case(
-        Some(ToolOutput::ReadDir(TextOutput { text: "dir listing".into(), instructions: None, state: None })),
+        Some(&ToolOutput::ReadDir(TextOutput { text: "dir listing".into(), instructions: None, state: None })),
         None, "read", true
         ; "readdir_uses_text_field"
     )]
     #[test_case(
-        Some(ToolOutput::ReadCode { path: "a.rs".into(), start_line: 1, lines: vec![], total_lines: 0, instructions: None }),
+        Some(&ToolOutput::ReadCode { path: "a.rs".into(), start_line: 1, lines: vec![], total_lines: 0, instructions: None }),
         None, "read", false
         ; "structured_output_resolves_to_none"
     )]
     fn resolve_output_text_presence(
-        output: Option<ToolOutput>,
+        output: Option<&ToolOutput>,
         body: Option<&str>,
         tool: &str,
         expect_text: bool,
     ) {
         let limits = RenderLimits::new(SectionFlags::default(), TOL.get(tool));
-        let resolved = resolve_output(output.as_ref(), body, None, 0, limits);
+        let resolved = resolve_output(output, body, None, 0, limits);
         assert_eq!(resolved.text.is_some(), expect_text);
     }
 
@@ -1660,6 +1667,7 @@ mod tests {
     #[test]
     fn resolve_span_style_inline_all_modifiers() {
         use n00n_agent::types::InlineStyle;
+        use ratatui::style::Modifier;
         let style = SpanStyle::Inline(InlineStyle {
             fg: Some((10, 20, 30)),
             bg: Some((40, 50, 60)),
@@ -1673,7 +1681,6 @@ mod tests {
         let resolved = resolve_span_style(&style);
         assert_eq!(resolved.fg, Some(Color::Rgb(10, 20, 30)));
         assert_eq!(resolved.bg, Some(Color::Rgb(40, 50, 60)));
-        use ratatui::style::Modifier;
         assert!(resolved.add_modifier.contains(Modifier::BOLD));
         assert!(resolved.add_modifier.contains(Modifier::ITALIC));
         assert!(resolved.add_modifier.contains(Modifier::UNDERLINED));

@@ -672,11 +672,12 @@ impl<'t> EventLoop<'t> {
                 let app = self.focused_app();
                 app.float_mgr.open(buf, config, focus, event_tx, cmd_rx);
                 if focus {
-                    app.transition_plan(crate::app::mode::PlanTrigger::InteractivePrompt);
+                    app.transition_plan(&crate::app::mode::PlanTrigger::InteractivePrompt);
                 }
             }
             UiAction::PickModel { current, reply_tx } => {
-                self.focused_app().pick_model_for_lua(current, reply_tx);
+                self.focused_app()
+                    .pick_model_for_lua(current.as_deref(), reply_tx);
                 self.handle_action(self.focused, Action::RefreshModels);
             }
             UiAction::Session { req, reply_tx } => {
@@ -722,10 +723,10 @@ impl<'t> EventLoop<'t> {
             );
         }
     }
-
     /// `List` replies from a background task (the scan can be slow); every
     /// other request is answered synchronously by the event loop, which owns
     /// the live runtimes.
+    #[allow(clippy::too_many_lines)]
     fn handle_session_request(
         &mut self,
         req: SessionRequest,
@@ -1060,7 +1061,7 @@ impl<'t> EventLoop<'t> {
             lua_handle,
         );
     }
-
+    #[allow(clippy::too_many_lines)]
     fn handle_action(&mut self, idx: usize, action: Action) {
         match action {
             Action::SendMessage(input) => {
@@ -1144,7 +1145,7 @@ impl<'t> EventLoop<'t> {
                     visible,
                     rt.shell_tx.clone(),
                     cancel,
-                    self.ctx.config.clone(),
+                    &self.ctx.config,
                 );
             }
             Action::OpenEditor(path) => {
@@ -1164,7 +1165,7 @@ impl<'t> EventLoop<'t> {
             Action::Btw(question) => {
                 let slot = self.ctx.model_slot.load();
                 self.sessions[idx].app.start_btw(
-                    question,
+                    &question,
                     Arc::clone(&slot.provider),
                     slot.model.clone(),
                 );
@@ -1291,9 +1292,9 @@ impl<'t> EventLoop<'t> {
 
 fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
     if kind == MouseEventKind::ScrollUp {
-        lines as i32
+        lines.cast_signed()
     } else {
-        -(lines as i32)
+        -lines.cast_signed()
     }
 }
 

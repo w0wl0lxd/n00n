@@ -884,13 +884,17 @@ const N00N_PREFIX_LEN: u16 = 6;
 
 fn make_sel(area: Rect, anchor: (u32, u16), cursor: (u32, u16)) -> Selection {
     let mut sel = Selection::start(
-        area.y + anchor.0 as u16,
+        area.y + u16::try_from(anchor.0).unwrap_or_else(|_| u16::MAX),
         anchor.1,
         area,
         SelectionZone::Messages,
         0,
     );
-    sel.update(area.y + cursor.0 as u16, cursor.1, 0);
+    sel.update(
+        area.y + u16::try_from(cursor.0).unwrap_or_else(|_| u16::MAX),
+        cursor.1,
+        0,
+    );
     sel
 }
 
@@ -907,7 +911,7 @@ fn panel_with_msgs(texts: &[&str], width: u16, height: u16) -> MessagesPanel {
 fn extract_partial_column_selection() {
     let panel = panel_with_msgs(&["Hello world"], 80, 24);
     let area = Rect::new(0, 0, 80, 24);
-    let world_start = N00N_PREFIX_LEN + "Hello ".len() as u16;
+    let world_start = N00N_PREFIX_LEN + u16::try_from("Hello ".len()).unwrap_or_else(|_| u16::MAX);
     let sel = make_sel(area, (0, world_start), (0, world_start + 4));
     let text = panel.extract_selection_text(&sel, area);
     assert_eq!(text, "world");
@@ -1409,11 +1413,14 @@ fn task_tool_id_at_only_routes_header() {
 
     assert_eq!(panel.tool_id_at(0, area), Some("task1"));
     assert_eq!(panel.tool_id_at(1, area), None);
-    let truncation_row = panel.cache.segments()[0]
-        .lines()
-        .iter()
-        .position(|line| line.spans.iter().any(|span| span.content.contains("›")))
-        .unwrap() as u16;
+    let truncation_row = u16::try_from(
+        panel.cache.segments()[0]
+            .lines()
+            .iter()
+            .position(|line| line.spans.iter().any(|span| span.content.contains("›")))
+            .unwrap(),
+    )
+    .unwrap_or_else(|_| u16::MAX);
     assert_eq!(panel.tool_id_at(truncation_row, area), None);
     assert!(panel.handle_click(truncation_row, area));
     assert!(!seg_text(&panel, "task1").contains("›"));
@@ -1440,26 +1447,32 @@ fn snapshot_tool_native_truncation_expands_but_snapshot_row_routes_lua() {
     render(&mut panel, 80, 80);
     let area = Rect::new(0, 0, 80, 80);
     let segment = &panel.cache.segments()[0];
-    let truncation_row = segment
-        .lines()
-        .iter()
-        .position(|line| line.spans.iter().any(|span| span.content.contains("›")))
-        .unwrap() as u16;
+    let truncation_row = u16::try_from(
+        segment
+            .lines()
+            .iter()
+            .position(|line| line.spans.iter().any(|span| span.content.contains("›")))
+            .unwrap(),
+    )
+    .unwrap_or_else(|_| u16::MAX);
 
     assert!(panel.handle_click(truncation_row, area));
     assert!(panel.lua_clicks.is_empty());
     assert!(!seg_text(&panel, "t1").contains("›"));
 
     render(&mut panel, 80, 240);
-    let snapshot_row = panel.cache.segments()[0]
-        .lines()
-        .iter()
-        .position(|line| {
-            line.spans
-                .iter()
-                .any(|span| span.content.contains("lua snapshot row"))
-        })
-        .unwrap() as u16;
+    let snapshot_row = u16::try_from(
+        panel.cache.segments()[0]
+            .lines()
+            .iter()
+            .position(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.content.contains("lua snapshot row"))
+            })
+            .unwrap(),
+    )
+    .unwrap_or_else(|_| u16::MAX);
     assert!(panel.handle_click(snapshot_row, Rect::new(0, 0, 80, 240)));
     assert_eq!(panel.lua_clicks.get("t1"), Some(&vec![1]));
 }
@@ -2261,18 +2274,13 @@ fn assert_cache_equal(a: &MessagesPanel, b: &MessagesPanel) {
     assert_eq!(at, bt, "tool_ids");
 }
 
-#[test_case(0, 4, 0, vec![] ; "empty")]
-#[test_case(3, 4, 3, vec![] ; "below_batch_all_initial")]
-#[test_case(4, 4, 4, vec![] ; "exactly_batch_all_initial")]
-#[test_case(5, 4, 4, vec![1] ; "one_over_batch_one_backlog")]
-#[test_case(10, 4, 4, vec![4, 2] ; "two_batches")]
-#[test_case(12, 4, 4, vec![4, 4] ; "even_split")]
-fn restore_plan_splits_recent_first(
-    total: usize,
-    batch: usize,
-    initial: usize,
-    batches: Vec<usize>,
-) {
+#[test_case(0, 4, 0, &[] ; "empty")]
+#[test_case(3, 4, 3, &[] ; "below_batch_all_initial")]
+#[test_case(4, 4, 4, &[] ; "exactly_batch_all_initial")]
+#[test_case(5, 4, 4, &[1] ; "one_over_batch_one_backlog")]
+#[test_case(10, 4, 4, &[4, 2] ; "two_batches")]
+#[test_case(12, 4, 4, &[4, 4] ; "even_split")]
+fn restore_plan_splits_recent_first(total: usize, batch: usize, initial: usize, batches: &[usize]) {
     let plan = restore_plan(total, batch);
     assert_eq!(plan.initial, initial);
     assert_eq!(plan.prepend_batches, batches);

@@ -104,7 +104,7 @@ impl StatusBar {
             self.flash = None;
         }
     }
-
+    #[allow(clippy::too_many_lines)]
     pub fn view(&self, frame: &mut Frame, area: Rect, ctx: &StatusBarContext) {
         let mut left_spans = Vec::new();
 
@@ -153,8 +153,9 @@ impl StatusBar {
             left_spans.push(Span::styled(format!(" {e}"), theme::current().error));
         } else {
             let pct = if ctx.stats.context_window > 0 {
-                (f64::from(ctx.stats.context_size) / f64::from(ctx.stats.context_window) * 100.0)
-                    as u32
+                crate::cast::f64_to_u32(
+                    f64::from(ctx.stats.context_size) / f64::from(ctx.stats.context_window) * 100.0,
+                )
             } else {
                 0
             };
@@ -223,7 +224,12 @@ impl StatusBar {
 
         let [left_area, right_area] = Layout::horizontal([
             Constraint::Min(0),
-            Constraint::Length(right_spans.iter().map(|s| s.width() as u16).sum()),
+            Constraint::Length(
+                right_spans
+                    .iter()
+                    .map(|s| u16::try_from(s.width()).unwrap_or_else(|_| u16::MAX))
+                    .sum(),
+            ),
         ])
         .areas(area);
 

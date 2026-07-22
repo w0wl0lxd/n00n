@@ -328,12 +328,11 @@ impl App {
 
     pub(crate) fn pick_model_for_lua(
         &mut self,
-        current: Option<String>,
+        current: Option<&str>,
         reply: flume::Sender<Option<String>>,
     ) {
         self.model_picker_reply = Some(reply);
-        self.model_picker
-            .open(current.as_deref().unwrap_or_else(Default::default));
+        self.model_picker.open(current.unwrap_or_else(|| ""));
     }
 
     pub(crate) fn flash(&mut self, msg: String) {
@@ -408,7 +407,7 @@ impl App {
             Msg::Scroll { column, row, delta } => {
                 let drag_zone = self.selection_state.as_ref().and_then(|s| match s {
                     SelectionState::Dragging { sel, .. } => Some(sel.zone),
-                    _ => None,
+                    SelectionState::PendingCopy { .. } => None,
                 });
                 self.handle_scroll(column, row, delta);
                 if let Some(zone) = self.zone_at(row, column) {
@@ -598,6 +597,7 @@ impl App {
         None
     }
 
+    #[allow(clippy::too_many_lines)]
     fn dispatch_overlay(&mut self, key: KeyEvent) -> Option<Vec<Action>> {
         if self.permission_prompt.is_open() {
             if let Some(answer) = self.permission_prompt.handle_key(key) {
@@ -736,16 +736,14 @@ impl App {
 
         if self.rewind_picker.is_open() {
             return Some(match self.rewind_picker.handle_key(key) {
-                RewindPickerAction::Consumed => vec![],
+                RewindPickerAction::Consumed | RewindPickerAction::Close => vec![],
                 RewindPickerAction::Select(entry) => self.rewind_to(entry),
-                RewindPickerAction::Close => vec![],
             });
         }
 
         if self.theme_picker.is_open() {
             return Some(match self.theme_picker.handle_key(key) {
-                ThemePickerAction::Consumed => vec![],
-                ThemePickerAction::Closed => vec![],
+                ThemePickerAction::Consumed | ThemePickerAction::Closed => vec![],
             });
         }
 
@@ -777,8 +775,7 @@ impl App {
 
         if self.login_picker.is_open() {
             return Some(match self.login_picker.handle_key(key) {
-                LoginPickerAction::Consumed => vec![],
-                LoginPickerAction::Close => vec![],
+                LoginPickerAction::Consumed | LoginPickerAction::Close => vec![],
                 LoginPickerAction::Authenticated { model_spec } => {
                     vec![Action::ChangeModel(model_spec), Action::RefreshModels]
                 }
@@ -790,14 +787,13 @@ impl App {
 
         if self.mcp_picker.is_open() {
             return Some(match self.mcp_picker.handle_key(key) {
-                McpPickerAction::Consumed => vec![],
+                McpPickerAction::Consumed | McpPickerAction::Close => vec![],
                 McpPickerAction::Toggle {
                     server_name,
                     enabled,
                 } => {
                     vec![Action::ToggleMcp(server_name, enabled)]
                 }
-                McpPickerAction::Close => vec![],
             });
         }
 
@@ -874,12 +870,15 @@ impl App {
                     vec![]
                 }
             }
-            InputAction::Passthrough(_) | InputAction::ContinueLine | InputAction::None => vec![],
-            InputAction::OpenFilePicker => vec![],
-            InputAction::PaletteSync(_) => vec![],
+            InputAction::Passthrough(_)
+            | InputAction::ContinueLine
+            | InputAction::None
+            | InputAction::OpenFilePicker
+            | InputAction::PaletteSync(_) => vec![],
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn handle_main_chat_key(&mut self, key: KeyEvent) -> Vec<Action> {
         if key::TRANSCRIPT_DETAILS.matches(key) {
             let visible = self.active_chat().toggle_transcript_details();
@@ -1101,7 +1100,7 @@ impl App {
         self.retry_info = None;
         self.close_all_overlays();
         self.pending_input = PendingInput::None;
-        self.finish_subagents(DisplayRole::Error, CANCELLED_TEXT);
+        self.finish_subagents(&DisplayRole::Error, CANCELLED_TEXT);
         self.subagent_answers.clear();
         self.subagent_prompts.clear();
         self.shell.cancel_all();
@@ -1140,10 +1139,10 @@ impl App {
         ) {
             self.pending_input = PendingInput::None;
         }
-
         vec![Action::CancelSubagent { tool_use_id }]
     }
 
+    #[allow(clippy::too_many_lines)]
     fn handle_agent_event(&mut self, envelope: Envelope) -> Vec<Action> {
         if envelope.run_id == RESTORE_RUN_ID {
             let (id, snapshot, theme_gen, is_header) = match envelope.event {
@@ -1249,7 +1248,7 @@ impl App {
             if self.state.mode == Mode::Plan
                 && self.state.plan.path().is_some_and(|pp| e.wrote_to(pp))
             {
-                self.transition_plan(PlanTrigger::WriteDone);
+                self.transition_plan(&PlanTrigger::WriteDone);
             }
             if let Some(ref outputs) = self.shared_tool_outputs {
                 outputs
@@ -1379,11 +1378,11 @@ impl App {
                     self.queue.clear();
                     self.subagent_answers.clear();
                     self.subagent_prompts.clear();
-                    self.finish_subagents(DisplayRole::Error, ERROR_TEXT);
+                    self.finish_subagents(&DisplayRole::Error, ERROR_TEXT);
                     self.chats[chat_idx]
                         .push(DisplayMessage::new(DisplayRole::Error, message.clone()));
                     for chat in &mut self.chats {
-                        chat.fail_in_progress_with_message(message.clone());
+                        chat.fail_in_progress_with_message(&message);
                     }
                     self.fire_session_autocmd(
                         "TurnError",
@@ -1427,7 +1426,7 @@ impl App {
         );
         chat.set_restore_channel(self.lua_event_handle.clone(), self.restore_event_tx.clone());
         chat.tool_use_id = Some(id.clone());
-        chat.model_id = subagent.model.clone();
+        chat.model_id.clone_from(&subagent.model);
         if let Some(ref prompt) = subagent.prompt {
             chat.push_user_message(prompt);
         }
@@ -1435,6 +1434,7 @@ impl App {
         idx
     }
 
+    #[allow(clippy::too_many_lines)]
     fn execute_command(&mut self, cmd: ParsedCommand) -> Vec<Action> {
         self.input_box.discard();
         match cmd.name.as_str() {
@@ -1750,7 +1750,7 @@ impl App {
             || self.chats.iter().any(super::chat::Chat::is_animating)
     }
 
-    fn finish_subagents(&mut self, role: DisplayRole, text: &str) {
+    fn finish_subagents(&mut self, role: &DisplayRole, text: &str) {
         for &sub_idx in self.chat_index.values() {
             self.chats[sub_idx].mark_finished(role.clone(), text);
         }
@@ -1829,7 +1829,7 @@ impl App {
         self.plan_form.reset();
         let plan_snapshot = match std::mem::take(&mut self.state.plan) {
             PlanState::Ready(p) => Some((
-                std::fs::read_to_string(&p).unwrap_or_else(|_| Default::default()),
+                std::fs::read_to_string(&p).unwrap_or_else(|_| String::default()),
                 p.display().to_string(),
             )),
             _ => None,

@@ -92,7 +92,7 @@ impl UsageModal {
         let theme = theme::current();
         let lines = build_lines(ctx, &theme);
 
-        let total = lines.len() as u16;
+        let total = u16::try_from(lines.len()).unwrap_or_else(|_| u16::MAX);
         let modal = Modal {
             title: TITLE,
             width_percent: 60,
@@ -114,7 +114,7 @@ impl UsageModal {
             Span::styled("Ctrl+R", theme.keybind_key),
             Span::styled(" reload ", theme.tool_dim),
         ]);
-        let hint_w = hint.width() as u16;
+        let hint_w = u16::try_from(hint.width()).unwrap_or_else(|_| u16::MAX);
         let hint_area = Rect {
             x: popup.x + popup.width.saturating_sub(hint_w + 1),
             y: popup.y + popup.height.saturating_sub(1),
@@ -340,7 +340,7 @@ fn quota_lines(state: &UsageFetchState, theme: &crate::theme::Theme) -> Vec<Line
 }
 
 fn format_reset(epoch_ms: u64, tz: &TimeZone) -> String {
-    let secs = (epoch_ms / 1000) as i64;
+    let secs = (epoch_ms / 1000).cast_signed();
     let Ok(ts) = Timestamp::from_second(secs) else {
         return epoch_ms.to_string();
     };

@@ -10,17 +10,17 @@ weight = 5
 group = "Reference"
 +++"#;
 
-const TIER_PICKER_NOTE: &str = r#"Open the model picker with `/model` and press `!`, `@`, `#`, or `$` on any row to assign it to strong, medium, weak, or compaction. Press the same key again to remove the assignment. Your overrides are saved to `~/.local/state/n00n/model-tiers` and apply across sessions."#;
+const TIER_PICKER_NOTE: &str = r"Open the model picker with `/model` and press `!`, `@`, `#`, or `$` on any row to assign it to strong, medium, weak, or compaction. Press the same key again to remove the assignment. Your overrides are saved to `~/.local/state/n00n/model-tiers` and apply across sessions.";
 
-const AUTH_RELOADING: &str = r#"## Auth Reloading
+const AUTH_RELOADING: &str = r"## Auth Reloading
 
 N00n re-reads auth from storage and environment variables each time a new agent spawns (`/new`, retry, session load). If you run `n00n auth login` in another terminal or change an env var, the next session picks it up without a restart.
 
-You can set multiple API keys in one env var (`ANTHROPIC_API_KEY=sk-1,sk-2,sk-3`) and they rotate automatically on rate-limit or auth errors."#;
+You can set multiple API keys in one env var (`ANTHROPIC_API_KEY=sk-1,sk-2,sk-3`) and they rotate automatically on rate-limit or auth errors.";
 
-const LONG_CONTEXT_NOTE: &str = r#"Add `-1m` to any Claude model, like `claude-sonnet-4-6-1m`, to use the 1M token context window."#;
+const LONG_CONTEXT_NOTE: &str = r"Add `-1m` to any Claude model, like `claude-sonnet-4-6-1m`, to use the 1M token context window.";
 
-const BEDROCK_NOTE: &str = r#"#### Amazon Bedrock
+const BEDROCK_NOTE: &str = r"#### Amazon Bedrock
 
 If you already use Claude through AWS Bedrock, you can point N00n at it instead of the direct Anthropic API. Set `CLAUDE_CODE_USE_BEDROCK=1` and N00n will route all Anthropic requests through Bedrock. The same models, the same features, just a different door.
 
@@ -33,18 +33,18 @@ You will need `AWS_REGION` and one of the following for auth:
 | Bearer token | `AWS_BEARER_TOKEN_BEDROCK` |
 | Gateway proxy | `CLAUDE_CODE_SKIP_BEDROCK_AUTH=1` + `ANTHROPIC_BEDROCK_BASE_URL` (skips signing, useful behind a proxy that handles auth) |
 
-You can override the model with `ANTHROPIC_MODEL` and the endpoint with `ANTHROPIC_BEDROCK_BASE_URL`. These env var names match Claude Code, so if you were already using Bedrock there, the same setup works here."#;
+You can override the model with `ANTHROPIC_MODEL` and the endpoint with `ANTHROPIC_BEDROCK_BASE_URL`. These env var names match Claude Code, so if you were already using Bedrock there, the same setup works here.";
 
-const OPENCODE_FREE_MODELS_NOTE: &str = r#"By default N00n hides free models from the Opencode catalog. To list free models (they use a public fallback, no API key needed), add this to `~/.config/n00n/providers.toml`:
+const OPENCODE_FREE_MODELS_NOTE: &str = r"By default N00n hides free models from the Opencode catalog. To list free models (they use a public fallback, no API key needed), add this to `~/.config/n00n/providers.toml`:
 
 ```toml
 [opencode]
 enable_free_models = true
 ```
 
-The default is `false`."#;
+The default is `false`.";
 
-const MODEL_IDENTIFIERS: &str = r#"## Model Identifiers
+const MODEL_IDENTIFIERS: &str = r"## Model Identifiers
 
 Models are referenced as `provider/model_id`:
 
@@ -54,7 +54,7 @@ openai/gpt-4.1
 zai/glm-4.7
 ```
 
-If the model name is unique across providers, the prefix can be omitted."#;
+If the model name is unique across providers, the prefix can be omitted.";
 
 fn dynamic_providers_section() -> String {
     let valid_values: Vec<String> = ProviderKind::iter().map(|k| format!("`{k}`")).collect();
@@ -224,12 +224,10 @@ fn write_model_table(out: &mut String, entries: &[ModelEntry]) {
 
         let pricing = tier_entries
             .first()
-            .map(|e| format_pricing(e))
-            .unwrap_or_default();
+            .map_or_else(String::new, |e| format_pricing(e));
         let context = tier_entries
             .first()
-            .map(|e| format_context(e))
-            .unwrap_or_default();
+            .map_or_else(String::new, |e| format_context(e));
 
         let _ = writeln!(
             out,
@@ -247,7 +245,7 @@ fn write_model_table(out: &mut String, entries: &[ModelEntry]) {
         .map(|e| {
             format!(
                 "{} ({})",
-                e.prefixes.first().unwrap_or(&"?"),
+                e.prefixes.first().map_or_else(|| "?", |s| *s),
                 tier_label(e.tier).to_lowercase(),
             )
         })

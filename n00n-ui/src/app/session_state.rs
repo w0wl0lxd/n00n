@@ -92,22 +92,23 @@ impl SessionState {
 
     pub fn sync_session(
         &mut self,
-        shared_history: &Option<Arc<ArcSwap<Vec<Message>>>>,
-        shared_transcript: &Option<n00n_agent::SharedTranscript>,
-        shared_tool_outputs: &Option<Arc<Mutex<HashMap<String, ToolOutput>>>>,
+        shared_history: Option<&Arc<ArcSwap<Vec<Message>>>>,
+        shared_transcript: Option<&n00n_agent::SharedTranscript>,
+        shared_tool_outputs: Option<&Arc<Mutex<HashMap<String, ToolOutput>>>>,
         permissions: &Arc<PermissionManager>,
     ) {
         if let Some(history) = shared_history {
-            self.session.messages = Vec::clone(&history.load());
+            Clone::clone_from(&mut self.session.messages, &history.load());
         }
         if let Some(transcript) = shared_transcript {
-            self.session.transcript = Vec::clone(&transcript.load());
+            Clone::clone_from(&mut self.session.transcript, &transcript.load());
         }
         if let Some(outputs) = shared_tool_outputs {
-            self.session.tool_outputs = outputs
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone();
+            self.session.tool_outputs.clone_from(
+                &outputs
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
         }
         self.session.token_usage = self.token_usage;
         self.session.meta.context_size = self.context_size;
@@ -188,9 +189,7 @@ pub(crate) fn stored_to_rules(stored: &[StoredRule]) -> Vec<n00n_config::Permiss
     stored
         .iter()
         .filter_map(|r| {
-            let tool = if let Some(t) = migrate_stored_tool_key(&r.tool) {
-                t
-            } else {
+            let Some(tool) = migrate_stored_tool_key(&r.tool) else {
                 if matches!(r.effect, StoredEffect::Deny) {
                     tracing::error!(
                         key = %r.tool,
