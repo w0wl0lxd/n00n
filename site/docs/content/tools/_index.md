@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-n00n ships with 25 built-in tools. This is the full reference.
+n00n ships with 27 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -163,11 +163,7 @@ Execute Python code in a sandboxed interpreter with tools as callable functions.
 
 ### `question` *(lua plugin)*
 
-Use this tool when you need to ask the user questions during execution. This allows you to:
-- Gather user preferences or requirements
-- Clarify ambiguous instructions
-- Get decisions on implementation choices as you work
-- Offer choices to the user about what direction to take
+Ask the user questions during execution. Use to gather preferences, clarify instructions, get decisions, or offer choices.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -187,43 +183,41 @@ Control background agents started by task or team.
 
 ### `team` *(lua plugin)*
 
-Run a bounded ALMAS team for an SDLC goal. Roles cover scope, planning, implementation, testing, and review on cost-aware tiers.
-supervised returns a plan; autonomous executes it with optional validator quorum; swarm runs bounded explorer/worker/validator rounds with an information-bottleneck fan-out gate. model overrides tiers; auto_tier routes by task. use_retrieval grounds work, compact TOON-encodes that context, and background returns an agent_id for agent_control. Default/hard budgets are 16/24 agents and 4 concurrent.
+Run a bounded ALMAS team for an SDLC goal. Roles: product_manager, planner, developer, tester, reviewer. Modes: supervised (return plan), autonomous (execute plan), swarm (decentralized rounds with IBN gate). model overrides tiers; auto_tier routes by task. use_retrieval grounds work; compact TOON-encodes context; background returns agent_id. Default/hard budgets: 16/24 agents, 4 concurrent.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `max_agents` | integer | no | 16, hard maximum 24 | Total team agent-call budget. |
-| `background` | boolean | no |  | Start the team in a separate background session and return its agent_id immediately. |
-| `compact` | boolean | no |  | Encode retrieved context as TOON (token-saving, opt-in). |
-| `model_tier` | string | no |  | Supervisor/model tier (weak/medium/strong). Defaults to strong when model is omitted. |
-| `quorum` | boolean | no |  | Require validator quorum for autonomous validation and swarm acceptance. |
-| `max_steps` | integer | no | 6, maximum 8 | Maximum supervisor plan steps to execute. |
-| `max_concurrent` | integer | no | 4 | Swarm concurrency. Maximum 4. |
-| `ibn_gate` | boolean | no |  | Use the information-bottleneck fan-out gate in swarm mode. |
-| `max_rounds` | integer | no | 2, maximum 4 | Swarm mode only: max coordination rounds. |
-| `goal` | string | yes |  | High-level SDLC goal, e.g. 'Add a retry helper and cover it with tests.' |
-| `model` | string | no |  | Exact model spec for every team agent. Overrides model_tier and role tiers. |
+| `max_agents` | integer | no | 16, max 24 | Team agent budget. |
+| `background` | boolean | no |  | Start in background session; return agent_id. |
+| `compact` | boolean | no |  | TOON-encode retrieved context (token-saving). |
+| `model_tier` | string | no |  | Supervisor tier (weak/medium/strong). Default: strong. |
+| `quorum` | boolean | no |  | Require validator quorum for autonomous/swarm. |
+| `max_steps` | integer | no | 6, max 8 | Max plan steps. |
+| `max_concurrent` | integer | no | 4, max 4 | Swarm concurrency. |
+| `ibn_gate` | boolean | no |  | Use information-bottleneck fan-out gate in swarm. |
+| `max_rounds` | integer | no | 2, max 4 | Swarm max rounds. |
+| `goal` | string | yes |  | High-level SDLC goal. |
+| `model` | string | no |  | Exact model for all agents. Overrides model_tier. |
 | `use_retrieval` | boolean | no |  | Ground steps with repo retrieval. |
-| `mode` | string | no |  | "supervised" (default, return the plan for review), "autonomous" (run the plan), or "swarm" (decentralized SwarmSys rounds). |
-| `auto_tier` | boolean | no |  | Route each subagent tier from its step prompt. Defaults to true unless an exact model is set. |
-| `thinking` | string/integer | no |  | Thinking mode for team agents: "off", "adaptive", an effort level through "max", or a token budget. Defaults to "adaptive". |
+| `mode` | string | no |  | "supervised" (return plan), "autonomous" (run plan), "swarm" (decentralized rounds). |
+| `auto_tier` | boolean | no |  | Route subagent tier from step prompt. Default: true unless model set. |
+| `thinking` | string/integer | no |  | Thinking mode: "off", "adaptive", effort level, or token budget. Default: "adaptive". |
 
 ### `task` *(lua plugin)*
 
-Launch one isolated agent; combine independent calls with batch.
-research (default) is read-only; general can edit. Each call starts fresh, so include context and ask for concise file:line results. Summarize returned results for the user. auto_tier is opt-in. background returns an agent_id for agent_control.
+Launch one isolated agent; combine independent calls with batch. research (default) is read-only; general can edit. Each call starts fresh, so include context and ask for concise file:line results. Summarize returned results. auto_tier is opt-in. background returns agent_id.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `description` | string | yes | Short (3-5 words) description of the task |
-| `model_tier` | string | no | Optional capped tier: "weak" for simple work, "medium" for normal changes, or "strong" for complex/critical work. |
-| `auto_tier` | boolean | no | Pick model_tier from the prompt automatically (opt-in). Overrides model_tier when set. |
-| `background` | boolean | no | Start this task in a separate background session and return its agent_id immediately. |
-| `model` | string | no | Exact model spec (optional, e.g. openai/gpt-5.6-luna). Overrides model_tier. |
-| `output_schema` | object | no | JSON Schema (object) the subagent's final result must match. When set, the result is returned as a validated JSON string. |
+| `description` | string | yes | Short (3-5 words) task description |
+| `model_tier` | string | no | Capped tier: "weak", "medium", or "strong" |
+| `auto_tier` | boolean | no | Pick model_tier from prompt automatically (opt-in). Overrides model_tier when set. |
+| `background` | boolean | no | Start in background session; return agent_id immediately. |
+| `model` | string | no | Exact model spec (optional). Overrides model_tier. |
+| `output_schema` | object | no | JSON Schema (object) subagent result must match. Result returned as validated JSON string. |
 | `prompt` | string | yes | Detailed task prompt for the agent |
-| `thinking` | string/integer | no | Thinking mode: "off", "adaptive", "minimal", "low", "medium", "high", "xhigh", "max", or a token budget. Omit to inherit the user setting. |
-| `subagent_type` | string | no | Subagent type: "research" (read-only, default) or "general" (can modify files) |
+| `thinking` | string/integer | no | Thinking mode: "off", "adaptive", effort level, or token budget. Omit to inherit user setting. |
+| `subagent_type` | string | no | "research" (read-only, default) or "general" (can edit) |
 
 ### `workflow` *(lua plugin)*
 
@@ -231,9 +225,9 @@ Run a bounded, sandboxed Lua workflow for multi-stage agent orchestration.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `inputs` | object | no | Free-form object exposed to the script as the global `inputs`. |
-| `script` | string | yes | Lua workflow script. First statement: meta({...}). Then orchestrate with agent/parallel/pipeline/phase/log. Must return the final answer as a string. |
-| `resume` | string | no | Prior run_id. Replays journaled agent() results and only spends tokens on new calls. |
+| `inputs` | object | no | Free-form object exposed to script as global `inputs`. |
+| `script` | string | yes | Lua workflow script. First statement: meta({...}). Orchestrate with agent/parallel/pipeline/phase/log. Must return final answer as string. |
+| `resume` | string | no | Prior run_id. Replays journaled agent() results; only spends tokens on new calls. |
 
 ### `todo_write` *(lua plugin)*
 
@@ -255,11 +249,28 @@ Persistent, project-scoped scratchpad for learnings, patterns, decisions, and go
 
 ### `skill` *(lua plugin)*
 
-Load a skill that provides instructions and workflows for specific tasks.
+Load a skill for specific tasks.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `name` | string | yes | Name of the skill to load |
+
+### `tool_search` *(lua plugin)*
+
+Search for deferred tools by name or description. Returns a list of tools that can be loaded on demand.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `query` | string | yes | Search query to match tool names or descriptions |
+| `namespace` | string | no | Optional namespace filter |
+
+### `load_namespace` *(lua plugin)*
+
+Load all tools from a namespace. Returns the list of tools that were loaded.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `namespace` | string | yes | Namespace to load |
 
 ## Web
 
