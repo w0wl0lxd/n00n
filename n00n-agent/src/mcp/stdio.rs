@@ -232,6 +232,7 @@ impl StdioTransport {
 }
 
 impl McpTransport for StdioTransport {
+    #[allow(clippy::cast_possible_truncation)]
     fn send_request<'a>(
         &'a self,
         method: &'a str,
@@ -260,7 +261,6 @@ impl McpTransport for StdioTransport {
                     async_io::Timer::after(self.timeout).await;
                     Err(McpError::Timeout {
                         server: self.server(),
-                        #[allow(clippy::cast_possible_truncation)]
                         timeout_ms: self.timeout.as_millis() as u64,
                     })
                 },
@@ -307,7 +307,6 @@ impl McpTransport for StdioTransport {
         "stdio"
     }
 
-    #[allow(clippy::used_underscore_binding)]
     fn child_pids(&self) -> Vec<u32> {
         vec![self.child.id()]
     }

@@ -802,14 +802,11 @@ mod tests {
             let probe = StartProbe::default();
             let started = Arc::clone(&probe.started);
             let registry = ToolRegistry::new();
-            registry
-                .register(
-                    Arc::new(probe),
-                    ToolSource::Lua {
-                        plugin: "test".into(),
-                    },
-                )
-                .unwrap();
+            let tool: Arc<dyn Tool> = Arc::new(probe);
+            let source = ToolSource::Lua {
+                plugin: "test".into(),
+            };
+            registry.register(Arc::clone(&tool), source).unwrap();
 
             let done = run(
                 &registry,
