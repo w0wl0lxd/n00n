@@ -223,6 +223,11 @@ pub(super) fn build_wire_tools(tools: &Value) -> Value {
         return tools.clone();
     };
     let mut out: Vec<Value> = arr.clone();
+    for tool in &mut out {
+        if let Some(schema) = tool.get_mut("input_schema") {
+            *schema = crate::providers::strip_additional_properties(std::mem::take(schema));
+        }
+    }
     if let Some(last) = out.last_mut() {
         last["cache_control"] = json!({"type": "ephemeral"});
     }
