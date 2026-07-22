@@ -266,30 +266,34 @@ fn ymdhms_to_epoch(
     Some(days_since_epoch * 86400 + hour * 3600 + minute * 60 + second)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn sign_request_sigv4(
-    method: &str,
-    url: &str,
-    headers: &[(&str, &str)],
-    body: &[u8],
-    access_key: &str,
-    secret_key: &str,
-    session_token: Option<&str>,
-    region: &str,
-    service: &str,
-    timestamp: &str,
-) -> Result<Vec<(String, String)>, AgentError> {
-    let date = &timestamp[..8];
+struct SigV4Request<'a> {
+    method: &'a str,
+    url: &'a str,
+    headers: &'a [(&'a str, &'a str)],
+    body: &'a [u8],
+    access_key: &'a str,
+    secret_key: &'a str,
+    session_token: Option<&'a str>,
+    region: &'a str,
+    service: &'a str,
+    timestamp: &'a str,
+}
 
-    let (_, path, query) = parse_url(url);
-    let payload_hash = hex_sha256(body);
+fn sign_request_sigv4(req: &SigV4Request<'_>) -> Result<Vec<(String, String)>, AgentError> {
+    let date = &req.timestamp[..8];
+
+    let (_, path, query) = parse_url(req.url);
+    let payload_hash = hex_sha256(req.body);
 
     // 'host' belongs to the HTTP request, so the caller already sets it. If we add
     // it here too it ends up signed twice and AWS rejects the signature.
-    let mut canonical_headers: Vec<(&str, String)> =
-        headers.iter().map(|(k, v)| (*k, v.to_string())).collect();
-    canonical_headers.push(("x-amz-date", timestamp.to_string()));
-    if let Some(tok) = session_token {
+    let mut canonical_headers: Vec<(&str, String)> = req
+        .headers
+        .iter()
+        .map(|(k, v)| (*k, v.to_string()))
+        .collect();
+    canonical_headers.push(("x-amz-date", req.timestamp.to_string()));
+    if let Some(tok) = req.session_token {
         canonical_headers.push(("x-amz-security-token", tok.to_string()));
     }
     canonical_headers.sort_by(|a, b| a.0.cmp(b.0));
@@ -313,27 +317,30 @@ fn sign_request_sigv4(
     // so '%3A' becomes '%253A'. Skip this and the signature will not match.
     let canonical_path = encode_path(path);
     let canonical_request = format!(
-        "{method}\n{canonical_path}\n{query}\n{canonical_headers_str}\n{signed_headers}\n{payload_hash}"
+        "{}\n{canonical_path}\n{query}\n{canonical_headers_str}\n{signed_headers}\n{payload_hash}",
+        req.method
     );
 
-    let credential_scope = format!("{date}/{region}/{service}/aws4_request");
+    let credential_scope = format!("{date}/{}/{}/aws4_request", req.region, req.service);
     let string_to_sign = format!(
-        "AWS4-HMAC-SHA256\n{timestamp}\n{credential_scope}\n{}",
+        "AWS4-HMAC-SHA256\n{}\n{credential_scope}\n{}",
+        req.timestamp,
         hex_sha256(canonical_request.as_bytes())
     );
 
-    let signing_key = derive_signing_key(secret_key, date, region, service)?;
+    let signing_key = derive_signing_key(req.secret_key, date, req.region, req.service)?;
     let signature = hex_encode(&hmac_sha256(&signing_key, string_to_sign.as_bytes())?);
 
     let authorization = format!(
-        "AWS4-HMAC-SHA256 Credential={access_key}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}"
+        "AWS4-HMAC-SHA256 Credential={}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}",
+        req.access_key
     );
 
     let mut result = vec![
         ("Authorization".into(), authorization),
-        ("x-amz-date".into(), timestamp.into()),
+        ("x-amz-date".into(), req.timestamp.into()),
     ];
-    if let Some(tok) = session_token {
+    if let Some(tok) = req.session_token {
         result.push(("x-amz-security-token".into(), tok.into()));
     }
     Ok(result)
@@ -619,18 +626,18 @@ impl Provider for Bedrock {
                     secret_key,
                     session_token,
                     expires_at: _,
-                } => Some(sign_request_sigv4(
-                    "POST",
-                    &url,
-                    &extra_headers,
-                    &json_body,
+                } => Some(sign_request_sigv4(&SigV4Request {
+                    method: "POST",
+                    url: &url,
+                    headers: &extra_headers,
+                    body: &json_body,
                     access_key,
                     secret_key,
-                    session_token.as_deref(),
-                    &auth.region,
-                    "bedrock",
-                    &timestamp,
-                )?),
+                    session_token: session_token.as_deref(),
+                    region: &auth.region,
+                    service: "bedrock",
+                    timestamp: &timestamp,
+                })?),
                 AuthKind::Bearer { token } => {
                     Some(vec![("Authorization".into(), format!("Bearer {token}"))])
                 }
@@ -797,21 +804,21 @@ mod tests {
         // was computed against the doubly encoded '%253A' canonical path, so this
         // test fails the moment someone stops re-encoding the path.
         let url = "https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude-3-5-sonnet-20241022-v2%3A0/invoke-with-response-stream";
-        let headers = sign_request_sigv4(
-            "POST",
+        let headers = sign_request_sigv4(&SigV4Request {
+            method: "POST",
             url,
-            &[
+            headers: &[
                 ("content-type", "application/json"),
                 ("host", "bedrock-runtime.us-east-1.amazonaws.com"),
             ],
-            b"{}",
-            "AKID",
-            "SECRET",
-            None,
-            "us-east-1",
-            "bedrock",
-            "20240101T000000Z",
-        )
+            body: b"{}",
+            access_key: "AKID",
+            secret_key: "SECRET",
+            session_token: None,
+            region: "us-east-1",
+            service: "bedrock",
+            timestamp: "20240101T000000Z",
+        })
         .unwrap();
         let auth = headers
             .iter()
@@ -829,21 +836,21 @@ mod tests {
     #[test_case(None ; "without_session_token")]
     #[test_case(Some("TOKEN") ; "with_session_token")]
     fn sigv4_signing(session_token: Option<&str>) {
-        let headers = sign_request_sigv4(
-            "POST",
-            "https://bedrock-runtime.us-east-1.amazonaws.com/model/test/invoke",
-            &[
+        let headers = sign_request_sigv4(&SigV4Request {
+            method: "POST",
+            url: "https://bedrock-runtime.us-east-1.amazonaws.com/model/test/invoke",
+            headers: &[
                 ("content-type", "application/json"),
                 ("host", "bedrock-runtime.us-east-1.amazonaws.com"),
             ],
-            b"{}",
-            "AKID",
-            "SECRET",
+            body: b"{}",
+            access_key: "AKID",
+            secret_key: "SECRET",
             session_token,
-            "us-east-1",
-            "bedrock",
-            "20240101T000000Z",
-        )
+            region: "us-east-1",
+            service: "bedrock",
+            timestamp: "20240101T000000Z",
+        })
         .unwrap();
         let auth = headers.iter().find(|(k, _)| k == "Authorization").unwrap();
         assert!(auth.1.starts_with(
