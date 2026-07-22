@@ -136,6 +136,8 @@ pub(crate) struct PendingTool {
     pub(crate) start_annotation: Option<StartAnnotation>,
     pub(crate) examples: Option<Value>,
     pub(crate) describe_key: Option<RegistryKey>,
+    pub(crate) defer_loading: bool,
+    pub(crate) namespace: Option<Arc<str>>,
 }
 
 pub(crate) type PendingTools = Arc<Mutex<Vec<PendingTool>>>;
@@ -156,6 +158,8 @@ pub(crate) struct LuaTool {
     pub(crate) start_annotation: Option<StartAnnotation>,
     pub(crate) examples: Option<Value>,
     pub(crate) has_describe_fn: bool,
+    pub(crate) defer_loading: bool,
+    pub(crate) namespace: Option<Arc<str>>,
 }
 
 impl Tool for LuaTool {
@@ -212,6 +216,14 @@ impl Tool for LuaTool {
 
     fn examples(&self) -> Option<Value> {
         self.examples.clone()
+    }
+
+    fn defer_loading(&self) -> bool {
+        self.defer_loading
+    }
+
+    fn namespace(&self) -> Option<&str> {
+        self.namespace.as_deref()
     }
 
     fn parse(&self, input: &Value) -> Result<Box<dyn ToolInvocation>, ParseError> {
@@ -1102,6 +1114,7 @@ fn parse_start_annotation(spec: &Table, schema: &Value) -> LuaResult<Option<Star
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> LuaResult<()> {
     let name: String = spec
         .get("name")
@@ -1180,6 +1193,15 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
             .transpose()
             .map_err(|e| mlua::Error::runtime(format!("register_tool: invalid examples: {e}")))?;
 
+    let defer_loading: bool = spec
+        .get::<Option<bool>>("defer_loading")?
+        .unwrap_or_else(|| false);
+
+    let namespace: Option<Arc<str>> = spec
+        .get("namespace")
+        .ok()
+        .map(|s: String| Arc::from(s.as_str()));
+
     let name: Arc<str> = Arc::from(name.as_str());
 
     pending
@@ -1201,6 +1223,8 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
             start_annotation,
             examples,
             describe_key,
+            defer_loading,
+            namespace,
         });
 
     Ok(())
@@ -1692,6 +1716,8 @@ mod tests {
             has_start_fn: false,
             examples: None,
             has_describe_fn: false,
+            defer_loading: false,
+            namespace: None,
         }
     }
 

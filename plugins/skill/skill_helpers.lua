@@ -33,7 +33,11 @@ function M.build_skill_list(skills)
 
   local lines = {}
   for _, s in ipairs(sorted) do
-    lines[#lines + 1] = "- " .. s.name .. ": " .. s.description
+    local desc = s.description
+    if #desc > 120 then
+      desc = desc:sub(1, 117) .. "..."
+    end
+    lines[#lines + 1] = "- " .. s.name .. ": " .. desc
   end
   return "\n\n<available_skills>\n" .. table.concat(lines, "\n") .. "\n</available_skills>"
 end

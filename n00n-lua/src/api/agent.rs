@@ -554,15 +554,27 @@ async fn session(
         let _ = sink.send(ToolLive::Annotation(model.spec()));
     }
 
-    let mut tools_json: JsonValue = match tools_val {
-        Some(val) => {
-            let tools = lua_to_json(&lua, &val)?;
-            if !tools.is_array() {
-                return Err(mlua::Error::runtime("tools must be an array"));
-            }
-            tools
+    let (mut tools_json, tool_filter) = if let Some(val) = tools_val {
+        let tools = lua_to_json(&lua, &val)?;
+        if !tools.is_array() {
+            return Err(mlua::Error::runtime("tools must be an array"));
         }
-        None => JsonValue::Array(vec![]),
+        (tools, ToolFilter::All)
+    } else {
+        let vars = n00n_agent::template::Vars::new();
+        let filter = ToolFilter::from_config(&agent_ctx.config, &model, &[]);
+        let ctx = DescriptionContext {
+            filter: &filter,
+            audience,
+            workflow: false,
+        };
+        let tools = n00n_agent::tools::ToolRegistry::global().definitions_active(
+            &vars,
+            &ctx,
+            model.supports_tool_examples(),
+            &n00n_agent::tools::ActiveTools::default(),
+        );
+        (tools, filter)
     };
 
     let mut local_map: HashMap<String, LocalToolFn> = HashMap::new();
@@ -690,6 +702,7 @@ async fn session(
         },
         system: system.unwrap_or_else(String::new),
         tools: tools_json,
+        tool_filter,
         thinking,
         fast,
         mcp: agent_ctx.mcp.clone(),
@@ -1186,6 +1199,7 @@ struct SessionState {
     params: AgentParams,
     system: String,
     tools: JsonValue,
+    tool_filter: ToolFilter,
     thinking: ThinkingConfig,
     fast: bool,
     mcp: Option<n00n_agent::mcp::McpHandle>,
@@ -1341,6 +1355,7 @@ async fn prompt(
                 system: s.system.clone(),
                 event_tx: s.sub_event_tx.clone(),
                 tools: s.tools.clone(),
+                tool_filter: s.tool_filter.clone(),
             },
         )
         .with_user_response_rx(Arc::clone(&s.answer_rx))

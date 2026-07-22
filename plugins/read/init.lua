@@ -8,7 +8,7 @@ local DESCRIPTION = [[Read a file or directory. Returns contents with line numbe
 - **Always include offset and limit** if possible. Defaults: no offset = start at 1; no limit = up to 2000 lines.
 - Use the **index** tool or **grep** tool first to find the offset and limit.
 - Only read the sections you actually need.
-- Use `wc -l` to check total number of lines before reading to decide a reasonable limit unless known already.
+- Use `wc -l` to check total lines before reading to decide a reasonable limit.
 - Use truncation hints (e.g. "truncated lines X-Y") to continue with the correct offset.
 - Do not reread the same range (same file and same offset).
 - Prefer grep to locate content instead of scanning full files.

@@ -2,11 +2,8 @@ local QuestionForm = require("question_form")
 local QuestionHelpers = require("question_helpers")
 local ToolView = require("n00n.tool_view")
 
-local DESCRIPTION = [[Use this tool when you need to ask the user questions during execution. This allows you to:
-- Gather user preferences or requirements
-- Clarify ambiguous instructions
-- Get decisions on implementation choices as you work
-- Offer choices to the user about what direction to take
+local DESCRIPTION =
+  [[Ask the user questions during execution. Use to gather preferences, clarify instructions, get decisions, or offer choices.
 
 Rules:
 - `custom` enabled by default adds "Type your own answer" - don't include catch-all options.

@@ -5,7 +5,10 @@
 //! - `watchdog`: no resident interrupt; a thread arms a one-shot native
 //!   interrupt every 10ms (what the runtime uses now)
 //! - `none`: no cancellation at all (upper bound)
-
+//!
+//! This benchmark uses the same low-level Luau FFI hooks as the runtime; the
+//! unsafe code is isolated to this file and exercised only during benchmarking.
+#![allow(unsafe_code)]
 #![allow(unsafe_code)]
 
 use std::cell::Cell;
