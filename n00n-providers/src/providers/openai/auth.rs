@@ -230,7 +230,7 @@ fn lock_credentials_with_timeout(
             Ok(()) => return Ok((CredentialsLock { _file: file }, started.elapsed())),
             Err(TryLockError::WouldBlock) if started.elapsed() >= timeout => {
                 let millis = match u64::try_from(timeout.as_millis()) {
-                    Ok(millis) => millis,
+                    Ok(m) => m,
                     Err(_) => u64::MAX,
                 };
                 return Err(AgentError::CredentialLockTimeout { millis });

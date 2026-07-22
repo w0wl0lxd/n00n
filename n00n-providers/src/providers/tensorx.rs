@@ -80,7 +80,6 @@ impl TensorX {
 }
 
 impl Provider for TensorX {
-    #[allow(clippy::result_map_or_into_option)]
     fn stream_message<'a>(
         &'a self,
         model: &'a Model,
@@ -114,9 +113,7 @@ impl Provider for TensorX {
                 let info = guard
                     .discovered(model.provider, &model.id)
                     .and_then(|d| d.provider_info.clone())
-                    .and_then(|arc| {
-                        Arc::downcast::<TensorXModelInfo>(arc).map_or_else(|_| None, Some)
-                    });
+                    .and_then(|arc| Arc::downcast::<TensorXModelInfo>(arc).ok());
                 if let Some(info) = info {
                     (info.has_thinking, info.has_reasoning_effort)
                 } else {

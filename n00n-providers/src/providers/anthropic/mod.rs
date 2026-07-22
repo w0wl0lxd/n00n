@@ -31,7 +31,7 @@ const MODELS_URL: &str = "https://api.anthropic.com/v1/models?limit=1000";
 const FAST_MODE_BETA: &str = "fast-mode-2026-02-01";
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const OAUTH_BETA: &str = "oauth-2025-04-20";
-const MONEY_EXPONENT: u32 = 2;
+const MONEY_EXPONENT: i32 = 2;
 const LABEL_SESSION: &str = "Current session";
 const LABEL_WEEK_ALL: &str = "Current week (all models)";
 
@@ -124,10 +124,14 @@ fn parse_reset(rfc3339: &str) -> Option<u64> {
     u64::try_from(ts.as_millisecond()).ok()
 }
 
-#[allow(clippy::cast_possible_wrap)]
 fn spent(minor_units: f64, exponent: Option<u32>, currency: Option<&str>) -> String {
-    let exp = i32::try_from(exponent.unwrap_or_else(|| MONEY_EXPONENT))
-        .unwrap_or_else(|_| MONEY_EXPONENT as i32);
+    let exp = match exponent {
+        Some(e) => match i32::try_from(e) {
+            Ok(v) => v,
+            Err(_) => MONEY_EXPONENT,
+        },
+        None => MONEY_EXPONENT,
+    };
     let amount = minor_units / 10f64.powi(exp);
     match currency {
         None | Some("USD") => format!("${amount:.2} spent"),

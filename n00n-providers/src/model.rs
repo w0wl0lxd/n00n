@@ -528,15 +528,19 @@ mod tests {
         ModelTier::Compaction,
     ];
 
-    #[allow(clippy::needless_pass_by_value)]
-    #[test_case("no-slash-here", ModelError::InvalidFormat ; "invalid_format")]
-    #[test_case("foobar/gpt-4", ModelError::UnsupportedProvider("foobar".into()) ; "unsupported_provider")]
-    fn from_spec_errors(spec: &str, expected: ModelError) {
+    #[test_case("no-slash-here", "invalid_format" ; "invalid_format")]
+    #[test_case("foobar/gpt-4", "unsupported_provider" ; "unsupported_provider")]
+    fn from_spec_errors(spec: &str, variant: &str) {
         let err = Model::from_spec(spec).unwrap_err();
-        assert_eq!(
-            std::mem::discriminant(&err),
-            std::mem::discriminant(&expected)
-        );
+        match variant {
+            "invalid_format" => {
+                assert!(matches!(err, ModelError::InvalidFormat));
+            }
+            "unsupported_provider" => {
+                assert!(matches!(err, ModelError::UnsupportedProvider(_)));
+            }
+            _ => panic!("unknown variant: {variant}"),
+        }
     }
 
     #[test]
@@ -595,7 +599,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::float_cmp)]
     fn fast_flag_ignored_without_fast_tier() {
         let pricing = ModelPricing {
             input: 3.00,
@@ -610,7 +613,7 @@ mod tests {
             cache_creation: 1_000_000,
             cache_read: 1_000_000,
         };
-        assert_eq!(usage.cost(&pricing, true), usage.cost(&pricing, false));
+        approx::assert_relative_eq!(usage.cost(&pricing, true), usage.cost(&pricing, false));
     }
 
     #[test]

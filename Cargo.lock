@@ -3111,6 +3111,7 @@ dependencies = [
 name = "n00n-providers"
 version = "0.4.2"
 dependencies = [
+ "approx",
  "async-lock",
  "async-tungstenite",
  "base64",

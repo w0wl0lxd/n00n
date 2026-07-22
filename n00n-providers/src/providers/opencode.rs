@@ -38,6 +38,17 @@ pub enum EndpointType {
     Messages,
 }
 
+struct StreamContext<'a> {
+    model: &'a Model,
+    messages: &'a [Message],
+    system: &'a str,
+    tools: &'a Value,
+    event_tx: &'a Sender<ProviderEvent>,
+    auth: &'a ResolvedAuth,
+    opts: &'a RequestOptions,
+    session_id: Option<&'a SessionRef>,
+}
+
 type CatalogIndex = HashMap<String, CatalogProvider>;
 
 #[derive(Deserialize, Serialize)]
@@ -487,65 +498,52 @@ impl Opencode {
         .await)
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn handle_catalog_chat_completions(
         &self,
-        model: &Model,
-        messages: &[Message],
-        system: &str,
-        tools: &Value,
-        event_tx: &Sender<ProviderEvent>,
-        auth: &ResolvedAuth,
-        opts: &RequestOptions,
-        session_id: Option<&SessionRef>,
+        ctx: StreamContext<'_>,
     ) -> Result<StreamResponse, AgentError> {
         let mut body = self.chat_compat.build_body_with_session(
-            model,
-            messages,
-            system,
-            tools,
-            session_id.map(n00n_storage::id::SessionRef::as_str),
+            ctx.model,
+            ctx.messages,
+            ctx.system,
+            ctx.tools,
+            ctx.session_id.map(n00n_storage::id::SessionRef::as_str),
         );
-        opts.thinking
-            .apply_reasoning_effort(&mut body, &dialect::PREFER_HIGH, model);
+        ctx.opts
+            .thinking
+            .apply_reasoning_effort(&mut body, &dialect::PREFER_HIGH, ctx.model);
         self.chat_compat
-            .do_stream(model, &[], &body, event_tx, auth)
+            .do_stream(ctx.model, &[], &body, ctx.event_tx, ctx.auth)
             .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn handle_catalog_messages(
         &self,
-        model: &Model,
-        messages: &[Message],
-        system: &str,
-        tools: &Value,
-        event_tx: &Sender<ProviderEvent>,
-        auth: &ResolvedAuth,
-        opts: &RequestOptions,
+        ctx: StreamContext<'_>,
     ) -> Result<StreamResponse, AgentError> {
         let system_blocks = vec![shared::SystemBlock {
             r#type: "text",
-            text: system,
+            text: ctx.system,
             cache_control: Some(shared::EPHEMERAL),
         }];
         let mut body = shared::build_request_body_with_system(
-            model,
-            messages,
+            ctx.model,
+            ctx.messages,
             &system_blocks,
-            tools,
-            opts.thinking,
+            ctx.tools,
+            ctx.opts.thinking,
         );
-        body["model"] = json!(model.id);
+        body["model"] = json!(ctx.model.id);
         body["stream"] = json!(true);
         let json_body = serde_json::to_vec(&body)?;
-        let request = auth
+        let request = ctx
+            .auth
             .configure_request(
                 Request::builder()
                     .method("POST")
                     .uri(format!(
                         "{}{}",
-                        auth.base_url.as_deref().unwrap_or_else(|| ""),
+                        ctx.auth.base_url.as_deref().unwrap_or_else(|| ""),
                         MESSAGES_PATH
                     ))
                     .header("user-agent", super::user_agent())
@@ -554,13 +552,14 @@ impl Opencode {
             )
             .body(json_body)?;
 
-        debug!(model = %model.id, "sending Anthropic-format request via catalog");
+        debug!(model = %ctx.model.id, "sending Anthropic-format request via catalog");
 
         let response = self.client.send_async(request).await?;
         let status = response.status().as_u16();
 
         if status == 200 {
-            crate::providers::anthropic::parse_sse(response, event_tx, self.stream_timeout).await
+            crate::providers::anthropic::parse_sse(response, ctx.event_tx, self.stream_timeout)
+                .await
         } else {
             Err(AgentError::from_response(response).await)
         }
@@ -625,16 +624,30 @@ impl Provider for Opencode {
 
             match api_format {
                 EndpointType::ChatCompletions => {
-                    self.handle_catalog_chat_completions(
-                        &model, messages, system, tools, event_tx, &auth, &opts, session_id,
-                    )
-                    .await
+                    let ctx = StreamContext {
+                        model: &model,
+                        messages,
+                        system,
+                        tools,
+                        event_tx,
+                        auth: &auth,
+                        opts: &opts,
+                        session_id,
+                    };
+                    self.handle_catalog_chat_completions(ctx).await
                 }
                 EndpointType::Messages => {
-                    self.handle_catalog_messages(
-                        &model, messages, system, tools, event_tx, &auth, &opts,
-                    )
-                    .await
+                    let ctx = StreamContext {
+                        model: &model,
+                        messages,
+                        system,
+                        tools,
+                        event_tx,
+                        auth: &auth,
+                        opts: &opts,
+                        session_id: None,
+                    };
+                    self.handle_catalog_messages(ctx).await
                 }
             }
         })
@@ -1724,7 +1737,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::float_cmp)]
     fn catalog_all_models_public_fallback_shows_only_free() {
         let (_tmp, state_dir) = temp_state_dir();
         // Provider with OPENCODE_API_KEY in env but no key set gets "public" fallback.
@@ -1783,6 +1795,6 @@ mod tests {
             "public fallback should only show free models"
         );
         assert_eq!(result[0].id, "opencode/free-model");
-        assert_eq!(result[0].pricing.as_ref().unwrap().input, 0.0);
+        approx::assert_relative_eq!(result[0].pricing.as_ref().unwrap().input, 0.0);
     }
 }

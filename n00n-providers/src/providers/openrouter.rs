@@ -280,7 +280,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::float_cmp)]
     fn parse_model_scales_pricing_to_per_million() {
         let info = parse_model(&kimi_k3_json()).expect("model should parse");
 
@@ -289,14 +288,13 @@ mod tests {
         assert_eq!(info.supports_vision, Some(true));
         assert_eq!(info.supports_thinking, Some(true));
         let pricing = info.pricing.expect("pricing should be parsed");
-        assert_eq!(pricing.input, 3.0);
-        assert_eq!(pricing.output, 15.0);
-        assert_eq!(pricing.cache_read, 0.3);
-        assert_eq!(pricing.cache_write, 0.0);
+        approx::assert_relative_eq!(pricing.input, 3.0);
+        approx::assert_relative_eq!(pricing.output, 15.0);
+        approx::assert_relative_eq!(pricing.cache_read, 0.3);
+        approx::assert_relative_eq!(pricing.cache_write, 0.0);
     }
 
     #[test]
-    #[allow(clippy::float_cmp)]
     fn parse_model_scales_cache_write() {
         let mut m = kimi_k3_json();
         m["pricing"]["input_cache_write"] = json!("0.00000375");
@@ -305,7 +303,7 @@ mod tests {
             .expect("model should parse")
             .pricing
             .expect("pricing should be parsed");
-        assert_eq!(pricing.cache_write, 3.75);
+        approx::assert_relative_eq!(pricing.cache_write, 3.75);
     }
 
     #[test]
