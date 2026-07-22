@@ -5286,6 +5286,13 @@ end
 return shorten_path
 ```
 
+### `require("n00n.telemetry")`
+
+```lua
+-- Append-only JSONL telemetry logger for multi-agent runs.
+function M.open(log_dir, run_id)
+```
+
 ### `require("n00n.text_input")`
 
 ```lua

@@ -14,6 +14,9 @@ local STRUCTURED_OUTPUT_NAME = "structured_output"
 local STRUCTURED_OUTPUT_DESCRIPTION = "Report your final result. Call it exactly once when your task is complete."
 local STRUCTURED_OUTPUT_ACK = "Output recorded."
 local STRUCTURED_OUTPUT_PROMPT_SUFFIX = "\n\nWhen finished, call the structured_output tool with your final result."
+local DONE_NAME = "done"
+local DONE_DESCRIPTION = "Call when the task is complete with your final answer."
+local DONE_PROMPT_SUFFIX = "\n\nWhen finished, call the done tool with your final answer."
 local MAX_SCHEMA_ERRORS = 3
 local MAX_SCHEMA_BYTES = 32 * 1024
 local MAX_SCHEMA_DEPTH = 16
@@ -220,6 +223,23 @@ local function handler(input, ctx)
         end,
       },
     }
+  else
+    local_tools = {
+      [DONE_NAME] = {
+        description = DONE_DESCRIPTION,
+        input_schema = {
+          type = "object",
+          properties = {
+            answer = { type = "string", description = "Final answer to return to the parent agent." },
+          },
+          required = { "answer" },
+        },
+        handler = function(value)
+          captured = value.answer
+          return "Done."
+        end,
+      },
+    }
   end
 
   local task_description = input.description or "task"
@@ -248,6 +268,8 @@ local function handler(input, ctx)
       local message = input.prompt
       if validator then
         message = message .. STRUCTURED_OUTPUT_PROMPT_SUFFIX
+      else
+        message = message .. DONE_PROMPT_SUFFIX
       end
       local result, err = preview:prompt(sess, message, task_description)
       local retries = 0
@@ -278,8 +300,10 @@ local function handler(input, ctx)
       if not captured and (not result or not result.text or result.text == "") then
         return finish({ llm_output = "sub-agent returned no output", is_error = true })
       end
-      local output = result.text
       if captured then
+        if type(captured) == "string" then
+          return finish({ llm_output = captured, format = "markdown" })
+        end
         local encoded, encode_err = n00n.json.encode(captured)
         if encode_err then
           return finish({
@@ -287,9 +311,9 @@ local function handler(input, ctx)
             is_error = true,
           })
         end
-        output = encoded
+        return finish({ llm_output = encoded, format = "markdown" })
       end
-      return finish({ llm_output = output, format = "markdown" })
+      return finish({ llm_output = result.text, format = "markdown" })
     end
 
     local result = do_prompt()

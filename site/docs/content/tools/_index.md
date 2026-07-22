@@ -116,17 +116,17 @@ Return a compact overview of a source file: imports, type definitions, function 
 
 ### `view_image` *(lua plugin)*
 
-View an image without losing quality. Large images are split into tiles instead of being resized, so you see the real pixels. Animated GIFs need `allow_gif_animation=true` if the provider can play them, or `static_image=true` to show just the first frame (this also applies to animated WebP).
+Lossless viewer: oversized images return native tile 1, never resized. GIF needs `allow_gif_animation=true` only for a known capable provider; otherwise `static_image=true` (also animated WebP).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path` | string | yes | Path to the image file |
-| `crop` | array | no | Region to crop, as [x, y, width, height]. Each edge is at most 8000 pixels, and the area is at most 4 megapixels |
-| `allow_gif_animation` | boolean | no | Allow showing the raw animated GIF |
-| `static_image` | boolean | no | Show only the first frame, as a PNG |
-| `tile_index` | integer | no | Which tile to return, starting at 1 |
-| `tile_width` | integer | no | Tile width in pixels. Defaults to 2000, up to 4 megapixels |
-| `tile_height` | integer | no | Tile height in pixels. Defaults to 2000, up to 4 megapixels |
+| `crop` | array | no | [x,y,w,h]; <=8000 edge/4MP. |
+| `path` | string | yes | Path. |
+| `allow_gif_animation` | boolean | no | Raw GIF opt-in. |
+| `tile_width` | integer | no | Default 2000; max 4MP. |
+| `tile_index` | integer | no | One-based tile. |
+| `static_image` | boolean | no | First-frame PNG. |
+| `tile_height` | integer | no | Default 2000; max 4MP. |
 
 ### `codegraph` *(lua plugin)*
 
@@ -179,35 +179,39 @@ Ask the user questions during execution. Use to gather preferences, clarify inst
 
 ### `agent_control` *(lua plugin)*
 
-Control background agents started by task or team.
+Control background agents started by task, team, or workflow.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `message` | string | no | Steering instructions. Required for message. |
+| `message` | string | no | Steering instructions. |
 | `action` | string | yes | Control action. |
-| `agent_id` | string | no | Background agent id. Required for status, message, and stop. |
+| `agent_id` | string | no | Background agent id. |
 
 ### `team` *(lua plugin)*
 
-Run a bounded ALMAS team for an SDLC goal. Roles: product_manager, planner, developer, tester, reviewer. Modes: supervised (return plan), autonomous (execute plan), swarm (decentralized rounds with IBN gate). model overrides tiers; auto_tier routes by task. use_retrieval grounds work; compact TOON-encodes context; background returns agent_id. Default/hard budgets: 16/24 agents, 4 concurrent.
+Run an ALMAS team for an SDLC goal. supervised returns a plan; autonomous executes it; swarm runs decentralized rounds. background returns an agent_id for agent_control.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
+| `human_escalation` | boolean | no |  | Pause on step failure and return a resumable run_id. |
+| `resume` | string | no |  | Paused run_id to resume. |
+| `ibn_gate` | boolean | no |  | Use information-bottleneck fan-out gate in swarm. |
+| `goal` | string | yes |  | High-level SDLC goal. |
+| `use_summary` | boolean | no |  | Use the Summary Agent index for retrieval. |
+| `mode` | string | no |  | "supervised" (return plan), "autonomous" (run plan), "swarm" (decentralized rounds). |
 | `max_agents` | integer | no | 16, max 24 | Team agent budget. |
-| `background` | boolean | no |  | Start in background session; return agent_id. |
 | `compact` | boolean | no |  | TOON-encode retrieved context (token-saving). |
 | `model_tier` | string | no |  | Supervisor tier (weak/medium/strong). Default: strong. |
-| `quorum` | boolean | no |  | Require validator quorum for autonomous/swarm. |
 | `max_steps` | integer | no | 6, max 8 | Max plan steps. |
 | `max_concurrent` | integer | no | 4, max 4 | Swarm concurrency. |
-| `ibn_gate` | boolean | no |  | Use information-bottleneck fan-out gate in swarm. |
+| `quorum` | boolean | no |  | Require validator quorum for autonomous/swarm. |
 | `max_rounds` | integer | no | 2, max 4 | Swarm max rounds. |
-| `goal` | string | yes |  | High-level SDLC goal. |
-| `model` | string | no |  | Exact model for all agents. Overrides model_tier. |
 | `use_retrieval` | boolean | no |  | Ground steps with repo retrieval. |
-| `mode` | string | no |  | "supervised" (return plan), "autonomous" (run plan), "swarm" (decentralized rounds). |
-| `auto_tier` | boolean | no |  | Route subagent tier from step prompt. Default: true unless model set. |
+| `model` | string | no |  | Exact model for all agents. Overrides model_tier. |
+| `continue` | string | no |  | Human guidance appended when resuming. |
 | `thinking` | string/integer | no |  | Thinking mode: "off", "adaptive", effort level, or token budget. Default: "adaptive". |
+| `background` | boolean | no |  | Start in background session; return agent_id. |
+| `auto_tier` | boolean | no |  | Route subagent tier from step prompt. Default: true unless model set. |
 
 ### `task` *(lua plugin)*
 
@@ -255,11 +259,12 @@ Persistent, project-scoped scratchpad for learnings, patterns, decisions, and go
 
 ### `skill` *(lua plugin)*
 
-Load a skill for specific tasks.
+Load a skill that provides instructions and workflows for specific tasks. Use `list=true` to enumerate available skills.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `name` | string | yes | Name of the skill to load |
+| `name` | string | no | Name of the skill to load. |
+| `list` | boolean | no | Return the list of available skills with their descriptions instead of loading one. |
 
 ### `tool_search` *(lua plugin)*
 
