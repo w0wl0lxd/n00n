@@ -155,7 +155,7 @@ mod tests {
         for y in area.y..area.y + area.height {
             let mut line = String::with_capacity(area.width as usize);
             for x in area.x..area.x + area.width {
-                line.push(buf[(x, y)].symbol().chars().next().unwrap_or(' '));
+                line.push(buf[(x, y)].symbol().chars().next().unwrap_or_else(|| ' '));
             }
             println!("{line}");
         }

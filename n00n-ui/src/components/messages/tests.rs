@@ -1068,13 +1068,17 @@ const N00N_PREFIX_LEN: u16 = 6;
 
 fn make_sel(area: Rect, anchor: (u32, u16), cursor: (u32, u16)) -> Selection {
     let mut sel = Selection::start(
-        area.y + anchor.0 as u16,
+        area.y + u16::try_from(anchor.0).unwrap_or_else(|_| u16::MAX),
         anchor.1,
         area,
         SelectionZone::Messages,
         0,
     );
-    sel.update(area.y + cursor.0 as u16, cursor.1, 0);
+    sel.update(
+        area.y + u16::try_from(cursor.0).unwrap_or_else(|_| u16::MAX),
+        cursor.1,
+        0,
+    );
     sel
 }
 
@@ -1091,7 +1095,7 @@ fn panel_with_msgs(texts: &[&str], width: u16, height: u16) -> MessagesPanel {
 fn extract_partial_column_selection() {
     let panel = panel_with_msgs(&["Hello world"], 80, 24);
     let area = Rect::new(0, 0, 80, 24);
-    let world_start = N00N_PREFIX_LEN + "Hello ".len() as u16;
+    let world_start = N00N_PREFIX_LEN + u16::try_from("Hello ".len()).unwrap_or_else(|_| u16::MAX);
     let sel = make_sel(area, (0, world_start), (0, world_start + 4));
     let text = panel.extract_selection_text(&sel, area);
     assert_eq!(text, "world");
@@ -1134,7 +1138,7 @@ fn extract_off_screen_rows_via_temp_buffer() {
 #[test]
 fn extract_mixed_fully_enclosed_and_partial() {
     let panel = panel_with_msgs(&["full segment", "partial here"], 80, 24);
-    let heights = panel.segment_heights().clone();
+    let heights = panel.segment_heights();
     let area = Rect::new(0, 0, 80, 24);
     let seg1_start = heights[0] + heights[1];
     let sel = make_sel(area, (0, 0), (u32::from(seg1_start), N00N_PREFIX_LEN + 6));
@@ -1593,7 +1597,8 @@ fn task_tool_id_at_only_routes_header() {
 
     assert_eq!(panel.tool_id_at(0, area), Some("task1"));
     assert_eq!(panel.tool_id_at(1, area), None);
-    let truncation_row = truncation_source_line(&panel, "task1") as u16;
+    let truncation_row =
+        u16::try_from(truncation_source_line(&panel, "task1")).unwrap_or_else(|_| u16::MAX);
     assert_eq!(panel.tool_id_at(truncation_row, area), None);
     assert!(panel.handle_click(truncation_row, area));
     assert!(!seg_text(&panel, "task1").contains("›"));
@@ -1633,10 +1638,12 @@ fn row_truncation_actions_expand_only_their_section_in_mixed_states() {
 
     let area = Rect::new(0, 0, 120, 240);
     let mut output_first = panel_with_truncated_script_and_output();
-    let output_row = section_truncation_source_line(&output_first, "t1", OUTPUT) as u16;
+    let output_row = u16::try_from(section_truncation_source_line(&output_first, "t1", OUTPUT))
+        .unwrap_or_else(|_| u16::MAX);
     assert!(output_first.handle_click(output_row, area));
     assert_eq!(output_first.expanded_tools.get("t1"), Some(&OUTPUT));
-    let script_row = section_truncation_source_line(&output_first, "t1", SCRIPT) as u16;
+    let script_row = u16::try_from(section_truncation_source_line(&output_first, "t1", SCRIPT))
+        .unwrap_or_else(|_| u16::MAX);
     assert!(output_first.handle_click(script_row, area));
     assert_eq!(
         output_first.expanded_tools.get("t1"),
@@ -1647,10 +1654,12 @@ fn row_truncation_actions_expand_only_their_section_in_mixed_states() {
     );
 
     let mut script_first = panel_with_truncated_script_and_output();
-    let script_row = section_truncation_source_line(&script_first, "t1", SCRIPT) as u16;
+    let script_row = u16::try_from(section_truncation_source_line(&script_first, "t1", SCRIPT))
+        .unwrap_or_else(|_| u16::MAX);
     assert!(script_first.handle_click(script_row, area));
     assert_eq!(script_first.expanded_tools.get("t1"), Some(&SCRIPT));
-    let output_row = section_truncation_source_line(&script_first, "t1", OUTPUT) as u16;
+    let output_row = u16::try_from(section_truncation_source_line(&script_first, "t1", OUTPUT))
+        .unwrap_or_else(|_| u16::MAX);
     assert!(script_first.handle_click(output_row, area));
     assert_eq!(
         script_first.expanded_tools.get("t1"),
@@ -1693,20 +1702,26 @@ fn snapshot_tool_native_truncation_expands_but_snapshot_row_routes_lua() {
     renamed_lines[truncation_line] = Line::from("  wording changed");
     panel.cache.segments_mut()[0].set_lines(renamed_lines);
 
-    assert!(panel.handle_click(truncation_line as u16, area));
+    assert!(panel.handle_click(
+        u16::try_from(truncation_line).unwrap_or_else(|_| u16::MAX),
+        area
+    ));
     assert!(panel.lua_clicks.is_empty());
     assert!(!seg_text(&panel, "t1").contains("›"));
 
     render(&mut panel, 80, 240);
-    let snapshot_row = panel.cache.segments()[0]
-        .lines()
-        .iter()
-        .position(|line| {
-            line.spans
-                .iter()
-                .any(|span| span.content.contains("lua snapshot row"))
-        })
-        .unwrap() as u16;
+    let snapshot_row = u16::try_from(
+        panel.cache.segments()[0]
+            .lines()
+            .iter()
+            .position(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.content.contains("lua snapshot row"))
+            })
+            .unwrap(),
+    )
+    .unwrap_or_else(|_| u16::MAX);
     assert!(panel.handle_click(snapshot_row, Rect::new(0, 0, 80, 240)));
     assert_eq!(panel.lua_clicks.get("t1"), Some(&vec![1]));
 }
@@ -1755,7 +1770,8 @@ fn running_live_tool_native_truncation_expands_but_header_routes_lua() {
     panel.lua_event_handle = Some(handle);
     render(&mut panel, 80, 240);
     let area = Rect::new(0, 0, 80, 240);
-    let truncation_row = section_truncation_source_line(&panel, "t1", SCRIPT) as u16;
+    let truncation_row = u16::try_from(section_truncation_source_line(&panel, "t1", SCRIPT))
+        .unwrap_or_else(|_| u16::MAX);
 
     assert!(panel.handle_click(truncation_row, area));
     assert_eq!(panel.expanded_tools.get("t1"), Some(&SCRIPT));
@@ -2629,18 +2645,13 @@ fn assert_cache_equal(a: &MessagesPanel, b: &MessagesPanel) {
     assert_eq!(at, bt, "tool_ids");
 }
 
-#[test_case(0, 4, 0, vec![] ; "empty")]
-#[test_case(3, 4, 3, vec![] ; "below_batch_all_initial")]
-#[test_case(4, 4, 4, vec![] ; "exactly_batch_all_initial")]
-#[test_case(5, 4, 4, vec![1] ; "one_over_batch_one_backlog")]
-#[test_case(10, 4, 4, vec![4, 2] ; "two_batches")]
-#[test_case(12, 4, 4, vec![4, 4] ; "even_split")]
-fn restore_plan_splits_recent_first(
-    total: usize,
-    batch: usize,
-    initial: usize,
-    batches: Vec<usize>,
-) {
+#[test_case(0, 4, 0, &[] ; "empty")]
+#[test_case(3, 4, 3, &[] ; "below_batch_all_initial")]
+#[test_case(4, 4, 4, &[] ; "exactly_batch_all_initial")]
+#[test_case(5, 4, 4, &[1] ; "one_over_batch_one_backlog")]
+#[test_case(10, 4, 4, &[4, 2] ; "two_batches")]
+#[test_case(12, 4, 4, &[4, 4] ; "even_split")]
+fn restore_plan_splits_recent_first(total: usize, batch: usize, initial: usize, batches: &[usize]) {
     let plan = restore_plan(total, batch);
     assert_eq!(plan.initial, initial);
     assert_eq!(plan.prepend_batches, batches);

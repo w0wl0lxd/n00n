@@ -78,9 +78,9 @@ pub(crate) fn visual_line_count(text_len: usize, width: usize) -> usize {
 
 pub(crate) fn apply_scroll_delta(offset: u16, delta: i32) -> u16 {
     if delta > 0 {
-        offset.saturating_sub(delta as u16)
+        offset.saturating_sub(u16::try_from(delta).unwrap_or_else(|_| u16::MAX))
     } else {
-        offset.saturating_add(delta.unsigned_abs() as u16)
+        offset.saturating_add(u16::try_from(delta.unsigned_abs()).unwrap_or_else(|_| u16::MAX))
     }
 }
 
@@ -224,7 +224,7 @@ pub enum ExitRequest {
 }
 
 impl ExitRequest {
-    pub fn code(&self) -> i32 {
+    pub fn code(self) -> i32 {
         match self {
             Self::None | Self::Success | Self::Reload => 0,
             Self::Error => 1,

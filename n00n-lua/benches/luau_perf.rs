@@ -6,6 +6,8 @@
 //!   interrupt every 10ms (what the runtime uses now)
 //! - `none`: no cancellation at all (upper bound)
 
+#![allow(unsafe_code)]
+
 use std::cell::Cell;
 use std::ffi::c_int;
 use std::ptr;
