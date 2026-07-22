@@ -8,6 +8,7 @@ use futures_lite::io::AsyncBufRead;
 use isahc::config::Configurable;
 use isahc::http::request::Builder;
 use serde::Deserialize;
+use serde_json::Value;
 use tracing::debug;
 
 use crate::AgentError;
@@ -108,6 +109,27 @@ pub(crate) fn urlenc(s: &str) -> String {
         }
     }
     out
+}
+
+/// Remove `additionalProperties` keys from a tool schema.
+///
+/// Native tool input is validated by the agent's `schema::validate`, so the
+/// closed-object signal is not required on the wire for most providers and
+/// removing it saves tokens in every tool definition.
+pub(crate) fn strip_additional_properties(value: Value) -> Value {
+    match value {
+        Value::Object(mut map) => {
+            map.remove("additionalProperties");
+            for v in map.values_mut() {
+                *v = strip_additional_properties(std::mem::take(v));
+            }
+            Value::Object(map)
+        }
+        Value::Array(items) => {
+            Value::Array(items.into_iter().map(strip_additional_properties).collect())
+        }
+        other => other,
+    }
 }
 
 #[derive(Deserialize)]

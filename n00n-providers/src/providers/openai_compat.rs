@@ -450,12 +450,13 @@ pub fn convert_tools(anthropic_tools: &Value) -> Value {
         tools
             .iter()
             .filter_map(|t| {
+                let input_schema = t.get("input_schema")?.clone();
                 Some(json!({
                     "type": "function",
                     "function": {
                         "name": t.get("name")?,
                         "description": t.get("description")?,
-                        "parameters": t.get("input_schema")?,
+                        "parameters": super::strip_additional_properties(input_schema),
                     }
                 }))
             })

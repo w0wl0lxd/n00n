@@ -655,25 +655,10 @@ fn convert_tools(tools: &Value) -> Vec<Value> {
             Some(json!({
                 "name": name,
                 "description": description,
-                "parameters": strip_additional_properties(parameters),
+                "parameters": super::strip_additional_properties(parameters),
             }))
         })
         .collect()
-}
-
-fn strip_additional_properties(value: Value) -> Value {
-    match value {
-        Value::Object(mut map) => {
-            map.remove("additionalProperties");
-            map.values_mut()
-                .for_each(|v| *v = strip_additional_properties(std::mem::take(v)));
-            Value::Object(map)
-        }
-        Value::Array(items) => {
-            Value::Array(items.into_iter().map(strip_additional_properties).collect())
-        }
-        other => other,
-    }
 }
 
 fn tool_defs_empty(tool_decls: &[Value]) -> bool {
@@ -847,6 +832,7 @@ async fn parse_sse(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::strip_additional_properties;
     use test_case::test_case;
 
     fn test_model() -> Model {
