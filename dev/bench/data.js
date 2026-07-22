@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784730784465,
+  "lastUpdate": 1784737836088,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -1295,6 +1295,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 91645,
             "range": "± 8920",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8b6577e9827362ec04c43edda9945a94d6f5c688",
+          "message": "refactor: remove clippy allows from small crates and storage append helper (#70)\n\n* refactor: remove clippy allows from small crates and storage append helper\n\n* chore: add changelog fragment for clippy-allows cleanup",
+          "timestamp": "2026-07-22T12:24:48-04:00",
+          "tree_id": "a755b7e1c245bd5ce4a636d5e52c5cf4ffe27398",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/8b6577e9827362ec04c43edda9945a94d6f5c688"
+        },
+        "date": 1784737835189,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6641621,
+            "range": "± 109274",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2338352,
+            "range": "± 6813",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2336119,
+            "range": "± 26473",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 9383116,
+            "range": "± 23552",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4352677,
+            "range": "± 16250",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4289494,
+            "range": "± 29694",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 584345,
+            "range": "± 1406",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191639,
+            "range": "± 3224",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191530,
+            "range": "± 575",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1030588,
+            "range": "± 10919",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 562270,
+            "range": "± 1871",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 561822,
+            "range": "± 2067",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 78424,
+            "range": "± 1038",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 106641,
+            "range": "± 6673",
             "unit": "ns/iter"
           }
         ]
