@@ -462,7 +462,13 @@ async fn initialize_deferred(
                 InitializationWake::Complete
             },
             async {
-                let command = cmd_rx.recv_async().await.ok();
+                let command = match cmd_rx.recv_async().await {
+                    Ok(cmd) => Some(cmd),
+                    Err(e) => {
+                        warn!(error = %e, "MCP command channel closed");
+                        None
+                    }
+                };
                 InitializationWake::Command(command)
             },
         )

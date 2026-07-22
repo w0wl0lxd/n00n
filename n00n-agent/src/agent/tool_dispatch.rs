@@ -79,17 +79,15 @@ pub async fn run(
     // LLM providers send tool names in wire format (server__tool) but our
     // internal index uses server.tool. Only convert if the name isn't a
     // native tool — avoids mangling native names that happen to contain __.
-    let mcp_name;
     let mcp_lookup = if entry.is_none() && name.contains("__") && mcp.is_some() {
-        mcp_name = crate::mcp::internal_tool_name(name);
-        mcp_name.as_str()
+        crate::mcp::internal_tool_name(name)
     } else {
-        name
+        name.to_owned()
     };
     let tool_id: Arc<str> = entry
         .as_ref()
         .map(|e| Arc::from(e.tool.name()))
-        .or_else(|| mcp.map(|m| m.interned_name(mcp_lookup)))
+        .or_else(|| mcp.map(|m| m.interned_name(&mcp_lookup)))
         .unwrap_or_else(|| Arc::from(UNKNOWN_MCP));
     let started = Instant::now();
 
@@ -163,22 +161,8 @@ pub async fn run(
 
         let result = invocation.execute(ctx).await;
         tool_done_from_result(result, id, tool_id, name, &entry.source, started.elapsed())
-    } else if mcp.is_some_and(|m| m.has_tool(mcp_lookup)) {
-        // MCP tools skip parsing, so we assemble the start event manually.
-        let start = ToolStartEvent {
-            id: id.clone(),
-            tool: Arc::clone(&tool_id),
-            summary: format!("mcp: {mcp_lookup}"),
-            render_header: None,
-            annotation: None,
-            input: None,
-            raw_input: Some(input.clone()),
-            output: None,
-        };
-        if matches!(emit, Emit::Notify) {
-            let _ = ctx.event_tx.send(AgentEvent::ToolStart(Box::new(start)));
-        }
-        execute_mcp_tool(ctx, &id, tool_id, mcp_lookup, input).await
+    } else if mcp.is_some_and(|m| m.has_tool(&mcp_lookup)) {
+        execute_mcp_tool(ctx, &id, tool_id, &mcp_lookup, input, emit).await
     } else {
         let msg = format!("{UNKNOWN_TOOL_PREFIX}: {mcp_lookup}");
         warn!(tool = %mcp_lookup, "unknown tool");
@@ -341,7 +325,22 @@ async fn execute_mcp_tool(
     tool_id: Arc<str>,
     tool_name: &str,
     input: &Value,
+    emit: Emit,
 ) -> ToolDoneEvent {
+    if matches!(emit, Emit::Notify) {
+        let start = ToolStartEvent {
+            id: id.to_owned(),
+            tool: Arc::clone(&tool_id),
+            summary: format!("mcp: {tool_name}"),
+            render_header: None,
+            annotation: None,
+            input: None,
+            raw_input: Some(input.clone()),
+            output: None,
+        };
+        let _ = ctx.event_tx.send(AgentEvent::ToolStart(Box::new(start)));
+    }
+
     if ctx.mode.plan_path().is_some() {
         return tool_done_error(
             id.to_owned(),
@@ -504,7 +503,7 @@ async fn dispatch_mcp(
         .mcp
         .as_ref()
         .map_or_else(|| Arc::from(UNKNOWN_MCP), |m| m.interned_name(tool_name));
-    execute_mcp_tool(ctx, id, tool_id, tool_name, input).await
+    execute_mcp_tool(ctx, id, tool_id, tool_name, input, Emit::Silent).await
 }
 
 #[cfg(test)]

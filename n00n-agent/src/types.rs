@@ -1109,11 +1109,6 @@ pub enum SpanStyle {
 pub struct InlineStyle {
     pub fg: Option<(u8, u8, u8)>,
     pub bg: Option<(u8, u8, u8)>,
-    pub bits: StyleBits,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct StyleBits {
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
@@ -1617,14 +1612,12 @@ mod tests {
     #[test_case(SpanStyle::Inline(InlineStyle {
         fg: Some((255, 0, 0)),
         bg: None,
-        bits: StyleBits {
-            bold: true,
-            italic: false,
-            underline: true,
-            dim: false,
-            strikethrough: false,
-            reversed: true,
-        },
+        bold: true,
+        italic: false,
+        underline: true,
+        dim: false,
+        strikethrough: false,
+        reversed: true,
     }) ; "inline")]
     fn snapshot_span_serde_roundtrip(style: SpanStyle) {
         let span = SnapshotSpan {

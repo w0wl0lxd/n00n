@@ -312,7 +312,7 @@ pub fn generate() -> String {
         })
         .collect();
 
-    let snapshot = registry.iter();
+    let snapshot = registry.snapshot();
     let mut tools: HashMap<&str, ToolInfo> = HashMap::new();
     for entry in &snapshot {
         if let Some(info) = collect_tool_info(&def_map, entry) {
@@ -430,7 +430,7 @@ mod tests {
     #[test]
     fn sections_partition_registered_tools() {
         let (registry, _) = load_registry_with_builtins();
-        let snapshot = registry.iter();
+        let snapshot = registry.snapshot();
         let registered: HashSet<&str> = snapshot
             .iter()
             .map(n00n_agent::tools::RegisteredTool::name)
