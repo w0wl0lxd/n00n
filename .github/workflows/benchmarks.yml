@@ -1,5 +1,4 @@
 name: Benchmarks
-
 on:
   push:
     branches: ["main"]
@@ -20,27 +19,23 @@ on:
   schedule:
     - cron: "13 2 * * 6"
   workflow_dispatch:
-
 permissions:
   contents: write
   pull-requests: write
-
 jobs:
   bench:
     name: Criterion
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           components: rustfmt
-
       - name: Run benchmarks
-        run: cargo bench -- --output-format bencher | tee criterion-output.txt
-
+        run: cargo bench --workspace -- --output-format bencher | tee criterion-output.txt
       - name: Store / report results
-        uses: benchmark-action/github-action-benchmark@v1
+        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1
         with:
           name: Criterion
           tool: cargo
