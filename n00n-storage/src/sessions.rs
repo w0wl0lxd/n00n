@@ -374,13 +374,17 @@ enum LogRecord<M, U, T> {
     Out { id: String, d: T },
     #[serde(rename = "sub_msg")]
     SubMsg { sub: String, d: M },
+    #[serde(rename = "transcript")]
+    Transcript { d: TranscriptEntry<M> },
+    #[serde(rename = "transcript_reset")]
+    TranscriptReset { d: Vec<TranscriptEntry<M>> },
     #[serde(rename = "meta")]
     Meta {
         title: String,
         token_usage: U,
         updated_at: u64,
-        #[serde(default)]
-        transcript: Vec<TranscriptEntry<M>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transcript: Option<Vec<TranscriptEntry<M>>>,
         #[serde(flatten)]
         meta: SessionMeta,
     },
@@ -395,6 +399,9 @@ pub struct SessionLog {
     saved_msg_count: usize,
     saved_tool_ids: HashSet<String>,
     saved_sub_msg_counts: HashMap<String, usize>,
+    saved_transcript_count: usize,
+    saved_transcript_compaction_count: usize,
+    saved_transcript_tail: Option<Vec<u8>>,
     /// Serialized trailing meta record; lets `append` persist meta-only
     /// changes (title, draft, updated_at) instead of dropping them.
     saved_meta: Vec<u8>,
@@ -403,6 +410,25 @@ pub struct SessionLog {
 
 fn sub_msg_snapshot<M>(map: &HashMap<String, Vec<M>>) -> HashMap<String, usize> {
     map.iter().map(|(k, v)| (k.clone(), v.len())).collect()
+}
+fn transcript_tail_bytes<M: Serialize>(
+    transcript: &[TranscriptEntry<M>],
+) -> Result<Option<Vec<u8>>, SessionError> {
+    transcript
+        .last()
+        .map(serde_json::to_vec)
+        .transpose()
+        .map_err(|error| StorageError::from(error).into())
+}
+
+fn transcript_compaction_count<M>(transcript: &[TranscriptEntry<M>]) -> usize {
+    transcript
+        .iter()
+        .map(|entry| match entry {
+            TranscriptEntry::Message(_) => 0,
+            TranscriptEntry::Compaction { entries } => 1 + transcript_compaction_count(entries),
+        })
+        .sum()
 }
 
 impl SessionLog {
@@ -414,7 +440,7 @@ impl SessionLog {
     {
         let file = write_session_file(dir, session)?;
         update_cwd_index(dir, &session.cwd, session.id)?;
-        Ok(Self::cursor_from(dir, session, file))
+        Self::cursor_from(dir, session, file)
     }
 
     pub fn open<M, U, T>(
@@ -442,7 +468,7 @@ impl SessionLog {
             .append(true)
             .open(&path)
             .map_err(StorageError::from)?;
-        let log = Self::cursor_from(dir, &session, file);
+        let log = Self::cursor_from(dir, &session, file)?;
         Ok((session, log))
     }
 
@@ -509,6 +535,19 @@ impl SessionLog {
             }
         }
 
+        if !self.transcript_prefix_unchanged(session)? {
+            let dir = self.dir.clone();
+            return self.compact(&dir, session);
+        }
+        for entry in &session.transcript[self.saved_transcript_count..] {
+            append_record(
+                &mut buf,
+                &LogRecord::<M, &U, &T>::Transcript { d: entry.clone() },
+            )?;
+        }
+        let new_transcript_compaction_count = transcript_compaction_count(&session.transcript);
+        let new_transcript_tail = transcript_tail_bytes(&session.transcript)?;
+
         let meta_bytes = meta_record_bytes(session)?;
         let meta_changed = meta_bytes != self.saved_meta;
         if buf.is_empty() && !meta_changed {
@@ -536,10 +575,13 @@ impl SessionLog {
         for (sub_id, count) in new_sub_counts {
             self.saved_sub_msg_counts.insert(sub_id, count);
         }
+        self.saved_transcript_count = session.transcript.len();
+        self.saved_transcript_compaction_count = new_transcript_compaction_count;
+        self.saved_transcript_tail = new_transcript_tail;
         if meta_changed {
             self.saved_meta = meta_bytes;
         }
-        self.saved_title = session.title.clone();
+        self.saved_title.clone_from(&session.title);
 
         Ok(())
     }
@@ -564,27 +606,54 @@ impl SessionLog {
             .append(true)
             .open(&path)
             .map_err(StorageError::from)?;
-        *self = Self::cursor_from(dir, session, file);
+        *self = Self::cursor_from(dir, session, file)?;
 
         Ok(())
     }
 
-    fn cursor_from<M, U, T>(dir: &Path, session: &Session<M, U, T>, file: File) -> Self
+    fn cursor_from<M, U, T>(
+        dir: &Path,
+        session: &Session<M, U, T>,
+        file: File,
+    ) -> Result<Self, SessionError>
     where
         M: Serialize + Clone,
         U: Serialize,
         T: Serialize,
     {
-        Self {
+        Ok(Self {
             session_id: session.id,
             dir: dir.to_path_buf(),
             file,
             saved_msg_count: session.messages.len(),
             saved_tool_ids: session.tool_outputs.keys().cloned().collect(),
             saved_sub_msg_counts: sub_msg_snapshot(&session.subagent_messages),
-            saved_meta: meta_record_bytes(session).unwrap_or_default(),
+            saved_transcript_count: session.transcript.len(),
+            saved_transcript_compaction_count: transcript_compaction_count(&session.transcript),
+            saved_transcript_tail: transcript_tail_bytes(&session.transcript)?,
+            saved_meta: meta_record_bytes(session)?,
             saved_title: session.title.clone(),
+        })
+    }
+
+    fn transcript_prefix_unchanged<M, U, T>(
+        &self,
+        session: &Session<M, U, T>,
+    ) -> Result<bool, SessionError>
+    where
+        M: Serialize,
+    {
+        if self.saved_transcript_count > session.transcript.len() {
+            return Ok(false);
         }
+        if self.saved_transcript_count == 0 {
+            return Ok(true);
+        }
+        let saved_prefix = &session.transcript[..self.saved_transcript_count];
+        Ok(
+            transcript_compaction_count(saved_prefix) == self.saved_transcript_compaction_count
+                && transcript_tail_bytes(saved_prefix)? == self.saved_transcript_tail,
+        )
     }
 
     fn require_same_id<M, U, T>(&self, session: &Session<M, U, T>) -> Result<(), SessionError> {
@@ -625,7 +694,7 @@ where
             title: session.title.clone(),
             token_usage: &session.token_usage,
             updated_at: session.updated_at,
-            transcript: session.transcript.clone(),
+            transcript: None,
             meta: session.meta.clone(),
         },
     )?;
@@ -695,6 +764,14 @@ where
                 },
             )?;
         }
+    }
+    if !session.transcript.is_empty() {
+        append_record(
+            &mut buf,
+            &LogRecord::<M, &U, &T>::TranscriptReset {
+                d: session.transcript.clone(),
+            },
+        )?;
     }
     buf.extend_from_slice(&meta_record_bytes(session)?);
     encode_frame(file, &buf)
@@ -811,6 +888,8 @@ where
             LogRecord::SubMsg { sub, d } => {
                 subagent_messages.entry(sub).or_default().push(d);
             }
+            LogRecord::Transcript { d } => transcript.push(d),
+            LogRecord::TranscriptReset { d } => transcript = d,
             LogRecord::Meta {
                 title: m_title,
                 token_usage: m_usage,
@@ -821,7 +900,9 @@ where
                 title = m_title;
                 token_usage = m_usage;
                 updated_at = m_updated;
-                transcript = m_transcript;
+                if let Some(m_transcript) = m_transcript {
+                    transcript = m_transcript;
+                }
                 meta = m_meta;
             }
         }
@@ -1288,7 +1369,10 @@ mod tests {
         SESSION_VERSION, StoredSubagent, append_record, encode_frame, generate_title, jsonl_path,
         load_cwd_index, now_epoch, update_cwd_index,
     };
-    use super::{SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError, TitleSource};
+    use super::{
+        SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError, TitleSource,
+        TranscriptEntry,
+    };
     use crate::id::N00nId;
     use serde_json::Value;
     use std::collections::HashMap;
@@ -1466,6 +1550,151 @@ mod tests {
         assert!(loaded.tool_outputs.contains_key("tool-1"));
         assert_eq!(loaded.subagent_messages["sub-1"].len(), 2);
         assert_eq!(loaded.subagent_messages["sub-2"].len(), 1);
+    }
+
+    #[test]
+    fn transcript_appends_incrementally() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session
+            .transcript
+            .push(TranscriptEntry::Message(user_message("first")));
+        let mut log = SessionLog::create(dir, &session).unwrap();
+
+        session
+            .transcript
+            .push(TranscriptEntry::Message(assistant_message("second")));
+        session.updated_at += 1;
+        log.append(&session).unwrap();
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert_eq!(loaded.transcript.len(), 2);
+        assert!(matches!(
+            &loaded.transcript[1],
+            TranscriptEntry::Message(message)
+                if message["content"][0]["text"].as_str() == Some("second")
+        ));
+    }
+
+    #[test]
+    fn transcript_compaction_replaces_prior_shape() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        let old = TranscriptEntry::Message(user_message("old"));
+        session.transcript.push(old.clone());
+        let mut log = SessionLog::create(dir, &session).unwrap();
+
+        session.transcript = vec![
+            TranscriptEntry::Compaction { entries: vec![old] },
+            TranscriptEntry::Message(user_message("summary")),
+        ];
+        session.updated_at += 1;
+        log.append(&session).unwrap();
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert_eq!(loaded.transcript.len(), 2);
+        assert!(matches!(
+            loaded.transcript.as_slice(),
+            [TranscriptEntry::Compaction { entries }, TranscriptEntry::Message(message)]
+                if entries.len() == 1
+                    && message["content"][0]["text"].as_str() == Some("summary")
+        ));
+    }
+
+    #[test]
+    fn same_tail_compaction_replaces_prior_shape() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        let first = TranscriptEntry::Message(user_message("first"));
+        let tail = TranscriptEntry::Message(user_message("same tail"));
+        session.transcript = vec![first.clone(), tail.clone()];
+        let mut log = SessionLog::create(dir, &session).unwrap();
+
+        session.transcript = vec![
+            TranscriptEntry::Compaction {
+                entries: vec![first, tail.clone()],
+            },
+            tail,
+        ];
+        session.updated_at += 1;
+        log.append(&session).unwrap();
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert!(matches!(
+            loaded.transcript.as_slice(),
+            [TranscriptEntry::Compaction { entries }, TranscriptEntry::Message(_)]
+                if entries.len() == 2
+        ));
+    }
+
+    #[test]
+    fn legacy_meta_transcript_remains_loadable() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let session: TestSession = Session::new("m", "/project");
+        let path = jsonl_path(dir, session.id);
+        let mut records = Vec::new();
+        append_record(
+            &mut records,
+            &LogRecord::<Value, &Value, &Value>::Header {
+                v: LOG_FORMAT_VERSION,
+                id: session.id,
+                model: session.model.clone(),
+                cwd: session.cwd.clone(),
+                title: Some(session.title.clone()),
+                created_at: session.created_at,
+            },
+        )
+        .unwrap();
+        append_record(
+            &mut records,
+            &LogRecord::<Value, &Value, &Value>::Meta {
+                title: session.title.clone(),
+                token_usage: &session.token_usage,
+                updated_at: session.updated_at,
+                transcript: Some(vec![TranscriptEntry::Message(user_message("legacy"))]),
+                meta: session.meta.clone(),
+            },
+        )
+        .unwrap();
+        let mut file = File::create(path).unwrap();
+        encode_frame(&mut file, &records).unwrap();
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert!(matches!(
+            loaded.transcript.as_slice(),
+            [TranscriptEntry::Message(message)]
+                if message["content"][0]["text"].as_str() == Some("legacy")
+        ));
+    }
+
+    #[test]
+    fn meta_only_saves_do_not_repeat_full_transcript() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.transcript.extend((0..2_000).map(|index| {
+            TranscriptEntry::Message(user_message(&format!(
+                "distinct transcript message {index}"
+            )))
+        }));
+        let mut log = SessionLog::create(dir, &session).unwrap();
+        let path = jsonl_path(dir, session.id);
+        let initial_size = fs::metadata(&path).unwrap().len();
+
+        for _ in 0..10 {
+            session.updated_at += 1;
+            log.append(&session).unwrap();
+        }
+
+        let growth = fs::metadata(path).unwrap().len() - initial_size;
+        assert!(
+            growth < initial_size,
+            "growth={growth}, initial={initial_size}"
+        );
     }
 
     #[test]
