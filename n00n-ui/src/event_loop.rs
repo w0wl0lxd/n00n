@@ -377,7 +377,8 @@ impl<'t> EventLoop<'t> {
             crate::update::spawn_check();
         });
 
-        let storage_writer = Arc::new(StorageWriter::new(storage.clone()));
+        let storage_writer =
+            Arc::new(StorageWriter::new(storage.clone()).context("spawn storage writer")?);
         let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
         let (mcp_handle, mcp_config_errors) = smol::block_on(mcp::start(&cwd));
 
@@ -448,7 +449,7 @@ impl<'t> EventLoop<'t> {
             sessions: runtimes,
             focused,
             ctx,
-            input: InputReader::spawn(),
+            input: InputReader::spawn().context("spawn input reader")?,
             warn_rx: bg.warn_rx,
             warn_tx: bg.warn_tx,
             ui_action_rx,

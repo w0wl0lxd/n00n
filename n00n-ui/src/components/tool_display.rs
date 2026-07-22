@@ -9,7 +9,6 @@ use code_view::SectionFlags;
 use n00n_config::ToolOutputLines;
 
 use std::borrow::Cow;
-use std::fmt::Write;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -376,7 +375,7 @@ impl ToolLineBuilder {
                 format!(" ({ann})"),
                 theme::current().tool_annotation,
             ));
-            write!(copy, " ({ann})").unwrap();
+            copy.push_str(&format!(" ({ann})"));
         }
         self.lines.push(Line::from(spans));
         self.search_text = copy;
@@ -698,7 +697,7 @@ pub fn truncate_to_header(text: &mut String) {
 
 pub(crate) fn append_annotation(ann: &mut Option<String>, suffix: &str) {
     match ann {
-        Some(a) => write!(a, " · {suffix}").unwrap(),
+        Some(a) => a.push_str(&format!(" · {suffix}")),
         None => *ann = Some(suffix.to_owned()),
     }
 }

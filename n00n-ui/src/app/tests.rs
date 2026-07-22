@@ -63,7 +63,7 @@ fn build_app(dir: StateDir, writer: Arc<StorageWriter>) -> App {
 
 fn test_app() -> App {
     let dir = StateDir::from_path(env::temp_dir());
-    let mut app = build_app(dir.clone(), Arc::new(StorageWriter::new(dir)));
+    let mut app = build_app(dir.clone(), Arc::new(StorageWriter::new(dir).unwrap()));
     let (shared_queue, _rx) = shared_queue::queue();
     app.queue.set_shared(shared_queue);
     app
@@ -72,7 +72,7 @@ fn test_app() -> App {
 fn tempdir_app() -> (TempDir, StateDir, Arc<StorageWriter>, App) {
     let tmp = TempDir::new().unwrap();
     let dir = StateDir::from_path(tmp.path().to_path_buf());
-    let writer = Arc::new(StorageWriter::new(dir.clone()));
+    let writer = Arc::new(StorageWriter::new(dir.clone()).unwrap());
     let app = build_app(dir.clone(), Arc::clone(&writer));
     (tmp, dir, writer, app)
 }
@@ -450,7 +450,7 @@ fn submit_prompt_rejects(mk: fn() -> App, text: &str, expected: &str) {
 
 fn streaming_app_without_queue() -> App {
     let dir = StateDir::from_path(env::temp_dir());
-    let mut app = build_app(dir.clone(), Arc::new(StorageWriter::new(dir)));
+    let mut app = build_app(dir.clone(), Arc::new(StorageWriter::new(dir).unwrap()));
     app.status = Status::Streaming;
     app
 }

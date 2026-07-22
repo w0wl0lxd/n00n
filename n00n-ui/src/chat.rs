@@ -642,7 +642,7 @@ pub(crate) fn restore_item_for(
     let output = stored.as_text();
     let state = stored.state().cloned();
     Some(n00n_lua::RestoreItem {
-        tool: role.name.clone(),
+        tool: Arc::clone(&role.name),
         tool_use_id: role.id.clone(),
         output,
         input: input.clone(),

@@ -566,7 +566,7 @@ fn merge_syntax_with_diff(
             if !current_text.is_empty() {
                 result.push(Span::styled(
                     std::mem::take(&mut current_text),
-                    current_style.unwrap(),
+                    current_style.unwrap_or_else(|| base),
                 ));
             }
             current_text.push(syn_char);
@@ -575,7 +575,10 @@ fn merge_syntax_with_diff(
     }
 
     if !current_text.is_empty() {
-        result.push(Span::styled(current_text, current_style.unwrap()));
+        result.push(Span::styled(
+            current_text,
+            current_style.unwrap_or_else(|| base),
+        ));
     }
 
     result

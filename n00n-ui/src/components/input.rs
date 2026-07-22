@@ -306,8 +306,10 @@ impl InputBox {
             Some(i) => i - 1,
         };
         self.history_index = Some(new_index);
-        let entry = self.history.get(new_index).unwrap().to_string();
-        self.set_input(entry);
+        let Some(entry) = self.history.get(new_index) else {
+            return;
+        };
+        self.set_input(entry.to_string());
         self.buffer.move_to_end();
     }
 
@@ -317,8 +319,10 @@ impl InputBox {
         };
         if i + 1 < self.history.len() {
             self.history_index = Some(i + 1);
-            let entry = self.history.get(i + 1).unwrap().to_string();
-            self.set_input(entry);
+            let Some(entry) = self.history.get(i + 1) else {
+                return;
+            };
+            self.set_input(entry.to_string());
         } else {
             self.history_index = None;
             let draft = mem::take(&mut self.draft);

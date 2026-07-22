@@ -1092,7 +1092,7 @@ mod tests {
         let (event_tx, cmd_rx, _event_rx, _cmd_tx) = make_channels();
         let buf = Arc::new(SharedBuf::new());
         buf.append(make_line("initial"));
-        mgr.open(buf.clone(), make_config(), true, event_tx, cmd_rx);
+        mgr.open(Arc::clone(&buf), make_config(), true, event_tx, cmd_rx);
         assert_eq!(mgr.windows[0].cached_lines.len(), 1);
 
         buf.append(make_line("second"));
@@ -1108,7 +1108,7 @@ mod tests {
         for i in 0..5 {
             buf.append(make_line(&format!("line{i}")));
         }
-        mgr.open(buf.clone(), make_config(), true, event_tx, cmd_rx);
+        mgr.open(Arc::clone(&buf), make_config(), true, event_tx, cmd_rx);
         mgr.windows[0].cursor = 4;
 
         buf.set_lines(vec![make_line("only")]);
@@ -1263,7 +1263,7 @@ mod tests {
         }
         let mut cfg = make_config();
         cfg.reserved_bottom = 1;
-        mgr.open(buf.clone(), cfg, true, event_tx, cmd_rx);
+        mgr.open(Arc::clone(&buf), cfg, true, event_tx, cmd_rx);
         mgr.windows[0].cursor = 3;
 
         buf.set_lines(vec![make_line("a"), make_line("b")]);
@@ -1327,7 +1327,7 @@ mod tests {
         let mut mgr = FloatManager::new();
         let (event_tx, cmd_rx, _event_rx, cmd_tx) = make_channels();
         let buf = Arc::new(SharedBuf::new());
-        mgr.open(buf.clone(), make_config(), true, event_tx, cmd_rx);
+        mgr.open(Arc::clone(&buf), make_config(), true, event_tx, cmd_rx);
         assert_eq!(mgr.windows[0].cached_lines.len(), 0);
 
         cmd_tx.send(WinCommand::SetCursor(5)).unwrap();
@@ -1468,7 +1468,7 @@ mod tests {
         let mut mgr = FloatManager::new();
         let (event_tx, cmd_rx, _event_rx, _cmd_tx) = make_channels();
         let buf = make_buf(&["initial"]);
-        mgr.open(buf.clone(), make_config(), true, event_tx, cmd_rx);
+        mgr.open(Arc::clone(&buf), make_config(), true, event_tx, cmd_rx);
         assert_eq!(mgr.windows[0].cached_lines.len(), 1);
 
         buf.append(make_line("second"));

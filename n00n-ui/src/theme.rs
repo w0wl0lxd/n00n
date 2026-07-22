@@ -801,6 +801,7 @@ impl Theme {
         })
     }
 
+    #[allow(clippy::expect_used)]
     fn load_or_bundled() -> Self {
         if let Some(name) = read_theme_name()
             && let Ok(theme) = load_by_name(&name)
