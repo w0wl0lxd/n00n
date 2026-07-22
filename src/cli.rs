@@ -25,6 +25,7 @@ pub enum InputFormat {
 
 #[derive(Parser)]
 #[command(name = "n00n", version, about = "AI coding agent for the terminal")]
+#[allow(clippy::struct_excessive_bools)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -85,7 +86,7 @@ pub struct Cli {
     #[arg(long)]
     pub exit_on_done: bool,
 
-    /// Pre-approve tools (comma-separated). Accepts PascalCase (Claude Code) or snake_case.
+    /// Pre-approve tools (comma-separated). Accepts `PascalCase` (Claude Code) or `snake_case`.
     #[arg(long, value_delimiter = ',', visible_alias = "allowedTools")]
     pub allowed_tools: Vec<String>,
 
