@@ -5,14 +5,25 @@
     clippy::needless_pass_by_value
 )]
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, VecDeque};
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use n00n_agent::tools::{ToolRegistry, ToolSource, timeout_annotation};
+use n00n_agent::template::env_vars;
+use n00n_agent::tools::{
+    DescriptionContext, ToolAudience, ToolFilter, ToolRegistry, ToolSource, timeout_annotation,
+};
 use n00n_config::{AlwaysThinking, PluginsConfig, ToolOutputLines};
 use n00n_lua::{PluginError, PluginHost, WARM_TOOL_CAP};
-use std::path::Path;
+use n00n_providers::provider::{BoxFuture, Provider};
+use n00n_providers::{
+    AgentError, ContentBlock, Message, Model, ProviderEvent, RequestOptions, Role, StopReason,
+    StreamResponse, TokenUsage,
+};
+use n00n_storage::id::SessionRef;
+
+const TOOL_DEFINITIONS_BYTE_BUDGET: usize = 42_000;
 
 fn fresh_registry() -> Arc<ToolRegistry> {
     Arc::new(ToolRegistry::new())
@@ -24,6 +35,32 @@ fn builtins_host() -> (Arc<ToolRegistry>, PluginHost) {
     host.load_builtins(&PluginsConfig::from_plugins(&HashMap::new()))
         .unwrap();
     (reg, host)
+}
+
+#[test]
+fn builtin_main_tool_definitions_stay_within_prompt_budget() {
+    let (registry, _host) = builtins_host();
+    let definitions = registry.definitions(
+        &env_vars(),
+        &DescriptionContext {
+            filter: &ToolFilter::All,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        },
+        true,
+    );
+    let bytes = serde_json::to_vec_pretty(&definitions).unwrap().len() + 1;
+
+    for required in ["task", "team", "workflow", "agent_control"] {
+        assert!(
+            registry.has(required),
+            "required tool disappeared: {required}"
+        );
+    }
+    assert!(
+        bytes <= TOOL_DEFINITIONS_BYTE_BUDGET,
+        "builtin main tool definitions use {bytes} bytes; budget is {TOOL_DEFINITIONS_BYTE_BUDGET}"
+    );
 }
 
 fn exec_tool(reg: &ToolRegistry, name: &str, input: serde_json::Value) -> Result<String, String> {
@@ -362,6 +399,123 @@ fn handler_state_flows_to_tool_output_and_serde() {
     let json = serde_json::to_string(&out).unwrap();
     let parsed: n00n_agent::ToolOutput = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.state(), Some(&expected), "state must survive serde");
+}
+
+#[test]
+fn handler_usage_metadata_flows_to_tool_output_without_private_fields() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "usage_metadata",
+            description = "t",
+            schema = {MINIMAL_SCHEMA},
+            handler = function()
+                return {{
+                    llm_output = "done",
+                    cost = 0.125,
+                    usage = {{
+                        fresh_input_tokens = 5,
+                        cache_read_tokens = 7,
+                        cache_write_tokens = 11,
+                        input_tokens = 23,
+                        output_tokens = 13,
+                        raw_prompt = "PRIVATE_PROMPT",
+                    }},
+                    raw_payload = "PRIVATE_PAYLOAD",
+                    state = {{ restore = "kept" }},
+                }}
+            end
+        }})"#,
+    );
+    host.load_source("usage_metadata_plugin", &src).unwrap();
+
+    let output = exec_tool_output(&reg, "usage_metadata", serde_json::json!({})).unwrap();
+    let expected = serde_json::json!({
+        "cost": 0.125,
+        "usage": {
+            "fresh_input_tokens": 5,
+            "cache_read_tokens": 7,
+            "cache_write_tokens": 11,
+            "input_tokens": 23,
+            "output_tokens": 13,
+        },
+    });
+    assert_eq!(serde_json::to_value(output.telemetry()).unwrap(), expected);
+    assert_eq!(
+        output.state(),
+        Some(&serde_json::json!({ "restore": "kept" })),
+        "telemetry must not replace restore state"
+    );
+
+    let serialized = serde_json::to_string(&output).unwrap();
+    let _: n00n_agent::ToolTelemetry = serde_json::from_value(expected.clone())
+        .unwrap_or_else(|error| panic!("failed to restore telemetry {expected}: {error}"));
+    let restored: n00n_agent::ToolOutput = serde_json::from_str(&serialized)
+        .unwrap_or_else(|error| panic!("failed to restore {serialized}: {error}"));
+    assert_eq!(
+        serde_json::to_value(restored.telemetry()).unwrap(),
+        expected,
+        "telemetry must survive serde"
+    );
+    assert_eq!(
+        restored.state(),
+        Some(&serde_json::json!({ "restore": "kept" }))
+    );
+}
+
+#[test]
+fn image_and_diff_outputs_preserve_first_class_telemetry() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "telemetry_image",
+            description = "t",
+            schema = {MINIMAL_SCHEMA},
+            handler = function()
+                return {{
+                    llm_output = "caption",
+                    image = {{ media_type = "image/png", data = "aGVsbG8=" }},
+                    cost = 0.25,
+                }}
+            end
+        }})
+        n00n.api.register_tool({{
+            name = "telemetry_diff",
+            description = "t",
+            schema = {MINIMAL_SCHEMA},
+            handler = function()
+                return {{
+                    llm_output = "changed",
+                    diff_path = "src/lib.rs",
+                    diff_before = "old",
+                    diff_after = "new",
+                    usage = {{ input_tokens = 9, output_tokens = 3 }},
+                }}
+            end
+        }})"#,
+    );
+    host.load_source("telemetry_variants", &src).unwrap();
+
+    let image = exec_tool_output(&reg, "telemetry_image", serde_json::json!({})).unwrap();
+    assert!(matches!(image, n00n_agent::ToolOutput::Image { .. }));
+    assert_eq!(image.telemetry().and_then(|value| value.cost), Some(0.25));
+
+    let diff = exec_tool_output(&reg, "telemetry_diff", serde_json::json!({})).unwrap();
+    assert!(matches!(diff, n00n_agent::ToolOutput::Diff { .. }));
+    assert_eq!(
+        diff.telemetry()
+            .and_then(|value| value.usage.as_ref())
+            .map(|usage| (usage.input_tokens, usage.output_tokens)),
+        Some((9, 3))
+    );
+
+    for output in [image, diff] {
+        let serialized = serde_json::to_string(&output).unwrap();
+        let restored: n00n_agent::ToolOutput = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(restored.telemetry(), output.telemetry());
+    }
 }
 
 /// Restores `tool` from `src` and returns the snapshot's concatenated text.
@@ -3066,6 +3220,169 @@ fn call_tool_resolves_lua_tool_and_reports_unknown() {
     host.unload("echo_plugin").unwrap();
 }
 
+struct ScriptedSessionProvider {
+    responses: Mutex<VecDeque<Result<StreamResponse, AgentError>>>,
+}
+
+impl ScriptedSessionProvider {
+    fn new(responses: impl IntoIterator<Item = Result<StreamResponse, AgentError>>) -> Self {
+        Self {
+            responses: Mutex::new(responses.into_iter().collect()),
+        }
+    }
+}
+
+impl Provider for ScriptedSessionProvider {
+    fn stream_message<'a>(
+        &'a self,
+        _: &'a Model,
+        _: &'a [Message],
+        _: &'a str,
+        _: &'a serde_json::Value,
+        _: &'a flume::Sender<ProviderEvent>,
+        _: RequestOptions,
+        _: Option<&'a SessionRef>,
+    ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
+        Box::pin(async {
+            self.responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("scripted session provider exhausted")
+        })
+    }
+
+    fn list_models(&self) -> BoxFuture<'_, Result<Vec<n00n_providers::ModelInfo>, AgentError>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+}
+
+fn session_response(
+    content: Vec<ContentBlock>,
+    usage: TokenUsage,
+    stop_reason: StopReason,
+) -> StreamResponse {
+    StreamResponse {
+        message: Message {
+            role: Role::Assistant,
+            content,
+            ..Message::default()
+        },
+        usage,
+        stop_reason: Some(stop_reason),
+    }
+}
+
+fn run_session_usage_probe(provider: ScriptedSessionProvider, fast: bool) -> serde_json::Value {
+    let registry = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&registry)).unwrap();
+    let source = format!(
+        r#"n00n.api.register_tool({{
+            name = "session_usage_probe",
+            description = "test",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                local sess, session_err = n00n.agent.session(ctx, {{ fast = {fast} }})
+                if session_err then return session_err end
+                local result, prompt_err = sess:prompt("measure this")
+                sess:close()
+                local encoded, encode_err = n00n.json.encode({{ result = result, error = prompt_err }})
+                if encode_err then return encode_err end
+                return encoded
+            end
+        }})"#,
+    );
+    host.load_source("session_usage_plugin", &source).unwrap();
+
+    let entry = registry.get("session_usage_probe").unwrap();
+    let invocation = entry.tool.parse(&serde_json::json!({})).unwrap();
+    let (event_tx, event_rx) = flume::unbounded();
+    let event_tx = n00n_agent::EventSender::new(event_tx, 0);
+    let mut ctx = n00n_agent::tools::test_support::stub_ctx_with(
+        &n00n_agent::AgentMode::Build,
+        Some(&event_tx),
+        None,
+    );
+    ctx.provider = Arc::new(provider);
+    ctx.model = Arc::new(Model::from_spec("anthropic/claude-opus-4-8").unwrap());
+    ctx.registry = Arc::clone(&registry);
+
+    let output = smol::block_on(invocation.execute(&ctx))
+        .output
+        .expect("session usage probe failed");
+    drop(event_rx);
+    serde_json::from_str(&output.as_text()).expect("session usage probe returned invalid JSON")
+}
+
+#[test]
+fn session_prompt_returns_current_usage_on_normal_completion() {
+    let usage = TokenUsage {
+        input: 2,
+        output: 7,
+        cache_creation: 5,
+        cache_read: 3,
+    };
+    let output = run_session_usage_probe(
+        ScriptedSessionProvider::new([Ok(session_response(
+            vec![ContentBlock::Text {
+                text: "finished".to_owned(),
+            }],
+            usage,
+            StopReason::EndTurn,
+        ))]),
+        true,
+    );
+
+    assert_eq!(output["error"], serde_json::Value::Null);
+    assert_eq!(output["result"]["text"], "finished");
+    assert_eq!(output["result"]["fresh_input_tokens"], usage.input);
+    assert_eq!(output["result"]["cache_read_tokens"], usage.cache_read);
+    assert_eq!(output["result"]["cache_write_tokens"], usage.cache_creation);
+    assert_eq!(output["result"]["input_tokens"], usage.total_input());
+    assert_eq!(output["result"]["output_tokens"], usage.output);
+    assert_eq!(output["result"]["fast"], true);
+    let model = Model::from_spec("anthropic/claude-opus-4-8").unwrap();
+    assert_eq!(output["result"]["cost"], usage.cost(&model.pricing, true));
+}
+
+#[test]
+fn session_prompt_returns_charged_usage_with_later_error() {
+    let usage = TokenUsage {
+        input: 17,
+        output: 29,
+        cache_creation: 23,
+        cache_read: 19,
+    };
+    let output = run_session_usage_probe(
+        ScriptedSessionProvider::new([
+            Ok(session_response(
+                vec![ContentBlock::ToolUse {
+                    id: "charged-call".to_owned(),
+                    name: "missing_tool".to_owned(),
+                    input: serde_json::json!({}),
+                }],
+                usage,
+                StopReason::ToolUse,
+            )),
+            Err(AgentError::Config {
+                message: "charged failure".to_owned(),
+            }),
+        ]),
+        false,
+    );
+
+    assert_eq!(output["error"], "charged failure");
+    assert_eq!(output["result"]["fresh_input_tokens"], usage.input);
+    assert_eq!(output["result"]["cache_read_tokens"], usage.cache_read);
+    assert_eq!(output["result"]["cache_write_tokens"], usage.cache_creation);
+    assert_eq!(output["result"]["input_tokens"], usage.total_input());
+    assert_eq!(output["result"]["output_tokens"], usage.output);
+    assert_eq!(output["result"]["fast"], false);
+    let model = Model::from_spec("anthropic/claude-opus-4-8").unwrap();
+    assert_eq!(output["result"]["cost"], usage.cost(&model.pricing, false));
+}
+
 #[test]
 fn session_close_idempotent_and_prompt_after_close_errors() {
     let reg = fresh_registry();
@@ -3139,7 +3456,7 @@ fn lua_tool_image_reply_maps_to_image_output() {
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
     load_img_tool(&host);
     let out = exec_tool_output(&reg, "img_probe", serde_json::json!({})).unwrap();
-    let n00n_agent::ToolOutput::Image { source, text } = out else {
+    let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
         panic!("expected Image output, got {out:?}");
     };
     assert_eq!(source.media_type, n00n_agent::ImageMediaType::Png);
@@ -3201,7 +3518,7 @@ fn view_image_tool_returns_image_output() {
         serde_json::json!({"path": path.to_str().unwrap()}),
     )
     .unwrap();
-    let n00n_agent::ToolOutput::Image { source, text } = out else {
+    let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
         panic!("expected Image output, got {out:?}");
     };
     assert_eq!(source.media_type, n00n_agent::ImageMediaType::Png);
@@ -3256,7 +3573,7 @@ fn view_image_downscales_oversized_png_with_honest_caption() {
         serde_json::json!({"path": path.to_str().unwrap()}),
     )
     .unwrap();
-    let n00n_agent::ToolOutput::Image { source, text } = out else {
+    let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
         panic!("expected Image output, got {out:?}");
     };
     assert_eq!(source.media_type, n00n_agent::ImageMediaType::Png);
@@ -3285,7 +3602,7 @@ fn view_image_oversized_gif_reencodes_to_png_first_frame() {
         serde_json::json!({"path": path.to_str().unwrap()}),
     )
     .unwrap();
-    let n00n_agent::ToolOutput::Image { source, text } = out else {
+    let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
         panic!("expected Image output, got {out:?}");
     };
     // gif encoding is unsupported, so downscaling forces png; the caption
@@ -3313,7 +3630,7 @@ fn view_image_small_gif_passes_through_unchanged() {
         serde_json::json!({"path": path.to_str().unwrap()}),
     )
     .unwrap();
-    let n00n_agent::ToolOutput::Image { source, text } = out else {
+    let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
         panic!("expected Image output, got {out:?}");
     };
     assert_eq!(source.media_type, n00n_agent::ImageMediaType::Gif);

@@ -4,6 +4,32 @@
 
 use isahc::AsyncReadResponseExt;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestDeliveryPhase {
+    NotSent,
+    SentAwaitingAcceptance,
+    Accepted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestDeliveryMetadata {
+    pub phase: RequestDeliveryPhase,
+    pub response_id: Option<String>,
+    pub close_code: Option<u16>,
+    pub close_reason: Option<String>,
+}
+
+impl RequestDeliveryMetadata {
+    pub(crate) fn new(phase: RequestDeliveryPhase) -> Self {
+        Self {
+            phase,
+            response_id: None,
+            close_code: None,
+            close_reason: None,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
     #[error("API error ({status}): {message}")]
@@ -26,6 +52,11 @@ pub enum AgentError {
     Cancelled,
     #[error("stream timed out after {secs}s of inactivity")]
     Timeout { secs: u64 },
+    #[error("request may have been accepted before the connection failed: {message}")]
+    RequestSent {
+        message: String,
+        metadata: Option<RequestDeliveryMetadata>,
+    },
 }
 
 impl AgentError {
@@ -42,7 +73,8 @@ impl AgentError {
             | Self::Channel
             | Self::Json(_)
             | Self::Cancelled
-            | Self::HttpRequest(_) => false,
+            | Self::HttpRequest(_)
+            | Self::RequestSent { .. } => false,
         }
     }
 
@@ -80,7 +112,17 @@ impl AgentError {
                     || m.contains("maximum");
                 is_scope && is_overflow
             }
-            _ => false,
+            Self::Api { .. }
+            | Self::Config { .. }
+            | Self::Tool { .. }
+            | Self::Io(_)
+            | Self::Http(_)
+            | Self::HttpRequest(_)
+            | Self::Json(_)
+            | Self::Channel
+            | Self::Cancelled
+            | Self::Timeout { .. }
+            | Self::RequestSent { .. } => false,
         }
     }
 
@@ -113,6 +155,9 @@ impl AgentError {
             Self::Json(_) => "received an invalid response from the API".into(),
             Self::Channel => "internal error, try again".into(),
             Self::Cancelled => "cancelled".into(),
+            Self::RequestSent { .. } => {
+                "connection failed after the request was sent; not retrying to avoid duplicate output or charges".into()
+            }
         }
     }
 

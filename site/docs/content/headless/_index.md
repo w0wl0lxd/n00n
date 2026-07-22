@@ -7,7 +7,7 @@ group = "Reference"
 
 # Headless Mode
 
-Run N00n non-interactively with `--print` / `-p`. Useful for scripts, CI, and automation.
+Run n00n non-interactively with `--print` / `-p`. Useful for scripts, CI, and automation.
 
 ```bash
 n00n "explain this codebase" --print
@@ -37,7 +37,7 @@ Add `--verbose` to include full turn-by-turn messages in the output.
 
 ## Claude Code Compatibility
 
-N00n's `--print` is a drop-in replacement for Claude Code:
+n00n's `--print` is a drop-in replacement for Claude Code:
 
 ```bash
 # Before

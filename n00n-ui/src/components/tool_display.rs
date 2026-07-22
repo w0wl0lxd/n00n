@@ -5,7 +5,7 @@ use super::code_view;
 use crate::animation::{spinner_frame, spinner_str};
 use crate::theme;
 use code_view::RenderLimits;
-use code_view::SectionFlags;
+use code_view::{SectionFlags, TruncationAction};
 use n00n_config::ToolOutputLines;
 
 use std::borrow::Cow;
@@ -112,6 +112,7 @@ pub struct ToolLines {
     pub snapshot_base: Option<usize>,
     pub content_indent: &'static str,
     pub truncation: SectionFlags,
+    pub truncation_actions: Vec<TruncationAction>,
 }
 
 pub struct HighlightRequest {
@@ -222,7 +223,6 @@ pub fn append_right_info(
     }
 }
 
-#[derive(Clone, Copy)]
 enum Indicator {
     InProgress,
     Success,
@@ -322,6 +322,7 @@ struct ToolLineBuilder {
     content_range: (usize, usize),
     width: u16,
     truncation: SectionFlags,
+    truncation_actions: Vec<TruncationAction>,
     limits: RenderLimits,
     markdown: bool,
 }
@@ -337,6 +338,7 @@ impl ToolLineBuilder {
             content_range: (0, 0),
             width,
             truncation: SectionFlags::default(),
+            truncation_actions: Vec::new(),
             limits,
             markdown: false,
         }
@@ -377,7 +379,7 @@ impl ToolLineBuilder {
                 format!(" ({ann})"),
                 theme::current().tool_annotation,
             ));
-            let _ = write!(copy, " ({ann})");
+            write!(copy, " ({ann})").unwrap();
         }
         self.lines.push(Line::from(spans));
         self.search_text = copy;
@@ -390,7 +392,7 @@ impl ToolLineBuilder {
         self.search_text.push_str(text);
     }
 
-    fn prepend_indicator(&mut self, indicator: Indicator, started_at: &Instant) {
+    fn prepend_indicator(&mut self, indicator: Indicator, started_at: Instant) {
         if self.lines.is_empty() {
             return;
         }
@@ -418,6 +420,11 @@ impl ToolLineBuilder {
         self.truncation.script |= content.truncation.script;
         self.truncation.output |= content.truncation.output;
         let start = self.lines.len();
+        self.truncation_actions
+            .extend(content.truncation_actions.into_iter().map(|mut action| {
+                action.line += start;
+                action
+            }));
         for mut line in content.lines {
             line.spans.insert(0, Span::raw(TOOL_BODY_INDENT));
             self.lines.push(line);
@@ -460,7 +467,7 @@ impl ToolLineBuilder {
 
     fn push_markdown_body(&mut self, text: &str) {
         let style = theme::current().assistant;
-        let indent = u16::try_from(TOOL_BODY_INDENT.len()).unwrap_or_else(|_| u16::MAX);
+        let indent = TOOL_BODY_INDENT.len() as u16;
         let md_lines = text_to_lines(
             text,
             "",
@@ -478,6 +485,13 @@ impl ToolLineBuilder {
     fn push_truncation_count(&mut self, skipped: usize) {
         if should_truncate(skipped) {
             self.truncation.output = true;
+            self.truncation_actions.push(TruncationAction {
+                line: self.lines.len(),
+                section: SectionFlags {
+                    script: false,
+                    output: true,
+                },
+            });
             let text = truncation_notice(skipped);
             let mut line = Line::from(Span::styled(text, theme::current().tool_dim));
             line.spans.insert(0, Span::raw(TOOL_BODY_INDENT));
@@ -521,6 +535,7 @@ impl ToolLineBuilder {
             snapshot_base: self.snapshot_base,
             content_indent,
             truncation: self.truncation,
+            truncation_actions: self.truncation_actions,
         }
     }
 }
@@ -619,7 +634,7 @@ pub fn build_tool_lines(
     rctx: &RenderCtx,
     expanded: SectionFlags,
 ) -> ToolLines {
-    let tool_name = msg.role.tool_name().unwrap_or_else(|| "?");
+    let tool_name = msg.role.tool_name().unwrap_or("?");
     let (header, body) = match msg.text.split_once('\n') {
         Some((h, b)) => (h, Some(b)),
         None => (msg.text.as_str(), None),
@@ -633,7 +648,7 @@ pub fn build_tool_lines(
         msg.annotation.as_deref(),
         msg.render_header.as_ref(),
     );
-    b.prepend_indicator(status.into(), &rctx.started_at);
+    b.prepend_indicator(status.into(), rctx.started_at);
     let has_snapshot = msg.render_snapshot.is_some();
     b.push_code_content(
         msg.tool_input.as_deref(),
@@ -693,15 +708,13 @@ pub fn build_tool_lines(
 }
 
 pub fn truncate_to_header(text: &mut String) {
-    let end = text.find('\n').unwrap_or_else(|| text.len());
+    let end = text.find('\n').unwrap_or(text.len());
     text.truncate(end);
 }
 
 pub(crate) fn append_annotation(ann: &mut Option<String>, suffix: &str) {
     match ann {
-        Some(a) => {
-            let _ = write!(a, " · {suffix}");
-        }
+        Some(a) => write!(a, " · {suffix}").unwrap(),
         None => *ann = Some(suffix.to_owned()),
     }
 }
@@ -724,12 +737,21 @@ pub fn build_instructions_lines(
     };
     let mut b = ToolLineBuilder::new(width, exp, code_view::instruction_limit(expanded));
     b.push_header("load", header, annotation.as_deref(), None);
-    b.prepend_indicator(Indicator::Success, &Instant::now());
+    b.prepend_indicator(Indicator::Success, Instant::now());
 
     let start = b.lines.len();
     let has_truncation =
         code_view::render_instructions(blocks, &mut b.lines, b.limits.output, false);
     b.truncation.output |= has_truncation;
+    if has_truncation {
+        b.truncation_actions.push(TruncationAction {
+            line: b.lines.len().saturating_sub(1),
+            section: SectionFlags {
+                script: false,
+                output: true,
+            },
+        });
+    }
     for line in &mut b.lines[start..] {
         line.spans.insert(0, Span::raw(TOOL_BODY_INDENT));
     }
@@ -775,7 +797,6 @@ mod tests {
         }
     }
 
-    #[allow(clippy::unnecessary_wraps)]
     fn code_input() -> Option<ToolInput> {
         Some(ToolInput::Code {
             language: "sh".into(),
@@ -783,7 +804,6 @@ mod tests {
         })
     }
 
-    #[allow(clippy::unnecessary_wraps)]
     fn code_output() -> Option<ToolOutput> {
         Some(ToolOutput::ReadCode {
             path: "test.rs".into(),
@@ -794,7 +814,6 @@ mod tests {
         })
     }
 
-    #[allow(clippy::unnecessary_wraps)]
     fn plain_output() -> Option<ToolOutput> {
         Some(ToolOutput::Plain("ok".into()))
     }
@@ -812,6 +831,7 @@ mod tests {
                 name: BASH_TOOL_NAME.into(),
             })),
             text: text.into(),
+            metadata: None,
             images: Vec::new(),
             tool_input: input.map(Arc::new),
             tool_raw_input: None,
@@ -951,6 +971,7 @@ mod tests {
                 name: TASK_TOOL_NAME.into(),
             })),
             text: "Find auth".into(),
+            metadata: None,
             images: Vec::new(),
             tool_input: None,
             tool_raw_input: None,
@@ -1047,6 +1068,7 @@ mod tests {
                 name: "index".into(),
             })),
             text: format!("src/lib.rs\n{body}"),
+            metadata: None,
             images: Vec::new(),
             tool_input: None,
             tool_raw_input: None,
@@ -1066,10 +1088,7 @@ mod tests {
 
     #[test]
     fn index_output_truncated_at_max_lines() {
-        let mut body = String::new();
-        for i in 0..150 {
-            let _ = writeln!(body, "  line_{i}");
-        }
+        let body: String = (0..150).map(|i| format!("  line_{i}\n")).collect();
         let msg = index_msg(&body);
         let tl = build_tool_lines(
             &msg,
@@ -1091,6 +1110,7 @@ mod tests {
                 name: "index".into(),
             })),
             text: "src/lib.rs\nplain fallback".into(),
+            metadata: None,
             images: Vec::new(),
             tool_input: None,
             tool_raw_input: None,
@@ -1307,40 +1327,40 @@ mod tests {
     #[test_case(None,       None,    "bash",  false ; "none_output_none_body")]
     #[test_case(None,       Some("hello"), "bash", true ; "none_output_with_body")]
     #[test_case(
-        Some(&ToolOutput::Plain("world".into())), None, "bash", true
+        Some(ToolOutput::Plain("world".into())), None, "bash", true
         ; "plain_no_body_uses_plain"
     )]
     #[test_case(
-        Some(&ToolOutput::Plain("world".into())), Some("override"), "bash", true
+        Some(ToolOutput::Plain("world".into())), Some("override"), "bash", true
         ; "body_takes_priority_over_plain"
     )]
     #[test_case(
-        Some(&ToolOutput::Plain(String::new().into())), None, "bash", false
+        Some(ToolOutput::Plain(String::new().into())), None, "bash", false
         ; "empty_plain_resolves_to_none"
     )]
     #[test_case(
-        Some(&ToolOutput::Batch { text: "legacy batch text".into() }),
+        Some(ToolOutput::Batch { text: "legacy batch text".into() }),
         None, "batch", true
         ; "legacy_batch_falls_back_to_text"
     )]
     #[test_case(
-        Some(&ToolOutput::ReadDir(TextOutput { text: "dir listing".into(), instructions: None, state: None })),
+        Some(ToolOutput::ReadDir(TextOutput { text: "dir listing".into(), instructions: None, state: None, telemetry: None })),
         None, "read", true
         ; "readdir_uses_text_field"
     )]
     #[test_case(
-        Some(&ToolOutput::ReadCode { path: "a.rs".into(), start_line: 1, lines: vec![], total_lines: 0, instructions: None }),
+        Some(ToolOutput::ReadCode { path: "a.rs".into(), start_line: 1, lines: vec![], total_lines: 0, instructions: None }),
         None, "read", false
         ; "structured_output_resolves_to_none"
     )]
     fn resolve_output_text_presence(
-        output: Option<&ToolOutput>,
+        output: Option<ToolOutput>,
         body: Option<&str>,
         tool: &str,
         expect_text: bool,
     ) {
         let limits = RenderLimits::new(SectionFlags::default(), TOL.get(tool));
-        let resolved = resolve_output(output, body, None, 0, limits);
+        let resolved = resolve_output(output.as_ref(), body, None, 0, limits);
         assert_eq!(resolved.text.is_some(), expect_text);
     }
 
@@ -1384,6 +1404,7 @@ mod tests {
                 name: BASH_TOOL_NAME.into(),
             })),
             text,
+            metadata: None,
             images: Vec::new(),
             tool_input: None,
             tool_raw_input: None,
@@ -1480,6 +1501,7 @@ mod tests {
                 name: READ_TOOL_NAME.into(),
             })),
             text: "read /src/main.rs".into(),
+            metadata: None,
             images: Vec::new(),
             tool_input: None,
             tool_raw_input: None,
@@ -1513,6 +1535,35 @@ mod tests {
         assert_eq!(tl.truncation.any(), expect_truncation);
         let text = lines_text(&tl);
         assert_eq!(text.contains("inst 29"), expect_all_visible);
+    }
+
+    #[test]
+    fn exact_boundary_instruction_action_targets_notice_row() {
+        let blocks = vec![
+            InstructionBlock {
+                path: "first.md".into(),
+                content: (0..14)
+                    .map(|index| format!("first {index}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            },
+            InstructionBlock {
+                path: "second.md".into(),
+                content: "second 0\nsecond 1".into(),
+            },
+        ];
+
+        let tl = build_instructions_lines(&blocks, 80, false);
+
+        assert_eq!(tl.truncation_actions.len(), 1);
+        let action_line = tl.truncation_actions[0].line;
+        assert!(
+            tl.lines[action_line]
+                .spans
+                .iter()
+                .any(|span| span.content.contains(crate::markdown::TRUNCATION_PREFIX)),
+            "instruction action must be attached to its notice row"
+        );
     }
 
     #[test]
@@ -1597,6 +1648,7 @@ mod tests {
                 name: "index".into(),
             })),
             text: "src/lib.rs\nbody_text_here".into(),
+            metadata: None,
             images: Vec::new(),
             tool_input: None,
             tool_raw_input: None,
@@ -1637,6 +1689,7 @@ mod tests {
                 name: "index".into(),
             })),
             text: "header\nbody_fallback".into(),
+            metadata: None,
             images: Vec::new(),
             tool_input: None,
             tool_raw_input: None,
@@ -1667,7 +1720,6 @@ mod tests {
     #[test]
     fn resolve_span_style_inline_all_modifiers() {
         use n00n_agent::types::InlineStyle;
-        use ratatui::style::Modifier;
         let style = SpanStyle::Inline(InlineStyle {
             fg: Some((10, 20, 30)),
             bg: Some((40, 50, 60)),
@@ -1681,6 +1733,7 @@ mod tests {
         let resolved = resolve_span_style(&style);
         assert_eq!(resolved.fg, Some(Color::Rgb(10, 20, 30)));
         assert_eq!(resolved.bg, Some(Color::Rgb(40, 50, 60)));
+        use ratatui::style::Modifier;
         assert!(resolved.add_modifier.contains(Modifier::BOLD));
         assert!(resolved.add_modifier.contains(Modifier::ITALIC));
         assert!(resolved.add_modifier.contains(Modifier::UNDERLINED));

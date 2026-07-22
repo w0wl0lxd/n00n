@@ -241,22 +241,36 @@ case("workflow_run_id_allowlist_rejects_path_segments", function()
 end)
 
 case("workflow_parallel_concurrency_is_clamped_and_type_safe", function()
-  local max_concurrent = 8
+  local hard_max = 8
+  local configured = math.min(4, hard_max)
   local function clamp(requested)
     if type(requested) ~= "number" then
-      return max_concurrent
+      return configured
     end
-    return math.max(1, math.min(requested, max_concurrent))
+    return math.max(1, math.min(requested, configured))
   end
-  eq(clamp(nil), 8)
-  eq(clamp("two"), 8)
+  eq(configured, 4)
+  eq(math.min(100, hard_max), 8)
+  eq(clamp(nil), 4)
+  eq(clamp("two"), 4)
   eq(clamp(0), 1)
   eq(clamp(3), 3)
-  eq(clamp(100), 8)
+  eq(clamp(100), 4)
+end)
+
+case("workflow_agent_budget_has_default_and_hard_ceiling", function()
+  local default_budget = 24
+  local hard_max = 32
+  local function configured(value)
+    return math.min(value or default_budget, hard_max)
+  end
+  eq(configured(nil), 24)
+  eq(configured(12), 12)
+  eq(configured(1000), 32)
 end)
 
 case("workflow_agent_label_truncation_preserves_utf8", function()
-  local truncated = n00n.ui.truncate_text(string.rep("é", 40), 40)
+  local truncated = n00n.ui.truncate_text(string.rep("é", 41), 40)
   assert(utf8.len(truncated.head), "label truncation must not split UTF-8")
   assert(truncated.tail ~= "", "long labels must report a tail")
 end)

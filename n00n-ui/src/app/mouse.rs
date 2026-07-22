@@ -22,7 +22,7 @@ pub(crate) struct ScrollbarDrag {
 
 impl App {
     pub(super) fn handle_mouse(&mut self, event: MouseEvent) {
-        if self.handle_scrollbar_mouse(event) {
+        if self.handle_scrollbar_mouse(&event) {
             return;
         }
         match event.kind {
@@ -84,17 +84,6 @@ impl App {
                             {
                                 self.copy_text(&text, format!("Copied {label}"));
                             } else {
-                                let session = self.chats[render_chat]
-                                    .tool_id_at(event.row, area)
-                                    .and_then(|id| {
-                                        self.chats.iter().position(|chat| {
-                                            chat.tool_use_id.as_deref() == Some(id)
-                                        })
-                                    });
-                                if let Some(idx) = session {
-                                    self.active_chat = idx;
-                                    return;
-                                }
                                 self.chats[render_chat].handle_click(event.row, area);
                             }
                         }
@@ -107,7 +96,7 @@ impl App {
         }
     }
 
-    fn handle_scrollbar_mouse(&mut self, event: MouseEvent) -> bool {
+    fn handle_scrollbar_mouse(&mut self, event: &MouseEvent) -> bool {
         if !scrollbar::is_enabled() {
             return false;
         }
@@ -171,9 +160,7 @@ impl App {
                 };
                 let row_rel = i32::from(event.row.saturating_sub(track_y_start));
                 let max_thumb_start = (i32::from(viewport_height) - i32::from(thumb_len)).max(0);
-                let new_thumb_start =
-                    u16::try_from((row_rel - grab_offset).clamp(0, max_thumb_start))
-                        .unwrap_or_else(|_| u16::MAX);
+                let new_thumb_start = (row_rel - grab_offset).clamp(0, max_thumb_start) as u16;
                 let position = scrollbar::position_for_thumb_row(
                     content_len,
                     viewport_height,
@@ -187,6 +174,7 @@ impl App {
                 self.scrollbar_drag = None;
                 true
             }
+            MouseEventKind::Up(MouseButton::Left) => false,
             _ => false,
         }
     }
@@ -323,7 +311,7 @@ impl App {
                     raw_text: &copy_text,
                     line_breaks,
                 }];
-                selection::extract_selected_text(buf, screen_sel, &regions)
+                selection::extract_selected_text(buf, &screen_sel, &regions)
             }
             SelectionZone::Overlay => {
                 let scroll = self.scroll_offset(sel.zone);
@@ -335,7 +323,7 @@ impl App {
                     area: sel.area,
                     ..Default::default()
                 }];
-                selection::extract_selected_text(buf, screen_sel, &regions)
+                selection::extract_selected_text(buf, &screen_sel, &regions)
             }
         };
 
@@ -379,9 +367,10 @@ impl App {
     pub(super) fn msg_area(&self) -> Rect {
         self.zones
             .find(SelectionZone::Messages)
-            .map_or_else(Default::default, |z| {
+            .map(|z| {
                 let a = z.area;
                 Rect::new(a.x, a.y, a.width.saturating_sub(1), a.height)
             })
+            .unwrap_or_default()
     }
 }

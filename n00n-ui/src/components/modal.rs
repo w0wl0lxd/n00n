@@ -15,9 +15,7 @@ pub struct Modal<'a> {
 
 impl Modal<'_> {
     pub fn render(&self, frame: &mut Frame, area: Rect, content_height: u16) -> (Rect, Rect) {
-        let max_h =
-            u16::try_from(u32::from(area.height) * u32::from(self.max_height_percent) / 100)
-                .unwrap_or_else(|_| u16::MAX);
+        let max_h = (u32::from(area.height) * u32::from(self.max_height_percent) / 100) as u16;
         let total_h = (content_height + CHROME_LINES)
             .min(max_h)
             .max(CHROME_LINES + 1);

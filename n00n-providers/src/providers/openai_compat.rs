@@ -19,6 +19,17 @@ const STREAM_DONE: &str = "[DONE]";
 const GPT_5_6_BREAKPOINT_PREFIX: &str = "gpt-5.6-";
 const GPT_CODEX_MARKER: &str = "-codex";
 
+fn suppress_retry_after_response(error: AgentError) -> AgentError {
+    if error.is_retryable() {
+        AgentError::RequestSent {
+            message: error.to_string(),
+            metadata: None,
+        }
+    } else {
+        error
+    }
+}
+
 fn value_hash(value: &Value) -> u64 {
     /// Writes bytes directly into the underlying `Hasher`, avoiding the
     /// intermediate string allocations of the recursive implementation.
@@ -255,6 +266,7 @@ impl OpenAiCompatProvider {
                 self.stream_timeout,
             )
             .await
+            .map_err(suppress_retry_after_response)
         } else {
             Err(AgentError::from_response(response).await)
         }
@@ -786,6 +798,19 @@ mod tests {
     use futures_lite::io::Cursor;
 
     const TEST_STREAM_TIMEOUT: Duration = Duration::from_mins(5);
+
+    #[test]
+    fn post_response_transport_error_is_not_retried() {
+        let error = AgentError::Io(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "stream ended",
+        ));
+
+        assert!(matches!(
+            suppress_retry_after_response(error),
+            AgentError::RequestSent { .. }
+        ));
+    }
 
     #[test]
     fn parse_sse_text_and_usage() {

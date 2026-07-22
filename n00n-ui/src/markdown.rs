@@ -129,7 +129,7 @@ pub fn truncation_notice(count: usize) -> String {
         should_truncate(count),
         "truncation_notice called with count={count} below threshold"
     );
-    format!("{TRUNCATION_PREFIX} ({count} lines) click to expand")
+    format!("› {TRUNCATION_PREFIX} ({count} lines) click to expand")
 }
 
 pub struct Truncated<'a> {

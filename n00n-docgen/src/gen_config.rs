@@ -9,36 +9,36 @@ use n00n_config::{
 };
 use n00n_lua::{PluginHost, PluginOptionSpecs};
 
-type GenResult<T> = Result<T, String>;
-
 fn write_table_with_min(out: &mut String, fields: &[ConfigField]) {
-    let _ = writeln!(out, "| Field | Type | Default | Min | Description |");
-    let _ = writeln!(out, "|-------|------|---------|-----|-------------|");
+    writeln!(out, "| Field | Type | Default | Min | Description |").unwrap();
+    writeln!(out, "|-------|------|---------|-----|-------------|").unwrap();
     for f in fields {
         let default = f.default.format_default();
-        let min = f.min.map_or_else(|| "-".to_string(), |v| v.to_string());
-        let _ = writeln!(
+        let min = f.min.map_or("-".to_string(), |v| v.to_string());
+        writeln!(
             out,
             "| `{name}` | {ty} | `{default}` | {min} | {desc} |",
             name = f.name,
             ty = escape_pipes(f.ty),
             desc = f.description,
-        );
+        )
+        .unwrap();
     }
 }
 
 fn write_table_no_min(out: &mut String, fields: &[ConfigField]) {
-    let _ = writeln!(out, "| Field | Type | Default | Description |");
-    let _ = writeln!(out, "|-------|------|---------|-------------|");
+    writeln!(out, "| Field | Type | Default | Description |").unwrap();
+    writeln!(out, "|-------|------|---------|-------------|").unwrap();
     for f in fields {
         let default = f.default.format_default();
-        let _ = writeln!(
+        writeln!(
             out,
             "| `{name}` | {ty} | `{default}` | {desc} |",
             name = f.name,
             ty = escape_pipes(f.ty),
             desc = f.description,
-        );
+        )
+        .unwrap();
     }
 }
 
@@ -59,70 +59,70 @@ fn lua_section_name(heading: &str) -> String {
 
 fn write_section(out: &mut String, heading: &str, fields: &[ConfigField]) {
     let lua_name = lua_section_name(heading);
-    let _ = writeln!(out, "### `{lua_name}`\n");
+    writeln!(out, "### `{lua_name}`\n").unwrap();
     if has_any_min(fields) {
         write_table_with_min(out, fields);
     } else {
         write_table_no_min(out, fields);
     }
-    let _ = writeln!(out);
+    writeln!(out).unwrap();
 }
 
 fn write_plugin_options(out: &mut String, specs: &PluginOptionSpecs) {
     for (plugin, options) in specs {
-        let _ = writeln!(out, "### `plugins.{plugin}`\n");
-        let _ = writeln!(out, "| Field | Type | Default | Min | Description |");
-        let _ = writeln!(out, "|-------|------|---------|-----|-------------|");
+        writeln!(out, "### `plugins.{plugin}`\n").unwrap();
+        writeln!(out, "| Field | Type | Default | Min | Description |").unwrap();
+        writeln!(out, "|-------|------|---------|-----|-------------|").unwrap();
         for o in options {
             let default = o
                 .default
                 .as_ref()
-                .map_or_else(|| "-".to_string(), |d| format!("`{d}`"));
-            let min = o.min.map_or_else(|| "-".to_string(), |m| m.to_string());
-            let _ = writeln!(
+                .map_or("-".to_string(), |d| format!("`{d}`"));
+            let min = o.min.map_or("-".to_string(), |m| m.to_string());
+            writeln!(
                 out,
                 "| `{name}` | {ty} | {default} | {min} | {desc} |",
                 name = o.name,
                 ty = o.ty,
                 desc = o.desc,
-            );
+            )
+            .unwrap();
         }
-        let _ = writeln!(out);
+        writeln!(out).unwrap();
     }
 }
 
-fn collect_plugin_options() -> GenResult<PluginOptionSpecs> {
-    let host = PluginHost::with_all_builtins(Arc::new(ToolRegistry::new()))
-        .map_err(|e| format!("failed to load builtins: {e}"))?;
-    let specs = host
-        .plugin_options()
-        .map_err(|e| format!("failed to collect plugin options: {e}"))?;
-    if specs.is_empty() {
-        return Err("no plugin declared options; the plugins reference would be empty".to_string());
-    }
-    Ok(specs)
+fn collect_plugin_options() -> PluginOptionSpecs {
+    let host =
+        PluginHost::with_all_builtins(Arc::new(ToolRegistry::new())).expect("loading builtins");
+    let specs = host.plugin_options().expect("collecting plugin options");
+    assert!(
+        !specs.is_empty(),
+        "no plugin declared options; the plugins reference would be empty"
+    );
+    specs
 }
 
 fn write_tool_output_section(out: &mut String) {
-    let _ = writeln!(out, "### `ui.tool_output_lines`\n");
-    let _ = writeln!(
+    writeln!(out, "### `ui.tool_output_lines`\n").unwrap();
+    writeln!(
         out,
         "How many lines of output to show per tool in the UI. \
          All values are `usize` with a minimum of {MIN_TOOL_OUTPUT_LINES}.\n"
-    );
-    let _ = writeln!(out, "| Field | Default |");
-    let _ = writeln!(out, "|-------|---------|");
+    )
+    .unwrap();
+    writeln!(out, "| Field | Default |").unwrap();
+    writeln!(out, "|-------|---------|").unwrap();
     for (name, default) in ToolOutputLines::FIELD_DEFAULTS {
-        let _ = writeln!(out, "| `{name}` | {default} |");
+        writeln!(out, "| `{name}` | {default} |").unwrap();
     }
-    let _ = writeln!(out);
+    writeln!(out).unwrap();
 }
 
-#[allow(clippy::too_many_lines)]
-pub fn generate() -> GenResult<String> {
+pub fn generate() -> String {
     let mut out = String::with_capacity(4096);
 
-    let _ = writeln!(
+    writeln!(
         out,
         "\
 +++
@@ -182,11 +182,12 @@ All fields are optional. Typos in field names cause an error right away.
         tol_read = ToolOutputLines::DEFAULT.read + 2,
         max_output_lines = DEFAULT_MAX_OUTPUT_LINES + 1000,
         max_log_files = DEFAULT_MAX_LOG_FILES / 2,
-    );
+    )
+    .unwrap();
 
-    let _ = writeln!(out, "### Top-level\n");
+    writeln!(out, "### Top-level\n").unwrap();
     write_table_no_min(&mut out, TOP_LEVEL_FIELDS);
-    let _ = writeln!(out);
+    writeln!(out).unwrap();
 
     write_section(&mut out, "[ui]", UiConfig::FIELDS);
     write_tool_output_section(&mut out);
@@ -194,8 +195,8 @@ All fields are optional. Typos in field names cause an error right away.
     write_section(&mut out, "[provider]", ProviderConfig::FIELDS);
     write_section(&mut out, "[storage]", StorageConfig::FIELDS);
 
-    let _ = writeln!(out, "## Plugins\n");
-    let _ = writeln!(
+    writeln!(out, "## Plugins\n").unwrap();
+    writeln!(
         out,
         "The `plugins` table turns plugins on or off and passes options to \
          them. All bundled plugins are on by default. Set \
@@ -206,9 +207,10 @@ All fields are optional. Typos in field names cause an error right away.
          The edit plugin's extra tools are options too: \
          `plugins.edit = {{ multiedit = false, edit_lines = true }}`. \
          The old `tools` table is gone. If your config still uses it, \
-         N00n stops at startup and shows you the new form.\n"
-    );
-    let _ = writeln!(
+         n00n stops at startup and shows you the new form.\n"
+    )
+    .unwrap();
+    writeln!(
         out,
         "\
 ```lua
@@ -219,31 +221,32 @@ n00n.setup({{
     }},
 }})
 ```\n"
-    );
+    )
+    .unwrap();
 
-    let specs = collect_plugin_options()?;
-    write_plugin_options(&mut out, &specs);
+    write_plugin_options(&mut out, &collect_plugin_options());
 
-    let _ = writeln!(out, "## Validation\n");
-    let _ = writeln!(
+    writeln!(out, "## Validation\n").unwrap();
+    writeln!(
         out,
-        "If a value is below its minimum, N00n shows a `ConfigError` with the field name, \
+        "If a value is below its minimum, n00n shows a `ConfigError` with the field name, \
          value, and minimum."
-    );
+    )
+    .unwrap();
 
-    let _ = writeln!(
+    writeln!(
         out,
         "
 ## Directory layout
 
-N00n uses XDG directories on Linux and macOS:
+n00n uses XDG directories on Linux and macOS:
 
-|| Purpose | Path |
-||---------|------|
-|| Config | `~/.config/n00n/` (init.lua, permissions.toml, mcp.toml) |
-|| Data | `~/.local/share/n00n/` |
-|| Logs | `~/.local/logs/n00n/` |
-|| State | `~/.local/state/n00n/` |
+| Purpose | Path |
+|---------|------|
+| Config | `~/.config/n00n/` (init.lua, permissions.toml, mcp.toml) |
+| Data | `~/.local/share/n00n/` |
+| Logs | `~/.local/logs/n00n/` |
+| State | `~/.local/state/n00n/` |
 
 ## Personal Instructions
 
@@ -253,7 +256,8 @@ On top of `AGENTS.md`, you can add your own instructions in two places:
 - `~/.config/n00n/AGENTS.md` for preferences that apply to all projects
 
 Both are added to the system prompt at the start of every session."
-    );
+    )
+    .unwrap();
 
-    Ok(out)
+    out
 }

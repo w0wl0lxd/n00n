@@ -20,7 +20,7 @@ pub const GENERAL_PROMPT: &str = include_str!("prompts/general.md");
 pub const COMPACTION_SYSTEM: &str = include_str!("prompts/compaction.md");
 pub const COMPACTION_USER: &str = include_str!("prompts/compaction_user.md");
 
-pub const DEFAULT_IDENTITY: &str = r"You are N00n, an interactive CLI coding agent. Use the tools available to assist the user with software engineering tasks. Complete tasks successfully while minimizing token usage and tool calls to avoid context bloat.
+pub const DEFAULT_IDENTITY: &str = r"You are n00n, an interactive CLI coding agent. Use the tools available to assist the user with software engineering tasks. Complete tasks successfully while minimizing token usage and tool calls to avoid context bloat.
 
 You must NEVER generate or guess URLs unless they are for helping the user with programming.";
 
@@ -250,7 +250,7 @@ mod tests {
     #[test]
     fn empty_slots_emit_template_and_native_efficient_line() {
         let out = assemble(PromptId::System, &ResolvedSlots::default(), "");
-        assert!(out.starts_with("You are N00n"));
+        assert!(out.starts_with("You are n00n"));
         assert!(
             !out.contains("{{"),
             "unfilled marker left in output:\n{out}"
@@ -396,7 +396,7 @@ mod tests {
     #[test]
     fn singleton_default_used_when_empty() {
         let out = assemble(PromptId::System, &ResolvedSlots::default(), "");
-        assert!(out.starts_with("You are N00n"));
+        assert!(out.starts_with("You are n00n"));
     }
 
     #[test]
@@ -412,7 +412,7 @@ mod tests {
         );
         let out = assemble(PromptId::System, &s, "");
         assert!(out.contains("Custom identity"));
-        assert!(!out.contains("You are N00n"));
+        assert!(!out.contains("You are n00n"));
     }
 
     #[test]
@@ -437,7 +437,7 @@ mod tests {
         let out = assemble(PromptId::System, &s, "");
         assert!(out.contains("SECOND"));
         assert!(!out.contains("FIRST"));
-        assert!(!out.contains("You are N00n"));
+        assert!(!out.contains("You are n00n"));
     }
 
     #[test]

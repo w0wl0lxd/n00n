@@ -22,7 +22,7 @@ const EXAMPLE: &str = include_str!("../../plugins/glob/init.lua");
 
 const GUIDE: &str = r#"# Writing n00n plugins
 
-N00n plugins are plain Lua files (Luau) that run inside n00n. A plugin can
+n00n plugins are plain Lua files (Luau) that run inside n00n. A plugin can
 register tools the LLM calls, slash commands, keymaps, prompt hints, and
 custom UI. Everything lives under the global `n00n` table. An index of the
 full API reference is at the end of this document.
@@ -63,7 +63,7 @@ restore hooks, error handling, LLM output truncation, collapsible UI view:
 
 const HEADER: &str = r#"# Lua API
 
-N00n plugins are plain Lua files. Everything a plugin can touch lives under
+n00n plugins are plain Lua files. Everything a plugin can touch lives under
 one global table: `n00n`. This reference documents every module, function,
 and method. It is generated straight from the source code by `n00n-docgen`.
 

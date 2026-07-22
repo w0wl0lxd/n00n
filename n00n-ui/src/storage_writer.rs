@@ -23,6 +23,8 @@ type Pending = Arc<Mutex<HashMap<N00nId, Box<AppSession>>>>;
 
 type DeleteCallback = Box<dyn FnOnce(Result<(), SessionError>) + Send>;
 
+const RETRY_DELAY: Duration = Duration::from_secs(1);
+
 enum Op {
     Flush,
     Delete { id: N00nId, done: DeleteCallback },
@@ -45,9 +47,20 @@ impl StorageWriter {
             .name("storage-writer".into())
             .spawn(move || {
                 let mut logs: HashMap<N00nId, SessionLog> = HashMap::new();
-                while let Ok(op) = ops_rx.recv() {
+                let mut retry_pending = false;
+                loop {
+                    let op = if retry_pending {
+                        match ops_rx.recv_timeout(RETRY_DELAY) {
+                            Ok(op) => Some(op),
+                            Err(flume::RecvTimeoutError::Timeout) => Some(Op::Flush),
+                            Err(flume::RecvTimeoutError::Disconnected) => None,
+                        }
+                    } else {
+                        ops_rx.recv().ok()
+                    };
+                    let Some(op) = op else { break };
                     match op {
-                        Op::Flush => flush(&writer_pending, &mut logs, &dir),
+                        Op::Flush => retry_pending = flush(&writer_pending, &mut logs, &dir),
                         Op::Delete { id, done } => {
                             lock(&writer_pending).remove(&id);
                             logs.remove(&id);
@@ -107,21 +120,26 @@ fn writer_gone() -> SessionError {
     n00n_storage::StorageError::Io(io::Error::other("storage writer unavailable")).into()
 }
 
-fn flush(pending: &Pending, logs: &mut HashMap<N00nId, SessionLog>, dir: &StateDir) {
+fn flush(pending: &Pending, logs: &mut HashMap<N00nId, SessionLog>, dir: &StateDir) -> bool {
     let batch = mem::take(&mut *lock(pending));
     if batch.is_empty() {
-        return;
+        return false;
     }
     let sessions_dir = match dir.ensure_subdir(SESSIONS_DIR) {
         Ok(d) => d,
         Err(e) => {
             warn!(error = %e, "failed to ensure sessions dir");
-            return;
+            let mut pending = lock(pending);
+            for (id, session) in batch {
+                pending.entry(id).or_insert(session);
+            }
+            return true;
         }
     };
     for session in batch.into_values() {
         write_session(&sessions_dir, logs, &session);
     }
+    false
 }
 
 fn write_session(

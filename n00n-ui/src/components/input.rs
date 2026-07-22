@@ -185,8 +185,7 @@ impl InputBox {
     }
 
     pub fn set_max_input_lines(&mut self, max: u32) {
-        self.max_input_lines =
-            u16::try_from(max.clamp(1, u32::from(u16::MAX) - 2)).unwrap_or_else(|_| u16::MAX);
+        self.max_input_lines = max.clamp(1, u32::from(u16::MAX) - 2) as u16;
     }
 
     pub fn copy_text(&self) -> String {
@@ -204,9 +203,12 @@ impl InputBox {
 
     pub fn line_breaks(&self, content_width: u16) -> LineBreaks {
         let ew = effective_width(content_width.saturating_sub(2) as usize);
-        LineBreaks::from_heights(self.buffer.lines().iter().map(|line| {
-            u16::try_from(visual_line_count(line.width(), ew)).unwrap_or_else(|_| u16::MAX)
-        }))
+        LineBreaks::from_heights(
+            self.buffer
+                .lines()
+                .iter()
+                .map(|line| visual_line_count(line.width(), ew) as u16),
+        )
     }
 
     pub fn height(&self, width: u16) -> u16 {
@@ -216,7 +218,7 @@ impl InputBox {
             visual_lines += 1;
         }
         let capped = visual_lines.min(self.max_input_lines as usize);
-        u16::try_from(capped + 2).unwrap_or_else(|_| u16::MAX)
+        (capped + 2) as u16
     }
 
     pub fn is_at_first_line(&self) -> bool {
@@ -304,10 +306,8 @@ impl InputBox {
             Some(i) => i - 1,
         };
         self.history_index = Some(new_index);
-        let Some(entry) = self.history.get(new_index) else {
-            return;
-        };
-        self.set_input(entry.to_string());
+        let entry = self.history.get(new_index).unwrap().to_string();
+        self.set_input(entry);
         self.buffer.move_to_end();
     }
 
@@ -317,10 +317,8 @@ impl InputBox {
         };
         if i + 1 < self.history.len() {
             self.history_index = Some(i + 1);
-            let Some(entry) = self.history.get(i + 1) else {
-                return;
-            };
-            self.set_input(entry.to_string());
+            let entry = self.history.get(i + 1).unwrap().to_string();
+            self.set_input(entry);
         } else {
             self.history_index = None;
             let draft = mem::take(&mut self.draft);
@@ -334,9 +332,7 @@ impl InputBox {
             .lines()
             .iter()
             .take(self.buffer.y())
-            .map(|line| {
-                u16::try_from(visual_line_count(line.width(), ew)).unwrap_or_else(|_| u16::MAX)
-            })
+            .map(|line| visual_line_count(line.width(), ew) as u16)
             .sum();
 
         let wrap_row = {
@@ -344,16 +340,14 @@ impl InputBox {
             let cursor_col: usize = line
                 .chars()
                 .take(self.buffer.x())
-                .map(|c| c.width().unwrap_or_else(|| 1))
+                .map(|c| c.width().unwrap_or(1))
                 .sum();
-            u16::try_from(cursor_col.checked_div(ew).unwrap_or_else(|| 0))
-                .unwrap_or_else(|_| u16::MAX)
+            cursor_col.checked_div(ew).unwrap_or(0) as u16
         };
 
         lines_above + wrap_row
     }
 
-    #[allow(clippy::too_many_lines)]
     pub fn view(
         &mut self,
         frame: &mut Frame,
@@ -375,8 +369,7 @@ impl InputBox {
             }
         }
 
-        let mut total_vl = u16::try_from(total_visual_lines(&self.buffer, ew, focused))
-            .unwrap_or_else(|_| u16::MAX);
+        let mut total_vl = total_visual_lines(&self.buffer, ew, focused) as u16;
         if !self.pending_images.is_empty() {
             total_vl += 1;
         }
@@ -519,10 +512,7 @@ fn wrap_line(
     shell_spans: Option<&[Span<'static>]>,
 ) -> Vec<Line<'static>> {
     let chars: Vec<char> = line.chars().collect();
-    let widths: Vec<usize> = chars
-        .iter()
-        .map(|c| c.width().unwrap_or_else(|| 1))
-        .collect();
+    let widths: Vec<usize> = chars.iter().map(|c| c.width().unwrap_or(1)).collect();
     let row_width = ew.max(1);
 
     let mut row_ranges: Vec<(usize, usize)> = Vec::new();

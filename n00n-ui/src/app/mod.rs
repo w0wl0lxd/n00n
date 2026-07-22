@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use crate::AppSession;
 use crate::chat::Chat;
-use crate::chat::{CANCELLED_TEXT, ChatEventResult, DONE_TEXT, ERROR_TEXT};
+use crate::chat::{CANCELLED_TEXT, ChatEventResult, DONE_TEXT, ERROR_TEXT, transcript_to_display};
 use crate::clipboard::ClipboardState;
 use crate::components::btw_modal::BtwModal;
 use crate::components::command::{CommandAction, CommandPalette, ParsedCommand};
@@ -1222,6 +1222,28 @@ impl App {
             Some(ref subagent) => self.resolve_or_create_chat(subagent),
             None => 0,
         };
+
+        if matches!(envelope.event, AgentEvent::CompactionDone) && chat_idx == 0 {
+            self.chats[chat_idx].flush();
+            if let Some(shared_transcript) = &self.shared_transcript {
+                let transcript = shared_transcript.load();
+                let tool_outputs = self.shared_tool_outputs.as_ref().map_or_else(
+                    || self.state.session.tool_outputs.clone(),
+                    |outputs| {
+                        outputs
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .clone()
+                    },
+                );
+                let (display, _) = transcript_to_display(
+                    &transcript,
+                    &tool_outputs,
+                    &self.ui_config.tool_output_lines,
+                );
+                self.chats[chat_idx].load_messages(display);
+            }
+        }
 
         if let AgentEvent::ToolStart(ref e) = envelope.event {
             self.fire_session_autocmd(
