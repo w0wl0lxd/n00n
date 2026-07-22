@@ -20,11 +20,17 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use zstd::stream::{Decoder, Encoder};
 
-use crate::{StateDir, StorageError, atomic_write, atomic_write_permissions, now_epoch};
+use crate::{
+    StateDir, StorageError, atomic_write, atomic_write_permissions, atomic_write_streaming,
+    now_epoch,
+};
 
 const SESSION_VERSION: u32 = 1;
 const LOG_FORMAT_VERSION: u32 = 3;
 const COMPRESS_LEVEL: i32 = 3;
+const FRAME_READ_CHUNK_BYTES: usize = 1024 * 1024;
+const MAX_INCREMENTAL_FRAMES: u64 = 16_384;
+const TRANSCRIPT_RECORD_TYPE: &str = "transcript";
 pub const SESSIONS_DIR: &str = "sessions";
 const CWD_INDEX_FILE: &str = "cwd_latest.json";
 const SCAN_CACHE_FILE: &str = "scan_cache_v2.json";
@@ -412,13 +418,15 @@ enum LogRecord<M, U, T> {
     Out { id: String, d: T },
     #[serde(rename = "sub_msg")]
     SubMsg { sub: String, d: M },
+    #[serde(rename = "transcript")]
+    Transcript { d: TranscriptEntry<M> },
     #[serde(rename = "meta")]
     Meta {
         title: String,
         token_usage: U,
         updated_at: u64,
-        #[serde(default)]
-        transcript: Vec<TranscriptEntry<M>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transcript: Option<Vec<TranscriptEntry<M>>>,
         #[serde(flatten)]
         meta: SessionMeta,
     },
@@ -431,8 +439,10 @@ pub struct SessionLog {
     dir: PathBuf,
     file: File,
     saved_messages: MessageCursor,
+    saved_transcript: MessageCursor,
     saved_tool_ids: HashSet<String>,
     saved_sub_msg_counts: HashMap<String, usize>,
+    appended_frames: u64,
     /// Serialized trailing meta record; lets `append` persist meta-only
     /// changes (title, draft, `updated_at`) instead of dropping them.
     saved_meta: Vec<u8>,
@@ -465,6 +475,12 @@ fn sub_msg_snapshot<M>(map: &HashMap<String, Vec<M>>) -> HashMap<String, usize> 
     map.iter().map(|(k, v)| (k.clone(), v.len())).collect()
 }
 
+#[derive(Serialize)]
+struct TranscriptRecord<'a, M> {
+    t: &'static str,
+    d: &'a TranscriptEntry<M>,
+}
+
 impl SessionLog {
     /// # Errors
     /// Returns `SessionError` if the session file cannot be created or written.
@@ -493,7 +509,7 @@ impl SessionLog {
     {
         let path = locate_session_file(dir, session_id)
             .ok_or_else(|| SessionError::from(StorageError::NotFound(session_id.to_string())))?;
-        let session = load_session_at::<M, U, T>(&path)?;
+        let (session, saw_legacy_transcript, frame_count) = parse_records::<M, U, T>(&path)?;
 
         if session.id != session_id {
             return Err(SessionError::IdMismatch {
@@ -502,12 +518,19 @@ impl SessionLog {
             });
         }
 
-        let file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .open(&path)
-            .map_err(StorageError::from)?;
-        let log = Self::cursor_from(dir, &session, file)?;
+        let file = if saw_legacy_transcript {
+            write_session_file(dir, &session)?
+        } else {
+            OpenOptions::new()
+                .read(true)
+                .append(true)
+                .open(&path)
+                .map_err(StorageError::from)?
+        };
+        let mut log = Self::cursor_from(dir, &session, file)?;
+        if !saw_legacy_transcript {
+            log.appended_frames = frame_count.saturating_sub(1);
+        }
         Ok((session, log))
     }
 
@@ -538,11 +561,22 @@ impl SessionLog {
             return self.compact(&dir, session);
         }
 
+        let current_transcript = MessageCursor::capture(&session.transcript)?;
+        if !self.saved_transcript.is_prefix_of(&current_transcript) {
+            let dir = self.dir.clone();
+            return self.compact(&dir, session);
+        }
+
         if self.cursor_ahead(session) {
             return Err(SessionError::CursorAhead {
                 saved: self.saved_messages.len(),
                 actual: session.messages.len(),
             });
+        }
+
+        if self.appended_frames >= MAX_INCREMENTAL_FRAMES {
+            let dir = self.dir.clone();
+            return self.compact(&dir, session);
         }
 
         let mut buf = Vec::new();
@@ -583,6 +617,16 @@ impl SessionLog {
             }
         }
 
+        for entry in &session.transcript[self.saved_transcript.len()..] {
+            append_record(
+                &mut buf,
+                &TranscriptRecord {
+                    t: TRANSCRIPT_RECORD_TYPE,
+                    d: entry,
+                },
+            )?;
+        }
+
         let meta_bytes = meta_record_bytes(session)?;
         let meta_changed = meta_bytes != self.saved_meta;
         if buf.is_empty() && !meta_changed {
@@ -606,6 +650,8 @@ impl SessionLog {
         }
 
         self.saved_messages = current_messages;
+        self.saved_transcript = current_transcript;
+        self.appended_frames += 1;
         self.saved_tool_ids.extend(new_tool_ids);
         for (sub_id, count) in new_sub_counts {
             self.saved_sub_msg_counts.insert(sub_id, count);
@@ -632,14 +678,7 @@ impl SessionLog {
     {
         self.require_same_id(session)?;
 
-        let path = jsonl_path(dir, session.id);
-        atomic_write(&path, &full_session_bytes(session)?)?;
-
-        let file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .open(&path)
-            .map_err(StorageError::from)?;
+        let file = write_session_file(dir, session)?;
         *self = Self::cursor_from(dir, session, file)?;
 
         Ok(())
@@ -660,8 +699,10 @@ impl SessionLog {
             dir: dir.to_path_buf(),
             file,
             saved_messages: MessageCursor::capture(&session.messages)?,
+            saved_transcript: MessageCursor::capture(&session.transcript)?,
             saved_tool_ids: session.tool_outputs.keys().cloned().collect(),
             saved_sub_msg_counts: sub_msg_snapshot(&session.subagent_messages),
+            appended_frames: 0,
             saved_meta: meta_record_bytes(session)?,
             saved_title: session.title.clone(),
         })
@@ -705,7 +746,7 @@ where
             title: session.title.clone(),
             token_usage: &session.token_usage,
             updated_at: session.updated_at,
-            transcript: session.transcript.clone(),
+            transcript: None,
             meta: session.meta.clone(),
         },
     )?;
@@ -720,11 +761,7 @@ where
 {
     fs::create_dir_all(dir).map_err(StorageError::from)?;
     let path = jsonl_path(dir, session.id);
-    let tmp = path.with_extension("jsonl.tmp");
-    let mut tmp_file = File::create(&tmp).map_err(StorageError::from)?;
-    write_full_session(&mut tmp_file, session)?;
-    tmp_file.sync_data().map_err(StorageError::from)?;
-    fs::rename(&tmp, &path).map_err(StorageError::from)?;
+    atomic_write_streaming(&path, |file| write_full_session(file, session))?;
     let file = OpenOptions::new()
         .append(true)
         .open(&path)
@@ -741,9 +778,9 @@ where
     U: Serialize,
     T: Serialize,
 {
-    let mut buf = Vec::new();
+    let mut encoder = Encoder::new(file, COMPRESS_LEVEL).map_err(StorageError::from)?;
     append_record(
-        &mut buf,
+        &mut encoder,
         &LogRecord::<&M, &U, &T>::Header {
             v: LOG_FORMAT_VERSION,
             id: session.id,
@@ -754,11 +791,11 @@ where
         },
     )?;
     for msg in &session.messages {
-        append_record(&mut buf, &LogRecord::<&M, &U, &T>::Msg { d: msg })?;
+        append_record(&mut encoder, &LogRecord::<&M, &U, &T>::Msg { d: msg })?;
     }
     for (id, output) in &session.tool_outputs {
         append_record(
-            &mut buf,
+            &mut encoder,
             &LogRecord::<&M, &U, &T>::Out {
                 id: id.clone(),
                 d: output,
@@ -768,7 +805,7 @@ where
     for (sub_id, msgs) in &session.subagent_messages {
         for msg in msgs {
             append_record(
-                &mut buf,
+                &mut encoder,
                 &LogRecord::<&M, &U, &T>::SubMsg {
                     sub: sub_id.clone(),
                     d: msg,
@@ -776,24 +813,32 @@ where
             )?;
         }
     }
-    buf.extend_from_slice(&meta_record_bytes(session)?);
-    encode_frame(file, &buf)
+    for entry in &session.transcript {
+        append_record(
+            &mut encoder,
+            &TranscriptRecord {
+                t: TRANSCRIPT_RECORD_TYPE,
+                d: entry,
+            },
+        )?;
+    }
+    append_record(
+        &mut encoder,
+        &LogRecord::<M, &U, &T>::Meta {
+            title: session.title.clone(),
+            token_usage: &session.token_usage,
+            updated_at: session.updated_at,
+            transcript: None,
+            meta: session.meta.clone(),
+        },
+    )?;
+    encoder.finish().map_err(StorageError::from)?;
+    Ok(())
 }
 
-fn full_session_bytes<M, U, T>(session: &Session<M, U, T>) -> Result<Vec<u8>, SessionError>
-where
-    M: Serialize + Clone,
-    U: Serialize,
-    T: Serialize,
-{
-    let mut bytes = Vec::new();
-    write_full_session(&mut bytes, session)?;
-    Ok(bytes)
-}
-
-fn append_record<R: Serialize>(buf: &mut Vec<u8>, record: &R) -> Result<(), SessionError> {
-    serde_json::to_writer(&mut *buf, record).map_err(StorageError::from)?;
-    buf.push(b'\n');
+fn append_record<W: Write, R: Serialize>(writer: &mut W, record: &R) -> Result<(), SessionError> {
+    serde_json::to_writer(&mut *writer, record).map_err(StorageError::from)?;
+    writer.write_all(b"\n").map_err(StorageError::from)?;
     Ok(())
 }
 
@@ -822,6 +867,7 @@ struct SessionBuilder<M, U, T> {
     updated_at: u64,
     transcript: Vec<TranscriptEntry<M>>,
     meta: SessionMeta,
+    saw_legacy_transcript: bool,
 }
 
 impl<M, U, T> Default for SessionBuilder<M, U, T>
@@ -842,17 +888,17 @@ where
             updated_at: 0,
             transcript: Vec::new(),
             meta: SessionMeta::default(),
+            saw_legacy_transcript: false,
         }
     }
 }
 
-fn parse_records<M, U, T>(data: &[u8], path: &Path) -> Result<Session<M, U, T>, SessionError>
+fn parse_records<M, U, T>(path: &Path) -> Result<(Session<M, U, T>, bool, u64), SessionError>
 where
     M: DeserializeOwned + Default,
     U: DeserializeOwned + Default,
     T: DeserializeOwned,
 {
-    let reader = BufReader::new(data);
     let mut line_count = 0usize;
     let mut builder = SessionBuilder {
         title: DEFAULT_TITLE.to_string(),
@@ -860,17 +906,16 @@ where
     };
     let mut got_header = false;
 
-    for line_result in reader.lines() {
-        let line = line_result.map_err(StorageError::from)?;
+    let frame_count = visit_zstd_lines(path, |line| {
         line_count += 1;
         if line.is_empty() {
-            continue;
+            return Ok(());
         }
-        let record: LogRecord<M, U, T> = match serde_json::from_str(&line) {
-            Ok(r) => r,
-            Err(e) => {
+        let record: LogRecord<M, U, T> = match serde_json::from_str(line) {
+            Ok(record) => record,
+            Err(error) => {
                 if !got_header
-                    && let Ok(RawTag::Header { id: raw_id }) = serde_json::from_str::<RawTag>(&line)
+                    && let Ok(RawTag::Header { id: raw_id }) = serde_json::from_str::<RawTag>(line)
                     && let Err(source) = raw_id.parse::<N00nId>()
                 {
                     return Err(SessionError::CorruptHeaderId {
@@ -881,21 +926,21 @@ where
                 }
                 warn!(
                     path = %path.display(),
-                    error = %e,
+                    error = %error,
                     line = line_count,
                     "skipping unrecognized JSONL record",
                 );
-                continue;
+                return Ok(());
             }
         };
-        apply_record(&mut builder, record, &mut got_header)?;
-    }
+        apply_record(&mut builder, record, &mut got_header)
+    })?;
 
     let id = builder
         .id
         .ok_or(StorageError::NotFound(path.display().to_string()))?;
-
-    Ok(Session {
+    let saw_legacy_transcript = builder.saw_legacy_transcript;
+    let session = Session {
         version: SESSION_VERSION,
         id,
         title: normalize_title(&builder.title),
@@ -909,7 +954,8 @@ where
         meta: builder.meta,
         created_at: builder.created_at,
         updated_at: builder.updated_at,
-    })
+    };
+    Ok((session, saw_legacy_transcript, frame_count))
 }
 
 fn apply_record<M, U, T>(
@@ -953,6 +999,7 @@ where
         LogRecord::SubMsg { sub, d } => {
             builder.subagent_messages.entry(sub).or_default().push(d);
         }
+        LogRecord::Transcript { d } => builder.transcript.push(d),
         LogRecord::Meta {
             title: m_title,
             token_usage: m_usage,
@@ -963,7 +1010,10 @@ where
             builder.title = m_title;
             builder.token_usage = m_usage;
             builder.updated_at = m_updated;
-            builder.transcript = m_transcript;
+            if let Some(m_transcript) = m_transcript {
+                builder.transcript = m_transcript;
+                builder.saw_legacy_transcript = true;
+            }
             builder.meta = m_meta;
         }
     }
@@ -977,53 +1027,73 @@ fn encode_frame<W: Write>(file: &mut W, bytes: &[u8]) -> Result<(), SessionError
     Ok(())
 }
 
-fn decode_all(data: &[u8]) -> Result<Vec<u8>, SessionError> {
-    let mut dec = Decoder::new(data).map_err(StorageError::from)?;
-    let mut out = Vec::new();
-    let mut buf = vec![0u8; 65536];
-    loop {
-        match dec.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => out.extend_from_slice(&buf[..n]),
-            Err(e) => {
-                warn!(error = %e, "truncated zstd frame, recovering complete frames");
-                break;
-            }
-        }
-    }
-    Ok(out)
-}
-
 fn is_zst_data(data: &[u8]) -> bool {
     data.starts_with(&[0x28, 0xb5, 0x2f, 0xfd])
 }
 
-fn read_session_bytes(path: &Path) -> Result<Vec<u8>, SessionError> {
-    let data = fs::read(path).map_err(StorageError::from)?;
-    let valid = zst_valid_len(&data);
-    if valid < data.len() {
+fn visit_zstd_frames(
+    path: &Path,
+    mut visit: impl FnMut(&[u8]) -> Result<(), SessionError>,
+) -> Result<u64, SessionError> {
+    let initial_len = fs::metadata(path).map_err(StorageError::from)?.len();
+    let mut file = File::open(path).map_err(StorageError::from)?;
+    let mut pending = Vec::new();
+    let mut chunk = vec![0u8; FRAME_READ_CHUNK_BYTES];
+    let mut valid_len = 0u64;
+    let mut frame_count = 0u64;
+
+    loop {
+        if !pending.is_empty()
+            && let Ok(frame_size) = zstd::zstd_safe::find_frame_compressed_size(&pending)
+            && frame_size > 0
+            && frame_size <= pending.len()
+        {
+            visit(&pending[..frame_size])?;
+            let frame_size_u64 = u64::try_from(frame_size).map_err(|_| {
+                StorageError::Io(std::io::Error::other("zstd frame size exceeds u64"))
+            })?;
+            valid_len += frame_size_u64;
+            frame_count += 1;
+            pending.drain(..frame_size);
+            continue;
+        }
+
+        let read = file.read(&mut chunk).map_err(StorageError::from)?;
+        if read == 0 {
+            break;
+        }
+        pending.extend_from_slice(&chunk[..read]);
+    }
+
+    if !pending.is_empty() {
+        let current_len = fs::metadata(path).map_err(StorageError::from)?.len();
         warn!(
             path = %path.display(),
-            bytes = data.len() - valid,
-            "truncating torn zstd frame tail",
+            bytes = pending.len(),
+            "ignoring incomplete zstd frame tail",
         );
-        let _ = fs::OpenOptions::new()
-            .write(true)
-            .open(path)
-            .and_then(|f| f.set_len(valid as u64));
-    }
-    decode_all(&data[..valid])
-}
-
-fn zst_valid_len(data: &[u8]) -> usize {
-    let mut offset = 0usize;
-    while offset < data.len() {
-        match zstd::zstd_safe::find_frame_compressed_size(&data[offset..]) {
-            Ok(size) if size > 0 && offset + size <= data.len() => offset += size,
-            _ => break,
+        if current_len == initial_len {
+            OpenOptions::new()
+                .write(true)
+                .open(path)
+                .and_then(|file| file.set_len(valid_len))
+                .map_err(StorageError::from)?;
         }
     }
-    offset
+    Ok(frame_count)
+}
+
+fn visit_zstd_lines(
+    path: &Path,
+    mut visit: impl FnMut(&str) -> Result<(), SessionError>,
+) -> Result<u64, SessionError> {
+    visit_zstd_frames(path, |frame| {
+        let decoder = Decoder::new(frame).map_err(StorageError::from)?;
+        for line in BufReader::new(decoder).lines() {
+            visit(&line.map_err(StorageError::from)?)?;
+        }
+        Ok(())
+    })
 }
 
 // -- CWD index --
@@ -1300,25 +1370,37 @@ fn scan_headers(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, StorageErr
 
 #[allow(clippy::disallowed_methods)]
 fn scan_zst_header(path: &Path) -> Option<ScannedHeader> {
-    let data = decode_all(&fs::read(path).ok()?).ok()?;
-    let mut lines = data
-        .split(|byte| *byte == b'\n')
-        .filter(|line| !line.is_empty());
-    let header: ZstHeader = serde_json::from_slice(lines.next()?).ok()?;
-    if header.v != LOG_FORMAT_VERSION {
-        return None;
-    }
-    let (meta_title, updated_at) = lines
-        .rev()
-        .find_map(|line| {
-            if let Ok(ScanRecord::Meta { title, updated_at }) = serde_json::from_slice(line) {
-                Some((title, updated_at))
-            } else {
-                None
+    let mut header = None;
+    let mut meta_title = String::new();
+    let mut updated_at = 0u64;
+    visit_zstd_lines(path, |line| {
+        if line.is_empty() {
+            return Ok(());
+        }
+        if header.is_none() {
+            let parsed: ZstHeader = serde_json::from_str(line).map_err(StorageError::from)?;
+            if parsed.v != LOG_FORMAT_VERSION {
+                return Err(SessionError::VersionMismatch {
+                    found: parsed.v,
+                    expected: LOG_FORMAT_VERSION,
+                });
             }
-        })
-        .unwrap_or((String::new(), 0u64));
+            header = Some(parsed);
+            return Ok(());
+        }
+        if let Ok(ScanRecord::Meta {
+            title,
+            updated_at: record_updated_at,
+        }) = serde_json::from_str(line)
+        {
+            meta_title = title;
+            updated_at = record_updated_at;
+        }
+        Ok(())
+    })
+    .ok()?;
 
+    let header = header?;
     Some(ScannedHeader {
         id: header.id,
         cwd: header.cwd,
@@ -1368,7 +1450,7 @@ where
     U: DeserializeOwned + Default,
     T: DeserializeOwned,
 {
-    parse_records(&read_session_bytes(path)?, path)
+    parse_records(path).map(|(session, _, _)| session)
 }
 
 // -- Session impl --
@@ -1783,6 +1865,165 @@ mod tests {
         assert!(loaded.tool_outputs.contains_key("tool-1"));
         assert_eq!(loaded.subagent_messages["sub-1"].len(), 2);
         assert_eq!(loaded.subagent_messages["sub-2"].len(), 1);
+    }
+
+    #[test]
+    fn transcript_appends_incrementally_in_zstd_frames() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session
+            .transcript
+            .push(TranscriptEntry::Message(user_message("first")));
+        let mut log = SessionLog::create(dir, &session).unwrap();
+        let path = jsonl_path(dir, session.id);
+        assert!(super::file_is_zst(&path));
+
+        session
+            .transcript
+            .push(TranscriptEntry::Message(assistant_message("second")));
+        session.updated_at += 1;
+        log.append(&session).unwrap();
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert_eq!(loaded.transcript.len(), 2);
+        assert!(matches!(
+            &loaded.transcript[1],
+            TranscriptEntry::Message(message)
+                if message["content"][0]["text"].as_str() == Some("second")
+        ));
+    }
+
+    #[test]
+    fn transcript_replacement_compacts_even_with_same_length() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.transcript = vec![
+            TranscriptEntry::Message(user_message("old first")),
+            TranscriptEntry::Message(user_message("same tail")),
+        ];
+        let mut log = SessionLog::create(dir, &session).unwrap();
+
+        session.transcript = vec![
+            TranscriptEntry::Compaction {
+                entries: vec![TranscriptEntry::Message(user_message("old first"))],
+                generated_summary: None,
+            },
+            TranscriptEntry::Message(user_message("same tail")),
+        ];
+        session.updated_at += 1;
+        log.append(&session).unwrap();
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert!(matches!(
+            loaded.transcript.as_slice(),
+            [TranscriptEntry::Compaction { entries, .. }, TranscriptEntry::Message(_)]
+                if entries.len() == 1
+        ));
+    }
+
+    #[test]
+    fn meta_only_saves_do_not_repeat_full_transcript() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.transcript.extend((0..2_000).map(|index| {
+            TranscriptEntry::Message(user_message(&format!(
+                "distinct transcript message {index}"
+            )))
+        }));
+        let mut log = SessionLog::create(dir, &session).unwrap();
+        let path = jsonl_path(dir, session.id);
+        let initial_size = fs::metadata(&path).unwrap().len();
+
+        for _ in 0..10 {
+            session.updated_at += 1;
+            log.append(&session).unwrap();
+        }
+
+        let growth = fs::metadata(path).unwrap().len() - initial_size;
+        assert!(
+            growth < initial_size,
+            "growth={growth}, initial={initial_size}"
+        );
+    }
+
+    #[test]
+    fn incremental_frame_limit_triggers_zstd_compaction() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session
+            .transcript
+            .push(TranscriptEntry::Message(user_message("persisted")));
+        let mut log = SessionLog::create(dir, &session).unwrap();
+        let path = jsonl_path(dir, session.id);
+
+        for _ in 0..10 {
+            session.updated_at += 1;
+            log.append(&session).unwrap();
+        }
+        let expanded_size = fs::metadata(&path).unwrap().len();
+        log.appended_frames = super::MAX_INCREMENTAL_FRAMES;
+        session.updated_at += 1;
+        log.append(&session).unwrap();
+
+        let compacted_size = fs::metadata(&path).unwrap().len();
+        let (_, _, frame_count) = super::parse_records::<Value, Value, Value>(&path).unwrap();
+        assert!(compacted_size < expanded_size);
+        assert_eq!(frame_count, 1);
+        assert_eq!(log.appended_frames, 0);
+    }
+
+    #[test]
+    fn opening_legacy_transcript_log_migrates_to_compact_zstd() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let session: TestSession = Session::new("m", "/project");
+        let path = jsonl_path(dir, session.id);
+        let mut file = File::create(&path).unwrap();
+        let mut header = Vec::new();
+        append_record(
+            &mut header,
+            &LogRecord::<Value, &Value, &Value>::Header {
+                v: LOG_FORMAT_VERSION,
+                id: session.id,
+                model: session.model.clone(),
+                cwd: session.cwd.clone(),
+                title: Some(session.title.clone()),
+                created_at: session.created_at,
+            },
+        )
+        .unwrap();
+        encode_frame(&mut file, &header).unwrap();
+
+        for index in 0..50 {
+            let mut meta = Vec::new();
+            append_record(
+                &mut meta,
+                &LogRecord::<Value, &Value, &Value>::Meta {
+                    title: session.title.clone(),
+                    token_usage: &session.token_usage,
+                    updated_at: session.updated_at + index,
+                    transcript: Some(vec![TranscriptEntry::Message(user_message(
+                        "legacy transcript payload",
+                    ))]),
+                    meta: session.meta.clone(),
+                },
+            )
+            .unwrap();
+            encode_frame(&mut file, &meta).unwrap();
+        }
+        drop(file);
+        let legacy_size = fs::metadata(&path).unwrap().len();
+
+        let (loaded, _) = SessionLog::open::<Value, Value, Value>(dir, session.id).unwrap();
+        let migrated_size = fs::metadata(&path).unwrap().len();
+
+        assert_eq!(loaded.transcript.len(), 1);
+        assert!(migrated_size < legacy_size / 2);
+        assert!(super::file_is_zst(&path));
     }
 
     #[test]
