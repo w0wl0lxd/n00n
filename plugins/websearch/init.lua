@@ -10,7 +10,7 @@ local output_limits = require("n00n.output_limits")
 n00n.api.set_prompt({
   prompt = "system",
   slot = "environment",
-  content = "# Environment\nCurrent date: " .. os.date("%Y-%m-%d"),
+  content = "# Environment\nCurrent date: " .. os.date("%Y-%m-%d") .. "\n",
 })
 
 local opts = n00n.api.register_options(output_limits.extend({
