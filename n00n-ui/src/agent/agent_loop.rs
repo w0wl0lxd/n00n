@@ -213,7 +213,7 @@ impl AgentLoop {
                     message: e.to_string(),
                 })?;
             for pm in messages {
-                let text = pm.content.text.unwrap_or_default();
+                let text = pm.content.text.unwrap_or_else(Default::default);
                 let msg = match pm.role {
                     PromptRole::Assistant => Message {
                         role: n00n_providers::Role::Assistant,

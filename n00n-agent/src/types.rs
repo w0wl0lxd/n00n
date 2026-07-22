@@ -9,7 +9,7 @@ use n00n_config::ToolKey;
 use n00n_providers::{
     AgentError, ContentBlock, ImageSource, Message, Role, StopReason, TokenUsage,
 };
-use serde::de::Deserializer;
+use serde::de::{Deserializer, Error as DeError, MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
 
 pub const NO_FILES_FOUND: &str = "No files found";
@@ -138,6 +138,115 @@ fn append_instructions(out: &mut String, blocks: &[InstructionBlock]) {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ToolUsage {
+    pub fresh_input_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+impl ToolUsage {
+    /// Builds a usage breakdown only when its input categories conserve the total.
+    ///
+    /// # Errors
+    /// Returns an error when the category sum overflows or differs from `input_tokens`.
+    pub fn try_new(
+        fresh_input_tokens: u64,
+        cache_read_tokens: u64,
+        cache_write_tokens: u64,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> Result<Self, String> {
+        let category_total = fresh_input_tokens
+            .checked_add(cache_read_tokens)
+            .and_then(|total| total.checked_add(cache_write_tokens))
+            .ok_or_else(|| "tool usage input token categories overflow".to_owned())?;
+        if category_total != input_tokens {
+            return Err(format!(
+                "tool usage input token categories do not conserve total: \
+                 fresh_input_tokens ({fresh_input_tokens}) + cache_read_tokens \
+                 ({cache_read_tokens}) + cache_write_tokens ({cache_write_tokens}) != \
+                 input_tokens ({input_tokens})"
+            ));
+        }
+        Ok(Self {
+            fresh_input_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+            input_tokens,
+            output_tokens,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for ToolUsage {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct RawToolUsage {
+            #[serde(rename = "fresh_input_tokens")]
+            fresh_input: u64,
+            #[serde(rename = "cache_read_tokens")]
+            cache_read: u64,
+            #[serde(rename = "cache_write_tokens")]
+            cache_write: u64,
+            #[serde(rename = "input_tokens")]
+            input: u64,
+            #[serde(rename = "output_tokens")]
+            output: u64,
+        }
+
+        let raw = RawToolUsage::deserialize(deserializer)?;
+        Self::try_new(
+            raw.fresh_input,
+            raw.cache_read,
+            raw.cache_write,
+            raw.input,
+            raw.output,
+        )
+        .map_err(D::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ToolTelemetry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<ToolUsage>,
+}
+
+impl<'de> Deserialize<'de> for ToolTelemetry {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct RawToolTelemetry {
+            #[serde(default)]
+            cost: Option<f64>,
+            #[serde(default)]
+            usage: Option<ToolUsage>,
+        }
+
+        let raw = RawToolTelemetry::deserialize(deserializer)?;
+        Self::try_new(raw.cost, raw.usage)
+            .map_err(D::Error::custom)?
+            .ok_or_else(|| D::Error::custom("tool telemetry must contain cost or usage"))
+    }
+}
+
+impl ToolTelemetry {
+    /// Builds sanitized telemetry, rejecting non-finite or negative costs.
+    ///
+    /// # Errors
+    /// Returns an error when `cost` is not a finite nonnegative number.
+    pub fn try_new(cost: Option<f64>, usage: Option<ToolUsage>) -> Result<Option<Self>, String> {
+        if cost.is_some_and(|value| !value.is_finite() || value < 0.0) {
+            return Err("tool telemetry cost must be a finite nonnegative number".to_owned());
+        }
+        Ok((cost.is_some() || usage.is_some()).then_some(Self { cost, usage }))
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct TextOutput {
     pub text: String,
@@ -147,6 +256,8 @@ pub struct TextOutput {
     /// has to re-parse its own llm output.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<ToolTelemetry>,
 }
 
 impl From<String> for TextOutput {
@@ -155,6 +266,7 @@ impl From<String> for TextOutput {
             text,
             instructions: None,
             state: None,
+            telemetry: None,
         }
     }
 }
@@ -165,36 +277,82 @@ impl From<&str> for TextOutput {
             text: text.to_owned(),
             instructions: None,
             state: None,
+            telemetry: None,
         }
     }
 }
 
 impl<'de> Deserialize<'de> for TextOutput {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Raw {
-            Legacy(String),
-            Full {
-                text: String,
-                #[serde(default)]
-                instructions: Option<Vec<InstructionBlock>>,
-                #[serde(default)]
-                state: Option<serde_json::Value>,
-            },
+        struct TextOutputVisitor;
+
+        impl<'de> Visitor<'de> for TextOutputVisitor {
+            type Value = TextOutput;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a legacy text string or a structured text output")
+            }
+
+            fn visit_str<E: DeError>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(value.into())
+            }
+
+            fn visit_string<E: DeError>(self, value: String) -> Result<Self::Value, E> {
+                Ok(value.into())
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut text = None;
+                let mut instructions = None;
+                let mut state = None;
+                let mut telemetry = None;
+                let mut seen_instructions = false;
+                let mut seen_state = false;
+                let mut seen_telemetry = false;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "text" => {
+                            if text.is_some() {
+                                return Err(A::Error::duplicate_field("text"));
+                            }
+                            text = Some(map.next_value()?);
+                        }
+                        "instructions" => {
+                            if seen_instructions {
+                                return Err(A::Error::duplicate_field("instructions"));
+                            }
+                            seen_instructions = true;
+                            instructions = map.next_value()?;
+                        }
+                        "state" => {
+                            if seen_state {
+                                return Err(A::Error::duplicate_field("state"));
+                            }
+                            seen_state = true;
+                            state = map.next_value()?;
+                        }
+                        "telemetry" => {
+                            if seen_telemetry {
+                                return Err(A::Error::duplicate_field("telemetry"));
+                            }
+                            seen_telemetry = true;
+                            telemetry = map.next_value()?;
+                        }
+                        _ => {
+                            map.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(TextOutput {
+                    text: text.ok_or_else(|| A::Error::missing_field("text"))?,
+                    instructions,
+                    state,
+                    telemetry,
+                })
+            }
         }
-        match Raw::deserialize(deserializer)? {
-            Raw::Legacy(text) => Ok(text.into()),
-            Raw::Full {
-                text,
-                instructions,
-                state,
-            } => Ok(Self {
-                text,
-                instructions,
-                state,
-            }),
-        }
+
+        deserializer.deserialize_any(TextOutputVisitor)
     }
 }
 
@@ -217,6 +375,8 @@ pub enum ToolOutput {
         before: String,
         after: String,
         summary: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        telemetry: Option<ToolTelemetry>,
     },
     TodoList(Vec<TodoItem>),
     WriteCode {
@@ -242,6 +402,8 @@ pub enum ToolOutput {
         /// Caption for the `tool_result` block, e.g. "[image: slack.jpeg 222KB]";
         /// the pixels ride separately as a `ContentBlock::Image`.
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        telemetry: Option<ToolTelemetry>,
     },
 }
 
@@ -331,6 +493,37 @@ impl ToolOutput {
     }
 
     #[must_use]
+    pub fn telemetry(&self) -> Option<&ToolTelemetry> {
+        match self {
+            Self::Plain(text) | Self::Markdown(text) | Self::ReadDir(text) => {
+                text.telemetry.as_ref()
+            }
+            Self::Diff { telemetry, .. } | Self::Image { telemetry, .. } => telemetry.as_ref(),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_telemetry(mut self, telemetry: Option<ToolTelemetry>) -> Self {
+        let Some(telemetry) = telemetry else {
+            return self;
+        };
+        match &mut self {
+            Self::Plain(text) | Self::Markdown(text) | Self::ReadDir(text) => {
+                text.telemetry = Some(telemetry);
+            }
+            Self::Diff {
+                telemetry: current, ..
+            }
+            | Self::Image {
+                telemetry: current, ..
+            } => *current = Some(telemetry),
+            _ => {}
+        }
+        self
+    }
+
+    #[must_use]
     pub fn structured_display_text(&self) -> Option<String> {
         match self {
             Self::Diff { .. }
@@ -409,6 +602,7 @@ impl ToolOutput {
                 before,
                 after,
                 summary,
+                ..
             } => crate::diff::unified_text(
                 before,
                 after,
@@ -971,7 +1165,7 @@ mod tests {
     #[test_case(&ToolOutput::ReadCode { path: "a.rs".into(), start_line: 10, lines: vec!["x".into(); 5], total_lines: 100, instructions: None }, Some("5 of 100 lines") ; "read_code_partial")]
     #[test_case(&ToolOutput::WriteCode { path: "a.rs".into(), byte_count: 99, lines: vec![] }, Some("99 bytes") ; "write_code_bytes")]
     #[test_case(&ToolOutput::GrepResult { entries: vec![GrepFileEntry { path: "a.rs".into(), groups: vec![GrepMatchGroup::single(1, "hit")] }] }, Some("1 matches in 1 file") ; "grep_file_count")]
-    #[test_case(&ToolOutput::Diff { path: "a.rs".into(), before: String::new(), after: String::new(), summary: "ok".into() }, None ; "diff_no_annotation")]
+    #[test_case(&ToolOutput::Diff { path: "a.rs".into(), before: String::new(), after: String::new(), summary: "ok".into(), telemetry: None }, None ; "diff_no_annotation")]
     #[allow(clippy::needless_pass_by_value)]
     fn annotation_cases(output: &ToolOutput, expected: Option<&str>) {
         assert_eq!(output.annotation().as_deref(), expected);
@@ -1032,6 +1226,7 @@ mod tests {
             before: "keep\nold\n".into(),
             after: "keep\nnew\n".into(),
             summary: "Updated value".into(),
+            telemetry: None,
         };
         let display = output.as_display_text();
         assert!(display.starts_with("Updated value"));
@@ -1094,7 +1289,7 @@ mod tests {
     }
 
     #[test_case(&ToolOutput::WriteCode { path: "src/lib.rs".into(), byte_count: 10, lines: vec![] }, Some("src/lib.rs") ; "write_code")]
-    #[test_case(&ToolOutput::Diff { path: "src/lib.rs".into(), before: String::new(), after: String::new(), summary: String::new() }, Some("src/lib.rs") ; "diff")]
+    #[test_case(&ToolOutput::Diff { path: "src/lib.rs".into(), before: String::new(), after: String::new(), summary: String::new(), telemetry: None }, Some("src/lib.rs") ; "diff")]
     #[test_case(&ToolOutput::Plain("ok".into()), None ; "non_write_variant")]
     #[allow(clippy::needless_pass_by_value)]
     fn output_written_path(output: &ToolOutput, expected: Option<&str>) {
@@ -1139,6 +1334,7 @@ mod tests {
                 Arc::from(data),
             ),
             text: "[image: pic.png 1KB]".into(),
+            telemetry: None,
         };
         let done = |id: &str, output: ToolOutput| ToolDoneEvent {
             id: id.into(),
@@ -1405,6 +1601,71 @@ mod tests {
     }
 
     #[test]
+    fn tool_usage_rejects_nonconserving_categories() {
+        let error = ToolUsage::try_new(5, 7, 11, 24, 13).unwrap_err();
+        assert!(error.contains("do not conserve"));
+    }
+
+    #[test]
+    fn absent_sidecar_telemetry_does_not_erase_embedded_telemetry() {
+        let telemetry = ToolTelemetry::try_new(Some(0.25), None)
+            .unwrap()
+            .expect("cost must produce telemetry");
+        let output = ToolOutput::Plain(TextOutput {
+            text: "done".to_owned(),
+            instructions: None,
+            state: None,
+            telemetry: Some(telemetry.clone()),
+        });
+
+        assert_eq!(output.with_telemetry(None).telemetry(), Some(&telemetry));
+    }
+
+    #[test]
+    fn telemetry_deserialization_validates_cost_and_conservation() {
+        let nonconserving = r#"{"cost":0.5,"usage":{"fresh_input_tokens":5,"cache_read_tokens":7,"cache_write_tokens":11,"input_tokens":24,"output_tokens":13}}"#;
+        let negative_cost = r#"{"cost":-0.5}"#;
+
+        assert!(serde_json::from_str::<ToolTelemetry>(nonconserving).is_err());
+        assert!(serde_json::from_str::<ToolTelemetry>(negative_cost).is_err());
+    }
+
+    #[test]
+    fn text_output_rejects_duplicate_structured_fields() {
+        let duplicate_text = r#"{"Plain":{"text":"first","text":"second"}}"#;
+        let duplicate_null_telemetry =
+            r#"{"Plain":{"text":"ok","telemetry":null,"telemetry":null}}"#;
+
+        assert!(serde_json::from_str::<ToolOutput>(duplicate_text).is_err());
+        assert!(serde_json::from_str::<ToolOutput>(duplicate_null_telemetry).is_err());
+    }
+
+    #[test]
+    fn telemetry_variants_keep_legacy_serde_compatible() {
+        let diff_json =
+            r#"{"Diff":{"path":"a.rs","before":"old","after":"new","summary":"changed"}}"#;
+        let image_json =
+            r#"{"Image":{"source":{"media_type":"image/png","data":"aGVsbG8="},"text":"caption"}}"#;
+        let diff: ToolOutput = serde_json::from_str(diff_json).unwrap();
+        let image: ToolOutput = serde_json::from_str(image_json).unwrap();
+
+        assert!(matches!(
+            diff,
+            ToolOutput::Diff {
+                telemetry: None,
+                ..
+            }
+        ));
+        assert!(matches!(
+            image,
+            ToolOutput::Image {
+                telemetry: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn text_output_serde_legacy_bare_string() {
         const MSG: &str = "old sessions store Plain as a bare string";
         let json = r#"{"Plain":"hello world"}"#;
@@ -1429,6 +1690,7 @@ mod tests {
             text: "file contents".into(),
             instructions: Some(blocks),
             state: None,
+            telemetry: None,
         });
         let json = serde_json::to_string(&output).unwrap();
         let parsed: ToolOutput = serde_json::from_str(&json).unwrap();
@@ -1450,7 +1712,7 @@ mod tests {
         ; "prefers_field_over_output"
     )]
     #[test_case(
-        ToolOutput::Diff { path: "/diff/path".into(), before: String::new(), after: String::new(), summary: String::new() },
+        ToolOutput::Diff { path: "/diff/path".into(), before: String::new(), after: String::new(), summary: String::new(), telemetry: None },
         None, false, Some("/diff/path")
         ; "falls_back_to_output"
     )]
@@ -1486,6 +1748,7 @@ mod tests {
                 content: "do stuff".into(),
             }]),
             state: None,
+            telemetry: None,
         });
         let text = output.as_text();
         assert!(text.contains("fn main()"), "{INCLUDES_MSG}");

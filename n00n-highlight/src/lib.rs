@@ -265,6 +265,15 @@ pub struct CodeHighlighter {
     cached_segments: Vec<Vec<StyledSegment>>,
 }
 
+impl std::fmt::Debug for CodeHighlighter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CodeHighlighter")
+            .field("completed_lines", &self.completed_lines)
+            .field("cached_segments", &self.cached_segments)
+            .finish_non_exhaustive()
+    }
+}
+
 impl CodeHighlighter {
     #[must_use]
     pub fn new(lang: &str) -> Self {

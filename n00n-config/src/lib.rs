@@ -912,7 +912,7 @@ impl ToolOutputLines {
         workflow: 8,
         index: 3,
         grep: 3,
-        explore: 3,
+        explore: 5,
         read: 3,
         write: 7,
         web: 3,

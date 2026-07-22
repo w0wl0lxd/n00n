@@ -23,6 +23,7 @@ fn suppress_retry_after_response(error: AgentError) -> AgentError {
     if error.is_retryable() {
         AgentError::RequestSent {
             message: error.to_string(),
+            metadata: None,
         }
     } else {
         error

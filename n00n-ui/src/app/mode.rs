@@ -23,7 +23,7 @@ pub(crate) enum PlanTrigger {
 }
 
 impl Mode {
-    pub(crate) fn color(&self) -> Color {
+    pub(crate) fn color(self) -> Color {
         match self {
             Self::Build => theme::current().mode_build,
             Self::Plan => theme::current().mode_plan,
@@ -73,7 +73,7 @@ impl PlanState {
 }
 
 impl App {
-    pub(crate) fn transition_plan(&mut self, trigger: PlanTrigger) {
+    pub(crate) fn transition_plan(&mut self, trigger: &PlanTrigger) {
         if self.state.mode != Mode::Plan {
             return;
         }
