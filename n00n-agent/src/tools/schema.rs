@@ -106,7 +106,11 @@ pub enum ParamSchema {
 pub fn to_json_schema(s: &ParamSchema) -> Value {
     match s {
         ParamSchema::Primitive { kind, description } => {
-            json!({ "type": kind.to_string(), "description": description })
+            if description.is_empty() {
+                json!({ "type": kind.to_string() })
+            } else {
+                json!({ "type": kind.to_string(), "description": description })
+            }
         }
         ParamSchema::Enum {
             variants,
@@ -118,11 +122,16 @@ pub fn to_json_schema(s: &ParamSchema) -> Value {
             }
             v
         }
-        ParamSchema::Array { items, description } => json!({
-            "type": "array",
-            "description": description,
-            "items": to_json_schema(items),
-        }),
+        ParamSchema::Array { items, description } => {
+            let mut v = json!({
+                "type": "array",
+                "items": to_json_schema(items),
+            });
+            if !description.is_empty() {
+                v["description"] = json!(description);
+            }
+            v
+        }
         ParamSchema::Object {
             properties,
             description,
