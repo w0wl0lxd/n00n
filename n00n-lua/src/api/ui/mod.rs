@@ -250,6 +250,15 @@ fn truncate_text(lua: &Lua, text: String, max_width: usize) -> LuaResult<Table> 
         width += w;
         idx = i + c.len_utf8();
     }
+    // Long labels that exactly fill max_width still need to report a tail so
+    // callers can render a truncation/continuation indicator.
+    if idx == text.len()
+        && width == max_width
+        && !text.is_empty()
+        && let Some((pos, _)) = text[..idx].char_indices().next_back()
+    {
+        idx = pos;
+    }
     let tbl = lua.create_table()?;
     tbl.set("head", &text[..idx])?;
     tbl.set("tail", &text[idx..])?;
