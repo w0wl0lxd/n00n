@@ -670,8 +670,11 @@ impl SessionLog {
 
         let mut new_sub_counts: Vec<(String, usize)> = Vec::new();
         for (sub_id, msgs) in &session.subagent_messages {
-            #[allow(clippy::disallowed_methods)]
-            let saved = self.saved_sub_msg_counts.get(sub_id).copied().unwrap_or(0);
+            let saved = self
+                .saved_sub_msg_counts
+                .get(sub_id)
+                .copied()
+                .unwrap_or_else(|| 0);
             for msg in &msgs[saved..] {
                 append_record(
                     &mut buf,

@@ -373,6 +373,7 @@ impl<T: PickerItem> ListPicker<T> {
                 match idx {
                     Some(idx) => {
                         if let Some(mut state) = self.state.take() {
+                            // idx is from self.state.selected() which is bounds-checked
                             #[allow(clippy::disallowed_methods)]
                             return PickerAction::Select(idx, state.items.swap_remove(idx));
                         }

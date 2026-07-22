@@ -70,8 +70,7 @@ fn parse_doc(lines: &[String], span: proc_macro2::Span) -> syn::Result<ParsedDoc
             let ty = it
                 .next()
                 .ok_or_else(|| syn::Error::new(span, format!("malformed @param line: `{line}`")))?;
-            #[allow(clippy::disallowed_methods)]
-            let d = it.next().unwrap_or("");
+            let d = it.next().unwrap_or_else(|| "");
             if name.is_empty() || ty.is_empty() {
                 return Err(syn::Error::new(
                     span,

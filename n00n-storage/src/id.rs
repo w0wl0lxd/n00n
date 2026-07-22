@@ -37,6 +37,8 @@ pub enum N00nIdParseError {
 pub struct N00nId([u8; UUID_BYTES]);
 
 impl N00nId {
+    // N00nId::generate is the canonical UUIDv7 generator for the codebase.
+    // The disallow on Uuid::now_v7 is to prevent direct use elsewhere.
     #[allow(clippy::disallowed_methods)]
     #[must_use]
     pub fn generate() -> Self {
