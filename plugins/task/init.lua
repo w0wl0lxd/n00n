@@ -7,6 +7,7 @@
 
 local ToolView = require("n00n.tool_view")
 local route_tier = require("n00n.route_tier").route_tier
+local usage = require("n00n.usage")
 
 local STRUCTURED_OUTPUT_NAME = "structured_output"
 local STRUCTURED_OUTPUT_DESCRIPTION = "Report your final result. Call it exactly once when your task is complete."
@@ -282,27 +283,43 @@ local function handler(input, ctx)
       local retries = 0
       while not err and validator and not captured and retries < MAX_STRUCTURED_RETRIES do
         retries = retries + 1
-        result, err = sess:prompt(NUDGE_MISSING)
+        local nudged
+        nudged, err = sess:prompt(NUDGE_MISSING)
+        if nudged then
+          result = nudged
+        end
+      end
+      local session_usage, cost, metrics_err = usage.price(model.spec, result)
+      local function finish(value)
+        value.usage = session_usage
+        value.cost = cost
+        return value
+      end
+      if metrics_err then
+        return finish({ llm_output = "usage pricing failed: " .. metrics_err, is_error = true })
       end
       if err then
-        return { llm_output = "sub-agent error: " .. err, is_error = true }
+        return finish({ llm_output = "sub-agent error: " .. err, is_error = true })
       end
       if validator and not captured then
         local msg = last_errors and (STRUCTURED_INVALID_ERROR .. ":\n" .. last_errors) or STRUCTURED_MISSING_ERROR
-        return { llm_output = msg, is_error = true }
+        return finish({ llm_output = msg, is_error = true })
       end
       if not captured and (not result or not result.text or result.text == "") then
-        return { llm_output = "sub-agent returned no output", is_error = true }
+        return finish({ llm_output = "sub-agent returned no output", is_error = true })
       end
       local output = result.text
       if captured then
         local encoded, encode_err = n00n.json.encode(captured)
         if encode_err then
-          return { llm_output = "failed to encode structured output: " .. tostring(encode_err), is_error = true }
+          return finish({
+            llm_output = "failed to encode structured output: " .. tostring(encode_err),
+            is_error = true,
+          })
         end
         output = encoded
       end
-      return { llm_output = output, format = "markdown" }
+      return finish({ llm_output = output, format = "markdown" })
     end
 
     local function do_poll()
@@ -337,6 +354,8 @@ local function handler(input, ctx)
     body = preview.buf,
     is_error = out.is_error,
     format = out.format,
+    cost = out.cost,
+    usage = out.usage,
   }
 end
 

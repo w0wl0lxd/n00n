@@ -173,6 +173,10 @@ pub async fn run(
                     elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or_else(|_| u64::MAX),
                     "tool ok"
                 );
+                let output = match result.telemetry {
+                    Some(telemetry) => output.with_telemetry(Some(telemetry)),
+                    None => output,
+                };
                 ToolDoneEvent {
                     id,
                     tool: tool_id,
@@ -190,7 +194,19 @@ pub async fn run(
                     error = %message,
                     "tool failed"
                 );
-                done_error(message)
+                ToolDoneEvent {
+                    id,
+                    tool: tool_id,
+                    output: ToolOutput::Plain(crate::TextOutput {
+                        text: message,
+                        instructions: None,
+                        state: None,
+                        telemetry: result.telemetry,
+                    }),
+                    is_error: true,
+                    annotation: result.annotation,
+                    written_path: None,
+                }
             }
         }
     } else if mcp.is_some_and(|m| m.has_tool(mcp_lookup)) {
