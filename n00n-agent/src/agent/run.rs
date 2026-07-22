@@ -88,6 +88,7 @@ pub struct Agent<'h> {
     interrupt_source: Option<Arc<dyn InterruptSource>>,
     cancel: CancelToken,
     total_usage: TokenUsage,
+    total_cost: f64,
     context_size: u32,
     num_turns: u32,
     recent_calls: RecentCalls,
@@ -131,6 +132,7 @@ impl<'h> Agent<'h> {
             interrupt_source: None,
             cancel: CancelToken::none(),
             total_usage: TokenUsage::default(),
+            total_cost: 0.0,
             context_size: 0,
             num_turns: 0,
             recent_calls: RecentCalls::new(),
@@ -189,6 +191,16 @@ impl<'h> Agent<'h> {
     pub fn with_loaded_instructions(mut self, loaded: LoadedInstructions) -> Self {
         self.loaded_instructions = loaded;
         self
+    }
+
+    #[must_use]
+    pub fn total_usage(&self) -> TokenUsage {
+        self.total_usage
+    }
+
+    #[must_use]
+    pub fn total_cost(&self) -> f64 {
+        self.total_cost
     }
 
     /// Runs the agent loop with the given input.
@@ -291,10 +303,11 @@ impl<'h> Agent<'h> {
             "API response received"
         );
 
-        self.emit_turn_complete(&response)?;
         let usage = response.usage;
-        self.total_usage += usage;
+        let cost = usage.cost(&self.model.pricing, self.opts.fast);
+        self.record_usage(usage, cost);
         self.context_size = usage.context_tokens();
+        self.emit_turn_complete(&response)?;
 
         if has_tools {
             let history_len_before = self.history.len();
@@ -376,6 +389,11 @@ impl<'h> Agent<'h> {
             }
             Err(_) => Err(AgentError::Cancelled),
         }
+    }
+
+    fn record_usage(&mut self, usage: TokenUsage, cost: f64) {
+        self.total_usage += usage;
+        self.total_cost += cost;
     }
 
     fn emit_turn_complete(&self, response: &StreamResponse) -> Result<(), AgentError> {
@@ -466,7 +484,7 @@ impl<'h> Agent<'h> {
     async fn do_compact(&mut self) -> Result<(), AgentError> {
         let (compact_provider, compact_model) =
             resolve_compaction_model(&self.provider, &self.model, self.timeouts);
-        self.total_usage += compaction::compact_history(
+        let usage = compaction::compact_history(
             &*compact_provider,
             &compact_model,
             self.history,
@@ -474,6 +492,8 @@ impl<'h> Agent<'h> {
             &self.cancel,
         )
         .await?;
+        let cost = usage.cost(&compact_model.pricing, false);
+        self.record_usage(usage, cost);
         self.rollback_len = self.history.len();
         self.event_tx.send(AgentEvent::CompactionDone)?;
         self.history
@@ -556,6 +576,8 @@ mod tests {
     use super::*;
     use crate::Envelope;
     use crate::permissions::PermissionManager;
+
+    const COST_EPSILON: f64 = 1e-12;
 
     struct MockInterruptSource {
         commands: Mutex<VecDeque<ExtractedCommand>>,
@@ -821,6 +843,61 @@ mod tests {
                     if message.first_text_content() == Some(MAX_TOKENS_CONTINUE_PROMPT)
             ));
         });
+    }
+
+    #[test]
+    fn charged_usage_survives_event_delivery_failure() {
+        smol::block_on(async {
+            let charged = TokenUsage {
+                input: 100,
+                output: 50,
+                cache_creation: 30,
+                cache_read: 20,
+            };
+            let mut response = text_response(StopReason::EndTurn);
+            response.usage = charged;
+            let mut history = History::new(Vec::new());
+            let (mut agent, event_rx) = make_agent(MockProvider::new(vec![response]), &mut history);
+            drop(event_rx);
+
+            assert!(agent.run(default_input()).await.is_err());
+            assert_eq!(agent.total_usage(), charged);
+            let expected_cost = charged.cost(&default_model().pricing, false);
+            assert!((agent.total_cost() - expected_cost).abs() < COST_EPSILON);
+        });
+    }
+
+    #[test]
+    fn mixed_model_usage_preserves_per_call_cost() {
+        let mut history = History::new(Vec::new());
+        let (mut agent, _event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
+        let main_model = default_model();
+        let compact_model = Model::from_spec("anthropic/claude-haiku-4-5").unwrap();
+        let main_usage = TokenUsage {
+            input: 1_000_000,
+            output: 100_000,
+            ..Default::default()
+        };
+        let compact_usage = TokenUsage {
+            input: 200_000,
+            output: 20_000,
+            ..Default::default()
+        };
+        let main_cost = main_usage.cost(&main_model.pricing, true);
+        let compact_cost = compact_usage.cost(&compact_model.pricing, false);
+
+        agent.record_usage(main_usage, main_cost);
+        agent.record_usage(compact_usage, compact_cost);
+
+        let mut expected_usage = main_usage;
+        expected_usage += compact_usage;
+        assert_eq!(agent.total_usage(), expected_usage);
+        assert!((agent.total_cost() - (main_cost + compact_cost)).abs() < COST_EPSILON);
+        let incorrectly_repriced = agent.total_usage().cost(&main_model.pricing, true);
+        assert!(
+            (agent.total_cost() - incorrectly_repriced).abs() > COST_EPSILON,
+            "mixed usage must not be repriced as one main-model fast request"
+        );
     }
 
     #[test]

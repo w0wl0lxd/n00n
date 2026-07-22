@@ -20,6 +20,20 @@ local MAX_TEAM_CONCURRENT = 4
 local TEAM_TIMEOUT_SECS = 1800
 local MAX_RELAY_BYTES = 12000
 
+local function add_cost(total, value)
+  if total == nil or value == nil then
+    return nil
+  end
+  return total + value
+end
+
+local function cost_label(cost, model)
+  if cost == nil then
+    return " (cost unavailable, " .. (model or "?") .. ")"
+  end
+  return string.format(" (~$%.4f, %s)", cost, model or "?")
+end
+
 local PLANNER_OUTPUT = {
   type = "object",
   required = { "steps" },
@@ -71,7 +85,7 @@ local schema = {
       type = "integer",
       minimum = 1,
       maximum = MAX_TEAM_CONCURRENT,
-      description = "Swarm concurrency (default and maximum 4).",
+      description = "Swarm concurrency (default 4). Maximum 4.",
     },
     max_agents = {
       type = "integer",
@@ -206,14 +220,22 @@ local function run_supervisor(ctx, goal, opts)
 
   local res, rerr = sess:prompt(plan_prompt(goal))
   if not rerr and not captured then
-    res, rerr = sess:prompt(NUDGE)
+    local nudged
+    nudged, rerr = sess:prompt(NUDGE)
+    if nudged then
+      res = nudged
+    end
   end
   sess:close()
+  local usage, cost, metrics_err = roles.metrics(model.spec, res)
+  if metrics_err then
+    return nil, "supervisor usage pricing failed: " .. metrics_err, nil, usage
+  end
   if rerr then
-    return nil, "supervisor failed: " .. rerr
+    return nil, "supervisor failed: " .. rerr, cost, usage
   end
   if not captured then
-    return nil, "supervisor produced no plan"
+    return nil, "supervisor produced no plan", cost, usage
   end
   local max_steps = math.min(opts.max_steps or DEFAULT_PLAN_STEPS, MAX_PLAN_STEPS)
   local steps = {}
@@ -221,9 +243,9 @@ local function run_supervisor(ctx, goal, opts)
     steps[i] = captured.steps[i]
   end
   if #steps == 0 then
-    return nil, "supervisor produced an empty plan"
+    return nil, "supervisor produced an empty plan", cost, usage
   end
-  return steps, nil
+  return steps, nil, cost, usage
 end
 
 local function run_step(ctx, step, goal, input, relay_k, prior_results)
@@ -261,17 +283,19 @@ end
 local function run_autonomous(ctx, goal, input, steps, relay_k)
   local results = {}
   local total_cost = 0.0
+  local total_usage = roles.usage()
   local failures = 0
   for i, step in ipairs(steps) do
     local r = run_step(ctx, step, goal, input, relay_k, results)
+    total_cost = add_cost(total_cost, r.cost)
+    total_usage = roles.add_usage(total_usage, r.usage)
     if not r.ok then
       failures = failures + 1
       results[#results + 1] = string.format("[%d] %s: ERROR %s", i, step.role, r.error)
       break
     else
-      local cost_line = string.format(" (~$%.4f, %s)", r.cost or 0, r.model or "?")
+      local cost_line = cost_label(r.cost, r.model)
       results[#results + 1] = string.format("[%d] %s%s:\n%s", i, step.role, cost_line, r.text or "")
-      total_cost = total_cost + (r.cost or 0)
 
       if input.quorum ~= false and (step.role == "tester" or step.role == "reviewer") then
         local verdict = quorum.validate(ctx, table.concat(results, "\n\n"), {
@@ -280,6 +304,8 @@ local function run_autonomous(ctx, goal, input, steps, relay_k)
           thinking = input.thinking,
           budget = input._agent_budget,
         })
+        total_cost = add_cost(total_cost, verdict.cost)
+        total_usage = roles.add_usage(total_usage, verdict.usage)
         if not verdict.accepted then
           results[#results + 1] = string.format(
             "[quorum] %s output not endorsed by diverse validators (confidence %.2f):\n%s",
@@ -291,7 +317,7 @@ local function run_autonomous(ctx, goal, input, steps, relay_k)
       end
     end
   end
-  return results, total_cost, failures
+  return results, total_cost, failures, total_usage
 end
 
 -- Information-bottleneck fallback: a single strong-agent pass when fanning out
@@ -300,21 +326,23 @@ end
 local function run_single_pass(ctx, goal, input, steps, relay_k)
   local results = {}
   local total_cost = 0.0
+  local total_usage = roles.usage()
   local failures = 0
   for i, step in ipairs(steps) do
     local r = run_step(ctx, step, goal, input, relay_k, results)
     r.model = r.model or "strong"
+    total_cost = add_cost(total_cost, r.cost)
+    total_usage = roles.add_usage(total_usage, r.usage)
     if not r.ok then
       failures = failures + 1
       results[#results + 1] = string.format("[%d] %s: ERROR %s", i, step.role, r.error)
       break
     else
-      local cost_line = string.format(" (~$%.4f, %s)", r.cost or 0, r.model or "?")
+      local cost_line = cost_label(r.cost, r.model)
       results[#results + 1] = string.format("[%d] %s%s:\n%s", i, step.role, cost_line, r.text or "")
-      total_cost = total_cost + (r.cost or 0)
     end
   end
-  return results, total_cost, failures
+  return results, total_cost, failures, total_usage
 end
 
 local finish_run
@@ -351,9 +379,10 @@ local function handler(input, ctx)
     goal = goal .. "\n\nPrior learnings for this goal:\n" .. prior
   end
 
-  local steps, perr = run_supervisor(ctx, goal, input)
+  local steps, perr, supervisor_cost, supervisor_usage = run_supervisor(ctx, goal, input)
+  supervisor_usage = roles.usage(supervisor_usage)
   if perr then
-    return { llm_output = perr, is_error = true }
+    return { llm_output = perr, is_error = true, cost = supervisor_cost, usage = supervisor_usage }
   end
 
   if input.mode == "supervised" then
@@ -365,13 +394,15 @@ local function handler(input, ctx)
       llm_output = table.concat(plan, "\n")
         .. '\n\nReview the plan, then run `team` again with `mode = "autonomous"` or `mode = "swarm"` to execute it.',
       format = "markdown",
+      cost = supervisor_cost,
+      usage = supervisor_usage,
     }
   end
 
   -- Information-bottleneck β gate: decide fan-out + relay budget (offline).
   local ibn_tier, model_err = ibn.resolve_tier(ctx, input.model, input.model_tier)
   if model_err then
-    return { llm_output = model_err, is_error = true }
+    return { llm_output = model_err, is_error = true, cost = supervisor_cost, usage = supervisor_usage }
   end
   local gate = input.ibn_gate == false and { fan_out = true, relay_k = 6, reason = "IBN gate disabled" }
     or ibn.decide(ctx, goal, ibn_tier)
@@ -388,35 +419,57 @@ local function handler(input, ctx)
         thinking = input.thinking,
         quorum = input.quorum,
       })
+      local total_cost = add_cost(supervisor_cost, out.cost)
+      local total_usage = roles.add_usage(supervisor_usage, out.usage)
       if not out.ok then
-        return { llm_output = "swarm failed: " .. (out.error or "unknown"), is_error = true }
+        return {
+          llm_output = "swarm failed: " .. (out.error or "unknown"),
+          is_error = true,
+          cost = total_cost,
+          usage = total_usage,
+        }
       end
       local results = { string.format("[swarm] β gate: %s\n\n%s", gate.reason, out.text or "") }
-      return finish_run(ctx, input, results, out.cost or 0, out.rounds or 0, "rounds", slug)
+      return finish_run(ctx, input, results, total_cost, out.rounds or 0, "rounds", slug, nil, total_usage)
     end
 
     -- β gate says don't fan out: single strong-agent pass, log the reason.
-    local results, total_cost, failures = run_single_pass(ctx, goal, input, steps, relay_k)
+    local results, total_cost, failures, total_usage = run_single_pass(ctx, goal, input, steps, relay_k)
+    total_cost = add_cost(supervisor_cost, total_cost)
+    total_usage = roles.add_usage(supervisor_usage, total_usage)
     results[1] = "[swarm] β gate: " .. gate.reason .. "\n" .. (results[1] or "")
-    return finish_run(ctx, input, results, total_cost, #results, "steps", slug, failures)
+    return finish_run(ctx, input, results, total_cost, #results, "steps", slug, failures, total_usage)
   end
 
-  local results, total_cost, failures = run_autonomous(ctx, goal, input, steps, relay_k)
-  return finish_run(ctx, input, results, total_cost, #results, "steps", slug, failures)
+  local results, total_cost, failures, total_usage = run_autonomous(ctx, goal, input, steps, relay_k)
+  total_cost = add_cost(supervisor_cost, total_cost)
+  total_usage = roles.add_usage(supervisor_usage, total_usage)
+  return finish_run(ctx, input, results, total_cost, #results, "steps", slug, failures, total_usage)
 end
 
-finish_run = function(ctx, input, results, total_cost, completed, unit, slug, failures)
+finish_run = function(ctx, input, results, total_cost, completed, unit, slug, failures, usage)
   local report = table.concat(results, "\n\n")
   local failed = failures or 0
   local successful = math.max(completed - failed, 0)
-  local summary = string.format("\n\n---\nTeam complete: %d %s, ~$%.4f estimated cost.", successful, unit, total_cost)
+  local summary
+  if total_cost == nil then
+    summary = string.format("\n\n---\nTeam complete: %d %s. Cost estimate unavailable.", successful, unit)
+  else
+    summary = string.format("\n\n---\nTeam complete: %d %s, ~$%.4f estimated cost.", successful, unit, total_cost)
+  end
   if failed > 0 then
     summary = summary .. string.format(" %d step(s) failed; the run is incomplete.", failed)
   end
 
   memory.save(ctx, slug, report .. summary)
 
-  return { llm_output = report .. summary, format = "markdown", is_error = failed > 0 }
+  return {
+    llm_output = report .. summary,
+    format = "markdown",
+    is_error = failed > 0,
+    cost = total_cost,
+    usage = roles.usage(usage),
+  }
 end
 
 local function header(input)
