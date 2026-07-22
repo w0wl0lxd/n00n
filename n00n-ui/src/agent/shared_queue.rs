@@ -12,6 +12,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use n00n_agent::{AgentInput, ExtractedCommand, ImageSource, InterruptPoint, InterruptSource};
 
+#[cfg(test)]
+use n00n_agent::{AgentMode, ThinkingConfig};
+
 use crate::components::input::Submission;
 use crate::components::queue_panel::QueueEntry;
 use crate::theme;
@@ -84,7 +87,7 @@ impl QueueItem {
                 color: theme::current()
                     .queue
                     .fg
-                    .unwrap_or(theme::current().foreground),
+                    .unwrap_or_else(|| theme::current().foreground),
             },
         }
     }
@@ -157,7 +160,7 @@ impl QueueSender {
 
     pub(crate) fn insert_panel(&self, index: usize, entry: QueueItem) {
         let mut items = lock(&self.items);
-        let item_index = Self::panel_index(&items, index).unwrap_or(items.len());
+        let item_index = Self::panel_index(&items, index).unwrap_or_else(|| items.len());
         items.insert(item_index, entry);
     }
 
@@ -260,10 +263,10 @@ mod tests {
             image_count: 0,
             input: AgentInput {
                 message: String::new(),
-                mode: Default::default(),
+                mode: AgentMode::default(),
                 images: Vec::new(),
                 preamble: Vec::new(),
-                thinking: Default::default(),
+                thinking: ThinkingConfig::default(),
                 fast: false,
                 workflow: false,
                 prompt: None,
@@ -292,10 +295,10 @@ mod tests {
             image_count: 0,
             input: AgentInput {
                 message: text.into(),
-                mode: Default::default(),
+                mode: AgentMode::default(),
                 images: Vec::new(),
                 preamble: Vec::new(),
-                thinking: Default::default(),
+                thinking: ThinkingConfig::default(),
                 fast: false,
                 workflow: false,
                 prompt: None,

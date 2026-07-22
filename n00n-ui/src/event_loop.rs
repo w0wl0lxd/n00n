@@ -188,7 +188,7 @@ impl SpawnCtx {
             Arc::clone(&self.custom_commands),
             Arc::clone(&self.picker),
         );
-        app.lua_event_handle = self.lua_event_handle.clone();
+        app.lua_event_handle.clone_from(&self.lua_event_handle);
         handles.apply_to_app(&mut app);
         if resumed {
             restore_session(&mut app, &handles);
@@ -280,7 +280,11 @@ fn merge_batch(
     if batch.models.is_empty() {
         return;
     }
-    let mut merged = available.load().as_deref().cloned().unwrap_or_default();
+    let mut merged = available
+        .load()
+        .as_deref()
+        .cloned()
+        .unwrap_or_else(Vec::new);
     for spec in &batch.models {
         if !merged.contains(spec) {
             merged.push(spec.clone());
@@ -333,11 +337,11 @@ fn restore_session(app: &mut App, handles: &AgentHandles) {
         .load_session_rules(crate::app::session_state::stored_to_rules(
             &app.state.session.meta.session_rules,
         ));
-    *handles
+    (*handles
         .tool_outputs
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-        app.state.session.tool_outputs.clone();
+        .unwrap_or_else(std::sync::PoisonError::into_inner))
+    .clone_from(&app.state.session.tool_outputs);
     app.restore_display();
     for w in app.state.warnings.drain(..) {
         app.status_bar.flash(w);
@@ -349,6 +353,8 @@ impl<'t> EventLoop<'t> {
         terminal: &'t mut ratatui::DefaultTerminal,
         params: EventLoopParams,
     ) -> Result<Self> {
+        static PROCESS_WARMUP: std::sync::Once = std::sync::Once::new();
+
         let EventLoopParams {
             mut model,
             needs_login,
@@ -370,7 +376,6 @@ impl<'t> EventLoop<'t> {
             lua_event_handle,
         } = params;
 
-        static PROCESS_WARMUP: std::sync::Once = std::sync::Once::new();
         PROCESS_WARMUP.call_once(|| {
             std::thread::spawn(crate::highlight::warmup);
             crate::update::spawn_check();
@@ -727,7 +732,8 @@ impl<'t> EventLoop<'t> {
             SessionRequest::List => {
                 let storage = self.ctx.storage.clone();
                 smol::unblock(move || {
-                    let cwd = std::env::current_dir().unwrap_or_default();
+                    let cwd =
+                        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                     let reply = AppSession::list(&cwd.to_string_lossy(), &storage)
                         .map_err(|e| e.to_string())
                         .and_then(|list| serde_json::to_value(list).map_err(|e| e.to_string()));
@@ -961,7 +967,6 @@ impl<'t> EventLoop<'t> {
                 (None, None)
             }
             Event::Key(key) if key.kind == KeyEventKind::Press => (Some(Msg::Key(key)), None),
-            Event::Key(_) => (None, None),
             Event::Paste(text) => (Some(Msg::Paste(text)), None),
             Event::Mouse(mouse) => self.translate_mouse(mouse),
             _ => (None, None),
@@ -1124,8 +1129,8 @@ impl<'t> EventLoop<'t> {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = loaded.tool_outputs;
             }
-            Action::ChangeModel(spec) => self.change_model(spec),
-            Action::RefreshProvider { slug } => self.refresh_provider(slug),
+            Action::ChangeModel(spec) => self.change_model(&spec),
+            Action::RefreshProvider { slug } => self.refresh_provider(&slug),
             Action::AssignTier(spec, tier) => {
                 n00n_providers::model_registry::set_and_persist(spec, tier, &self.ctx.storage);
             }
@@ -1191,13 +1196,13 @@ impl<'t> EventLoop<'t> {
         }
     }
 
-    fn change_model(&mut self, spec: String) {
-        match Model::from_spec(&spec) {
+    fn change_model(&mut self, spec: &str) {
+        match Model::from_spec(spec) {
             Ok(mut new_model) => match from_model(&mut new_model, self.ctx.timeouts) {
                 Ok(new_provider) => {
                     let app = self.focused_app();
                     app.update_model(&new_model);
-                    app.record_recent_model(&spec);
+                    app.record_recent_model(spec);
                     app.usage_slot.store(None);
                     self.ctx.model_slot.store(Arc::new(ModelSlot {
                         model: new_model,
@@ -1247,7 +1252,7 @@ impl<'t> EventLoop<'t> {
         .detach();
     }
 
-    fn refresh_provider(&mut self, slug: String) {
+    fn refresh_provider(&mut self, slug: &str) {
         let mut model = self.ctx.model_slot.load().model.clone();
         if model.provider.to_string() == slug {
             if let Ok(provider) =
@@ -1259,8 +1264,8 @@ impl<'t> EventLoop<'t> {
                     provider: Arc::from(provider),
                 }));
             }
-        } else if let Some(builtin) = n00n_config::providers::builtin_provider(&slug) {
-            self.change_model(builtin.default_model.to_string());
+        } else if let Some(builtin) = n00n_config::providers::builtin_provider(slug) {
+            self.change_model(builtin.default_model);
         }
     }
 
@@ -1304,9 +1309,9 @@ impl<'t> EventLoop<'t> {
 
 fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
     if kind == MouseEventKind::ScrollUp {
-        lines as i32
+        lines.cast_signed()
     } else {
-        -(lines as i32)
+        -lines.cast_signed()
     }
 }
 

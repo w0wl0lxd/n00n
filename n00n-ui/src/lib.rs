@@ -53,6 +53,11 @@ pub enum RunOutcome {
     },
 }
 
+/// Run the n00n UI event loop.
+///
+/// # Errors
+///
+/// Returns an error if the terminal cannot be initialized or the event loop fails.
 pub fn run(params: EventLoopParams, initial_prompt: Option<String>) -> Result<RunOutcome> {
     let report = {
         let (_guard, mut terminal) = terminal::TerminalGuard::init()?;

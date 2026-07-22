@@ -168,7 +168,7 @@ impl Splash {
             ease_out_cubic(t / FADE_DURATION)
         };
         if self.animate {
-            self.render_field(area, buf, t + self.field_offset, fade, accent);
+            Self::render_field(area, buf, t + self.field_offset, fade, accent);
         }
     }
 
@@ -189,17 +189,17 @@ impl Splash {
         let top_y = area.y + area.height.saturating_sub(block_height) / if compact { 1 } else { 2 };
         let tag_y = top_y + 1;
         let help_y = top_y + if compact { 2 } else { 3 };
-        let tip_y = top_y + if compact { 3 } else { 5 };
+        let hint_y = top_y + if compact { 3 } else { 5 };
         let version_y = if compact { top_y } else { area.y };
 
-        self.render_logo(area, buf, t, fade, top_y, accent);
+        Self::render_logo(area, buf, t, fade, top_y, accent);
         render_centered_faded(area, buf, fade, 0.75, tag_y, TAGLINE);
-        self.render_help(area, buf, fade, help_y, accent);
-        self.render_tip(area, buf, fade, tip_y, accent);
+        Self::render_help(area, buf, fade, help_y, accent);
+        self.render_tip(area, buf, fade, hint_y, accent);
         render_version(area, buf, fade, version_y, new_version);
     }
 
-    fn render_field(&self, area: Rect, buf: &mut Buffer, t: f32, fade: f32, accent: Color) {
+    fn render_field(area: Rect, buf: &mut Buffer, t: f32, fade: f32, accent: Color) {
         let theme = theme::current();
         let (ac_r, ac_g, ac_b) = extract_rgb(accent, (100, 140, 255));
         let (bg_r, bg_g, bg_b) = extract_rgb(theme.background, (15, 15, 25));
@@ -334,15 +334,7 @@ impl Splash {
         }
     }
 
-    fn render_logo(
-        &self,
-        area: Rect,
-        buf: &mut Buffer,
-        t: f32,
-        fade: f32,
-        top_y: u16,
-        accent: Color,
-    ) {
+    fn render_logo(area: Rect, buf: &mut Buffer, t: f32, fade: f32, top_y: u16, accent: Color) {
         let theme = theme::current();
         let bg = theme.background;
         let (ac_r, ac_g, ac_b) = extract_rgb(accent, (100, 140, 255));
@@ -370,7 +362,7 @@ impl Splash {
         }
     }
 
-    fn render_help(&self, area: Rect, buf: &mut Buffer, fade: f32, help_y: u16, accent: Color) {
+    fn render_help(area: Rect, buf: &mut Buffer, fade: f32, help_y: u16, accent: Color) {
         if help_y >= area.y + area.height {
             return;
         }
@@ -403,7 +395,7 @@ impl Splash {
         let theme = theme::current();
         let bg = theme.background;
         let tip_rgb = extract_rgb(
-            theme.todo_in_progress.fg.unwrap_or(Color::Yellow),
+            theme.todo_in_progress.fg.unwrap_or_else(|| Color::Yellow),
             (249, 226, 175),
         );
         let ac = extract_rgb(accent, (100, 140, 255));
