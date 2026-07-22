@@ -96,25 +96,27 @@ impl FilePickerModal {
         let nucleo = Nucleo::new(Config::DEFAULT.match_paths(), notify, None, 1);
         let injector = nucleo.injector();
         let cancel = Arc::new(AtomicBool::new(false));
-        let cancel_clone = cancel.clone();
+        let cancel_clone = Arc::clone(&cancel);
         let (done_tx, done_rx) = flume::bounded(1);
 
         let root = PathBuf::from(cwd);
         if let Err(e) = thread::Builder::new()
             .name("file-walker".into())
             .spawn(move || {
-                let overrides = OverrideBuilder::new(&root)
-                    .add("!.git")
-                    .unwrap()
-                    .build()
-                    .unwrap();
+                let mut overrides_builder = OverrideBuilder::new(&root);
+                if overrides_builder.add("!.git").is_err() {
+                    return;
+                }
+                let Ok(overrides) = overrides_builder.build() else {
+                    return;
+                };
                 WalkBuilder::new(&root)
                     .hidden(false)
                     .overrides(overrides)
                     .build_parallel()
                     .run(|| {
                         let injector = injector.clone();
-                        let cancel = cancel.clone();
+                        let cancel = Arc::clone(&cancel);
                         let root = root.clone();
                         Box::new(move |entry| {
                             if cancel.load(Ordering::Relaxed) {

@@ -1,5 +1,4 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::fmt::Write;
 use strum::EnumIter;
 use unicode_width::UnicodeWidthStr;
 
@@ -609,7 +608,7 @@ pub(crate) fn key_event_to_string(key: &KeyEvent) -> String {
         KeyCode::End => s.push_str("end"),
         KeyCode::PageUp => s.push_str("pageup"),
         KeyCode::PageDown => s.push_str("pagedown"),
-        KeyCode::F(n) => write!(s, "f{n}").unwrap(),
+        KeyCode::F(n) => s.push_str(&format!("f{n}")),
         KeyCode::Insert => s.push_str("insert"),
         _ => {}
     }

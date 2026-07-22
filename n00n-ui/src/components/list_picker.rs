@@ -314,10 +314,9 @@ impl<T: PickerItem> ListPicker<T> {
     }
 
     fn handle_ready_key(&mut self, key: KeyEvent) -> PickerAction<T> {
-        let s = self
-            .state
-            .as_mut()
-            .expect("handle_ready_key called without state");
+        let Some(s) = self.state.as_mut() else {
+            return PickerAction::Close;
+        };
 
         if key::QUIT.matches(key) {
             self.state = None;
@@ -367,8 +366,13 @@ impl<T: PickerItem> ListPicker<T> {
                 }
                 match idx {
                     Some(idx) => {
-                        let mut state = self.state.take().unwrap();
-                        PickerAction::Select(idx, state.items.swap_remove(idx))
+                        let Some(mut state) = self.state.take() else {
+                            return PickerAction::Close;
+                        };
+                        if idx >= state.items.len() {
+                            return PickerAction::Close;
+                        }
+                        PickerAction::Select(idx, state.items.remove(idx))
                     }
                     None => PickerAction::Consumed,
                 }

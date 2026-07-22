@@ -1254,7 +1254,7 @@ impl App {
             if let Some(ref outputs) = self.shared_tool_outputs {
                 outputs
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .insert(e.id.clone(), e.output.clone());
             }
             if let Some(&sub_idx) = self.chat_index.get(&e.id) {
@@ -1573,7 +1573,10 @@ impl App {
     }
 
     fn execute_mcp_prompt(&mut self, name: &str, args: &str) -> Vec<Action> {
-        let prompt = self.command_palette.find_mcp_prompt(name).unwrap().clone();
+        let Some(prompt) = self.command_palette.find_mcp_prompt(name) else {
+            return Vec::new();
+        };
+        let prompt = prompt.clone();
 
         let arguments = Self::parse_prompt_args(&prompt, args);
         let missing: Vec<_> = prompt

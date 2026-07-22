@@ -492,7 +492,9 @@ impl MessagesPanel {
         let tl = build_instructions_lines(blocks, self.viewport_width, exp.output);
 
         if let Some(seg_idx) = self.cache.find_instructions(parent_id) {
-            let seg = self.cache.get_mut(seg_idx).unwrap();
+            let Some(seg) = self.cache.get_mut(seg_idx) else {
+                return;
+            };
             seg.search_text = tl.search_text.clone();
             seg.update_with_reuse(tl, &self.hl_worker);
         } else {
@@ -1555,7 +1557,9 @@ impl MessagesPanel {
             .as_deref()
             .and_then(n00n_agent::ToolOutput::owned_instructions);
 
-        let seg = self.cache.get_mut(seg_idx).unwrap();
+        let Some(seg) = self.cache.get_mut(seg_idx) else {
+            return;
+        };
         seg.search_text = tl.search_text.clone();
         seg.update_with_reuse(tl, &self.hl_worker);
 
@@ -1634,7 +1638,7 @@ impl MessagesPanel {
             .content_width(self.viewport_width)
             .saturating_sub(prefix.width() as u16)
             .max(1);
-        let picker = self.picker.clone();
+        let picker = Arc::clone(&self.picker);
         let picker_ref = &*picker;
         let mut lines = if style.use_markdown {
             text_to_lines(
@@ -1771,7 +1775,7 @@ impl MessagesPanel {
                     .content_width(self.viewport_width)
                     .saturating_sub(prefix.width() as u16)
                     .max(1);
-                let picker = self.picker.clone();
+                let picker = Arc::clone(&self.picker);
                 let picker_ref = &*picker;
                 let mut lines = if style.use_markdown {
                     text_to_lines(

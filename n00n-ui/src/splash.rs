@@ -83,7 +83,7 @@ impl ColorTransition {
             to: rgb,
             start: Instant::now()
                 .checked_sub(std::time::Duration::from_secs_f32(COLOR_TRANSITION_SECS))
-                .unwrap(),
+                .unwrap_or_else(Instant::now),
         }
     }
 
@@ -100,7 +100,10 @@ impl ColorTransition {
 
     #[must_use]
     pub fn is_animating(&self) -> bool {
-        Instant::now().duration_since(self.start).as_secs_f32() < COLOR_TRANSITION_SECS
+        Instant::now()
+            .saturating_duration_since(self.start)
+            .as_secs_f32()
+            < COLOR_TRANSITION_SECS
     }
 
     #[must_use]
@@ -110,7 +113,8 @@ impl ColorTransition {
     }
 
     fn resolve_rgb(&self, now: Instant) -> (u8, u8, u8) {
-        let t = (now.duration_since(self.start).as_secs_f32() / COLOR_TRANSITION_SECS).min(1.0);
+        let t = (now.saturating_duration_since(self.start).as_secs_f32() / COLOR_TRANSITION_SECS)
+            .min(1.0);
         let p = ease_out_cubic(t);
         (
             lerp_u8(self.from.0, self.to.0, p),
