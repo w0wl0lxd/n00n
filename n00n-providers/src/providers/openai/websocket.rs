@@ -35,6 +35,129 @@ const MALFORMED_RETRY_AFTER_DELAY: Duration = Duration::from_mins(1);
 
 type ResponsesSocket = WebSocketStream<async_tungstenite::smol::ConnectStream>;
 
+enum MessageResult {
+    Continue,
+    Progress,
+    Break,
+}
+
+async fn handle_message(
+    socket: &mut ResponsesSocket,
+    message: WsMessage,
+    delivery: &mut RequestDeliveryMetadata,
+    acc: &mut ResponseAccumulator,
+    event_tx: &Sender<ProviderEvent>,
+    progress_deadline: Instant,
+    response_deadline: Instant,
+    stream_timeout: Duration,
+) -> Result<MessageResult, WebSocketAttemptError> {
+    match message {
+        WsMessage::Text(text) => {
+            let event: Value = serde_json::from_str(&text).map_err(|error| {
+                WebSocketAttemptError::transport(
+                    AgentError::Json(error),
+                    acc.emitted_event(),
+                    delivery.clone(),
+                )
+            })?;
+            let event_type = event.get("type").and_then(Value::as_str);
+            update_delivery_metadata(delivery, event_type, &event);
+            match event_type {
+                Some("error") => {
+                    let error = error_from_event(&event);
+                    let transport_failure = matches!(&error, AgentError::Io(_));
+                    Err(if transport_failure {
+                        WebSocketAttemptError::transport(
+                            error,
+                            acc.emitted_event(),
+                            delivery.clone(),
+                        )
+                    } else {
+                        WebSocketAttemptError::response(
+                            error,
+                            acc.emitted_event(),
+                            delivery.clone(),
+                        )
+                    })
+                }
+                Some(event_type) => {
+                    let semantic_progress = is_semantic_progress_event(event_type, &event);
+                    match acc.handle_event(event_type, &event, event_tx).await {
+                        Ok(true) => Ok(MessageResult::Break),
+                        Ok(false) if semantic_progress => Ok(MessageResult::Progress),
+                        Ok(false) => Ok(MessageResult::Continue),
+                        Err(error) => Err(WebSocketAttemptError::response(
+                            error,
+                            acc.emitted_event(),
+                            delivery.clone(),
+                        )),
+                    }
+                }
+                None => Ok(MessageResult::Continue),
+            }
+        }
+        WsMessage::Ping(_) => {
+            let flush_deadline = progress_deadline.min(response_deadline);
+            let flushed = flush_until(socket, flush_deadline).await.map_err(|error| {
+                WebSocketAttemptError::transport(error, acc.emitted_event(), delivery.clone())
+            })?;
+            if !flushed {
+                return Err(WebSocketAttemptError::transport(
+                    AgentError::Timeout {
+                        secs: stream_timeout.as_secs(),
+                    },
+                    acc.emitted_event(),
+                    delivery.clone(),
+                ));
+            }
+            Ok(MessageResult::Continue)
+        }
+        WsMessage::Close(frame) => {
+            add_close_metadata(delivery, frame.as_ref());
+            Err(WebSocketAttemptError::transport(
+                IoError::new(
+                    ErrorKind::ConnectionAborted,
+                    "Responses WebSocket closed without a terminal event",
+                )
+                .into(),
+                acc.emitted_event(),
+                delivery.clone(),
+            ))
+        }
+        _ => Ok(MessageResult::Continue),
+    }
+}
+
+async fn send_create_event(
+    socket: &mut ResponsesSocket,
+    body: &Value,
+    delivery: &mut RequestDeliveryMetadata,
+    stream_timeout: Duration,
+) -> Result<(Instant, Instant, Duration), WebSocketAttemptError> {
+    let create_event = build_create_event(body);
+    delivery.phase = RequestDeliveryPhase::SentAwaitingAcceptance;
+    let response_timeout = response_in_flight_timeout(stream_timeout);
+    let response_deadline = Instant::now() + response_timeout;
+    let progress_deadline = Instant::now() + stream_timeout;
+    let create_sent = send_json_until(
+        socket,
+        &create_event,
+        progress_deadline.min(response_deadline),
+    )
+    .await
+    .map_err(|error| WebSocketAttemptError::transport(error, false, delivery.clone()))?;
+    if !create_sent {
+        return Err(WebSocketAttemptError::transport(
+            AgentError::Timeout {
+                secs: stream_timeout.as_secs(),
+            },
+            false,
+            delivery.clone(),
+        ));
+    }
+    Ok((response_deadline, progress_deadline, response_timeout))
+}
+
 pub(crate) struct ResponsesWebSocket {
     socket: ResponsesSocket,
     opened_at: Instant,
@@ -314,7 +437,6 @@ impl ResponsesWebSocket {
             .await
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn stream_message_with_keepalive(
         &mut self,
         body: &Value,
@@ -334,27 +456,8 @@ impl ResponsesWebSocket {
                 delivery,
             ));
         }
-        let create_event = build_create_event(body);
-        delivery.phase = RequestDeliveryPhase::SentAwaitingAcceptance;
-        let response_timeout = response_in_flight_timeout(stream_timeout);
-        let response_deadline = Instant::now() + response_timeout;
-        let mut progress_deadline = Instant::now() + stream_timeout;
-        let create_sent = send_json_until(
-            &mut self.socket,
-            &create_event,
-            progress_deadline.min(response_deadline),
-        )
-        .await
-        .map_err(|error| WebSocketAttemptError::transport(error, false, delivery.clone()))?;
-        if !create_sent {
-            return Err(WebSocketAttemptError::transport(
-                AgentError::Timeout {
-                    secs: stream_timeout.as_secs(),
-                },
-                false,
-                delivery,
-            ));
-        }
+        let (response_deadline, mut progress_deadline, response_timeout) =
+            send_create_event(&mut self.socket, body, &mut delivery, stream_timeout).await?;
 
         let mut acc = ResponseAccumulator::new();
         let mut keepalive_deadline = Instant::now() + keepalive_interval;
@@ -409,89 +512,21 @@ impl ResponsesWebSocket {
             else {
                 continue;
             };
-            match message {
-                WsMessage::Text(text) => {
-                    let event: Value = serde_json::from_str(&text).map_err(|error| {
-                        WebSocketAttemptError::transport(
-                            AgentError::Json(error),
-                            acc.emitted_event(),
-                            delivery.clone(),
-                        )
-                    })?;
-                    let event_type = event.get("type").and_then(Value::as_str);
-                    update_delivery_metadata(&mut delivery, event_type, &event);
-                    match event_type {
-                        Some("error") => {
-                            let error = error_from_event(&event);
-                            let transport_failure = matches!(&error, AgentError::Io(_));
-                            return Err(if transport_failure {
-                                WebSocketAttemptError::transport(
-                                    error,
-                                    acc.emitted_event(),
-                                    delivery,
-                                )
-                            } else {
-                                WebSocketAttemptError::response(
-                                    error,
-                                    acc.emitted_event(),
-                                    delivery,
-                                )
-                            });
-                        }
-                        Some(event_type) => {
-                            let semantic_progress = is_semantic_progress_event(event_type, &event);
-                            match acc.handle_event(event_type, &event, event_tx).await {
-                                Ok(true) => break,
-                                Ok(false) if semantic_progress => {
-                                    progress_deadline = Instant::now() + stream_timeout;
-                                }
-                                Ok(false) => {}
-                                Err(error) => {
-                                    return Err(WebSocketAttemptError::response(
-                                        error,
-                                        acc.emitted_event(),
-                                        delivery,
-                                    ));
-                                }
-                            }
-                        }
-                        None => {}
-                    }
-                }
-                WsMessage::Ping(_) => {
-                    let flush_deadline = progress_deadline.min(response_deadline);
-                    let flushed = flush_until(&mut self.socket, flush_deadline)
-                        .await
-                        .map_err(|error| {
-                            WebSocketAttemptError::transport(
-                                error,
-                                acc.emitted_event(),
-                                delivery.clone(),
-                            )
-                        })?;
-                    if !flushed {
-                        return Err(WebSocketAttemptError::transport(
-                            AgentError::Timeout {
-                                secs: stream_timeout.as_secs(),
-                            },
-                            acc.emitted_event(),
-                            delivery,
-                        ));
-                    }
-                }
-                WsMessage::Close(frame) => {
-                    add_close_metadata(&mut delivery, frame.as_ref());
-                    return Err(WebSocketAttemptError::transport(
-                        IoError::new(
-                            ErrorKind::ConnectionAborted,
-                            "Responses WebSocket closed without a terminal event",
-                        )
-                        .into(),
-                        acc.emitted_event(),
-                        delivery,
-                    ));
-                }
-                _ => {}
+            match handle_message(
+                &mut self.socket,
+                message,
+                &mut delivery,
+                &mut acc,
+                event_tx,
+                progress_deadline,
+                response_deadline,
+                stream_timeout,
+            )
+            .await?
+            {
+                MessageResult::Continue => {}
+                MessageResult::Progress => progress_deadline = Instant::now() + stream_timeout,
+                MessageResult::Break => break,
             }
         }
 
