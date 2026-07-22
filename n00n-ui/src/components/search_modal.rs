@@ -123,7 +123,7 @@ impl SearchModal {
             self.selected = self
                 .selected
                 .checked_sub(1)
-                .unwrap_or(self.matches.len() - 1);
+                .unwrap_or_else(|| self.matches.len() - 1);
             self.ensure_visible();
         }
     }
@@ -262,7 +262,7 @@ impl SearchModal {
         let cursor_byte = TextBuffer::char_to_byte(&query, self.search.x());
         let (before, rest) = query.split_at(cursor_byte);
         let mut chars = rest.chars();
-        let cursor_char = chars.next().unwrap_or(' ');
+        let cursor_char = chars.next().unwrap_or_else(|| ' ');
         let after = chars.as_str();
 
         let line = Line::from(vec![
@@ -286,7 +286,7 @@ impl Overlay for SearchModal {
 }
 
 fn pick_display_line(text: &str, indices: &[u32]) -> (String, Vec<u32>) {
-    let first_idx = indices.iter().copied().min().unwrap_or(0);
+    let first_idx = indices.iter().copied().min().unwrap_or_else(|| 0);
     let mut char_offset = 0u32;
     for line in text.lines() {
         let line_char_count = line.chars().count() as u32;
@@ -300,7 +300,7 @@ fn pick_display_line(text: &str, indices: &[u32]) -> (String, Vec<u32>) {
         }
         char_offset += line_char_count + 1;
     }
-    let first_line = text.lines().next().unwrap_or("").to_string();
+    let first_line = text.lines().next().unwrap_or_else(|| "").to_string();
     (first_line, Vec::new())
 }
 
@@ -314,7 +314,7 @@ fn build_highlighted_line<'a>(
     let index_set: std::collections::HashSet<u32> = indices.iter().copied().collect();
     let base_style = if is_selected { t.item_selected } else { t.item };
     let match_style = base_style
-        .fg(t.accent.fg.unwrap_or_default())
+        .fg(t.accent.fg.unwrap_or_else(ratatui::style::Color::default))
         .add_modifier(Modifier::BOLD);
 
     let mut spans = vec![Span::styled(LABEL_INDENT, base_style)];

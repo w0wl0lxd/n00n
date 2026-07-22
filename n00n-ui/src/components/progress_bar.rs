@@ -32,7 +32,7 @@ pub fn render(frame: &mut Frame, area: Rect, config: &ProgressBarConfig<'_>) {
     let mut spans = Vec::with_capacity(width);
 
     if let Some(label) = config.label {
-        let style = config.label_style.unwrap_or_default();
+        let style = config.label_style.unwrap_or_else(Style::default);
         spans.push(Span::styled(label, style));
     }
 

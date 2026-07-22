@@ -379,7 +379,7 @@ impl ToolLineBuilder {
                 format!(" ({ann})"),
                 theme::current().tool_annotation,
             ));
-            write!(copy, " ({ann})").unwrap();
+            let _ = write!(copy, " ({ann})");
         }
         self.lines.push(Line::from(spans));
         self.search_text = copy;
@@ -634,7 +634,7 @@ pub fn build_tool_lines(
     rctx: &RenderCtx,
     expanded: SectionFlags,
 ) -> ToolLines {
-    let tool_name = msg.role.tool_name().unwrap_or("?");
+    let tool_name = msg.role.tool_name().unwrap_or_else(|| "?");
     let (header, body) = match msg.text.split_once('\n') {
         Some((h, b)) => (h, Some(b)),
         None => (msg.text.as_str(), None),
@@ -708,14 +708,15 @@ pub fn build_tool_lines(
 }
 
 pub fn truncate_to_header(text: &mut String) {
-    let end = text.find('\n').unwrap_or(text.len());
+    let end = text.find('\n').unwrap_or_else(|| text.len());
     text.truncate(end);
 }
 
 pub(crate) fn append_annotation(ann: &mut Option<String>, suffix: &str) {
-    match ann {
-        Some(a) => write!(a, " · {suffix}").unwrap(),
-        None => *ann = Some(suffix.to_owned()),
+    if let Some(a) = ann {
+        let _ = write!(a, " · {suffix}");
+    } else {
+        *ann = Some(suffix.to_owned());
     }
 }
 

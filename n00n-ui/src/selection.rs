@@ -373,7 +373,7 @@ fn compute_wrap_types(line: &Line<'_>, width: u16) -> Vec<bool> {
 
     while i < chars.len() {
         let ch = chars[i];
-        let cw = ch.width().unwrap_or(0);
+        let cw = ch.width().unwrap_or_else(|| 0);
 
         if ch == ' ' || ch == '\t' {
             last_breakable = Some(i);

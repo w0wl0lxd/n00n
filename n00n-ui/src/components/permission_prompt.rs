@@ -50,7 +50,7 @@ const DENY_GUIDANCE_HINTS: &[(&str, &str)] = &[("Enter", "Deny"), ("Esc", "Cance
 
 fn aligned_hint_rows(rows: &[&[(&str, &str)]]) -> Vec<Line<'static>> {
     let t = theme::current();
-    let max_cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    let max_cols = rows.iter().map(|r| r.len()).max().unwrap_or_else(|| 0);
     let mut col_widths = vec![0usize; max_cols];
     for row in rows {
         for (i, (key, desc)) in row.iter().enumerate() {
@@ -300,7 +300,7 @@ impl PermissionPrompt {
             };
             let (before, after) = display_text.split_at(cursor_pos);
             let mut chars = after.chars();
-            let cursor_ch = chars.next().unwrap_or(' ');
+            let cursor_ch = chars.next().unwrap_or_else(|| ' ');
             let rest: String = chars.collect();
 
             let mut spans = vec![Span::raw("  "), Span::styled("guide ", label_style)];
