@@ -1,7 +1,7 @@
 //! `n00n.agent` exposes subagent primitives to Lua plugins. Policy (retries,
 //! validation, concurrency) lives in the task plugin, not here.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque, hash_map::Entry};
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -775,9 +775,11 @@ fn sanitize_activity_message(raw: &str) -> String {
             let separator_char =
                 separator.map_or('=', |position| word.as_bytes()[position] as char);
             sanitized.push(format!("{key}{separator_char}{REDACTED}"));
-            let has_inline_value = separator.is_some_and(|position| position + 1 < word.len());
+            let inline_value = separator.and_then(|position| word.get(position + 1..));
             index += 1;
-            if !has_inline_value {
+            if inline_value.is_some_and(|value| value.eq_ignore_ascii_case("bearer")) {
+                index = index.saturating_add(1).min(words.len());
+            } else if inline_value.is_none_or(str::is_empty) {
                 if words
                     .get(index)
                     .is_some_and(|next| *next == "=" || *next == ":")
@@ -884,8 +886,7 @@ struct ProgressState {
     activities: VecDeque<Activity>,
     done: bool,
     completed_count: u64,
-    started_activity_ids: HashSet<String>,
-    completed_activity_ids: HashSet<String>,
+    active_activity_counts: HashMap<String, usize>,
     turn_id: u64,
     forwarded_barriers: u64,
 }
@@ -911,8 +912,7 @@ impl Progress {
                 activities: VecDeque::new(),
                 done: false,
                 completed_count: 0,
-                started_activity_ids: HashSet::new(),
-                completed_activity_ids: HashSet::new(),
+                active_activity_counts: HashMap::new(),
                 turn_id: 0,
                 forwarded_barriers: 0,
             }),
@@ -978,11 +978,11 @@ impl Progress {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.completed_activity_ids.contains(&event.id)
-            || !state.started_activity_ids.insert(event.id.clone())
-        {
-            return;
-        }
+        let active_count = state
+            .active_activity_counts
+            .entry(event.id.clone())
+            .or_insert(0);
+        *active_count = active_count.saturating_add(1);
         if state.activities.len() >= PROGRESS_MAX_RECENT {
             state.activities.pop_front();
         }
@@ -1002,13 +1002,19 @@ impl Progress {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !state.completed_activity_ids.insert(event.id.clone()) {
-            return;
+        match state.active_activity_counts.entry(event.id.clone()) {
+            Entry::Occupied(mut entry) if *entry.get() > 1 => {
+                *entry.get_mut() = entry.get().saturating_sub(1);
+            }
+            Entry::Occupied(entry) => {
+                entry.remove();
+            }
+            Entry::Vacant(_) => return,
         }
         if let Some(activity) = state
             .activities
             .iter_mut()
-            .find(|activity| activity.id == event.id)
+            .find(|activity| activity.id == event.id && activity.status == ActivityStatus::Running)
         {
             activity.status = if event.is_error {
                 ActivityStatus::Error
@@ -1420,7 +1426,6 @@ mod tests {
     fn progress_updates_start_in_place_and_retains_status() {
         let progress = Progress::new(Instant::now());
         progress.record_start(&progress_start("one", "cargo test"));
-        progress.record_start(&progress_start("one", "duplicate"));
         progress.record_done(&progress_done("one", true));
         progress.record_done(&progress_done("one", true));
 
@@ -1432,6 +1437,28 @@ mod tests {
         assert_eq!(state.activities.len(), 1);
         assert_eq!(state.activities[0].message.as_deref(), Some("cargo test"));
         assert_eq!(state.activities[0].status, ActivityStatus::Error);
+        assert!(state.active_activity_counts.is_empty());
+    }
+
+    #[test]
+    fn progress_tracks_reused_activity_ids_in_order() {
+        let progress = Progress::new(Instant::now());
+        progress.record_start(&progress_start("call_read", "first"));
+        progress.record_start(&progress_start("call_read", "second"));
+        progress.record_done(&progress_done("call_read", false));
+        progress.record_done(&progress_done("call_read", true));
+
+        let state = progress
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(state.completed_count, 2);
+        assert_eq!(state.activities.len(), 2);
+        assert_eq!(state.activities[0].message.as_deref(), Some("first"));
+        assert_eq!(state.activities[0].status, ActivityStatus::Success);
+        assert_eq!(state.activities[1].message.as_deref(), Some("second"));
+        assert_eq!(state.activities[1].status, ActivityStatus::Error);
+        assert!(state.active_activity_counts.is_empty());
     }
 
     #[test]
@@ -1530,6 +1557,12 @@ mod tests {
             sanitized,
             "API_KEY=[REDACTED] Authorization:[REDACTED] --password=[REDACTED] foo=[REDACTED]"
         );
+    }
+
+    #[test]
+    fn progress_redacts_adjacent_bearer_scheme_and_token() {
+        let sanitized = sanitize_activity_message("Authorization:Bearer visible-token trailing");
+        assert_eq!(sanitized, "Authorization:[REDACTED] trailing");
     }
 
     #[test]
