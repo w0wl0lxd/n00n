@@ -48,22 +48,11 @@ pub(super) fn filter_tool_result(content: &str) -> String {
 
         last_was_blank = false;
 
-        let is_progress = trimmed.starts_with("...")
-            || trimmed.starts_with("==>")
-            || trimmed.starts_with("-->")
-            || trimmed.contains('%')
-            || trimmed.contains("progress")
-            || trimmed.contains("Processing")
-            || trimmed.contains("Downloading")
-            || trimmed.contains("Installing")
-            || trimmed.contains("Building")
-            || trimmed.contains("Compiling");
-
-        if is_progress {
+        if is_progress_line(trimmed) {
             continue;
         }
 
-        lines.push(trimmed.to_string());
+        lines.push(line.to_string());
     }
 
     while lines.last().map_or(false, String::is_empty) {
@@ -71,6 +60,30 @@ pub(super) fn filter_tool_result(content: &str) -> String {
     }
 
     lines.join("\n")
+}
+
+fn is_progress_line(trimmed: &str) -> bool {
+    if trimmed.starts_with("...")
+        || trimmed.starts_with("==>")
+        || trimmed.starts_with("-->")
+        || trimmed.contains("progress")
+        || trimmed.contains("Processing")
+        || trimmed.contains("Downloading")
+        || trimmed.contains("Installing")
+        || trimmed.contains("Building")
+        || trimmed.contains("Compiling")
+    {
+        return true;
+    }
+
+    if let Some(prefix) = trimmed.strip_suffix('%') {
+        let without_pct = prefix.trim();
+        if !without_pct.is_empty() && without_pct.chars().all(|c| c.is_ascii_digit() || c == '.') {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Resolves the model to use for compaction.

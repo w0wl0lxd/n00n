@@ -655,7 +655,7 @@ fn convert_tools(tools: &Value) -> Vec<Value> {
             Some(json!({
                 "name": name,
                 "description": description,
-                "parameters": super::strip_additional_properties(parameters),
+                "parameters": parameters,
             }))
         })
         .collect()
@@ -832,7 +832,6 @@ async fn parse_sse(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::strip_additional_properties;
     use test_case::test_case;
 
     fn test_model() -> Model {
@@ -1040,14 +1039,12 @@ mod tests {
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "cmd": {"type": "string", "additionalProperties": false},
+                    "cmd": {"type": "string"},
                     "opts": {
                         "type": "object",
-                        "additionalProperties": false,
                         "properties": {"verbose": {"type": "boolean"}}
                     }
-                },
-                "additionalProperties": false
+                }
             }
         }]);
         let result = convert_tools(&tools);
@@ -1055,57 +1052,6 @@ mod tests {
         assert_eq!(result[0]["name"], "bash");
         assert_eq!(result[0]["description"], "run a command");
         assert!(result[0]["parameters"]["properties"]["cmd"].is_object());
-        assert!(
-            result[0]["parameters"]
-                .get("additionalProperties")
-                .is_none()
-        );
-        assert!(
-            result[0]["parameters"]["properties"]["cmd"]
-                .get("additionalProperties")
-                .is_none()
-        );
-        assert!(
-            result[0]["parameters"]["properties"]["opts"]
-                .get("additionalProperties")
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn strip_additional_properties_recursive() {
-        let schema = json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "inner": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {"x": {"type": "number", "additionalProperties": false}}
-                },
-                "list": {
-                    "type": "array",
-                    "items": {"type": "string", "additionalProperties": false}
-                }
-            }
-        });
-        let cleaned = strip_additional_properties(schema);
-        assert!(cleaned.get("additionalProperties").is_none());
-        assert!(
-            cleaned["properties"]["inner"]
-                .get("additionalProperties")
-                .is_none()
-        );
-        assert!(
-            cleaned["properties"]["inner"]["properties"]["x"]
-                .get("additionalProperties")
-                .is_none()
-        );
-        assert!(
-            cleaned["properties"]["list"]["items"]
-                .get("additionalProperties")
-                .is_none()
-        );
     }
 
     #[test]

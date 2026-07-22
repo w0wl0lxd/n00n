@@ -147,7 +147,6 @@ pub fn to_json_schema(s: &ParamSchema) -> Value {
             let mut v = json!({
                 "type": "object",
                 "properties": props,
-                "additionalProperties": false,
             });
             if !required.is_empty() {
                 v["required"] = json!(required);
@@ -984,10 +983,13 @@ mod tests {
     }
 
     #[test]
-    fn to_json_schema_object_is_closed_with_required_and_nested_items() {
+    fn to_json_schema_object_has_required_and_nested_items() {
         let v = to_json_schema(&MULTIEDIT_LIKE);
         assert_eq!(v["type"], "object");
-        assert_eq!(v["additionalProperties"], false);
+        assert!(
+            v.get("additionalProperties").is_none(),
+            "additionalProperties is enforced by schema::validate, not the wire schema"
+        );
         let req: Vec<&str> = v["required"]
             .as_array()
             .unwrap()
@@ -997,9 +999,11 @@ mod tests {
         assert_eq!(req, vec!["path", "edits"]);
         assert_eq!(v["properties"]["edits"]["type"], "array");
         assert_eq!(v["properties"]["edits"]["items"]["type"], "object");
-        assert_eq!(
-            v["properties"]["edits"]["items"]["additionalProperties"],
-            false
+        assert!(
+            v["properties"]["edits"]["items"]
+                .get("additionalProperties")
+                .is_none(),
+            "additionalProperties is enforced by schema::validate, not the wire schema"
         );
     }
 
