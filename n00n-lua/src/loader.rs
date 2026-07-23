@@ -36,6 +36,10 @@ static BUNDLED_PLUGINS: &[BundledPlugin] = &[
         dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/arbor"),
     },
     BundledPlugin {
+        name: "blackboard",
+        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/blackboard"),
+    },
+    BundledPlugin {
         name: "sessions",
         dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/sessions"),
     },
