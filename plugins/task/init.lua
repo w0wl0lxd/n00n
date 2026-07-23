@@ -5,10 +5,8 @@
 -- primitives only (`n00n.agent.session`, `n00n.json.schema_validator`,
 -- `n00n.async.semaphore`).
 
-local ActivityPreview = require("n00n.activity_preview")
 local ToolView = require("n00n.tool_view")
-local route_tier = require("n00n.route_tier").route_tier
-local usage = require("n00n.usage")
+local output_limits = require("n00n.output_limits")
 
 local STRUCTURED_OUTPUT_NAME = "structured_output"
 local STRUCTURED_OUTPUT_DESCRIPTION = "Report your final result. Call it exactly once when your task is complete."
@@ -17,14 +15,15 @@ local STRUCTURED_OUTPUT_PROMPT_SUFFIX = "\n\nWhen finished, call the structured_
 local DONE_NAME = "done"
 local DONE_DESCRIPTION = "Call when the task is complete with your final answer."
 local DONE_PROMPT_SUFFIX = "\n\nWhen finished, call the done tool with your final answer."
+local MAX_STRUCTURED_RETRIES = 2
 local MAX_SCHEMA_ERRORS = 3
 local MAX_SCHEMA_BYTES = 32 * 1024
 local MAX_SCHEMA_DEPTH = 16
 local MAX_STRUCTURED_RETRIES = 1
 local SCHEMA_ROOT_ERROR = "output_schema must have type object"
-local SCHEMA_COMPILE_ERROR = "invalid output_schema"
 local SCHEMA_SIZE_ERROR = "output_schema exceeds 32768-byte limit"
 local SCHEMA_DEPTH_ERROR = "output_schema exceeds maximum depth of 16"
+local SCHEMA_COMPILE_ERROR = "invalid output_schema"
 local STRUCTURED_MISSING_ERROR = "subagent finished without calling structured_output"
 local STRUCTURED_INVALID_ERROR = "subagent result does not match output_schema"
 local INVALID_INPUT_PREFIX =
@@ -121,6 +120,41 @@ local function bounded_errors(errors)
   return table.concat(out, "\n")
 end
 
+local function make_preview(ctx, description)
+  local tol = ctx:tool_output_lines()
+  local max_preview = (tol and tol.task) or DEFAULT_OUTPUT_LINES
+  local view = ToolView.new(n00n.ui.buf(), { max_lines = max_preview, keep = "tail" })
+  local last_completed = 0
+
+  local function update(progress)
+    if progress.completed_count > last_completed then
+      local new_count = progress.completed_count - last_completed
+      local recent = progress.recent_tools
+      local start = new_count <= #recent and (#recent - new_count + 1) or 1
+      for i = start, #recent do
+        view:append({ { "✓ " .. recent[i], "dim" } })
+      end
+      last_completed = progress.completed_count
+    end
+
+    local elapsed = math.floor(progress.elapsed_ms / 1000)
+    local elapsed_str = n00n.ui.humantime(elapsed)
+    local header = { { description .. " · " .. elapsed_str, "bold" } }
+    if progress.current_tool then
+      header[#header + 1] = { { "▸ " .. progress.current_tool, "bold" } }
+    elseif not progress.done then
+      header[#header + 1] = { { "Starting...", "dim" } }
+    end
+    view:set_header(header)
+  end
+
+  view.buf:on("click", function()
+    view:toggle()
+  end)
+
+  return { buf = view.buf, update = update }
+end
+
 local function handler(input, ctx)
   if input.background then
     local forwarded = {}
@@ -156,11 +190,11 @@ local function handler(input, ctx)
     if type(input.output_schema) ~= "table" or input.output_schema.type ~= "object" then
       return { llm_output = SCHEMA_ROOT_ERROR, is_error = true }
     end
-    local encoded_schema, encode_err = n00n.json.encode(input.output_schema)
+    local schema_json, encode_err = n00n.json.encode(input.output_schema)
     if encode_err then
       return { llm_output = SCHEMA_COMPILE_ERROR .. ": " .. encode_err, is_error = true }
     end
-    if #encoded_schema > MAX_SCHEMA_BYTES then
+    if #schema_json > MAX_SCHEMA_BYTES then
       return { llm_output = SCHEMA_SIZE_ERROR, is_error = true }
     end
     if not schema_within_depth(input.output_schema, 1) then
@@ -199,7 +233,6 @@ local function handler(input, ctx)
   local tool_defs, tools_err = n00n.agent.tools(ctx, {
     audience = audience,
     spec = model.spec,
-    include_mcp = true,
   })
   if tools_err then
     return { llm_output = tools_err, is_error = true }
@@ -242,98 +275,115 @@ local function handler(input, ctx)
     }
   end
 
-  local task_description = input.description or "task"
-  local preview, preview_err = ActivityPreview.new(ctx, task_description)
-  if not preview then
-    return { llm_output = "failed to publish task preview: " .. tostring(preview_err), is_error = true }
+  local preview = make_preview(ctx, input.description or "task")
+
+  local function on_finish(err, result)
+    if err then
+      ctx:finish({ llm_output = "task failed: " .. tostring(err), is_error = true, body = preview.buf })
+    else
+      ctx:finish({
+        llm_output = result.llm_output,
+        body = preview.buf,
+        is_error = result.is_error,
+        format = result.format,
+        usage = result.usage,
+        cost = result.cost,
+      })
+    end
   end
 
-  local permit
-  local ok, out = pcall(function()
-    permit = semaphore:acquire()
-    local sess, sess_err = n00n.agent.session(ctx, {
-      model_spec = model.spec,
-      system = system,
-      tools = tool_defs,
-      local_tools = local_tools,
-      audience = audience,
-      name = input.description,
-      thinking = input.thinking,
-    })
-    if sess_err then
-      return { llm_output = sess_err, is_error = true }
-    end
+  n00n.async.run(function()
+    local permit = semaphore:acquire()
+    local ok, out = pcall(function()
+      local sess, sess_err = n00n.agent.session(ctx, {
+        model_spec = model.spec,
+        system = system,
+        tools = tool_defs,
+        local_tools = local_tools,
+        audience = audience,
+        name = input.description,
+      })
+      if sess_err then
+        return { llm_output = sess_err, is_error = true }
+      end
 
-    local function do_prompt()
-      local message = input.prompt
-      if validator then
-        message = message .. STRUCTURED_OUTPUT_PROMPT_SUFFIX
-      else
-        message = message .. DONE_PROMPT_SUFFIX
-      end
-      local result, err = preview:prompt(sess, message, task_description)
-      local retries = 0
-      while not err and validator and not captured and retries < MAX_STRUCTURED_RETRIES do
-        retries = retries + 1
-        local nudged
-        nudged, err = preview:prompt(sess, NUDGE_MISSING, task_description)
-        if nudged then
-          result = nudged
+      local function attach_cost(r)
+        if r and not r.cost and r.input_tokens and r.output_tokens then
+          local cost, _ = n00n.agent.usage_cost(model.spec, r.input_tokens, r.output_tokens, r)
+          r.cost = cost
         end
       end
-      local session_usage, cost, metrics_err = usage.price(model.spec, result)
-      local function finish(value)
-        value.usage = session_usage
-        value.cost = cost
-        return value
-      end
-      if metrics_err then
-        return finish({ llm_output = "usage pricing failed: " .. metrics_err, is_error = true })
-      end
-      if err then
-        return finish({ llm_output = "sub-agent error: " .. err, is_error = true })
-      end
-      if validator and not captured then
-        local msg = last_errors and (STRUCTURED_INVALID_ERROR .. ":\n" .. last_errors) or STRUCTURED_MISSING_ERROR
-        return finish({ llm_output = msg, is_error = true })
-      end
-      if not captured and (not result or not result.text or result.text == "") then
-        return finish({ llm_output = "sub-agent returned no output", is_error = true })
-      end
-      if captured then
-        if type(captured) == "string" then
-          return finish({ llm_output = captured, format = "markdown" })
+
+      local function do_prompt()
+        local message = input.prompt
+        if validator then
+          message = message .. STRUCTURED_OUTPUT_PROMPT_SUFFIX
+        else
+          message = message .. DONE_PROMPT_SUFFIX
         end
-        local encoded, encode_err = n00n.json.encode(captured)
-        if encode_err then
-          return finish({
-            llm_output = "failed to encode structured output: " .. tostring(encode_err),
+        local result, err = sess:prompt(message)
+        attach_cost(result)
+        local retries = 0
+        while not err and validator and not captured and retries < MAX_STRUCTURED_RETRIES do
+          retries = retries + 1
+          result, err = sess:prompt(NUDGE_MISSING)
+          attach_cost(result)
+        end
+        if err then
+          return {
+            llm_output = "sub-agent error: " .. err,
             is_error = true,
-          })
+            usage = result,
+            cost = result and result.cost,
+          }
         end
-        return finish({ llm_output = encoded, format = "markdown" })
+        if validator and not captured then
+          local msg = last_errors and (STRUCTURED_INVALID_ERROR .. ":\n" .. last_errors) or STRUCTURED_MISSING_ERROR
+          return { llm_output = msg, is_error = true, usage = result, cost = result and result.cost }
+        end
+        if captured then
+          if type(captured) == "string" then
+            return { llm_output = captured, format = "markdown", usage = result, cost = result and result.cost }
+          end
+          return {
+            llm_output = n00n.json.encode(captured),
+            format = "markdown",
+            usage = result,
+            cost = result and result.cost,
+          }
+        end
+        return { llm_output = result.text, format = "markdown", usage = result, cost = result and result.cost }
       end
-      return finish({ llm_output = result.text, format = "markdown" })
-    end
 
-    local result = do_prompt()
-    sess:close()
-    return result
-  end)
-  if permit then
+      local function do_poll()
+        while true do
+          local progress, err = sess:get_progress()
+          if not progress then
+            return
+          end
+          preview:update(progress)
+          if progress.done then
+            return
+          end
+        end
+      end
+
+      local results = n00n.async.gather({ do_prompt, do_poll })
+      sess:close()
+      local prompt_res = results[1]
+      if not prompt_res.ok then
+        error(prompt_res.err, 0)
+      end
+      return prompt_res.value
+    end)
     permit:release()
-  end
-  if not ok then
-    return { llm_output = "task failed: " .. tostring(out), is_error = true, body = preview.view.buf }
-  end
-  return {
-    llm_output = out.llm_output,
-    body = preview.view.buf,
-    is_error = out.is_error,
-    format = out.format,
-    cost = out.cost,
-    usage = out.usage,
-  }
+    if not ok then
+      error(out, 0)
+    end
+    return out
+  end, on_finish)
+
+  return nil
 end
 
 local function header(input)
@@ -347,7 +397,7 @@ local function restore(_input, output, is_error, ctx)
   local opts = {
     max_lines = (tol and tol.task) or DEFAULT_OUTPUT_LINES,
     keep = "head",
-    max_line_bytes = DEFAULT_MAX_LINE_BYTES,
+    max_line_bytes = output_limits.DEFAULT_MAX_LINE_BYTES,
   }
   if not is_error then
     local width = math.max(n00n.ui.terminal_size().cols - BODY_INDENT_COLS, MIN_MD_WIDTH)

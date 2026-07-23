@@ -588,11 +588,25 @@ impl From<ThinkingConfig> for StoredThinking {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RequestOptions {
     pub thinking: ThinkingConfig,
     /// Raw user preference, reconciled by [`RequestOptions::clamped`] before use.
     pub fast: bool,
+    /// Number of recent messages whose last content block should be marked with
+    /// `cache_control`. Default is 2. Higher values increase cache write cost but
+    /// may improve cache hit rates in long conversations.
+    pub message_cache_breakpoints: usize,
+}
+
+impl Default for RequestOptions {
+    fn default() -> Self {
+        Self {
+            thinking: Default::default(),
+            fast: false,
+            message_cache_breakpoints: 2,
+        }
+    }
 }
 
 impl RequestOptions {
@@ -608,6 +622,7 @@ impl RequestOptions {
                 ThinkingConfig::Off
             },
             fast: self.fast && model.supports_fast(),
+            message_cache_breakpoints: self.message_cache_breakpoints,
         }
     }
 }
@@ -635,7 +650,8 @@ pub struct UsageLimit {
     /// Human-readable label for the window, provided by the provider.
     pub label: String,
     /// Usage percentage within the window, 0-100.
-    pub percentage: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub percentage: Option<u32>,
     /// When the window resets, as epoch milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reset_at: Option<u64>,
@@ -896,8 +912,7 @@ mod tests {
     fn clamp_test_model(provider: crate::provider::ProviderKind) -> crate::model::Model {
         crate::model::Model {
             id: "test-model".into(),
-            provider,
-            dynamic_slug: None,
+            provider: std::sync::Arc::<str>::from(provider.to_string()),
             tier: crate::model::ModelTier::Medium,
             family: provider.family(),
             supports_tool_examples_override: None,
@@ -921,6 +936,7 @@ mod tests {
         let opts = RequestOptions {
             thinking,
             fast: false,
+            message_cache_breakpoints: 2,
         };
         assert_eq!(opts.clamped(&model).thinking, expected);
     }
@@ -931,6 +947,7 @@ mod tests {
         let opts = RequestOptions {
             thinking: ThinkingConfig::Off,
             fast: true,
+            message_cache_breakpoints: 2,
         };
         assert!(!opts.clamped(&model).fast);
     }

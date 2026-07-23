@@ -1,4 +1,5 @@
-use n00n_providers::model::{ModelEntry, ModelTier, models_for_provider};
+use n00n_providers::manifest::ManifestRegistry;
+use n00n_providers::model::{ModelEntry, ModelTier};
 use n00n_providers::provider::ProviderKind;
 use std::fmt::Write;
 use strum::IntoEnumIterator;
@@ -17,6 +18,16 @@ const AUTH_RELOADING: &str = r"## Auth Reloading
 n00n re-reads auth from storage and environment variables each time a new agent spawns (`/new`, retry, session load). If you run `n00n auth login` in another terminal or change an env var, the next session picks it up without a restart.
 
 You can set multiple API keys in one env var (`ANTHROPIC_API_KEY=sk-1,sk-2,sk-3`) and they rotate automatically on rate-limit or auth errors.";
+
+const BASE_URL_OVERRIDES: &str = r"## Base URL Overrides
+
+Every provider honors a `<SLUG>_BASE_URL` env var (`anthropic` -> `ANTHROPIC_BASE_URL`, `llama-cpp` -> `LLAMA_CPP_BASE_URL`). Set it to the origin of a proxy or a compatible endpoint and n00n appends the API paths itself:
+
+```sh
+ANTHROPIC_BASE_URL=https://my-proxy.internal n00n
+```
+
+It wins over `providers.toml` and built-in defaults. `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL` are the same names the official SDKs use, so an existing proxy setup carries over as is. One exception: `OPENAI_BASE_URL` only redirects the platform API, never the ChatGPT Coding Plan backend.";
 
 const LONG_CONTEXT_NOTE: &str = r"Add `-1m` to any Claude model, like `claude-sonnet-4-6-1m`, to use the 1M token context window.";
 
@@ -152,7 +163,7 @@ fn build_sections() -> Vec<ProviderSection> {
                         "https://api.z.ai/api/coding/paas/v4",
                     ],
                     features: ProviderKind::Zai.features(),
-                    entries: models_for_provider(ProviderKind::Zai),
+                    entries: ManifestRegistry::get("zai").unwrap().models,
                 });
             }
             ProviderKind::OpenAi => {
@@ -162,7 +173,7 @@ fn build_sections() -> Vec<ProviderSection> {
                     auth_line: format!("{} (also supports OAuth device flow)", format_auth(kind)),
                     urls: vec![kind.base_url()],
                     features: kind.features(),
-                    entries: models_for_provider(kind),
+                    entries: ManifestRegistry::get(&kind.to_string()).unwrap().models,
                 });
             }
             ProviderKind::Copilot => {
@@ -175,7 +186,7 @@ fn build_sections() -> Vec<ProviderSection> {
                     ),
                     urls: vec![kind.base_url()],
                     features: kind.features(),
-                    entries: models_for_provider(kind),
+                    entries: ManifestRegistry::get(&kind.to_string()).unwrap().models,
                 });
             }
             _ => {
@@ -185,7 +196,7 @@ fn build_sections() -> Vec<ProviderSection> {
                     auth_line: format_auth(kind),
                     urls: vec![kind.base_url()],
                     features: kind.features(),
-                    entries: models_for_provider(kind),
+                    entries: ManifestRegistry::get(&kind.to_string()).unwrap().models,
                 });
             }
         }
@@ -329,6 +340,7 @@ pub fn generate() -> String {
     );
     let _ = writeln!(out, "{TIER_PICKER_NOTE}\n");
     let _ = writeln!(out, "{AUTH_RELOADING}\n");
+    let _ = writeln!(out, "{BASE_URL_OVERRIDES}\n");
     let _ = writeln!(out, "## Built-in Providers\n");
 
     for section in &build_sections() {

@@ -15,7 +15,7 @@ use super::instructions::LoadedInstructions;
 use super::streaming::stream_with_retry;
 use super::tool_dispatch::{self, RecentCalls};
 use crate::cancel::{CancelMap, CancelToken, PreDispatchGate};
-use crate::mcp::McpHandle;
+use crate::mcp::McpSession;
 use crate::permissions::PermissionManager;
 use crate::tools::{
     ActiveTools, Deadline, FileReadTracker, LocalTools, ToolAudience, ToolContext, ToolFilter,
@@ -109,7 +109,7 @@ pub struct Agent<'h> {
     pre_dispatch_rollback_len: Option<usize>,
     rollback_len: Option<usize>,
     pre_dispatch_gate: Option<Arc<PreDispatchGate>>,
-    mcp: Option<McpHandle>,
+    mcp: Option<McpSession>,
     config: AgentConfig,
     tool_output_lines: ToolOutputLines,
     reauth_attempts: u32,
@@ -182,7 +182,7 @@ impl<'h> Agent<'h> {
     }
 
     #[must_use]
-    pub fn with_mcp(mut self, mcp: Option<McpHandle>) -> Self {
+    pub fn with_mcp(mut self, mcp: Option<McpSession>) -> Self {
         self.mcp = mcp;
         self
     }
@@ -262,6 +262,7 @@ impl<'h> Agent<'h> {
         self.opts = RequestOptions {
             thinking: input.thinking,
             fast: input.fast,
+            message_cache_breakpoints: 2,
         };
 
         info!(
