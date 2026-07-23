@@ -1,6 +1,6 @@
 # Implementation Plan: ALMAS expansion - cross-session visibility, blackboard coordination, and agent control plane
 
-**Branch**: `specs/002-agent-coordination-visibility` | **Date**: 2026-07-23 | **Spec**: spec.md
+**Branch**: `spec/almas-coordination-visibility` | **Date**: 2026-07-23 | **Spec**: spec.md
 
 **Input**: Feature specification from `/specs/002-agent-coordination-visibility/spec.md`
 
