@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784802121331,
+  "lastUpdate": 1784802152902,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -2267,6 +2267,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 114305,
             "range": "± 20115",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cd7afe32eec90c0d49297e7035a30b71bebce50b",
+          "message": "ci: migrate git hooks to hk and workflow tooling to mise-action",
+          "timestamp": "2026-07-23T06:08:59-04:00",
+          "tree_id": "41fa60de1ce612465f7a09a5f9fb0df70ee7122f",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/cd7afe32eec90c0d49297e7035a30b71bebce50b"
+        },
+        "date": 1784802151941,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6666305,
+            "range": "± 39194",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2354157,
+            "range": "± 8440",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2350121,
+            "range": "± 24948",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 9570770,
+            "range": "± 66430",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4290568,
+            "range": "± 95314",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4265602,
+            "range": "± 21762",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 585665,
+            "range": "± 5639",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191819,
+            "range": "± 409",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191348,
+            "range": "± 281",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1041450,
+            "range": "± 5288",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 564210,
+            "range": "± 1315",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 568036,
+            "range": "± 2497",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 80731,
+            "range": "± 373",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 112083,
+            "range": "± 3219",
             "unit": "ns/iter"
           }
         ]
