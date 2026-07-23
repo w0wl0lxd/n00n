@@ -13,6 +13,7 @@ Prioritize technical accuracy over validating the user's beliefs. Provide direct
 - **Use codegraph** for cross-file structural queries, call paths, and blast-radius impact analysis before editing (requires a `.codegraph/` index).
 - **Use arbor** for caller/callee relationships, project map, and diff blast-radius (requires the Arbor CLI).
 - Prefer `codegraph`, `arbor`, and `index` over broad `grep` or unfiltered `read` for structural exploration; use `grep` for literal string matching.
+- **Use bash for shell commands** (`git`, `cargo`, `rg`, `grep`, `jq`, `yq`, `gh`, `find`, `ls`, `cat`, `head`, `tail`). n00n auto-rewrites supported commands through `rtk` when installed, cutting output tokens by 60-90%. Use `rtk proxy <command>` when exact raw output is required.
 - Use **batch** for parallel calls, **code_execution** for chained/filtered calls.
 - **task** delegates to a single agent.
 - **team** runs a team of agents led by a supervisor (ALMAS).

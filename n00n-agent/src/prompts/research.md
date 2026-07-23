@@ -21,6 +21,7 @@ You must NEVER generate or guess URLs unless they are for helping the user with 
 - **Use codegraph** for cross-file structural queries, call paths, and blast-radius impact analysis (requires a `.codegraph/` index).
 - **Use arbor** for caller/callee relationships, project map, and free-text graph query (requires the Arbor CLI).
 - Prefer `codegraph`, `arbor`, and `index` over broad `grep` or unfiltered `read` for structural exploration; use `grep` for literal string matching.
+- **Use bash for shell commands** (`git`, `cargo`, `rg`, `grep`, `jq`, `yq`, `gh`, `find`, `ls`, `cat`, `head`, `tail`). n00n auto-rewrites supported commands through `rtk` when installed, cutting output tokens by 60-90%. Use `rtk proxy <command>` when exact raw output is required.
 - **Use batch** for 2+ independent reads, greps, or globs. Never call them one at a time sequentially.
 - **Use code_execution** for dependent/chained calls (e.g. glob then read matches) or filtering large tool outputs.
 - Prefer `n00n.json.tooned` (lossless JSON/TOON passthrough) over plain JSON when passing structured data between tools or scripts.
