@@ -130,7 +130,7 @@ Lossless viewer: oversized images return native tile 1, never resized. GIF needs
 
 ### `codegraph` *(lua plugin)*
 
-Query a pre-indexed semantic codegraph for cross-file structural analysis. Returns verbatim source code grouped by file, plus a dependency impact "blast radius" summary with caller counts and test coverage info.
+Query a pre-indexed semantic codegraph for cross-file structural analysis. Returns verbatim source code grouped by file, plus a dependency impact "blast radius" summary with caller counts and test coverage info. Typically uses fewer tokens than broad grep + read for the same cross-file question.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -139,7 +139,9 @@ Query a pre-indexed semantic codegraph for cross-file structural analysis. Retur
 
 ### `arbor` *(lua plugin)*
 
-Graph-based code analysis using Arbor.
+Graph-based code analysis using Arbor. Returns structured, compact
+caller/callee/project maps; prefer it over broad grep or unfiltered reads
+for relationship and impact questions.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
