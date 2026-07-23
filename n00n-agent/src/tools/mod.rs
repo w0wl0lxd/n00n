@@ -950,8 +950,9 @@ mod tests {
                 .last()
                 .unwrap()
                 .join("etc/hosts")
-                .to_string_lossy();
-            assert_eq!(resolve_path("/etc/hosts").unwrap(), expected.as_ref());
+                .to_string_lossy()
+                .into_owned();
+            assert_eq!(resolve_path("/etc/hosts").unwrap(), expected);
         }
         #[cfg(not(windows))]
         assert_eq!(resolve_path("/etc/hosts").unwrap(), "/etc/hosts");
