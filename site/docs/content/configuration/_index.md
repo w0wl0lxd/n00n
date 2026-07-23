@@ -65,17 +65,17 @@ All fields are optional. Typos in field names cause an error right away.
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
 | `splash_animation` | bool | `true` | - | Show splash animation on startup |
+| `mascot` | bool | `true` | - | Show the n00n mascot on the idle splash screen |
 | `scrollbar` | bool | `true` | - | Show vertical scrollbar in scrollable areas |
 | `flash_duration_ms` | u64 | `1500` | - | Duration of flash messages (ms) |
 | `typewriter_ms_per_char` | u64 | `4` | - | Typewriter effect speed (ms/char) |
 | `mouse_scroll_lines` | u32 | `3` | 1 | Lines per mouse wheel scroll |
 | `max_input_lines` | u32 | `20` | 1 | Maximum visible input lines |
 | `show_thinking` | bool | `true` | - | When true (default), show full model reasoning live and persisted. When false, hide reasoning behind an indicator (thinking> ...) with a click-to-expand hint, both while thinking and after it completes |
-| `mascot` | bool | `false` | - | Show the n00n mascot on the idle splash screen |
 
 ### `ui.theme`
 
-Name of the color theme to load at startup, overriding the theme you last picked interactively. If unset, Maki keeps your last selection (the built-in default on first run). An unknown name is ignored with a warning.
+Name of the color theme to load at startup, overriding the theme you last picked interactively. If unset, n00n keeps your last selection (the built-in default on first run). An unknown name is ignored with a warning.
 
 Available themes: `ayu_dark`, `ayu_light`, `ayu_mirage`, `carbonfox`, `catppuccin_frappe`, `catppuccin_latte`, `catppuccin_macchiato`, `catppuccin_mocha`, `dracula`, `everforest_dark`, `fleet_dark`, `github_dark`, `gruvbox`, `gruvbox_light`, `kanagawa`, `material_darker`, `monokai_pro`, `night_owl`, `nightfox`, `nord`, `onedark`, `rose_pine`, `rose_pine_dawn`, `rose_pine_moon`, `solarized_dark`, `solarized_light`, `tokyonight`, `vscode_dark_plus`, `zenburn`.
 
@@ -157,6 +157,7 @@ n00n.setup({
 | `max_memory_mb` | integer | `50` | 10 | Memory limit for the Python sandbox (MB). |
 | `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool. |
 | `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
+| `ruff_fix` | boolean | `true` | - | Run Ruff --fix --unsafe-fixes and formatting before execution when Ruff is available. |
 | `timeout_secs` | integer | `30` | 5 | Script execution time budget in seconds; waiting on tool calls does not count. A call's `timeout` param overrides it. |
 
 ### `plugins.codegraph`
