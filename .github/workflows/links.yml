@@ -26,18 +26,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Link Checker
-        uses: lycheeverse/lychee-action@v2
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
         with:
-          args: >-
-            --no-progress
-            --max-concurrency 4
-            --timeout 20
-            --retry-wait-time 2
-            --accept 200..=299,403,429
-            --exclude-mail
+          install_args: lychee
+      - name: Link Checker
+        run: |
+          lychee \
+            --no-progress \
+            --max-concurrency 4 \
+            --timeout 20 \
+            --retry-wait-time 2 \
+            --accept 200..=299,403,429 \
+            --exclude-mail \
             "README.md" "CONTRIBUTING.md" "site/index.html" "site/docs/content/**/*.md"
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          fail: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true

@@ -54,11 +54,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: JohnnyMorganz/stylua-action@v5
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
         with:
-          token: ${{ github.token }}
-          version: latest
-          args: --check plugins/
+          install_args: stylua
+      - run: stylua --check plugins/
 
   lint:
     name: Lint
@@ -68,7 +67,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
-      - uses: extractions/setup-just@v4
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
+        with:
+          install_args: just
       - run: just lint
 
   test:
@@ -79,10 +80,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
-      - uses: extractions/setup-just@v4
-      - uses: taiki-e/install-action@v2
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
         with:
-          tool: cargo-nextest
+          install_args: just cargo:cargo-nextest
       - run: sudo apt-get -o Acquire::Retries=5 install -y ripgrep
       - run: just test
 
@@ -93,9 +93,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: taiki-e/install-action@v2
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
         with:
-          tool: cargo-machete
+          install_args: cargo:cargo-machete
       - run: cargo machete
 
   docs:
@@ -106,7 +106,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
-      - uses: extractions/setup-just@v4
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
+        with:
+          install_args: just
       - run: just gen-docs-check
 
   build:
@@ -117,7 +119,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
-      - uses: extractions/setup-just@v4
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
+        with:
+          install_args: just
       - run: just build
 
   lint-windows:
@@ -128,7 +132,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
-      - uses: extractions/setup-just@v4
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
+        with:
+          install_args: just
       - run: just lint
 
   build-windows:
@@ -139,7 +145,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
-      - uses: extractions/setup-just@v4
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
+        with:
+          install_args: just
       - run: just build
 
   coverage:
@@ -150,13 +158,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
-      - uses: extractions/setup-just@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
-      - uses: taiki-e/install-action@v2
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
         with:
-          tool: cargo-llvm-cov,cargo-nextest
+          install_args: cargo:cargo-nextest cargo:cargo-llvm-cov
       - run: sudo apt-get -o Acquire::Retries=5 install -y ripgrep
       - run: cargo llvm-cov nextest --workspace --lcov --output-path lcov.info --retries 2
       - uses: codecov/codecov-action@v5
