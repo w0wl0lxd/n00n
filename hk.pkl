@@ -31,7 +31,7 @@ hooks {
   ["commit-msg"] {
     steps {
       ["conventional-commit"] {
-        check = "bash -c 'first=$(grep -v \"^#\" \"{{commit_msg_file}}\" | sed \"/^$/d\" | head -n1); case \"$first\" in \"Merge \"* | \"Merge branch\"*) exit 0 ;; esac; hk util check-conventional-commit --allowed-types feat,fix,docs,style,refactor,perf,test,build,ci,chore,revert,merge \"{{commit_msg_file}}\"'"
+        check = "bash -c 'first=$(grep -v \"^#\" \"{{commit_msg_file}}\" | sed \"/^$/d\" | head -n1); case \"$first\" in \"Merge \"* | \"Merge branch\"*) exit 0 ;; esac; hk util check-conventional-commit \"{{commit_msg_file}}\"'"
       }
     }
   }

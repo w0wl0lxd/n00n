@@ -36,5 +36,6 @@ jobs:
         with:
           install_args: ty
       - run: ty check scripts/
+
 permissions:
   contents: read
