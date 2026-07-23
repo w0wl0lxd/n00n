@@ -51,7 +51,10 @@ pub fn run(model_arg: Option<&str>, yolo: bool, no_jit: bool) -> Result<()> {
     let model = setup::resolve_model(model_arg, &config.provider, &storage)?;
     setup::install_panic_log_hook();
 
-    let (mcp_handle, _mcp_config_errors) = smol::block_on(n00n_agent::mcp::start(&cwd));
+    let (mcp_handle, _mcp_config_errors) = smol::block_on(n00n_agent::mcp::start(
+        &cwd,
+        config.agent.mcp_tool_desc_max_chars,
+    ));
 
     let prompt_slots = plugin_host
         .event_handle()

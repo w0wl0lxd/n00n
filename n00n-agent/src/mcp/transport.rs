@@ -44,17 +44,32 @@ fn invalid_response(name: &Arc<str>, e: impl std::fmt::Display) -> McpError {
     }
 }
 
-/// Initialize the MCP transport session.
+pub struct ServerCapabilities {
+    pub tools: bool,
+    pub prompts: bool,
+}
+
+impl ServerCapabilities {
+    fn parse(result: &Value) -> Self {
+        Self {
+            tools: result["capabilities"]["tools"].is_object(),
+            prompts: result["capabilities"]["prompts"].is_object(),
+        }
+    }
+}
+
+/// Initialize an MCP transport and return server capabilities.
 ///
 /// # Errors
 ///
-/// Returns an error if the initialize handshake fails.
-pub async fn initialize(transport: &dyn McpTransport) -> Result<(), McpError> {
+/// Returns `McpError` if the initialize request or notification fails.
+pub async fn initialize(transport: &dyn McpTransport) -> Result<ServerCapabilities, McpError> {
     let params = initialize_params();
-    transport.send_request("initialize", Some(params)).await?;
+    let result = transport.send_request("initialize", Some(params)).await?;
     transport
         .send_notification("notifications/initialized", None)
-        .await
+        .await?;
+    Ok(ServerCapabilities::parse(&result))
 }
 
 /// List tools available on the MCP server.
@@ -144,4 +159,21 @@ pub async fn call_tool(
         "MCP tools/call response"
     );
     Ok(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use test_case::test_case;
+
+    #[test_case(json!({"capabilities": {"tools": {}, "prompts": {}}}), true, true ; "both")]
+    #[test_case(json!({"capabilities": {"tools": {"listChanged": false}}}), true, false ; "tools_only")]
+    #[test_case(json!({"capabilities": {"prompts": {}}}), false, true ; "prompts_only")]
+    #[test_case(json!({}), false, false ; "no_capabilities")]
+    #[allow(clippy::needless_pass_by_value)]
+    fn parses_capabilities(result: Value, tools: bool, prompts: bool) {
+        let caps = ServerCapabilities::parse(&result);
+        assert_eq!((caps.tools, caps.prompts), (tools, prompts));
+    }
 }

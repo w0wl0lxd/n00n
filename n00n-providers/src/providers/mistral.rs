@@ -12,6 +12,7 @@ use super::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
 use super::{KeyPool, ResolvedAuth};
 
 static CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
+    slug: "mistral",
     api_key_env: "MISTRAL_API_KEY",
     base_url: "https://api.mistral.ai/v1",
     max_tokens_field: "max_tokens",
@@ -52,7 +53,7 @@ inventory::submit!(n00n_config::providers::BuiltInProvider {
     needs_url: false,
 });
 
-pub(crate) fn models() -> &'static [ModelEntry] {
+pub(crate) const fn models() -> &'static [ModelEntry] {
     &[
         ModelEntry {
             prefixes: &[

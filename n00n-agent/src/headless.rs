@@ -24,9 +24,9 @@ use crate::tools::{
     ActiveTools, DescriptionContext, FileReadTracker, ToolAudience, ToolFilter, ToolRegistry,
 };
 use crate::{
-    Agent, AgentConfig, AgentError, AgentEvent, AgentInput, AgentMode, AgentParams, AgentRunParams,
-    Envelope, EventSender, ImageSource, LoadedInstructions, McpHandle, PermissionsConfig,
-    ToolOutput, ToolOutputLines,
+    Agent, AgentConfig, AgentEvent, AgentInput, AgentMode, AgentParams, AgentRunParams, Envelope,
+    EventSender, ImageSource, McpHandle, McpSession, PermissionsConfig, ToolOutput,
+    ToolOutputLines,
 };
 
 type StoredSession = Session<Message, TokenUsage, ToolOutput>;
@@ -101,80 +101,10 @@ struct AgentSetup {
     tool_filter: ToolFilter,
 }
 
-struct HeadlessAgentContext {
-    raw_tx: flume::Sender<Envelope>,
-    params: HeadlessParams,
-    session_ref: SessionRef,
-    session_cwd: String,
-    system: String,
-    tools: Value,
-    tool_filter: ToolFilter,
-    loaded_instructions: LoadedInstructions,
-    mode: AgentMode,
-    fast: bool,
-    workflow: bool,
-}
-
-struct InteractiveAgentContext {
-    raw_tx: flume::Sender<Envelope>,
-    input_rx: flume::Receiver<AgentInput>,
-    cancel_rx: flume::Receiver<()>,
-    model_rx: flume::Receiver<Model>,
-    answer_rx: Arc<Mutex<flume::Receiver<String>>>,
-    file_tracker: Arc<FileReadTracker>,
-    params: InteractiveParams,
-    vars: template::Vars,
-    instructions: agent::Instructions,
-    tools: Value,
-    tool_filter: ToolFilter,
-    session_id: N00nId,
-    working_dir: String,
-    session_ref: SessionRef,
-    permissions: Arc<PermissionManager>,
-}
-
-struct ModelChangeContext<'a> {
-    model_rx: &'a flume::Receiver<Model>,
-    model: &'a mut Model,
-    provider: &'a mut Arc<dyn Provider>,
-    tools: &'a mut Value,
-    tool_filter: &'a mut ToolFilter,
-    vars: &'a template::Vars,
-    config: &'a AgentConfig,
-    excluded_tools: &'a [&'static str],
-    mcp_handle: Option<&'a McpHandle>,
-    workflow: bool,
-    timeouts: Timeouts,
-    openai_options: OpenAiOptions,
-}
-
-struct SingleTurnContext<'a> {
-    input: AgentInput,
-    history: &'a mut History,
-    model: &'a Model,
-    config: &'a AgentConfig,
-    provider: &'a Arc<dyn Provider>,
-    permissions: &'a Arc<PermissionManager>,
-    session_ref: &'a SessionRef,
-    timeouts: Timeouts,
-    openai_options: OpenAiOptions,
-    file_tracker: &'a Arc<FileReadTracker>,
-    prompt_slots: &'a Arc<ResolvedSlots>,
-    tools: &'a Value,
-    tool_filter: &'a ToolFilter,
-    loaded_instructions: &'a LoadedInstructions,
-    answer_rx: &'a Arc<Mutex<flume::Receiver<String>>>,
-    cancel_rx: &'a flume::Receiver<()>,
-    system: String,
-    event_tx: EventSender,
-    mcp_handle: Option<McpHandle>,
-}
-
 fn setup(
     model: &Model,
     config: &AgentConfig,
     excluded_tools: &[&'static str],
-    mcp_handle: Option<&McpHandle>,
     workflow: bool,
 ) -> AgentSetup {
     let vars = template::env_vars();
@@ -184,7 +114,6 @@ fn setup(
         model,
         config,
         excluded_tools,
-        mcp_handle,
         workflow,
         ToolRegistry::global(),
     );
@@ -202,7 +131,6 @@ fn tool_definitions(
     model: &Model,
     config: &AgentConfig,
     excluded_tools: &[&'static str],
-    mcp_handle: Option<&McpHandle>,
     workflow: bool,
     registry: &ToolRegistry,
 ) -> (Value, ToolFilter) {
@@ -212,16 +140,12 @@ fn tool_definitions(
         audience: ToolAudience::MAIN,
         workflow,
     };
-    let mut tools = registry.definitions_active(
+    let tools = registry.definitions_active(
         vars,
         &ctx,
         model.supports_tool_examples(),
         &ActiveTools::default(),
     );
-
-    if let Some(handle) = mcp_handle {
-        handle.extend_tools(&mut tools);
-    }
 
     (tools, filter)
 }
@@ -239,7 +163,6 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
         &params.model,
         &params.config,
         &params.excluded_tools,
-        params.mcp_handle.as_ref(),
         params.workflow,
     );
 
@@ -261,20 +184,83 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
     let session_cwd = working_dir.clone();
     let fast = params.fast;
     let workflow = params.workflow;
-    let ctx = HeadlessAgentContext {
-        raw_tx,
-        params,
-        session_ref: session_ref_clone,
-        session_cwd,
-        system,
-        tools,
-        tool_filter,
-        loaded_instructions: instructions.loaded,
-        mode,
-        fast,
-        workflow,
-    };
-    let task = smol::spawn(run_headless_agent(ctx));
+    let task = smol::spawn({
+        let mcp_shutdown = params.mcp_handle.clone();
+        let working_dir_path = params.initial_wd.clone();
+        async move {
+            let event_tx = EventSender::new(raw_tx, 0);
+            let mut model = params.model;
+            let provider: Arc<dyn Provider> =
+                Arc::from(provider::from_model_fallback_with_openai_options(
+                    &mut model,
+                    params.timeouts,
+                    params.openai_options,
+                ));
+            let error_tx = event_tx.clone();
+            let mut history = History::new(Vec::new());
+            let model_spec = model.spec();
+            let mut session_store =
+                SessionStore::open(session_ref_clone.id(), &session_cwd, &model_spec);
+            let mut agent = Agent::new(
+                AgentParams {
+                    provider,
+                    model,
+                    config: params.config,
+                    tool_output_lines: ToolOutputLines::default(),
+                    permissions: Arc::new(PermissionManager::new(
+                        params.permissions_config,
+                        working_dir_path,
+                    )),
+                    session_id: Some(session_ref_clone.clone()),
+                    timeouts: params.timeouts,
+                    openai_options: params.openai_options,
+                    file_tracker: FileReadTracker::fresh(),
+                    prompt_slots: Arc::new(params.prompt_slots),
+                    subagent_cancels: Arc::new(CancelMap::new()),
+                    registry: Arc::clone(ToolRegistry::global_arc()),
+                    audience: ToolAudience::MAIN,
+                },
+                AgentRunParams {
+                    history: &mut history,
+                    system,
+                    event_tx,
+                    tools,
+                    tool_filter,
+                },
+            )
+            .with_loaded_instructions(instructions.loaded)
+            .with_mcp(params.mcp_handle.clone().map(|h| McpSession::new(h, &[])));
+
+            let result = agent
+                .run(AgentInput {
+                    message: params.prompt,
+                    mode,
+                    images: params.images,
+                    preamble: Vec::new(),
+                    thinking: n00n_providers::ThinkingConfig::default(),
+                    fast,
+                    workflow,
+                    prompt: None,
+                })
+                .await;
+            drop(agent);
+
+            if let Some(store) = &mut session_store {
+                store.record_turn(history.as_slice(), model_spec);
+            }
+
+            if let Err(e) = result {
+                error!(error = %e, "agent error");
+                let _ = error_tx.send(AgentEvent::Error {
+                    message: e.user_message(),
+                });
+            }
+
+            if let Some(handle) = mcp_shutdown {
+                handle.shutdown().await;
+            }
+        }
+    });
 
     HeadlessHandle {
         event_rx,
@@ -282,105 +268,6 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
         session_id: session_ref,
         cwd: working_dir,
         task,
-    }
-}
-
-async fn run_headless_agent(ctx: HeadlessAgentContext) {
-    let HeadlessAgentContext {
-        raw_tx,
-        params,
-        session_ref,
-        session_cwd,
-        system,
-        tools,
-        tool_filter,
-        loaded_instructions,
-        mode,
-        fast,
-        workflow,
-    } = ctx;
-
-    let mcp_shutdown = params.mcp_handle.clone();
-    let working_dir_path = params.initial_wd.clone();
-    let event_tx = EventSender::new(raw_tx, 0);
-    let mut model = params.model;
-    let provider: Arc<dyn Provider> = match provider::from_model_async_with_openai_options(
-        &mut model,
-        params.timeouts,
-        params.openai_options,
-    )
-    .await
-    {
-        Ok(p) => Arc::from(p),
-        Err(e) => {
-            error!(error = %e, "provider error");
-            let _ = event_tx.send(AgentEvent::Error {
-                message: e.user_message(),
-            });
-            return;
-        }
-    };
-    let error_tx = event_tx.clone();
-    let mut history = History::new(Vec::new());
-    let model_spec = model.spec();
-    let mut session_store = SessionStore::open(session_ref.id(), &session_cwd, &model_spec);
-    let mut agent = Agent::new(
-        AgentParams {
-            provider,
-            model,
-            config: params.config,
-            tool_output_lines: ToolOutputLines::default(),
-            permissions: Arc::new(PermissionManager::new(
-                params.permissions_config,
-                working_dir_path,
-            )),
-            session_id: Some(session_ref.clone()),
-            timeouts: params.timeouts,
-            openai_options: params.openai_options,
-            file_tracker: FileReadTracker::fresh(),
-            prompt_slots: Arc::new(params.prompt_slots),
-            subagent_cancels: Arc::new(CancelMap::new()),
-            registry: Arc::clone(ToolRegistry::global_arc()),
-            audience: ToolAudience::MAIN,
-        },
-        AgentRunParams {
-            history: &mut history,
-            system,
-            event_tx,
-            tools,
-            tool_filter,
-        },
-    )
-    .with_loaded_instructions(loaded_instructions)
-    .with_mcp(params.mcp_handle);
-
-    let result = agent
-        .run(AgentInput {
-            message: params.prompt,
-            mode,
-            images: params.images,
-            preamble: Vec::new(),
-            thinking: n00n_providers::ThinkingConfig::default(),
-            fast,
-            workflow,
-            prompt: None,
-        })
-        .await;
-    drop(agent);
-
-    if let Some(store) = &mut session_store {
-        store.record_turn(history.as_slice(), model_spec);
-    }
-
-    if let Err(e) = result {
-        error!(error = %e, "agent error");
-        let _ = error_tx.send(AgentEvent::Error {
-            message: e.user_message(),
-        });
-    }
-
-    if let Some(handle) = mcp_shutdown {
-        handle.shutdown().await;
     }
 }
 
@@ -419,13 +306,12 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
     let AgentSetup {
         vars,
         instructions,
-        tools,
+        mut tools,
         tool_filter,
     } = setup(
         &params.model,
         &params.config,
         &params.excluded_tools,
-        params.mcp_handle.as_ref(),
         params.workflow,
     );
 
@@ -457,25 +343,124 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
     let file_tracker = FileReadTracker::fresh();
 
     let session_ref_clone = session_ref.clone();
-    let permissions_clone = Arc::clone(&permissions);
-    let ctx = InteractiveAgentContext {
-        raw_tx,
-        input_rx,
-        cancel_rx,
-        model_rx,
-        answer_rx,
-        file_tracker,
-        params,
-        vars,
-        instructions,
-        tools,
-        tool_filter,
-        session_id,
-        working_dir,
-        session_ref: session_ref_clone,
-        permissions: permissions_clone,
-    };
-    let task = smol::spawn(run_interactive_agent(ctx));
+    let task = smol::spawn({
+        let permissions = Arc::clone(&permissions);
+        async move {
+            let mut model = params.model;
+            let mut provider: Arc<dyn Provider> =
+                Arc::from(provider::from_model_fallback_with_openai_options(
+                    &mut model,
+                    params.timeouts,
+                    params.openai_options,
+                ));
+
+            let mut store = SessionStore::open(session_id, &working_dir, &model.spec());
+            let mut history = History::restored(params.initial_history);
+            let mut run_id: u64 = 0;
+            let mut tool_filter = tool_filter.clone();
+
+            while let Ok(input) = input_rx.recv_async().await {
+                let event_tx = EventSender::new(raw_tx.clone(), run_id);
+                let error_tx = event_tx.clone();
+
+                if let Some(mut new_model) = model_rx.try_iter().last()
+                    && new_model.spec() != model.spec()
+                {
+                    provider = Arc::from(provider::from_model_fallback_with_openai_options(
+                        &mut new_model,
+                        params.timeouts,
+                        params.openai_options,
+                    ));
+                    let (new_tools, new_filter) = tool_definitions(
+                        &vars,
+                        &new_model,
+                        &params.config,
+                        &params.excluded_tools,
+                        params.workflow,
+                        ToolRegistry::global(),
+                    );
+                    tools = new_tools;
+                    tool_filter = new_filter;
+                    model = new_model;
+                }
+
+                let mut system = params.system_prompt_override.clone().unwrap_or_else(|| {
+                    agent::build_system_prompt(
+                        &vars,
+                        &input.mode,
+                        &instructions.text,
+                        &params.prompt_slots,
+                        &model,
+                    )
+                });
+                if let Some(append) = &params.append_system_prompt {
+                    system.push('\n');
+                    system.push_str(append);
+                }
+
+                let (trigger, cancel) = CancelToken::new();
+                let cancel_task = smol::spawn({
+                    let cancel_rx = cancel_rx.clone();
+                    async move {
+                        if cancel_rx.recv_async().await.is_ok() {
+                            trigger.cancel();
+                        }
+                    }
+                });
+
+                while answer_rx.lock().await.try_recv().is_ok() {}
+
+                let mut agent = Agent::new(
+                    AgentParams {
+                        provider: Arc::clone(&provider),
+                        model: model.clone(),
+                        config: params.config.clone(),
+                        tool_output_lines: ToolOutputLines::default(),
+                        permissions: Arc::clone(&permissions),
+                        session_id: Some(session_ref_clone.clone()),
+                        timeouts: params.timeouts,
+                        openai_options: params.openai_options,
+                        file_tracker: Arc::clone(&file_tracker),
+                        prompt_slots: Arc::clone(&params.prompt_slots),
+                        subagent_cancels: Arc::new(CancelMap::new()),
+                        registry: Arc::clone(ToolRegistry::global_arc()),
+                        audience: ToolAudience::MAIN,
+                    },
+                    AgentRunParams {
+                        history: &mut history,
+                        system,
+                        event_tx,
+                        tools: tools.clone(),
+                        tool_filter: tool_filter.clone(),
+                    },
+                )
+                .with_loaded_instructions(instructions.loaded.clone())
+                .with_user_response_rx(Arc::clone(&answer_rx))
+                .with_cancel(cancel)
+                .with_mcp(params.mcp_handle.clone().map(|h| McpSession::new(h, &[])));
+
+                let result = agent.run(input).await;
+                drop(agent);
+                cancel_task.cancel().await;
+
+                if let Err(ref e) = result {
+                    error!(error = %e, "agent error");
+                    let _ = error_tx.send(AgentEvent::Error {
+                        message: e.user_message(),
+                    });
+                }
+
+                if let Some(store) = &mut store {
+                    store.record_turn(history.as_slice(), model.spec());
+                }
+                run_id += 1;
+            }
+
+            if let Some(handle) = params.mcp_handle {
+                handle.shutdown().await;
+            }
+        }
+    });
 
     InteractiveHandle {
         event_rx,
@@ -488,277 +473,6 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
         permissions,
         task,
     }
-}
-
-async fn run_interactive_agent(mut ctx: InteractiveAgentContext) {
-    let mut model = ctx.params.model.clone();
-    let Some(mut provider) = initialize_provider(
-        &mut model,
-        ctx.params.timeouts,
-        ctx.params.openai_options,
-        &ctx.raw_tx,
-    )
-    .await
-    else {
-        return;
-    };
-    let mut store = SessionStore::open(ctx.session_id, &ctx.working_dir, &model.spec());
-    let mut history = History::restored(ctx.params.initial_history.clone());
-    let mut run_id: u64 = 0;
-    let mcp_handle = ctx.params.mcp_handle.clone();
-
-    run_interactive_loop(
-        &mut ctx,
-        mcp_handle.as_ref(),
-        &mut model,
-        &mut provider,
-        &mut store,
-        &mut history,
-        &mut run_id,
-    )
-    .await;
-
-    if let Some(handle) = mcp_handle {
-        handle.shutdown().await;
-    }
-}
-
-async fn run_interactive_loop(
-    ctx: &mut InteractiveAgentContext,
-    mcp_handle: Option<&McpHandle>,
-    model: &mut Model,
-    provider: &mut Arc<dyn Provider>,
-    store: &mut Option<SessionStore>,
-    history: &mut History,
-    run_id: &mut u64,
-) {
-    let tools = &mut ctx.tools;
-    let tool_filter = &mut ctx.tool_filter;
-
-    while let Ok(input) = ctx.input_rx.recv_async().await {
-        let event_tx = EventSender::new(ctx.raw_tx.clone(), *run_id);
-
-        if let Err(e) = handle_model_change(ModelChangeContext {
-            model_rx: &ctx.model_rx,
-            model,
-            provider,
-            tools,
-            tool_filter,
-            vars: &ctx.vars,
-            config: &ctx.params.config,
-            excluded_tools: &ctx.params.excluded_tools,
-            mcp_handle,
-            workflow: ctx.params.workflow,
-            timeouts: ctx.params.timeouts,
-            openai_options: ctx.params.openai_options,
-        })
-        .await
-        {
-            error!(error = %e, "provider error");
-            let _ = event_tx.send(AgentEvent::Error {
-                message: e.user_message(),
-            });
-            *run_id += 1;
-            continue;
-        }
-
-        let system = build_system_prompt(
-            &ctx.vars,
-            &input.mode,
-            &ctx.instructions.text,
-            &ctx.params.prompt_slots,
-            ctx.params.system_prompt_override.as_ref(),
-            ctx.params.append_system_prompt.as_ref(),
-            model,
-        );
-
-        let result = run_single_turn(SingleTurnContext {
-            input,
-            history,
-            model,
-            config: &ctx.params.config,
-            provider,
-            permissions: &ctx.permissions,
-            session_ref: &ctx.session_ref,
-            timeouts: ctx.params.timeouts,
-            openai_options: ctx.params.openai_options,
-            file_tracker: &ctx.file_tracker,
-            prompt_slots: &ctx.params.prompt_slots,
-            tools,
-            tool_filter,
-            loaded_instructions: &ctx.instructions.loaded,
-            answer_rx: &ctx.answer_rx,
-            cancel_rx: &ctx.cancel_rx,
-            system,
-            event_tx: event_tx.clone(),
-            mcp_handle: mcp_handle.cloned(),
-        })
-        .await;
-
-        if let Err(ref e) = result {
-            error!(error = %e, "agent error");
-            let _ = event_tx.send(AgentEvent::Error {
-                message: e.user_message(),
-            });
-        }
-
-        if let Some(store) = store {
-            store.record_turn(history.as_slice(), model.spec());
-        }
-        *run_id += 1;
-    }
-}
-
-async fn initialize_provider(
-    model: &mut Model,
-    timeouts: Timeouts,
-    openai_options: OpenAiOptions,
-    raw_tx: &flume::Sender<Envelope>,
-) -> Option<Arc<dyn Provider>> {
-    match provider::from_model_async_with_openai_options(model, timeouts, openai_options).await {
-        Ok(p) => Some(Arc::from(p)),
-        Err(e) => {
-            error!(error = %e, "provider error");
-            let _ = EventSender::new(raw_tx.clone(), 0).send(AgentEvent::Error {
-                message: e.user_message(),
-            });
-            None
-        }
-    }
-}
-
-async fn run_single_turn(ctx: SingleTurnContext<'_>) -> Result<(), AgentError> {
-    let SingleTurnContext {
-        input,
-        history,
-        model,
-        config,
-        provider,
-        permissions,
-        session_ref,
-        timeouts,
-        openai_options,
-        file_tracker,
-        prompt_slots,
-        tools,
-        tool_filter,
-        loaded_instructions,
-        answer_rx,
-        cancel_rx,
-        system,
-        event_tx,
-        mcp_handle,
-    } = ctx;
-
-    let (trigger, cancel) = CancelToken::new();
-    let cancel_task = smol::spawn({
-        let cancel_rx = cancel_rx.clone();
-        async move {
-            if cancel_rx.recv_async().await.is_ok() {
-                trigger.cancel();
-            }
-        }
-    });
-
-    while answer_rx.lock().await.try_recv().is_ok() {}
-
-    let mut agent = Agent::new(
-        AgentParams {
-            provider: Arc::clone(provider),
-            model: model.clone(),
-            config: config.clone(),
-            tool_output_lines: ToolOutputLines::default(),
-            permissions: Arc::clone(permissions),
-            session_id: Some(session_ref.clone()),
-            timeouts,
-            openai_options,
-            file_tracker: Arc::clone(file_tracker),
-            prompt_slots: Arc::clone(prompt_slots),
-            subagent_cancels: Arc::new(CancelMap::new()),
-            registry: Arc::clone(ToolRegistry::global_arc()),
-            audience: ToolAudience::MAIN,
-        },
-        AgentRunParams {
-            history,
-            system,
-            event_tx,
-            tools: tools.clone(),
-            tool_filter: tool_filter.clone(),
-        },
-    )
-    .with_loaded_instructions(loaded_instructions.clone())
-    .with_user_response_rx(Arc::clone(answer_rx))
-    .with_cancel(cancel)
-    .with_mcp(mcp_handle);
-
-    let result = agent.run(input).await;
-    drop(agent);
-    cancel_task.cancel().await;
-    result
-}
-
-async fn handle_model_change(
-    ctx: ModelChangeContext<'_>,
-) -> Result<(), n00n_providers::AgentError> {
-    let ModelChangeContext {
-        model_rx,
-        model,
-        provider,
-        tools,
-        tool_filter,
-        vars,
-        config,
-        excluded_tools,
-        mcp_handle,
-        workflow,
-        timeouts,
-        openai_options,
-    } = ctx;
-
-    if let Some(mut new_model) = model_rx.try_iter().last()
-        && new_model.spec() != model.spec()
-    {
-        let p = provider::from_model_async_with_openai_options(
-            &mut new_model,
-            timeouts,
-            openai_options,
-        )
-        .await?;
-
-        *provider = Arc::from(p);
-        let (new_tools, new_filter) = tool_definitions(
-            vars,
-            &new_model,
-            config,
-            excluded_tools,
-            mcp_handle,
-            workflow,
-            ToolRegistry::global(),
-        );
-        *tools = new_tools;
-        *tool_filter = new_filter;
-        *model = new_model;
-    }
-    Ok(())
-}
-
-fn build_system_prompt(
-    vars: &template::Vars,
-    mode: &AgentMode,
-    instructions_text: &str,
-    prompt_slots: &Arc<ResolvedSlots>,
-    system_prompt_override: Option<&String>,
-    append_system_prompt: Option<&String>,
-    model: &Model,
-) -> String {
-    let mut system = system_prompt_override.cloned().unwrap_or_else(|| {
-        agent::build_system_prompt(vars, mode, instructions_text, prompt_slots, model)
-    });
-    if let Some(append) = append_system_prompt {
-        system.push('\n');
-        system.push_str(append);
-    }
-    system
 }
 
 fn extract_tool_names(tools: &Value) -> Vec<String> {

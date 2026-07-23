@@ -244,7 +244,7 @@ fn truncate_text(lua: &Lua, text: String, max_width: usize) -> LuaResult<Table> 
     for (i, c) in text.char_indices() {
         let w = UnicodeWidthChar::width(c).unwrap_or_else(|| DEFAULT_CHAR_WIDTH);
         if width + w > max_width {
-            if idx == 0 {
+            if idx == 0 && max_width > 0 {
                 idx = i + c.len_utf8();
             }
             break;

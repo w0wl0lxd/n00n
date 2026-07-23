@@ -5218,9 +5218,11 @@ ListPicker.highlight_spans = highlight_spans
 
 local DEFAULT_MAX_OUTPUT_LINES = 2000
 local DEFAULT_MAX_OUTPUT_BYTES = 50 * 1024
+local DEFAULT_MAX_LINE_BYTES = 500
 
 local M = {}
 
+M.DEFAULT_MAX_LINE_BYTES = DEFAULT_MAX_LINE_BYTES
 M.specs = {
   max_output_lines = { type = "integer", desc = "Override `agent.max_output_lines` for this tool." },
   max_output_bytes = { type = "integer", desc = "Override `agent.max_output_bytes` for this tool." },
@@ -5367,8 +5369,8 @@ function TextInput:render(prefix, prefix_width, width)
 
 -- opts: max_lines (default 80) shown while collapsed, keep "head"|"tail"
 -- (default "tail"), max_expand_lines (default 2000) kept for expansion,
--- max_line_bytes and max_width (optional) cap each complete rendered row,
--- and hide_collapsed (default false) reveals body lines only after a click.
+-- max_line_bytes (optional) per-line byte cap applied at render time,
+-- max_width (optional) display-width cap, hide_collapsed (default false).
 function ToolView.new(buf, opts)
 function ToolView:set_header(lines)
 function ToolView:clear()

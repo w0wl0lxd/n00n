@@ -620,6 +620,7 @@ mod tests {
         assert!(picker.session.is_none());
     }
 
+    #[cfg(unix)]
     #[test]
     fn pending_debounce_controls_visibility() {
         let (mut picker, _done_tx) = pending_picker();
