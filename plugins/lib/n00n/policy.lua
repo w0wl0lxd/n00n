@@ -41,7 +41,7 @@ local function load_policies()
   return decoded
 end
 
-local function evaluate_policy_direct(agent_id, session_type, tags, tool_name)
+function M.evaluate_policy(agent_id, session_type, tags, tool_name)
   local policies = load_policies()
   if not policies or not policies.rules or #policies.rules == 0 then
     return { allowed = true }
@@ -128,7 +128,7 @@ local function evaluate_policy_direct(agent_id, session_type, tags, tool_name)
 end
 
 function M.call_tool(ctx, agent_id, session_type, tags, tool_name, input)
-  local policy_result = evaluate_policy_direct(agent_id, session_type, tags, tool_name)
+  local policy_result = M.evaluate_policy(agent_id, session_type, tags, tool_name)
   if not policy_result.allowed then
     return nil, policy_result.reason or "policy blocked tool call"
   end

@@ -12,13 +12,30 @@ local function project_id()
   return base .. "-default"
 end
 
+local function validate_id(id)
+  if not id or id == "" then
+    return nil, "id is required"
+  end
+  if #id > 128 then
+    return nil, "id exceeds maximum length of 128"
+  end
+  if id:find("%.%.") or id:find("/") or id:find("\\") or id:find("%z") or id:find("%c") then
+    return nil, "id contains invalid characters (path traversal, control chars, or null not allowed)"
+  end
+  if id:find("[^%w%-%_.]") then
+    return nil, "id contains invalid characters (only alphanumeric, dash, underscore, dot allowed)"
+  end
+  return true
+end
+
 local function checkpoint_dir(run_id)
   local state = n00n.env.state_dir()
   if not state then
     return nil, "cannot resolve state dir"
   end
-  if run_id == "." or run_id == ".." or run_id:find("[^%w%-%_.]") then
-    return nil, "run_id contains invalid characters"
+  local ok, err = validate_id(run_id)
+  if not ok then
+    return nil, err
   end
   return n00n.fs.joinpath(state, "projects/" .. project_id() .. "/runs/" .. run_id .. "/checkpoints")
 end
@@ -33,8 +50,9 @@ function M.save(run_id, checkpoint_id, state)
 
   n00n.fs.mkdir(dir, { parents = true })
 
-  if checkpoint_id == "." or checkpoint_id == ".." or checkpoint_id:find("[^%w%-%_.]") then
-    return nil, "checkpoint_id contains invalid characters"
+  local ok, vid = validate_id(checkpoint_id)
+  if not ok then
+    return nil, vid
   end
 
   local checkpoint = {
@@ -123,7 +141,52 @@ function M.latest(run_id)
     return nil
   end
 
-  return checkpoints[#checkpoints].checkpoint_id
+  local latest = checkpoints[1]
+  local latest_ts = latest.timestamp or 0
+  for i = 2, #checkpoints do
+    if (checkpoints[i].timestamp or 0) > latest_ts then
+      latest = checkpoints[i]
+      latest_ts = checkpoints[i].timestamp or 0
+    end
+  end
+
+  return latest.checkpoint_id
+end
+
+function M.prune(run_id, keep_n)
+  local dir, err = checkpoint_dir(run_id)
+  if not dir then
+    return nil, err
+  end
+
+  if not keep_n or keep_n < 0 then
+    keep_n = 1
+  end
+
+  local checkpoints, list_err = M.list(run_id)
+  if not checkpoints then
+    return nil, list_err
+  end
+
+  if #checkpoints <= keep_n then
+    return true
+  end
+
+  table.sort(checkpoints, function(a, b)
+    return (a.timestamp or 0) > (b.timestamp or 0)
+  end)
+
+  local to_remove = {}
+  for i = keep_n + 1, #checkpoints do
+    to_remove[#to_remove + 1] = checkpoints[i].checkpoint_id
+  end
+
+  for _, ckpt_id in ipairs(to_remove) do
+    local path = n00n.fs.joinpath(dir, ckpt_id .. ".json")
+    pcall(n00n.fs.rm, path)
+  end
+
+  return true
 end
 
 return M
