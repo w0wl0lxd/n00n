@@ -1974,6 +1974,96 @@ fn tool_done_moves_live_buf_to_watched_polled_but_not_animating() {
 }
 
 #[test]
+fn live_snapshot_update_preserves_manual_scroll_anchor_at_narrow_width() {
+    let mut panel = test_panel();
+    let buf = Arc::new(n00n_agent::SharedBuf::new());
+    buf.set_lines(vec![snap_line("short")]);
+    panel.tool_start(start("t1", "codegraph"));
+    panel.register_live_buf("t1".into(), Arc::clone(&buf));
+    panel.poll_live_bufs();
+    for i in 0..20 {
+        panel.push(DisplayMessage::new(
+            DisplayRole::Assistant,
+            format!("message {i}"),
+        ));
+    }
+    render(&mut panel, 18, 8);
+    panel.restore_scroll(8, false);
+
+    let old_scroll = panel.scroll_top();
+    let old_height = panel.segment_heights()[0];
+    buf.set_lines(
+        (1..=6)
+            .map(|i| snap_line(&format!("result {i} wraps across the narrow viewport")))
+            .collect(),
+    );
+    panel.poll_live_bufs();
+    let new_height = panel.segment_heights()[0];
+
+    assert!(new_height > old_height);
+    assert_eq!(
+        panel.scroll_top(),
+        old_scroll + (new_height - old_height),
+        "content below a live card must remain visually anchored"
+    );
+    assert!(!panel.auto_scroll());
+}
+
+#[test]
+fn live_snapshot_update_keeps_auto_scroll_at_bottom_without_intermediate_churn() {
+    let mut panel = test_panel();
+    let buf = Arc::new(n00n_agent::SharedBuf::new());
+    buf.set_lines(
+        (1..=6)
+            .map(|i| snap_line(&format!("initial result {i} wraps at narrow widths")))
+            .collect(),
+    );
+    panel.tool_start(start("t1", "codegraph"));
+    panel.register_live_buf("t1".into(), Arc::clone(&buf));
+    for _ in 0..20 {
+        render(&mut panel, 18, 6);
+    }
+    assert!(panel.auto_scroll());
+
+    let old_scroll = panel.scroll_top();
+    let old_height = panel.segment_heights()[0];
+    buf.set_lines(
+        (1..=10)
+            .map(|i| snap_line(&format!("updated result {i} wraps at narrow widths")))
+            .collect(),
+    );
+    panel.poll_live_bufs();
+    let new_height = panel.segment_heights()[0];
+
+    assert!(new_height > old_height);
+    assert_eq!(panel.scroll_top(), old_scroll + (new_height - old_height));
+    assert!(panel.auto_scroll());
+}
+
+#[test]
+fn live_snapshot_reflows_when_viewport_becomes_narrow_without_republication() {
+    let mut panel = test_panel();
+    let buf = Arc::new(n00n_agent::SharedBuf::new());
+    buf.set_lines(vec![snap_line(
+        "a complete explore result line that must reflow when the viewport narrows",
+    )]);
+    panel.tool_start(start("t1", "codegraph"));
+    panel.register_live_buf("t1".into(), Arc::clone(&buf));
+    render(&mut panel, 80, 20);
+    let wide_height = panel.segment_heights()[0];
+    assert!(buf.read_if_dirty().is_none());
+
+    render(&mut panel, 16, 20);
+    let narrow_height = panel.segment_heights()[0];
+
+    assert!(narrow_height > wide_height);
+    assert!(
+        buf.read_if_dirty().is_none(),
+        "resize must not republish the Lua buffer"
+    );
+}
+
+#[test]
 fn watched_fifo_evicts_oldest_which_stops_polling_and_restores_with_recorded_clicks() {
     let (eh, probe) = n00n_lua::test_support::probed_event_handle();
     let (tx, _rx) = flume::unbounded();

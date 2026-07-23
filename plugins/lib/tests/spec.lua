@@ -1,4 +1,5 @@
 local ActivityPreview = require("n00n.activity_preview")
+local ExploreResult = require("n00n.explore_result")
 local truncate = require("n00n.truncate")
 local ToolView = require("n00n.tool_view")
 
@@ -19,12 +20,34 @@ end
 
 -- Mock buf that records set_lines calls
 local function mock_buf()
-  local b = { lines = nil, call_count = 0 }
+  local b = { lines = nil, call_count = 0, handlers = {} }
   function b:set_lines(lines)
     self.lines = lines
     self.call_count = self.call_count + 1
   end
+  function b:on(event, callback)
+    self.handlers[event] = callback
+  end
+  function b:click(event)
+    local callback = self.handlers.click
+    if callback then
+      callback(event)
+    end
+  end
+  function b:len()
+    return self.lines and #self.lines or 0
+  end
   return b
+end
+
+local function with_mock_ui_buf(fn)
+  local original = n00n.ui.buf
+  n00n.ui.buf = mock_buf
+  local ok, err = pcall(fn)
+  n00n.ui.buf = original
+  if not ok then
+    error(err)
+  end
 end
 
 case("truncate_within_limits_unchanged", function()
@@ -187,6 +210,45 @@ local function line_text(line)
   end
   return table.concat(out)
 end
+
+case("tool_view_replace_text_publishes_once_and_bounds_large_output", function()
+  local buf = mock_buf()
+  local view = ToolView.new(buf, { max_lines = 5, keep = "head", max_expand_lines = 20 })
+  local lines = {}
+  for i = 1, 1000 do
+    lines[i] = "line" .. i
+  end
+
+  view:replace_text(table.concat(lines, "\n"))
+
+  eq(buf.call_count, 1, "a logical replacement must publish one snapshot")
+  eq(#buf.lines, 6, "five result rows plus the expansion notice")
+  view:toggle()
+  eq(#buf.lines, 21, "expanded publication stays bounded by max_expand_lines")
+  eq(line_text(buf.lines[21]), "980 lines omitted")
+end)
+
+case("explore_result_live_update_keeps_expansion", function()
+  with_mock_ui_buf(function()
+    local card = ExploreResult.new()
+    card:update("one\ntwo\nthree\nfour\nfive\nsix")
+    eq(card.buf:len(), 6)
+
+    card.buf:click({ row = 6 })
+    eq(card.buf:len(), 6, "expanded six-line result has no notice")
+    card:update("alpha\nbeta\ngamma\ndelta\nepsilon\nzeta\neta")
+    eq(card.buf:len(), 7, "a live update must preserve expanded state")
+  end)
+end)
+
+case("explore_result_restore_click_matches_live_card", function()
+  with_mock_ui_buf(function()
+    local buf = ExploreResult.restore("one\ntwo\nthree\nfour\nfive\nsix\nseven")
+    eq(buf:len(), 6)
+    buf:click({ row = 6 })
+    eq(buf:len(), 7)
+  end)
+end)
 
 case("tool_view_caps_complete_rows_by_width_and_bytes", function()
   local buf = mock_buf()
