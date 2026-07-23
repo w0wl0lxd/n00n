@@ -945,14 +945,8 @@ mod tests {
         // e.g. `C:\etc\hosts`).
         #[cfg(windows)]
         {
-            let expected = cwd
-                .ancestors()
-                .last()
-                .unwrap()
-                .join("etc/hosts")
-                .to_string_lossy()
-                .into_owned();
-            assert_eq!(resolve_path("/etc/hosts").unwrap(), expected);
+            let expected = cwd.ancestors().last().unwrap().join("etc").join("hosts");
+            assert_eq!(PathBuf::from(resolve_path("/etc/hosts").unwrap()), expected);
         }
         #[cfg(not(windows))]
         assert_eq!(resolve_path("/etc/hosts").unwrap(), "/etc/hosts");
