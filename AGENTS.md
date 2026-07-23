@@ -86,9 +86,21 @@ The workspace lint configuration is the law. It lives in the root `Cargo.toml` `
 - Ship finished work: commit with a clear Conventional Commit message, push the branch, and open a draft PR. Do not force-push or push to main.
 - Never add AI-agent attribution to commits, PRs, changelogs, or authored content.
 
+## Token-efficient exploration
+
+Every tool result spends context tokens. Prefer structural, pre-indexed tools over broad searches and unfiltered file reads.
+
+- **Cross-file structure first:** use `codegraph` for end-to-end system questions, call paths, and blast-radius impact checks (requires a `.codegraph/` index). Use `arbor` for caller/callee relationships, project map, and diff blast-radius (requires the Arbor CLI).
+- **Single-file structure next:** use `index` to get a compact skeleton and exact line ranges before reading any source file.
+- **Then targeted reads:** use `read` with `offset`/`limit` for the specific section you need.
+- **Use `grep` as a fallback:** for literal string matching or when no index is available, not as the default exploration tool.
+- **Parallelize and filter:** use `batch` for independent calls, `code_execution` for chained/filtered calls so intermediate output stays out of context.
+- **Compress structured data:** prefer `n00n.json.tooned` (lossless JSON/TOON passthrough) over plain JSON when passing structured data between tools or scripts.
+- **Compress shell output:** use `rtk` wrappers for verbose commands (`rtk git`, `rtk rg`, `rtk test`) and `context-mode` once installed.
+
 ## Research and Verification
 
-- Before fixing an unfamiliar failure mode, third-party CLI or tool behavior, library or API behavior, or infra/CI/deployment issue, research the documented behavior first. Use `context7` for current docs, `exa` and web search for known issues, and `thoughtbox` to synthesize findings.
+- Before fixing an unfamiliar failure mode, third-party CLI or tool behavior, library or API behavior, or infra/CI/deployment issue, research the documented behavior first. Use `context7` for current docs, `exa` and web search for known issues, `codegraph`/`arbor`/`index` for codebase evidence, and `thoughtbox` to synthesize findings.
 - Report real command results and separate unrelated red-baseline failures from touched-surface regressions.
 
 ## Architecture
