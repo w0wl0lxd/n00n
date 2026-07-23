@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784802152902,
+  "lastUpdate": 1784807323615,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -2375,6 +2375,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 112083,
             "range": "± 3219",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "036edf305e33a155218ba90197273639fb9c1ffd",
+          "message": "fix: resolve n00n compile/test regressions after maki merge (#77)\n\n* fix: resolve n00n-lua type mismatches after merge\n\n- Change SessionState.mcp from McpHandle to McpSession\n- Remove duplicate flatten() call in model tier lookup\n- Remove duplicate role_name function in messages/mod.rs\n- Remove duplicate UnicodeWidthStr import\n- Remove duplicate terminal_image module declaration\n- Remove duplicate PROCESS_WARMUP static\n- Fix wrapped_line_count import path in streaming_content.rs\n\n* fix: resolve remaining test failures and clippy warnings after maki merge\n\n- Fix n00n-providers anthropic cache_control breakpoints and zai quota\n  response JSON parsing.\n- Restore n00n-agent prompt environment default and clean clippy match.\n- Add missing n00n-lua index language mappings and view_image constants.\n- Fix n00n-lua tool_view byte/width truncation and todo_write panel height.\n- Restore task plugin schema size/depth validation, usage telemetry, and\n  fast-cost propagation.\n\n* fix: resolve n00n compile/test regressions after maki merge\n\n* fix: remove trailing character from changelog\n\n* fix: resolve Windows CI and rebase issues for #77\n\n- Merge main into review-pr-77\n- Add test-windows job to rust.yml\n- Fix Windows lint dead-code warnings in mcp tests\n- Fix resolve_path_cases Windows expectation\n- Skip Unix-specific jobwait test on Windows\n- Handle PermissionDenied when opening credential lock on Windows\n- Restore compressed prompt templates and add codegraph/arbor guidance\n- Regenerate docs\n\n* fix: Windows borrow and rustdoc link regressions\n\n- Use into_owned() in resolve_path_cases to avoid temporary borrow\n- Fix broken rustdoc intra-doc link to ProviderManifest::fallback_max_output\n- Remove private-item intra-doc link in model_registry docs\n\n* fix: Windows test flakiness in #77\n\n- Compare /etc/hosts resolution as PathBuf to avoid separator mismatch\n- Relax websocket absolute-deadline timing tolerance on Windows\n- Skip Unix-sensitive file picker debounce test on Windows",
+          "timestamp": "2026-07-23T07:35:17-04:00",
+          "tree_id": "856b121f5fc121e735f3a4c69ef5d8ceec985975",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/036edf305e33a155218ba90197273639fb9c1ffd"
+        },
+        "date": 1784807322566,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6624715,
+            "range": "± 169458",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2351702,
+            "range": "± 14423",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2370640,
+            "range": "± 22917",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 9385336,
+            "range": "± 30305",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4377643,
+            "range": "± 50048",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4260522,
+            "range": "± 47196",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 582429,
+            "range": "± 1386",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191542,
+            "range": "± 367",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191604,
+            "range": "± 280",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1021979,
+            "range": "± 4899",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 563508,
+            "range": "± 5121",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 563131,
+            "range": "± 833",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 80930,
+            "range": "± 207",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 155147,
+            "range": "± 18519",
             "unit": "ns/iter"
           }
         ]
