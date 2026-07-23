@@ -46,8 +46,8 @@ local function validate_id(id)
   if not id or id == "" then
     return nil, "id is required"
   end
-  if id:find("[^%w%-%_.]") then
-    return nil, "id contains invalid characters (only alphanumeric, dash, underscore, dot allowed)"
+  if id == "." or id == ".." or id:find("[^%w%-%_.]") then
+    return nil, "id contains invalid characters (only alphanumeric, dash, underscore, dot allowed, not . or ..)"
   end
   return true
 end
@@ -126,6 +126,16 @@ local function read_post(post_id)
   return decoded
 end
 
+local function is_active_claim(claim)
+  if not claim or not claim.expires_at then
+    return false
+  end
+  if claim.status == "released" or claim.status == "failed" or claim.status == "done" then
+    return false
+  end
+  return claim.expires_at >= os.time()
+end
+
 local function clean_expired_claims()
   local dir, err = claims_dir()
   if not dir then
@@ -137,16 +147,19 @@ local function clean_expired_claims()
     return true
   end
 
-  local now = os.time()
   for _, entry in ipairs(entries) do
     if entry[2] == "directory" then
       local claim_path = n00n.fs.joinpath(dir, entry[1], "claim.json")
       local content, read_err = n00n.fs.read(claim_path)
       if content then
         local claim, dec_err = n00n.json.decode(content)
-        if claim and claim.expires_at and claim.expires_at < now then
+        if
+          claim
+          and claim.expires_at
+          and claim.expires_at < os.time()
+          and not (claim.status == "released" or claim.status == "done" or claim.status == "failed")
+        then
           pcall(n00n.fs.rm, claim_path)
-          pcall(n00n.fs.rm, n00n.fs.joinpath(dir, entry[1]))
         end
       end
     end
@@ -175,28 +188,29 @@ local function claim_task(task_id, expires_in)
   end
   n00n.fs.mkdir(dir, { parents = true })
 
-  local claim_dir = n00n.fs.joinpath(dir, task_id)
-
   local clean_ok, clean_err = clean_expired_claims()
   if not clean_ok then
     return nil, "cleanup error: " .. tostring(clean_err)
   end
 
+  local claim_dir = n00n.fs.joinpath(dir, task_id)
+  local claim_path = n00n.fs.joinpath(claim_dir, "claim.json")
+  local created_dir = false
   local meta = n00n.fs.metadata(claim_dir)
   if meta and meta.is_dir then
-    local claim_path = n00n.fs.joinpath(claim_dir, "claim.json")
     local content, read_err = n00n.fs.read(claim_path)
     if content then
       local claim, dec_err = n00n.json.decode(content)
-      if claim and claim.expires_at and claim.expires_at >= os.time() then
+      if is_active_claim(claim) then
         return nil, "task already claimed by " .. (claim.agent_id or "unknown")
       end
     end
-  end
-
-  local mkdir_ok, mkdir_err = n00n.fs.mkdir(claim_dir)
-  if not mkdir_ok then
-    return nil, "claim failed: " .. tostring(mkdir_err)
+  else
+    local mkdir_ok, mkdir_err = n00n.fs.mkdir(claim_dir)
+    if not mkdir_ok then
+      return nil, "claim failed: " .. tostring(mkdir_err)
+    end
+    created_dir = true
   end
 
   local now = os.time()
@@ -208,16 +222,19 @@ local function claim_task(task_id, expires_in)
     status = "claimed",
   }
 
-  local claim_path = n00n.fs.joinpath(claim_dir, "claim.json")
   local content, enc_err = n00n.json.encode(claim)
   if not content then
-    pcall(n00n.fs.rm, claim_dir)
+    if created_dir then
+      pcall(n00n.fs.rm, claim_dir)
+    end
     return nil, "encode error: " .. tostring(enc_err)
   end
 
   local write_ok, write_err = n00n.fs.write(claim_path, content)
   if not write_ok then
-    pcall(n00n.fs.rm, claim_dir)
+    if created_dir then
+      pcall(n00n.fs.rm, claim_dir)
+    end
     return nil, "write error: " .. tostring(write_err)
   end
 
