@@ -517,56 +517,88 @@ local function run_single_pass(ctx, goal, input, steps, relay_k, logger, resume_
   return results, total_cost, failures, total_usage, nil
 end
 
-local function run_wave(ctx, wave_name, wave_steps, goal, input, relay_k, logger, run_id, wave_index)
-  local results = {}
+local function run_wave(
+  ctx,
+  wave_name,
+  wave_steps,
+  goal,
+  input,
+  relay_k,
+  logger,
+  run_id,
+  wave_index,
+  prior_results,
+  start_step_index
+)
+  local wave_results = {}
+  local step_outputs = {}
+  -- Copy prior wave results so steps within this wave see each other's outputs.
+  local wave_context = {}
+  for _, v in ipairs(prior_results) do
+    wave_context[#wave_context + 1] = v
+  end
   local total_cost = 0.0
   local total_usage = roles.usage()
   local failures = 0
 
   for i, entry in ipairs(wave_steps) do
-    local step = entry.step
-    if logger then
-      logger.log("step_started", { index = entry.index, role = step.role, tier = step.tier, wave = wave_name })
-    end
-    post_blackboard_status(ctx, "step_started", step, run_id, { index = entry.index, wave = wave_name })
-
-    local r = run_step(ctx, step, goal, input, relay_k, results)
-    total_cost = add_cost(total_cost, r.cost)
-    total_usage = roles.add_usage(total_usage, r.usage)
-
-    if not r.ok then
-      failures = failures + 1
-      results[#results + 1] = string.format("[%d] %s: ERROR %s", entry.index, step.role, r.error)
+    if i >= start_step_index then
+      local step = entry.step
       if logger then
-        logger.log("step_error", { index = entry.index, role = step.role, error = r.error, wave = wave_name })
+        logger.log("step_started", { index = entry.index, role = step.role, tier = step.tier, wave = wave_name })
       end
-      post_blackboard_status(
-        ctx,
-        "step_error",
-        step,
-        run_id,
-        { index = entry.index, error = r.error, wave = wave_name }
-      )
-    else
-      local cost_line = cost_label(r.cost, r.model)
-      results[#results + 1] = string.format("[%d] %s%s:\n%s", entry.index, step.role, cost_line, r.text or "")
-      if logger then
-        logger.log(
+      post_blackboard_status(ctx, "step_started", step, run_id, { index = entry.index, wave = wave_name })
+
+      local r = run_step(ctx, step, goal, input, relay_k, wave_context)
+      total_cost = add_cost(total_cost, r.cost)
+      total_usage = roles.add_usage(total_usage, r.usage)
+
+      if not r.ok then
+        failures = failures + 1
+        local result_line = string.format("[%d] %s: ERROR %s", entry.index, step.role, r.error)
+        wave_results[#wave_results + 1] = result_line
+        wave_context[#wave_context + 1] = result_line
+        step_outputs[entry.index] = r.error or ""
+        if logger then
+          logger.log("step_error", { index = entry.index, role = step.role, error = r.error, wave = wave_name })
+        end
+        post_blackboard_status(
+          ctx,
+          "step_error",
+          step,
+          run_id,
+          { index = entry.index, error = r.error, wave = wave_name }
+        )
+      else
+        local cost_line = cost_label(r.cost, r.model)
+        local result_line = string.format("[%d] %s%s:\n%s", entry.index, step.role, cost_line, r.text or "")
+        wave_results[#wave_results + 1] = result_line
+        wave_context[#wave_context + 1] = result_line
+        step_outputs[entry.index] = r.text or ""
+        if logger then
+          logger.log(
+            "step_done",
+            { index = entry.index, role = step.role, cost = r.cost or 0, model = r.model, wave = wave_name }
+          )
+        end
+        post_blackboard_status(
+          ctx,
           "step_done",
-          { index = entry.index, role = step.role, cost = r.cost or 0, model = r.model, wave = wave_name }
+          step,
+          run_id,
+          { index = entry.index, cost = r.cost or 0, model = r.model, wave = wave_name }
         )
       end
-      post_blackboard_status(
-        ctx,
-        "step_done",
-        step,
-        run_id,
-        { index = entry.index, cost = r.cost or 0, model = r.model, wave = wave_name }
-      )
     end
   end
 
-  return { results = results, cost = total_cost, usage = total_usage, failures = failures }
+  return {
+    results = wave_results,
+    cost = total_cost,
+    usage = total_usage,
+    failures = failures,
+    step_outputs = step_outputs,
+  }
 end
 
 local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state, run_id)
@@ -597,30 +629,39 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
         logger.log("wave_skipped", { wave = wave_name, reason = "empty" })
       end
     else
+      local wave_start_step = wave_idx == start_wave_index and start_step_index or 1
       local retry_count = 0
       local wave_passed = false
 
       while retry_count <= max_retries and not wave_passed do
-        local wave_result = run_wave(ctx, wave_name, wave_steps, goal, input, relay_k, logger, run_id, wave_idx)
-
-        total_cost = add_cost(total_cost, wave_result.cost)
-        total_usage = roles.add_usage(total_usage, wave_result.usage)
-
-        for _, r in ipairs(wave_result.results) do
-          results[#results + 1] = r
-        end
+        local wave_result =
+          run_wave(ctx, wave_name, wave_steps, goal, input, relay_k, logger, run_id, wave_idx, results, wave_start_step)
 
         if wave_result.failures > 0 then
           if logger then
             logger.log("wave_error", { wave = wave_name, failures = wave_result.failures })
           end
+          total_cost = add_cost(total_cost, wave_result.cost)
+          total_usage = roles.add_usage(total_usage, wave_result.usage)
+          for _, r in ipairs(wave_result.results) do
+            results[#results + 1] = r
+          end
           break
         end
 
-        local passed, validation_err =
-          validation.validate_wave(ctx, { wave_name = wave_name, steps = wave_steps }, goal, input)
+        local passed, validation_err = validation.validate_wave(
+          ctx,
+          { wave_name = wave_name, steps = wave_steps, step_outputs = wave_result.step_outputs },
+          goal,
+          input
+        )
         if passed then
           wave_passed = true
+          total_cost = add_cost(total_cost, wave_result.cost)
+          total_usage = roles.add_usage(total_usage, wave_result.usage)
+          for _, r in ipairs(wave_result.results) do
+            results[#results + 1] = r
+          end
           if logger then
             logger.log("wave_passed", { wave = wave_name })
           end
@@ -639,6 +680,11 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
                 .. (validation_err or "failed")
             end
           else
+            total_cost = add_cost(total_cost, wave_result.cost)
+            total_usage = roles.add_usage(total_usage, wave_result.usage)
+            for _, r in ipairs(wave_result.results) do
+              results[#results + 1] = r
+            end
             results[#results + 1] = string.format(
               "[wave %s] validation failed after %d retries: %s",
               wave_name,
@@ -649,7 +695,7 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
         end
       end
 
-      if input.checkpoints then
+      if input.checkpoints and wave_passed then
         local ckpt_id = "wave_" .. wave_idx .. "_step_" .. #wave_steps
         local ckpt_state = {
           results = results,
