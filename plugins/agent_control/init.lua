@@ -80,12 +80,6 @@ local schema = {
   },
 }
 
-local function project_id()
-  local cwd = n00n.uv.cwd()
-  local root = n00n.fs.root(cwd, ".git") or cwd
-  return memory_helpers.project_id(root)
-end
-
 local function policies_dir()
   local state = n00n.env.state_dir()
   if not state then

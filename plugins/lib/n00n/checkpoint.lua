@@ -17,12 +17,7 @@ local function checkpoint_dir(run_id)
   if not state then
     return nil, "cannot resolve state dir"
   end
-  local ok, vid = pcall(function()
-    if run_id:find("[^%w%-%_.]") then
-      error("invalid run_id")
-    end
-  end)
-  if not ok then
+  if run_id == "." or run_id == ".." or run_id:find("[^%w%-%_.]") then
     return nil, "run_id contains invalid characters"
   end
   return n00n.fs.joinpath(state, "projects/" .. project_id() .. "/runs/" .. run_id .. "/checkpoints")
@@ -38,12 +33,7 @@ function M.save(run_id, checkpoint_id, state)
 
   n00n.fs.mkdir(dir, { parents = true })
 
-  local ok, vid = pcall(function()
-    if checkpoint_id:find("[^%w%-%_.]") then
-      error("invalid checkpoint_id")
-    end
-  end)
-  if not ok then
+  if checkpoint_id == "." or checkpoint_id == ".." or checkpoint_id:find("[^%w%-%_.]") then
     return nil, "checkpoint_id contains invalid characters"
   end
 

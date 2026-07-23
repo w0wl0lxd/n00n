@@ -38,6 +38,7 @@ const SECTIONS: &[(&str, &[&str])] = &[
         "Agent & Knowledge",
         &[
             "agent_control",
+            "blackboard",
             "team",
             "task",
             "workflow",

@@ -12,7 +12,7 @@ local quorum = require("quorum")
 local swarm = require("swarm")
 local telemetry = require("n00n.telemetry")
 
-local function post_blackboard_status(event_type, step, run_id, extra)
+local function post_blackboard_status(ctx, event_type, step, run_id, extra)
   local post = {
     type = "status",
     content = event_type .. ": " .. (step.role or "unknown"),
@@ -27,7 +27,7 @@ local function post_blackboard_status(event_type, step, run_id, extra)
   end
 
   pcall(function()
-    local result = n00n.api.call_tool("blackboard", { action = "write", post = post })
+    n00n.agent.call_tool(ctx, "blackboard", { action = "write", post = post })
   end)
 end
 
@@ -326,7 +326,7 @@ local function run_step(ctx, step, goal, input, relay_k, prior_results)
   return roles.run(ctx, step.role, step_prompt, role_opts)
 end
 
-local function run_autonomous(ctx, goal, input, steps, relay_k, logger, resume_state)
+local function run_autonomous(ctx, goal, input, steps, relay_k, logger, resume_state, run_id)
   local results = {}
   local total_cost = 0.0
   local total_usage = roles.usage()
@@ -346,7 +346,7 @@ local function run_autonomous(ctx, goal, input, steps, relay_k, logger, resume_s
     if logger then
       logger.log("step_started", { index = i, role = step.role, tier = step.tier })
     end
-    post_blackboard_status("step_started", step, run_id, { index = i })
+    post_blackboard_status(ctx, "step_started", step, run_id, { index = i })
     local r = run_step(ctx, step, goal, input, relay_k, results)
     total_cost = add_cost(total_cost, r.cost)
     total_usage = roles.add_usage(total_usage, r.usage)
@@ -356,7 +356,7 @@ local function run_autonomous(ctx, goal, input, steps, relay_k, logger, resume_s
       if logger then
         logger.log("step_error", { index = i, role = step.role, error = r.error })
       end
-      post_blackboard_status("step_error", step, run_id, { index = i, error = r.error })
+      post_blackboard_status(ctx, "step_error", step, run_id, { index = i, error = r.error })
       if input.human_escalation then
         memory.save_state(ctx, input.resume or memory.slug(goal), {
           goal = goal,
@@ -386,7 +386,7 @@ local function run_autonomous(ctx, goal, input, steps, relay_k, logger, resume_s
       if logger then
         logger.log("step_done", { index = i, role = step.role, cost = r.cost or 0, model = r.model })
       end
-      post_blackboard_status("step_done", step, run_id, { index = i, cost = r.cost or 0, model = r.model })
+      post_blackboard_status(ctx, "step_done", step, run_id, { index = i, cost = r.cost or 0, model = r.model })
 
       if input.quorum ~= false and (step.role == "tester" or step.role == "reviewer") then
         local verdict = quorum.validate(ctx, table.concat(results, "\n\n"), {
@@ -415,7 +415,7 @@ end
 -- Information-bottleneck fallback: a single strong-agent pass when fanning out
 -- would not help (strong model + single-step goal). Runs the plan in sequence,
 -- honoring each step's tier, rather than paying coordination cost.
-local function run_single_pass(ctx, goal, input, steps, relay_k, logger, resume_state)
+local function run_single_pass(ctx, goal, input, steps, relay_k, logger, resume_state, run_id)
   local results = {}
   local total_cost = 0.0
   local total_usage = roles.usage()
@@ -435,7 +435,7 @@ local function run_single_pass(ctx, goal, input, steps, relay_k, logger, resume_
     if logger then
       logger.log("step_started", { index = i, role = step.role, tier = step.tier })
     end
-    post_blackboard_status("step_started", step, run_id, { index = i })
+    post_blackboard_status(ctx, "step_started", step, run_id, { index = i })
     local r = run_step(ctx, step, goal, input, relay_k, results)
     r.model = r.model or "strong"
     total_cost = add_cost(total_cost, r.cost)
@@ -446,7 +446,7 @@ local function run_single_pass(ctx, goal, input, steps, relay_k, logger, resume_
       if logger then
         logger.log("step_error", { index = i, role = step.role, error = r.error })
       end
-      post_blackboard_status("step_error", step, run_id, { index = i, error = r.error })
+      post_blackboard_status(ctx, "step_error", step, run_id, { index = i, error = r.error })
       if input.human_escalation then
         memory.save_state(ctx, input.resume or memory.slug(goal), {
           goal = goal,
@@ -476,7 +476,7 @@ local function run_single_pass(ctx, goal, input, steps, relay_k, logger, resume_
       if logger then
         logger.log("step_done", { index = i, role = step.role, cost = r.cost or 0, model = r.model })
       end
-      post_blackboard_status("step_done", step, run_id, { index = i, cost = r.cost or 0, model = r.model })
+      post_blackboard_status(ctx, "step_done", step, run_id, { index = i, cost = r.cost or 0, model = r.model })
     end
   end
   return results, total_cost, failures, total_usage, nil
@@ -621,7 +621,7 @@ local function run_team(input, ctx)
 
     -- β gate says don't fan out: single strong-agent pass, log the reason.
     local results, sp_cost, sp_failures, sp_usage, pause =
-      run_single_pass(ctx, goal, input, steps, relay_k, logger, resume_state)
+      run_single_pass(ctx, goal, input, steps, relay_k, logger, resume_state, run_id)
     if pause then
       if logger then
         logger.log(
@@ -642,7 +642,7 @@ local function run_team(input, ctx)
   end
 
   local results, auto_cost, auto_failures, auto_usage, pause =
-    run_autonomous(ctx, goal, input, steps, relay_k, logger, resume_state)
+    run_autonomous(ctx, goal, input, steps, relay_k, logger, resume_state, run_id)
   if pause then
     if logger then
       logger.log(
