@@ -59,8 +59,8 @@ function M.validate_wave(ctx, wave_result, goal, input)
   end
 
   local response = res or ""
-  local upper_response = response:upper()
-  if upper_response:find("^PASS") or upper_response:find("\nPASS") then
+  local first_token = response:upper():match("^%s*([%S]+)")
+  if first_token == "PASS" then
     return true
   else
     local explanation = response:match("FAIL%s*(.+)") or response
