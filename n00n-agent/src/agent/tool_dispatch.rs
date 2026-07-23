@@ -2,14 +2,14 @@ use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tracing::{debug, error, warn};
 
 use crate::mcp::{McpSession, TOOL_SEARCH_TOOL_NAME, UNKNOWN_MCP};
 use crate::task_set::TaskSet;
-use crate::tools::registry::{ToolInvocation, ToolRegistry};
+use crate::tools::registry::{ToolExecResult, ToolInvocation, ToolRegistry, ToolSource};
 use crate::tools::{LocalToolFn, ToolContext};
 use crate::{AgentError, AgentEvent, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use n00n_config::ToolKey;
@@ -60,7 +60,6 @@ impl RecentCalls {
 
 /// Parse errors and unknown tools skip the start event so the UI never
 /// shows a phantom spinner.
-#[allow(clippy::too_many_lines)]
 pub async fn run(
     registry: &ToolRegistry,
     mcp: Option<&McpSession>,
@@ -79,34 +78,27 @@ pub async fn run(
     // LLM providers send tool names in wire format (server__tool) but our
     // internal index uses server.tool. Only convert if the name isn't a
     // native tool — avoids mangling native names that happen to contain __.
-    let mcp_name;
     let mcp_lookup = if entry.is_none() && name.contains("__") && mcp.is_some() {
-        mcp_name = crate::mcp::internal_tool_name(name);
-        mcp_name.as_str()
+        crate::mcp::internal_tool_name(name)
     } else {
-        name
+        name.to_owned()
     };
     let tool_id: Arc<str> = entry
         .as_ref()
         .map(|e| Arc::from(e.tool.name()))
-        .or_else(|| mcp.map(|m| m.interned_name(mcp_lookup)))
+        .or_else(|| mcp.map(|m| m.interned_name(&mcp_lookup)))
         .unwrap_or_else(|| Arc::from(UNKNOWN_MCP));
     let started = Instant::now();
-
-    let done_error = |msg: String| ToolDoneEvent {
-        id: id.clone(),
-        tool: Arc::clone(&tool_id),
-        output: ToolOutput::Plain(msg.into()),
-        is_error: true,
-        annotation: None,
-        written_path: None,
-    };
 
     if entry
         .as_ref()
         .is_some_and(|entry| !entry.tool.audience().contains(ctx.audience))
     {
-        return done_error(TOOL_AUDIENCE_DENIED.into());
+        return tool_done_error(
+            id.clone(),
+            Arc::clone(&tool_id),
+            TOOL_AUDIENCE_DENIED.into(),
+        );
     }
 
     if let Some(entry) = entry {
@@ -120,7 +112,7 @@ pub async fn run(
                     error = %e,
                     "tool input parse failed"
                 );
-                return done_error(e.to_string());
+                return tool_done_error(id.clone(), Arc::clone(&tool_id), e.to_string());
             }
         };
 
@@ -133,10 +125,14 @@ pub async fn run(
                         target = %target.display(),
                         "blocked write in plan mode"
                     );
-                    return done_error(crate::tools::PLAN_WRITE_RESTRICTED.into());
+                    return tool_done_error(
+                        id.clone(),
+                        Arc::clone(&tool_id),
+                        crate::tools::PLAN_WRITE_RESTRICTED.into(),
+                    );
                 }
                 if let Some(reason) = ctx.permissions.boundary_block_reason(target) {
-                    return done_error(reason);
+                    return tool_done_error(id.clone(), Arc::clone(&tool_id), reason);
                 }
             }
         }
@@ -159,7 +155,7 @@ pub async fn run(
         invocation.start(ctx).await;
 
         if let Err(e) = enforce_permission(invocation.as_ref(), name, ctx, &id).await {
-            return done_error(e);
+            return tool_done_error(id.clone(), Arc::clone(&tool_id), e);
         }
 
         let result = invocation.execute(ctx).await;
@@ -224,7 +220,7 @@ pub async fn run(
     } else {
         let msg = format!("{UNKNOWN_TOOL_PREFIX}: {mcp_lookup}");
         warn!(tool = %mcp_lookup, "unknown tool");
-        done_error(msg)
+        tool_done_error(id, tool_id, msg)
     }
 }
 
@@ -307,6 +303,83 @@ fn run_local_tool(
     }
 }
 
+fn tool_done_error(id: String, tool_id: Arc<str>, message: String) -> ToolDoneEvent {
+    ToolDoneEvent {
+        id,
+        tool: tool_id,
+        output: ToolOutput::Plain(message.into()),
+        is_error: true,
+        annotation: None,
+        written_path: None,
+    }
+}
+
+fn tool_done_plain(id: String, tool_id: Arc<str>, text: String) -> ToolDoneEvent {
+    ToolDoneEvent {
+        id,
+        tool: tool_id,
+        output: ToolOutput::Plain(text.into()),
+        is_error: false,
+        annotation: None,
+        written_path: None,
+    }
+}
+
+fn tool_done_from_result(
+    result: ToolExecResult,
+    id: String,
+    tool_id: Arc<str>,
+    name: &str,
+    source: &ToolSource,
+    elapsed: Duration,
+) -> ToolDoneEvent {
+    let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or_else(|_| u64::MAX);
+    match result.output {
+        Ok(output) => {
+            debug!(
+                tool = %name,
+                source = %source.as_log_field(),
+                elapsed_ms,
+                "tool ok"
+            );
+            let output = match result.telemetry {
+                Some(telemetry) => output.with_telemetry(Some(telemetry)),
+                None => output,
+            };
+            ToolDoneEvent {
+                id,
+                tool: tool_id,
+                output,
+                is_error: false,
+                annotation: result.annotation,
+                written_path: result.written_path,
+            }
+        }
+        Err(message) => {
+            warn!(
+                tool = %name,
+                source = %source.as_log_field(),
+                elapsed_ms,
+                error = %message,
+                "tool failed"
+            );
+            ToolDoneEvent {
+                id,
+                tool: tool_id,
+                output: ToolOutput::Plain(crate::TextOutput {
+                    text: message,
+                    instructions: None,
+                    state: None,
+                    telemetry: result.telemetry,
+                }),
+                is_error: true,
+                annotation: result.annotation,
+                written_path: None,
+            }
+        }
+    }
+}
+
 /// Enforce permission for a native tool. MCP tools bypass this — they go
 /// through `execute_mcp_tool` which handles permission checking internally.
 ///
@@ -325,15 +398,15 @@ async fn enforce_permission(
     if let Some(scopes) = inv.permission_scopes().await {
         let tool_key = ToolKey::native(name);
         ctx.permissions
-            .enforce(
-                &tool_key,
-                &scopes,
-                &ctx.event_tx,
-                ctx.user_response_rx.as_deref(),
-                id,
-                &ctx.cancel,
-                ctx.mode.plan_path(),
-            )
+            .enforce(PermissionCheckContext {
+                tool: &tool_key,
+                scopes: &scopes,
+                event_tx: &ctx.event_tx,
+                user_response_rx: ctx.user_response_rx.as_deref(),
+                request_id: id,
+                cancel: &ctx.cancel,
+                plan_path: ctx.mode.plan_path(),
+            })
             .await
             .map_err(|e| e.to_string())?;
     }
@@ -346,24 +419,38 @@ async fn execute_mcp_tool(
     tool_id: Arc<str>,
     tool_name: &str,
     input: &Value,
+    emit: Emit,
 ) -> ToolDoneEvent {
-    let done = |output: String, is_error: bool| ToolDoneEvent {
-        id: id.to_owned(),
-        tool: Arc::clone(&tool_id),
-        output: ToolOutput::Plain(output.into()),
-        is_error,
-        annotation: None,
-        written_path: None,
-    };
+    if matches!(emit, Emit::Notify) {
+        let start = ToolStartEvent {
+            id: id.to_owned(),
+            tool: Arc::clone(&tool_id),
+            summary: format!("mcp: {tool_name}"),
+            render_header: None,
+            annotation: None,
+            input: None,
+            raw_input: Some(input.clone()),
+            output: None,
+        };
+        let _ = ctx.event_tx.send(AgentEvent::ToolStart(Box::new(start)));
+    }
 
     if ctx.mode.plan_path().is_some() {
-        return done(MCP_BLOCKED_IN_PLAN.into(), true);
+        return tool_done_error(
+            id.to_owned(),
+            Arc::clone(&tool_id),
+            MCP_BLOCKED_IN_PLAN.into(),
+        );
     }
 
     let perm_tool = match ToolKey::parse(tool_name) {
         Ok(k) => k,
         Err(e) => {
-            return done(format!("invalid MCP tool key '{tool_name}': {e}"), true);
+            return tool_done_error(
+                id.to_owned(),
+                Arc::clone(&tool_id),
+                format!("invalid MCP tool key '{tool_name}': {e}"),
+            );
         }
     };
     let perm_scope = {
@@ -378,30 +465,34 @@ async fn execute_mcp_tool(
 
     if let Err(e) = ctx
         .permissions
-        .enforce(
-            &perm_tool,
-            &perm_scopes,
-            &ctx.event_tx,
-            ctx.user_response_rx.as_deref(),
-            id,
-            &ctx.cancel,
-            ctx.mode.plan_path(),
-        )
+        .enforce(PermissionCheckContext {
+            tool: &perm_tool,
+            scopes: &perm_scopes,
+            event_tx: &ctx.event_tx,
+            user_response_rx: ctx.user_response_rx.as_deref(),
+            request_id: id,
+            cancel: &ctx.cancel,
+            plan_path: ctx.mode.plan_path(),
+        })
         .await
     {
-        return done(e.to_string(), true);
+        return tool_done_error(id.to_owned(), Arc::clone(&tool_id), e.to_string());
     }
 
     let Some(mcp) = &ctx.mcp else {
-        return done(format!("MCP manager not available for {tool_name}"), true);
+        return tool_done_error(
+            id.to_owned(),
+            Arc::clone(&tool_id),
+            format!("MCP manager not available for {tool_name}"),
+        );
     };
 
     // A permitted call to a deferred tool counts as loading it, so its full
     // definition joins the next request; a denied call must not load anything.
     mcp.mark_loaded(tool_name);
     match mcp.call_tool(tool_name, input).await {
-        Ok(text) => done(text, false),
-        Err(e) => done(e.to_string(), true),
+        Ok(text) => tool_done_plain(id.to_owned(), tool_id, text),
+        Err(e) => tool_done_error(id.to_owned(), tool_id, e.to_string()),
     }
 }
 
@@ -509,7 +600,7 @@ async fn dispatch_mcp(
         .mcp
         .as_ref()
         .map_or_else(|| Arc::from(UNKNOWN_MCP), |m| m.interned_name(tool_name));
-    execute_mcp_tool(ctx, id, tool_id, tool_name, input).await
+    execute_mcp_tool(ctx, id, tool_id, tool_name, input, Emit::Silent).await
 }
 
 #[cfg(test)]
@@ -888,11 +979,11 @@ mod tests {
             );
 
             let registry = ToolRegistry::new();
-            let tool = Arc::new(GuardedMock);
+            let tool: Arc<dyn Tool> = Arc::new(GuardedMock);
             let source = ToolSource::Lua {
                 plugin: "test".into(),
             };
-            registry.register(tool, source).unwrap();
+            registry.register(&tool, &source).unwrap();
 
             let done = run(
                 &registry,
@@ -984,14 +1075,11 @@ mod tests {
             let probe = StartProbe::default();
             let started = Arc::clone(&probe.started);
             let registry = ToolRegistry::new();
-            registry
-                .register(
-                    Arc::new(probe),
-                    ToolSource::Lua {
-                        plugin: "test".into(),
-                    },
-                )
-                .unwrap();
+            let tool: Arc<dyn Tool> = Arc::new(probe);
+            let source = ToolSource::Lua {
+                plugin: "test".into(),
+            };
+            registry.register(&tool, &source).unwrap();
 
             let done = run(
                 &registry,
@@ -1032,11 +1120,11 @@ mod tests {
             let probe = StartProbe::default();
             let (started, executed) = (Arc::clone(&probe.started), Arc::clone(&probe.executed));
             let registry = ToolRegistry::new();
-            let tool = Arc::new(probe);
+            let tool: Arc<dyn Tool> = Arc::new(probe);
             let source = ToolSource::Lua {
                 plugin: "test".into(),
             };
-            registry.register(tool, source).unwrap();
+            registry.register(&tool, &source).unwrap();
 
             let done = run(
                 &registry,

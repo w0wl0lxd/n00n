@@ -64,6 +64,29 @@ struct ToolsCache {
     vars_hash: u64,
 }
 
+pub(super) struct AgentLoopInit {
+    pub(super) model_slot: Arc<ArcSwap<ModelSlot>>,
+    pub(super) config: AgentConfig,
+    pub(super) tool_output_lines: ToolOutputLines,
+    pub(super) initial_history: Vec<Message>,
+    pub(super) initial_transcript: Vec<TranscriptEntry<Message>>,
+    pub(super) shared_history: Arc<ArcSwap<Vec<Message>>>,
+    pub(super) shared_transcript: n00n_agent::SharedTranscript,
+    pub(super) btw_system: Arc<ArcSwap<String>>,
+    pub(super) mcp_handle: Option<McpHandle>,
+    pub(super) permissions: Arc<PermissionManager>,
+    pub(super) agent_tx: flume::Sender<Envelope>,
+    pub(super) answer_rx: flume::Receiver<String>,
+    pub(super) queue: Arc<QueueReceiver>,
+    pub(super) cancel_map: Arc<RunCancelMap>,
+    pub(super) init_cancel: CancelToken,
+    pub(super) session_id: Option<SessionRef>,
+    pub(super) timeouts: n00n_providers::Timeouts,
+    pub(super) openai_options: OpenAiOptions,
+    pub(super) lua_handle: Option<EventHandle>,
+    pub(super) subagent_cancels: Arc<CancelMap<String>>,
+}
+
 impl AgentLoop {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
@@ -191,7 +214,6 @@ impl AgentLoop {
         agent::compact(&*provider, &model, &mut self.history, event_tx).await
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn do_agent_run(
         &mut self,
         mut input: AgentInput,

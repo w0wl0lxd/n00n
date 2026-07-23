@@ -23,7 +23,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             }
         }
         Some(Command::Index { path }) => {
-            subcmd::index(&path, cli.no_plugins, cli.no_jit)?;
+            subcmd::index(&path, cli.plugin_flags.no_plugins, cli.plugin_flags.no_jit)?;
         }
         Some(Command::Models) => {
             subcmd::models();
@@ -42,7 +42,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             update::rollback().map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
         }
         Some(Command::Acp { model, yolo }) => {
-            acp::run(model.as_deref(), yolo, cli.no_jit)?;
+            acp::run(model.as_deref(), yolo, cli.plugin_flags.no_jit)?;
         }
         Some(Command::Prompt {
             variant,
@@ -50,7 +50,15 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             tools,
             names,
         }) => {
-            subcmd::prompt(&variant, plan, tools, names, cli.no_jit)?;
+            subcmd::prompt(
+                &variant,
+                subcmd::PromptFlags {
+                    plan,
+                    tools,
+                    names,
+                    no_jit: cli.plugin_flags.no_jit,
+                },
+            )?;
         }
         None => {
             tui::run(cli)?;

@@ -15,9 +15,14 @@ pub(super) const CONTINUE_AFTER_COMPACT: &str = "Continue if you have next steps
 
 const MINIMAL_CONTEXT_RATIO: f64 = 0.2;
 const AGGRESSIVE_CONTEXT_RATIO: f64 = 0.4;
-const NORMAL_BUDGET_RATIO: f64 = 0.15;
-const AGGRESSIVE_BUDGET_RATIO: f64 = 0.10;
-const MINIMAL_BUDGET_RATIO: f64 = 0.05;
+struct BudgetRatio {
+    num: u64,
+    den: u64,
+}
+
+const NORMAL_BUDGET: BudgetRatio = BudgetRatio { num: 15, den: 100 };
+const AGGRESSIVE_BUDGET: BudgetRatio = BudgetRatio { num: 10, den: 100 };
+const MINIMAL_BUDGET: BudgetRatio = BudgetRatio { num: 5, den: 100 };
 const MIN_COMPACTION_BUDGET: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,17 +49,19 @@ impl CompactionTier {
     }
 
     #[must_use]
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub fn token_budget(self, context_window: u32) -> u32 {
         if context_window == 0 {
             return 0;
         }
         let ratio = match self {
-            Self::Normal => NORMAL_BUDGET_RATIO,
-            Self::Aggressive => AGGRESSIVE_BUDGET_RATIO,
-            Self::Minimal => MINIMAL_BUDGET_RATIO,
+            Self::Normal => NORMAL_BUDGET,
+            Self::Aggressive => AGGRESSIVE_BUDGET,
+            Self::Minimal => MINIMAL_BUDGET,
         };
-        ((f64::from(context_window) * ratio) as u32).max(MIN_COMPACTION_BUDGET)
+        let raw = (u64::from(context_window) * ratio.num) / ratio.den;
+        u32::try_from(raw)
+            .unwrap_or_else(|_| u32::MAX)
+            .max(MIN_COMPACTION_BUDGET)
     }
 }
 
@@ -94,17 +101,17 @@ pub(super) async fn compact_history(
     let mut last_error = None;
 
     for attempt in 0..max_attempts {
-        match stream_with_retry(
+        match stream_with_retry(super::streaming::StreamContext {
             provider,
             model,
-            &compaction_history,
-            crate::prompt::COMPACTION_SYSTEM,
-            &empty_tools,
+            messages: &compaction_history,
+            system: crate::prompt::COMPACTION_SYSTEM,
+            tools: &empty_tools,
             event_tx,
             cancel,
-            RequestOptions::default(),
-            None,
-        )
+            opts: RequestOptions::default(),
+            session_id: None,
+        })
         .await
         {
             Ok(response) => {

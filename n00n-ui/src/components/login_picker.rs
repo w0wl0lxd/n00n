@@ -273,7 +273,6 @@ impl LoginPicker {
             _ => false,
         }
     }
-    #[allow(clippy::too_many_lines)]
     pub fn handle_key(&mut self, key: KeyEvent) -> LoginPickerAction {
         let action = match &mut self.step {
             Step::Closed => return LoginPickerAction::Consumed,
@@ -552,7 +551,6 @@ impl LoginPicker {
 
         self.transition(action)
     }
-    #[allow(clippy::too_many_lines)]
     fn transition(&mut self, action: StepAction) -> LoginPickerAction {
         match action {
             StepAction::None => LoginPickerAction::Consumed,
@@ -660,7 +658,6 @@ impl LoginPicker {
             }
         }
     }
-    #[allow(clippy::too_many_lines)]
     pub fn view(&mut self, frame: &mut Frame, area: Rect) -> Rect {
         match &mut self.step {
             Step::Closed => Rect::default(),

@@ -116,10 +116,20 @@ mod tests {
         fn gen_text(state: &mut u64, max_len: usize) -> String {
             const ALPHABET: &[u8] =
                 b"abcdefghijklmnopqrstuvwxyz0123456789 \n\t!@#$%^&*()_+-=[]{}|;':\",./<>?";
-            let len = (xorshift64(state) as usize) % max_len;
+            let raw = xorshift64(state);
+            let len = if max_len == 0 {
+                0
+            } else {
+                usize::try_from(raw).unwrap_or_else(|_| usize::MAX) % max_len
+            };
             let mut out = String::with_capacity(len);
             for _ in 0..len {
-                let idx = (xorshift64(state) as usize) % ALPHABET.len();
+                let raw = xorshift64(state);
+                let idx = if ALPHABET.is_empty() {
+                    0
+                } else {
+                    usize::try_from(raw).unwrap_or_else(|_| usize::MAX) % ALPHABET.len()
+                };
                 out.push(ALPHABET[idx] as char);
             }
             out
@@ -135,14 +145,14 @@ mod tests {
             match kind {
                 0 => Value::Null,
                 1 => Value::Bool((xorshift64(state) & 1) == 1),
-                2 => Value::Number(((xorshift64(state) % 1000) as i64).into()),
+                2 => Value::Number((xorshift64(state) % 1000).cast_signed().into()),
                 3 => Value::String(gen_text(state, 50)),
                 4 if depth > 0 => {
-                    let len = (xorshift64(state) as usize) % 4;
+                    let len = usize::try_from(xorshift64(state)).unwrap_or_else(|_| usize::MAX) % 4;
                     Value::Array((0..len).map(|_| gen_value(state, depth - 1)).collect())
                 }
                 5 if depth > 0 => {
-                    let len = (xorshift64(state) as usize) % 4;
+                    let len = usize::try_from(xorshift64(state)).unwrap_or_else(|_| usize::MAX) % 4;
                     let mut m = serde_json::Map::new();
                     for i in 0..len {
                         m.insert(format!("k{i}"), gen_value(state, depth - 1));

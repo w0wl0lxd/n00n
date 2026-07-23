@@ -333,7 +333,7 @@ impl Effort {
         let tokens = if let Ok(t) = u32::try_from(computed) {
             t
         } else {
-            eprintln!("Warning: thinking budget overflow, using max");
+            warn!(effort = %self, max, computed, "thinking budget overflow, using max");
             max
         };
         tokens.clamp(MIN_THINKING_BUDGET, max)
@@ -348,7 +348,7 @@ impl Effort {
             .into_iter()
             .find(|e| u64::from(e.percent()) >= pct)
             .unwrap_or_else(|| {
-                eprintln!("Warning: no thinking level matches budget, using Max");
+                warn!(n, max, pct, "no thinking level matches budget, using Max");
                 Self::Max
             })
     }
@@ -365,7 +365,7 @@ impl Effort {
         if let Some(level) = supported.iter().rev().find(|&&e| e < self).copied() {
             level
         } else {
-            eprintln!("Warning: no lower thinking level found, using lowest supported");
+            warn!(effort = %self, supported = ?supported, "no lower thinking level found, using lowest supported");
             supported[0]
         }
     }

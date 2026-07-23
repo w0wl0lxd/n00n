@@ -322,17 +322,17 @@ impl<'h> Agent<'h> {
         if self.cancel.is_cancelled() || !self.commit_pre_dispatch() {
             return Err(AgentError::Cancelled);
         }
-        let response = match stream_with_retry(
-            &*self.provider,
-            &self.model,
-            self.history.as_slice(),
-            &self.system,
-            &self.tools,
-            &self.event_tx,
-            &self.cancel,
-            self.opts,
-            self.session_id.as_ref(),
-        )
+        let response = match stream_with_retry(super::streaming::StreamContext {
+            provider: &*self.provider,
+            model: &self.model,
+            messages: self.history.as_slice(),
+            system: &self.system,
+            tools: &self.tools,
+            event_tx: &self.event_tx,
+            cancel: &self.cancel,
+            opts: self.opts,
+            session_id: self.session_id.as_ref(),
+        })
         .await
         {
             Ok(r) => {

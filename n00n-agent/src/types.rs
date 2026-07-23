@@ -1157,7 +1157,6 @@ pub enum SpanStyle {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[allow(clippy::struct_excessive_bools)]
 pub struct InlineStyle {
     pub fg: Option<(u8, u8, u8)>,
     pub bg: Option<(u8, u8, u8)>,
@@ -1450,7 +1449,6 @@ mod tests {
     #[test_case(&ToolOutput::WriteCode { path: "src/lib.rs".into(), byte_count: 10, lines: vec![] }, Some("src/lib.rs") ; "write_code")]
     #[test_case(&ToolOutput::Diff { path: "src/lib.rs".into(), before: String::new(), after: String::new(), summary: String::new(), telemetry: None }, Some("src/lib.rs") ; "diff")]
     #[test_case(&ToolOutput::Plain("ok".into()), None ; "non_write_variant")]
-    #[allow(clippy::needless_pass_by_value)]
     fn output_written_path(output: &ToolOutput, expected: Option<&str>) {
         assert_eq!(output.written_path(), expected);
     }
@@ -1734,15 +1732,6 @@ mod tests {
     fn agent_event_tool_snapshot_theme_gen_backwards_compat() {
         const OMIT_MSG: &str = "theme_gen: None must not appear in serialized JSON";
         const COMPAT_MSG: &str = "missing theme_gen must deserialize as None (backwards compat)";
-
-        #[derive(Deserialize)]
-        #[allow(clippy::items_after_statements)]
-        struct ToolSnapshotFields {
-            #[allow(dead_code)]
-            id: String,
-            #[serde(default)]
-            theme_gen: Option<u64>,
-        }
 
         let event = AgentEvent::ToolSnapshot {
             id: "t1".into(),

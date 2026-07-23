@@ -691,11 +691,11 @@ impl MessagesPanel {
     fn shift_scroll_for_height_change(&mut self, old_height: u16, new_height: u16) {
         let delta = i32::from(new_height) - i32::from(old_height);
         self.scroll_top = if delta >= 0 {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            self.scroll_top.saturating_add(delta as u16)
+            self.scroll_top
+                .saturating_add(u16::try_from(delta).unwrap_or_else(|_| u16::MAX))
         } else {
-            #[allow(clippy::cast_possible_truncation)]
-            self.scroll_top.saturating_sub(delta.unsigned_abs() as u16)
+            self.scroll_top
+                .saturating_sub(u16::try_from(delta.unsigned_abs()).unwrap_or_else(|_| u16::MAX))
         };
     }
 
@@ -1038,7 +1038,6 @@ impl MessagesPanel {
             && self.streaming_text.is_empty()
     }
 
-    #[allow(clippy::too_many_lines)]
     pub fn view(&mut self, frame: &mut Frame, area: Rect, has_selection: bool, _is_working: bool) {
         self.viewport_height = area.height;
         let width = area.width.saturating_sub(1);
@@ -1540,12 +1539,7 @@ impl MessagesPanel {
         thinking_indicator(streaming_thinking.line_count(), None)
     }
 
-    #[allow(clippy::unused_self)]
-    fn build_cached_thinking_indicator(
-        &self,
-        text: &str,
-        duration: Option<&str>,
-    ) -> Vec<Line<'static>> {
+    fn build_cached_thinking_indicator(text: &str, duration: Option<&str>) -> Vec<Line<'static>> {
         thinking_indicator(logical_line_count(text), duration)
     }
 
@@ -1590,7 +1584,7 @@ impl MessagesPanel {
             return;
         };
         let lines = if collapsed {
-            self.build_cached_thinking_indicator(&text, duration.as_deref())
+            Self::build_cached_thinking_indicator(&text, duration.as_deref())
         } else {
             let style = thinking_style();
             text_to_lines(
@@ -1677,7 +1671,6 @@ impl MessagesPanel {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     fn build_segments_for_msg(&self, msg: &DisplayMessage, msg_index: usize) -> Vec<Segment> {
         if let Some(DisplayMetadata::Compaction(compaction)) = &msg.metadata {
             return vec![build_compaction_segment(
@@ -1724,7 +1717,7 @@ impl MessagesPanel {
         }
         if matches!(&msg.role, DisplayRole::Thinking) && msg.thinking_collapsed {
             let text = msg.text.clone();
-            let lines = self.build_cached_thinking_indicator(&text, msg.annotation.as_deref());
+            let lines = Self::build_cached_thinking_indicator(&text, msg.annotation.as_deref());
             let search_text = format!("thinking> {text}");
             return vec![Segment::with_lines(
                 lines,
@@ -1822,7 +1815,6 @@ impl MessagesPanel {
         out
     }
 
-    #[allow(clippy::too_many_lines)]
     fn rebuild_line_cache(&mut self) {
         let _start = self.cache.msg_count();
         if !self.cache.needs_rebuild(self.messages.len()) {
@@ -1868,7 +1860,7 @@ impl MessagesPanel {
                 if matches!(&msg.role, DisplayRole::Thinking) && msg.thinking_collapsed {
                     let text = msg.text.clone();
                     let lines =
-                        self.build_cached_thinking_indicator(&text, msg.annotation.as_deref());
+                        Self::build_cached_thinking_indicator(&text, msg.annotation.as_deref());
                     let search_text = format!("thinking> {text}");
                     self.cache.push_spacer_if_needed();
                     self.cache.push(Segment::with_lines(
