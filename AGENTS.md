@@ -94,7 +94,14 @@ Every tool result spends context tokens. Prefer structural, pre-indexed tools ov
 - **Single-file structure next:** use `index` to get a compact skeleton and exact line ranges before reading any source file.
 - **Then targeted reads:** use `read` with `offset`/`limit` for the specific section you need.
 - **Use `grep` as a fallback:** for literal string matching or when no index is available, not as the default exploration tool.
-- **Parallelize and filter:** use `batch` for independent calls, `code_execution` for chained/filtered calls so intermediate output stays out of context.
+- **Parallelize:** use `batch` for independent calls.
+- **Filter and pipeline with `code_execution`:** chain calls, filter large outputs, and transform data inside the sandboxed Python interpreter. Only the final result should reach the context window.
+- **AST-aware search (`ast-grep`):** if you configure the `ast-grep` MCP server, use it for AST-pattern structural search and safe refactoring. It is more precise than `grep` and safer than `sed` for code changes. Example `.n00n/mcp.toml`:
+  ```toml
+  [mcp.ast-grep]
+  command = ["/path/to/ast-grep-mcp-host"]
+  timeout = 300000
+  ```
 - **Compress structured data:** prefer `n00n.json.tooned` (lossless JSON/TOON passthrough) over plain JSON when passing structured data between tools or scripts.
 - **Compress shell output:** use `rtk` wrappers for verbose commands (`rtk git`, `rtk rg`, `rtk test`) and `context-mode` once installed.
 
