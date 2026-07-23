@@ -239,6 +239,8 @@ local description = [[Execute a bash command.
 Commands run in ]] .. cwd .. [[ by default.
 
 - **DO NOT** use for file ops! Only git, builds, tests, and system commands.
+- When `rtk` is installed, commands are auto-rewritten through `rtk` for 60-90% token savings (e.g. `git status` -> `rtk git status`, `rg` -> `rtk rg`, `jq`/`yq` -> `rtk jq`/`rtk yq`).
+- Use `bash` for `git`, `cargo`, `rg`, `grep`, `jq`, `yq`, `gh`, `find`, `ls`, `cat`, `head`, `tail`, and similar system commands.
 - Use `workdir` param instead of `cd <dir> && <cmd>` patterns.
 - Do NOT use to communicate text to the user.
 - Chain dependent commands with `&&`. Use batch for independent ones.
@@ -248,7 +250,7 @@ Commands run in ]] .. cwd .. [[ by default.
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Reserve bash for system commands (git, builds, tests). Do NOT use bash for file operations, including on files outside the working dir.",
+  content = "- Reserve `bash` for system commands (git, cargo, rg, grep, jq, yq, gh, find, ls, cat, head, tail, builds, tests). `bash` auto-rewrites supported commands through `rtk` when installed for 60-90% token savings. Do NOT use `bash` for file operations, including on files outside the working dir.",
 })
 
 local opts = n00n.api.register_options(output_limits.extend({
