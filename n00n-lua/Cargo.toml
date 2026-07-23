@@ -42,7 +42,7 @@ tree-sitter-css = { workspace = true }
 tree-sitter-hcl = { workspace = true }
 tree-sitter-json = { workspace = true }
 tree-sitter-make = { workspace = true }
-tree-sitter-scss = { workspace = true }
+cortexkit-tree-sitter-scss = { workspace = true }
 tree-sitter-svelte-ng = { workspace = true }
 tree-sitter-vue-next = { workspace = true }
 unicode-width = { workspace = true }
