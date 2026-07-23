@@ -594,7 +594,7 @@ pub struct RequestOptions {
     /// Raw user preference, reconciled by [`RequestOptions::clamped`] before use.
     pub fast: bool,
     /// Number of recent messages whose last content block should be marked with
-    /// cache_control. Default is 2. Higher values increase cache write cost but
+    /// `cache_control`. Default is 2. Higher values increase cache write cost but
     /// may improve cache hit rates in long conversations.
     pub message_cache_breakpoints: usize,
 }

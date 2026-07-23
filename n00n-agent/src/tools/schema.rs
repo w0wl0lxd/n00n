@@ -28,6 +28,7 @@ const TRUNCATION_SUFFIX: &str = "...";
 
 /// Truncate a string to at most `max_len` characters on a word boundary.
 /// If truncated, appends an ellipsis indicator.
+#[must_use]
 pub fn truncate_on_word_boundary(s: &str, max_len: usize) -> String {
     let char_count = s.chars().count();
     if char_count <= max_len {
@@ -54,8 +55,7 @@ pub fn truncate_on_word_boundary(s: &str, max_len: usize) -> String {
     let cut_pos = last_space.unwrap_or_else(|| {
         s.char_indices()
             .nth(target_chars)
-            .map(|(i, _)| i)
-            .unwrap_or(s.len())
+            .map_or(s.len(), |(i, _)| i)
     });
     let truncated = &s[..cut_pos];
     format!("{}{}", truncated.trim_end(), TRUNCATION_SUFFIX)
@@ -805,10 +805,11 @@ fn log_coercion(
     );
 }
 
-/// OpenAI requires the top-level `parameters` of every function to be an object
+/// `OpenAI` requires the top-level `parameters` of every function to be an object
 /// schema with `properties` and `required` as an array. MCP servers and plugins
 /// can return schemas that break these rules, so this function repairs them
 /// before they are sent to a provider.
+#[must_use]
 pub fn sanitize_tool_input_schema(mut schema: Value) -> Value {
     if let Value::Object(map) = &mut schema
         && is_object_schema(map)
@@ -933,8 +934,7 @@ fn sanitize_required(map: &mut serde_json::Map<String, Value>) {
     let prop_keys: HashSet<String> = map
         .get("properties")
         .and_then(|p| p.as_object())
-        .map(|p| p.keys().cloned().collect())
-        .unwrap_or_default();
+        .map_or_else(HashSet::new, |p| p.keys().cloned().collect());
 
     match map.get_mut("required") {
         Some(req_val) if req_val.is_object() => {

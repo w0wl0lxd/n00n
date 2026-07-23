@@ -416,7 +416,7 @@ fn lines_remaining_after(total: usize, start_line: usize, shown: usize) -> usize
 
 impl ToolOutput {
     fn grep_summary(entries: &[GrepFileEntry]) -> String {
-        let matches: usize = entries.iter().map(|e| e.match_count()).sum();
+        let matches: usize = entries.iter().map(GrepFileEntry::match_count).sum();
         let files = entries.len();
         let match_word = if matches == 1 { "match" } else { "matches" };
         let file_word = if files == 1 { "file" } else { "files" };
@@ -458,6 +458,7 @@ impl ToolOutput {
         }
     }
 
+    #[must_use]
     pub fn summary(&self) -> Self {
         match self {
             Self::ReadCode {
@@ -1274,7 +1275,8 @@ mod tests {
     #[test_case(ToolOutput::ReadCode { path: "a.rs".into(), start_line: 10, lines: vec!["x".into(); 5], total_lines: 100, instructions: None }, Some("5 of 100 lines") ; "read_code_partial")]
     #[test_case(ToolOutput::WriteCode { path: "a.rs".into(), byte_count: 99, lines: vec![] }, Some("99 bytes") ; "write_code_bytes")]
     #[test_case(ToolOutput::GrepResult { entries: vec![GrepFileEntry { path: "a.rs".into(), groups: vec![GrepMatchGroup::single(1, "hit")] }] }, Some("1 match in 1 file") ; "grep_file_count")]
-    #[test_case(ToolOutput::Diff { path: "a.rs".into(), before: String::new(), after: String::new(), summary: "ok".into() }, None ; "diff_no_annotation")]
+    #[test_case(ToolOutput::Diff { path: "a.rs".into(), before: String::new(), after: String::new(), summary: "ok".into(), telemetry: None }, None ; "diff_no_annotation")]
+    #[allow(clippy::needless_pass_by_value)]
     fn annotation_cases(output: ToolOutput, expected: Option<&str>) {
         assert_eq!(output.annotation().as_deref(), expected);
     }
@@ -1284,10 +1286,11 @@ mod tests {
     #[test_case(ToolOutput::WriteCode { path: "a.rs".into(), byte_count: 99, lines: vec![] }, "wrote 99 bytes to a.rs" ; "write_code_summary")]
     #[test_case(ToolOutput::GrepResult { entries: vec![GrepFileEntry { path: "a.rs".into(), groups: vec![GrepMatchGroup::single(1, "hit")] }] }, "1 match in 1 file" ; "grep_single_file_summary")]
     #[test_case(ToolOutput::GrepResult { entries: vec![GrepFileEntry { path: "a.rs".into(), groups: vec![GrepMatchGroup::single(1, "hit")] }, GrepFileEntry { path: "b.rs".into(), groups: vec![GrepMatchGroup::single(2, "hit2")] }] }, "2 matches in 2 files" ; "grep_multiple_files_summary")]
-    #[test_case(ToolOutput::Diff { path: "a.rs".into(), before: "old".into(), after: "new".into(), summary: "changed 2 lines".into() }, "changed 2 lines" ; "diff_summary")]
+    #[test_case(ToolOutput::Diff { path: "a.rs".into(), before: "old".into(), after: "new".into(), summary: "changed 2 lines".into(), telemetry: None }, "changed 2 lines" ; "diff_summary")]
     #[test_case(ToolOutput::Plain("ok".into()), "ok" ; "plain_passthrough")]
     #[test_case(ToolOutput::Markdown("**bold**".into()), "**bold**" ; "markdown_passthrough")]
     #[test_case(ToolOutput::ReadDir("a.rs\nb.rs".into()), "a.rs\nb.rs" ; "readdir_passthrough")]
+    #[allow(clippy::needless_pass_by_value)]
     fn summary_cases(output: ToolOutput, expected_text: &str) {
         let summary = output.summary();
         assert_eq!(summary.as_text(), expected_text);
@@ -1304,7 +1307,7 @@ mod tests {
             start_line: 1,
             lines: vec!["fn main()".into()],
             total_lines: 1,
-            instructions: Some(instructions.clone()),
+            instructions: Some(instructions),
         };
         let summary = output.summary();
         assert!(summary.as_text().contains("1 lines from a.rs"));

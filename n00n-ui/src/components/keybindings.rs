@@ -162,13 +162,6 @@ pub mod key {
         modifiers: KeyModifiers::ALT,
         label: "Alt+O",
     };
-    pub const COPY: Bind = Bind {
-        code: KeyCode::Char('c'),
-        modifiers: KeyModifiers::from_bits_truncate(
-            KeyModifiers::CONTROL.bits() | KeyModifiers::SHIFT.bits(),
-        ),
-        label: "Ctrl+Shift+C",
-    };
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter)]
@@ -373,12 +366,6 @@ pub const KEYBINDS: &[Keybind] = &[
     Keybind {
         label: KeyLabel::Single(key::TASKS.label),
         description: "Open tasks",
-        context: KeybindContext::General,
-        platform: Platform::All,
-    },
-    Keybind {
-        label: KeyLabel::Single(key::COPY.label),
-        description: "Copy selection",
         context: KeybindContext::General,
         platform: Platform::All,
     },

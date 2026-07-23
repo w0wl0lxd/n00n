@@ -495,6 +495,7 @@ async fn call_tool(
 #[lua_fn]
 #[allow(clippy::too_many_lines)]
 #[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::unused_async)]
 async fn session(
     lua: Lua,
     ctx: mlua::UserDataRef<LuaCtx>,

@@ -1,6 +1,7 @@
 local ToolView = require("n00n.tool_view")
 
 local DEFAULT_PREVIEW_LINES = 5
+local MAX_PANEL_HEIGHT = 10
 
 local items = {}
 local buf = nil

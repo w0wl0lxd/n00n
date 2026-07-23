@@ -55,12 +55,14 @@ pub struct Chat {
     pub context_size: u32,
     pub model_id: Option<String>,
     pub tool_use_id: Option<String>,
+    pub failed: bool,
     pending_turn_usage: Option<String>,
     messages_panel: MessagesPanel,
     finished: bool,
 }
 
 impl Chat {
+    #[must_use]
     pub fn new(name: String, ui_config: UiConfig, picker: Arc<Picker>) -> Self {
         Self {
             name,
@@ -68,24 +70,11 @@ impl Chat {
             context_size: 0,
             model_id: None,
             tool_use_id: None,
+            failed: false,
             pending_turn_usage: None,
             messages_panel: MessagesPanel::new(ui_config, picker),
             finished: false,
         }
-    }
-
-    pub fn restore(
-        name: String,
-        ui_config: UiConfig,
-        picker: Arc<Picker>,
-        messages: Vec<Message>,
-        tool_outputs: &HashMap<String, ToolOutput>,
-        tool_output_lines: &ToolOutputLines,
-    ) -> Self {
-        let (display, _) = history_to_display(&messages, tool_outputs, tool_output_lines);
-        let mut chat = Self::new(name, ui_config, picker);
-        chat.messages_panel.load_messages(display);
-        chat
     }
 
     pub fn set_pending_turn_usage(&mut self, usage: String) {
@@ -340,10 +329,6 @@ impl Chat {
 
     pub fn handle_click(&mut self, row: u16, area: Rect) {
         self.messages_panel.handle_click(row, area);
-    }
-
-    pub fn tool_id_at(&self, row: u16, area: Rect) -> Option<&str> {
-        self.messages_panel.tool_id_at(row, area)
     }
 
     pub fn tool_snapshot(
@@ -677,14 +662,11 @@ pub fn history_to_display<S: std::hash::BuildHasher>(
                         }
                     })
                     .collect();
-                if let Some(text) = msg.user_text() {
-                    let mut display_msg = DisplayMessage::new(DisplayRole::User, text.to_owned());
-                    display_msg.images = images;
-                    display.push(display_msg);
-                } else if !images.is_empty() {
-                    let mut display_msg = DisplayMessage::new(DisplayRole::User, String::new());
-                    display_msg.images = images;
-                    display.push(display_msg);
+                let text = msg
+                    .user_text()
+                    .map_or_else(String::new, std::borrow::ToOwned::to_owned);
+                if !text.is_empty() || !images.is_empty() {
+                    display.push(DisplayMessage::with_images(DisplayRole::User, text, images));
                 }
             }
             Role::Assistant => {
@@ -694,10 +676,11 @@ pub fn history_to_display<S: std::hash::BuildHasher>(
                             display.push(DisplayMessage::new(DisplayRole::Assistant, text.clone()));
                         }
                         ContentBlock::Image { source } => {
-                            let mut display_msg =
-                                DisplayMessage::new(DisplayRole::Assistant, String::new());
-                            display_msg.images = vec![source.clone()];
-                            display.push(display_msg);
+                            display.push(DisplayMessage::with_images(
+                                DisplayRole::Assistant,
+                                String::new(),
+                                vec![source.clone()],
+                            ));
                         }
                         ContentBlock::Thinking { thinking, .. } if !thinking.is_empty() => {
                             let mut message =
@@ -783,7 +766,6 @@ pub fn history_to_display<S: std::hash::BuildHasher>(
                                 render_header: None,
                                 snapshot_theme_gen: 0,
                                 thinking_collapsed: false,
-                                images: Vec::new(),
                             });
                         }
                         _ => {}
@@ -941,11 +923,7 @@ mod tests {
 
     #[test]
     fn tool_lifecycle() {
-        let mut chat = Chat::new(
-            "Main".into(),
-            UiConfig::default(),
-            Arc::new(ratatui_image::picker::Picker::halfblocks()),
-        );
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
         chat.handle_event(tool_start("t1", "bash"), None);
         assert_eq!(chat.in_progress_count(), 1);
 
@@ -958,11 +936,7 @@ mod tests {
 
     #[test]
     fn plan_write_renders_file_content() {
-        let mut chat = Chat::new(
-            "Main".into(),
-            UiConfig::default(),
-            Arc::new(ratatui_image::picker::Picker::halfblocks()),
-        );
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
         let dir = tempfile::tempdir().unwrap();
         let plan_path = dir.path().join("plan.md");
         std::fs::write(&plan_path, "# My Plan\n\n- Step 1").unwrap();
@@ -982,11 +956,7 @@ mod tests {
 
     #[test]
     fn plan_write_ignores_different_path() {
-        let mut chat = Chat::new(
-            "Main".into(),
-            UiConfig::default(),
-            Arc::new(ratatui_image::picker::Picker::halfblocks()),
-        );
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
         let plan_path = Path::new("/plans/123.md");
         chat.handle_event(tool_start("w1", "write"), Some(plan_path));
         let (output, wp) = write_output("src/main.rs");
@@ -999,11 +969,7 @@ mod tests {
 
     #[test]
     fn plan_edit_shows_path_only() {
-        let mut chat = Chat::new(
-            "Main".into(),
-            UiConfig::default(),
-            Arc::new(ratatui_image::picker::Picker::halfblocks()),
-        );
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
         let dir = tempfile::tempdir().unwrap();
         let plan_path = dir.path().join("plan.md");
         std::fs::write(&plan_path, "# My Plan\n\n- Step 1").unwrap();
@@ -1518,12 +1484,8 @@ mod tests {
     }
 
     #[test]
-    fn compaction_done_flushes_streaming_buffers() {
-        let mut chat = Chat::new(
-            "Main".into(),
-            UiConfig::default(),
-            Arc::new(ratatui_image::picker::Picker::halfblocks()),
-        );
+    fn compaction_done_absorbs_streaming_summary_into_card() {
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
 
         chat.handle_event(AgentEvent::AutoCompacting, None);
         assert_eq!(chat.message_count(), 1);

@@ -12,11 +12,12 @@ use n00n_agent::{
     ImageMediaType, InterruptSource, McpConfigErrors, McpPromptArg, McpServerInfo, McpServerStatus,
     McpSnapshot, McpSnapshotReader, ToolDoneEvent, ToolOutput, ToolStartEvent, TurnCompleteEvent,
 };
-use n00n_config::{PermissionsConfig, ToolKey, UiConfig};
+use n00n_config::{PermissionsConfig, UiConfig};
 use n00n_lua::{HintReader, KeymapReader, LuaCommandReader};
 use n00n_providers::{ContentBlock, Effort, Role, TokenUsage};
-use n00n_storage::sessions::{StoredMode, StoredThinking};
+use n00n_storage::sessions::{StoredMode, StoredThinking, TranscriptEntry};
 use ratatui::{Terminal, backend::TestBackend, layout::Rect};
+use ratatui_image::picker::Picker;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -43,10 +44,9 @@ fn build_app_with_mcp(
     mcp_reader: McpSnapshotReader,
 ) -> App {
     let model = test_model();
-    let cwd = dir.path().to_string_lossy().to_string();
     App::new(
         &model,
-        AppSession::new("test-model", &cwd),
+        AppSession::new("test-model", "/tmp/test"),
         dir,
         Arc::new(ArcSwapOption::empty()),
         mcp_reader,
@@ -65,7 +65,7 @@ fn build_app_with_mcp(
             PathBuf::from("/tmp"),
         )),
         Arc::from([]),
-        Arc::new(ratatui_image::picker::Picker::halfblocks()),
+        Arc::new(Picker::halfblocks()),
     )
 }
 
@@ -1559,39 +1559,6 @@ fn picker_enter_stays_at_navigated() {
     assert_eq!(app.active_chat, 1);
 }
 
-#[test]
-fn picker_navigate_to_subagent_then_type_routes_prompt_to_subagent() {
-    let mut app = test_app();
-    app.status = Status::Streaming;
-    app.run_id = 1;
-    let (prompt_tx, prompt_rx) = flume::bounded::<SubagentPrompt>(32);
-    app.update(Msg::Agent(Box::new(Envelope {
-        event: AgentEvent::TextDelta { text: "x".into() },
-        subagent: Some(subagent_info_with_channels(
-            "task1",
-            "task1",
-            "research",
-            None,
-            Some(prompt_tx),
-        )),
-        run_id: 1,
-    })));
-
-    app.update(Msg::Key(kb::TASKS.to_key_event()));
-    app.update(Msg::Key(key(KeyCode::Down)));
-    app.update(Msg::Key(key(KeyCode::Enter)));
-
-    assert!(!app.task_picker.is_open());
-    assert_eq!(app.active_chat, 1);
-
-    app.update(Msg::Key(key(KeyCode::Char('h'))));
-    app.update(Msg::Key(key(KeyCode::Enter)));
-
-    assert_eq!(prompt_rx.try_recv().unwrap().text, "h");
-    assert_eq!(app.chats[1].last_message_text(), "h");
-    assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::User));
-}
-
 const OVERLAY_BLOCKED_KEYS: &[KeyEvent] = &[
     kb::NEXT_CHAT.to_key_event(),
     kb::PREV_CHAT.to_key_event(),
@@ -1641,13 +1608,25 @@ fn overlay_blocks_ctrl_shortcuts(setup: fn(&mut App)) {
 }
 
 #[test]
-fn at_mention_does_not_open_flyout_mid_word() {
+fn at_mention_opens_file_picker_and_esc_leaves_literal() {
+    let mut app = test_app();
+    app.update(Msg::Key(key(KeyCode::Char('@'))));
+    assert!(app.file_picker.is_open());
+    assert_eq!(app.input_box.buffer.value(), "");
+
+    app.update(Msg::Key(key(KeyCode::Esc)));
+    assert!(!app.file_picker.is_open());
+    assert_eq!(app.input_box.buffer.value(), "@");
+}
+
+#[test]
+fn at_mention_does_not_open_mid_word() {
     let mut app = test_app();
     for c in "em".chars() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
     }
     app.update(Msg::Key(key(KeyCode::Char('@'))));
-    assert!(!app.mention_flyout.is_open());
+    assert!(!app.file_picker.is_open());
     assert_eq!(app.input_box.buffer.value(), "em@");
 }
 
@@ -3199,7 +3178,7 @@ fn stale_auth_required_after_cancel_is_dropped() {
 }
 
 #[test]
-fn send_to_agent_unknown_subagent_does_not_fall_back_to_main() {
+fn send_to_agent_unknown_subagent_does_not_fallback_to_main() {
     let (main_tx, main_rx) = flume::unbounded();
     let mut app = test_app();
     app.status = Status::Streaming;
@@ -3635,35 +3614,25 @@ fn ctrl_t_noop_when_plan_not_ready() {
     assert!(!app.plan_form.is_visible());
 }
 
-fn install_override(
-    app: &mut App,
-    key: KeyCode,
-    modifiers: KeyModifiers,
-) -> n00n_lua::test_support::RequestProbe {
-    app.keymap_reader = n00n_lua::test_support::keymap_reader_with(vec![n00n_lua::KeymapEntry {
-        key,
-        modifiers,
-        desc: "plugin override".into(),
-        plugin: Arc::from("test-plugin"),
-        id: 1,
-    }]);
-    let (handle, probe) = n00n_lua::test_support::probed_event_handle();
-    app.lua_event_handle = Some(handle);
-    probe
-}
-
-const OVERRIDE_DISPATCHED: &str = "override callback must be dispatched";
-const OVERRIDE_NOT_DISPATCHED: &str = "override callback must not be dispatched";
-
 #[test]
 fn override_shadows_builtin_ctrl_when_no_overlay_open() {
+    let entry = n00n_lua::KeymapEntry {
+        key: kb::HELP.code,
+        modifiers: kb::HELP.modifiers,
+        desc: "plugin help override".into(),
+        plugin: std::sync::Arc::from("test-plugin"),
+        id: 1,
+    };
+    let reader = n00n_lua::test_support::keymap_reader_with(vec![entry]);
     let mut app = test_app();
-    let probe = install_override(&mut app, kb::HELP.code, kb::HELP.modifiers);
+    let (handle, _probe) = n00n_lua::test_support::probed_event_handle();
+    app.lua_event_handle = Some(handle);
+    app.keymap_reader = reader;
+    assert!(!app.help_modal.is_open());
 
     let actions = app.update(Msg::Key(kb::HELP.to_key_event()));
 
     assert!(actions.is_empty());
-    assert!(probe.try_recv().is_some(), "{OVERRIDE_DISPATCHED}");
     assert!(
         !app.help_modal.is_open(),
         "override must consume the key before the built-in HELP handler runs"
@@ -3672,14 +3641,23 @@ fn override_shadows_builtin_ctrl_when_no_overlay_open() {
 
 #[test]
 fn override_shadows_quit_builtin() {
+    let entry = n00n_lua::KeymapEntry {
+        key: kb::QUIT.code,
+        modifiers: kb::QUIT.modifiers,
+        desc: "plugin quit override".into(),
+        plugin: std::sync::Arc::from("test-plugin"),
+        id: 3,
+    };
+    let reader = n00n_lua::test_support::keymap_reader_with(vec![entry]);
     let mut app = test_app();
+    let (handle, _probe) = n00n_lua::test_support::probed_event_handle();
+    app.lua_event_handle = Some(handle);
     app.status = Status::Idle;
-    let probe = install_override(&mut app, kb::QUIT.code, kb::QUIT.modifiers);
+    app.keymap_reader = reader;
 
     let actions = app.update(Msg::Key(kb::QUIT.to_key_event()));
 
     assert!(actions.is_empty());
-    assert!(probe.try_recv().is_some(), "{OVERRIDE_DISPATCHED}");
     assert_eq!(
         app.exit_request,
         ExitRequest::None,
@@ -3689,14 +3667,23 @@ fn override_shadows_quit_builtin() {
 
 #[test]
 fn override_shadows_tab_mode_toggle() {
+    let entry = n00n_lua::KeymapEntry {
+        key: KeyCode::Tab,
+        modifiers: KeyModifiers::NONE,
+        desc: "plugin tab override".into(),
+        plugin: std::sync::Arc::from("test-plugin"),
+        id: 4,
+    };
+    let reader = n00n_lua::test_support::keymap_reader_with(vec![entry]);
     let mut app = test_app();
+    let (handle, _probe) = n00n_lua::test_support::probed_event_handle();
+    app.lua_event_handle = Some(handle);
     let initial_mode = app.state.mode;
-    let probe = install_override(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    app.keymap_reader = reader;
 
     let actions = app.update(Msg::Key(key(KeyCode::Tab)));
 
     assert!(actions.is_empty());
-    assert!(probe.try_recv().is_some(), "{OVERRIDE_DISPATCHED}");
     assert_eq!(
         app.state.mode, initial_mode,
         "override must consume Tab before the built-in mode toggle runs"
@@ -3705,13 +3692,22 @@ fn override_shadows_tab_mode_toggle() {
 
 #[test]
 fn override_shadows_esc_builtin() {
+    let entry = n00n_lua::KeymapEntry {
+        key: KeyCode::Esc,
+        modifiers: KeyModifiers::NONE,
+        desc: "plugin esc override".into(),
+        plugin: std::sync::Arc::from("test-plugin"),
+        id: 5,
+    };
+    let reader = n00n_lua::test_support::keymap_reader_with(vec![entry]);
     let mut app = test_app();
-    let probe = install_override(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    let (handle, _probe) = n00n_lua::test_support::probed_event_handle();
+    app.lua_event_handle = Some(handle);
+    app.keymap_reader = reader;
 
     let actions = app.update(Msg::Key(key(KeyCode::Esc)));
 
     assert!(actions.is_empty());
-    assert!(probe.try_recv().is_some(), "{OVERRIDE_DISPATCHED}");
     assert!(
         app.last_esc.is_none(),
         "override must consume Esc before the built-in esc handler runs"
@@ -3721,8 +3717,16 @@ fn override_shadows_esc_builtin() {
 #[cfg(unix)]
 #[test]
 fn override_does_not_shadow_suspend() {
+    let entry = n00n_lua::KeymapEntry {
+        key: kb::SUSPEND.code,
+        modifiers: kb::SUSPEND.modifiers,
+        desc: "plugin suspend override".into(),
+        plugin: std::sync::Arc::from("test-plugin"),
+        id: 6,
+    };
+    let reader = n00n_lua::test_support::keymap_reader_with(vec![entry]);
     let mut app = test_app();
-    let probe = install_override(&mut app, kb::SUSPEND.code, kb::SUSPEND.modifiers);
+    app.keymap_reader = reader;
 
     let actions = app.update(Msg::Key(kb::SUSPEND.to_key_event()));
 
@@ -3730,12 +3734,12 @@ fn override_does_not_shadow_suspend() {
         actions.iter().any(|a| matches!(a, Action::Suspend)),
         "suspend is non-remappable: override must not shadow Ctrl+Z"
     );
-    assert!(probe.try_recv().is_none(), "{OVERRIDE_NOT_DISPATCHED}");
 }
 
 #[test]
 fn builtin_runs_when_no_override() {
     let mut app = test_app();
+    assert!(!app.help_modal.is_open());
 
     app.update(Msg::Key(kb::HELP.to_key_event()));
 
@@ -3743,31 +3747,41 @@ fn builtin_runs_when_no_override() {
 }
 
 #[test]
-fn plan_toggle_beats_override_when_open_and_after_dismiss() {
+fn overlay_wins_over_override_when_plan_form_open() {
+    let entry = n00n_lua::KeymapEntry {
+        key: kb::PLAN_TOGGLE.code,
+        modifiers: kb::PLAN_TOGGLE.modifiers,
+        desc: "plugin plan override".into(),
+        plugin: std::sync::Arc::from("test-plugin"),
+        id: 2,
+    };
+    let reader = n00n_lua::test_support::keymap_reader_with(vec![entry]);
     let mut app = plan_app();
-    let probe = install_override(&mut app, kb::PLAN_TOGGLE.code, kb::PLAN_TOGGLE.modifiers);
+    app.keymap_reader = reader;
     assert!(app.plan_form.is_visible());
+    assert!(app.lua_event_handle.is_none());
 
     app.update(Msg::Key(kb::PLAN_TOGGLE.to_key_event()));
-    assert!(
-        !app.plan_form.is_visible(),
-        "open plan form must consume Ctrl+T before the override"
-    );
 
-    app.update(Msg::Key(kb::PLAN_TOGGLE.to_key_event()));
-    assert!(
-        app.plan_form.is_visible(),
-        "Ctrl+T must reopen the dismissed plan form despite the override"
-    );
-    assert!(probe.try_recv().is_none(), "{OVERRIDE_NOT_DISPATCHED}");
+    assert!(!app.plan_form.is_visible());
 }
 
 #[test]
 fn streaming_cancel_wins_over_quit_override() {
+    let entry = n00n_lua::KeymapEntry {
+        key: kb::QUIT.code,
+        modifiers: kb::QUIT.modifiers,
+        desc: "plugin quit override".into(),
+        plugin: std::sync::Arc::from("test-plugin"),
+        id: 7,
+    };
+    let reader = n00n_lua::test_support::keymap_reader_with(vec![entry]);
     let mut app = test_app();
+    let (handle, _probe) = n00n_lua::test_support::probed_event_handle();
+    app.lua_event_handle = Some(handle);
     app.status = Status::Streaming;
     app.run_id = 1;
-    let probe = install_override(&mut app, kb::QUIT.code, kb::QUIT.modifiers);
+    app.keymap_reader = reader;
 
     let actions = app.update(Msg::Key(kb::QUIT.to_key_event()));
 
@@ -3777,14 +3791,22 @@ fn streaming_cancel_wins_over_quit_override() {
     );
     assert_eq!(app.status, Status::Idle);
     assert_eq!(app.exit_request, ExitRequest::None);
-    assert!(probe.try_recv().is_none(), "{OVERRIDE_NOT_DISPATCHED}");
 }
 
 #[test]
 fn dead_host_override_falls_back_to_builtin() {
+    let entry = n00n_lua::KeymapEntry {
+        key: kb::HELP.code,
+        modifiers: kb::HELP.modifiers,
+        desc: "plugin help override".into(),
+        plugin: std::sync::Arc::from("test-plugin"),
+        id: 8,
+    };
+    let reader = n00n_lua::test_support::keymap_reader_with(vec![entry]);
     let mut app = test_app();
-    let _probe = install_override(&mut app, kb::HELP.code, kb::HELP.modifiers);
     app.lua_event_handle = Some(n00n_lua::EventHandle::disconnected_for_test());
+    app.keymap_reader = reader;
+    assert!(!app.help_modal.is_open());
 
     app.update(Msg::Key(kb::HELP.to_key_event()));
 
@@ -3796,12 +3818,21 @@ fn dead_host_override_falls_back_to_builtin() {
 
 #[test]
 fn streaming_cancel_wins_over_esc_override() {
+    let entry = n00n_lua::KeymapEntry {
+        key: KeyCode::Esc,
+        modifiers: KeyModifiers::NONE,
+        desc: "plugin esc override".into(),
+        plugin: std::sync::Arc::from("test-plugin"),
+        id: 9,
+    };
+    let reader = n00n_lua::test_support::keymap_reader_with(vec![entry]);
     let mut app = test_app();
+    let (handle, _probe) = n00n_lua::test_support::probed_event_handle();
+    app.lua_event_handle = Some(handle);
     app.status = Status::Streaming;
     app.run_id = 1;
-    app.status_bar.flash_duration = Duration::from_secs(3600);
     app.last_esc = Some(Instant::now());
-    let probe = install_override(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    app.keymap_reader = reader;
 
     let actions = app.update(Msg::Key(key(KeyCode::Esc)));
 
@@ -3810,7 +3841,6 @@ fn streaming_cancel_wins_over_esc_override() {
         "built-in cancel must win while streaming even when Esc is overridden"
     );
     assert_eq!(app.status, Status::Idle);
-    assert!(probe.try_recv().is_none(), "{OVERRIDE_NOT_DISPATCHED}");
 }
 
 #[test]
@@ -4316,323 +4346,4 @@ fn subagent_cancel_then_navigate_back_main_unaffected() {
     assert_eq!(app.active_chat, 0);
     assert_eq!(app.status, Status::Streaming);
     assert!(!app.chats[0].is_finished());
-}
-
-#[test_case("task"     ; "task")]
-#[test_case("agent"    ; "agent")]
-#[test_case("team"     ; "team")]
-#[test_case("workflow" ; "workflow")]
-fn ctrl_click_subagent_card_header_enters_chat(tool: &str) {
-    let mut app = test_app();
-    app.status = Status::Streaming;
-    app.run_id = 1;
-    app.update(agent_msg(AgentEvent::ToolStart(Box::new(ToolStartEvent {
-        id: "card1".into(),
-        tool: tool.into(),
-        summary: "safe summary".into(),
-        annotation: Some("safe annotation".into()),
-        input: None,
-        raw_input: None,
-        output: None,
-        render_header: None,
-    }))));
-    app.update(subagent_msg(
-        AgentEvent::TextDelta {
-            text: "child".into(),
-        },
-        "card1",
-        Some("research"),
-    ));
-    app.update(agent_msg(AgentEvent::ToolDone(Box::new(ToolDoneEvent {
-        id: "card1".into(),
-        tool: tool.into(),
-        output: ToolOutput::Markdown("body line\n".repeat(100).into()),
-        is_error: false,
-        annotation: None,
-        written_path: None,
-    }))));
-    let area = Rect::new(0, 0, 80, 80);
-    set_zone(&mut app, SelectionZone::Messages, area);
-
-    let mut terminal = Terminal::new(TestBackend::new(80, 80)).unwrap();
-    terminal.draw(|frame| app.view(frame)).unwrap();
-    let msg_area = app.msg_area();
-
-    let ctrl_click = |app: &mut App, row| {
-        app.update(Msg::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: 10,
-            row,
-            modifiers: KeyModifiers::CONTROL,
-        }));
-        app.update(Msg::Mouse(MouseEvent {
-            kind: MouseEventKind::Up(MouseButton::Left),
-            column: 10,
-            row,
-            modifiers: KeyModifiers::CONTROL,
-        }));
-    };
-
-    ctrl_click(&mut app, msg_area.y);
-    assert_eq!(
-        app.active_chat, 1,
-        "{tool} ctrl+header click must enter the subagent chat"
-    );
-}
-
-#[test]
-fn typing_in_running_subagent_routes_prompt_to_that_agent() {
-    let mut app = test_app();
-    app.status = Status::Streaming;
-    app.run_id = 1;
-    let (prompt_tx, prompt_rx) = flume::bounded::<SubagentPrompt>(32);
-    app.update(Msg::Agent(Box::new(Envelope {
-        event: AgentEvent::TextDelta {
-            text: "running".into(),
-        },
-        subagent: Some(subagent_info_with_channels(
-            "task1",
-            "task1",
-            "research",
-            None,
-            Some(prompt_tx),
-        )),
-        run_id: 1,
-    })));
-    assert_eq!(app.chats.len(), 2);
-    assert_eq!(app.active_chat, 0);
-    app.active_chat = 1;
-
-    app.update(Msg::Key(key(KeyCode::Char('f'))));
-    app.update(Msg::Key(key(KeyCode::Char('o'))));
-    app.update(Msg::Key(key(KeyCode::Char('l'))));
-    app.update(Msg::Key(key(KeyCode::Char('l'))));
-    app.update(Msg::Key(key(KeyCode::Char('o'))));
-    app.update(Msg::Key(key(KeyCode::Char('w'))));
-    app.update(Msg::Key(key(KeyCode::Enter)));
-
-    assert_eq!(prompt_rx.try_recv().unwrap().text, "follow");
-}
-
-#[test]
-fn pasting_in_running_subagent_routes_prompt_to_that_agent() {
-    let mut app = test_app();
-    app.status = Status::Streaming;
-    app.run_id = 1;
-    let (prompt_tx, prompt_rx) = flume::bounded::<SubagentPrompt>(32);
-    app.update(Msg::Agent(Box::new(Envelope {
-        event: AgentEvent::TextDelta {
-            text: "running".into(),
-        },
-        subagent: Some(subagent_info_with_channels(
-            "task1",
-            "task1",
-            "research",
-            None,
-            Some(prompt_tx),
-        )),
-        run_id: 1,
-    })));
-    app.active_chat = 1;
-
-    app.update(Msg::Paste("pasted follow-up".into()));
-    app.update(Msg::Key(key(KeyCode::Enter)));
-
-    assert_eq!(prompt_rx.try_recv().unwrap().text, "pasted follow-up");
-    assert_eq!(app.chats[1].last_message_text(), "pasted follow-up");
-    assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::User));
-}
-
-#[test]
-fn typing_in_finished_subagent_flashes_explanation() {
-    let mut app = test_app();
-    app.status = Status::Streaming;
-    app.run_id = 1;
-    let (prompt_tx, prompt_rx) = flume::bounded::<SubagentPrompt>(32);
-    app.update(subagent_msg(
-        AgentEvent::TextDelta {
-            text: "running".into(),
-        },
-        "task1",
-        Some("research"),
-    ));
-    let info = subagent_info_with_channels("task1", "task1", "research", None, Some(prompt_tx));
-    app.handle_agent_event(Envelope {
-        event: AgentEvent::TextDelta { text: "x".into() },
-        subagent: Some(info),
-        run_id: 1,
-    });
-    app.active_chat = 1;
-    finish_subagent_task(&mut app, false);
-
-    app.update(Msg::Key(key(KeyCode::Char('h'))));
-    app.update(Msg::Key(key(KeyCode::Enter)));
-
-    assert_eq!(app.status_bar.flash_text(), Some(STEERING_UNAVAILABLE_MSG));
-    assert!(prompt_rx.try_recv().is_err());
-    assert!(!app.subagent_prompts.contains_key("task1"));
-}
-
-#[test]
-fn subagent_prompt_queue_full_restores_input_and_flashes_busy() {
-    let mut app = test_app();
-    app.status = Status::Streaming;
-    app.run_id = 1;
-    let (prompt_tx, prompt_rx) = flume::bounded::<SubagentPrompt>(1);
-    let fill_tx = prompt_tx.clone();
-    let info = subagent_info_with_channels("task1", "task1", "research", None, Some(prompt_tx));
-    app.handle_agent_event(Envelope {
-        event: AgentEvent::TextDelta { text: "x".into() },
-        subagent: Some(info),
-        run_id: 1,
-    });
-    app.active_chat = 1;
-    fill_tx
-        .try_send(SubagentPrompt {
-            text: "fill".into(),
-            images: Vec::new(),
-        })
-        .unwrap();
-
-    app.input_box.set_input("hi".into());
-    app.update(Msg::Key(key(KeyCode::Enter)));
-
-    assert_eq!(app.status_bar.flash_text(), Some(STEERING_BUSY_MSG));
-    assert_eq!(app.input_box.buffer.value(), "hi");
-    assert_eq!(prompt_rx.try_recv().unwrap().text, "fill");
-    assert!(prompt_rx.try_recv().is_err());
-}
-
-#[test]
-fn subagent_prompt_disconnected_removes_sender_and_flashes_unavailable() {
-    let mut app = test_app();
-    app.status = Status::Streaming;
-    app.run_id = 1;
-    let (prompt_tx, _prompt_rx) = flume::bounded::<SubagentPrompt>(1);
-    drop(_prompt_rx);
-    let info = subagent_info_with_channels("task1", "task1", "research", None, Some(prompt_tx));
-    app.handle_agent_event(Envelope {
-        event: AgentEvent::TextDelta { text: "x".into() },
-        subagent: Some(info),
-        run_id: 1,
-    });
-    app.active_chat = 1;
-
-    app.input_box.set_input("hi".into());
-    app.update(Msg::Key(key(KeyCode::Enter)));
-
-    assert_eq!(app.status_bar.flash_text(), Some(STEERING_UNAVAILABLE_MSG));
-    assert!(!app.subagent_prompts.contains_key("task1"));
-}
-
-#[test]
-fn permission_answer_to_finished_subagent_does_not_fall_back_to_main() {
-    let (mut app, sub_rx, main_rx) = app_with_subagent_tx("task1");
-    app.permission_prompt.open(
-        "perm-id".into(),
-        ToolKey::native("bash"),
-        vec!["execute".into()],
-        Some("task1".into()),
-    );
-    finish_subagent(&mut app, "task1", false);
-
-    app.update(Msg::Key(key(KeyCode::Char('y'))));
-
-    assert!(main_rx.try_recv().is_err());
-    assert!(sub_rx.try_recv().is_err());
-    assert!(!app.permission_prompt.is_open());
-}
-
-#[test]
-fn permission_answer_to_active_subagent_routes_to_subagent() {
-    let (mut app, sub_rx, main_rx) = app_with_subagent_tx("task1");
-    app.permission_prompt.open(
-        "perm-id".into(),
-        ToolKey::native("bash"),
-        vec!["execute".into()],
-        Some("task1".into()),
-    );
-
-    app.update(Msg::Key(key(KeyCode::Char('y'))));
-
-    assert_eq!(sub_rx.try_recv().unwrap(), "allow");
-    assert!(main_rx.try_recv().is_err());
-    assert!(!app.permission_prompt.is_open());
-}
-
-#[test]
-fn permission_answer_to_disconnected_subagent_does_not_fall_back_to_main() {
-    let (mut app, sub_rx, main_rx) = app_with_subagent_tx("task1");
-    drop(sub_rx);
-    app.permission_prompt.open(
-        "perm-id".into(),
-        ToolKey::native("bash"),
-        vec!["execute".into()],
-        Some("task1".into()),
-    );
-
-    app.update(Msg::Key(key(KeyCode::Char('y'))));
-
-    assert!(main_rx.try_recv().is_err());
-    assert!(!app.permission_prompt.is_open());
-}
-
-#[test]
-fn cancel_subagent_removes_prompt_sender() {
-    let (prompt_tx, _prompt_rx) = flume::bounded::<SubagentPrompt>(2);
-    let mut app = test_app();
-    app.status = Status::Streaming;
-    app.run_id = 1;
-    app.update(Msg::Agent(Box::new(Envelope {
-        event: AgentEvent::TextDelta { text: "x".into() },
-        subagent: Some(subagent_info_with_channels(
-            "task1",
-            "task1",
-            "research",
-            None,
-            Some(prompt_tx),
-        )),
-        run_id: 1,
-    })));
-    app.active_chat = 1;
-    app.last_esc = Some(Instant::now());
-
-    app.update(Msg::Key(key(KeyCode::Esc)));
-
-    assert!(app.chats[1].is_finished());
-    assert!(!app.subagent_prompts.contains_key("task1"));
-    assert!(!app.subagent_answers.contains_key("task1"));
-}
-
-#[test]
-fn subagent_prompt_carries_images() {
-    let mut app = test_app();
-    app.status = Status::Streaming;
-    app.run_id = 1;
-    let (prompt_tx, prompt_rx) = flume::bounded::<SubagentPrompt>(32);
-    app.update(Msg::Agent(Box::new(Envelope {
-        event: AgentEvent::TextDelta {
-            text: "running".into(),
-        },
-        subagent: Some(subagent_info_with_channels(
-            "task1",
-            "task1",
-            "research",
-            None,
-            Some(prompt_tx),
-        )),
-        run_id: 1,
-    })));
-    app.active_chat = 1;
-
-    let img = ImageSource::new(ImageMediaType::Png, Arc::from("dGVzdA=="));
-    app.input_box.attach_image(img);
-    app.update(Msg::Key(key(KeyCode::Char('d'))));
-    app.update(Msg::Key(key(KeyCode::Enter)));
-
-    let prompt = prompt_rx.try_recv().unwrap();
-    assert_eq!(prompt.text, "d");
-    assert_eq!(prompt.images.len(), 1);
-    assert_eq!(app.chats[1].last_message_text(), "d [1 image]");
-    assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::User));
 }

@@ -175,7 +175,7 @@ fn credits_limit(u: &OauthUsage) -> Option<UsageLimit> {
     };
     Some(UsageLimit {
         label: "Usage credits".into(),
-        percentage: Some(percent.round() as u32),
+        percentage: Some(percentage(percent)),
         reset_at: None,
         detail,
     })
@@ -189,7 +189,7 @@ impl From<OauthUsage> for ProviderUsage {
             .filter_map(|l| {
                 Some(UsageLimit {
                     label: limit_label(l),
-                    percentage: Some(l.percent?.round() as u32),
+                    percentage: Some(percentage(l.percent?)),
                     reset_at: l.resets_at.as_deref().and_then(parse_reset),
                     detail: None,
                 })
@@ -206,7 +206,7 @@ impl From<OauthUsage> for ProviderUsage {
                 let w = w.as_ref()?;
                 Some(UsageLimit {
                     label: label.into(),
-                    percentage: Some(w.utilization?.round() as u32),
+                    percentage: Some(percentage(w.utilization?)),
                     reset_at: w.resets_at.as_deref().and_then(parse_reset),
                     detail: None,
                 })
@@ -221,7 +221,9 @@ impl From<OauthUsage> for ProviderUsage {
 /// (which Anthropic base URLs historically included).
 fn origin(base_url: &str) -> &str {
     let trimmed = base_url.trim_end_matches('/');
-    trimmed.strip_suffix(MESSAGES_PATH).unwrap_or(trimmed)
+    trimmed
+        .strip_suffix(MESSAGES_PATH)
+        .unwrap_or_else(|| trimmed)
 }
 
 /// True when `base_url` targets the real Anthropic API, directly or via the
@@ -290,8 +292,11 @@ impl Anthropic {
     }
 
     fn build_request(&self, method: &str, path: &str) -> isahc::http::request::Builder {
-        let auth = self.auth.lock().unwrap();
-        let base = auth.base_url.as_deref().unwrap_or(API_ORIGIN);
+        let auth = self
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let base = auth.base_url.as_deref().unwrap_or_else(|| API_ORIGIN);
         let url = format!("{}{path}", origin(base));
         auth.configure_request(
             Request::builder()
@@ -341,7 +346,7 @@ impl Anthropic {
         loop {
             let mut path = MODELS_PATH.to_string();
             if let Some(cursor) = &after_id {
-                path.push_str(&format!("&after_id={cursor}"));
+                let _ = write!(path, "&after_id={cursor}");
             }
 
             let request = self.build_request("GET", &path).body(())?;
@@ -565,7 +570,7 @@ mod tests {
         assert_eq!(usage.limits.len(), 4);
         assert_eq!(usage.limits[0].label, "Current session");
         assert_eq!(usage.limits[0].percentage, Some(14));
-        assert_eq!(usage.limits[0].reset_at, Some(1770415200000));
+        assert_eq!(usage.limits[0].reset_at, Some(1_770_415_200_000));
         assert_eq!(usage.limits[1].label, "Current week (all models)");
         assert_eq!(usage.limits[1].percentage, Some(2));
         assert_eq!(usage.limits[2].label, "Current week (Fable)");
@@ -590,7 +595,7 @@ mod tests {
         assert_eq!(usage.limits.len(), 5);
         assert_eq!(usage.limits[0].label, "Current session");
         assert_eq!(usage.limits[0].percentage, Some(35));
-        assert_eq!(usage.limits[0].reset_at, Some(1770415200000));
+        assert_eq!(usage.limits[0].reset_at, Some(1_770_415_200_000));
         assert_eq!(usage.limits[1].label, "Current week (all models)");
         assert_eq!(usage.limits[2].label, "Current week (Sonnet)");
         assert_eq!(usage.limits[3].label, "Current week (Opus)");

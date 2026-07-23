@@ -226,34 +226,35 @@ impl Model {
         let spec = format!("{slug}/{model_id}");
         // Discovery keys `known_models` by the builtin slug, so a dynamic or
         // custom slug reads positional tiers and metadata through its base.
-        let tier = model_registry().read().unwrap().tier_for(
-            &spec,
-            manifest.slug,
-            static_entry.map(|e| e.tier),
-        );
-        let (family, pricing, max_output_tokens, context_window) = match static_entry {
-            Some(e) => (
+        let tier = model_registry()
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .tier_for(&spec, manifest.slug, static_entry.map(|e| e.tier));
+        let (family, pricing, max_output_tokens, context_window) = if let Some(e) = static_entry {
+            (
                 e.family,
                 e.pricing.clone(),
                 Some(e.max_output_tokens),
-                anthropic::shared::long_context_window(model_id).unwrap_or(e.context_window),
-            ),
-            None => {
-                let guard = model_registry().read().unwrap();
-                let discovered = guard.discovered(manifest.slug, model_id);
-                (
-                    manifest.family,
-                    discovered
-                        .and_then(|d| d.pricing.clone())
-                        .unwrap_or_default(),
-                    discovered
-                        .and_then(|d| d.max_output_tokens)
-                        .or(manifest.fallback_max_output),
-                    discovered
-                        .and_then(|d| d.context_window)
-                        .unwrap_or(manifest.fallback_context_window),
-                )
-            }
+                anthropic::shared::long_context_window(model_id)
+                    .unwrap_or_else(|| e.context_window),
+            )
+        } else {
+            let guard = model_registry()
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let discovered = guard.discovered(manifest.slug, model_id);
+            (
+                manifest.family,
+                discovered
+                    .and_then(|d| d.pricing.clone())
+                    .unwrap_or_else(ModelPricing::default),
+                discovered
+                    .and_then(|d| d.max_output_tokens)
+                    .or(manifest.fallback_max_output),
+                discovered
+                    .and_then(|d| d.context_window)
+                    .unwrap_or_else(|| manifest.fallback_context_window),
+            )
         };
         Self {
             id: model_id.to_string(),
@@ -281,10 +282,10 @@ impl Model {
         };
         model_registry()
             .read()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .discovered(manifest.slug, &self.id)
             .and_then(|d| d.supports_thinking)
-            .unwrap_or(manifest.supports_thinking)
+            .unwrap_or_else(|| manifest.supports_thinking)
     }
 
     #[must_use]
@@ -297,7 +298,7 @@ impl Model {
             .and_then(|m| {
                 model_registry()
                     .read()
-                    .unwrap()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .discovered(m.slug, &self.id)
                     .and_then(|d| d.supports_vision)
             })
@@ -330,6 +331,7 @@ impl Model {
     /// mode to Anthropic-based providers, resolved through the base manifest so
     /// oauth scripts keep it; Bedrock separately ignores `opts.fast` at request
     /// time.
+    #[must_use]
     pub fn supports_fast(&self) -> bool {
         self.pricing.fast.is_some()
             && ManifestRegistry::for_slug(&self.provider).is_some_and(|m| m.slug == FAST_PROVIDER)
@@ -340,12 +342,22 @@ impl Model {
         format!("{}/{}", self.provider, self.id)
     }
 
+    #[must_use]
     pub fn provider_display_name(&self) -> &'static str {
         ManifestRegistry::for_slug(&self.provider).map_or("Unknown", |m| m.display_name)
     }
 
+    /// Build a model for a provider slug and tier.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ModelError` if no model can be resolved for the tier.
     pub fn from_tier(slug: &str, tier: ModelTier) -> Result<Self, ModelError> {
-        if let Some(spec) = model_registry().read().unwrap().spec_for_tier(slug, tier) {
+        if let Some(spec) = model_registry()
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .spec_for_tier(slug, tier)
+        {
             return Self::from_spec(&spec);
         }
         let entry = ManifestRegistry::find_default_for_tier(slug, tier)
@@ -354,6 +366,11 @@ impl Model {
         Self::from_spec(&format!("{slug}/{model_id}"))
     }
 
+    /// Build a model for a provider slug and tier, allowing dynamic and custom providers.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ModelError` if the provider or tier cannot be resolved.
     pub fn from_tier_dynamic(slug: &str, tier: ModelTier) -> Result<Self, ModelError> {
         if let Some(model) = dynamic::find_model_for_tier(slug, tier) {
             return Ok(model);
@@ -662,7 +679,7 @@ mod tests {
     }
 
     #[test]
-    fn total_input_saturates_at_u32_max() {
+    fn total_input_saturates_when_all_max() {
         let usage = TokenUsage {
             input: u32::MAX,
             output: 0,
@@ -673,7 +690,7 @@ mod tests {
     }
 
     #[test]
-    fn context_tokens_saturates_at_u32_max() {
+    fn context_tokens_saturates_when_all_max() {
         let usage = TokenUsage {
             input: u32::MAX,
             output: u32::MAX,
@@ -684,7 +701,7 @@ mod tests {
     }
 
     #[test]
-    fn add_assign_saturates_at_u32_max() {
+    fn add_assign_saturates_all_fields_at_u32_max() {
         let mut usage = TokenUsage {
             input: u32::MAX - 10,
             output: u32::MAX - 10,

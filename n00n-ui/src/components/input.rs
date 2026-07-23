@@ -20,9 +20,8 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use super::scrollbar::{ScrollInfo, render_vertical_scrollbar};
 use super::{apply_scroll_delta, visual_line_count};
 use crate::selection::LineBreaks;
-use n00n_config::DEFAULT_MAX_INPUT_LINES;
 
-const BORDER_LINES: u16 = 2;
+const MAX_INPUT_LINES: u16 = 20;
 const CHEVRON: &str = super::CHEVRON;
 const NEWLINE_PAD: &str = "  ";
 const PREFIX_WIDTH: u16 = 2;
@@ -45,7 +44,7 @@ const PLACEHOLDER_SUGGESTIONS: &[&str] = &[
 pub enum InputAction {
     Submit(Submission),
     ContinueLine,
-    OpenMention,
+    OpenFilePicker,
     PaletteSync(String),
     Passthrough(KeyEvent),
     None,
@@ -104,8 +103,7 @@ impl InputBox {
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
                     && self.char_before_cursor_is_whitespace_or_start() =>
             {
-                self.buffer.push_char('@');
-                return InputAction::OpenMention;
+                return InputAction::OpenFilePicker;
             }
             _ if is_newline_key(&key) => {
                 self.buffer.add_line();
@@ -181,14 +179,14 @@ impl InputBox {
             placeholder_hint: PLACEHOLDER_SUGGESTIONS[0],
             placeholder_index: 0,
             pending_images: Vec::new(),
-            max_input_lines: DEFAULT_MAX_INPUT_LINES as u16,
+            max_input_lines: MAX_INPUT_LINES,
             last_total_vl: 1,
             last_content_height: 1,
         }
     }
 
     pub fn set_max_input_lines(&mut self, max: u32) {
-        self.max_input_lines = max.clamp(1, u16::MAX as u32 - BORDER_LINES as u32) as u16;
+        self.max_input_lines = cast::u32_to_u16(max.clamp(1, u32::from(u16::MAX) - 2));
     }
 
     pub fn copy_text(&self) -> String {
@@ -221,7 +219,7 @@ impl InputBox {
             visual_lines += 1;
         }
         let capped = visual_lines.min(self.max_input_lines as usize);
-        (capped + BORDER_LINES as usize) as u16
+        cast::usize_to_u16(capped + 2)
     }
 
     pub fn is_at_first_line(&self) -> bool {
@@ -250,68 +248,6 @@ impl InputBox {
         match self.char_before_cursor() {
             None => true,
             Some(c) => c.is_whitespace(),
-        }
-    }
-
-    pub fn mention_query(&self) -> Option<(&str, &str)> {
-        let line = &self.buffer.lines()[self.buffer.y()];
-        let cursor_x = self.buffer.x();
-
-        if cursor_x == 0 {
-            return None;
-        }
-
-        let byte_idx = TextBuffer::char_to_byte(line, cursor_x);
-        let before_cursor = &line[..byte_idx];
-
-        let at_pos = before_cursor.rfind('@')?;
-        let after_at = &before_cursor[at_pos + 1..];
-
-        if at_pos == 0
-            || before_cursor[..at_pos]
-                .chars()
-                .last()
-                .is_none_or(|c| c.is_whitespace())
-        {
-            let last_slash = after_at.rfind('/');
-            if let Some(slash_pos) = last_slash {
-                let cwd = &after_at[..=slash_pos];
-                let query = &after_at[slash_pos + 1..];
-                Some((cwd, query))
-            } else {
-                Some(("", after_at))
-            }
-        } else {
-            None
-        }
-    }
-
-    pub fn replace_mention(&mut self, replacement: &str) {
-        let cursor_y = self.buffer.y();
-        let cursor_x = self.buffer.x();
-
-        if cursor_x == 0 {
-            return;
-        }
-
-        let line = self.buffer.lines()[cursor_y].clone();
-        let byte_idx = TextBuffer::char_to_byte(&line, cursor_x);
-        let before_cursor = &line[..byte_idx];
-
-        if let Some(at_pos) = before_cursor.rfind('@') {
-            let is_valid = at_pos == 0
-                || before_cursor[..at_pos]
-                    .chars()
-                    .last()
-                    .is_none_or(|c| c.is_whitespace());
-            if is_valid {
-                let before_at = &line[..at_pos];
-                let after_cursor = &line[byte_idx..];
-                let new_line = format!("{}{}{}", before_at, replacement, after_cursor);
-                self.buffer.lines_mut()[cursor_y] = new_line;
-                let new_cursor_x = at_pos + replacement.chars().count();
-                self.buffer.set_cursor(cursor_y, new_cursor_x);
-            }
         }
     }
 
@@ -354,7 +290,7 @@ impl InputBox {
     }
 
     pub fn set_submission(&mut self, sub: Submission) {
-        self.buffer = TextBuffer::new(sub.text);
+        self.buffer = TextBuffer::new(&sub.text);
         self.pending_images = sub.images;
     }
 
@@ -427,8 +363,8 @@ impl InputBox {
         focused: bool,
         top_right_hint: Option<Line<'_>>,
     ) {
-        let content_height = area.height.saturating_sub(BORDER_LINES);
-        let ew = effective_width(area.width as usize);
+        let content_height = area.height.saturating_sub(2);
+        let ew = effective_width(area.width.saturating_sub(2) as usize);
 
         if self.follow_cursor {
             let visual_cursor_y = self.visual_cursor_y(ew);
@@ -782,72 +718,7 @@ mod tests {
         }
         assert!(input.char_before_cursor_is_backslash());
         input.continue_line();
-    }
-
-    #[test]
-    fn mention_query_at_start() {
-        let mut input = InputBox::new(InputHistory::default());
-        type_text(&mut input, "@src");
-        assert_eq!(input.mention_query(), Some(("", "src")));
-    }
-
-    #[test]
-    fn mention_query_after_whitespace() {
-        let mut input = InputBox::new(InputHistory::default());
-        type_text(&mut input, "read @src");
-        assert_eq!(input.mention_query(), Some(("", "src")));
-    }
-
-    #[test]
-    fn mention_query_with_directory() {
-        let mut input = InputBox::new(InputHistory::default());
-        type_text(&mut input, "@src/comp/ma");
-        assert_eq!(input.mention_query(), Some(("src/comp/", "ma")));
-    }
-
-    #[test]
-    fn mention_query_directory_only() {
-        let mut input = InputBox::new(InputHistory::default());
-        type_text(&mut input, "@src/");
-        assert_eq!(input.mention_query(), Some(("src/", "")));
-    }
-
-    #[test]
-    fn mention_query_none_without_at() {
-        let mut input = InputBox::new(InputHistory::default());
-        type_text(&mut input, "read src");
-        assert_eq!(input.mention_query(), None);
-    }
-
-    #[test]
-    fn mention_query_none_after_word() {
-        let mut input = InputBox::new(InputHistory::default());
-        type_text(&mut input, "read@src");
-        assert_eq!(input.mention_query(), None);
-    }
-
-    #[test]
-    fn replace_mention_at_start() {
-        let mut input = InputBox::new(InputHistory::default());
-        type_text(&mut input, "@src");
-        input.replace_mention("src/main.rs");
-        assert_eq!(input.buffer.value(), "src/main.rs");
-    }
-
-    #[test]
-    fn replace_mention_after_whitespace() {
-        let mut input = InputBox::new(InputHistory::default());
-        type_text(&mut input, "read @src");
-        input.replace_mention("src/main.rs");
-        assert_eq!(input.buffer.value(), "read src/main.rs");
-    }
-
-    #[test]
-    fn replace_mention_preserves_after_cursor() {
-        let mut input = InputBox::new(InputHistory::default());
-        type_text(&mut input, "@src");
-        input.replace_mention("src/main.rs");
-        assert_eq!(input.buffer.value(), "src/main.rs");
+        assert_eq!(input.buffer.lines(), &["asd", "asd"]);
     }
 
     const TEST_WIDTH: u16 = 80;
@@ -860,7 +731,7 @@ mod tests {
             input.buffer.add_line();
         }
         assert!(input.height(TEST_WIDTH) > base);
-        assert!(input.height(TEST_WIDTH) <= DEFAULT_MAX_INPUT_LINES as u16 + BORDER_LINES);
+        assert!(input.height(TEST_WIDTH) <= MAX_INPUT_LINES + 2);
     }
 
     #[test]
@@ -1013,11 +884,7 @@ mod tests {
         for _ in 0..extra_lines {
             input.buffer.add_line();
         }
-        let terminal = render_input(
-            &mut input,
-            40,
-            DEFAULT_MAX_INPUT_LINES as u16 + BORDER_LINES,
-        );
+        let terminal = render_input(&mut input, 40, MAX_INPUT_LINES + 2);
         assert_eq!(has_scrollbar_thumb(&terminal), expect_visible);
     }
 
@@ -1273,30 +1140,30 @@ mod tests {
     }
 
     #[test]
-    fn at_mention_opens_flyout_at_start() {
+    fn at_mention_opens_picker_at_start() {
         let mut input = InputBox::new(InputHistory::default());
         let action = input.handle_key(key_char('@'));
-        assert!(matches!(action, InputAction::OpenMention));
-        assert_eq!(input.buffer.value(), "@");
+        assert!(matches!(action, InputAction::OpenFilePicker));
+        assert_eq!(input.buffer.value(), "");
     }
 
     #[test]
-    fn at_mention_opens_flyout_after_whitespace() {
+    fn at_mention_opens_picker_after_whitespace() {
         let mut input = InputBox::new(InputHistory::default());
         type_text(&mut input, "read ");
         let action = input.handle_key(key_char('@'));
-        assert!(matches!(action, InputAction::OpenMention));
-        assert_eq!(input.buffer.value(), "read @");
+        assert!(matches!(action, InputAction::OpenFilePicker));
+        assert_eq!(input.buffer.value(), "read ");
     }
 
     #[test]
-    fn at_mention_opens_flyout_at_new_line_start() {
+    fn at_mention_opens_picker_at_new_line_start() {
         let mut input = InputBox::new(InputHistory::default());
         type_text(&mut input, "read");
         input.buffer.add_line();
         let action = input.handle_key(key_char('@'));
-        assert!(matches!(action, InputAction::OpenMention));
-        assert_eq!(input.buffer.value(), "read\n@");
+        assert!(matches!(action, InputAction::OpenFilePicker));
+        assert_eq!(input.buffer.value(), "read\n");
     }
 
     #[test]
@@ -1304,7 +1171,7 @@ mod tests {
         let mut input = InputBox::new(InputHistory::default());
         type_text(&mut input, "em");
         let action = input.handle_key(key_char('@'));
-        assert!(!matches!(action, InputAction::OpenMention));
+        assert!(!matches!(action, InputAction::OpenFilePicker));
         assert_eq!(input.buffer.value(), "em@");
     }
 
@@ -1313,7 +1180,15 @@ mod tests {
         let mut input = InputBox::new(InputHistory::default());
         type_text(&mut input, "see(");
         let action = input.handle_key(key_char('@'));
-        assert!(!matches!(action, InputAction::OpenMention));
+        assert!(!matches!(action, InputAction::OpenFilePicker));
         assert_eq!(input.buffer.value(), "see(@");
+    }
+
+    #[test]
+    fn at_mention_is_literal_with_ctrl_modifier() {
+        let mut input = InputBox::new(InputHistory::default());
+        let action = input.handle_key(KeyEvent::new(KeyCode::Char('@'), KeyModifiers::CONTROL));
+        assert!(!matches!(action, InputAction::OpenFilePicker));
+        assert_eq!(input.buffer.value(), "");
     }
 }

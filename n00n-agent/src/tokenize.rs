@@ -112,6 +112,7 @@ mod tests {
             *state
         }
 
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         fn gen_text(state: &mut u64, max_len: usize) -> String {
             const ALPHABET: &[u8] =
                 b"abcdefghijklmnopqrstuvwxyz0123456789 \n\t!@#$%^&*()_+-=[]{}|;':\",./<>?";
@@ -124,6 +125,11 @@ mod tests {
             out
         }
 
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_possible_wrap,
+            clippy::cast_sign_loss
+        )]
         fn gen_value(state: &mut u64, depth: usize) -> Value {
             let kind = xorshift64(state) % 6;
             match kind {

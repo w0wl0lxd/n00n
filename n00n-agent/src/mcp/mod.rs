@@ -22,6 +22,7 @@ pub mod stdio;
 pub mod transport;
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -210,7 +211,9 @@ struct ToolDescriptor {
 
 impl ToolDescriptor {
     fn wire_name(&self) -> &str {
-        self.definition["name"].as_str().unwrap_or_default()
+        self.definition["name"]
+            .as_str()
+            .unwrap_or_else(Default::default)
     }
 }
 
@@ -317,6 +320,7 @@ impl McpSession {
     /// `history` seeds the loaded set when resuming: tools the model was
     /// already calling stay declared across restarts. A pure string scan,
     /// so it is safe before servers connect, and unknown names are inert.
+    #[must_use]
     pub fn new(handle: McpHandle, history: &[Message]) -> Self {
         let loaded = history
             .iter()
@@ -335,6 +339,7 @@ impl McpSession {
     }
 
     /// A view over the same handle with no loads, for a new (sub)session.
+    #[must_use]
     pub fn fresh(&self) -> Self {
         Self::new(self.handle.clone(), &[])
     }
@@ -386,6 +391,10 @@ impl McpSession {
     /// Rank deferred tools against `query` keywords (exact name first,
     /// then name hits over description hits) and mark the top
     /// `MAX_SEARCH_LOADS` loaded; their definitions join the next request.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the query is empty or no matching tool is found.
     pub fn search_tools(&self, query: &str) -> Result<String, String> {
         let q = query.trim().to_lowercase();
         let tokens: Vec<&str> = q
@@ -453,14 +462,14 @@ impl McpSession {
             hits.len()
         );
         for hit in &hits {
-            out.push_str(&format!("\n- `{hit}`"));
+            let _ = write!(out, "\n- `{hit}`");
         }
         if !overflow.is_empty() {
             let shown = overflow.len().min(MAX_OVERFLOW_NAMES);
             let names: Vec<String> = overflow[..shown].iter().map(|n| format!("`{n}`")).collect();
-            out.push_str(&format!("\n{SEARCH_OVERFLOW_PREFIX}{}", names.join(", ")));
+            let _ = write!(out, "\n{SEARCH_OVERFLOW_PREFIX}{}", names.join(", "));
             if overflow.len() > shown {
-                out.push_str(&format!(" and {} more", overflow.len() - shown));
+                let _ = write!(out, " and {} more", overflow.len() - shown);
             }
             out.push_str(". Search an exact tool name to load it.");
         }
@@ -474,7 +483,9 @@ impl McpSession {
     }
 
     fn lock_loaded(&self) -> std::sync::MutexGuard<'_, HashSet<Arc<str>>> {
-        self.loaded.lock().unwrap_or_else(|e| e.into_inner())
+        self.loaded
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -576,7 +587,7 @@ pub async fn start_with_config(config: McpConfig, max_desc_chars: usize) -> Opti
         return None;
     }
 
-    let defer_tools = config.defer_tools.unwrap_or(DEFAULT_DEFER_TOOLS);
+    let defer_tools = config.defer_tools.unwrap_or_else(|| DEFAULT_DEFER_TOOLS);
     let mut inner = parse_entries(config);
     inner.max_desc_chars = max_desc_chars;
     start_enabled(&mut inner).await;
@@ -597,6 +608,7 @@ pub async fn start_with_config(config: McpConfig, max_desc_chars: usize) -> Opti
     Some(handle)
 }
 
+#[cfg(test)]
 fn log_initialized(inner: &McpManagerInner) {
     info!(
         running = inner
@@ -609,11 +621,13 @@ fn log_initialized(inner: &McpManagerInner) {
     );
 }
 
+#[cfg(test)]
 enum InitializationWake {
     Complete,
     Command(Option<McpCommand>),
 }
 
+#[cfg(test)]
 async fn initialize_deferred(
     inner: &mut McpManagerInner,
     index: &Arc<ArcSwap<ToolIndex>>,
@@ -1101,7 +1115,7 @@ impl McpTransport for StubTransport {
     ) -> transport::BoxFuture<'a, Result<(), McpError>> {
         Box::pin(async { Ok(()) })
     }
-    fn shutdown<'a>(&'a self) -> transport::BoxFuture<'a, ()> {
+    fn shutdown(&self) -> transport::BoxFuture<'_, ()> {
         Box::pin(async {})
     }
     fn server_name(&self) -> &Arc<str> {
@@ -1115,7 +1129,7 @@ impl McpTransport for StubTransport {
 fn build_haystack(definition: &Value) -> String {
     let mut hay = definition["description"]
         .as_str()
-        .unwrap_or_default()
+        .unwrap_or_else(Default::default)
         .to_lowercase();
     if let Some(props) = definition["input_schema"]["properties"].as_object() {
         for key in props.keys() {
@@ -1136,7 +1150,7 @@ fn tool_search_definition(deferred: &[&ToolDescriptor]) -> Value {
         let (server, raw) = d
             .qualified_name
             .split_once(SEPARATOR)
-            .unwrap_or((UNKNOWN_MCP, &d.qualified_name));
+            .unwrap_or_else(|| (UNKNOWN_MCP, &d.qualified_name));
         if server == current_server {
             catalog.push_str(", ");
         } else {
@@ -1216,6 +1230,42 @@ fn intern(name: String) -> Arc<str> {
     let arc: Arc<str> = Arc::from(name.as_str());
     map.insert(name, Arc::clone(&arc));
     arc
+}
+
+#[cfg(test)]
+struct PreparedManager {
+    inner: McpManagerInner,
+    index: Arc<ArcSwap<ToolIndex>>,
+    snapshot: Arc<ArcSwap<McpSnapshot>>,
+    cmd_rx: flume::Receiver<McpCommand>,
+    handle: McpHandle,
+}
+
+#[cfg(test)]
+fn prepare_manager(config: McpConfig) -> Option<PreparedManager> {
+    if config.is_empty() {
+        return None;
+    }
+
+    let defer_tools = config.defer_tools.unwrap_or_else(|| DEFAULT_DEFER_TOOLS);
+    let inner = parse_entries(config);
+    let snapshot = Arc::new(ArcSwap::from_pointee(McpSnapshot::default()));
+    let index: Arc<ArcSwap<ToolIndex>> = Arc::new(ArcSwap::from_pointee(ToolIndex::default()));
+    publish(&inner, &index, &snapshot, inner.max_desc_chars);
+    let (cmd_tx, cmd_rx) = flume::unbounded();
+    let handle = McpHandle {
+        cmd_tx,
+        index: Arc::clone(&index),
+        snapshot: Arc::clone(&snapshot),
+        defer_tools,
+    };
+    Some(PreparedManager {
+        inner,
+        index,
+        snapshot,
+        cmd_rx,
+        handle,
+    })
 }
 
 #[cfg(test)]
@@ -1516,7 +1566,7 @@ mod tests {
     #[test_case("srv__tool-" ; "wire_name")]
     #[test_case("tool-" ; "bare_name_as_shown_in_catalog")]
     fn search_exact_name_outranks_keyword_matches(prefix: &str) {
-        let tools = (0..MAX_SEARCH_LOADS + 1)
+        let tools = (0..=MAX_SEARCH_LOADS)
             .map(|i| tool_def("srv", &format!("tool-{i}"), "", json!({})))
             .collect();
         let (_inner, handle) = setup(vec![entry_with_tools("srv", tools)]);
@@ -1601,7 +1651,7 @@ mod tests {
             ],
             display_text: None,
         }];
-        let restored = McpSession::new(session.handle.clone(), &history);
+        let restored = McpSession::new(session.handle, &history);
         let mut tools = json!([]);
         restored.extend_tools(&mut tools);
         assert_eq!(
@@ -1684,7 +1734,7 @@ mod tests {
             }],
             display_text: None,
         }];
-        let restored = McpSession::new(session.handle.clone(), &history);
+        let restored = McpSession::new(session.handle, &history);
         let mut tools = json!([]);
         restored.extend_tools(&mut tools);
         assert_eq!(

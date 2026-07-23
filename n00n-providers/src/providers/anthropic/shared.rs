@@ -163,22 +163,19 @@ pub(super) fn build_wire_messages(
         return Vec::new();
     }
 
-    let mut user_message_indices: Vec<usize> = messages
+    let user_message_indices: Vec<usize> = messages
         .iter()
         .enumerate()
         .filter(|(_, m)| matches!(m.role, Role::User))
         .map(|(i, _)| i)
         .collect();
 
-    let last_user_idx = user_message_indices.pop();
-    let penultimate_user_idx = user_message_indices.pop();
-
-    if let Some(idx) = last_user_idx {
-        breakpoints.insert((idx, messages[idx].content.len().saturating_sub(1)));
-    }
-
-    if let Some(idx) = penultimate_user_idx {
-        breakpoints.insert((idx, messages[idx].content.len().saturating_sub(1)));
+    for idx in user_message_indices
+        .iter()
+        .rev()
+        .take(message_cache_breakpoints)
+    {
+        breakpoints.insert((*idx, messages[*idx].content.len().saturating_sub(1)));
     }
 
     let mut last_tool_result_idx = None;
@@ -208,33 +205,21 @@ pub(super) fn build_wire_messages(
     messages
         .iter()
         .enumerate()
-        .map(|(msg_idx, msg)| {
-            let cache_last_block = msg_idx + message_cache_breakpoints >= len;
-
-            if cache_last_block {
-                debug!(
-                    msg_idx,
-                    total_blocks = msg.content.len(),
-                    "marking last block with cache_control"
-                );
-            }
-
-            WireMessage {
-                role: &msg.role,
-                content: msg
-                    .content
-                    .iter()
-                    .enumerate()
-                    .map(|(block_idx, block)| WireContentBlock {
-                        inner: block,
-                        cache_control: if cache_last_block && block_idx + 1 == msg.content.len() {
-                            Some(EPHEMERAL)
-                        } else {
-                            None
-                        },
-                    })
-                    .collect(),
-            }
+        .map(|(msg_idx, msg)| WireMessage {
+            role: &msg.role,
+            content: msg
+                .content
+                .iter()
+                .enumerate()
+                .map(|(block_idx, block)| WireContentBlock {
+                    inner: block,
+                    cache_control: if breakpoints.contains(&(msg_idx, block_idx)) {
+                        Some(EPHEMERAL)
+                    } else {
+                        None
+                    },
+                })
+                .collect(),
         })
         .collect()
 }
@@ -441,6 +426,7 @@ impl EventParser {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) const fn models() -> &'static [ModelEntry] {
     const MODELS: &[ModelEntry] = &[
         ModelEntry {
@@ -676,10 +662,22 @@ mod tests {
         ];
 
         let wire = build_wire_messages(&messages, breakpoints);
-        let len = messages.len();
+
+        let user_indices: Vec<usize> = messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| matches!(m.role, Role::User))
+            .map(|(i, _)| i)
+            .collect();
+        let cached_users: std::collections::HashSet<usize> = user_indices
+            .iter()
+            .copied()
+            .rev()
+            .take(breakpoints)
+            .collect();
 
         for (msg_idx, wire_msg) in wire.iter().enumerate() {
-            let should_cache = msg_idx + breakpoints >= len;
+            let should_cache = cached_users.contains(&msg_idx) && !wire_msg.content.is_empty();
             let last_block_has_cache = wire_msg
                 .content
                 .last()

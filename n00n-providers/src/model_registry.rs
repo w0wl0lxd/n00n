@@ -93,6 +93,7 @@ impl ModelRegistry {
     }
 
     /// Lookup discovered metadata for a model by ID.
+    #[must_use]
     pub fn discovered(&self, provider: &str, model_id: &str) -> Option<&ModelInfo> {
         self.known_models
             .get(provider)?
@@ -133,6 +134,7 @@ impl ModelRegistry {
         ModelTier::Medium
     }
 
+    #[must_use]
     pub fn spec_for_tier(&self, provider: &str, tier: ModelTier) -> Option<String> {
         let prefix = format!("{provider}/");
         if let Some(spec) = self.overrides.get(&tier)
@@ -141,14 +143,13 @@ impl ModelRegistry {
             return Some(spec.clone());
         }
 
-        let candidate = self
-            .static_candidate(provider, tier)
+        let candidate = Self::static_candidate(provider, tier)
             .or_else(|| self.positional_candidate(provider, tier))?;
 
         (!self.claimed_elsewhere(&candidate, tier)).then_some(candidate)
     }
 
-    fn static_candidate(&self, provider: &str, tier: ModelTier) -> Option<String> {
+    fn static_candidate(provider: &str, tier: ModelTier) -> Option<String> {
         let manifest = crate::manifest::ManifestRegistry::get(provider)?;
         manifest
             .models

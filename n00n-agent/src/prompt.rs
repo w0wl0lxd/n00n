@@ -92,7 +92,6 @@ impl Slot {
         match self {
             Slot::Identity => Some(DEFAULT_IDENTITY),
             Slot::Tone => Some(DEFAULT_TONE),
-            Slot::Environment => Some("# Environment\nCurrent date: 2026-07-21\n"),
             _ => None,
         }
     }

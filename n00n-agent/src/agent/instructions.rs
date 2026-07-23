@@ -158,7 +158,7 @@ pub(crate) fn load_instruction_text_with_home(
 
     let mut text = String::new();
     for (label, content) in files {
-        text.push_str(&format!("\n\n{label}:\n{content}"));
+        let _ = write!(text, "\n\n{label}:\n{content}");
     }
     text
 }
@@ -181,7 +181,7 @@ pub(crate) fn load_instructions_with_home(
     let files = collect_instruction_files(cwd, home, xdg_config, &instr.loaded);
 
     for (label, content) in files {
-        instr.text.push_str(&format!("\n\n{label}:\n{content}"));
+        let _ = write!(instr.text, "\n\n{label}:\n{content}");
     }
 
     instr

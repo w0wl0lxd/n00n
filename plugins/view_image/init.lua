@@ -19,6 +19,10 @@ local MAX_PROVIDER_EDGE = 8000
 -- A cropped RGBA region can need four bytes per pixel. Four MP bounds the
 -- working crop to roughly 16 MB before the separately bounded PNG encoding.
 local MAX_CHUNK_PIXELS = 4 * 1000 * 1000
+-- Anthropic rejects images over 5 MB base64; 3 MB raw is ~4 MB encoded.
+local MAX_BASE64_BYTES = 4 * math.ceil(MAX_RAW_BYTES / 3)
+-- Host encode_limited cap for lossless PNG tiles.
+local MAX_PNG_BYTES = 3750000
 
 local MEDIA_TYPES = {
   png = "image/png",

@@ -328,7 +328,7 @@ fn discover() -> &'static [DynamicProviderMeta] {
         // Load config first: it hard-exits on malformed providers.toml, so fail
         // before spawning every provider script.
         let custom = ProvidersConfig::load();
-        let mut metas = providers_dir().map(|d| discover_in(&d)).unwrap_or_default();
+        let mut metas = providers_dir().map_or_else(Vec::new, |d| discover_in(&d));
         // A script and a providers.toml entry must not share a slug. The script
         // loses, the same way it already loses to a builtin, and we say so
         // instead of silently picking a winner.
@@ -479,8 +479,7 @@ pub fn dynamic_model_specs_for(slug: &str) -> Vec<String> {
     if meta.models.is_empty() {
         let base_slug = meta.base.to_string();
         ManifestRegistry::get(&base_slug)
-            .map(|m| m.models)
-            .unwrap_or(&[])
+            .map_or(&[] as &[crate::model::ModelEntry], |m| m.models)
             .iter()
             .flat_map(|entry| entry.prefixes.iter())
             .map(|prefix| format!("{slug}/{prefix}"))

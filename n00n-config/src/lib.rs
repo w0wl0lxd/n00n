@@ -896,10 +896,12 @@ impl UiConfig {
             flash_duration_ms: f.flash_duration_ms.map_or(DEFAULT_FLASH_DURATION_MS, |v| v),
             typewriter_ms_per_char: f
                 .typewriter_ms_per_char
-                .unwrap_or(DEFAULT_TYPEWRITER_MS_PER_CHAR),
-            mouse_scroll_lines: f.mouse_scroll_lines.unwrap_or(DEFAULT_MOUSE_SCROLL_LINES),
-            max_input_lines: f.max_input_lines.unwrap_or(DEFAULT_MAX_INPUT_LINES),
-            show_thinking: f.show_thinking.unwrap_or(true),
+                .unwrap_or_else(|| DEFAULT_TYPEWRITER_MS_PER_CHAR),
+            mouse_scroll_lines: f
+                .mouse_scroll_lines
+                .unwrap_or_else(|| DEFAULT_MOUSE_SCROLL_LINES),
+            max_input_lines: f.max_input_lines.unwrap_or_else(|| DEFAULT_MAX_INPUT_LINES),
+            show_thinking: f.show_thinking.unwrap_or_else(|| true),
             theme: f.theme,
             tool_output_lines: ToolOutputLines::from_file(f.tool_output_lines),
         }
@@ -1105,7 +1107,7 @@ impl AgentConfig {
     fn from_file(file: AgentFileConfig, no_rtk: bool, disabled_tools: Vec<String>) -> Self {
         let dynamic_tools = if let Some(dt) = file.dynamic_tools {
             DynamicToolConfig {
-                enabled: dt.enabled.unwrap_or(false),
+                enabled: dt.enabled.unwrap_or_else(|| false),
                 default_mode: dt.default_mode.unwrap_or_else(|| "default".to_string()),
             }
         } else {
@@ -1122,11 +1124,13 @@ impl AgentConfig {
                 .map_or(DEFAULT_MAX_OUTPUT_LINES, |v| v),
             max_continuation_turns: file
                 .max_continuation_turns
-                .unwrap_or(DEFAULT_MAX_CONTINUATION_TURNS),
-            compaction_buffer: file.compaction_buffer.unwrap_or(DEFAULT_COMPACTION_BUFFER),
+                .unwrap_or_else(|| DEFAULT_MAX_CONTINUATION_TURNS),
+            compaction_buffer: file
+                .compaction_buffer
+                .unwrap_or_else(|| DEFAULT_COMPACTION_BUFFER),
             mcp_tool_desc_max_chars: file
                 .mcp_tool_desc_max_chars
-                .unwrap_or(DEFAULT_MCP_TOOL_DESC_MAX_CHARS),
+                .unwrap_or_else(|| DEFAULT_MCP_TOOL_DESC_MAX_CHARS),
             max_turns: None,
             allowed_tools: Vec::new(),
             disabled_tools,
@@ -1740,6 +1744,11 @@ fn find_wsl() -> Option<PathBuf> {
 /// C runtime / libuv argument parser instead of being reinterpreted by
 /// cmd.exe. On Windows, searches PATH and known install locations for Git
 /// Bash, Cygwin, MSYS2 and falls back to WSL's `wsl.exe -e bash -c`.
+///
+/// # Errors
+///
+/// Returns `Err` on Windows if no bash-compatible shell (Git Bash, Cygwin,
+/// MSYS2, or WSL) can be located.
 pub fn bash_command(cmd: &str) -> Result<Command, String> {
     #[cfg(unix)]
     {
@@ -1763,6 +1772,7 @@ pub fn bash_command(cmd: &str) -> Result<Command, String> {
     }
 }
 
+#[must_use]
 pub fn load_permissions(cwd: &Path) -> PermissionsConfig {
     let global_dirs = config_search_dirs(global_dir().as_deref());
     load_permissions_inner(cwd, &global_dirs)

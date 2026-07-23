@@ -1,7 +1,7 @@
 /// Estimates token cost for a sample multi-turn conversation at different
 /// Anthropic prompt cache breakpoint values.
 ///
-/// Usage: cargo run --bin anthropic_cache_benchmark
+/// Usage: cargo run --bin `anthropic_cache_benchmark`
 ///
 /// This script simulates a conversation with N turns and estimates the cost
 /// difference between breakpoint values 0, 1, 2, and 3. The actual optimal
@@ -30,7 +30,7 @@ struct TurnCost {
 
 fn estimate_turn_cost(turn: u32, breakpoints: usize, _prev_turns: &[TurnCost]) -> TurnCost {
     let total_messages = (turn + 1) * 2;
-    let breakpoints_u32 = breakpoints as u32;
+    let breakpoints_u32 = u32::try_from(breakpoints).unwrap_or_else(|_| u32::MAX);
 
     let mut cache_write = 0;
     let mut cache_read = 0;
@@ -79,10 +79,10 @@ fn calculate_total_cost(costs: &[TurnCost]) -> f64 {
     let total_cache_write: u32 = costs.iter().map(|c| c.cache_write).sum();
     let total_cache_read: u32 = costs.iter().map(|c| c.cache_read).sum();
 
-    (total_input as f64 * INPUT_PRICE
-        + total_output as f64 * OUTPUT_PRICE
-        + total_cache_write as f64 * CACHE_WRITE_PRICE
-        + total_cache_read as f64 * CACHE_READ_PRICE)
+    (f64::from(total_input) * INPUT_PRICE
+        + f64::from(total_output) * OUTPUT_PRICE
+        + f64::from(total_cache_write) * CACHE_WRITE_PRICE
+        + f64::from(total_cache_read) * CACHE_READ_PRICE)
         / 1_000_000.0
 }
 
@@ -91,20 +91,17 @@ fn main() {
     println!("==================================================");
     println!();
     println!("Parameters:");
-    println!("  System prompt: {} tokens", SYSTEM_TOKENS);
-    println!("  Tools: {} tokens", TOOLS_TOKENS);
-    println!("  User message avg: {} tokens", USER_MESSAGE_TOKENS);
-    println!(
-        "  Assistant message avg: {} tokens",
-        ASSISTANT_MESSAGE_TOKENS
-    );
-    println!("  Turns: {}", NUM_TURNS);
+    println!("  System prompt: {SYSTEM_TOKENS} tokens");
+    println!("  Tools: {TOOLS_TOKENS} tokens");
+    println!("  User message avg: {USER_MESSAGE_TOKENS} tokens");
+    println!("  Assistant message avg: {ASSISTANT_MESSAGE_TOKENS} tokens");
+    println!("  Turns: {NUM_TURNS}");
     println!();
     println!("Pricing (Sonnet 4.6 per 1M tokens):");
-    println!("  Input: ${:.2}", INPUT_PRICE);
-    println!("  Output: ${:.2}", OUTPUT_PRICE);
-    println!("  Cache write: ${:.2}", CACHE_WRITE_PRICE);
-    println!("  Cache read: ${:.2}", CACHE_READ_PRICE);
+    println!("  Input: ${INPUT_PRICE:.2}");
+    println!("  Output: ${OUTPUT_PRICE:.2}");
+    println!("  Cache write: ${CACHE_WRITE_PRICE:.2}");
+    println!("  Cache read: ${CACHE_READ_PRICE:.2}");
     println!();
 
     let mut results: HashMap<usize, f64> = HashMap::new();
@@ -123,17 +120,17 @@ fn main() {
         let total_cache_write: u32 = costs.iter().map(|c| c.cache_write).sum();
         let total_cache_read: u32 = costs.iter().map(|c| c.cache_read).sum();
 
-        println!("Breakpoints: {}", breakpoints);
-        println!("  Total input: {} tokens", total_input);
-        println!("  Total output: {} tokens", total_output);
-        println!("  Total cache write: {} tokens", total_cache_write);
-        println!("  Total cache read: {} tokens", total_cache_read);
-        println!("  Estimated cost: ${:.6}", total_cost);
+        println!("Breakpoints: {breakpoints}");
+        println!("  Total input: {total_input} tokens");
+        println!("  Total output: {total_output} tokens");
+        println!("  Total cache write: {total_cache_write} tokens");
+        println!("  Total cache read: {total_cache_read} tokens");
+        println!("  Estimated cost: ${total_cost:.6}");
         println!();
     }
 
     println!("Recommendation:");
-    let min_cost = results.values().cloned().fold(f64::INFINITY, f64::min);
+    let min_cost = results.values().copied().fold(f64::INFINITY, f64::min);
     let mut best_breakpoints = 2;
     for (&b, &cost) in &results {
         if (cost - min_cost).abs() < 1e-9 {
@@ -142,10 +139,7 @@ fn main() {
         }
     }
 
-    println!(
-        "  Lowest cost: ${:.6} with {} breakpoints",
-        min_cost, best_breakpoints
-    );
+    println!("  Lowest cost: ${min_cost:.6} with {best_breakpoints} breakpoints");
     println!();
     println!("Note: This is a simplified model. Real-world performance depends on:");
     println!("  - Actual conversation length and message distribution");

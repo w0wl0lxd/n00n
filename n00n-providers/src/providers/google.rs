@@ -837,8 +837,7 @@ mod tests {
     fn test_model() -> Model {
         Model {
             id: "gemini-2.5-flash".into(),
-            provider: crate::provider::ProviderKind::Google,
-            dynamic_slug: None,
+            provider: std::sync::Arc::<str>::from("google"),
             tier: ModelTier::Medium,
             family: ModelFamily::Gemini,
             supports_vision_override: Some(true),

@@ -20,16 +20,10 @@ local function line_nr_fmt(count)
   return "%" .. w .. "d "
 end
 
--- Truncate a UTF-8 string at a byte boundary that is also a codepoint
--- boundary, appending an ellipsis if truncation happened.
-local function utf8_truncate_bytes(s, max_bytes)
-  if #s <= max_bytes then
-    return s
-  end
-  if max_bytes <= 0 then
-    return ""
-  end
-  local i = max_bytes
+local ELLIPSIS_BYTES = 3
+
+local function utf8_boundary(s, target)
+  local i = target
   while i > 0 do
     local next_b = s:byte(i + 1)
     if not next_b or next_b < 0x80 or next_b >= 0xC0 then
@@ -37,10 +31,45 @@ local function utf8_truncate_bytes(s, max_bytes)
     end
     i = i - 1
   end
-  if i <= 0 then
-    return "…"
+  return i
+end
+
+-- Truncate a string so the *content* is capped at max_bytes and an ellipsis is
+-- appended. When max_bytes is too small for an ellipsis, just return the raw
+-- prefix so the result never exceeds max_bytes.
+local function utf8_truncate_bytes(s, max_bytes)
+  if #s <= max_bytes then
+    return s
   end
+  if max_bytes <= 0 then
+    return ""
+  end
+  if max_bytes <= ELLIPSIS_BYTES then
+    local i = utf8_boundary(s, max_bytes)
+    return i > 0 and s:sub(1, i) or ""
+  end
+  local i = utf8_boundary(s, max_bytes)
   return s:sub(1, i) .. "…"
+end
+
+-- Truncate a string so the *final* byte length, including any ellipsis, is at
+-- most max_bytes.
+local function utf8_truncate_bytes_final(s, max_bytes)
+  if #s <= max_bytes then
+    return s
+  end
+  if max_bytes <= 0 then
+    return ""
+  end
+  if max_bytes <= ELLIPSIS_BYTES then
+    local i = utf8_boundary(s, max_bytes)
+    return i > 0 and s:sub(1, i) or ""
+  end
+  local i = utf8_boundary(s, max_bytes - ELLIPSIS_BYTES)
+  if i > 0 then
+    return s:sub(1, i) .. "…"
+  end
+  return ""
 end
 
 local function line_text_bytes(line)
@@ -58,46 +87,66 @@ local function line_text_bytes(line)
   return n
 end
 
-local function truncate_line(line, max_bytes)
-  if not max_bytes or max_bytes <= 0 then
-    return line
-  end
+local function line_text(line)
   if type(line) == "string" then
-    return utf8_truncate_bytes(line, max_bytes)
-  end
-  if line_text_bytes(line) <= max_bytes then
     return line
   end
-  local out = {}
-  local used = 0
+  local parts = {}
   for _, span in ipairs(line) do
-    if used >= max_bytes then
-      break
-    end
-    local text, style
-    if type(span) == "string" then
-      text = span
-    else
-      text = span[1] or ""
-      style = span[2]
-    end
-    local remaining = max_bytes - used
-    if #text > remaining then
-      text = utf8_truncate_bytes(text, remaining)
-    end
-    if style then
-      out[#out + 1] = { text, style }
-    else
-      out[#out + 1] = text
-    end
-    used = used + #text
+    parts[#parts + 1] = type(span) == "string" and span or (span[1] or "")
   end
-  return out
+  return table.concat(parts)
+end
+
+local function truncate_line(line, max_bytes, max_width)
+  if max_width and max_width > 0 then
+    local text = line_text(line)
+    local truncated = n00n.ui.truncate_text(text, max_width)
+    local head = truncated.head
+    if max_bytes and max_bytes > 0 then
+      head = utf8_truncate_bytes_final(head, max_bytes)
+    end
+    return head
+  end
+  if max_bytes and max_bytes > 0 then
+    if type(line) == "string" then
+      return utf8_truncate_bytes(line, max_bytes)
+    end
+    if line_text_bytes(line) > max_bytes then
+      local out = {}
+      local used = 0
+      for _, span in ipairs(line) do
+        if used >= max_bytes then
+          break
+        end
+        local text, style
+        if type(span) == "string" then
+          text = span
+        else
+          text = span[1] or ""
+          style = span[2]
+        end
+        local remaining = max_bytes - used
+        if #text > remaining then
+          text = utf8_truncate_bytes(text, remaining)
+        end
+        if style then
+          out[#out + 1] = { text, style }
+        else
+          out[#out + 1] = text
+        end
+        used = used + #text
+      end
+      return out
+    end
+  end
+  return line
 end
 
 -- opts: max_lines (default 80) shown while collapsed, keep "head"|"tail"
 -- (default "tail"), max_expand_lines (default 2000) kept for expansion,
--- max_line_bytes (optional) per-line byte cap applied at render time.
+-- max_line_bytes (optional) per-line byte cap applied at render time,
+-- max_width (optional) display-width cap, hide_collapsed (default false).
 function ToolView.new(buf, opts)
   local self = setmetatable({}, ToolView)
   self.buf = buf
@@ -105,6 +154,8 @@ function ToolView.new(buf, opts)
   self.keep = (opts and opts.keep) or "tail"
   self.max_expand_lines = (opts and opts.max_expand_lines) or 2000
   self.max_line_bytes = (opts and opts.max_line_bytes) or nil
+  self.max_width = (opts and opts.max_width) or nil
+  self.hide_collapsed = (opts and opts.hide_collapsed) or false
   self.header = {}
   self.ring = {}
   self.ring_start = 1

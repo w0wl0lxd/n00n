@@ -51,6 +51,7 @@ use crate::input::InputReader;
 use crate::storage_writer::StorageWriter;
 use crate::terminal;
 use crate::terminal_image;
+use ratatui_image::picker::Picker;
 
 const ANIMATION_INTERVAL_MS: u64 = 16;
 const IDLE_POLL_INTERVAL_MS: u64 = 100;
@@ -157,7 +158,7 @@ struct SpawnCtx {
     model_slot: Arc<ArcSwap<ModelSlot>>,
     available_models: Arc<ArcSwapOption<Vec<String>>>,
     storage_writer: Arc<StorageWriter>,
-    picker: Arc<ratatui_image::picker::Picker>,
+    picker: Arc<Picker>,
 }
 
 impl SpawnCtx {
@@ -387,7 +388,7 @@ impl<'t> EventLoop<'t> {
             commands,
             sessions,
             focused,
-            mut startup_warnings,
+            startup_warnings,
             storage,
             config,
             ui_config,
@@ -402,19 +403,6 @@ impl<'t> EventLoop<'t> {
             ui_action_rx,
             lua_event_handle,
         } = params;
-
-        // Apply the config theme before the warmup thread spawns, or warmup
-        // could bake the syntax palette from the old theme. Only the
-        // in-memory name is set, so the user's saved pick survives.
-        if let Some(ref name) = ui_config.theme {
-            match crate::theme::load_by_name(name) {
-                Ok(theme) => {
-                    crate::theme::set_current_name(name);
-                    crate::theme::set(theme);
-                }
-                Err(e) => startup_warnings.push(format!("config ui.theme: {e}")),
-            }
-        }
 
         PROCESS_WARMUP.call_once(|| {
             std::thread::spawn(crate::highlight::warmup);
@@ -442,8 +430,9 @@ impl<'t> EventLoop<'t> {
             model: model.clone(),
             provider,
         }));
+        let bg = spawn_model_fetch(&model_slot, timeouts, openai_options);
+
         let picker = Arc::new(terminal_image::picker());
-        let bg = spawn_model_fetch(&model_slot, timeouts);
 
         let ctx = SpawnCtx {
             storage,
@@ -699,9 +688,7 @@ impl<'t> EventLoop<'t> {
         let slot_model = self.ctx.model_slot.load();
         let spec = slot_model.model.spec();
         for rt in &mut self.sessions {
-            if rt.app.state.session.model != spec
-                || rt.app.state.model.context_window != slot_model.model.context_window
-            {
+            if rt.app.state.session.model != spec {
                 rt.app.update_model(&slot_model.model);
                 self.dirty = true;
             }

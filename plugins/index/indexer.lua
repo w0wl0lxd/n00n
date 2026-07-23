@@ -52,6 +52,17 @@ local EXT_TO_LANG = {
   yaml = "yaml",
   yml = "yaml",
   sql = "sql",
+  astro = "astro",
+  css = "css",
+  scss = "scss",
+  json = "json",
+  hcl = "hcl",
+  tf = "hcl",
+  tfvars = "hcl",
+  svelte = "svelte",
+  vue = "vue",
+  dockerfile = "containerfile",
+  mk = "make",
 }
 
 local FILENAME_TO_LANG = {

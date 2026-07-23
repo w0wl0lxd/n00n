@@ -23,7 +23,6 @@ struct ViewLayout {
     status_area: Rect,
     queue_area: Rect,
     panel_windows: Vec<(usize, Rect)>,
-    mention_area: Rect,
     input_area: Rect,
     splits: SplitLayout,
     bottom_takeover: bool,
@@ -32,10 +31,6 @@ struct ViewLayout {
 impl App {
     pub fn view(&mut self, frame: &mut Frame) {
         self.status_bar.clear_expired_hint();
-
-        if let Some(flash) = self.mention_flyout.tick() {
-            self.status_bar.flash(flash);
-        }
 
         let form_visible = self.permission_prompt.is_open() || self.plan_form_active();
         let layout = self.compute_layout(frame.area(), form_visible);
@@ -85,8 +80,7 @@ impl App {
             let panel_h: u16 = self.float_mgr.panel_reqs().iter().map(|(_, h)| *h).sum();
             queue_panel::height(self.queue.panel_len())
                 + panel_h
-                + self.mention_flyout.height(inner.width)
-                + self.input_box.height(inner.width).min(max_bottom)
+                + self.input_box.height(inner.width)
         } else {
             let panel_h: u16 = self.float_mgr.panel_reqs().iter().map(|(_, h)| *h).sum();
             if panel_h > 0 { panel_h + 1 } else { 1 }
@@ -109,18 +103,9 @@ impl App {
             queue_panel::height(self.queue.panel_len())
         };
 
-        let mention_height = if bottom_takeover {
-            0
-        } else {
-            self.mention_flyout.height(inner.width)
-        };
-
         let mut constraints = vec![Constraint::Length(queue_height)];
         for &(_, h) in &panel_reqs {
             constraints.push(Constraint::Length(h));
-        }
-        if mention_height > 0 {
-            constraints.push(Constraint::Length(mention_height));
         }
         constraints.push(Constraint::Min(1));
 
@@ -132,11 +117,6 @@ impl App {
             .map(|(i, &(idx, _))| (idx, areas[1 + i]))
             .collect();
         let input_area = areas[areas.len() - 1];
-        let mention_area = if mention_height > 0 && areas.len() > 2 {
-            areas[areas.len() - 2]
-        } else {
-            Rect::default()
-        };
 
         ViewLayout {
             msg_area,
@@ -144,7 +124,6 @@ impl App {
             status_area,
             queue_area,
             panel_windows,
-            mention_area,
             input_area,
             splits,
             bottom_takeover,
@@ -234,9 +213,6 @@ impl App {
                 panel_hint,
             );
             self.command_palette.view(frame, layout.input_area);
-            if layout.mention_area.height > 0 {
-                self.mention_flyout.view(frame, layout.mention_area);
-            }
         }
     }
 
@@ -264,7 +240,7 @@ impl App {
             if let Some(flash) = self.file_picker.tick() {
                 self.status_bar.flash(flash);
             }
-            overlay_rect = self.file_picker.view(frame, layout.input_area);
+            overlay_rect = self.file_picker.view(frame, full);
         }
 
         macro_rules! render_if_open {

@@ -167,6 +167,7 @@ const BUILTINS: &[ProviderManifest] = &[
 pub struct ManifestRegistry;
 
 impl ManifestRegistry {
+    #[must_use]
     pub fn get(slug: &str) -> Option<&'static ProviderManifest> {
         BUILTINS.iter().find(|m| m.slug == slug)
     }
@@ -176,16 +177,19 @@ impl ManifestRegistry {
     /// name, tier defaults) still work for stubs that declare no models. `None`
     /// for an unknown slug, so callers pick a fallback instead of silently
     /// inheriting a zeroed manifest.
+    #[must_use]
     pub fn for_slug(slug: &str) -> Option<&'static ProviderManifest> {
         Self::get(slug)
             .or_else(|| dynamic::base_for_slug(slug).and_then(|base| Self::get(&base.to_string())))
             .or_else(|| custom::base_kind(slug).and_then(|base| Self::get(&base.to_string())))
     }
 
+    #[must_use]
     pub fn builtins() -> &'static [ProviderManifest] {
         BUILTINS
     }
 
+    #[must_use]
     pub fn find_default_for_tier(slug: &str, tier: ModelTier) -> Option<&'static ModelEntry> {
         Self::for_slug(slug)?
             .models

@@ -114,6 +114,7 @@ impl ProviderKind {
         }
     }
 
+    #[must_use]
     pub const fn features(self) -> Option<&'static str> {
         match self {
             Self::Anthropic => {
@@ -278,6 +279,12 @@ pub trait Provider: Send + Sync {
     fn adjust_model(&self, _model: &mut Model) {}
 }
 
+/// Create a provider for the given slug.
+///
+/// # Errors
+///
+/// Returns `AgentError` if the slug does not match a builtin, dynamic,
+/// or custom provider, or if provider construction fails.
 pub fn provider_for_slug(slug: &str, timeouts: Timeouts) -> Result<Box<dyn Provider>, AgentError> {
     if let Ok(kind) = ProviderKind::from_str(slug) {
         return kind.create(timeouts);
@@ -289,14 +296,25 @@ pub fn provider_for_slug(slug: &str, timeouts: Timeouts) -> Result<Box<dyn Provi
     }
 }
 
+#[must_use]
 pub fn provider_available(slug: &str) -> bool {
     provider_for_slug(slug, Timeouts::default()).is_ok()
 }
 
+/// Create a provider for a resolved model, applying provider-specific adjustments.
+///
+/// # Errors
+///
+/// Returns `AgentError` if the provider cannot be created.
 pub fn from_model(model: &mut Model, timeouts: Timeouts) -> Result<Box<dyn Provider>, AgentError> {
     from_model_with_openai_options(model, timeouts, OpenAiOptions::default())
 }
 
+/// Create a provider for a resolved model with OpenAI-compatible options.
+///
+/// # Errors
+///
+/// Returns `AgentError` if the provider cannot be created.
 pub fn from_model_with_openai_options(
     model: &mut Model,
     timeouts: Timeouts,
@@ -411,35 +429,17 @@ pub fn available_model_specs() -> Vec<String> {
     specs
 }
 
-fn should_discover(kind: ProviderKind) -> bool {
-    let config = n00n_config::providers::ProvidersConfig::load();
-    match kind {
-        ProviderKind::Ollama => ollama_is_configured(
-            std::env::var_os("OLLAMA_HOST").is_some(),
-            std::env::var_os("OLLAMA_API_KEY").is_some(),
-            config.get("ollama").is_some(),
-        ),
-        ProviderKind::LlamaCpp => llama_cpp_is_configured(
-            std::env::var_os("LLAMA_CPP_HOST").is_some(),
-            std::env::var_os("LLAMA_CPP_API_KEY").is_some(),
-            config.get("llama-cpp").is_some(),
-        ),
-        _ => true,
-    }
-}
-
+#[cfg(test)]
 fn ollama_is_configured(has_host: bool, has_api_key: bool, has_provider_config: bool) -> bool {
     has_host || has_api_key || has_provider_config
 }
 
+#[cfg(test)]
 fn llama_cpp_is_configured(has_host: bool, has_api_key: bool, has_provider_config: bool) -> bool {
     has_host || has_api_key || has_provider_config
 }
 
 /// Fetches all available models from all providers asynchronously.
-///
-/// # Panics
-/// Panics if the model registry mutex is poisoned.
 #[allow(clippy::too_many_lines)]
 pub async fn fetch_all_models(
     mut on_ready: impl FnMut(ModelBatch),
@@ -463,7 +463,7 @@ pub async fn fetch_all_models(
                         let slug: Arc<str> = Arc::from(slug);
                         crate::model_registry::model_registry()
                             .write()
-                            .unwrap()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .set_known_models(&slug, models.clone());
                     }
                     let mut specs: Vec<String> =

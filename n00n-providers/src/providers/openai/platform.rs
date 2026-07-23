@@ -830,23 +830,6 @@ impl OpenAi {
         result
     }
 
-    fn codex_auth(&self) -> Result<ResolvedAuth, AgentError> {
-        // Prefer OAuth tokens for the ChatGPT Coding Plan backend.
-        if let Some(storage) = self.storage.as_ref()
-            && let Some(tokens) = n00n_storage::auth::load_tokens(storage, auth::PROVIDER)
-        {
-            return Ok(auth::build_coding_plan_resolved(&tokens));
-        }
-        // Fall back to standard API key via the Responses API. `OPENAI_BASE_URL`
-        // overrides the platform API only, never the ChatGPT backend above.
-        let mut auth = self.current_auth();
-        if auth.base_url.is_none() {
-            auth.base_url = n00n_config::providers::base_url_override("openai")
-                .or_else(|| Some(CONFIG.base_url.into()));
-        }
-        Ok(auth)
-    }
-
     fn stores_responses(&self, auth: &ResolvedAuth) -> bool {
         self.storage.is_some()
             && self.response_state_storage.is_some()

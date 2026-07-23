@@ -58,6 +58,11 @@ impl ServerCapabilities {
     }
 }
 
+/// Initialize an MCP transport and return server capabilities.
+///
+/// # Errors
+///
+/// Returns `McpError` if the initialize request or notification fails.
 pub async fn initialize(transport: &dyn McpTransport) -> Result<ServerCapabilities, McpError> {
     let params = initialize_params();
     let result = transport.send_request("initialize", Some(params)).await?;
@@ -166,6 +171,7 @@ mod tests {
     #[test_case(json!({"capabilities": {"tools": {"listChanged": false}}}), true, false ; "tools_only")]
     #[test_case(json!({"capabilities": {"prompts": {}}}), false, true ; "prompts_only")]
     #[test_case(json!({}), false, false ; "no_capabilities")]
+    #[allow(clippy::needless_pass_by_value)]
     fn parses_capabilities(result: Value, tools: bool, prompts: bool) {
         let caps = ServerCapabilities::parse(&result);
         assert_eq!((caps.tools, caps.prompts), (tools, prompts));

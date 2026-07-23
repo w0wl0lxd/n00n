@@ -21,8 +21,9 @@ local MAX_SCHEMA_BYTES = 32 * 1024
 local MAX_SCHEMA_DEPTH = 16
 local MAX_STRUCTURED_RETRIES = 1
 local SCHEMA_ROOT_ERROR = "output_schema must have type object"
+local SCHEMA_SIZE_ERROR = "output_schema exceeds 32768-byte limit"
+local SCHEMA_DEPTH_ERROR = "output_schema exceeds maximum depth of 16"
 local SCHEMA_COMPILE_ERROR = "invalid output_schema"
-local SCHEMA_ROOT_ERROR = "output_schema must have type object"
 local STRUCTURED_MISSING_ERROR = "subagent finished without calling structured_output"
 local STRUCTURED_INVALID_ERROR = "subagent result does not match output_schema"
 local INVALID_INPUT_PREFIX =
@@ -189,6 +190,16 @@ local function handler(input, ctx)
     if type(input.output_schema) ~= "table" or input.output_schema.type ~= "object" then
       return { llm_output = SCHEMA_ROOT_ERROR, is_error = true }
     end
+    local schema_json, encode_err = n00n.json.encode(input.output_schema)
+    if encode_err then
+      return { llm_output = SCHEMA_COMPILE_ERROR .. ": " .. encode_err, is_error = true }
+    end
+    if #schema_json > MAX_SCHEMA_BYTES then
+      return { llm_output = SCHEMA_SIZE_ERROR, is_error = true }
+    end
+    if not schema_within_depth(input.output_schema, 1) then
+      return { llm_output = SCHEMA_DEPTH_ERROR, is_error = true }
+    end
     local compile_err
     validator, compile_err = n00n.json.schema_validator(input.output_schema)
     if compile_err then
@@ -275,6 +286,8 @@ local function handler(input, ctx)
         body = preview.buf,
         is_error = result.is_error,
         format = result.format,
+        usage = result.usage,
+        cost = result.cost,
       })
     end
   end
@@ -294,6 +307,13 @@ local function handler(input, ctx)
         return { llm_output = sess_err, is_error = true }
       end
 
+      local function attach_cost(r)
+        if r and not r.cost and r.input_tokens and r.output_tokens then
+          local cost, _ = n00n.agent.usage_cost(model.spec, r.input_tokens, r.output_tokens, r)
+          r.cost = cost
+        end
+      end
+
       local function do_prompt()
         local message = input.prompt
         if validator then
@@ -302,25 +322,37 @@ local function handler(input, ctx)
           message = message .. DONE_PROMPT_SUFFIX
         end
         local result, err = sess:prompt(message)
+        attach_cost(result)
         local retries = 0
         while not err and validator and not captured and retries < MAX_STRUCTURED_RETRIES do
           retries = retries + 1
           result, err = sess:prompt(NUDGE_MISSING)
+          attach_cost(result)
         end
         if err then
-          return { llm_output = "sub-agent error: " .. err, is_error = true }
+          return {
+            llm_output = "sub-agent error: " .. err,
+            is_error = true,
+            usage = result,
+            cost = result and result.cost,
+          }
         end
         if validator and not captured then
           local msg = last_errors and (STRUCTURED_INVALID_ERROR .. ":\n" .. last_errors) or STRUCTURED_MISSING_ERROR
-          return { llm_output = msg, is_error = true }
+          return { llm_output = msg, is_error = true, usage = result, cost = result and result.cost }
         end
         if captured then
           if type(captured) == "string" then
-            return { llm_output = captured, format = "markdown" }
+            return { llm_output = captured, format = "markdown", usage = result, cost = result and result.cost }
           end
-          return { llm_output = n00n.json.encode(captured), format = "markdown" }
+          return {
+            llm_output = n00n.json.encode(captured),
+            format = "markdown",
+            usage = result,
+            cost = result and result.cost,
+          }
         end
-        return { llm_output = result.text, format = "markdown" }
+        return { llm_output = result.text, format = "markdown", usage = result, cost = result and result.cost }
       end
 
       local function do_poll()

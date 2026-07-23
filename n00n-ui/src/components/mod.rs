@@ -10,7 +10,6 @@ pub(crate) mod list_picker;
 pub(crate) mod login_picker;
 pub(crate) mod lua_float;
 pub(crate) mod mcp_picker;
-pub(crate) mod mention_flyout;
 pub mod messages;
 pub(crate) mod modal;
 pub(crate) mod model_picker;
@@ -306,7 +305,8 @@ pub enum DisplayMetadata {
 pub struct DisplayMessage {
     pub role: DisplayRole,
     pub text: String,
-    pub images: Vec<n00n_agent::ImageSource>,
+    pub metadata: Option<DisplayMetadata>,
+    pub images: Vec<ImageSource>,
     pub tool_input: Option<Arc<ToolInput>>,
     pub tool_raw_input: Option<Arc<serde_json::Value>>,
     pub tool_output: Option<Arc<ToolOutput>>,
@@ -327,7 +327,30 @@ impl DisplayMessage {
         Self {
             role,
             text,
+            metadata: None,
             images: Vec::new(),
+            tool_input: None,
+            tool_raw_input: None,
+            tool_output: None,
+            live_output: None,
+            annotation: None,
+            plan_path: None,
+            timestamp: None,
+            turn_usage: None,
+            truncated_lines: 0,
+            render_snapshot: None,
+            render_header: None,
+            snapshot_theme_gen: 0,
+            thinking_collapsed: false,
+        }
+    }
+
+    pub fn with_images(role: DisplayRole, text: String, images: Vec<ImageSource>) -> Self {
+        Self {
+            role,
+            text,
+            metadata: None,
+            images,
             tool_input: None,
             tool_raw_input: None,
             tool_output: None,
@@ -348,6 +371,7 @@ impl DisplayMessage {
         Self {
             role: DisplayRole::Assistant,
             text,
+            metadata: None,
             images: Vec::new(),
             tool_input: None,
             tool_raw_input: None,

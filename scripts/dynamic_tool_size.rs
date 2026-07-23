@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use n00n_agent::template::Vars;
-use n00n_agent::tools::{DescriptionContext, ToolAudience, ToolFilter, ToolRegistry};
+use n00n_agent::tools::{ActiveTools, DescriptionContext, ToolAudience, ToolFilter, ToolRegistry};
 use n00n_providers::Model;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -18,20 +18,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         workflow: false,
     };
 
-    let modes = ["default", "research", "build", "compact"];
+    let tool_modes = ["default", "research", "build", "compact"];
 
     println!("Tool definition size by mode:");
     println!("{:<15} {:<15} {:<15}", "Mode", "Tool Count", "Bytes");
     println!("{}", "-".repeat(45));
 
-    for mode in &modes {
-        let allowed = registry.active_tools_for_mode(mode, &[]);
+    for mode in &tool_modes {
+        let active = ActiveTools::default();
         let defs =
-            registry.definitions_filtered(&vars, &ctx, model.supports_tool_examples(), &allowed);
+            registry.definitions_active(&vars, &ctx, model.supports_tool_examples(), &active);
         let bytes = serde_json::to_vec(&defs)?.len();
-        let count = allowed.len();
+        let count = defs.as_array().map_or(0, std::vec::Vec::len);
 
-        println!("{:<15} {:<15} {:<15}", mode, count, bytes);
+        println!("{mode:<15} {count:<15} {bytes:<15}");
     }
 
     let all_defs = registry.definitions(&vars, &ctx, model.supports_tool_examples());

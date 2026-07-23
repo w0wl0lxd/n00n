@@ -71,7 +71,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
                 input: 0.435,
                 output: 0.87,
                 cache_write: 0.00,
-                cache_read: 0.003625,
+                cache_read: 0.003_625,
                 fast: None,
             },
             max_output_tokens: 384_000,
@@ -219,7 +219,11 @@ impl Provider for DeepSeek {
 
     fn fetch_usage(&self) -> BoxFuture<'_, Result<Option<ProviderUsage>, AgentError>> {
         Box::pin(async move {
-            let auth = self.auth.lock().unwrap().clone();
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             let body = self.compat.get_text(&auth, BALANCE_URL).await?;
             let parsed: BalanceResponse = serde_json::from_str(&body)?;
             Ok(Some(parsed.into()))

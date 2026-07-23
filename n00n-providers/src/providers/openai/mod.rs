@@ -22,6 +22,7 @@ inventory::submit!(n00n_config::providers::BuiltInProvider {
     needs_url: false,
 });
 
+#[allow(clippy::too_many_lines)]
 pub(crate) const fn models() -> &'static [ModelEntry] {
     &[
         ModelEntry {

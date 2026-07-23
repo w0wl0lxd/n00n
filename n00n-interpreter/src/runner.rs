@@ -215,10 +215,10 @@ fn run_inner<S: BuildHasher>(
                     .filter_map(|id| pending_calls.remove(id))
                     .collect();
 
-                let resolved = resolver(batch)?;
+                let resolved_batch = resolver(batch)?;
                 let state = reset_clock(state)?;
 
-                let results: Vec<(u32, ExtFunctionResult)> = resolved
+                let results: Vec<(u32, ExtFunctionResult)> = resolved_batch
                     .into_iter()
                     .map(|(id, result)| match result {
                         Ok(val) => (id, ExtFunctionResult::Return(json_to_monty(val))),
@@ -456,13 +456,13 @@ await main()
         const WAIT: Duration = Duration::from_millis(700);
         // Two awaits: an implementation that resets the clock only once would
         // still time out on the second wait.
-        let code = r#"
+        let code = r"
 async def main():
     a = await slow()
     b = await slow()
     return a + b
 await main()
-"#;
+";
         let tools = stub_tools(&["slow"]);
         let resolver: AsyncResolver = Box::new(|pending: Vec<PendingCall>| {
             std::thread::sleep(WAIT);

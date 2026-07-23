@@ -264,7 +264,7 @@ fn run_tool_search(
     emit: Emit,
 ) -> ToolDoneEvent {
     let tool_id: Arc<str> = Arc::from(TOOL_SEARCH_TOOL_NAME);
-    let query = input["query"].as_str().unwrap_or_default();
+    let query = input["query"].as_str().unwrap_or_else(Default::default);
     emit_raw_start(ctx, emit, &id, &tool_id, query.to_owned(), input);
     let (output, is_error) = match mcp.search_tools(query) {
         Ok(out) => (out, false),
@@ -662,6 +662,7 @@ mod tests {
 
     #[test_case(serde_json::json!({"query": "  "}) ; "blank_query")]
     #[test_case(serde_json::json!({}) ; "missing_query")]
+    #[allow(clippy::needless_pass_by_value)]
     fn tool_search_bad_query_is_error_event(input: Value) {
         smol::block_on(async {
             let mcp = crate::mcp::stub_session(&[("srv.tool", "")]);
@@ -1061,7 +1062,7 @@ mod tests {
     }
 
     #[test]
-    fn local_tool_progress_keywords_returned_unchanged() {
+    fn local_tool_progress_keywords_in_project_output() {
         smol::block_on(async {
             const PROGRESS_TEXT: &str = "Building project... 100% complete ==> Done";
             let ctx = local_ctx("progress", |_| Ok(PROGRESS_TEXT.to_string()));

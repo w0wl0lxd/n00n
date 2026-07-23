@@ -203,7 +203,9 @@ impl Provider for OpenRouter {
             body["cache_control"] = json!({"type": "ephemeral"});
 
             let reasoning_info: Option<Arc<OpenRouterModelInfo>> = {
-                let guard = crate::model_registry::model_registry().read().unwrap();
+                let guard = crate::model_registry::model_registry()
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 // Discovery keys by the builtin slug; a dynamic wrap's model
                 // carries its own slug, so don't key by model.provider.
                 guard

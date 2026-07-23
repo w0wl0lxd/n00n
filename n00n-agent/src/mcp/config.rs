@@ -312,6 +312,7 @@ fn merge_config(merged: &mut McpConfig, errors: &mut McpConfigErrors, path: &Pat
     }
 }
 
+#[must_use]
 pub fn load_config(cwd: &Path) -> (McpConfig, McpConfigErrors) {
     let mut merged = McpConfig::default();
     let mut errors = McpConfigErrors::new(cwd.to_path_buf());

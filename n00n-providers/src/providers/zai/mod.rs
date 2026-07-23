@@ -112,6 +112,7 @@ inventory::submit!(BuiltInProvider {
     needs_url: false,
 });
 
+#[allow(clippy::too_many_lines)]
 pub(crate) const fn models() -> &'static [ModelEntry] {
     &[
         ModelEntry {
@@ -410,7 +411,7 @@ mod tests {
         assert_eq!(usage.limits.len(), 3);
         assert_eq!(usage.limits[0].label, "5-hour tokens");
         assert_eq!(usage.limits[0].percentage, Some(16));
-        assert_eq!(usage.limits[0].reset_at, Some(1777819631597));
+        assert_eq!(usage.limits[0].reset_at, Some(1_777_819_631_597));
         assert_eq!(usage.limits[1].label, "Weekly tokens");
         assert_eq!(usage.limits[2].label, "Subscription time");
         assert_eq!(usage.limits[2].reset_at, Some(1_780_336_384_978));

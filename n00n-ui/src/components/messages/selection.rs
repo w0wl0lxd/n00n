@@ -34,6 +34,9 @@ pub(super) fn extract_selection_text(
 
         let Some(seg) = cache.get(i) else { continue };
 
+        let rel_start = doc_start.row.saturating_sub(seg_start) as usize;
+        let rel_end = ((doc_end.row + 1).saturating_sub(seg_start) as usize).min(h as usize);
+
         let inset = seg.content_inset();
         let content_x = msg_area.x.saturating_add(inset);
         let start_col = if seg_start > doc_start.row {
@@ -73,17 +76,23 @@ pub(super) fn extract_selection_text(
             .wrap(Wrap { trim: false })
             .render(tmp_area, &mut tmp);
 
-        let start_rel = doc_start.row.saturating_sub(seg_start) as u16;
-        let end_rel = (doc_end.row + 1).saturating_sub(seg_start) as u16;
         let ss = ScreenSelection {
-            start_row: start_rel,
+            start_row: u16::try_from(rel_start).unwrap_or_else(|_| u16::MAX),
             start_col,
-            end_row: end_rel.saturating_sub(1),
+            end_row: u16::try_from(rel_end.saturating_sub(1)).unwrap_or_else(|_| u16::MAX),
             end_col,
         };
 
         let breaks = LineBreaks::from_lines(seg.lines(), content_width);
-        selection::append_rows(&tmp, tmp_area, &ss, start_rel, end_rel, &mut out, &breaks);
+        selection::append_rows(
+            &tmp,
+            tmp_area,
+            ss,
+            u16::try_from(rel_start).unwrap_or_else(|_| u16::MAX),
+            u16::try_from(rel_end).unwrap_or_else(|_| u16::MAX),
+            &mut out,
+            &breaks,
+        );
     }
     out
 }
