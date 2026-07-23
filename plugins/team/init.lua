@@ -19,7 +19,17 @@ local policy_ok, policy = pcall(require, "n00n.policy")
 
 local function call_tool_with_policy(ctx, tool_name, input)
   if policy_ok and policy then
-    local result, err = policy.call_tool(ctx, nil, "team", { "team" }, tool_name, input)
+    local session_id = n00n.session.current()
+    local session_type = "team"
+    local tags = { "team" }
+    if session_id then
+      local status, status_err = n00n.session.status(session_id)
+      if status then
+        session_type = status.session_type or session_type
+        tags = status.tags or tags
+      end
+    end
+    local result, err = policy.call_tool(ctx, session_id, session_type, tags, tool_name, input)
     if result then
       return result
     end
@@ -393,14 +403,17 @@ local function run_autonomous(ctx, goal, input, steps, relay_k, logger, resume_s
       end
       post_blackboard_status(ctx, "step_error", step, run_id, { index = i, error = r.error })
       if input.human_escalation then
-        memory.save_state(ctx, input.resume or memory.slug(goal), {
+        local pause_run_id = input.resume or memory.slug(goal)
+        memory.save_state(ctx, pause_run_id, {
           goal = goal,
           steps = steps,
           results = results,
           total_cost = total_cost,
           total_usage = total_usage,
-          failed_index = i,
-          start_index = i,
+          failed_step = i,
+          failed_role = step.role,
+          wave_index = 0,
+          step_index = i,
         })
         return results,
           total_cost,
@@ -408,7 +421,7 @@ local function run_autonomous(ctx, goal, input, steps, relay_k, logger, resume_s
           total_usage,
           {
             paused = true,
-            run_id = input.resume or memory.slug(goal),
+            run_id = pause_run_id,
             failed_step = i,
             failed_role = step.role,
             error = r.error,
@@ -483,14 +496,17 @@ local function run_single_pass(ctx, goal, input, steps, relay_k, logger, resume_
       end
       post_blackboard_status(ctx, "step_error", step, run_id, { index = i, error = r.error })
       if input.human_escalation then
-        memory.save_state(ctx, input.resume or memory.slug(goal), {
+        local pause_run_id = input.resume or memory.slug(goal)
+        memory.save_state(ctx, pause_run_id, {
           goal = goal,
           steps = steps,
           results = results,
           total_cost = total_cost,
           total_usage = total_usage,
-          failed_index = i,
-          start_index = i,
+          failed_step = i,
+          failed_role = step.role,
+          wave_index = 0,
+          step_index = i,
         })
         return results,
           total_cost,
@@ -498,7 +514,7 @@ local function run_single_pass(ctx, goal, input, steps, relay_k, logger, resume_
           total_usage,
           {
             paused = true,
-            run_id = input.resume or memory.slug(goal),
+            run_id = pause_run_id,
             failed_step = i,
             failed_role = step.role,
             error = r.error,
@@ -540,6 +556,8 @@ local function run_wave(
   local total_cost = 0.0
   local total_usage = roles.usage()
   local failures = 0
+  local failed_step = nil
+  local failed_role = nil
 
   for i, entry in ipairs(wave_steps) do
     if i >= start_step_index then
@@ -555,6 +573,8 @@ local function run_wave(
 
       if not r.ok then
         failures = failures + 1
+        failed_step = entry.index
+        failed_role = step.role
         local result_line = string.format("[%d] %s: ERROR %s", entry.index, step.role, r.error)
         wave_results[#wave_results + 1] = result_line
         wave_context[#wave_context + 1] = result_line
@@ -569,6 +589,19 @@ local function run_wave(
           run_id,
           { index = entry.index, error = r.error, wave = wave_name }
         )
+        if input.human_escalation then
+          return {
+            results = wave_results,
+            cost = total_cost,
+            usage = total_usage,
+            failures = failures,
+            step_outputs = step_outputs,
+            paused = true,
+            failed_step = failed_step,
+            failed_role = failed_role,
+            error = r.error,
+          }
+        end
       else
         local cost_line = cost_label(r.cost, r.model)
         local result_line = string.format("[%d] %s%s:\n%s", entry.index, step.role, cost_line, r.text or "")
@@ -598,19 +631,28 @@ local function run_wave(
     usage = total_usage,
     failures = failures,
     step_outputs = step_outputs,
+    failed_step = failed_step,
+    failed_role = failed_role,
   }
 end
 
 local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state, run_id)
   local computed_waves = waves.compute_waves(steps)
   local wave_names = waves.wave_names()
-  local max_retries = math.min(input.max_wave_retries or DEFAULT_MAX_WAVE_RETRIES, MAX_WAVE_RETRIES)
+  local max_retries = input.max_wave_retries or DEFAULT_MAX_WAVE_RETRIES
+  if max_retries < 1 then
+    max_retries = 1
+  end
+  if max_retries > MAX_WAVE_RETRIES then
+    max_retries = MAX_WAVE_RETRIES
+  end
 
   local results = {}
   local total_cost = 0.0
   local total_usage = roles.usage()
   local start_wave_index = 1
   local start_step_index = 1
+  local pause = nil
 
   if resume_state then
     results = resume_state.results or results
@@ -646,6 +688,12 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
       local wave_cost = 0.0
       local wave_usage = roles.usage()
       local feedback
+      local failed_step_index = nil
+      local failed_role = nil
+
+      if logger then
+        logger.log("wave_started", { wave = wave_name, index = wave_idx })
+      end
 
       while retry_count <= max_retries and not wave_passed do
         if feedback then
@@ -677,6 +725,19 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
           for _, r in ipairs(wave_result.results) do
             results[#results + 1] = r
           end
+          failed_step_index = wave_result.failed_step
+          failed_role = wave_result.failed_role
+          if logger then
+            logger.log("wave_failed", { wave = wave_name, retry_count = retry_count, cost = wave_cost })
+          end
+          if wave_result.paused then
+            pause = {
+              run_id = run_id,
+              failed_step = failed_step_index,
+              failed_role = failed_role,
+              error = wave_result.error,
+            }
+          end
           break
         end
 
@@ -694,7 +755,7 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
             results[#results + 1] = r
           end
           if logger then
-            logger.log("wave_passed", { wave = wave_name })
+            logger.log("wave_completed", { wave = wave_name, retry_count = retry_count, cost = wave_cost })
           end
         else
           retry_count = retry_count + 1
@@ -716,27 +777,38 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
               max_retries,
               validation_err or "unknown"
             )
+            if logger then
+              logger.log("wave_failed", { wave = wave_name, retry_count = retry_count, cost = wave_cost })
+            end
           end
         end
       end
 
-      if input.checkpoints and wave_passed then
+      if input.checkpoints then
         local ckpt_id = "wave_" .. wave_idx .. "_step_" .. #wave_steps
         local ckpt_state = {
           results = results,
           total_cost = total_cost,
           total_usage = total_usage,
-          wave_index = wave_idx + 1,
-          step_index = 1,
+          wave_index = wave_passed and wave_idx + 1 or wave_idx,
+          step_index = wave_passed and 1 or (failed_step_index or wave_start_step),
           steps = steps,
           goal = goal,
         }
+        if not wave_passed then
+          ckpt_state.failed_step = failed_step_index
+          ckpt_state.failed_role = failed_role
+        end
         local save_ok, save_err = checkpoint.save(run_id, ckpt_id, ckpt_state)
         if not save_ok then
           if logger then
             logger.log("checkpoint_save_failed", { checkpoint_id = ckpt_id, error = save_err })
           end
         end
+      end
+
+      if pause then
+        break
       end
     end
   end
@@ -748,7 +820,7 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
     end
   end
 
-  return results, total_cost, failures, total_usage, nil
+  return results, total_cost, failures, total_usage, pause
 end
 
 local finish_run
@@ -808,7 +880,17 @@ local function run_team(input, ctx)
         goal = resume_state.goal
         input.mode = input.mode or "autonomous"
       else
-        return { llm_output = "checkpoint load failed: " .. tostring(ckpt_err), is_error = true }
+        if logger then
+          logger.log("checkpoint_load_failed", { run_id = input.resume, error = ckpt_err })
+        end
+        resume_state = memory.load_state(ctx, input.resume)
+        if resume_state then
+          steps = resume_state.steps
+          goal = resume_state.goal
+          input.mode = input.mode or "autonomous"
+        else
+          return { llm_output = "resume run_id not found: " .. input.resume, is_error = true }
+        end
       end
     else
       resume_state = memory.load_state(ctx, input.resume)

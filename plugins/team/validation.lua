@@ -59,11 +59,13 @@ function M.validate_wave(ctx, wave_result, goal, input)
   end
 
   local response = res or ""
-  local first_token = response:upper():match("^%s*([%S]+)")
-  if first_token == "PASS" then
+  local trimmed = response:match("^%s*(.-)%s*$") or response
+  local first_word = trimmed:match("^%S+") or ""
+  local upper_word = first_word:upper()
+  if upper_word == "PASS" or upper_word == "PASS." or upper_word == "PASS:" or upper_word == "PASSED" then
     return true
   else
-    local explanation = response:match("FAIL%s*(.+)") or response
+    local explanation = trimmed:match("^FAIL%s*(.+)") or trimmed
     return nil, explanation
   end
 end
