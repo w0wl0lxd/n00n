@@ -103,7 +103,22 @@ Every tool result spends context tokens. Prefer structural, pre-indexed tools ov
   timeout = 300000
   ```
 - **Compress structured data:** prefer `n00n.json.tooned` (lossless JSON/TOON passthrough) over plain JSON when passing structured data between tools or scripts.
-- **Compress shell output:** use `rtk` wrappers for verbose commands (`rtk git`, `rtk rg`, `rtk test`) and `context-mode` once installed.
+- **Compress shell output with `rtk`:** the `bash` tool automatically rewrites supported commands through `rtk` when the `rtk` CLI is installed, typically cutting output tokens by 60-90%. Use `bash` (not raw `grep`/`read`/`cat`) for `git`, `cargo`, `rg`, `grep`, `jq`, `yq`, `gh`, `find`, `ls`, `cat`, `head`, `tail`, and other system commands. Use `rtk proxy <command>` when exact raw shell output is required. Combine with `context-mode` once installed.
+
+### Shell and RTK patterns
+
+These are the modern 2026 defaults for common shell workflows. Run them through `bash`; n00n will rewrite them to `rtk` equivalents when possible.
+
+- **Git:** `git status`, `git diff`, `git log --oneline`, `git branch`, `git remote -v`
+- **Search:** `rg 'pattern' src/`, `grep 'pattern' file`, `find . -name '*.rs' -type f`
+- **JSON/YAML:** `jq '.foo.bar' file.json`, `yq '.foo.bar' file.yaml`
+- **Build/test:** `cargo test`, `cargo clippy`, `cargo build`, `just test`
+- **GitHub CLI:** `gh pr checks`, `gh pr view`, `gh run list`
+- **Lists:** `ls -la`, `cat file`, `head -n 20 file`, `tail -n 20 file`
+- **Large outputs:** always wrap with `rtk` (`rtk rg`, `rtk jq`, `rtk cargo test`) or let `bash` auto-rewrite.
+- **Exact output:** use `rtk proxy <command>` when the rewrite would drop details you need.
+
+Do **not** use `bash` for file writes, moves, deletes, or broad destructive operations. Use `edit`/`multiedit`/`write` for those.
 
 ## Research and Verification
 
