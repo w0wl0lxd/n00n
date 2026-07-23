@@ -10,7 +10,7 @@ use grep_searcher::Searcher;
 use grep_searcher::SearcherBuilder;
 use grep_searcher::{Sink, SinkContext, SinkFinish, SinkMatch};
 use ignore::WalkState;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::{mtime, resolve_search_path, truncate_bytes, walk_builder};
 
@@ -193,7 +193,7 @@ impl GrepSink<'_> {
         let line_nr = if let Ok(v) = usize::try_from(line_nr) {
             v
         } else {
-            eprintln!("Warning: line number exceeds usize, using MAX");
+            warn!(line_nr, "line number exceeds usize, using MAX");
             usize::MAX
         };
         self.current_group.push(GrepLine {
