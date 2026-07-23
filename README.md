@@ -1,30 +1,29 @@
 # n00n
 
-> AI coding agent. Native Rust TUI. Context-efficient, transparent, fast.
-
-n00n is a fork of [maki](https://github.com/tontinton/maki) with its own direction: a
-Neovim-style Lua plugin system, lossless [TOON](https://github.com/w0wl0lxd/tooned)
-re-encoding of tool-call data, and an ACP server for editor integrations.
+> n00n is an opinionated experimental fork of [maki](https://github.com/tontinton/maki): currently testing lossless [TOON](https://github.com/w0wl0lxd/tooned)
+re-encoding of tool-call data, and [ALMAS](https://arxiv.org/abs/2510.03463) agent orchestration, and a strict clippy/no-unsafe re-write
 
 ## Quick start
 
 ```sh
 cargo install --locked --git https://github.com/w0wl0lxd/n00n.git n00n
-export ANTHROPIC_API_KEY=sk-...
+
 cd your-project && n00n
 ```
 
 With Nix: `nix run github:w0wl0lxd/n00n`  
 Or grab a binary from [releases](https://github.com/w0wl0lxd/n00n/releases/latest).
 
-Type a prompt and press **Enter** — the agent reads, edits, searches, and runs code.
+Type a prompt and press **Enter** — the agent reads, edits, searches, and runs code. `n00n` also has inline images! (for supported terminals)
+
+<img width="937" height="987" alt="image" src="https://github.com/user-attachments/assets/5c33e266-ebee-44a4-8a89-5ffd25a3b7ab" />
 
 ## Why n00n
 
 **Context efficiency first.** n00n spends tokens on the work, not on repeating your codebase back
 to the model. The `index` tool uses tree-sitter to produce a compact skeleton (imports, type defs,
 function signatures with exact line ranges) — the model reads structure first and only the lines it
-needs. For me this adds ~59 tok/turn but saves ~224 tok/turn on read calls, netting ~165 tok/turn.
+needs. 
 
 **Native Rust TUI.** No JavaScript runtime, no Electron, no 500 MB install. Immediate startup,
 smooth at 60 FPS, light on memory. Even the splash animation uses SIMD.

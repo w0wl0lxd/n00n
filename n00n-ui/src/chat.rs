@@ -94,6 +94,7 @@ impl Chat {
             .set_restore_channel(event_handle, event_tx);
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn handle_event(&mut self, event: AgentEvent, plan_path: Option<&Path>) -> ChatEventResult {
         match event {
             AgentEvent::ThinkingDelta { text } => {
@@ -115,7 +116,7 @@ impl Chat {
                 self.messages_panel.tool_done(*e);
                 if let Some(pp) = plan_write {
                     let content = if is_full_write {
-                        std::fs::read_to_string(pp).unwrap_or_default()
+                        std::fs::read_to_string(pp).unwrap_or_else(|_| String::new())
                     } else {
                         String::new()
                     };
@@ -366,7 +367,7 @@ impl Chat {
         self.messages_panel.cancel_in_progress();
     }
 
-    pub fn fail_in_progress_with_message(&mut self, message: String) {
+    pub fn fail_in_progress_with_message(&mut self, message: &str) {
         self.messages_panel.fail_in_progress_with_message(message);
     }
 
@@ -541,17 +542,17 @@ impl Chat {
 }
 
 #[must_use]
-pub fn transcript_to_display(
+pub fn transcript_to_display<S: std::hash::BuildHasher>(
     entries: &[TranscriptEntry<Message>],
-    tool_outputs: &HashMap<String, ToolOutput>,
+    tool_outputs: &HashMap<String, ToolOutput, S>,
     tool_output_lines: &ToolOutputLines,
 ) -> (Vec<DisplayMessage>, Vec<n00n_lua::RestoreItem>) {
     transcript_to_display_at(entries, tool_outputs, tool_output_lines, 1, "compaction")
 }
 
-fn transcript_to_display_at(
+fn transcript_to_display_at<S: std::hash::BuildHasher>(
     entries: &[TranscriptEntry<Message>],
-    tool_outputs: &HashMap<String, ToolOutput>,
+    tool_outputs: &HashMap<String, ToolOutput, S>,
     tool_output_lines: &ToolOutputLines,
     depth: usize,
     parent_id: &str,
@@ -628,9 +629,10 @@ fn transcript_message_count(entries: &[TranscriptEntry<Message>]) -> usize {
         .sum()
 }
 
-pub fn history_to_display(
+#[allow(clippy::too_many_lines)] // message-role dispatch; extraction would fragment rendering
+pub fn history_to_display<S: std::hash::BuildHasher>(
     messages: &[Message],
-    tool_outputs: &HashMap<String, ToolOutput>,
+    tool_outputs: &HashMap<String, ToolOutput, S>,
     tool_output_lines: &ToolOutputLines,
 ) -> (Vec<DisplayMessage>, Vec<n00n_lua::RestoreItem>) {
     let results = build_tool_results_map(messages);
@@ -718,7 +720,7 @@ pub fn history_to_display(
                             let output = stored
                                 .map(n00n_agent::ToolOutput::as_text)
                                 .or_else(|| result_text.map(str::to_owned))
-                                .unwrap_or_default();
+                                .unwrap_or_else(String::new);
                             let state = stored.and_then(|o| o.state().cloned());
                             // Structured outputs (e.g. Diff) render natively
                             // in Rust with full fidelity; a Lua restore
@@ -790,7 +792,7 @@ pub(crate) fn restore_item_for(
     let output = stored.as_text();
     let state = stored.state().cloned();
     Some(n00n_lua::RestoreItem {
-        tool: role.name.clone(),
+        tool: Arc::clone(&role.name),
         tool_use_id: role.id.clone(),
         output,
         input: input.clone(),
@@ -815,7 +817,7 @@ fn build_loaded_tool(
         let annotation = output.annotation();
         (summary.to_owned(), 0, Some(Arc::new(output)), annotation)
     } else {
-        let result = result_text.unwrap_or("");
+        let result = result_text.unwrap_or_else(|| "");
         let annotation = if result.is_empty() {
             None
         } else {
@@ -908,6 +910,7 @@ mod tests {
             before: String::new(),
             after: String::new(),
             summary: String::new(),
+            telemetry: None,
         }
     }
 
@@ -1229,6 +1232,7 @@ mod tests {
                     before: "x\n".into(),
                     after: "y\n".into(),
                     summary: "edited a".into(),
+                    telemetry: None,
                 },
             ),
             (

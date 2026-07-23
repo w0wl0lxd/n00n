@@ -77,7 +77,7 @@ impl SessionState {
                 .thinking
                 .map(Into::into)
                 .filter(|_| model.supports_thinking())
-                .unwrap_or_default(),
+                .unwrap_or_else(Default::default),
             fast: session.meta.fast && model.supports_fast(),
             workflow: session.meta.workflow,
             session,
@@ -90,6 +90,7 @@ impl SessionState {
         }
     }
 
+    #[allow(clippy::ref_option)]
     pub fn sync_session(
         &mut self,
         shared_history: &Option<Arc<ArcSwap<Vec<Message>>>>,
@@ -98,16 +99,18 @@ impl SessionState {
         permissions: &Arc<PermissionManager>,
     ) {
         if let Some(history) = shared_history {
-            self.session.messages = Vec::clone(&history.load());
+            Clone::clone_from(&mut self.session.messages, &history.load());
         }
         if let Some(transcript) = shared_transcript {
-            self.session.transcript = Vec::clone(&transcript.load());
+            Clone::clone_from(&mut self.session.transcript, &transcript.load());
         }
         if let Some(outputs) = shared_tool_outputs {
-            self.session.tool_outputs = outputs
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone();
+            Clone::clone_from(
+                &mut self.session.tool_outputs,
+                &outputs
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
         }
         self.session.token_usage = self.token_usage;
         self.session.meta.context_size = self.context_size;
@@ -184,6 +187,7 @@ fn migrate_stored_tool_key(s: &str) -> Option<n00n_config::ToolKey> {
     }
 }
 
+#[allow(clippy::assigning_clones, clippy::manual_let_else)]
 pub(crate) fn stored_to_rules(stored: &[StoredRule]) -> Vec<n00n_config::PermissionRule> {
     stored
         .iter()

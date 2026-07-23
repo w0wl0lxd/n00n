@@ -53,7 +53,7 @@ impl RenderCursor {
             .saturating_sub(segment_skip)
             .min(self.bottom.saturating_sub(self.y));
         let seg_area = Rect::new(self.viewport.x, self.y, self.viewport.width, visible_h);
-        let mut base = style.unwrap_or_default();
+        let mut base = style.unwrap_or_else(Default::default);
         if highlight {
             base = base.add_modifier(Modifier::REVERSED);
         }
@@ -144,7 +144,7 @@ impl RenderCursor {
             seg_area
         };
         if content_area.width > 0 && content_area.height > 0 {
-            let position = SignedPosition::from((0, -(segment_skip as i16)));
+            let position = SignedPosition::from((0, -segment_skip.cast_signed()));
             let image = SlicedImage::new(protocol, position);
             frame.render_widget(image, content_area);
         }
