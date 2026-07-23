@@ -1728,6 +1728,11 @@ mod tests {
         assert_eq!(ToolOutput::Plain(text.into()).is_empty_result(), expected);
     }
 
+    #[derive(serde::Deserialize)]
+    struct ToolSnapshotFields {
+        theme_gen: Option<u64>,
+    }
+
     #[test]
     fn agent_event_tool_snapshot_theme_gen_backwards_compat() {
         const OMIT_MSG: &str = "theme_gen: None must not appear in serialized JSON";

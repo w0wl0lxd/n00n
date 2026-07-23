@@ -38,7 +38,6 @@ use crate::{AgentConfig, AgentMode, EventSender, SharedBuf};
 use n00n_config::ToolOutputLines;
 use n00n_providers::RequestOptions;
 use n00n_providers::provider::Provider;
-use n00n_providers::provider::ProviderKind;
 use n00n_providers::{Model, ModelFamily, ModelPricing, ModelTier, OpenAiOptions};
 use n00n_storage::id::SessionRef;
 
@@ -447,8 +446,7 @@ const FALLBACK_CONTEXT_WINDOW: u32 = 200_000;
 fn fallback_model() -> Model {
     Model {
         id: "anthropic/claude-3-haiku-20240307".into(),
-        provider: ProviderKind::Anthropic,
-        dynamic_slug: None,
+        provider: "anthropic".into(),
         tier: ModelTier::Medium,
         family: ModelFamily::Claude,
         supports_tool_examples_override: None,

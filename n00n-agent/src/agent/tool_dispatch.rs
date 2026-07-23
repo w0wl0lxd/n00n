@@ -2,14 +2,15 @@ use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde_json::Value;
 use tracing::{debug, error, warn};
 
 use crate::mcp::{McpSession, TOOL_SEARCH_TOOL_NAME, UNKNOWN_MCP};
+use crate::permissions::PermissionCheckContext;
 use crate::task_set::TaskSet;
-use crate::tools::registry::{ToolExecResult, ToolInvocation, ToolRegistry, ToolSource};
+use crate::tools::registry::{ToolInvocation, ToolRegistry};
 use crate::tools::{LocalToolFn, ToolContext};
 use crate::{AgentError, AgentEvent, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use n00n_config::ToolKey;
@@ -207,16 +208,8 @@ pub async fn run(
         }
     } else if let Some(mcp) = mcp.filter(|_| name == TOOL_SEARCH_TOOL_NAME) {
         run_tool_search(mcp, id, input, ctx, emit)
-    } else if mcp.is_some_and(|m| m.has_tool(mcp_lookup)) {
-        emit_raw_start(
-            ctx,
-            emit,
-            &id,
-            &tool_id,
-            format!("mcp: {mcp_lookup}"),
-            input,
-        );
-        execute_mcp_tool(ctx, &id, tool_id, mcp_lookup, input).await
+    } else if mcp.is_some_and(|m| m.has_tool(&mcp_lookup)) {
+        execute_mcp_tool(ctx, &id, tool_id, &mcp_lookup, input, emit).await
     } else {
         let msg = format!("{UNKNOWN_TOOL_PREFIX}: {mcp_lookup}");
         warn!(tool = %mcp_lookup, "unknown tool");
@@ -322,61 +315,6 @@ fn tool_done_plain(id: String, tool_id: Arc<str>, text: String) -> ToolDoneEvent
         is_error: false,
         annotation: None,
         written_path: None,
-    }
-}
-
-fn tool_done_from_result(
-    result: ToolExecResult,
-    id: String,
-    tool_id: Arc<str>,
-    name: &str,
-    source: &ToolSource,
-    elapsed: Duration,
-) -> ToolDoneEvent {
-    let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or_else(|_| u64::MAX);
-    match result.output {
-        Ok(output) => {
-            debug!(
-                tool = %name,
-                source = %source.as_log_field(),
-                elapsed_ms,
-                "tool ok"
-            );
-            let output = match result.telemetry {
-                Some(telemetry) => output.with_telemetry(Some(telemetry)),
-                None => output,
-            };
-            ToolDoneEvent {
-                id,
-                tool: tool_id,
-                output,
-                is_error: false,
-                annotation: result.annotation,
-                written_path: result.written_path,
-            }
-        }
-        Err(message) => {
-            warn!(
-                tool = %name,
-                source = %source.as_log_field(),
-                elapsed_ms,
-                error = %message,
-                "tool failed"
-            );
-            ToolDoneEvent {
-                id,
-                tool: tool_id,
-                output: ToolOutput::Plain(crate::TextOutput {
-                    text: message,
-                    instructions: None,
-                    state: None,
-                    telemetry: result.telemetry,
-                }),
-                is_error: true,
-                annotation: result.annotation,
-                written_path: None,
-            }
-        }
     }
 }
 

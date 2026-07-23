@@ -14,7 +14,7 @@ use n00n_agent::tools::{
 use n00n_agent::{
     Agent, AgentConfig, AgentEvent, AgentInput, AgentParams, AgentRunParams, CancelMap,
     CancelToken, CancelTrigger, Envelope, EventSender, History, Instructions, McpCommand,
-    PromptRole, ToolOutputLines,
+    McpHandle, PromptRole, ToolOutputLines,
 };
 use n00n_lua::EventHandle;
 use n00n_providers::{AgentError, Message, Model, OpenAiOptions, TokenUsage};
@@ -88,29 +88,29 @@ pub(super) struct AgentLoopInit {
 }
 
 impl AgentLoop {
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn new(
-        model_slot: Arc<ArcSwap<ModelSlot>>,
-        config: AgentConfig,
-        tool_output_lines: ToolOutputLines,
-        initial_history: Vec<Message>,
-        initial_transcript: Vec<TranscriptEntry<Message>>,
-        shared_history: Arc<ArcSwap<Vec<Message>>>,
-        shared_transcript: n00n_agent::SharedTranscript,
-        btw_system: Arc<ArcSwap<String>>,
-        mcp_handle: Option<n00n_agent::mcp::McpHandle>,
-        permissions: Arc<PermissionManager>,
-        agent_tx: flume::Sender<Envelope>,
-        answer_rx: flume::Receiver<String>,
-        queue: Arc<QueueReceiver>,
-        cancel_map: Arc<RunCancelMap>,
-        init_cancel: CancelToken,
-        session_id: Option<SessionRef>,
-        timeouts: n00n_providers::Timeouts,
-        openai_options: OpenAiOptions,
-        lua_handle: Option<EventHandle>,
-        subagent_cancels: Arc<CancelMap<String>>,
-    ) -> Self {
+    pub(super) fn new(init: AgentLoopInit) -> Self {
+        let AgentLoopInit {
+            model_slot,
+            config,
+            tool_output_lines,
+            initial_history,
+            initial_transcript,
+            shared_history,
+            shared_transcript,
+            btw_system,
+            mcp_handle,
+            permissions,
+            agent_tx,
+            answer_rx,
+            queue,
+            cancel_map,
+            init_cancel,
+            session_id,
+            timeouts,
+            openai_options,
+            lua_handle,
+            subagent_cancels,
+        } = init;
         Self {
             model_slot,
             config,
