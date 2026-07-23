@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784777915971,
+  "lastUpdate": 1784779102888,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -2051,6 +2051,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 121321,
             "range": "± 7999",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "386c8918a6bbe5f3e1839ac952f636feeb4018d7",
+          "message": "Merge pull request #78 from w0wl0lxd/fix/review-nits\n\nrefactor: use structured tracing for library fallback warnings",
+          "timestamp": "2026-07-22T23:52:31-04:00",
+          "tree_id": "cd6600e0110b9beea6f574f6c2126a5ef2ed719a",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/386c8918a6bbe5f3e1839ac952f636feeb4018d7"
+        },
+        "date": 1784779101566,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6436972,
+            "range": "± 108453",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2452300,
+            "range": "± 3816",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2378049,
+            "range": "± 27366",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7444899,
+            "range": "± 13984",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3723417,
+            "range": "± 10357",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3621480,
+            "range": "± 41095",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 553875,
+            "range": "± 1214",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 167968,
+            "range": "± 411",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 167916,
+            "range": "± 654",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1023192,
+            "range": "± 8773",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 608891,
+            "range": "± 3603",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 609881,
+            "range": "± 6810",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 69694,
+            "range": "± 6414",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 150239,
+            "range": "± 17601",
             "unit": "ns/iter"
           }
         ]
