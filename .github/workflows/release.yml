@@ -17,22 +17,25 @@ env:
   GH_REPO: ${{ github.repository }}
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
+      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262'  # v4
+        with:
+          persist-credentials: false
       - name: Create draft release
-        run: |
-          .github/scripts/retry.sh bash -c \
-            'gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
-             gh release create "$GITHUB_REF_NAME" --draft \
-               --title "$GITHUB_REF_NAME" --generate-notes'
+        run: |-
+          .github/scripts/retry.sh sh -c \
+            "gh release view \"$GITHUB_REF_NAME\" >/dev/null 2>&1 || \
+             gh release create \"$GITHUB_REF_NAME\" --draft \
+               --title \"$GITHUB_REF_NAME\" --generate-notes"
 
+    permissions:
+      contents: write
   build-linux:
     name: Build (${{ matrix.target }})
     needs: create-release
@@ -47,8 +50,9 @@ jobs:
             runner: ubuntu-24.04-arm
 
     steps:
-      - uses: actions/checkout@v4
-
+      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262'  # v4
+        with:
+          persist-credentials: false
       - name: Build in Alpine container
         run: |
           docker run --rm \
@@ -65,7 +69,7 @@ jobs:
               source "$HOME/.cargo/env"
               cargo build --release --target ${{ matrix.target }}
             '
-          sudo chown -R $(id -u):$(id -g) target/
+          sudo chown -R "$(id -u):$(id -g)" target/
 
       - name: Package
         run: |
@@ -78,6 +82,8 @@ jobs:
       - name: Upload artifact
         run: .github/scripts/retry.sh gh release upload "$GITHUB_REF_NAME" "$ARCHIVE" --clobber
 
+    permissions:
+      contents: write
   build-other:
     name: Build (${{ matrix.target }})
     needs: create-release
@@ -94,14 +100,11 @@ jobs:
             runner: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
-
+      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262'  # v4
+        with:
+          persist-credentials: false
       - name: Install Rust toolchain
         run: rustup target add ${{ matrix.target }}
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}-${{ github.ref_name }}
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
@@ -129,20 +132,23 @@ jobs:
         shell: bash
         run: .github/scripts/retry.sh gh release upload "$GITHUB_REF_NAME" "$ARCHIVE" --clobber
 
+    permissions:
+      contents: write
   publish:
     name: Publish Release
     needs: [build-linux, build-other]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
+      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262'  # v4
+        with:
+          persist-credentials: false
       - name: Download artifacts
         run: .github/scripts/retry.sh gh release download "$GITHUB_REF_NAME" --dir artifacts
 
       - name: Generate checksums
         run: |
           cd artifacts
-          sha256sum * > ../sha256sums.txt
+          sha256sum -- * > ../sha256sums.txt
           cat ../sha256sums.txt
 
       - name: Upload checksums
@@ -150,3 +156,5 @@ jobs:
 
       - name: Mark release as published
         run: .github/scripts/retry.sh gh release edit "$GITHUB_REF_NAME" --draft=false
+    permissions:
+      contents: write
