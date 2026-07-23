@@ -11,6 +11,22 @@ local ibn = require("ibn")
 local quorum = require("quorum")
 local swarm = require("swarm")
 local telemetry = require("n00n.telemetry")
+local checkpoint = require("n00n.checkpoint")
+local waves = require("waves")
+local validation = require("validation")
+
+local policy_ok, policy = pcall(require, "n00n.policy")
+
+local function call_tool_with_policy(ctx, tool_name, input)
+  if policy_ok and policy then
+    local result, err = policy.call_tool(ctx, nil, "team", { "team" }, tool_name, input)
+    if result then
+      return result
+    end
+    return nil, err or "policy blocked tool call"
+  end
+  return n00n.agent.call_tool(ctx, tool_name, input)
+end
 
 local function post_blackboard_status(ctx, event_type, step, run_id, extra)
   local post = {
@@ -27,7 +43,7 @@ local function post_blackboard_status(ctx, event_type, step, run_id, extra)
   end
 
   pcall(function()
-    n00n.agent.call_tool(ctx, "blackboard", { action = "write", post = post })
+    call_tool_with_policy(ctx, "blackboard", { action = "write", post = post })
   end)
 end
 
@@ -40,6 +56,8 @@ local MAX_TEAM_AGENTS = 24
 local MAX_TEAM_CONCURRENT = 4
 local TEAM_TIMEOUT_SECS = 1800
 local MAX_RELAY_BYTES = 12000
+local DEFAULT_MAX_WAVE_RETRIES = 3
+local MAX_WAVE_RETRIES = 5
 
 local function add_cost(total, value)
   if total == nil or value == nil then
@@ -178,6 +196,23 @@ local schema = {
     continue = {
       type = "string",
       description = "Human guidance appended when resuming.",
+    },
+    waves = {
+      type = "boolean",
+      default = false,
+      description = "Execute plan in waves (plan, implement, validate) with validation gates.",
+    },
+    checkpoints = {
+      type = "boolean",
+      default = false,
+      description = "Persist checkpoints after each wave for resume capability.",
+    },
+    max_wave_retries = {
+      type = "integer",
+      minimum = 1,
+      maximum = MAX_WAVE_RETRIES,
+      default = DEFAULT_MAX_WAVE_RETRIES,
+      description = "Max retries when validation gate fails (default 3, max 5).",
     },
   },
 }
@@ -482,6 +517,169 @@ local function run_single_pass(ctx, goal, input, steps, relay_k, logger, resume_
   return results, total_cost, failures, total_usage, nil
 end
 
+local function run_wave(ctx, wave_name, wave_steps, goal, input, relay_k, logger, run_id, wave_index)
+  local results = {}
+  local total_cost = 0.0
+  local total_usage = roles.usage()
+  local failures = 0
+
+  for i, entry in ipairs(wave_steps) do
+    local step = entry.step
+    if logger then
+      logger.log("step_started", { index = entry.index, role = step.role, tier = step.tier, wave = wave_name })
+    end
+    post_blackboard_status(ctx, "step_started", step, run_id, { index = entry.index, wave = wave_name })
+
+    local r = run_step(ctx, step, goal, input, relay_k, results)
+    total_cost = add_cost(total_cost, r.cost)
+    total_usage = roles.add_usage(total_usage, r.usage)
+
+    if not r.ok then
+      failures = failures + 1
+      results[#results + 1] = string.format("[%d] %s: ERROR %s", entry.index, step.role, r.error)
+      if logger then
+        logger.log("step_error", { index = entry.index, role = step.role, error = r.error, wave = wave_name })
+      end
+      post_blackboard_status(
+        ctx,
+        "step_error",
+        step,
+        run_id,
+        { index = entry.index, error = r.error, wave = wave_name }
+      )
+    else
+      local cost_line = cost_label(r.cost, r.model)
+      results[#results + 1] = string.format("[%d] %s%s:\n%s", entry.index, step.role, cost_line, r.text or "")
+      if logger then
+        logger.log(
+          "step_done",
+          { index = entry.index, role = step.role, cost = r.cost or 0, model = r.model, wave = wave_name }
+        )
+      end
+      post_blackboard_status(
+        ctx,
+        "step_done",
+        step,
+        run_id,
+        { index = entry.index, cost = r.cost or 0, model = r.model, wave = wave_name }
+      )
+    end
+  end
+
+  return { results = results, cost = total_cost, usage = total_usage, failures = failures }
+end
+
+local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state, run_id)
+  local computed_waves = waves.compute_waves(steps)
+  local wave_names = waves.wave_names()
+  local max_retries = math.min(input.max_wave_retries or DEFAULT_MAX_WAVE_RETRIES, MAX_WAVE_RETRIES)
+
+  local results = {}
+  local total_cost = 0.0
+  local total_usage = roles.usage()
+  local start_wave_index = 1
+  local start_step_index = 1
+
+  if resume_state then
+    results = resume_state.results or results
+    total_cost = resume_state.total_cost or total_cost
+    total_usage = resume_state.total_usage or total_usage
+    start_wave_index = resume_state.wave_index or start_wave_index
+    start_step_index = resume_state.step_index or start_step_index
+  end
+
+  for wave_idx = start_wave_index, #wave_names do
+    local wave_name = wave_names[wave_idx]
+    local wave_steps = computed_waves[wave_name]
+
+    if waves.is_empty(computed_waves, wave_name) then
+      if logger then
+        logger.log("wave_skipped", { wave = wave_name, reason = "empty" })
+      end
+    else
+      local retry_count = 0
+      local wave_passed = false
+
+      while retry_count <= max_retries and not wave_passed do
+        local wave_result = run_wave(ctx, wave_name, wave_steps, goal, input, relay_k, logger, run_id, wave_idx)
+
+        total_cost = add_cost(total_cost, wave_result.cost)
+        total_usage = roles.add_usage(total_usage, wave_result.usage)
+
+        for _, r in ipairs(wave_result.results) do
+          results[#results + 1] = r
+        end
+
+        if wave_result.failures > 0 then
+          if logger then
+            logger.log("wave_error", { wave = wave_name, failures = wave_result.failures })
+          end
+          break
+        end
+
+        local passed, validation_err =
+          validation.validate_wave(ctx, { wave_name = wave_name, steps = wave_steps }, goal, input)
+        if passed then
+          wave_passed = true
+          if logger then
+            logger.log("wave_passed", { wave = wave_name })
+          end
+        else
+          retry_count = retry_count + 1
+          if logger then
+            logger.log("wave_validation_failed", { wave = wave_name, retry = retry_count, error = validation_err })
+          end
+
+          if retry_count <= max_retries then
+            for i, entry in ipairs(wave_steps) do
+              entry.step.prompt = entry.step.prompt
+                .. "\n\nValidation feedback (retry "
+                .. retry_count
+                .. "): "
+                .. (validation_err or "failed")
+            end
+          else
+            results[#results + 1] = string.format(
+              "[wave %s] validation failed after %d retries: %s",
+              wave_name,
+              max_retries,
+              validation_err or "unknown"
+            )
+          end
+        end
+      end
+
+      if input.checkpoints then
+        local ckpt_id = "wave_" .. wave_idx .. "_step_" .. #wave_steps
+        local ckpt_state = {
+          results = results,
+          total_cost = total_cost,
+          total_usage = total_usage,
+          wave_index = wave_idx + 1,
+          step_index = 1,
+          steps = steps,
+          goal = goal,
+        }
+        local save_ok, save_err = checkpoint.save(run_id, ckpt_id, ckpt_state)
+        if not save_ok then
+          if logger then
+            logger.log("checkpoint_save_failed", { checkpoint_id = ckpt_id, error = save_err })
+          end
+        end
+      end
+    end
+  end
+
+  local failures = 0
+  for _, r in ipairs(results) do
+    if r:find("ERROR") then
+      failures = failures + 1
+    end
+  end
+
+  return results, total_cost, failures, total_usage, nil
+end
+
 local finish_run
 
 local function run_team(input, ctx)
@@ -530,13 +728,26 @@ local function run_team(input, ctx)
   local steps, perr, supervisor_cost, supervisor_usage
   local resume_state
   if input.resume and #input.resume > 0 then
-    resume_state = memory.load_state(ctx, input.resume)
-    if resume_state then
-      steps = resume_state.steps
-      goal = resume_state.goal
-      input.mode = input.mode or "autonomous"
+    local latest_id = checkpoint.latest(input.resume)
+    if latest_id then
+      local ckpt_state, ckpt_err = checkpoint.load(input.resume, latest_id)
+      if ckpt_state then
+        resume_state = ckpt_state
+        steps = resume_state.steps
+        goal = resume_state.goal
+        input.mode = input.mode or "autonomous"
+      else
+        return { llm_output = "checkpoint load failed: " .. tostring(ckpt_err), is_error = true }
+      end
     else
-      return { llm_output = "resume run_id not found: " .. input.resume, is_error = true }
+      resume_state = memory.load_state(ctx, input.resume)
+      if resume_state then
+        steps = resume_state.steps
+        goal = resume_state.goal
+        input.mode = input.mode or "autonomous"
+      else
+        return { llm_output = "resume run_id not found: " .. input.resume, is_error = true }
+      end
     end
   end
 
@@ -641,8 +852,15 @@ local function run_team(input, ctx)
     return finish_run(ctx, input, results, total_cost, #results, "steps", slug, sp_failures, total_usage, logger)
   end
 
-  local results, auto_cost, auto_failures, auto_usage, pause =
-    run_autonomous(ctx, goal, input, steps, relay_k, logger, resume_state, run_id)
+  local results, auto_cost, auto_failures, auto_usage, pause
+  if input.waves then
+    results, auto_cost, auto_failures, auto_usage, pause =
+      run_waves(ctx, goal, input, steps, relay_k, logger, resume_state, run_id)
+  else
+    results, auto_cost, auto_failures, auto_usage, pause =
+      run_autonomous(ctx, goal, input, steps, relay_k, logger, resume_state, run_id)
+  end
+
   if pause then
     if logger then
       logger.log(
