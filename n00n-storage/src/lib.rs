@@ -190,7 +190,9 @@ fn sync_dir(path: &Path) -> std::io::Result<()> {
 pub fn now_epoch() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or_else(
         |_| {
-            eprintln!("Warning: system time is before UNIX epoch; clock misconfiguration detected");
+            tracing::warn!(
+                "system time is before UNIX epoch; clock misconfiguration detected, returning 0"
+            );
             0
         },
         |d| d.as_secs(),
