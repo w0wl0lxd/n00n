@@ -101,5 +101,8 @@ harness = false
 name = "perf"
 harness = false
 
+[package.metadata.cargo-machete]
+ignored = ["cortexkit-tree-sitter-scss"]
+
 [lints]
 workspace = true
