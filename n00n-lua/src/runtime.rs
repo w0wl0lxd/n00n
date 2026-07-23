@@ -57,7 +57,7 @@ fn register_builtin_tools(registry: &Arc<ToolRegistry>) -> Result<(), PluginErro
         ),
     ];
     for (tool, source) in tools {
-        match registry.register(tool, source) {
+        match registry.register(&tool, &source) {
             Ok(()) => {}
             Err(RegistryError::NameConflict { name, .. })
                 if name == "tool_search" || name == "load_namespace" => {}

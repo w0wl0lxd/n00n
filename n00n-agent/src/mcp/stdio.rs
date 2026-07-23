@@ -254,14 +254,14 @@ impl McpTransport for StdioTransport {
                 return Err(e);
             }
 
+            let timeout_ms = u64::try_from(self.timeout.as_millis()).unwrap_or_else(|_| u64::MAX);
             let result = futures_lite::future::race(
                 async { rx.recv().await.unwrap_or_else(|_| Err(self.server_died())) },
                 async {
                     async_io::Timer::after(self.timeout).await;
                     Err(McpError::Timeout {
                         server: self.server(),
-                        #[allow(clippy::cast_possible_truncation)]
-                        timeout_ms: self.timeout.as_millis() as u64,
+                        timeout_ms,
                     })
                 },
             )
@@ -270,8 +270,9 @@ impl McpTransport for StdioTransport {
             if result.is_err() {
                 self.pending.lock().await.remove(&id);
             } else {
-                let duration_ms = start.elapsed().as_millis();
-                info!(server = %self.server(), method, id, duration_ms = duration_ms as u64, "MCP stdio response");
+                let duration_ms =
+                    u64::try_from(start.elapsed().as_millis()).unwrap_or_else(|_| u64::MAX);
+                info!(server = %self.server(), method, id, duration_ms, "MCP stdio response");
             }
 
             result
@@ -307,7 +308,6 @@ impl McpTransport for StdioTransport {
         "stdio"
     }
 
-    #[allow(clippy::used_underscore_binding)]
     fn child_pids(&self) -> Vec<u32> {
         vec![self.child.id()]
     }

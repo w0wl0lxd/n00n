@@ -140,7 +140,7 @@ impl ToolInvocation for LoadNamespaceInvocation {
         Box::pin(async move {
             let tools: Vec<String> = ctx
                 .registry
-                .iter()
+                .snapshot()
                 .iter()
                 .filter(|t| t.namespace.as_deref() == Some(self.namespace.as_str()))
                 .map(|t| t.name().to_string())

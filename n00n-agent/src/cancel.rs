@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use event_listener::Event;
 
+#[derive(Debug)]
 struct Shared {
     cancelled: AtomicBool,
     event: Event,
@@ -22,7 +23,7 @@ impl Shared {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CancelToken(Arc<Shared>);
 
 pub struct CancelTrigger(Arc<Shared>);
