@@ -19,7 +19,7 @@ A record on the shared blackboard containing observations, claims, or status upd
 - `agent_id` (string, required): ID of the agent that created the post.
 - `timestamp` (integer, required): Unix timestamp in seconds.
 - `type` (string, required): Post type - one of "observation", "claim", "status", "escalation".
-- `content` (string, required): Post content (free-form text or structured JSON).
+- `content` (string, required): Post content (free-form text or structured JSON, max 10KB, valid UTF-8).
 - `tags` (array of string, optional): Tags for filtering and querying.
 - `task_id` (string, optional): Associated task ID for task-scoped posts.
 
@@ -28,7 +28,7 @@ A record on the shared blackboard containing observations, claims, or status upd
 - `agent_id` must be a valid session ID from n00n.session.live().
 - `timestamp` must be a positive integer.
 - `type` must be one of the allowed values.
-- `content` must be non-empty.
+- `content` must be non-empty, valid UTF-8, and at most 10KB.
 - `tags` array elements must be non-empty strings.
 - `task_id` must be non-empty if present.
 
@@ -42,14 +42,14 @@ A blackboard post of type "claim" representing an exclusive task assignment.
 - `task_id` (string, required): Unique task identifier.
 - `agent_id` (string, required): ID of the agent holding the claim.
 - `claimed_at` (integer, required): Unix timestamp when the claim was acquired.
-- `expires_at` (integer, required): Unix timestamp when the claim expires.
+- `expires_at` (integer, required): Unix timestamp when the claim expires (default 300 seconds from claimed_at, max 3600).
 - `status` (string, required): Claim status - one of "claimed", "released", "done", "failed".
 
 **Validation rules**:
 - `task_id` must be non-empty and unique across active claims.
 - `agent_id` must be a valid session ID.
 - `claimed_at` must be less than or equal to `expires_at`.
-- `expires_at` must be in the future (relative to claim time).
+- `expires_at` must be in the future (relative to claim time) and at most 3600 seconds after `claimed_at`.
 - `status` must be one of the allowed values.
 
 **State transitions**:

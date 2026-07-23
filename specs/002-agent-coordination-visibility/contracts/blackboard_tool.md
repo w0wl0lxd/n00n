@@ -46,7 +46,7 @@ The blackboard tool provides a shared coordination substrate for multi-agent ses
         description = "Claim data for claim_task action.",
         properties = {
           task_id = { type = "string", description = "Task ID to claim." },
-          expires_in = { type = "integer", description = "Claim TTL in seconds (default 300)." },
+          expires_in = { type = "integer", description = "Claim TTL in seconds (default 300, max 3600)." },
         },
         required = { "task_id" },
       },
@@ -58,7 +58,7 @@ The blackboard tool provides a shared coordination substrate for multi-agent ses
           task_id = { type = "string", description = "Filter by task ID." },
           tags = { type = "array", items = { type = "string" }, description = "Filter by tags (any match)." },
           agent_id = { type = "string", description = "Filter by agent ID." },
-          limit = { type = "integer", description = "Maximum results (default 100)." },
+          limit = { type = "integer", description = "Maximum results (default 100, max 1000)." },
         },
       },
     },

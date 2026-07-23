@@ -261,6 +261,12 @@
 - [ ] T102 Verify all success criteria (SC-001 to SC-006) are met
 - [ ] T103 Add feature flags for optional coordination features in plugins/team/init.lua
 - [ ] T104 Update documentation for new coordination features
+- [ ] T105 [P] Add benchmark task for SC-004: measure defect rate with wave dispatch vs non-wave dispatch on 20-task benchmark suite
+- [ ] T106 [P] Add benchmark task for SC-005: measure escalation success rate across 50 representative scenarios
+- [ ] T107 [P] Add benchmark task for SC-006: measure checkpoint recording overhead and verify under 5%
+- [ ] T108 Add wave dispatch cycle detection and abort/escalation handling in plugins/team/waves.lua
+- [ ] T109 Add non-interactive escalation payload handling in plugins/agent_control/init.lua
+- [ ] T110 Add fallback to last known good checkpoint on corruption in plugins/lib/n00n/checkpoint.lua
 
 ---
 

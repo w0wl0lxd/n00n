@@ -36,7 +36,7 @@ As a developer running multiple concurrent `team` or `workflow` sessions, I want
 
 **Acceptance Scenarios**:
 
-1. **Given** two concurrent `team` sessions, **When** agent A posts a claim for file `src/main.rs`, **Then** agent B reading the blackboard sees the claim and can avoid conflicting edits.
+1. **Given** two concurrent `team` sessions, **When** agent A posts a claim for file `src/main.rs`, **Then** agent B reading the blackboard immediately sees the claim and can avoid conflicting edits.
 2. **Given** a blackboard with multiple posts, **When** an agent queries for posts tagged with a specific task ID, **Then** only posts matching that tag are returned in chronological order.
 3. **Given** the blackboard service is unavailable, **When** an agent attempts to post, **Then** the operation fails gracefully with a clear error and the agent retries or falls back to local state.
 
@@ -53,7 +53,7 @@ As a developer, I want agents to claim tasks atomically from a shared queue, so 
 **Acceptance Scenarios**:
 
 1. **Given** a task queue with unclaimed items, **When** two agents simultaneously attempt to claim the same task, **Then** only one succeeds and the other receives a conflict error or the next available task.
-2. **Given** a claimed task, **When** the claiming agent completes or fails the task, **Then** the claim is released and the task is marked done or returned to the queue for retry.
+2. **Given** a claimed task, **When** the claiming agent completes or fails the task, **Then** the claim is released and the task is marked done; failed tasks return to the queue with exponential backoff and a maximum of 3 retries.
 3. **Given** an agent crashes while holding a claim, **When** a claim timeout expires, **Then** the claim is automatically released and the task becomes available for re-claiming.
 
 ---
@@ -85,7 +85,7 @@ As a developer, I want a centralized control plane that enforces policies on age
 **Acceptance Scenarios**:
 
 1. **Given** a policy restricting write tools for agents with tag `background`, **When** a background agent attempts a write operation, **Then** the operation is rejected with a policy violation error and the agent continues without crashing.
-2. **Given** a paused agent, **When** it attempts any tool call, **Then** the call is rejected with a `paused` status and the agent waits for a `resume` or policy update.
+2. **Given** a paused agent, **When** it attempts any tool call, **Then** the call is rejected with a `paused` status and the agent waits indefinitely for a `resume` or policy update unless an escalation timeout is configured.
 3. **Given** no policy configured, **When** an agent performs any operation, **Then** all operations proceed without restriction.
 
 ---
@@ -101,7 +101,7 @@ As a developer using `team`, I want the supervisor to dispatch agents in waves (
 **Acceptance Scenarios**:
 
 1. **Given** a three-wave dispatch (plan, implement, validate), **When** the planning wave completes, **Then** a validation gate runs and only if it passes does the implementation wave start.
-2. **Given** the implementation wave introduces a defect, **When** the validation wave runs, **Then** the defect is detected, the wave fails, and the run returns to the planning wave for correction.
+2. **Given** the implementation wave introduces a defect, **When** the validation wave runs, **Then** the defect is detected by failing tests or a rejected code review, the wave fails, and the run returns to the planning wave for correction.
 3. **Given** a wave dispatch configuration, **When** a wave completes successfully, **Then** the next wave in the topology starts automatically with the validated artifacts as input.
 
 ---
@@ -180,11 +180,11 @@ As a developer, I want each agent run to have a versioned lifecycle with checkpo
 
 ### Measurable Outcomes
 
-- **SC-001**: In a test with 10 concurrent agents claiming from a 50-task queue, zero tasks are claimed by more than one agent.
-- **SC-002**: Visibility API queries return within 100ms for up to 100 active sessions without blocking agent execution.
-- **SC-003**: Policy violations are detected and enforced within 50ms of the restricted operation attempt.
-- **SC-004**: Wave dispatch with dual validation gates reduces defect injection rate by at least 30% compared to non-wave dispatch on a sample of 20 representative tasks.
-- **SC-005**: Human escalation requests are surfaced and paused runs resume successfully after human input in 95% of test cases.
+- **SC-001**: In a test with 10 concurrent agents claiming from a 50-task queue, no task is simultaneously claimed by more than one agent at any point in time.
+- **SC-002**: Visibility API p95 latency is under 100ms for up to 100 active sessions and queries do not block agent execution.
+- **SC-003**: Policy enforcement p95 latency is under 50ms from the restricted operation attempt.
+- **SC-004**: Wave dispatch with dual validation gates reduces defect injection rate by at least 30% compared to non-wave dispatch on the same 20-task benchmark suite.
+- **SC-005**: Human escalation requests are surfaced and paused runs resume successfully after human input in 95% of 50 representative escalation scenarios.
 - **SC-006**: Checkpoint recording adds less than 5% overhead to run duration and checkpoints can be loaded and resumed without data loss.
 
 ## Assumptions
