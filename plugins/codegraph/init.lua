@@ -40,7 +40,7 @@ local opts = n00n.api.register_options(output_limits.extend({}))
 n00n.api.register_tool({
   name = "codegraph",
   kind = "read",
-  description = [[Query a pre-indexed semantic codegraph for cross-file structural analysis. Returns verbatim source code grouped by file, plus a dependency impact "blast radius" summary with caller counts and test coverage info.
+  description = [[Query a pre-indexed semantic codegraph for cross-file structural analysis. Returns verbatim source code grouped by file, plus a dependency impact "blast radius" summary with caller counts and test coverage info. Typically uses fewer tokens than broad grep + read for the same cross-file question.
 
 Best for:
 - Understanding how a system works end-to-end ("how does X work")
