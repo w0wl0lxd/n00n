@@ -12,6 +12,9 @@ on:
       - "scripts/**/*.py"
       - ".github/workflows/python.yml"
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: Ruff
@@ -36,6 +39,3 @@ jobs:
         with:
           install_args: ty
       - run: ty check scripts/
-
-permissions:
-  contents: read

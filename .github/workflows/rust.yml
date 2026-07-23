@@ -11,6 +11,9 @@ env:
   CARGO_INCREMENTAL: 0
   CARGO_NET_RETRY: 10
 
+permissions:
+  contents: read
+
 jobs:
   changes:
     name: Detect changes
@@ -229,6 +232,3 @@ jobs:
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
         run: exit 1
-
-permissions:
-  contents: read
