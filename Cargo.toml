@@ -17,6 +17,14 @@ name = "n00n"
 path = "src/main.rs"
 bench = false
 
+[[bin]]
+name = "anthropic_cache_benchmark"
+path = "scripts/anthropic_cache_benchmark.rs"
+
+[[bin]]
+name = "dynamic_tool_size"
+path = "scripts/dynamic_tool_size.rs"
+
 [dependencies]
 n00n-ui = { workspace = true }
 n00n-agent = { workspace = true }
@@ -96,9 +104,6 @@ bs58 = "0.5"
 uuid = { version = "1", default-features = false, features = ["std", "v7"] }
 zstd = { version = "0.13", default-features = false }
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
-ratatui-image = { version = "11.0", default-features = false, features = [
-  "crossterm",
-] }
 crossterm = { version = "0.29", features = ["osc52"] }
 color-eyre = { version = "0.6", default-features = false, features = [
   "track-caller",
@@ -142,24 +147,11 @@ similar = { version = "2", features = ["inline", "unicode"] }
 jsonrepair = { version = "0.1", default-features = false, features = ["serde"] }
 jsonschema = { version = "0.33", default-features = false }
 httpdate = "1.0.3"
-jiff = { version = "0.2", default-features = false, features = [
-  "std",
-  "tz-system",
-] }
-arboard = { version = "3", default-features = false, features = [
-  "image-data",
-  "wayland-data-control",
-] }
-image = { version = "0.25", default-features = false, features = [
-  "png",
-  "jpeg",
-  "gif",
-  "webp",
-] }
-flume = { version = "0.11", default-features = false, features = [
-  "async",
-  "select",
-] }
+jiff = { version = "0.2", default-features = false, features = ["std", "tz-system"] }
+arboard = { version = "3", default-features = false, features = ["image-data", "wayland-data-control"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+flume = { version = "0.11", default-features = false, features = ["async", "select"] }
+ratatui-image = { version = "11.0.6", default-features = false, features = ["crossterm"] }
 humantime = "2"
 toml = "0.8"
 toml_edit = "0.22"

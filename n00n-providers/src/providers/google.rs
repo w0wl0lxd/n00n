@@ -83,7 +83,7 @@ inventory::submit!(n00n_config::providers::BuiltInProvider {
     needs_url: false,
 });
 
-pub(crate) fn models() -> &'static [ModelEntry] {
+pub(crate) const fn models() -> &'static [ModelEntry] {
     &[
         ModelEntry {
             prefixes: &["gemini-2.5-pro"],

@@ -5,9 +5,7 @@ mod selection;
 mod tests;
 
 use self::render::RenderCursor;
-use self::segment::{MessageAction, Segment, SegmentCache, Surface};
-
-pub(crate) use self::segment::wrapped_line_count;
+use self::segment::{Segment, SegmentCache, Surface, wrapped_line_count};
 
 use super::tool_display::{
     RenderCtx, ToolLines, append_annotation, append_right_info, assistant_style,
@@ -25,13 +23,13 @@ use crate::mascot::Mascot;
 use crate::render_worker::RenderWorker;
 use crate::selection::Selection;
 use crate::splash::{ColorTransition, Splash};
+use crate::terminal_image;
 use crate::theme;
 use n00n_config::{ToolOutputLines, UiConfig};
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
-
 use unicode_width::UnicodeWidthStr;
 
 use super::scrollbar::{ScrollInfo, render_vertical_scrollbar};
@@ -47,14 +45,9 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph};
 use ratatui_image::picker::Picker;
 
-pub(crate) const JUMP_TO_BOTTOM_TEXT: &str = "↓ Bottom";
-const JUMP_TO_BOTTOM_KEY_GAP: &str = "  ";
-const JUMP_TO_BOTTOM_THRESHOLD: u16 = 1;
-const JUMP_TO_BOTTOM_POPUP_HEIGHT: u16 = 3;
-const JUMP_TO_BOTTOM_POPUP_BOTTOM_MARGIN: u16 = 1;
+const THINKING_HIDDEN_HEADER: &str = "thinking> ...";
 pub(super) const COPY_LABEL_WIDTH: u16 = 6;
 
 #[derive(Clone, Copy)]
@@ -101,38 +94,7 @@ pub struct MessagesPanel {
     /// only bumps when colors actually land.
     rebake_requested: HashMap<String, u64>,
     prompt_progress: Option<PromptProgress>,
-    jump_to_bottom_popup: Option<Rect>,
-    /// Older display messages waiting to be prepended in batches so a long
-    /// session resumes without blocking the first paint on full rendering.
-    restore_backlog: Vec<DisplayMessage>,
-    /// Per-frame prepend sizes, drained front-to-back by `drain_restore_backlog`.
-    restore_batches: VecDeque<usize>,
     picker: Arc<Picker>,
-}
-
-/// Incremental restore plan: show the `initial` (most recent) messages first,
-/// then prepend the remaining older messages in `prepend_batches`-sized chunks
-/// (drained front-to-back, each chunk taken from the end of the backlog so
-/// older history lands just above what is already rendered).
-struct RestorePlan {
-    initial: usize,
-    prepend_batches: Vec<usize>,
-}
-
-fn restore_plan(total: usize, batch_size: usize) -> RestorePlan {
-    let batch_size = batch_size.max(1);
-    let initial = total.min(batch_size);
-    let mut backlog = total - initial;
-    let mut prepend_batches = Vec::new();
-    while backlog > 0 {
-        let take = backlog.min(batch_size);
-        prepend_batches.push(take);
-        backlog -= take;
-    }
-    RestorePlan {
-        initial,
-        prepend_batches,
-    }
 }
 
 impl MessagesPanel {
@@ -180,9 +142,6 @@ impl MessagesPanel {
             thinking_started: None,
             rebake_requested: HashMap::new(),
             prompt_progress: None,
-            jump_to_bottom_popup: None,
-            restore_backlog: Vec::new(),
-            restore_batches: VecDeque::new(),
             picker,
         }
     }
@@ -1153,7 +1112,8 @@ impl MessagesPanel {
             if let Some(term_img) = seg.image() {
                 cursor.render_image(&term_img.protocol, h, seg.surface(), frame);
             } else {
-                cursor.render(seg.lines(), h, None, seg.surface(), highlight, frame);
+                let style = seg.tool_id.as_ref().map(|_| theme::current().tool_bg);
+                cursor.render(seg.lines(), h, style, seg.surface(), highlight, frame);
             }
         }
 
@@ -1314,6 +1274,19 @@ impl MessagesPanel {
 
     pub fn extract_selection_text(&self, sel: &Selection, msg_area: Rect) -> String {
         selection::extract_selection_text(&self.cache, self.viewport_width, sel, msg_area)
+    }
+
+    pub fn tool_id_at(&self, row: u16, area: Rect) -> Option<&str> {
+        if area.height == 0 {
+            return None;
+        }
+        let doc_row = (row.saturating_sub(area.y)) as u32 + self.scroll_top as u32;
+        let (_, segment, segment_start) =
+            self.cache.segment_at_row(doc_row, self.viewport_width)?;
+        let rel = u16::try_from(doc_row - segment_start).ok()?;
+        (segment.source_line_at(rel, self.viewport_width) == Some(0))
+            .then_some(segment.tool_id.as_deref())
+            .flatten()
     }
 
     fn tool_in_progress(&self, tool_id: &str) -> bool {
@@ -1898,11 +1871,8 @@ impl MessagesPanel {
                     _ => Surface::Plain,
                 };
                 let base_width = surface.content_width(self.viewport_width).max(1);
-                let content_width = base_width
-                    .saturating_sub(u16::try_from(prefix.width()).unwrap_or_else(|_| u16::MAX))
-                    .max(1);
+                let content_width = base_width.saturating_sub(prefix.width() as u16).max(1);
                 let image_width = base_width;
-                let picker_ref = &*self.picker;
                 let mut lines = if style.use_markdown {
                     text_to_lines(
                         &msg.text,
@@ -1939,27 +1909,30 @@ impl MessagesPanel {
                     )));
                 }
 
-                let prefix_width = u16::try_from(prefix.width()).unwrap_or_else(|_| u16::MAX);
+                let prefix_width = prefix.width() as u16;
                 let search_text = format!("{}> {}", role_name(&msg.role), msg.text);
+                let mut segment = Segment::with_lines(
+                    lines,
+                    search_text,
+                    Some(msg.text.clone()),
+                    prefix_width,
+                    Some(i),
+                );
+                segment.set_surface(surface);
                 self.cache.push_spacer_if_needed();
-                if !msg.text.is_empty() || msg.plan_path.is_some() || msg.images.is_empty() {
-                    let mut segment = Segment::with_lines(
-                        lines,
-                        search_text,
-                        Some(msg.text.clone()),
-                        prefix_width,
-                        Some(i),
-                    );
-                    segment.set_surface(surface);
+                if !msg.text.is_empty() || msg.plan_path.is_some() {
                     self.cache.push(segment);
                 }
                 for (idx, source) in msg.images.iter().enumerate() {
-                    if idx > 0 || !msg.text.is_empty() {
+                    if !terminal_image::supports_images() {
+                        break;
+                    }
+                    if idx > 0 || !msg.text.is_empty() || msg.plan_path.is_some() {
                         self.cache.push(Segment::spacer());
                     }
                     self.cache.push(Segment::with_image(
                         source,
-                        picker_ref,
+                        Arc::clone(&self.picker),
                         image_width,
                         surface,
                         Some(i),

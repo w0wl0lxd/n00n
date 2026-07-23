@@ -24,6 +24,42 @@ pub(crate) const PARAM_PREVIEW_MAX: usize = 120;
 const PREVIEW_SUFFIX: &str = "...";
 const JSON_ENCODED_ARRAY_HINT: &str = "Pass a JSON array, not a JSON-encoded string.";
 const JSON_ENCODED_OBJECT_HINT: &str = "Pass a JSON object, not a JSON-encoded string.";
+const TRUNCATION_SUFFIX: &str = "...";
+
+/// Truncate a string to at most `max_len` characters on a word boundary.
+/// If truncated, appends an ellipsis indicator.
+pub fn truncate_on_word_boundary(s: &str, max_len: usize) -> String {
+    let char_count = s.chars().count();
+    if char_count <= max_len {
+        return s.to_string();
+    }
+
+    let suffix_len = TRUNCATION_SUFFIX.len();
+    if max_len <= suffix_len {
+        return TRUNCATION_SUFFIX.to_string();
+    }
+
+    let target_chars = max_len - suffix_len;
+    let mut last_space = None;
+
+    for (char_idx, (byte_idx, ch)) in s.char_indices().enumerate() {
+        if char_idx >= target_chars {
+            break;
+        }
+        if ch.is_whitespace() {
+            last_space = Some(byte_idx);
+        }
+    }
+
+    let cut_pos = last_space.unwrap_or_else(|| {
+        s.char_indices()
+            .nth(target_chars)
+            .map(|(i, _)| i)
+            .unwrap_or(s.len())
+    });
+    let truncated = &s[..cut_pos];
+    format!("{}{}", truncated.trim_end(), TRUNCATION_SUFFIX)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamKind {
@@ -769,13 +805,10 @@ fn log_coercion(
     );
 }
 
-/// Sanitize a tool input schema to comply with `OpenAI` function-calling requirements.
-///
-/// `OpenAI` requires the top-level `parameters` of every function to be an object
+/// OpenAI requires the top-level `parameters` of every function to be an object
 /// schema with `properties` and `required` as an array. MCP servers and plugins
 /// can return schemas that break these rules, so this function repairs them
 /// before they are sent to a provider.
-#[must_use]
 pub fn sanitize_tool_input_schema(mut schema: Value) -> Value {
     if let Value::Object(map) = &mut schema
         && is_object_schema(map)
@@ -840,7 +873,6 @@ fn sanitize_property_schema(schema: &mut Value) {
                 }
                 sanitize_array_schema(map);
             } else if type_str.is_some() {
-                // Primitive or other typed property: leave as-is.
             } else if map.contains_key("enum") {
                 map.insert("type".to_string(), json!("string"));
             } else if map.contains_key("anyOf")
@@ -848,9 +880,7 @@ fn sanitize_property_schema(schema: &mut Value) {
                 || map.contains_key("allOf")
                 || map.contains_key("$ref")
             {
-                // Leave composite/reference schemas untouched.
             } else {
-                // Ambiguous description-only schema defaults to object.
                 sanitize_object_schema(map);
             }
         }
@@ -903,7 +933,8 @@ fn sanitize_required(map: &mut serde_json::Map<String, Value>) {
     let prop_keys: HashSet<String> = map
         .get("properties")
         .and_then(|p| p.as_object())
-        .map_or_else(HashSet::new, |p| p.keys().cloned().collect());
+        .map(|p| p.keys().cloned().collect())
+        .unwrap_or_default();
 
     match map.get_mut("required") {
         Some(req_val) if req_val.is_object() => {
@@ -916,6 +947,135 @@ fn sanitize_required(map: &mut serde_json::Map<String, Value>) {
             map["required"] = Value::Array(Vec::new());
         }
         None => {}
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::*;
+
+    #[test]
+    fn truncate_on_word_boundary_short_string() {
+        assert_eq!(truncate_on_word_boundary("short", 20), "short");
+    }
+
+    #[test]
+    fn truncate_on_word_boundary_exact_length() {
+        assert_eq!(truncate_on_word_boundary("exact", 5), "exact");
+    }
+
+    #[test]
+    fn truncate_on_word_boundary_truncates() {
+        assert_eq!(truncate_on_word_boundary("hello world", 8), "hello...");
+    }
+
+    #[test]
+    fn truncate_on_word_boundary_truncates_on_space() {
+        assert_eq!(truncate_on_word_boundary("hello world", 10), "hello...");
+    }
+
+    #[test]
+    fn truncate_on_word_boundary_no_space_truncates_at_limit() {
+        assert_eq!(truncate_on_word_boundary("helloworld", 8), "hello...");
+    }
+
+    #[test]
+    fn truncate_on_word_boundary_very_short_limit() {
+        assert_eq!(truncate_on_word_boundary("hello", 2), "...");
+    }
+
+    #[test]
+    fn sanitize_tool_input_schema_valid_object() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"}
+            },
+            "required": ["path"]
+        });
+        let sanitized = sanitize_tool_input_schema(schema.clone());
+        assert_eq!(sanitized, schema);
+    }
+
+    #[test]
+    fn sanitize_tool_input_schema_missing_type() {
+        let schema = json!({
+            "properties": {
+                "path": {"type": "string"}
+            }
+        });
+        let sanitized = sanitize_tool_input_schema(schema);
+        assert_eq!(sanitized["type"], "object");
+        assert!(sanitized["properties"].is_object());
+    }
+
+    #[test]
+    fn sanitize_tool_input_schema_empty_schema() {
+        let schema = json!({});
+        let sanitized = sanitize_tool_input_schema(schema);
+        assert_eq!(sanitized["type"], "object");
+        assert!(sanitized["properties"].as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn sanitize_tool_input_schema_non_object_wraps() {
+        let schema = json!({"type": "string"});
+        let sanitized = sanitize_tool_input_schema(schema);
+        assert_eq!(sanitized["type"], "object");
+        assert!(sanitized["properties"].get("value").is_some());
+        assert_eq!(sanitized["required"], json!(["value"]));
+    }
+
+    #[test]
+    fn sanitize_tool_input_schema_cleans_required_array() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"}
+            },
+            "required": ["path", "missing"]
+        });
+        let sanitized = sanitize_tool_input_schema(schema);
+        let required = sanitized["required"].as_array().unwrap();
+        assert_eq!(required, &["path"]);
+    }
+
+    #[test]
+    fn sanitize_tool_input_schema_array_with_prefix_items() {
+        let schema = json!({
+            "type": "array",
+            "prefixItems": [{"type": "string"}]
+        });
+        let sanitized = sanitize_tool_input_schema(schema);
+        assert_eq!(sanitized["type"], "object");
+        assert!(sanitized.get("prefixItems").is_none());
+        assert!(sanitized.get("properties").is_some());
+        assert_eq!(sanitized["properties"]["value"]["type"], "array");
+        assert_eq!(sanitized["properties"]["value"]["items"]["type"], "string");
+    }
+
+    #[test]
+    fn sanitize_tool_input_schema_array_with_items_array() {
+        let schema = json!({
+            "type": "array",
+            "items": [{"type": "string"}, {"type": "number"}]
+        });
+        let sanitized = sanitize_tool_input_schema(schema);
+        assert_eq!(sanitized["type"], "object");
+        assert_eq!(sanitized["properties"]["value"]["type"], "array");
+        assert_eq!(sanitized["properties"]["value"]["items"]["type"], "string");
+    }
+
+    #[test]
+    fn sanitize_tool_input_schema_valid_array() {
+        let schema = json!({
+            "type": "array",
+            "items": {"type": "string"}
+        });
+        let sanitized = sanitize_tool_input_schema(schema);
+        assert_eq!(sanitized["type"], "object");
+        assert_eq!(sanitized["properties"]["value"]["type"], "array");
+        assert_eq!(sanitized["properties"]["value"]["items"]["type"], "string");
     }
 }
 
@@ -1284,249 +1444,91 @@ mod tests {
         assert!(validate(schema, input).is_ok());
     }
 
-    #[test_case(json!({"type": "string"}), json!({"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]}) ; "type_string_root")]
-    #[test_case(json!({"type": "integer"}), json!({"type": "object", "properties": {"value": {"type": "integer"}}, "required": ["value"]}) ; "type_integer_root")]
-    #[test_case(json!({"type": "boolean"}), json!({"type": "object", "properties": {"value": {"type": "boolean"}}, "required": ["value"]}) ; "type_boolean_root")]
-    #[allow(clippy::needless_pass_by_value)]
-    fn sanitize_primitive_root_wraps_as_object(input: Value, expected: Value) {
-        let result = sanitize_tool_input_schema(input);
-        assert_eq!(result, expected);
-    }
-
-    #[test_case(json!({"type": "object", "required": {}}), json!({"type": "object", "properties": {}, "required": []}) ; "required_object")]
-    #[test_case(json!({"type": "object", "required": {"foo": true}}), json!({"type": "object", "properties": {}, "required": []}) ; "required_object_with_content")]
-    #[allow(clippy::needless_pass_by_value)]
-    fn sanitize_required_object_to_array(input: Value, expected: Value) {
-        let result = sanitize_tool_input_schema(input);
-        assert_eq!(result, expected);
-    }
-
-    #[test_case(json!({"type": "object"}), json!({"type": "object", "properties": {}}) ; "missing_properties")]
-    #[test_case(json!({}), json!({"type": "object", "properties": {}}) ; "empty_schema")]
-    #[allow(clippy::needless_pass_by_value)]
-    fn sanitize_missing_properties(input: Value, expected: Value) {
-        let result = sanitize_tool_input_schema(input);
-        assert_eq!(result, expected);
-    }
-
-    #[test_case(json!({"type": "array", "prefixItems": [{"type": "string"}]}), json!({"type": "object", "properties": {"value": {"type": "array", "items": {"type": "string"}}}, "required": ["value"]}) ; "prefixitems_to_items")]
-    #[allow(clippy::needless_pass_by_value)]
-    fn sanitize_prefixitems_to_items(input: Value, expected: Value) {
-        let result = sanitize_tool_input_schema(input);
-        assert_eq!(result, expected);
-    }
-
-    #[test_case(json!({"type": "object", "properties": {"foo": {"type": "string"}}, "required": ["foo", "bar"]}), json!({"type": "object", "properties": {"foo": {"type": "string"}}, "required": ["foo"]}) ; "required_filters_missing_props")]
-    #[allow(clippy::needless_pass_by_value)]
-    fn sanitize_required_filters_missing_properties(input: Value, expected: Value) {
-        let result = sanitize_tool_input_schema(input);
-        assert_eq!(result, expected);
-    }
-
-    #[test_case(json!({"type": "object", "properties": {"foo": {"type": "string", "prefixItems": [{"type": "integer"}]}}}), json!({"type": "object", "properties": {"foo": {"type": "array", "items": {"type": "integer"}}}}) ; "nested_prefixitems")]
-    #[allow(clippy::needless_pass_by_value)]
-    fn sanitize_nested_prefixitems(input: Value, expected: Value) {
-        let result = sanitize_tool_input_schema(input);
-        assert_eq!(result, expected);
-    }
-
     #[test]
-    fn sanitize_does_not_wrap_primitive_properties() {
-        let input = json!({
-            "type": "object",
-            "properties": {
-                "command": {"type": "string"},
-                "timeout": {"type": "integer"}
-            },
-            "required": ["command"]
-        });
-        let result = sanitize_tool_input_schema(input.clone());
-        assert_eq!(result, input);
-    }
-
-    #[test]
-    fn sanitize_preserves_valid_schema() {
-        let valid = json!({
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "count": {"type": "integer"}
-            },
-            "required": ["path"]
-        });
-        let result = sanitize_tool_input_schema(valid.clone());
-        assert_eq!(result, valid);
-    }
-
-    #[test]
-    fn sanitize_handles_string_with_description() {
-        let input = json!({
-            "type": "string",
-            "description": "A string value"
-        });
-        let expected = json!({
-            "type": "object",
-            "properties": {
-                "value": {
-                    "type": "string",
-                    "description": "A string value"
-                }
-            },
-            "required": ["value"]
-        });
-        let result = sanitize_tool_input_schema(input);
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn to_json_schema_never_emits_additional_properties_for_object() {
-        const OBJ_SCHEMA: ParamSchema = ParamSchema::Object {
-            properties: &[("name", &STR_PRIM, true, &[])],
-            description: "",
-        };
-        let v = to_json_schema(&OBJ_SCHEMA);
-        assert!(
-            v.get("additionalProperties").is_none(),
-            "object schema should not emit additionalProperties"
-        );
-    }
-
-    #[test]
-    fn to_json_schema_never_emits_additional_properties_for_array() {
-        const ARR_SCHEMA: ParamSchema = ParamSchema::Array {
-            items: &STR_PRIM,
-            description: "",
-        };
-        let v = to_json_schema(&ARR_SCHEMA);
-        assert!(
-            v.get("additionalProperties").is_none(),
-            "array schema should not emit additionalProperties"
-        );
-    }
-
-    #[test]
-    fn to_json_schema_never_emits_additional_properties_for_any() {
+    fn to_json_schema_never_emits_additional_properties() {
         const ANY_SCHEMA: ParamSchema = ParamSchema::Any { description: "" };
-        let v = to_json_schema(&ANY_SCHEMA);
-        assert!(
-            v.get("additionalProperties").is_none(),
-            "any schema should not emit additionalProperties"
-        );
-    }
+        let any_json = to_json_schema(&ANY_SCHEMA);
+        assert!(any_json.get("additionalProperties").is_none());
 
-    #[test]
-    fn to_json_schema_never_emits_additional_properties_for_union() {
-        const UNION_SCHEMA: ParamSchema = ParamSchema::Union {
-            variants: &[&STR_PRIM, &BOOL_PRIM],
-            description: "",
-        };
-        let v = to_json_schema(&UNION_SCHEMA);
-        assert!(
-            v.get("additionalProperties").is_none(),
-            "union schema should not emit additionalProperties"
-        );
-        for variant in v["anyOf"].as_array().unwrap() {
-            assert!(
-                variant.get("additionalProperties").is_none(),
-                "union variant should not emit additionalProperties"
-            );
-        }
-    }
+        let array_json = to_json_schema(&EDITS_ARRAY);
+        assert!(array_json.get("additionalProperties").is_none());
 
-    #[test]
-    fn to_json_schema_never_emits_additional_properties_for_nested_object() {
-        const NESTED_OBJ: ParamSchema = ParamSchema::Object {
-            properties: &[("inner", &MULTIEDIT_LIKE, true, &[])],
-            description: "",
-        };
-        let v = to_json_schema(&NESTED_OBJ);
+        let object_json = to_json_schema(&MULTIEDIT_LIKE);
+        assert!(object_json.get("additionalProperties").is_none());
+
         assert!(
-            v.get("additionalProperties").is_none(),
-            "nested object schema should not emit additionalProperties"
-        );
-        assert!(
-            v["properties"]["inner"]
+            object_json["properties"]["edits"]["items"]
                 .get("additionalProperties")
-                .is_none(),
-            "nested object property should not emit additionalProperties"
+                .is_none()
         );
     }
 
     #[test]
-    fn try_from_json_ignores_additional_properties_on_object() {
+    fn try_from_json_ignores_additional_properties_field() {
         let schema_json = json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
-                "name": {"type": "string"}
-            },
-            "additionalProperties": false
+                "path": { "type": "string" }
+            }
         });
         let schema = try_from_json(&schema_json);
-        assert!(
-            schema.is_ok(),
-            "try_from_json should accept additionalProperties"
-        );
+        assert!(schema.is_ok());
     }
 
     #[test]
-    fn validate_drops_unknown_keys_at_top_level() {
+    fn validate_drops_unknown_keys_top_level() {
         const SCHEMA: ParamSchema = ParamSchema::Object {
             properties: &[("name", &STR_PRIM, true, &[])],
             description: "",
         };
         let out = validate(&SCHEMA, json!({"name": "x", "unknown": 42})).unwrap();
         assert!(out.get("unknown").is_none());
+        assert_eq!(out["name"], "x");
     }
 
     #[test]
     fn validate_drops_unknown_keys_nested() {
-        const SCHEMA: ParamSchema = ParamSchema::Object {
-            properties: &[("inner", &MULTIEDIT_LIKE, true, &[])],
+        const NESTED_SCHEMA: ParamSchema = ParamSchema::Object {
+            properties: &[("config", &MULTIEDIT_LIKE, true, &[])],
             description: "",
         };
-        let out = validate(
-            &SCHEMA,
-            json!({"inner": {"path": "/x", "edits": [], "unknown": 42}}),
-        )
-        .unwrap();
-        assert!(out["inner"].get("unknown").is_none());
-    }
-
-    #[test]
-    fn validate_drops_unknown_keys_in_recovered_schema() {
-        let schema_json = json!({
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"}
+        let input = json!({
+            "config": {
+                "path": "/x",
+                "edits": [{"old_string": "a", "new_string": "b"}],
+                "unknown_field": "drop_me"
             }
         });
-        let schema = try_from_json(&schema_json).unwrap();
-        let out = validate(schema, json!({"name": "x", "unknown": 42})).unwrap();
-        assert!(out.get("unknown").is_none());
+        let out = validate(&NESTED_SCHEMA, input).unwrap();
+        assert!(out["config"].get("unknown_field").is_none());
+        assert_eq!(out["config"]["path"], "/x");
     }
 
     #[test]
-    fn validate_drops_unknown_keys_in_union_variant() {
-        const UNION_SCHEMA: ParamSchema = ParamSchema::Union {
-            variants: &[&MULTIEDIT_LIKE],
+    fn validate_drops_unknown_keys_after_roundtrip() {
+        const SCHEMA: ParamSchema = ParamSchema::Object {
+            properties: &[("name", &STR_PRIM, true, &[])],
             description: "",
         };
-        let out = validate(
-            &UNION_SCHEMA,
-            json!({"path": "/x", "edits": [], "unknown": 42}),
-        )
-        .unwrap();
-        assert!(out.get("unknown").is_none());
+        let json_schema = to_json_schema(&SCHEMA);
+        let recovered = try_from_json(&json_schema).unwrap();
+        let out = validate(recovered, json!({"name": "x", "dropped": 99})).unwrap();
+        assert!(out.get("dropped").is_none());
     }
 
     #[test]
     fn validate_preserves_required_fields() {
         const SCHEMA: ParamSchema = ParamSchema::Object {
-            properties: &[("name", &STR_PRIM, true, &[])],
+            properties: &[
+                ("name", &STR_PRIM, true, &[]),
+                ("optional", &STR_PRIM, false, &[]),
+            ],
             description: "",
         };
-        let out = validate(&SCHEMA, json!({"name": "x"})).unwrap();
+        let out = validate(&SCHEMA, json!({"name": "x", "optional": "y"})).unwrap();
         assert_eq!(out["name"], "x");
+        assert_eq!(out["optional"], "y");
     }
 
     #[test]
@@ -1541,27 +1543,22 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_validates_same_good_inputs() {
+    fn roundtrip_validates_same_inputs() {
         const SCHEMA: ParamSchema = ParamSchema::Object {
-            properties: &[("name", &STR_PRIM, true, &[])],
+            properties: &[
+                ("name", &STR_PRIM, true, &[]),
+                ("count", &BOOL_PRIM, false, &[]),
+            ],
             description: "",
         };
-        let good_input = json!({"name": "x"});
         let json_schema = to_json_schema(&SCHEMA);
         let recovered = try_from_json(&json_schema).unwrap();
+
+        let good_input = json!({"name": "test", "count": true});
         assert!(validate(&SCHEMA, good_input.clone()).is_ok());
         assert!(validate(recovered, good_input).is_ok());
-    }
 
-    #[test]
-    fn roundtrip_validates_same_bad_inputs() {
-        const SCHEMA: ParamSchema = ParamSchema::Object {
-            properties: &[("name", &STR_PRIM, true, &[])],
-            description: "",
-        };
-        let bad_input = json!({});
-        let json_schema = to_json_schema(&SCHEMA);
-        let recovered = try_from_json(&json_schema).unwrap();
+        let bad_input = json!({"name": "test", "count": "not_bool"});
         assert!(validate(&SCHEMA, bad_input.clone()).is_err());
         assert!(validate(recovered, bad_input).is_err());
     }

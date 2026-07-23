@@ -469,25 +469,82 @@ mod tests {
             },
         );
         let out = assemble(PromptId::System, &s, "");
-        assert!(out.contains("Never assume a library is available"));
+        assert!(out.contains("Never assume library availability"));
         assert!(out.contains("- Extra rule"));
     }
 
     #[test]
-    fn assemble_system_without_environment_slot_has_no_heading() {
-        let out = assemble(PromptId::System, &ResolvedSlots::default(), "");
-        assert!(out.contains("# Environment"));
+    fn prompt_templates_compressed_by_at_least_10_percent() {
+        // Baseline sizes before compression (from T061 audit):
+        const SYSTEM_BASELINE: usize = 1418;
+        const GENERAL_BASELINE: usize = 1759;
+        const RESEARCH_BASELINE: usize = 1438;
+        const COMPACTION_USER_BASELINE: usize = 927;
+        const COMPACTION_BASELINE: usize = 669;
+        const PLAN_BASELINE: usize = 1031;
+
+        let system_current = SYSTEM_PROMPT.len();
+        let general_current = GENERAL_PROMPT.len();
+        let research_current = RESEARCH_PROMPT.len();
+        let compaction_user_current = COMPACTION_USER.len();
+        let compaction_current = COMPACTION_SYSTEM.len();
+        let plan_current = PLAN_PROMPT.len();
+
+        // Assert each template is at least 10% smaller than baseline
+        assert!(
+            system_current <= (SYSTEM_BASELINE * 9 / 10),
+            "system.md not compressed enough: {} bytes (baseline: {}, target: {})",
+            system_current,
+            SYSTEM_BASELINE,
+            SYSTEM_BASELINE * 9 / 10
+        );
+        assert!(
+            general_current <= (GENERAL_BASELINE * 9 / 10),
+            "general.md not compressed enough: {} bytes (baseline: {}, target: {})",
+            general_current,
+            GENERAL_BASELINE,
+            GENERAL_BASELINE * 9 / 10
+        );
+        assert!(
+            research_current <= (RESEARCH_BASELINE * 9 / 10),
+            "research.md not compressed enough: {} bytes (baseline: {}, target: {})",
+            research_current,
+            RESEARCH_BASELINE,
+            RESEARCH_BASELINE * 9 / 10
+        );
+        assert!(
+            compaction_user_current <= (COMPACTION_USER_BASELINE * 9 / 10),
+            "compaction_user.md not compressed enough: {} bytes (baseline: {}, target: {})",
+            compaction_user_current,
+            COMPACTION_USER_BASELINE,
+            COMPACTION_USER_BASELINE * 9 / 10
+        );
+        assert!(
+            compaction_current <= (COMPACTION_BASELINE * 9 / 10),
+            "compaction.md not compressed enough: {} bytes (baseline: {}, target: {})",
+            compaction_current,
+            COMPACTION_BASELINE,
+            COMPACTION_BASELINE * 9 / 10
+        );
+        assert!(
+            plan_current <= (PLAN_BASELINE * 9 / 10),
+            "plan.md not compressed enough: {} bytes (baseline: {}, target: {})",
+            plan_current,
+            PLAN_BASELINE,
+            PLAN_BASELINE * 9 / 10
+        );
     }
 
     #[test]
-    fn assemble_system_without_environment_slot_has_no_bare_marker() {
+    fn assemble_system_without_environment_has_no_heading_or_marker() {
         let out = assemble(PromptId::System, &ResolvedSlots::default(), "");
+        assert!(!out.contains("# Environment"));
         assert!(!out.contains("{{environment}}"));
     }
 
     #[test]
-    fn assemble_system_with_environment_content_has_heading_and_content() {
-        const ENV_CONTENT: &str = "# Environment\nCurrent date: 2026-07-22";
+    fn assemble_system_with_environment_shows_heading_and_content() {
+        const ENV_CONTENT: &str = "# Environment\nCurrent date: 2026-07-21";
         let mut s = ResolvedSlots::default();
         s.insert(
             PromptId::System,
@@ -499,13 +556,13 @@ mod tests {
         );
         let out = assemble(PromptId::System, &s, "");
         assert!(out.contains("# Environment"));
-        assert!(out.contains("Current date: 2026-07-22"));
-        assert!(!out.contains("2026-07-21"));
+        assert!(out.contains("Current date: 2026-07-21"));
+        assert!(!out.contains("{{environment}}"));
     }
 
     #[test]
-    fn assemble_system_with_environment_content_has_no_bare_marker() {
-        const ENV_CONTENT: &str = "# Environment\nCurrent date: 2026-07-22";
+    fn environment_section_placed_between_objectivity_and_tool_usage() {
+        const ENV_CONTENT: &str = "# Environment\nCurrent date: 2026-07-21";
         let mut s = ResolvedSlots::default();
         s.insert(
             PromptId::System,
@@ -516,6 +573,16 @@ mod tests {
             },
         );
         let out = assemble(PromptId::System, &s, "");
-        assert!(!out.contains("{{environment}}"));
+        let obj_idx = out.find("# Professional objectivity").unwrap();
+        let env_idx = out.find("# Environment").unwrap();
+        let tool_idx = out.find("# Tool usage").unwrap();
+        assert!(
+            obj_idx < env_idx,
+            "Environment should be after Professional objectivity"
+        );
+        assert!(
+            env_idx < tool_idx,
+            "Environment should be before Tool usage"
+        );
     }
 }

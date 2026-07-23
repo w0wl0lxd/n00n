@@ -51,7 +51,6 @@ use crate::input::InputReader;
 use crate::storage_writer::StorageWriter;
 use crate::terminal;
 use crate::terminal_image;
-use ratatui_image::picker::Picker;
 
 const ANIMATION_INTERVAL_MS: u64 = 16;
 const IDLE_POLL_INTERVAL_MS: u64 = 100;
@@ -158,7 +157,7 @@ struct SpawnCtx {
     model_slot: Arc<ArcSwap<ModelSlot>>,
     available_models: Arc<ArcSwapOption<Vec<String>>>,
     storage_writer: Arc<StorageWriter>,
-    picker: Arc<Picker>,
+    picker: Arc<ratatui_image::picker::Picker>,
 }
 
 impl SpawnCtx {
@@ -190,7 +189,7 @@ impl SpawnCtx {
             self.keymap_reader.clone(),
             self.hint_reader.clone(),
             Arc::clone(&self.storage_writer),
-            self.ui_config,
+            self.ui_config.clone(),
             self.input_history_size,
             permissions,
             Arc::clone(&self.custom_commands),
@@ -388,7 +387,7 @@ impl<'t> EventLoop<'t> {
             commands,
             sessions,
             focused,
-            startup_warnings,
+            mut startup_warnings,
             storage,
             config,
             ui_config,
@@ -404,6 +403,19 @@ impl<'t> EventLoop<'t> {
             lua_event_handle,
         } = params;
 
+        // Apply the config theme before the warmup thread spawns, or warmup
+        // could bake the syntax palette from the old theme. Only the
+        // in-memory name is set, so the user's saved pick survives.
+        if let Some(ref name) = ui_config.theme {
+            match crate::theme::load_by_name(name) {
+                Ok(theme) => {
+                    crate::theme::set_current_name(name);
+                    crate::theme::set(theme);
+                }
+                Err(e) => startup_warnings.push(format!("config ui.theme: {e}")),
+            }
+        }
+
         PROCESS_WARMUP.call_once(|| {
             std::thread::spawn(crate::highlight::warmup);
             crate::update::spawn_check();
@@ -411,7 +423,8 @@ impl<'t> EventLoop<'t> {
 
         let storage_writer = Arc::new(StorageWriter::new(storage.clone())?);
         let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-        let (mcp_handle, mcp_config_errors) = smol::block_on(mcp::start(&cwd));
+        let (mcp_handle, mcp_config_errors) =
+            smol::block_on(mcp::start(&cwd, config.mcp_tool_desc_max_chars));
 
         let provider: Arc<dyn Provider> = if needs_login {
             Arc::from(from_model_fallback_with_openai_options(
@@ -429,9 +442,8 @@ impl<'t> EventLoop<'t> {
             model: model.clone(),
             provider,
         }));
-        let bg = spawn_model_fetch(&model_slot, timeouts, openai_options);
-
         let picker = Arc::new(terminal_image::picker());
+        let bg = spawn_model_fetch(&model_slot, timeouts);
 
         let ctx = SpawnCtx {
             storage,
@@ -687,7 +699,9 @@ impl<'t> EventLoop<'t> {
         let slot_model = self.ctx.model_slot.load();
         let spec = slot_model.model.spec();
         for rt in &mut self.sessions {
-            if rt.app.state.session.model != spec {
+            if rt.app.state.session.model != spec
+                || rt.app.state.model.context_window != slot_model.model.context_window
+            {
                 rt.app.update_model(&slot_model.model);
                 self.dirty = true;
             }

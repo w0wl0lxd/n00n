@@ -587,10 +587,11 @@ pub fn mcp_auth(server: &str, storage: &StateDir) -> Result<()> {
             .mcp
             .get(server)
             .ok_or_else(|| color_eyre::eyre::eyre!("unknown MCP server: {server}"))?;
-        let mcp_config::Transport::Http { url, .. } =
-            mcp_config::parse_server(server.to_owned(), raw.clone())?.transport
-        else {
-            color_eyre::eyre::bail!("server '{server}' is not an HTTP transport");
+        let url = match mcp_config::parse_server(server.to_owned(), raw.clone())?.transport {
+            mcp_config::Transport::Http { url, .. } => url,
+            _ => {
+                color_eyre::eyre::bail!("server '{server}' is not an HTTP transport");
+            }
         };
         mcp_oauth::authenticate(server, &url, None, storage, mcp_oauth::Interaction::Cli).await?;
         eprintln!("Successfully authenticated with MCP server '{server}'");

@@ -9,9 +9,9 @@ pub(crate) mod cast;
 pub mod chat;
 mod clipboard;
 mod components;
+mod highlight;
 pub use components::command::{BUILTIN_COMMANDS, BuiltinCommand};
 pub use components::keybindings;
-mod highlight;
 pub use highlight::highlight_ansi;
 pub mod image;
 mod markdown;
@@ -20,15 +20,16 @@ mod render_worker;
 mod selection;
 pub mod splash;
 mod storage_writer;
+mod terminal_image;
 mod text_buffer;
 mod theme;
+pub use theme::BUNDLED_THEMES;
 pub mod update;
 
 mod agent;
 mod event_loop;
 mod input;
 mod terminal;
-mod terminal_image;
 
 use color_eyre::Result;
 use n00n_agent::ToolOutput;

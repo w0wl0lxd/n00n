@@ -34,6 +34,7 @@ use crate::components::list_picker::{ListPicker, PickerAction, PickerItem};
 use crate::components::login_picker::{LoginPicker, LoginPickerAction};
 use crate::components::lua_float::FloatManager;
 use crate::components::mcp_picker::{McpPicker, McpPickerAction};
+use crate::components::mention_flyout::{MentionAction, MentionFlyout};
 use crate::components::model_picker::{ModelPicker, ModelPickerAction};
 use crate::components::permission_prompt::PermissionPrompt;
 use crate::components::plan_form::{PlanForm, PlanFormAction};
@@ -55,7 +56,7 @@ use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use n00n_agent::permissions::PermissionManager;
 use n00n_agent::{
     AgentEvent, Envelope, ImageSource, McpConfigErrors, McpPromptInfo, McpSnapshotReader,
-    PreDispatchGate, SubagentInfo, SubagentPrompt, ToolOutput,
+    SubagentInfo, SubagentPrompt, ToolOutput,
 };
 use n00n_config::UiConfig;
 use n00n_lua::{EventHandle, HintReader, KeymapReader, LuaCommandReader};
@@ -95,26 +96,14 @@ const WORKFLOW_OFF_MSG: &str = "Workflow mode: off";
 const IMPLEMENT_MSG_PREFIX: &str = "Implement the plan";
 const IMPLEMENT_PARALLEL_HINT: &str = "Use batch+task to parallelize, assign each subagent a separate module and restrict its tests to that module to avoid interference.";
 
-const TASK_DONE_DETAIL: &str = "✓ done";
-const TASK_ERROR_DETAIL: &str = "✗ error";
-const TASK_RUNNING_DETAIL: &str = "◈ running";
+const TASK_DONE_DETAIL: &str = "✓ ";
 const STEERING_UNAVAILABLE_MSG: &str = "This agent is no longer accepting messages";
 const STEERING_BUSY_MSG: &str = "This agent is busy; try again in a moment";
-const TASK_PANEL_FOOTER: &[(&str, &str)] =
-    &[("enter", "open"), ("ctrl+x", "toggle"), ("esc", "close")];
 
 enum SubagentPromptError {
     Finished,
     Disconnected,
     Full(Submission),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum TaskStatus {
-    Main,
-    Running,
-    Done,
-    Error,
 }
 
 #[derive(Clone)]
@@ -151,31 +140,10 @@ pub(super) enum PendingInput {
     AuthRetry {
         subagent_id: Option<String>,
     },
+    #[allow(dead_code)]
     SubagentFollowUp {
         subagent_id: String,
     },
-}
-
-trait SubmissionClock: Send + Sync {
-    fn now(&self) -> Instant;
-}
-
-struct SystemSubmissionClock;
-
-impl SubmissionClock for SystemSubmissionClock {
-    fn now(&self) -> Instant {
-        Instant::now()
-    }
-}
-
-struct PendingSubmission {
-    submission_id: u64,
-    run_id: u64,
-    submitted_at: Instant,
-    message: QueuedMessage,
-    gate: Arc<PreDispatchGate>,
-    preamble: Vec<Message>,
-    display_len_before: usize,
 }
 
 pub enum Msg {
@@ -206,6 +174,7 @@ pub struct App {
     pub(super) float_mgr: FloatManager,
     pub(super) search_modal: SearchModal,
     pub(super) file_picker: FilePickerModal,
+    pub(super) mention_flyout: MentionFlyout,
     pub(super) permission_prompt: PermissionPrompt,
     pub(super) plan_form: PlanForm,
     pub(super) status_bar: StatusBar,
@@ -272,9 +241,14 @@ impl App {
         let state = SessionState::from_session(session, model, &storage);
         let mut input_box = InputBox::new(InputHistory::load(&storage, input_history_size));
         input_box.set_max_input_lines(ui_config.max_input_lines);
+        let typewriter = ui_config.typewriter_ms_per_char;
+        let flash = ui_config.flash_duration();
         let mut app = Self {
-            chats: vec![Chat::new("Main".into(), ui_config, Arc::clone(&picker))],
-            picker,
+            chats: vec![Chat::new(
+                "Main".into(),
+                ui_config.clone(),
+                Arc::clone(&picker),
+            )],
             active_chat: 0,
             chat_index: HashMap::new(),
             input_box,
@@ -293,13 +267,14 @@ impl App {
             rewind_picker: RewindPicker::new(),
             help_modal: HelpModal::new(),
             usage_modal: UsageModal::new(),
-            btw_modal: BtwModal::new(ui_config.typewriter_ms_per_char),
+            btw_modal: BtwModal::new(typewriter),
             float_mgr: FloatManager::new(),
             search_modal: SearchModal::new(),
             file_picker: FilePickerModal::new(),
+            mention_flyout: MentionFlyout::new(),
             permission_prompt: PermissionPrompt::new(),
             plan_form: PlanForm::new(),
-            status_bar: StatusBar::new(ui_config.flash_duration()),
+            status_bar: StatusBar::new(flash),
             status: Status::Idle,
             state,
             exit_request: ExitRequest::None,
@@ -329,6 +304,7 @@ impl App {
             shell: shell::ShellState::default(),
             ui_config,
             permissions,
+            picker,
             lua_event_handle: None,
             keymap_reader,
             hint_reader,
@@ -411,7 +387,11 @@ impl App {
 
     pub fn update(&mut self, msg: Msg) -> Vec<Action> {
         match msg {
-            Msg::Key(key) => self.handle_key(key),
+            Msg::Key(key) => {
+                let actions = self.handle_key(key);
+                self.close_mention_flyout_if_invalid();
+                actions
+            }
             Msg::Paste(text) => {
                 let text = text.replace("\r\n", "\n").replace('\r', "\n");
                 if text.is_empty() {
@@ -436,6 +416,7 @@ impl App {
                         self.route_text_paste(&text);
                     }
                 }
+                self.close_mention_flyout_if_invalid();
                 vec![]
             }
             Msg::Mouse(event) => {
@@ -509,7 +490,7 @@ impl App {
         };
         match tx.try_send(prompt) {
             Ok(()) => {
-                self.chats[idx].show_user_message_with_images(sub.text.clone(), sub.images);
+                self.chats[idx].show_user_message(format_with_images(&sub.text, sub.images.len()));
                 Ok(())
             }
             Err(flume::TrySendError::Full(_)) => Err(SubagentPromptError::Full(sub)),
@@ -520,14 +501,14 @@ impl App {
         }
     }
 
-    fn handle_subagent_prompt_result(&mut self, subagent_id: &str, sub: Submission) {
-        match self.send_subagent_prompt(subagent_id, sub) {
+    fn handle_subagent_prompt_result(&mut self, subagent_id: String, sub: Submission) {
+        match self.send_subagent_prompt(&subagent_id, sub) {
             Ok(()) => {}
             Err(SubagentPromptError::Full(sub)) => {
                 self.flash(STEERING_BUSY_MSG.into());
                 self.input_box.set_submission(sub);
             }
-            Err(SubagentPromptError::Finished | SubagentPromptError::Disconnected) => {
+            Err(SubagentPromptError::Finished) | Err(SubagentPromptError::Disconnected) => {
                 self.flash(STEERING_UNAVAILABLE_MSG.into());
             }
         }
@@ -662,13 +643,6 @@ impl App {
             self.active_chat().jump_to_bottom();
             return Some(vec![]);
         }
-        if key::PLAN_TOGGLE.matches(key)
-            && self.state.mode == Mode::Plan
-            && self.state.plan.is_ready()
-        {
-            self.plan_form.toggle();
-            return Some(vec![]);
-        }
         None
     }
 
@@ -743,6 +717,47 @@ impl App {
             return Some(vec![]);
         }
 
+        if self.mention_flyout.is_open() {
+            let is_navigation_key = matches!(
+                key.code,
+                KeyCode::Up
+                    | KeyCode::Down
+                    | KeyCode::Enter
+                    | KeyCode::Esc
+                    | KeyCode::Left
+                    | KeyCode::Right
+                    | KeyCode::Backspace
+            );
+            if is_navigation_key || is_ctrl(&key) {
+                let actions: Option<Vec<Action>> = match self.mention_flyout.handle_key(key) {
+                    MentionAction::Consumed => Some(vec![]),
+                    MentionAction::Select(path) => {
+                        self.mention_flyout.close();
+                        self.input_box.replace_mention(&path);
+                        self.command_palette.sync(&self.input_box.buffer.value());
+                        Some(vec![])
+                    }
+                    MentionAction::Navigate(new_cwd) => {
+                        let mention_text = format!("@{}", new_cwd);
+                        self.input_box.replace_mention(&mention_text);
+                        self.command_palette.sync(&self.input_box.buffer.value());
+                        if let Some((cwd, query)) = self.input_box.mention_query() {
+                            self.mention_flyout.set_query(cwd, query);
+                        }
+                        Some(vec![])
+                    }
+                    MentionAction::Close => {
+                        self.mention_flyout.close();
+                        Some(vec![])
+                    }
+                    MentionAction::Passthrough => None,
+                };
+                if let Some(actions) = actions {
+                    return Some(actions);
+                }
+            }
+        }
+
         if self.file_picker.is_open() {
             return Some(match self.file_picker.handle_key(key) {
                 FilePickerModalAction::Consumed => vec![],
@@ -756,12 +771,7 @@ impl App {
                     vec![]
                 }
                 FilePickerModalAction::Close => {
-                    let was_at = self.file_picker.take_at_mention();
                     self.file_picker.close();
-                    if was_at {
-                        self.input_box.buffer.push_char('@');
-                        self.command_palette.sync(&self.input_box.buffer.value());
-                    }
                     vec![]
                 }
             });
@@ -872,6 +882,14 @@ impl App {
             });
         }
 
+        if key::PLAN_TOGGLE.matches(key)
+            && self.state.mode == Mode::Plan
+            && self.state.plan.is_ready()
+        {
+            self.plan_form.toggle();
+            return Some(vec![]);
+        }
+
         None
     }
 
@@ -918,14 +936,17 @@ impl App {
     }
 
     fn handle_subagent_chat_key(&mut self, key: KeyEvent) -> Vec<Action> {
-        let finished = self.chats[self.active_chat].is_finished();
-        if key.code == KeyCode::Left {
+        if key.code == KeyCode::Tab && !self.is_bash_input() {
+            return self.toggle_mode();
+        }
+        if key.code == KeyCode::Esc && self.chats[self.active_chat].is_finished() {
             self.active_chat = 0;
             self.last_esc = None;
             return vec![];
         }
-        if finished && key.code == KeyCode::Esc {
+        if key.code == KeyCode::Left {
             self.active_chat = 0;
+            self.last_esc = None;
             return vec![];
         }
         if key.code != KeyCode::Esc {
@@ -946,14 +967,19 @@ impl App {
                 }
             }
             InputAction::Passthrough(_)
+            | InputAction::OpenMention
             | InputAction::ContinueLine
-            | InputAction::None
-            | InputAction::OpenFilePicker
-            | InputAction::PaletteSync(_) => vec![],
+            | InputAction::PaletteSync(_)
+            | InputAction::None => vec![],
         }
     }
 
-    #[allow(clippy::too_many_lines)]
+    fn close_mention_flyout_if_invalid(&mut self) {
+        if self.mention_flyout.is_open() && self.input_box.mention_query().is_none() {
+            self.mention_flyout.close();
+        }
+    }
+
     fn handle_main_chat_key(&mut self, key: KeyEvent) -> Vec<Action> {
         if key::TRANSCRIPT_DETAILS.matches(key) {
             let visible = self.active_chat().toggle_transcript_details();
@@ -988,6 +1014,10 @@ impl App {
                 self.file_picker.open(&self.state.session.cwd);
             } else if key.code == KeyCode::Char('v') && self.image_paste_rx.is_empty() {
                 self.start_image_paste();
+            } else if key::COPY.matches(key) {
+                if let Some(SelectionState::Dragging { sel, .. }) = self.selection_state.take() {
+                    self.selection_state = Some(SelectionState::PendingCopy { sel });
+                }
             } else if let InputAction::PaletteSync(val) = self.input_box.handle_key(key) {
                 self.command_palette.sync(&val);
             }
@@ -1012,12 +1042,22 @@ impl App {
         let streaming = self.status == Status::Streaming;
         match self.input_box.handle_key(key) {
             InputAction::Submit(sub) => self.handle_submit(sub),
-            InputAction::OpenFilePicker => {
-                self.file_picker.open_via_at(&self.state.session.cwd);
+            InputAction::OpenMention => {
+                if let Some((cwd, query)) = self.input_box.mention_query() {
+                    self.mention_flyout
+                        .open(&self.state.session.cwd, cwd, query);
+                }
                 vec![]
             }
             InputAction::PaletteSync(val) => {
                 self.command_palette.sync(&val);
+                if self.mention_flyout.is_open() {
+                    if let Some((cwd, query)) = self.input_box.mention_query() {
+                        self.mention_flyout.set_query(cwd, query);
+                    } else {
+                        self.mention_flyout.close();
+                    }
+                }
                 vec![]
             }
             InputAction::Passthrough(key) => {
@@ -1097,7 +1137,7 @@ impl App {
                 return vec![];
             }
             PendingInput::SubagentFollowUp { subagent_id } => {
-                self.handle_subagent_prompt_result(&subagent_id, sub);
+                self.handle_subagent_prompt_result(subagent_id, sub);
                 return vec![];
             }
             PendingInput::None => {}
@@ -1109,7 +1149,7 @@ impl App {
             let Some(tool_use_id) = self.chats[self.active_chat].tool_use_id.clone() else {
                 return vec![];
             };
-            self.handle_subagent_prompt_result(&tool_use_id, sub);
+            self.handle_subagent_prompt_result(tool_use_id, sub);
             return vec![];
         }
         if sub.is_empty() {
@@ -1347,12 +1387,7 @@ impl App {
         self.chats[self.active_chat].mark_finished(DisplayRole::Error, CANCELLED_TEXT);
         self.subagent_answers.remove(&tool_use_id);
         self.subagent_prompts.remove(&tool_use_id);
-        if matches!(
-            self.pending_input,
-            PendingInput::SubagentFollowUp { ref subagent_id } if subagent_id == &tool_use_id
-        ) {
-            self.pending_input = PendingInput::None;
-        }
+
         vec![Action::CancelSubagent { tool_use_id }]
     }
 
@@ -1658,15 +1693,16 @@ impl App {
         if let Some(ref tx) = subagent.prompt_tx {
             self.subagent_prompts.insert(id.clone(), tx.clone());
         }
-        self.chats[0].update_tool_summary(&subagent.parent_tool_use_id, &subagent.name);
+        self.chats[0].update_tool_summary(id, &subagent.name);
         if let Some(ref model) = subagent.model {
-            self.chats[0].update_tool_model(&subagent.parent_tool_use_id, model);
+            self.chats[0].update_tool_model(id, model);
         }
         let mut chat = Chat::new(
             subagent.name.clone(),
-            self.ui_config,
+            self.ui_config.clone(),
             Arc::clone(&self.picker),
         );
+        chat.tool_use_id = Some(id.clone());
         chat.set_restore_channel(self.lua_event_handle.clone(), self.restore_event_tx.clone());
         chat.tool_use_id = Some(id.clone());
         chat.model_id.clone_from(&subagent.model);

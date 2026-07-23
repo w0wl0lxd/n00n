@@ -1,6 +1,6 @@
 use crate::render_worker::RenderWorker;
-use crate::terminal_image::TerminalImage;
-use crate::theme;
+use crate::terminal_image::{LazyImage, TerminalImage};
+use std::sync::Arc;
 
 use super::super::code_view::SectionFlags;
 use super::super::code_view::TruncationAction;
@@ -12,23 +12,6 @@ use ratatui_image::picker::Picker;
 use std::cell::Cell;
 
 const INST_SUFFIX: &str = "__inst";
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum SegmentIdentity {
-    Tool(String),
-    Instructions(String),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum MessageAction {
-    ToggleCompaction(String),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PositionedMessageAction {
-    line: usize,
-    action: MessageAction,
-}
 
 fn media_type_label(media_type: ImageMediaType) -> &'static str {
     match media_type {
@@ -105,45 +88,13 @@ pub(super) struct Segment {
     message_actions: Vec<PositionedMessageAction>,
     pub content_indent: &'static str,
     surface: Surface,
-    image: Option<TerminalImage>,
+    image: Option<LazyImage>,
 }
 
 impl Segment {
     pub fn with_tool(tool_id: String) -> Self {
         Self {
             identity: Some(SegmentIdentity::Tool(tool_id.clone())),
-            tool_id: Some(tool_id),
-            surface: Surface::Tool,
-            ..Self::default()
-        }
-    }
-
-    pub fn with_compaction(
-        lines: Vec<Line<'static>>,
-        search_text: String,
-        msg_index: usize,
-        actions: Vec<(usize, String)>,
-    ) -> Self {
-        Self {
-            lines,
-            search_text,
-            msg_index: Some(msg_index),
-            message_actions: actions
-                .into_iter()
-                .map(|(line, id)| PositionedMessageAction {
-                    line,
-                    action: MessageAction::ToggleCompaction(id),
-                })
-                .collect(),
-            surface: Surface::Tool,
-            ..Self::default()
-        }
-    }
-
-    pub fn with_instructions(parent_id: String) -> Self {
-        let tool_id = format!("{parent_id}{INST_SUFFIX}");
-        Self {
-            identity: Some(SegmentIdentity::Instructions(parent_id)),
             tool_id: Some(tool_id),
             surface: Surface::Tool,
             ..Self::default()
@@ -176,35 +127,20 @@ impl Segment {
 
     pub fn with_image(
         source: &ImageSource,
-        picker: &Picker,
+        picker: Arc<Picker>,
         width: u16,
         surface: Surface,
         msg_index: Option<usize>,
     ) -> Self {
-        let mut seg = match TerminalImage::from_source(source, picker, width) {
-            Ok(term_img) => {
-                let search_text = format!(
-                    "[image: {} {}x{}]",
-                    media_type_label(source.media_type),
-                    term_img.size.width,
-                    term_img.size.height
-                );
-                Self {
-                    search_text: search_text.clone(),
-                    raw_text: Some(search_text),
-                    msg_index,
-                    image: Some(term_img),
-                    ..Self::default()
-                }
-            }
-            Err(err) => {
-                let search_text = format!("[image: {err}]");
-                let lines = vec![Line::from(vec![Span::styled(
-                    search_text.clone(),
-                    theme::current().error,
-                )])];
-                Self::with_lines(lines, search_text.clone(), Some(search_text), 0, msg_index)
-            }
+        let search_text = format!("[image: {}]", media_type_label(source.media_type));
+        let fallback = Line::from(Span::raw(search_text.clone()));
+        let mut seg = Self {
+            lines: vec![fallback],
+            search_text: search_text.clone(),
+            raw_text: Some(search_text),
+            msg_index,
+            image: Some(LazyImage::new(source.clone(), picker, width)),
+            ..Self::default()
         };
         seg.set_surface(surface);
         seg
@@ -215,7 +151,9 @@ impl Segment {
     }
 
     pub fn image(&self) -> Option<&TerminalImage> {
-        self.image.as_ref()
+        self.image
+            .as_ref()
+            .and_then(|lazy| lazy.get_or_decode().ok())
     }
 
     pub fn set_surface(&mut self, surface: Surface) {
@@ -225,14 +163,6 @@ impl Segment {
 
     pub fn surface(&self) -> Surface {
         self.surface
-    }
-
-    pub fn has_copy_label_room(&self, width: u16, label_width: u16) -> bool {
-        width >= label_width
-            && self
-                .lines
-                .first()
-                .is_none_or(|line| line.width() <= usize::from(width - label_width))
     }
 }
 
@@ -249,15 +179,6 @@ impl Surface {
 }
 
 impl Segment {
-    pub fn copy_payload(&self) -> Option<(&str, &'static str)> {
-        let raw = self.raw_text.as_deref()?;
-        if let Some(code) = n00n_markdown::single_code_block(raw) {
-            Some((code, "code"))
-        } else {
-            Some((raw, "markdown"))
-        }
-    }
-
     pub fn content_inset(&self) -> u16 {
         if self.surface.is_framed() { 2 } else { 0 }
     }
@@ -272,8 +193,10 @@ impl Segment {
     }
 
     pub fn height(&self, width: u16) -> u16 {
-        if let Some(img) = &self.image {
-            return img.size.height;
+        if let Some(img) = &self.image
+            && let Ok(size) = img.size()
+        {
+            return size.height;
         }
         if let Some(c) = self.cached_height.get()
             && c.at_width == width
@@ -646,5 +569,59 @@ mod tests {
             vec![(0, 0), (5usize.saturating_add_signed(delta), 1)],
             "positions before the splice stay, after it shift by the delta"
         );
+    }
+
+    fn invalid_image_source() -> ImageSource {
+        ImageSource {
+            media_type: ImageMediaType::Png,
+            data: Arc::from("not-valid-base64-data"),
+        }
+    }
+
+    #[test]
+    fn with_image_sets_fallback_lines() {
+        let source = invalid_image_source();
+        let seg = Segment::with_image(
+            &source,
+            Arc::new(ratatui_image::picker::Picker::halfblocks()),
+            40,
+            Surface::Assistant,
+            None,
+        );
+        assert_eq!(seg.lines().len(), 1);
+        let text: String = seg.lines()[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(text, "[image: png]");
+        assert_eq!(seg.raw_text.as_deref(), Some("[image: png]"));
+    }
+
+    #[test]
+    fn image_decode_failure_uses_fallback_height() {
+        let source = invalid_image_source();
+        let seg = Segment::with_image(
+            &source,
+            Arc::new(ratatui_image::picker::Picker::halfblocks()),
+            40,
+            Surface::Assistant,
+            None,
+        );
+        assert!(seg.image().is_none(), "decode should fail for invalid data");
+        assert_eq!(seg.height(80), 1, "height should fall back to lines count");
+    }
+
+    #[test]
+    fn image_segments_have_search_text() {
+        let source = invalid_image_source();
+        let seg = Segment::with_image(
+            &source,
+            Arc::new(ratatui_image::picker::Picker::halfblocks()),
+            40,
+            Surface::Assistant,
+            None,
+        );
+        assert_eq!(seg.search_text, "[image: png]");
     }
 }

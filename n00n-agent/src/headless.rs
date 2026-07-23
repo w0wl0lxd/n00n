@@ -25,7 +25,8 @@ use crate::tools::{
 };
 use crate::{
     Agent, AgentConfig, AgentEvent, AgentInput, AgentMode, AgentParams, AgentRunParams, Envelope,
-    EventSender, ImageSource, McpHandle, PermissionsConfig, ToolOutput, ToolOutputLines,
+    EventSender, ImageSource, McpHandle, McpSession, PermissionsConfig, ToolOutput,
+    ToolOutputLines,
 };
 
 type StoredSession = Session<Message, TokenUsage, ToolOutput>;
@@ -104,7 +105,6 @@ fn setup(
     model: &Model,
     config: &AgentConfig,
     excluded_tools: &[&'static str],
-    mcp_handle: Option<&McpHandle>,
     workflow: bool,
 ) -> AgentSetup {
     let vars = template::env_vars();
@@ -114,7 +114,6 @@ fn setup(
         model,
         config,
         excluded_tools,
-        mcp_handle,
         workflow,
         ToolRegistry::global(),
     );
@@ -132,7 +131,6 @@ fn tool_definitions(
     model: &Model,
     config: &AgentConfig,
     excluded_tools: &[&'static str],
-    mcp_handle: Option<&McpHandle>,
     workflow: bool,
     registry: &ToolRegistry,
 ) -> (Value, ToolFilter) {
@@ -142,16 +140,12 @@ fn tool_definitions(
         audience: ToolAudience::MAIN,
         workflow,
     };
-    let mut tools = registry.definitions_active(
+    let tools = registry.definitions_active(
         vars,
         &ctx,
         model.supports_tool_examples(),
         &ActiveTools::default(),
     );
-
-    if let Some(handle) = mcp_handle {
-        handle.extend_tools(&mut tools);
-    }
 
     (tools, filter)
 }
@@ -170,7 +164,6 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
         &params.model,
         &params.config,
         &params.excluded_tools,
-        params.mcp_handle.as_ref(),
         params.workflow,
     );
 
@@ -198,22 +191,12 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
         async move {
             let event_tx = EventSender::new(raw_tx, 0);
             let mut model = params.model;
-            let provider: Arc<dyn Provider> = match provider::from_model_async_with_openai_options(
-                &mut model,
-                params.timeouts,
-                params.openai_options,
-            )
-            .await
-            {
-                Ok(p) => Arc::from(p),
-                Err(e) => {
-                    error!(error = %e, "provider error");
-                    let _ = event_tx.send(AgentEvent::Error {
-                        message: e.user_message(),
-                    });
-                    return;
-                }
-            };
+            let provider: Arc<dyn Provider> =
+                Arc::from(provider::from_model_fallback_with_openai_options(
+                    &mut model,
+                    params.timeouts,
+                    params.openai_options,
+                ));
             let error_tx = event_tx.clone();
             let mut history = History::new(Vec::new());
             let model_spec = model.spec();
@@ -247,7 +230,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                 },
             )
             .with_loaded_instructions(instructions.loaded)
-            .with_mcp(params.mcp_handle);
+            .with_mcp(params.mcp_handle.clone().map(|h| McpSession::new(h, &[])));
 
             let result = agent
                 .run(AgentInput {
@@ -331,7 +314,6 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
         &params.model,
         &params.config,
         &params.excluded_tools,
-        params.mcp_handle.as_ref(),
         params.workflow,
     );
 
@@ -368,22 +350,11 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
         async move {
             let mut model = params.model;
             let mut provider: Arc<dyn Provider> =
-                match provider::from_model_async_with_openai_options(
+                Arc::from(provider::from_model_fallback_with_openai_options(
                     &mut model,
                     params.timeouts,
                     params.openai_options,
-                )
-                .await
-                {
-                    Ok(p) => Arc::from(p),
-                    Err(e) => {
-                        error!(error = %e, "provider error");
-                        let _ = EventSender::new(raw_tx, 0).send(AgentEvent::Error {
-                            message: e.user_message(),
-                        });
-                        return;
-                    }
-                };
+                ));
 
             let mut store = SessionStore::open(session_id, &working_dir, &model.spec());
             let mut history = History::restored(params.initial_history);
@@ -397,37 +368,22 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                 if let Some(mut new_model) = model_rx.try_iter().last()
                     && new_model.spec() != model.spec()
                 {
-                    match provider::from_model_async_with_openai_options(
+                    provider = Arc::from(provider::from_model_fallback_with_openai_options(
                         &mut new_model,
                         params.timeouts,
                         params.openai_options,
-                    )
-                    .await
-                    {
-                        Ok(p) => {
-                            provider = Arc::from(p);
-                            let (new_tools, new_filter) = tool_definitions(
-                                &vars,
-                                &new_model,
-                                &params.config,
-                                &params.excluded_tools,
-                                params.mcp_handle.as_ref(),
-                                params.workflow,
-                                ToolRegistry::global(),
-                            );
-                            tools = new_tools;
-                            tool_filter = new_filter;
-                            model = new_model;
-                        }
-                        Err(e) => {
-                            error!(error = %e, "provider error");
-                            let _ = error_tx.send(AgentEvent::Error {
-                                message: e.user_message(),
-                            });
-                            run_id += 1;
-                            continue;
-                        }
-                    }
+                    ));
+                    let (new_tools, new_filter) = tool_definitions(
+                        &vars,
+                        &new_model,
+                        &params.config,
+                        &params.excluded_tools,
+                        params.workflow,
+                        ToolRegistry::global(),
+                    );
+                    tools = new_tools;
+                    tool_filter = new_filter;
+                    model = new_model;
                 }
 
                 let mut system = params.system_prompt_override.clone().unwrap_or_else(|| {
@@ -483,7 +439,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                 .with_loaded_instructions(instructions.loaded.clone())
                 .with_user_response_rx(Arc::clone(&answer_rx))
                 .with_cancel(cancel)
-                .with_mcp(params.mcp_handle.clone());
+                .with_mcp(params.mcp_handle.clone().map(|h| McpSession::new(h, &[])));
 
                 let result = agent.run(input).await;
                 drop(agent);

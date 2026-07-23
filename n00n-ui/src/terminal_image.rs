@@ -5,6 +5,8 @@ use ratatui_image::errors::Errors as ProtocolErrors;
 use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::sliced::SlicedProtocol;
 use ratatui_image::{FontSize, Resize};
+use std::cell::OnceCell;
+use std::sync::Arc;
 use thiserror::Error;
 
 const UNBOUNDED_HEIGHT: u16 = u16::MAX;
@@ -82,6 +84,10 @@ fn env_hint(name: &str) -> Option<String> {
     }
 }
 
+pub(crate) fn supports_images() -> bool {
+    !matches!(env_hint("TERM").as_deref(), Some("dumb"))
+}
+
 fn detect_protocol(
     term: Option<&str>,
     term_program: Option<&str>,
@@ -152,7 +158,7 @@ pub struct TerminalImage {
 }
 
 impl TerminalImage {
-    pub fn from_source(
+    fn decode(
         source: &ImageSource,
         picker: &Picker,
         max_width: u16,
@@ -171,6 +177,37 @@ impl TerminalImage {
         let protocol = SlicedProtocol::new_with_resize(picker, dyn_img, target, Resize::Fit(None))?;
         let size = protocol.size();
         Ok(Self { protocol, size })
+    }
+}
+
+/// Defers the expensive decode (base64 + image decode + resize) from
+/// segment construction to the first time the image is actually rendered.
+/// Segments that are scrolled out of view never pay the cost.
+pub struct LazyImage {
+    source: ImageSource,
+    picker: Arc<Picker>,
+    width: u16,
+    decoded: OnceCell<Result<TerminalImage, TerminalImageError>>,
+}
+
+impl LazyImage {
+    pub fn new(source: ImageSource, picker: Arc<Picker>, width: u16) -> Self {
+        Self {
+            source,
+            picker,
+            width,
+            decoded: OnceCell::new(),
+        }
+    }
+
+    pub fn get_or_decode(&self) -> Result<&TerminalImage, &TerminalImageError> {
+        self.decoded
+            .get_or_init(|| TerminalImage::decode(&self.source, &self.picker, self.width))
+            .as_ref()
+    }
+
+    pub fn size(&self) -> Result<Size, &TerminalImageError> {
+        self.get_or_decode().map(|img| img.size)
     }
 }
 
@@ -205,8 +242,8 @@ mod tests {
     fn from_source_decodes_png_and_fits_width() {
         let img = ImageBuffer::from_fn(TEST_IMAGE_SIZE, TEST_IMAGE_SIZE, |x, y| {
             image::Rgb([
-                u8::try_from(x).unwrap_or_else(|_| u8::MAX) * 32,
-                u8::try_from(y).unwrap_or_else(|_| u8::MAX) * 32,
+                u8::try_from(x * 32).unwrap(),
+                u8::try_from(y * 32).unwrap(),
                 128,
             ])
         });
@@ -220,7 +257,7 @@ mod tests {
                 .into(),
         };
         let picker = Picker::halfblocks();
-        let term_img = TerminalImage::from_source(&source, &picker, TEST_IMAGE_MAX_WIDTH).unwrap();
+        let term_img = TerminalImage::decode(&source, &picker, TEST_IMAGE_MAX_WIDTH).unwrap();
         assert!(term_img.size.width > 0 && term_img.size.width <= TEST_IMAGE_MAX_WIDTH);
         assert!(term_img.size.height > 0);
     }
@@ -409,6 +446,14 @@ mod tests {
             detect_protocol(Some(term), None, None, env_with(&["KITTY_WINDOW_ID"])),
             ProtocolType::Kitty,
             "expected {term} with KITTY_WINDOW_ID to use Kitty"
+        );
+    }
+
+    #[test]
+    fn supports_images_true_for_normal_terminal() {
+        assert!(
+            supports_images(),
+            "should support images when TERM is not dumb"
         );
     }
 }

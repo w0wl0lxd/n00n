@@ -163,7 +163,7 @@ local function create_bash_view(command, ctx)
   local view = ToolView.new(buf, {
     max_lines = (tol and tol.bash) or 5,
     keep = "tail",
-    max_line_bytes = DEFAULT_MAX_LINE_BYTES,
+    max_line_bytes = output_limits.DEFAULT_MAX_LINE_BYTES,
   })
   view:set_header(build_header_lines(command))
   buf:on("click", function()
@@ -235,16 +235,9 @@ local function collect_commands(node, source)
   return out
 end
 
-local description = [[Execute a bash command.
-Commands run in ]] .. cwd .. [[ by default.
-
-- **DO NOT** use for file ops! Only git, builds, tests, and system commands.
-- Use `workdir` param instead of `cd <dir> && <cmd>` patterns.
-- Do NOT use to communicate text to the user.
-- Chain dependent commands with `&&`. Use batch for independent ones.
-- Provide a short `description` (3-5 words).
-- Output truncated beyond 2000 lines or 50KB.
-- Interactive commands (sudo, ssh prompts) fail immediately.]]
+local description = [[Execute a bash command. Default dir: ]]
+  .. cwd
+  .. [[. DO NOT use for file ops - only git, builds, tests, system commands. Use `workdir` instead of `cd && cmd`. Chain dependent commands with `&&`. Use batch for independent ones. Provide short `description` (3-5 words). Output truncated beyond 2000 lines or 50KB. Interactive commands (sudo, ssh) fail immediately.]]
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
@@ -262,14 +255,15 @@ local opts = n00n.api.register_options(output_limits.extend({
 n00n.api.register_tool({
   name = "bash",
   kind = "execute",
+  modes = { "default", "build", "compact" },
   description = description,
   schema = {
     type = "object",
     properties = {
-      command = { type = "string", description = "The bash command to execute", required = true },
-      timeout = { type = "integer", description = "Timeout in seconds (default 120)" },
-      workdir = { type = "string", description = "Working directory (default: cwd)" },
-      description = { type = "string", description = "Short description (3-5 words) of what the command does" },
+      command = { type = "string", required = true },
+      timeout = { type = "integer" },
+      workdir = { type = "string" },
+      description = { type = "string" },
     },
   },
   permission_scopes = function(input)

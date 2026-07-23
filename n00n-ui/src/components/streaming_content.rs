@@ -1,5 +1,5 @@
 use crate::animation::Typewriter;
-use crate::components::messages::wrapped_line_count;
+use crate::components::messages::segment::wrapped_line_count;
 use crate::markdown::{paint_semantic, prefix_line, prefix_span};
 use crate::theme;
 

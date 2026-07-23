@@ -1,7 +1,6 @@
 local ToolView = require("n00n.tool_view")
 
 local DEFAULT_PREVIEW_LINES = 5
-local MAX_PANEL_HEIGHT = 12
 
 local items = {}
 local buf = nil
@@ -19,13 +18,8 @@ local STATUS_MARKERS = {
   cancelled = { "[x]", "todo_cancelled" },
 }
 
-local DESCRIPTION = [[Create or update a structured todo list to track tasks.
-
-**Use after EACH completed step!**
-
-- Send the complete list each time (replace-all semantics).
-- Use ONLY for multi-step work (3+ steps).
-- Skip for trivial tasks.]]
+local DESCRIPTION =
+  [[Create or update a structured todo list to track tasks. Use after EACH completed step. Send complete list each time (replace-all semantics). Use ONLY for multi-step work (3+ steps). Skip for trivial tasks.]]
 
 local function count_done()
   local n = 0

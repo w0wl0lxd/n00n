@@ -4,7 +4,7 @@ use crate::clipboard::CopyResult;
 use crate::components::scrollbar;
 use crate::selection::{self, ContentRegion, EdgeScroll, Selection, SelectionState, SelectionZone};
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use ratatui::layout::{Position, Rect};
+use ratatui::layout::Rect;
 
 use super::App;
 
@@ -88,13 +88,7 @@ impl App {
                                 self.active_chat = idx;
                                 return;
                             }
-                            if let Some((text, label)) =
-                                self.chats[render_chat].copy_at(event.row, event.column, area)
-                            {
-                                self.copy_text(&text, format!("Copied {label}"));
-                            } else {
-                                self.chats[render_chat].handle_click(event.row, area);
-                            }
+                            self.chats[render_chat].handle_click(event.row, area);
                         }
                     } else {
                         self.selection_state = Some(SelectionState::PendingCopy { sel });

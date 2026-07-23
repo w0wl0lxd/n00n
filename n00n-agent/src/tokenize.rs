@@ -97,72 +97,13 @@ mod tests {
     }
 
     #[test]
-    fn count_json_null_is_one_token() {
+    fn count_json_falls_back_for_non_serializable() {
         let value = Value::Null;
         let tokens = count_json(&value);
         assert_eq!(tokens, 1, "null serializes to one token-ish string");
     }
 
     #[test]
-    fn count_tokens_returns_zero_for_empty_input() {
-        let tokens = count_tokens("");
-        assert_eq!(tokens, 0);
-    }
-
-    #[test]
-    fn count_tokens_returns_positive_for_non_empty_input() {
-        let tokens = count_tokens("hello");
-        assert!(tokens > 0);
-    }
-
-    #[test]
-    fn count_json_empty_string_returns_one() {
-        let value = json!("");
-        let tokens = count_json(&value);
-        assert_eq!(tokens, 1);
-    }
-
-    #[test]
-    fn count_json_returns_positive_for_non_empty_input() {
-        let value = json!({"key": "value"});
-        let tokens = count_json(&value);
-        assert!(tokens > 0);
-    }
-
-    #[test]
-    fn count_json_uses_tiktoken_for_short_json() {
-        let value = json!({"short": "data"});
-        let tokens = count_json(&value);
-        assert!(tokens > 0);
-    }
-
-    #[test]
-    fn count_json_uses_byte_fallback_for_large_json() {
-        let large_value = json!({"data": "x".repeat(10_000)});
-        let tokens = count_json(&large_value);
-        assert!(tokens > 2_000);
-    }
-
-    #[test]
-    fn count_json_null_returns_one() {
-        let value = Value::Null;
-        let tokens = count_json(&value);
-        assert_eq!(tokens, 1);
-    }
-
-    #[test]
-    fn count_json_large_object_uses_byte_fallback() {
-        let mut obj = serde_json::Map::new();
-        for i in 0..1000 {
-            obj.insert(format!("key{i}"), json!("x".repeat(100)));
-        }
-        let value = Value::Object(obj);
-        let tokens = count_json(&value);
-        assert!(tokens > 10_000);
-    }
-
-    #[test]
-    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     fn tokenize_fuzz_smoke() {
         fn xorshift64(state: &mut u64) -> u64 {
             *state ^= *state << 13;

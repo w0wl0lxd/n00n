@@ -72,22 +72,11 @@ fn resolve_model_from_ctx(ctx: &AgentContext, tier: Option<&str>) -> Result<Mode
     let map = n00n_providers::model_registry::model_registry()
         .read()
         .map_err(|e| format!("model registry lock poisoned: {e}"))?;
-    ctx.model
-        .dynamic_slug
-        .is_none()
-        .then(|| map.spec_for_tier(ctx.model.provider, effective))
-        .flatten()
+    map.spec_for_tier(&ctx.model.provider, effective)
         .or_else(|| map.spec_for_tier_any(effective))
         .and_then(|s| Model::from_spec(&s).ok())
         .map_or_else(
-            || {
-                Model::from_tier_dynamic(
-                    ctx.model.provider,
-                    effective,
-                    ctx.model.dynamic_slug.as_deref(),
-                )
-                .map_err(|e| e.to_string())
-            },
+            || Model::from_tier_dynamic(&ctx.model.provider, effective).map_err(|e| e.to_string()),
             Ok,
         )
 }
@@ -532,13 +521,10 @@ async fn session(
     let (model, provider): (Model, Arc<dyn provider::Provider>) = if let Some(ref spec) = model_spec
     {
         let mut m = try_pair!(Model::from_spec(spec));
-        let p = try_pair!(
-            provider::from_model_async_with_openai_options(
-                &mut m,
-                agent_ctx.timeouts,
-                agent_ctx.openai_options,
-            )
-            .await
+        let p = provider::from_model_fallback_with_openai_options(
+            &mut m,
+            agent_ctx.timeouts,
+            agent_ctx.openai_options,
         );
         (m, Arc::from(p))
     } else {
@@ -1201,7 +1187,7 @@ struct SessionState {
     tool_filter: ToolFilter,
     thinking: ThinkingConfig,
     fast: bool,
-    mcp: Option<n00n_agent::mcp::McpHandle>,
+    mcp: Option<n00n_agent::mcp::McpSession>,
     history: History,
     sub_event_tx: EventSender,
     child_cancel: n00n_agent::cancel::CancelToken,

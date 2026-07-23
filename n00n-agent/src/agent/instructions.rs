@@ -98,17 +98,31 @@ fn collect_instruction_files(
 ) -> Vec<(String, String)> {
     let mut out = Vec::new();
 
-    for dir in find_project_ancestor_dirs(Path::new(cwd)) {
+    let ancestor_dirs: Vec<_> = find_project_ancestor_dirs(Path::new(cwd)).collect();
+    let has_git_root = ancestor_dirs.iter().any(|dir| dir.join(".git").exists());
+    let project_dirs = if has_git_root {
+        ancestor_dirs
+    } else {
+        ancestor_dirs.into_iter().take(1).collect()
+    };
+
+    // Load root instructions first so cwd instructions come last and override on conflicts.
+    for dir in project_dirs.into_iter().rev() {
         for filename in INSTRUCTION_FILES {
-            if let Some((_, content)) = read_instruction(&dir.join(filename), loaded) {
-                out.push((format!("Project instructions ({filename})"), content));
+            if let Some((canonical, content)) = read_instruction(&dir.join(filename), loaded) {
+                out.push((
+                    format!("Project instructions ({})", canonical.display()),
+                    content,
+                ));
                 break;
             }
         }
 
-        if let Some((_, content)) = read_instruction(&dir.join(LOCAL_INSTRUCTION_FILE), loaded) {
+        if let Some((canonical, content)) =
+            read_instruction(&dir.join(LOCAL_INSTRUCTION_FILE), loaded)
+        {
             out.push((
-                format!("Local instructions ({LOCAL_INSTRUCTION_FILE})"),
+                format!("Local instructions ({})", canonical.display()),
                 content,
             ));
         }
@@ -144,7 +158,7 @@ pub(crate) fn load_instruction_text_with_home(
 
     let mut text = String::new();
     for (label, content) in files {
-        let _ = write!(text, "\n\n{label}:\n{content}");
+        text.push_str(&format!("\n\n{label}:\n{content}"));
     }
     text
 }
@@ -167,7 +181,7 @@ pub(crate) fn load_instructions_with_home(
     let files = collect_instruction_files(cwd, home, xdg_config, &instr.loaded);
 
     for (label, content) in files {
-        let _ = write!(instr.text, "\n\n{label}:\n{content}");
+        instr.text.push_str(&format!("\n\n{label}:\n{content}"));
     }
 
     instr
@@ -350,8 +364,8 @@ mod tests {
             "should load instructions from project root"
         );
         assert!(
-            text.find("crate rules").unwrap() < text.find("root rules").unwrap(),
-            "closer instructions should come before root instructions"
+            text.find("root rules").unwrap() < text.find("crate rules").unwrap(),
+            "root instructions should come before closer instructions"
         );
     }
 
