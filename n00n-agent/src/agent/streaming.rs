@@ -8,6 +8,18 @@ use tracing::warn;
 use crate::cancel::CancelToken;
 use crate::{AgentError, AgentEvent, EventSender};
 
+pub(crate) struct StreamContext<'a> {
+    pub provider: &'a dyn Provider,
+    pub model: &'a Model,
+    pub messages: &'a [Message],
+    pub system: &'a str,
+    pub tools: &'a Value,
+    pub event_tx: &'a EventSender,
+    pub cancel: &'a CancelToken,
+    pub opts: RequestOptions,
+    pub session_id: Option<&'a SessionRef>,
+}
+
 async fn forward_provider_events(
     prx: flume::Receiver<ProviderEvent>,
     event_tx: &EventSender,
@@ -41,32 +53,31 @@ async fn forward_provider_events(
     emitted_output
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn stream_with_retry(
-    provider: &dyn Provider,
-    model: &Model,
-    messages: &[Message],
-    system: &str,
-    tools: &Value,
-    event_tx: &EventSender,
-    cancel: &CancelToken,
-    opts: RequestOptions,
-    session_id: Option<&SessionRef>,
+    ctx: StreamContext<'_>,
 ) -> Result<StreamResponse, AgentError> {
-    let opts = opts.clamped(model);
-    let messages = n00n_providers::adapt_images_for_model(model, messages);
+    let opts = ctx.opts.clamped(ctx.model);
+    let messages = n00n_providers::adapt_images_for_model(ctx.model, ctx.messages);
     let messages = &*messages;
     let mut retry = RetryState::new();
     loop {
         let (ptx, prx) = flume::unbounded();
         let forwarder = smol::spawn({
-            let event_tx = event_tx.clone();
+            let event_tx = ctx.event_tx.clone();
             async move { forward_provider_events(prx, &event_tx).await }
         });
         let result = futures_lite::future::race(
-            provider.stream_message(model, messages, system, tools, &ptx, opts, session_id),
+            ctx.provider.stream_message(
+                ctx.model,
+                messages,
+                ctx.system,
+                ctx.tools,
+                &ptx,
+                opts,
+                ctx.session_id,
+            ),
             async {
-                cancel.cancelled().await;
+                ctx.cancel.cancelled().await;
                 Err(AgentError::Cancelled)
             },
         )
@@ -78,7 +89,7 @@ pub(crate) async fn stream_with_retry(
             Err(AgentError::Cancelled) => return Err(AgentError::Cancelled),
             Err(e) if e.is_retryable() && !emitted_output => {
                 if e.should_rotate_key()
-                    && let Ok(true) = provider.rotate_key().await
+                    && let Ok(true) = ctx.provider.rotate_key().await
                 {
                     warn!("rotated API key after error: {e}");
                 }
@@ -88,7 +99,7 @@ pub(crate) async fn stream_with_retry(
                 }
                 let delay_ms = u64::try_from(delay.as_millis()).unwrap_or_else(|_| u64::MAX);
                 warn!(attempt, delay_ms, error = %e, "retryable, will retry");
-                event_tx.send(AgentEvent::Retry {
+                ctx.event_tx.send(AgentEvent::Retry {
                     attempt,
                     message: e.retry_message(),
                     delay_ms,
@@ -97,10 +108,10 @@ pub(crate) async fn stream_with_retry(
                     async {
                         smol::Timer::after(delay).await;
                     },
-                    cancel.cancelled(),
+                    ctx.cancel.cancelled(),
                 )
                 .await;
-                if cancel.is_cancelled() {
+                if ctx.cancel.is_cancelled() {
                     return Err(AgentError::Cancelled);
                 }
             }
@@ -157,17 +168,17 @@ mod tests {
             let (agent_tx, _agent_rx) = flume::unbounded::<Envelope>();
             let event_tx = EventSender::new(agent_tx, 1);
 
-            let result = stream_with_retry(
-                &provider,
-                &model,
-                &[Message::user("task".into())],
-                "system",
-                &serde_json::json!([]),
-                &event_tx,
-                &CancelToken::none(),
-                RequestOptions::default(),
-                None,
-            )
+            let result = stream_with_retry(StreamContext {
+                provider: &provider,
+                model: &model,
+                messages: &[Message::user("task".into())],
+                system: "system",
+                tools: &serde_json::json!([]),
+                event_tx: &event_tx,
+                cancel: &CancelToken::none(),
+                opts: RequestOptions::default(),
+                session_id: None,
+            })
             .await;
 
             assert!(matches!(result, Err(AgentError::RequestSent { .. })));

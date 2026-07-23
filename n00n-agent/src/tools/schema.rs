@@ -1059,22 +1059,25 @@ mod tests {
         assert!(rendered.contains(MSG_JSON_ENCODED_HINT));
     }
 
-    #[test_case(json!("30"),                     ParamKind::Integer, Some(json!(30))   ; "string_to_integer")]
-    #[test_case(json!(" 42"),                    ParamKind::Integer, Some(json!(42))   ; "whitespace_trimmed")]
-    #[test_case(json!("-5"),                     ParamKind::Integer, Some(json!(-5))   ; "negative")]
-    #[test_case(json!(""),                       ParamKind::Integer, None              ; "empty_string")]
-    #[test_case(json!("30, \"offset\": 2075"),   ParamKind::Integer, None              ; "embedded_trailing_fields_rejected")]
-    #[test_case(json!("-3-5"),                   ParamKind::Integer, None              ; "malformed_number_rejected")]
-    #[test_case(json!("20.0"),                    ParamKind::Integer, Some(json!(20))   ; "float_string_to_integer")]
-    #[test_case(json!("20.5"),                    ParamKind::Integer, None              ; "fractional_float_string_rejected")]
-    #[test_case(json!("NaN"),                     ParamKind::Integer, None              ; "nan_string_rejected")]
-    #[test_case(json!("inf"),                     ParamKind::Integer, None              ; "inf_string_rejected")]
-    #[test_case(json!("1.25"),                   ParamKind::Number,  Some(json!(1.25)) ; "string_to_float")]
-    #[test_case(json!("true"),                   ParamKind::Bool,    Some(json!(true)) ; "string_to_bool")]
-    #[test_case(json!(30),                       ParamKind::Integer, None              ; "already_correct_type_no_coercion")]
-    #[allow(clippy::needless_pass_by_value)]
-    fn coerce_primitive_cases(value: Value, expected: ParamKind, wanted: Option<Value>) {
-        assert_eq!(coerce_primitive(&value, expected), wanted);
+    #[test_case(&json!("30"),                     ParamKind::Integer, Some(&json!(30))   ; "string_to_integer")]
+    #[test_case(&json!(" 42"),                    ParamKind::Integer, Some(&json!(42))   ; "whitespace_trimmed")]
+    #[test_case(&json!("-5"),                     ParamKind::Integer, Some(&json!(-5))   ; "negative")]
+    #[test_case(&json!(""),                       ParamKind::Integer, None              ; "empty_string")]
+    #[test_case(&json!("30, \"offset\": 2075"),   ParamKind::Integer, None              ; "embedded_trailing_fields_rejected")]
+    #[test_case(&json!("-3-5"),                   ParamKind::Integer, None              ; "malformed_number_rejected")]
+    #[test_case(&json!("20.0"),                    ParamKind::Integer, Some(&json!(20))   ; "float_string_to_integer")]
+    #[test_case(&json!("20.5"),                    ParamKind::Integer, None              ; "fractional_float_string_rejected")]
+    #[test_case(&json!("NaN"),                     ParamKind::Integer, None              ; "nan_string_rejected")]
+    #[test_case(&json!("inf"),                     ParamKind::Integer, None              ; "inf_string_rejected")]
+    #[test_case(&json!("1.25"),                   ParamKind::Number,  Some(&json!(1.25)) ; "string_to_float")]
+    #[test_case(&json!("true"),                   ParamKind::Bool,    Some(&json!(true)) ; "string_to_bool")]
+    #[test_case(&json!(30),                       ParamKind::Integer, None              ; "already_correct_type_no_coercion")]
+    fn coerce_primitive_cases(value: &Value, expected: ParamKind, wanted: Option<&Value>) {
+        let result = coerce_primitive(value, expected);
+        match wanted {
+            Some(w) => assert_eq!(result, Some(w.clone())),
+            None => assert!(result.is_none()),
+        }
     }
 
     #[test]
@@ -1266,10 +1269,9 @@ mod tests {
         assert_eq!(out["path"], expected_path);
     }
 
-    #[test_case(json!({"alias": "file_path"}), json!({"file_path": "/x"}) ; "single_string_alias")]
-    #[test_case(json!({"alias": ["file_path", "fp"]}), json!({"fp": "/x"}) ; "array_alias")]
-    #[allow(clippy::needless_pass_by_value)]
-    fn try_from_json_alias_parsing(alias_field: Value, input: Value) {
+    #[test_case(&json!({"alias": "file_path"}), &json!({"file_path": "/x"}) ; "single_string_alias")]
+    #[test_case(&json!({"alias": ["file_path", "fp"]}), &json!({"fp": "/x"}) ; "array_alias")]
+    fn try_from_json_alias_parsing(alias_field: &Value, input: &Value) {
         let mut schema_json = json!({
             "type": "object",
             "properties": {
@@ -1281,53 +1283,47 @@ mod tests {
             .unwrap()
             .extend(alias_field.as_object().unwrap().clone());
         let schema = try_from_json(&schema_json).unwrap();
-        assert!(validate(schema, input).is_ok());
+        assert!(validate(schema, input.clone()).is_ok());
     }
 
-    #[test_case(json!({"type": "string"}), json!({"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]}) ; "type_string_root")]
-    #[test_case(json!({"type": "integer"}), json!({"type": "object", "properties": {"value": {"type": "integer"}}, "required": ["value"]}) ; "type_integer_root")]
-    #[test_case(json!({"type": "boolean"}), json!({"type": "object", "properties": {"value": {"type": "boolean"}}, "required": ["value"]}) ; "type_boolean_root")]
-    #[allow(clippy::needless_pass_by_value)]
-    fn sanitize_primitive_root_wraps_as_object(input: Value, expected: Value) {
-        let result = sanitize_tool_input_schema(input);
-        assert_eq!(result, expected);
+    #[test_case(&json!({"type": "string"}), &json!({"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]}) ; "type_string_root")]
+    #[test_case(&json!({"type": "integer"}), &json!({"type": "object", "properties": {"value": {"type": "integer"}}, "required": ["value"]}) ; "type_integer_root")]
+    #[test_case(&json!({"type": "boolean"}), &json!({"type": "object", "properties": {"value": {"type": "boolean"}}, "required": ["value"]}) ; "type_boolean_root")]
+    fn sanitize_primitive_root_wraps_as_object(input: &Value, expected: &Value) {
+        let result = sanitize_tool_input_schema(input.clone());
+        assert_eq!(result, *expected);
     }
 
-    #[test_case(json!({"type": "object", "required": {}}), json!({"type": "object", "properties": {}, "required": []}) ; "required_object")]
-    #[test_case(json!({"type": "object", "required": {"foo": true}}), json!({"type": "object", "properties": {}, "required": []}) ; "required_object_with_content")]
-    #[allow(clippy::needless_pass_by_value)]
-    fn sanitize_required_object_to_array(input: Value, expected: Value) {
-        let result = sanitize_tool_input_schema(input);
-        assert_eq!(result, expected);
+    #[test_case(&json!({"type": "object", "required": {}}), &json!({"type": "object", "properties": {}, "required": []}) ; "required_object")]
+    #[test_case(&json!({"type": "object", "required": {"foo": true}}), &json!({"type": "object", "properties": {}, "required": []}) ; "required_object_with_content")]
+    fn sanitize_required_object_to_array(input: &Value, expected: &Value) {
+        let result = sanitize_tool_input_schema(input.clone());
+        assert_eq!(result, *expected);
     }
 
-    #[test_case(json!({"type": "object"}), json!({"type": "object", "properties": {}}) ; "missing_properties")]
-    #[test_case(json!({}), json!({"type": "object", "properties": {}}) ; "empty_schema")]
-    #[allow(clippy::needless_pass_by_value)]
-    fn sanitize_missing_properties(input: Value, expected: Value) {
-        let result = sanitize_tool_input_schema(input);
-        assert_eq!(result, expected);
+    #[test_case(&json!({"type": "object"}), &json!({"type": "object", "properties": {}}) ; "missing_properties")]
+    #[test_case(&json!({}), &json!({"type": "object", "properties": {}}) ; "empty_schema")]
+    fn sanitize_missing_properties(input: &Value, expected: &Value) {
+        let result = sanitize_tool_input_schema(input.clone());
+        assert_eq!(result, *expected);
     }
 
-    #[test_case(json!({"type": "array", "prefixItems": [{"type": "string"}]}), json!({"type": "object", "properties": {"value": {"type": "array", "items": {"type": "string"}}}, "required": ["value"]}) ; "prefixitems_to_items")]
-    #[allow(clippy::needless_pass_by_value)]
-    fn sanitize_prefixitems_to_items(input: Value, expected: Value) {
-        let result = sanitize_tool_input_schema(input);
-        assert_eq!(result, expected);
+    #[test_case(&json!({"type": "array", "prefixItems": [{"type": "string"}]}), &json!({"type": "object", "properties": {"value": {"type": "array", "items": {"type": "string"}}}, "required": ["value"]}) ; "prefixitems_to_items")]
+    fn sanitize_prefixitems_to_items(input: &Value, expected: &Value) {
+        let result = sanitize_tool_input_schema(input.clone());
+        assert_eq!(result, *expected);
     }
 
-    #[test_case(json!({"type": "object", "properties": {"foo": {"type": "string"}}, "required": ["foo", "bar"]}), json!({"type": "object", "properties": {"foo": {"type": "string"}}, "required": ["foo"]}) ; "required_filters_missing_props")]
-    #[allow(clippy::needless_pass_by_value)]
-    fn sanitize_required_filters_missing_properties(input: Value, expected: Value) {
-        let result = sanitize_tool_input_schema(input);
-        assert_eq!(result, expected);
+    #[test_case(&json!({"type": "object", "properties": {"foo": {"type": "string"}}, "required": ["foo", "bar"]}), &json!({"type": "object", "properties": {"foo": {"type": "string"}}, "required": ["foo"]}) ; "required_filters_missing_props")]
+    fn sanitize_required_filters_missing_properties(input: &Value, expected: &Value) {
+        let result = sanitize_tool_input_schema(input.clone());
+        assert_eq!(result, *expected);
     }
 
-    #[test_case(json!({"type": "object", "properties": {"foo": {"type": "string", "prefixItems": [{"type": "integer"}]}}}), json!({"type": "object", "properties": {"foo": {"type": "array", "items": {"type": "integer"}}}}) ; "nested_prefixitems")]
-    #[allow(clippy::needless_pass_by_value)]
-    fn sanitize_nested_prefixitems(input: Value, expected: Value) {
-        let result = sanitize_tool_input_schema(input);
-        assert_eq!(result, expected);
+    #[test_case(&json!({"type": "object", "properties": {"foo": {"type": "string", "prefixItems": [{"type": "integer"}]}}}), &json!({"type": "object", "properties": {"foo": {"type": "array", "items": {"type": "integer"}}}}) ; "nested_prefixitems")]
+    fn sanitize_nested_prefixitems(input: &Value, expected: &Value) {
+        let result = sanitize_tool_input_schema(input.clone());
+        assert_eq!(result, *expected);
     }
 
     #[test]

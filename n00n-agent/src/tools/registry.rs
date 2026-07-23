@@ -175,7 +175,7 @@ impl Future for HeaderFuture {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PermissionScopes {
     pub scopes: Vec<String>,
     pub force_prompt: bool,
@@ -325,8 +325,7 @@ impl ToolRegistry {
     ///
     /// # Errors
     /// Returns an error if a tool with the same name is already registered.
-    #[allow(clippy::needless_pass_by_value)]
-    pub fn register(&self, tool: Arc<dyn Tool>, source: ToolSource) -> Result<(), RegistryError> {
+    pub fn register(&self, tool: &Arc<dyn Tool>, source: &ToolSource) -> Result<(), RegistryError> {
         let name = tool.name().to_owned();
         let defer_loading = tool.defer_loading();
         let namespace = tool.namespace().map(Arc::from);
@@ -340,7 +339,7 @@ impl ToolRegistry {
             let mut next = Vec::with_capacity(current.len() + 1);
             next.extend(current.iter().cloned());
             next.push(RegisteredTool {
-                tool: Arc::clone(&tool),
+                tool: Arc::clone(tool),
                 source: source.clone(),
                 defer_loading,
                 namespace: namespace.clone(),
@@ -614,8 +613,7 @@ impl ToolRegistry {
     }
 
     #[must_use]
-    #[allow(clippy::iter_not_returning_iterator)]
-    pub fn iter(&self) -> RegistrySnapshot {
+    pub fn snapshot(&self) -> RegistrySnapshot {
         RegistrySnapshot(self.tools.load_full())
     }
 
@@ -757,10 +755,8 @@ mod tests {
         let reg = ToolRegistry::new();
         let tool = mock("dupe");
         let source = lua_source("p");
-        #[allow(clippy::clone_on_ref_ptr)]
-        reg.register(tool.clone(), source.clone()).unwrap();
-        #[allow(clippy::clone_on_ref_ptr)]
-        let err = reg.register(tool, source).unwrap_err();
+        reg.register(&tool, &source).unwrap();
+        let err = reg.register(&tool, &source).unwrap_err();
         assert!(matches!(err, RegistryError::NameConflict { .. }));
     }
 
@@ -770,7 +766,7 @@ mod tests {
         let before = reg.snapshot_arc();
         let tool = mock("solo");
         let source = lua_source("p");
-        reg.register(tool, source).unwrap();
+        reg.register(&tool, &source).unwrap();
         let after = reg.snapshot_arc();
         assert!(
             !Arc::ptr_eq(&before, &after),
@@ -792,7 +788,7 @@ mod tests {
         let source = ToolSource::Mcp {
             server: "late_server".into(),
         };
-        reg.register(tool, source).unwrap();
+        reg.register(&tool, &source).unwrap();
 
         let filter = crate::tools::ToolFilter::All;
         let ctx = DescriptionContext {
@@ -824,11 +820,9 @@ mod tests {
         let mcp_source = ToolSource::Mcp {
             server: "srv".into(),
         };
-        #[allow(clippy::clone_on_ref_ptr)]
-        reg.register(lua_a.clone(), p1.clone()).unwrap();
-        #[allow(clippy::clone_on_ref_ptr)]
-        reg.register(lua_b.clone(), p2.clone()).unwrap();
-        reg.register(srv_tool, mcp_source).unwrap();
+        reg.register(&lua_a, &p1).unwrap();
+        reg.register(&lua_b, &p2).unwrap();
+        reg.register(&srv_tool, &mcp_source).unwrap();
 
         reg.clear_lua();
 
@@ -836,20 +830,17 @@ mod tests {
         assert!(!reg.has("lua_b"));
         assert!(reg.has("srv.tool"));
 
-        #[allow(clippy::clone_on_ref_ptr)]
-        reg.register(lua_a, p1).unwrap();
-        #[allow(clippy::clone_on_ref_ptr)]
-        reg.register(lua_b, p2).unwrap();
+        reg.register(&lua_a, &p1).unwrap();
+        reg.register(&lua_b, &p2).unwrap();
         assert!(reg.has("lua_a"));
         assert!(reg.has("lua_b"));
     }
 
     #[test]
-    #[allow(clippy::similar_names)]
     fn clear_mcp_server_removes_only_that_server() {
         let reg = ToolRegistry::new();
-        let server_a_one = mock("serverA.one");
-        let server_b_one = mock("serverB.one");
+        let tool_a = mock("serverA.one");
+        let tool_b = mock("serverB.one");
         let other_tool = mock("other_tool");
         let source_a = ToolSource::Mcp {
             server: "serverA".into(),
@@ -858,9 +849,9 @@ mod tests {
             server: "serverB".into(),
         };
         let other_source = lua_source("other");
-        reg.register(server_a_one, source_a).unwrap();
-        reg.register(server_b_one, source_b).unwrap();
-        reg.register(other_tool, other_source).unwrap();
+        reg.register(&tool_a, &source_a).unwrap();
+        reg.register(&tool_b, &source_b).unwrap();
+        reg.register(&other_tool, &other_source).unwrap();
 
         reg.clear_mcp_server("serverA");
 
@@ -870,24 +861,23 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::similar_names)]
     fn clear_plugin_removes_only_that_plugin() {
         let reg = ToolRegistry::new();
-        let plugin_a_foo = mock("pluginA.foo");
-        let plugin_b_bar = mock("pluginB.bar");
+        let tool_a = mock("pluginA.foo");
+        let tool_b = mock("pluginB.bar");
         let source_a = ToolSource::Lua {
             plugin: "pluginA".into(),
         };
         let source_b = ToolSource::Lua {
             plugin: "pluginB".into(),
         };
-        reg.register(plugin_a_foo, source_a).unwrap();
-        reg.register(plugin_b_bar, source_b).unwrap();
+        reg.register(&tool_a, &source_a).unwrap();
+        reg.register(&tool_b, &source_b).unwrap();
         let mcp_tool = mock("mcp.tool");
         let mcp_source = ToolSource::Mcp {
             server: "srv".into(),
         };
-        reg.register(mcp_tool, mcp_source).unwrap();
+        reg.register(&mcp_tool, &mcp_source).unwrap();
 
         reg.clear_plugin("pluginA");
 
@@ -901,10 +891,9 @@ mod tests {
         let reg = ToolRegistry::new();
         let tool = mock("mytool");
         let source = lua_source("myplugin");
-        #[allow(clippy::clone_on_ref_ptr)]
-        reg.register(tool.clone(), source.clone()).unwrap();
+        reg.register(&tool, &source).unwrap();
 
-        let entries = vec![(tool, source)];
+        let entries = vec![(Arc::clone(&tool), source)];
         reg.replace_plugin("myplugin", &entries).unwrap();
 
         let entry = reg.get("mytool").unwrap();
@@ -919,13 +908,12 @@ mod tests {
         let reg = ToolRegistry::new();
         let shared = mock("shared");
         let mcp_source = ToolSource::Mcp { server: "s".into() };
-        #[allow(clippy::clone_on_ref_ptr)]
-        reg.register(shared.clone(), mcp_source).unwrap();
+        reg.register(&shared, &mcp_source).unwrap();
 
         let lua_source = ToolSource::Lua {
             plugin: "myplugin".into(),
         };
-        let entries = vec![(shared, lua_source)];
+        let entries = vec![(Arc::clone(&shared), lua_source)];
         let err = reg.replace_plugin("myplugin", &entries).unwrap_err();
         assert!(matches!(err, RegistryError::NameConflict { .. }));
     }
@@ -949,8 +937,8 @@ mod tests {
         let main_only = mock_scoped("main_only_tool", ToolAudience::MAIN);
         let everywhere = mock("everywhere");
         let p = lua_source("p");
-        reg.register(main_only, p.clone()).unwrap();
-        reg.register(everywhere, p).unwrap();
+        reg.register(&main_only, &p).unwrap();
+        reg.register(&everywhere, &p).unwrap();
 
         let vars = Vars::new();
         let filter = crate::tools::ToolFilter::All;
@@ -991,14 +979,15 @@ mod tests {
     #[test]
     fn search_returns_deferred_tools_matching_query() {
         let reg = ToolRegistry::new();
-        let deferred = Arc::new(MockTool {
+        let deferred: Arc<dyn Tool> = Arc::new(MockTool {
             name: "deferred_tool".to_owned(),
             audience: ToolAudience::all(),
             defer_loading: true,
             namespace: None,
         });
-        reg.register(deferred, lua_source("p")).unwrap();
-        reg.register(mock("active_tool"), lua_source("p")).unwrap();
+        reg.register(&deferred, &lua_source("p")).unwrap();
+        reg.register(&mock("active_tool"), &lua_source("p"))
+            .unwrap();
 
         let results = reg.search("deferred");
         assert_eq!(results.len(), 1);
@@ -1008,7 +997,8 @@ mod tests {
     #[test]
     fn search_excludes_non_deferred_tools() {
         let reg = ToolRegistry::new();
-        reg.register(mock("active_tool"), lua_source("p")).unwrap();
+        reg.register(&mock("active_tool"), &lua_source("p"))
+            .unwrap();
 
         let results = reg.search("active");
         assert_eq!(results.len(), 0);
@@ -1017,14 +1007,15 @@ mod tests {
     #[test]
     fn definitions_active_excludes_deferred_tools_unless_in_active_set() {
         let reg = ToolRegistry::new();
-        let deferred = Arc::new(MockTool {
+        let deferred: Arc<dyn Tool> = Arc::new(MockTool {
             name: "deferred_tool".to_owned(),
             audience: ToolAudience::all(),
             defer_loading: true,
             namespace: None,
         });
-        reg.register(deferred, lua_source("p")).unwrap();
-        reg.register(mock("active_tool"), lua_source("p")).unwrap();
+        reg.register(&deferred, &lua_source("p")).unwrap();
+        reg.register(&mock("active_tool"), &lua_source("p"))
+            .unwrap();
 
         let filter = crate::tools::ToolFilter::All;
         let ctx = DescriptionContext {
@@ -1052,13 +1043,13 @@ mod tests {
     #[test]
     fn definitions_active_includes_namespace_tools() {
         let reg = ToolRegistry::new();
-        let deferred = Arc::new(MockTool {
+        let deferred: Arc<dyn Tool> = Arc::new(MockTool {
             name: "deferred_tool".to_owned(),
             audience: ToolAudience::all(),
             defer_loading: true,
             namespace: Some("test_ns".to_string()),
         });
-        reg.register(deferred, ToolSource::Lua { plugin: "p".into() })
+        reg.register(&deferred, &ToolSource::Lua { plugin: "p".into() })
             .unwrap();
         let entry = reg.get("deferred_tool").unwrap();
         assert!(entry.defer_loading);

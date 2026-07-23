@@ -816,7 +816,7 @@ fn get_tools(lua: &Lua, opts: Option<Table>) -> LuaResult<Table> {
     }
 
     let out = lua.create_table()?;
-    for (i, entry) in registry.iter().iter().enumerate() {
+    for (i, entry) in registry.snapshot().iter().enumerate() {
         let t = tool_entry_to_lua(lua, entry)?;
         t.set("enabled", is_tool_enabled(&disabled, entry.name()))?;
         out.set(i + 1, t)?;
