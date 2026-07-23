@@ -12,9 +12,6 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
-
 concurrency:
   group: pages
   cancel-in-progress: false
@@ -24,27 +21,23 @@ jobs:
     name: Build site
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: Swatinem/rust-cache@v2
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262'  # v4
+        with:
+          persist-credentials: false
+      - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32'  # v2
+      - uses: 'dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4'  # stable
       - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
         with:
-          install_args: just
+          install_args: just zola
 
       - name: Generate docs
         run: just gen-docs
-
-      - name: Install Zola
-        uses: getzola/setup-zola@v2
-        with:
-          version: 0.19.2
 
       - name: Build site
         run: cd site && ./build.sh
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: 'actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa'  # v3
         with:
           path: site/_build
 
@@ -55,7 +48,11 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+      contents: read
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e  # v4
