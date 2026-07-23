@@ -22,7 +22,7 @@ The blackboard tool provides a shared coordination substrate for multi-agent ses
     properties = {
       action = {
         type = "string",
-        enum = { "write", "read", "claim_task", "release_task", "update_task", "query" },
+        enum = { "write", "read", "claim_task", "release_task", "update_task", "query", "list_claims" },
         description = "Blackboard action.",
       },
       post = {
@@ -166,6 +166,22 @@ Update a task claim status (e.g., mark as done or failed).
 - The calling agent must hold the claim.
 
 **Atomicity**: Update uses file lock to change the claim status atomically.
+
+### list_claims
+
+List active task claims.
+
+**Input**:
+- `action`: "list_claims"
+- `only_active` (boolean, optional): If true (default), return only active, unexpired claims.
+
+**Output**:
+- Success: `{ llm_output = "{encoded_claims}", claims = [{claim_objects}] }`
+- Error: `{ llm_output = "Error: {message}", is_error = true }`
+
+**Validation**:
+- Returns claims sorted by `claimed_at` descending (newest first).
+- Active claims have status `claimed` and `expires_at` in the future.
 
 ### query
 

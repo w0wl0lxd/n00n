@@ -20,12 +20,9 @@ function M.validate_wave(ctx, wave_result, goal, input)
   local output_parts = {}
   for _, entry in ipairs(wave_result.steps) do
     local step = entry.step
-    output_parts[#output_parts + 1] = string.format(
-      "Step %d (%s) output:\n%s",
-      entry.index,
-      step.role or "unknown",
-      step.text or step.error or "(no output)"
-    )
+    local step_output = wave_result.step_outputs and wave_result.step_outputs[entry.index] or "(no output)"
+    output_parts[#output_parts + 1] =
+      string.format("Step %d (%s) output:\n%s", entry.index, step.role or "unknown", step_output)
   end
   local output = table.concat(output_parts, "\n\n")
 

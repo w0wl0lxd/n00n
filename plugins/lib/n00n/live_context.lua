@@ -17,10 +17,9 @@ function M.snapshot(ctx)
     if posts_result and posts_result.results then
       bb_posts = posts_result.results
     end
-    local claims_result =
-      n00n.agent.call_tool(ctx or {}, "blackboard", { action = "query", query = { type = "claim" } })
-    if claims_result and claims_result.results then
-      bb_claims = claims_result.results
+    local claims_result = n00n.agent.call_tool(ctx or {}, "blackboard", { action = "list_claims", only_active = true })
+    if claims_result and claims_result.claims then
+      bb_claims = claims_result.claims
     end
   end)
 
