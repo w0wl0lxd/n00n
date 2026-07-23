@@ -1,6 +1,11 @@
 local ExploreResult = require("n00n.explore_result")
 local n00n_arbor = n00n.arbor
 
+n00n.api.register_prompt_hint({
+  slot = "tool_usage",
+  content = "- Use **arbor** for caller/callee relationships, project map, and blast-radius diff before broad grep or read (requires the Arbor CLI).",
+})
+
 local function format_list(items)
   local lines = {}
   for _, item in ipairs(items) do
@@ -76,7 +81,9 @@ n00n.api.register_tool({
   name = "arbor",
   kind = "read",
   description = [[
-Graph-based code analysis using Arbor.
+Graph-based code analysis using Arbor. Returns structured, compact
+caller/callee/project maps; prefer it over broad grep or unfiltered reads
+for relationship and impact questions.
 
 Commands:
 - callers <symbol>: Who calls this function/class? Returns name, kind, file, and line.

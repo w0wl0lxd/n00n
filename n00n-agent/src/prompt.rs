@@ -30,7 +30,14 @@ pub const DEFAULT_TONE: &str = r"- Be concise. Your output is displayed on a CLI
 - Output text to communicate with the user; all text you output outside of tool use is displayed to the user. Only use tools to complete tasks. NEVER use bash echo or other command-line tools to communicate thoughts, explanations, diagrams, or instructions to the user. Output all communication directly in your response text instead.
 - NEVER create files unless absolutely necessary. ALWAYS prefer editing existing files.";
 
-const NATIVE_EFFICIENT_TOOLS: &[&str] = &["batch", "code_execution", "index", "task"];
+const NATIVE_EFFICIENT_TOOLS: &[&str] = &[
+    "arbor",
+    "batch",
+    "code_execution",
+    "codegraph",
+    "index",
+    "task",
+];
 const INSTRUCTIONS_MARKER: &str = "{{instructions}}";
 
 /// Singleton: alphabetically last plugin wins, discarding all prior content
@@ -227,7 +234,8 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
-    const NATIVE_EFFICIENT_LINE: &str = "Most efficient tools: batch, code_execution, index, task";
+    const NATIVE_EFFICIENT_LINE: &str =
+        "Most efficient tools: arbor, batch, code_execution, codegraph, index, task";
 
     fn slots(prompt: PromptId, entries: &[(Slot, &str)]) -> ResolvedSlots {
         let mut slots = ResolvedSlots::default();

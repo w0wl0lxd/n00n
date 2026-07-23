@@ -13,14 +13,15 @@ n00n ships with 27 built-in tools. This is the full reference.
 
 ### `bash` *(lua plugin)*
 
-Execute a bash command. Default dir: <cwd>. DO NOT use for file ops - only git, builds, tests, system commands. Use `workdir` instead of `cd && cmd`. Chain dependent commands with `&&`. Use batch for independent ones. Provide short `description` (3-5 words). Output truncated beyond 2000 lines or 50KB. Interactive commands (sudo, ssh) fail immediately.
+Execute a bash command.
+Commands run in <cwd> by default.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `command` | string | yes |  |
-| `description` | string | no |  |
-| `timeout` | integer | no |  |
-| `workdir` | string | no |  |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `command` | string | yes |  | The bash command to execute |
+| `workdir` | string | no | cwd | Working directory |
+| `timeout` | integer | no | 120 | Timeout in seconds |
+| `description` | string | no |  | Short description (3-5 words) of what the command does |
 
 ### `read` *(lua plugin)*
 
@@ -28,103 +29,132 @@ Read a file or directory. Returns contents with line numbers (1-indexed).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `limit` | integer | no |  |
-| `offset` | integer | no |  |
-| `path` | string | yes |  |
+| `offset` | integer | no | Line number to start from (1-indexed) |
+| `path` | string | yes | Absolute path to the file or directory |
+| `limit` | integer | no | Max number of lines to read. Omitting the limit reads up to 2000 lines. |
 
 ### `write` *(lua plugin)*
 
-Write content to a file, replacing existing content. Creates parent directories. Always read first. Never create files unless necessary. Never proactively create docs (*.md, README) unless requested.
+Write content to a file, replacing existing content.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `content` | string | yes |  |
-| `path` | string | yes |  |
+| `content` | string | yes | The complete file content to write |
+| `path` | string | yes | Absolute path to the file |
 
 ### `edit` *(lua plugin)*
 
-Replace an exact string match in a file. old_string must appear exactly once unless replace_all is true. Read file first. When copying from read output, exclude line number prefix (e.g. `42: `). Prefer over write for targeted changes. Use replace_all for renaming.
+Replace an exact string match in a file.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `new_string` | string | yes |  |
-| `old_string` | string | yes |  |
-| `path` | string | yes |  |
-| `replace_all` | boolean | no |  |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `replace_all` | boolean | no | false | Replace all occurrences |
+| `path` | string | yes |  | Absolute path to the file |
+| `old_string` | string | yes |  | Exact string to find (must match uniquely unless replace_all is true) |
+| `new_string` | string | yes |  | Replacement string |
 
 ### `multiedit` *(lua plugin)*
 
-Make multiple find-and-replace edits to a single file atomically. Prefer over edit for multiple changes. Read file first. old_string must match exactly, including whitespace. Each edit must match exactly once unless replace_all. Edits applied in sequence. If any edit fails, none are written. Ensure earlier edits don't affect later edits.
+Make multiple find-and-replace edits to a single file atomically.
+Prefer this over edit when n00nng multiple changes to the same file.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `edits` | array | yes |  |
-| `path` | string | yes |  |
+| `edits` | array | yes | Array of edit operations to apply sequentially |
+| `path` | string | yes | Absolute path to the file |
 
 ### `edit_lines` *(lua plugin, opt-in)*
 
-Edit lines by number. Replaces lines from `start` to `end` (inclusive) with `new_string`. Use empty `new_string` to delete. Do not use with batch.
+Edit lines by number. Replaces lines from `start` to `end` (inclusive) with `new_string`. Use empty `new_string` to delete a range. Do not use with the batch tool.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `end` | integer | yes |  |
-| `new_string` | string | yes |  |
-| `path` | string | yes |  |
-| `start` | integer | yes |  |
+| `start` | integer | yes | First line (1-indexed) |
+| `path` | string | yes | Absolute path to the file |
+| `new_string` | string | yes | Replacement text |
+| `end` | integer | yes | Last line, inclusive |
 
 ### `insert_lines` *(lua plugin, opt-in)*
 
-Insert lines before a given line number. Lines at `line` and below shift down. Existing lines preserved. Do not use with batch.
+Insert lines before a given line number. Lines at `line` and below shift down. Existing lines are preserved. Do not use with the batch tool.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `line` | integer | yes |  |
-| `new_string` | string | yes |  |
-| `path` | string | yes |  |
+| `path` | string | yes | Absolute path to the file |
+| `line` | integer | yes | Line number to insert before (1-indexed). Use 1 to insert at the top. |
+| `new_string` | string | yes | Text to insert |
 
 ### `glob` *(lua plugin)*
 
-Find files by glob pattern. Respects .gitignore. Returns absolute paths sorted by modification time (newest first). Prefer speculative parallel searches over sequential glob+grep.
+Find files by glob pattern.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `path` | string | no |  |
-| `pattern` | string | yes |  |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `pattern` | string | yes |  | Glob pattern (e.g. **/*.rs, src/**/*.ts) |
+| `path` | string | no | cwd | Directory to search in |
 
 ### `grep` *(lua plugin)*
 
-Search file contents using regex. Respects .gitignore. Results grouped by file, sorted by modification time. Prefer speculative parallel searches over sequential glob+grep. Do NOT wrap pattern in quotes or double-escape (e.g. `\[` not `\\[`). Multi-line matching auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`.
+Search file contents using regex.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `context_after` | integer | no |  |
-| `context_before` | integer | no |  |
-| `include` | string | no |  |
-| `limit` | integer | no |  |
-| `path` | string | no |  |
-| `pattern` | string | yes |  |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `include` | string | no |  | File glob filter (e.g. *.c) |
+| `path` | string | no | cwd | Directory to search in |
+| `pattern` | string | yes |  | Regex pattern |
+| `context_after` | integer | no |  | Context lines after match |
+| `limit` | integer | no |  | Max match groups to return |
+| `context_before` | integer | no |  | Context lines before match |
 
 ### `index` *(lua plugin)*
 
-Return a compact overview of a source file: imports, types, function signatures, and structure with line numbers in []. ~70-90% more efficient than reading full file. Use FIRST to understand structure before read with offset/limit. Supports source files and markdown. Falls back with error on unsupported languages.
+Return a compact overview of a source file: imports, type definitions, function signatures, and structure with their line numbers surrounded by []. ~70-90% more efficient than reading the full file.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path` | string | yes |  |
+| `path` | string | yes | Absolute path to the file |
 
 ### `view_image` *(lua plugin)*
 
-View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read` for images. Paths: absolute, relative, or ~/. Oversized images downscaled automatically (animated gif/webp keep only first frame).
+Lossless viewer: oversized images return native tile 1, never resized. GIF needs `allow_gif_animation=true` only for a known capable provider; otherwise `static_image=true` (also animated WebP).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path` | string | yes |  |
+| `crop` | array | no | [x,y,w,h]; <=8000 edge/4MP. |
+| `path` | string | yes | Path. |
+| `allow_gif_animation` | boolean | no | Raw GIF opt-in. |
+| `tile_width` | integer | no | Default 2000; max 4MP. |
+| `tile_index` | integer | no | One-based tile. |
+| `static_image` | boolean | no | First-frame PNG. |
+| `tile_height` | integer | no | Default 2000; max 4MP. |
+
+### `codegraph` *(lua plugin)*
+
+Query a pre-indexed semantic codegraph for cross-file structural analysis. Returns verbatim source code grouped by file, plus a dependency impact "blast radius" summary with caller counts and test coverage info. Typically uses fewer tokens than broad grep + read for the same cross-file question.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `projectPath` | string | no | Absolute path to the project (defaults to current workspace) |
+| `query` | string | yes | Natural language question or symbol/file names to explore (e.g. 'AuthService login', 'GraphTraverser BFS impact') |
+
+### `arbor` *(lua plugin)*
+
+Graph-based code analysis using Arbor. Returns structured, compact
+caller/callee/project maps; prefer it over broad grep or unfiltered reads
+for relationship and impact questions.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `command` | string | yes |  |
+| `token_budget` | integer | no |  |
+| `project` | string | no |  |
+| `symbol` | string | no |  |
 
 ## Execution & Control
 
 ### `batch` *(lua plugin)*
 
-Execute multiple independent tool calls concurrently. ALWAYS use batch for multiple independent calls. 1-25 tools per batch. Parallel execution, order not guaranteed. Partial failures don't stop others. Do NOT nest batch. Use code_execution for dependent operations.
+Executes multiple independent tool calls concurrently to reduce round-trips.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -132,16 +162,16 @@ Execute multiple independent tool calls concurrently. ALWAYS use batch for multi
 
 ### `code_execution` *(lua plugin)*
 
-Execute Python code in a sandboxed interpreter with tools as callable functions. Use for chained/dependent tool calls and filtering/processing results. Faster than sequential tool calls. Tools are async: `result = await read(path='file.txt')`. Use `asyncio.gather()` for concurrency. Available libs: re, asyncio, sys, os, json. Fresh sandbox each run. 30s timeout (configurable).
+Execute Python code in a sandboxed interpreter with tools as callable functions.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
+| `timeout` | integer | no | 30, max 300 | Timeout in seconds |
 | `code` | string | yes |  | Python code to execute. Tools are async functions that return strings (not objects). You MUST await every call: `result = await read(path='/file')`. Use `await asyncio.gather(...)` for concurrency. |
-| `timeout` | integer | no | 30 | Script execution timeout in seconds |
 
 ### `question` *(lua plugin)*
 
-Ask the user questions during execution. Supports single/multi-select, custom answers, and tabbed multi-question forms. Put recommended options first with "(Recommended)" suffix.
+Ask the user questions during execution. Use to gather preferences, clarify instructions, get decisions, or offer choices.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -151,13 +181,52 @@ Ask the user questions during execution. Supports single/multi-select, custom an
 
 ### `agent_control` *(lua plugin)*
 
-Launch an autonomous subagent. Types: research (read-only, default) or general (full access). Best combined with batch. Each invocation starts fresh - inline context. Summarize results in your response.
+Control background agents started by task, team, or workflow.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `description` | string | yes | Short (3-5 words) description of the task |
-| `model_tier` | string | no | Model tier (optional, omit to use current model, capped at current tier): "strong" (deep reasoning, ~5x cost), "medium" (balanced), "weak" (fast/cheap). |
-| `output_schema` | string | no | JSON Schema (object) the subagent's final result must match. When set, the result is returned as a validated JSON string. |
+| `message` | string | no | Steering instructions. |
+| `action` | string | yes | Control action. |
+| `agent_id` | string | no | Background agent id. |
+
+### `team` *(lua plugin)*
+
+Run an ALMAS team for an SDLC goal. supervised returns a plan; autonomous executes it; swarm runs decentralized rounds. background returns an agent_id for agent_control.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `human_escalation` | boolean | no |  | Pause on step failure and return a resumable run_id. |
+| `resume` | string | no |  | Paused run_id to resume. |
+| `ibn_gate` | boolean | no |  | Use information-bottleneck fan-out gate in swarm. |
+| `goal` | string | yes |  | High-level SDLC goal. |
+| `use_summary` | boolean | no |  | Use the Summary Agent index for retrieval. |
+| `mode` | string | no |  | "supervised" (return plan), "autonomous" (run plan), "swarm" (decentralized rounds). |
+| `max_agents` | integer | no | 16, max 24 | Team agent budget. |
+| `compact` | boolean | no |  | TOON-encode retrieved context (token-saving). |
+| `model_tier` | string | no |  | Supervisor tier (weak/medium/strong). Default: strong. |
+| `max_steps` | integer | no | 6, max 8 | Max plan steps. |
+| `max_concurrent` | integer | no | 4, max 4 | Swarm concurrency. |
+| `quorum` | boolean | no |  | Require validator quorum for autonomous/swarm. |
+| `max_rounds` | integer | no | 2, max 4 | Swarm max rounds. |
+| `use_retrieval` | boolean | no |  | Ground steps with repo retrieval. |
+| `model` | string | no |  | Exact model for all agents. Overrides model_tier. |
+| `continue` | string | no |  | Human guidance appended when resuming. |
+| `thinking` | string/integer | no |  | Thinking mode: "off", "adaptive", effort level, or token budget. Default: "adaptive". |
+| `background` | boolean | no |  | Start in background session; return agent_id. |
+| `auto_tier` | boolean | no |  | Route subagent tier from step prompt. Default: true unless model set. |
+
+### `task` *(lua plugin)*
+
+Launch one isolated agent; combine independent calls with batch. research (default) is read-only; general can edit. Each call starts fresh, so include context and ask for concise file:line results. Summarize returned results. auto_tier is opt-in. background returns agent_id.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `description` | string | yes | Short (3-5 words) task description |
+| `model_tier` | string | no | Capped tier: "weak", "medium", or "strong" |
+| `auto_tier` | boolean | no | Pick model_tier from prompt automatically (opt-in). Overrides model_tier when set. |
+| `background` | boolean | no | Start in background session; return agent_id immediately. |
+| `model` | string | no | Exact model spec (optional). Overrides model_tier. |
+| `output_schema` | object | no | JSON Schema (object) subagent result must match. Result returned as validated JSON string. |
 | `prompt` | string | yes | Detailed task prompt for the agent |
 | `thinking` | string/integer | no | Thinking mode: "off", "adaptive", effort level, or token budget. Omit to inherit user setting. |
 | `subagent_type` | string | no | "research" (read-only, default) or "general" (can edit) |
@@ -174,7 +243,7 @@ Run a bounded, sandboxed Lua workflow for multi-stage agent orchestration.
 
 ### `todo_write` *(lua plugin)*
 
-Create or update a structured todo list to track tasks. Use after EACH completed step. Send complete list each time (replace-all semantics). Use ONLY for multi-step work (3+ steps). Skip for trivial tasks.
+Create or update a structured todo list to track tasks.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -182,7 +251,7 @@ Create or update a structured todo list to track tasks. Use after EACH completed
 
 ### `memory` *(lua plugin)*
 
-Persistent, project-scoped scratchpad for learnings, patterns, decisions, and gotchas across sessions. Save important context before compaction or to build project knowledge. Keep entries concise and current. Delete outdated information.
+Persistent, project-scoped scratchpad for learnings, patterns, decisions, and gotchas across sessions.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -192,18 +261,35 @@ Persistent, project-scoped scratchpad for learnings, patterns, decisions, and go
 
 ### `skill` *(lua plugin)*
 
-Load a skill that provides instructions and workflows for specific tasks. Use `list=true` to enumerate available skills; then call with the exact skill `name`.
+Load a skill that provides instructions and workflows for specific tasks. Use `list=true` to enumerate available skills.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `list` | boolean | no | Return the list of available skills with their descriptions instead of loading one. |
 | `name` | string | no | Name of the skill to load. |
+| `list` | boolean | no | Return the list of available skills with their descriptions instead of loading one. |
+
+### `tool_search` *(lua plugin)*
+
+Search for deferred tools by name or description. Returns a list of tools that can be loaded on demand.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `query` | string | yes | Search query to match tool names or descriptions |
+| `namespace` | string | no | Optional namespace filter |
+
+### `load_namespace` *(lua plugin)*
+
+Load all tools from a namespace. Returns the list of tools that were loaded.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `namespace` | string | yes | Namespace to load |
 
 ## Web
 
 ### `webfetch` *(lua plugin)*
 
-Fetch a URL and return its contents. Supports markdown (default), text, or html. HTTP auto-upgraded to HTTPS. Max 5MB response, 120s timeout. Best used inside code_execution to avoid context bloat.
+Fetch a URL and return its contents.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|

@@ -13,12 +13,14 @@ jobs:
     name: Fragment required
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262'  # v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Check for changelog fragment
         env:
           BASE: ${{ github.base_ref || 'main' }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         run: |
           set -euo pipefail
           git fetch -q origin "$BASE" || true
@@ -31,7 +33,7 @@ jobs:
             exit 0
           fi
 
-          labels="${{ join(github.event.pull_request.labels.*.name, ' ') }}"
+          labels="$LABELS"
           for l in $labels; do
             case "$l" in
               no-changelog|dependencies|ci) echo "label '$l' set; skipping."; exit 0 ;;
