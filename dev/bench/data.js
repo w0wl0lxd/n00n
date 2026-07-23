@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784765086643,
+  "lastUpdate": 1784777532370,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -1835,6 +1835,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 122338,
             "range": "± 23120",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5d9201786cb82788ed8079f4f7d29b8194d8d471",
+          "message": "Merge pull request #79 from w0wl0lxd/fix/tree-sitter-scss-windows\n\nfix(deps): use cortexkit-tree-sitter-scss for MSVC compatibility",
+          "timestamp": "2026-07-22T23:18:15-04:00",
+          "tree_id": "fc643efc986935618a6a5bb5ac60fb35762e4fed",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/5d9201786cb82788ed8079f4f7d29b8194d8d471"
+        },
+        "date": 1784777531060,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6660543,
+            "range": "± 269615",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2767974,
+            "range": "± 14943",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2224598,
+            "range": "± 56201",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 9301421,
+            "range": "± 19374",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4423834,
+            "range": "± 128936",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4422101,
+            "range": "± 14846",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 583352,
+            "range": "± 1983",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191757,
+            "range": "± 400",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191623,
+            "range": "± 249",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1023508,
+            "range": "± 4384",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 561652,
+            "range": "± 1606",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 561105,
+            "range": "± 1742",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 61601,
+            "range": "± 5734",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 191852,
+            "range": "± 5258",
             "unit": "ns/iter"
           }
         ]
