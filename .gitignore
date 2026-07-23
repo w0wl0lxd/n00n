@@ -23,3 +23,7 @@ runs.csv
 *.p12
 *.pfx
 *.keystore
+
+# hk local overrides
+hk.local.pkl
+.config/hk.local.pkl
