@@ -817,6 +817,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
+name = "cortexkit-tree-sitter-scss"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e1ab239ee763e587b6213bde9320d0ffb7013808b827ef36c115bfd265799a1"
+dependencies = [
+ "cc",
+ "tree-sitter",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3011,6 +3021,7 @@ dependencies = [
  "arc-swap",
  "async-lock",
  "base64",
+ "cortexkit-tree-sitter-scss",
  "criterion",
  "crossterm 0.29.0",
  "event-listener",
@@ -3075,7 +3086,6 @@ dependencies = [
  "tree-sitter-ruby",
  "tree-sitter-rust",
  "tree-sitter-scala",
- "tree-sitter-scss",
  "tree-sitter-sequel",
  "tree-sitter-starlark",
  "tree-sitter-svelte-ng",
@@ -6016,16 +6026,6 @@ checksum = "3394d6bc99bceae03c75482a93f1bcefff11e69d3a405f1410e864212b52739a"
 dependencies = [
  "cc",
  "tree-sitter-language",
-]
-
-[[package]]
-name = "tree-sitter-scss"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33909a9ca86390ebbf3461e9949c4bbe2767d2d024b486306d27616641d4ba24"
-dependencies = [
- "cc",
- "tree-sitter",
 ]
 
 [[package]]
