@@ -74,7 +74,7 @@ impl ProviderKind {
             Self::Synthetic => "Synthetic",
             Self::TensorX => "TensorX",
             Self::Opencode => "Opencode",
-            Self::Windsurf => "Windsurf / Devin",
+            Self::Windsurf => "Devin CLI",
         }
     }
 
@@ -94,7 +94,7 @@ impl ProviderKind {
             Self::Synthetic => "SYNTHETIC_API_KEY",
             Self::TensorX => "TENSORX_API_KEY",
             Self::Opencode => "OPENCODE_API_KEY",
-            Self::Windsurf => "WINDSURF_API_KEY",
+            Self::Windsurf => "DEVIN_API_KEY",
         }
     }
 
@@ -116,7 +116,7 @@ impl ProviderKind {
             Self::Synthetic => "https://api.synthetic.new/openai/v1",
             Self::TensorX => "https://api.tensorx.ai/v1",
             Self::Opencode => "https://opencode.ai/zen/v1",
-            Self::Windsurf => "http://localhost:3003/v1 (WindsurfAPI/Devin Desktop proxy)",
+            Self::Windsurf => "http://localhost:3003/v1 (OpenAI-compatible proxy for Devin CLI)",
         }
     }
 
@@ -146,7 +146,7 @@ impl ProviderKind {
                 "Dynamically discovered models via [models.dev](https://models.dev/) + all the models provided by Opencode Zen API",
             ),
             Self::Windsurf => Some(
-                "OpenAI-compatible endpoint for the Windsurf / Devin Desktop proxy; fully configurable base URL and model",
+                "OpenAI-compatible endpoint backed by Devin CLI credentials; fully configurable base URL and model",
             ),
             _ => None,
         }

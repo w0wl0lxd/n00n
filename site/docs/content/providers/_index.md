@@ -205,11 +205,11 @@ enable_free_models = true
 
 The default is `false`.
 
-### Windsurf / Devin
+### Devin CLI
 
-- **Env var**: `WINDSURF_API_KEY`
-- **API**: `http://localhost:3003/v1 (WindsurfAPI/Devin Desktop proxy)`
-- **Features**: OpenAI-compatible endpoint for the Windsurf / Devin Desktop proxy; fully configurable base URL and model
+- **Env var**: `DEVIN_API_KEY` or `WINDSURF_API_KEY`, falls back to Devin CLI `credentials.toml`
+- **API**: `http://localhost:3003/v1 (OpenAI-compatible proxy for Devin CLI)`
+- **Features**: OpenAI-compatible endpoint backed by Devin CLI credentials; fully configurable base URL and model
 
 | Tier | Models | Pricing (in/out per 1M tokens) | Context |
 |------|--------|-------------------------------|---------|

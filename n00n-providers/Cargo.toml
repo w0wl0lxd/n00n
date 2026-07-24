@@ -29,6 +29,8 @@ inventory = { workspace = true }
 jiff = { workspace = true }
 libc = { workspace = true }
 getrandom = { workspace = true }
+etcetera = { workspace = true }
+toml = { workspace = true }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 [dev-dependencies]

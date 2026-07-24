@@ -161,7 +161,7 @@ const OPENCODE: ProviderManifest = ProviderManifest {
 
 const WINDSURF: ProviderManifest = ProviderManifest {
     slug: "windsurf",
-    display_name: "Windsurf / Devin",
+    display_name: "Devin CLI",
     family: ModelFamily::Generic,
     supports_thinking: false,
     accepts_arbitrary_models: true,
