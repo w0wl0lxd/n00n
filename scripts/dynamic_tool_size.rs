@@ -15,39 +15,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let model = Model::from_spec("anthropic/claude-sonnet-4-6")?;
 
     let filter = ToolFilter::All;
-    let ctx = DescriptionContext {
-        filter: &filter,
-        audience: ToolAudience::MAIN,
-        workflow: false,
-    };
+    let active = ActiveTools::default();
 
-    let tool_modes = ["default", "research", "build", "compact"];
-
-    println!("Tool definition size by mode:");
+    println!("Tool definition size by audience:");
     println!(
-        "{:<15} {:<15} {:<15} {:<15}",
-        "Mode", "Tool Count", "Bytes", "Tokens (est)"
+        "{:<18} {:<15} {:<15} {:<15}",
+        "Audience", "Tool Count", "Bytes", "Tokens (est)"
     );
-    println!("{}", "-".repeat(60));
+    println!("{}", "-".repeat(63));
 
-    for mode in &tool_modes {
-        let active = ActiveTools::default();
+    let audiences = [
+        ("main", ToolAudience::MAIN, false),
+        ("research_sub", ToolAudience::RESEARCH_SUB, false),
+        ("general_sub", ToolAudience::GENERAL_SUB, false),
+        ("interpreter", ToolAudience::INTERPRETER, false),
+        ("workflow", ToolAudience::WORKFLOW, true),
+    ];
+
+    for (label, audience, workflow) in &audiences {
+        let ctx = DescriptionContext {
+            filter: &filter,
+            audience: *audience,
+            workflow: *workflow,
+        };
         let defs =
             registry.definitions_active(&vars, &ctx, model.supports_tool_examples(), &active);
         let bytes = serde_json::to_vec(&defs)?.len();
         let tokens = count_json_for_model(&model.id, &defs);
         let count = defs.as_array().map_or(0, std::vec::Vec::len);
 
-        println!("{mode:<15} {count:<15} {bytes:<15} {tokens:<15}");
+        println!("{label:<18} {count:<15} {bytes:<15} {tokens:<15}");
     }
 
+    let ctx = DescriptionContext {
+        filter: &filter,
+        audience: ToolAudience::MAIN,
+        workflow: false,
+    };
     let all_defs = registry.definitions(&vars, &ctx, model.supports_tool_examples());
     let all_bytes = serde_json::to_vec(&all_defs)?.len();
     let all_tokens = count_json_for_model(&model.id, &all_defs);
     let all_count = registry.names().len();
 
     println!(
-        "{:<15} {:<15} {:<15} {:<15}",
+        "{:<18} {:<15} {:<15} {:<15}",
         "all (unfiltered)", all_count, all_bytes, all_tokens
     );
 
