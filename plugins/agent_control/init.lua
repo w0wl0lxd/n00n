@@ -301,7 +301,7 @@ local function handler(input)
       end
       local encoded, enc_err = n00n.json.encode(rule)
       if not encoded then
-        return { llm_output = "Policy set: " .. rule.id, policy = rule }
+        return { llm_output = "Error: encode failed", is_error = true }
       end
       return { llm_output = encoded, policy = rule }
     elseif paction == "get" then

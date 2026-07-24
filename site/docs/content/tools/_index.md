@@ -196,6 +196,7 @@ Shared coordination substrate for multi-agent sessions. Post observations, claim
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `post` | object | no | Post data for write action. |
+| `only_active` | boolean | no | For list_claims: if true (default), return only active claims. If false, return all claims. |
 | `action` | string | yes | Blackboard action. |
 | `query` | object | no | Query parameters for query action. |
 | `status` | string | no | Status for update_task action. |
