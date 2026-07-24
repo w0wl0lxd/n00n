@@ -54,6 +54,7 @@ fn value_hash(value: &Value) -> u64 {
 }
 
 pub(crate) struct OpenAiCompatConfig {
+    pub slug: &'static str,
     pub api_key_env: &'static str,
     pub base_url: &'static str,
     pub max_tokens_field: &'static str,
@@ -214,16 +215,23 @@ impl OpenAiCompatProvider {
         body
     }
 
+    /// Effective base URL: an auth-supplied value (dynamic/custom providers)
+    /// wins, then the `<SLUG>_BASE_URL` env override, then the static default.
+    fn base_url(&self, auth: &ResolvedAuth) -> String {
+        if let Some(explicit) = auth.base_url.as_deref() {
+            return explicit.to_string();
+        }
+        n00n_config::providers::base_url_override(self.config.slug)
+            .unwrap_or_else(|| self.config.base_url.to_string())
+    }
+
     fn build_request(
         &self,
         method: &str,
         path: &str,
         auth: &ResolvedAuth,
     ) -> isahc::http::request::Builder {
-        let base = auth
-            .base_url
-            .as_deref()
-            .unwrap_or_else(|| self.config.base_url);
+        let base = self.base_url(auth);
         auth.configure_request(
             Request::builder()
                 .method(method)
@@ -1238,6 +1246,7 @@ data: [DONE]\n";
     #[test]
     fn build_body_with_session_adds_prompt_cache_key() {
         static TEST_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
+            slug: "test",
             api_key_env: "TEST_KEY",
             base_url: "https://test.com",
             max_tokens_field: "max_tokens",
@@ -1266,6 +1275,7 @@ data: [DONE]\n";
     #[test]
     fn build_body_without_session_no_prompt_cache_key() {
         static TEST_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
+            slug: "test",
             api_key_env: "TEST_KEY",
             base_url: "https://test.com",
             max_tokens_field: "max_tokens",
@@ -1288,6 +1298,7 @@ data: [DONE]\n";
     #[test]
     fn build_body_with_session_adds_prompt_cache_breakpoint_for_gpt_5_6() {
         static TEST_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
+            slug: "test",
             api_key_env: "TEST_KEY",
             base_url: "https://test.com",
             max_tokens_field: "max_tokens",

@@ -11,6 +11,9 @@ env:
   CARGO_INCREMENTAL: 0
   CARGO_NET_RETRY: 10
 
+permissions:
+  contents: read
+
 jobs:
   changes:
     name: Detect changes
@@ -18,8 +21,10 @@ jobs:
     outputs:
       code: ${{ steps.filter.outputs.code }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: dorny/paths-filter@v4.0.2
+      - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'  # v7
+        with:
+          persist-credentials: false
+      - uses: 'dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706'  # v4.0.2
         id: filter
         with:
           filters: |
@@ -44,7 +49,9 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'  # v7
+        with:
+          persist-credentials: false
       - run: cargo fmt --all -- --check
 
   fmt-lua:
@@ -53,12 +60,13 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: JohnnyMorganz/stylua-action@v5
+      - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'  # v7
         with:
-          token: ${{ github.token }}
-          version: latest
-          args: --check plugins/
+          persist-credentials: false
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
+        with:
+          install_args: stylua
+      - run: stylua --check plugins/
 
   lint:
     name: Lint
@@ -66,9 +74,13 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: Swatinem/rust-cache@v2
-      - uses: extractions/setup-just@v4
+      - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'  # v7
+        with:
+          persist-credentials: false
+      - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32'  # v2
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
+        with:
+          install_args: just
       - run: just lint
 
   test:
@@ -77,12 +89,13 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: Swatinem/rust-cache@v2
-      - uses: extractions/setup-just@v4
-      - uses: taiki-e/install-action@v2
+      - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'  # v7
         with:
-          tool: cargo-nextest
+          persist-credentials: false
+      - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32'  # v2
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
+        with:
+          install_args: just cargo:cargo-nextest
       - run: sudo apt-get -o Acquire::Retries=5 install -y ripgrep
       - run: just test
 
@@ -92,10 +105,12 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: taiki-e/install-action@v2
+      - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'  # v7
         with:
-          tool: cargo-machete
+          persist-credentials: false
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
+        with:
+          install_args: cargo:cargo-machete
       - run: cargo machete
 
   docs:
@@ -104,9 +119,13 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: Swatinem/rust-cache@v2
-      - uses: extractions/setup-just@v4
+      - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'  # v7
+        with:
+          persist-credentials: false
+      - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32'  # v2
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
+        with:
+          install_args: just
       - run: just gen-docs-check
 
   build:
@@ -115,9 +134,13 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: Swatinem/rust-cache@v2
-      - uses: extractions/setup-just@v4
+      - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'  # v7
+        with:
+          persist-credentials: false
+      - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32'  # v2
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
+        with:
+          install_args: just
       - run: just build
 
   lint-windows:
@@ -126,9 +149,13 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: Swatinem/rust-cache@v2
-      - uses: extractions/setup-just@v4
+      - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'  # v7
+        with:
+          persist-credentials: false
+      - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32'  # v2
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
+        with:
+          install_args: just
       - run: just lint
 
   build-windows:
@@ -137,10 +164,29 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: Swatinem/rust-cache@v2
-      - uses: extractions/setup-just@v4
+      - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'  # v7
+        with:
+          persist-credentials: false
+      - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32'  # v2
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
+        with:
+          install_args: just
       - run: just build
+
+  test-windows:
+    name: Test (Windows)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'  # v7
+        with:
+          persist-credentials: false
+      - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32'  # v2
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
+        with:
+          install_args: just cargo:cargo-nextest
+      - run: just test
 
   coverage:
     name: Coverage
@@ -148,18 +194,19 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: Swatinem/rust-cache@v2
-      - uses: extractions/setup-just@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'  # v7
+        with:
+          persist-credentials: false
+      - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32'  # v2
+      - uses: 'dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4'  # stable
         with:
           components: llvm-tools-preview
-      - uses: taiki-e/install-action@v2
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
         with:
-          tool: cargo-llvm-cov,cargo-nextest
+          install_args: cargo:cargo-nextest cargo:cargo-llvm-cov
       - run: sudo apt-get -o Acquire::Retries=5 install -y ripgrep
       - run: cargo llvm-cov nextest --workspace --lcov --output-path lcov.info --retries 2
-      - uses: codecov/codecov-action@v5
+      - uses: 'codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac'  # v5
         with:
           files: lcov.info
           fail_ci_if_error: false
@@ -171,9 +218,11 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: Swatinem/rust-cache@v2
-      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'  # v7
+        with:
+          persist-credentials: false
+      - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32'  # v2
+      - uses: 'dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83'  # 1.97.0
       - run: cargo build --workspace --all-targets
 
   rustdoc:
@@ -184,14 +233,29 @@ jobs:
       RUSTDOCFLAGS: -D rustdoc::broken_intra_doc_links
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: Swatinem/rust-cache@v2
+      - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'  # v7
+        with:
+          persist-credentials: false
+      - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32'  # v2
       - run: cargo doc --workspace --no-deps
 
   ci-pass:
     name: CI
     if: always()
-    needs: [fmt, fmt-lua, lint, test, machete, docs, build, lint-windows, build-windows, coverage, msrv, rustdoc]
+    needs:
+      - fmt
+      - fmt-lua
+      - lint
+      - test
+      - machete
+      - docs
+      - build
+      - lint-windows
+      - build-windows
+      - test-windows
+      - coverage
+      - msrv
+      - rustdoc
     runs-on: ubuntu-latest
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')

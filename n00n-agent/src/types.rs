@@ -9,7 +9,8 @@ use n00n_config::ToolKey;
 use n00n_providers::{
     AgentError, ContentBlock, ImageSource, Message, Role, StopReason, TokenUsage,
 };
-use serde::de::{Deserializer, Error as DeError, MapAccess, Visitor};
+use serde::de::Error as DeError;
+use serde::de::{Deserializer, MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
 
 pub const NO_FILES_FOUND: &str = "No files found";
@@ -414,6 +415,14 @@ fn lines_remaining_after(total: usize, start_line: usize, shown: usize) -> usize
 }
 
 impl ToolOutput {
+    fn grep_summary(entries: &[GrepFileEntry]) -> String {
+        let matches: usize = entries.iter().map(GrepFileEntry::match_count).sum();
+        let files = entries.len();
+        let match_word = if matches == 1 { "match" } else { "matches" };
+        let file_word = if files == 1 { "file" } else { "files" };
+        format!("{matches} {match_word} in {files} {file_word}")
+    }
+
     /// Short header suffix summarizing the output, e.g. `12 lines`.
     /// The UI uses it on tool completion, and `n00n.agent.call_tool` falls
     /// back to it when the tool's reply has no annotation of its own.
@@ -431,12 +440,7 @@ impl ToolOutput {
                 }
             }
             Self::WriteCode { byte_count, .. } => Some(format!("{byte_count} bytes")),
-            Self::GrepResult { entries } => {
-                let matches: usize = entries.iter().map(GrepFileEntry::match_count).sum();
-                let files = entries.len();
-                let f = if files == 1 { "file" } else { "files" };
-                Some(format!("{matches} matches in {files} {f}"))
-            }
+            Self::GrepResult { entries } => Some(Self::grep_summary(entries)),
             Self::ReadDir(t) => {
                 let n = t.text.lines().count();
                 Some(format!("{n} entries"))
@@ -451,6 +455,53 @@ impl ToolOutput {
                     .map_or_else(|| text.clone(), std::string::ToString::to_string),
             ),
             _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn summary(&self) -> Self {
+        match self {
+            Self::ReadCode {
+                path,
+                lines,
+                total_lines,
+                instructions,
+                ..
+            } => {
+                let shown = lines.len();
+                let summary_text = if *total_lines > shown {
+                    format!("{shown} of {total_lines} lines from {path}")
+                } else {
+                    format!("{shown} lines from {path}")
+                };
+                Self::Plain(TextOutput {
+                    text: summary_text,
+                    instructions: instructions.clone(),
+                    state: None,
+                    telemetry: None,
+                })
+            }
+            Self::WriteCode {
+                path, byte_count, ..
+            } => Self::Plain(TextOutput {
+                text: format!("wrote {byte_count} bytes to {path}"),
+                instructions: None,
+                state: None,
+                telemetry: None,
+            }),
+            Self::GrepResult { entries } => Self::Plain(TextOutput {
+                text: Self::grep_summary(entries),
+                instructions: None,
+                state: None,
+                telemetry: None,
+            }),
+            Self::Diff { summary, .. } => Self::Plain(TextOutput {
+                text: summary.clone(),
+                instructions: None,
+                state: None,
+                telemetry: None,
+            }),
+            other => other.clone(),
         }
     }
 
@@ -1216,24 +1267,66 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
-    #[derive(Deserialize)]
-    struct ToolSnapshotFields {
-        #[allow(dead_code)]
-        id: String,
-        #[serde(default)]
-        theme_gen: Option<u64>,
+    #[test_case(ToolOutput::Plain("ok".into()),                      Some("1 lines")     ; "plain_short_annotates")]
+    #[test_case(ToolOutput::Plain((0..20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n").into()), Some("20 lines") ; "plain_long_annotates")]
+    #[test_case(ToolOutput::Plain(String::new().into()),             None                ; "plain_empty_no_annotation")]
+    #[test_case(ToolOutput::ReadCode { path: "a.rs".into(), start_line: 1, lines: vec!["x".into(); 5], total_lines: 5, instructions: None }, Some("5 lines") ; "read_code_full_file")]
+    #[test_case(ToolOutput::ReadCode { path: "a.rs".into(), start_line: 10, lines: vec!["x".into(); 5], total_lines: 100, instructions: None }, Some("5 of 100 lines") ; "read_code_partial")]
+    #[test_case(ToolOutput::WriteCode { path: "a.rs".into(), byte_count: 99, lines: vec![] }, Some("99 bytes") ; "write_code_bytes")]
+    #[test_case(ToolOutput::GrepResult { entries: vec![GrepFileEntry { path: "a.rs".into(), groups: vec![GrepMatchGroup::single(1, "hit")] }] }, Some("1 match in 1 file") ; "grep_file_count")]
+    #[test_case(ToolOutput::Diff { path: "a.rs".into(), before: String::new(), after: String::new(), summary: "ok".into(), telemetry: None }, None ; "diff_no_annotation")]
+    #[allow(clippy::needless_pass_by_value)]
+    fn annotation_cases(output: ToolOutput, expected: Option<&str>) {
+        assert_eq!(output.annotation().as_deref(), expected);
     }
 
-    #[test_case(&ToolOutput::Plain("ok".into()),                      Some("1 lines")     ; "plain_short_annotates")]
-    #[test_case(&ToolOutput::Plain((0..20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n").into()), Some("20 lines") ; "plain_long_annotates")]
-    #[test_case(&ToolOutput::Plain(String::new().into()),             None                ; "plain_empty_no_annotation")]
-    #[test_case(&ToolOutput::ReadCode { path: "a.rs".into(), start_line: 1, lines: vec!["x".into(); 5], total_lines: 5, instructions: None }, Some("5 lines") ; "read_code_full_file")]
-    #[test_case(&ToolOutput::ReadCode { path: "a.rs".into(), start_line: 10, lines: vec!["x".into(); 5], total_lines: 100, instructions: None }, Some("5 of 100 lines") ; "read_code_partial")]
-    #[test_case(&ToolOutput::WriteCode { path: "a.rs".into(), byte_count: 99, lines: vec![] }, Some("99 bytes") ; "write_code_bytes")]
-    #[test_case(&ToolOutput::GrepResult { entries: vec![GrepFileEntry { path: "a.rs".into(), groups: vec![GrepMatchGroup::single(1, "hit")] }] }, Some("1 matches in 1 file") ; "grep_file_count")]
-    #[test_case(&ToolOutput::Diff { path: "a.rs".into(), before: String::new(), after: String::new(), summary: "ok".into(), telemetry: None }, None ; "diff_no_annotation")]
-    fn annotation_cases(output: &ToolOutput, expected: Option<&str>) {
-        assert_eq!(output.annotation().as_deref(), expected);
+    #[test_case(ToolOutput::ReadCode { path: "a.rs".into(), start_line: 1, lines: vec!["x".into(); 5], total_lines: 5, instructions: None }, "5 lines from a.rs" ; "read_code_full_file_summary")]
+    #[test_case(ToolOutput::ReadCode { path: "a.rs".into(), start_line: 10, lines: vec!["x".into(); 5], total_lines: 100, instructions: None }, "5 of 100 lines from a.rs" ; "read_code_partial_summary")]
+    #[test_case(ToolOutput::WriteCode { path: "a.rs".into(), byte_count: 99, lines: vec![] }, "wrote 99 bytes to a.rs" ; "write_code_summary")]
+    #[test_case(ToolOutput::GrepResult { entries: vec![GrepFileEntry { path: "a.rs".into(), groups: vec![GrepMatchGroup::single(1, "hit")] }] }, "1 match in 1 file" ; "grep_single_file_summary")]
+    #[test_case(ToolOutput::GrepResult { entries: vec![GrepFileEntry { path: "a.rs".into(), groups: vec![GrepMatchGroup::single(1, "hit")] }, GrepFileEntry { path: "b.rs".into(), groups: vec![GrepMatchGroup::single(2, "hit2")] }] }, "2 matches in 2 files" ; "grep_multiple_files_summary")]
+    #[test_case(ToolOutput::Diff { path: "a.rs".into(), before: "old".into(), after: "new".into(), summary: "changed 2 lines".into(), telemetry: None }, "changed 2 lines" ; "diff_summary")]
+    #[test_case(ToolOutput::Plain("ok".into()), "ok" ; "plain_passthrough")]
+    #[test_case(ToolOutput::Markdown("**bold**".into()), "**bold**" ; "markdown_passthrough")]
+    #[test_case(ToolOutput::ReadDir("a.rs\nb.rs".into()), "a.rs\nb.rs" ; "readdir_passthrough")]
+    #[allow(clippy::needless_pass_by_value)]
+    fn summary_cases(output: ToolOutput, expected_text: &str) {
+        let summary = output.summary();
+        assert_eq!(summary.as_text(), expected_text);
+    }
+
+    #[test]
+    fn summary_preserves_instructions() {
+        let instructions = vec![InstructionBlock {
+            path: "AGENTS.md".into(),
+            content: "do stuff".into(),
+        }];
+        let output = ToolOutput::ReadCode {
+            path: "a.rs".into(),
+            start_line: 1,
+            lines: vec!["fn main()".into()],
+            total_lines: 1,
+            instructions: Some(instructions),
+        };
+        let summary = output.summary();
+        assert!(summary.as_text().contains("1 lines from a.rs"));
+        assert!(summary.as_text().contains("Instructions from: AGENTS.md"));
+        assert!(summary.as_text().contains("do stuff"));
+    }
+
+    #[test]
+    fn summary_roundtrips_serde() {
+        let output = ToolOutput::ReadCode {
+            path: "a.rs".into(),
+            start_line: 1,
+            lines: vec!["fn main()".into()],
+            total_lines: 100,
+            instructions: None,
+        };
+        let summary = output.summary();
+        let json = serde_json::to_string(&summary).expect("summary must serialize");
+        let parsed: ToolOutput = serde_json::from_str(&json).expect("summary must deserialize");
+        assert_eq!(parsed.as_text(), summary.as_text());
     }
 
     #[test]
@@ -1633,6 +1726,11 @@ mod tests {
     #[test_case("a.rs\nb.rs", false ; "plain_output_not_empty_for_content")]
     fn plain_output_is_empty(text: &str, expected: bool) {
         assert_eq!(ToolOutput::Plain(text.into()).is_empty_result(), expected);
+    }
+
+    #[derive(serde::Deserialize)]
+    struct ToolSnapshotFields {
+        theme_gen: Option<u64>,
     }
 
     #[test]

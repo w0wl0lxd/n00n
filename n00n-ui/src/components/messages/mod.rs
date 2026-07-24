@@ -136,6 +136,7 @@ fn restore_plan(total: usize, batch_size: usize) -> RestorePlan {
 }
 
 impl MessagesPanel {
+    #[allow(clippy::needless_pass_by_value)]
     pub fn new(ui_config: UiConfig, picker: Arc<Picker>) -> Self {
         let thinking = thinking_style();
         let assistant = assistant_style();

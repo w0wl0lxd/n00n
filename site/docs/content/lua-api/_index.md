@@ -5146,6 +5146,16 @@ function ActivityPreview:update(progress, label, session_key)
 function ActivityPreview:prompt(sess, message, label)
 ```
 
+### `require("n00n.checkpoint")`
+
+```lua
+-- Checkpoint: save/load JSON snapshots for run lifecycle.
+function M.save(run_id, checkpoint_id, state)
+function M.load(run_id, checkpoint_id)
+function M.list(run_id)
+function M.latest(run_id)
+```
+
 ### `require("n00n.color")`
 
 ```lua
@@ -5210,6 +5220,13 @@ ListPicker.matches = matches
 ListPicker.highlight_spans = highlight_spans
 ```
 
+### `require("n00n.live_context")`
+
+```lua
+-- Live context: combine n00n.session.live() + blackboard query for visibility.
+function M.snapshot(ctx)
+```
+
 ### `require("n00n.output_limits")`
 
 ```lua
@@ -5218,9 +5235,11 @@ ListPicker.highlight_spans = highlight_spans
 
 local DEFAULT_MAX_OUTPUT_LINES = 2000
 local DEFAULT_MAX_OUTPUT_BYTES = 50 * 1024
+local DEFAULT_MAX_LINE_BYTES = 500
 
 local M = {}
 
+M.DEFAULT_MAX_LINE_BYTES = DEFAULT_MAX_LINE_BYTES
 M.specs = {
   max_output_lines = { type = "integer", desc = "Override `agent.max_output_lines` for this tool." },
   max_output_bytes = { type = "integer", desc = "Override `agent.max_output_bytes` for this tool." },
@@ -5240,6 +5259,13 @@ function M.resolve(opts, ctx)
 end
 
 return M
+```
+
+### `require("n00n.policy")`
+
+```lua
+-- Policy enforcement wrapper for tool calls.
+function M.call_tool(ctx, agent_id, session_type, tags, tool_name, input)
 ```
 
 ### `require("n00n.route_tier")`
@@ -5367,8 +5393,8 @@ function TextInput:render(prefix, prefix_width, width)
 
 -- opts: max_lines (default 80) shown while collapsed, keep "head"|"tail"
 -- (default "tail"), max_expand_lines (default 2000) kept for expansion,
--- max_line_bytes and max_width (optional) cap each complete rendered row,
--- and hide_collapsed (default false) reveals body lines only after a click.
+-- max_line_bytes (optional) per-line byte cap applied at render time,
+-- max_width (optional) display-width cap, hide_collapsed (default false).
 function ToolView.new(buf, opts)
 function ToolView:set_header(lines)
 function ToolView:clear()
