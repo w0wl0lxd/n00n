@@ -51,7 +51,8 @@ almas-demo *ARGS:
     ./scripts/almas_demo.sh {{ARGS}}
 
 setup-git-hooks:
-    git config core.hooksPath .githooks
+    git config --unset core.hooksPath 2>/dev/null || true
+    hk install
 
 secrets:
     gitleaks detect --source . --redact --no-banner --config .gitleaks.toml

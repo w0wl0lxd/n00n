@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use n00n_agent::agent;
-use n00n_agent::mcp::McpHandle;
+use n00n_agent::mcp::McpSession;
 use n00n_agent::mcp::config::McpServerStatus;
 use n00n_agent::permissions::PermissionManager;
 use n00n_agent::template;
@@ -14,7 +14,7 @@ use n00n_agent::tools::{
 use n00n_agent::{
     Agent, AgentConfig, AgentEvent, AgentInput, AgentParams, AgentRunParams, CancelMap,
     CancelToken, CancelTrigger, Envelope, EventSender, History, Instructions, McpCommand,
-    PromptRole, ToolOutputLines,
+    McpHandle, PromptRole, ToolOutputLines,
 };
 use n00n_lua::EventHandle;
 use n00n_providers::{AgentError, Message, Model, OpenAiOptions, TokenUsage};
@@ -35,7 +35,7 @@ pub(super) struct AgentLoop {
     instructions: Instructions,
     tools: Value,
     tool_filter: ToolFilter,
-    mcp_handle: Option<McpHandle>,
+    mcp: Option<McpSession>,
     history: History,
     btw_system: Arc<ArcSwap<String>>,
     cancel_map: Arc<RunCancelMap>,
@@ -88,7 +88,6 @@ pub(super) struct AgentLoopInit {
 }
 
 impl AgentLoop {
-    #[must_use]
     pub(super) fn new(init: AgentLoopInit) -> Self {
         let AgentLoopInit {
             model_slot,
@@ -120,7 +119,7 @@ impl AgentLoop {
             instructions: Instructions::default(),
             tools: Value::Null,
             tool_filter: ToolFilter::All,
-            mcp_handle,
+            mcp: mcp_handle.map(|h| McpSession::new(h, &initial_history)),
             history: History::restored_with_transcript(initial_history, initial_transcript)
                 .with_mirror(shared_history)
                 .with_transcript_mirror(shared_transcript),
@@ -198,7 +197,7 @@ impl AgentLoop {
 
         let slot = self.model_slot.load();
         self.rebuild_tools(&slot.model, false);
-        if let Some(ref mcp) = self.mcp_handle {
+        if let Some(ref mcp) = self.mcp {
             spawn_oauth_for_needs_auth(mcp);
         }
         !self.init_cancel.is_cancelled()
@@ -238,7 +237,7 @@ impl AgentLoop {
         let (trigger, cancel) = CancelToken::new();
         self.set_cancel_trigger(run_id, trigger);
         let prompt_messages = if let Some(ref prompt_ref) = input.prompt {
-            let Some(ref mcp) = self.mcp_handle else {
+            let Some(ref mcp) = self.mcp else {
                 self.clear_cancel_trigger(run_id);
                 return Err(AgentError::Tool {
                     tool: "mcp_prompt".into(),
@@ -330,7 +329,7 @@ impl AgentLoop {
         .with_user_response_rx(Arc::clone(&self.answer_rx))
         .with_interrupt_source(Arc::clone(&self.queue) as Arc<dyn n00n_agent::InterruptSource>)
         .with_cancel(cancel)
-        .with_mcp(self.mcp_handle.clone())
+        .with_mcp(self.mcp.clone())
         .with_pre_dispatch_gate(pre_dispatch_gate)
         .with_pre_dispatch_rollback_len(rollback_len);
 
@@ -348,10 +347,7 @@ impl AgentLoop {
 
     fn rebuild_tools(&mut self, model: &Model, workflow: bool) {
         let snap = ToolRegistry::global().snapshot_arc();
-        let mcp_gen = self
-            .mcp_handle
-            .as_ref()
-            .map(|m| m.reader().load().generation);
+        let mcp_gen = self.mcp.as_ref().map(|m| m.reader().load().generation);
         let vars_hash = self.vars.content_hash();
         let supports_tool_examples = model.supports_tool_examples();
         let supports_vision = model.supports_vision();
@@ -367,7 +363,7 @@ impl AgentLoop {
             return;
         }
         let mut tools = self.build_tools(model, workflow);
-        if let Some(ref mcp) = self.mcp_handle {
+        if let Some(ref mcp) = self.mcp {
             mcp.extend_tools(&mut tools);
         }
         self.tools = tools;
@@ -446,7 +442,7 @@ impl AgentLoop {
     }
 }
 
-fn spawn_oauth_for_needs_auth(handle: &McpHandle) {
+fn spawn_oauth_for_needs_auth(handle: &n00n_agent::mcp::McpHandle) {
     let snapshot = handle.reader().load().clone();
     for info in &snapshot.infos {
         let McpServerStatus::NeedsAuth { ref url } = info.status else {

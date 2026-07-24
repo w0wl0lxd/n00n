@@ -3,12 +3,7 @@ local QuestionHelpers = require("question_helpers")
 local ToolView = require("n00n.tool_view")
 
 local DESCRIPTION =
-  [[Ask the user questions during execution. Use to gather preferences, clarify instructions, get decisions, or offer choices.
-
-Rules:
-- `custom` enabled by default adds "Type your own answer" - don't include catch-all options.
-- Answers returned as arrays of labels. Set `multiSelect: true` for multi-select.
-- Put recommended option first with "(Recommended)" suffix.]]
+  [[Ask the user questions during execution. Supports single/multi-select, custom answers, and tabbed multi-question forms. Put recommended options first with "(Recommended)" suffix.]]
 
 local function card_width()
   local ok, size = pcall(n00n.ui.terminal_size)

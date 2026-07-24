@@ -35,7 +35,17 @@ local function split_at(s, max_cols)
     return s, ""
   end
   local t = n00n.ui.truncate_text(s, max_cols)
-  return t.head, t.tail
+  local head, tail = t.head, t.tail
+  -- truncate_text already force-takes the first char when max_cols is smaller
+  -- than its width, but guard against an empty head here so wrap_spans always
+  -- makes forward progress (e.g. a single wide glyph in a 1-cell column).
+  if max_cols > 0 and head == "" then
+    local next_pos = utf8.offset(s, 2)
+    local len = next_pos and next_pos - 1 or #s
+    head = s:sub(1, len)
+    tail = s:sub(len + 1)
+  end
+  return head, tail
 end
 
 local function wrap_spans(spans, max_width)
@@ -98,8 +108,15 @@ local function wrap_spans(spans, max_width)
             if current_w >= max_width then
               flush()
             end
-            local head, tail = split_at(word, max_width - current_w)
-            push(head, style, display_width(head))
+            local remaining = max_width - current_w
+            local head, tail = split_at(word, remaining)
+            local head_w = display_width(head)
+            if head_w > remaining and current_w > 0 then
+              flush()
+              head, tail = split_at(word, max_width)
+              head_w = display_width(head)
+            end
+            push(head, style, head_w)
             word = tail
           end
         end

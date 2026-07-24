@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 use n00n_config_macro::ConfigSection;
@@ -22,8 +23,8 @@ pub const DEFAULT_FLASH_DURATION_MS: u64 = 1500;
 pub const DEFAULT_TYPEWRITER_MS_PER_CHAR: u64 = 4;
 pub const DEFAULT_MOUSE_SCROLL_LINES: u32 = 3;
 pub const DEFAULT_MAX_INPUT_LINES: u32 = 20;
-
 pub const MIN_MAX_INPUT_LINES: u32 = 1;
+pub const DEFAULT_MCP_TOOL_DESC_MAX_CHARS: usize = 300;
 
 pub const DEFAULT_MAX_CONTINUATION_TURNS: u32 = 3;
 pub const DEFAULT_COMPACTION_BUFFER: CompactionBuffer = CompactionBuffer::Percent(20);
@@ -280,7 +281,7 @@ impl RawConfig {
                 .map(AlwaysThinking::resolve)
                 .transpose()?,
             ui: UiConfig::from_file(self.ui),
-            agent: AgentConfig::from_file(&self.agent, no_rtk, disabled_tools),
+            agent: AgentConfig::from_file(self.agent.clone(), no_rtk, disabled_tools),
             provider: ProviderConfig::from_file(self.provider),
             storage: StorageConfig::from_file(&self.storage),
             permissions: PermissionsConfig::default(),
@@ -329,6 +330,7 @@ pub struct UiFileConfig {
     pub typewriter_ms_per_char: Option<u64>,
     pub mouse_scroll_lines: Option<u32>,
     pub show_thinking: Option<bool>,
+    pub theme: Option<String>,
     pub tool_output_lines: Option<ToolOutputLinesFile>,
     pub max_input_lines: Option<u32>,
 }
@@ -345,6 +347,7 @@ impl UiFileConfig {
             typewriter_ms_per_char,
             mouse_scroll_lines,
             show_thinking,
+            theme,
             max_input_lines
         );
         match (self.tool_output_lines.as_mut(), overlay.tool_output_lines) {
@@ -464,17 +467,22 @@ impl<'de> Deserialize<'de> for CompactionBuffer {
     }
 }
 
-#[derive(Deserialize, Default, Debug)]
+#[derive(Deserialize, Default, Debug, Clone)]
 #[serde(default, deny_unknown_fields)]
 pub struct AgentFileConfig {
     pub max_output_bytes: Option<usize>,
     pub max_output_lines: Option<usize>,
     pub max_continuation_turns: Option<u32>,
     pub compaction_buffer: Option<CompactionBuffer>,
-    pub max_input_tokens: Option<u32>,
-    pub max_output_tokens: Option<u32>,
-    pub max_total_tokens: Option<u32>,
-    pub max_context_tokens: Option<u32>,
+    pub mcp_tool_desc_max_chars: Option<usize>,
+    pub dynamic_tools: Option<DynamicToolFileConfig>,
+}
+
+#[derive(Deserialize, Default, Debug, Clone)]
+#[serde(default, deny_unknown_fields)]
+pub struct DynamicToolFileConfig {
+    pub enabled: Option<bool>,
+    pub default_mode: Option<String>,
 }
 
 impl AgentFileConfig {
@@ -486,11 +494,20 @@ impl AgentFileConfig {
             max_output_lines,
             max_continuation_turns,
             compaction_buffer,
-            max_input_tokens,
-            max_output_tokens,
-            max_total_tokens,
-            max_context_tokens
+            mcp_tool_desc_max_chars
         );
+        match (self.dynamic_tools.as_mut(), overlay.dynamic_tools.clone()) {
+            (Some(base), Some(over)) => {
+                if over.enabled.is_some() {
+                    base.enabled = over.enabled;
+                }
+                if over.default_mode.is_some() {
+                    base.default_mode = over.default_mode;
+                }
+            }
+            (None, Some(over)) => self.dynamic_tools = Some(over),
+            _ => {}
+        }
     }
 }
 
@@ -826,11 +843,17 @@ pub struct Config {
     pub plugins: PluginsConfig,
 }
 
-#[derive(Debug, Clone, Copy, ConfigSection)]
+#[derive(Debug, Clone, ConfigSection)]
 #[config(section = "ui")]
 pub struct UiConfig {
     #[config(default = true, desc = "Show splash animation on startup")]
     pub splash_animation: bool,
+
+    #[config(
+        default = true,
+        desc = "Show the n00n mascot on the idle splash screen"
+    )]
+    pub mascot: bool,
 
     #[config(default = true, desc = "Show vertical scrollbar in scrollable areas")]
     pub scrollbar: bool,
@@ -853,11 +876,8 @@ pub struct UiConfig {
     )]
     pub show_thinking: bool,
 
-    #[config(
-        default = false,
-        desc = "Show the n00n mascot on the idle splash screen"
-    )]
-    pub mascot: bool,
+    #[config(skip, default = "None")]
+    pub theme: Option<String>,
 
     #[config(skip, default = "ToolOutputLines::default()")]
     pub tool_output_lines: ToolOutputLines,
@@ -877,12 +897,13 @@ impl UiConfig {
             flash_duration_ms: f.flash_duration_ms.map_or(DEFAULT_FLASH_DURATION_MS, |v| v),
             typewriter_ms_per_char: f
                 .typewriter_ms_per_char
-                .map_or(DEFAULT_TYPEWRITER_MS_PER_CHAR, |v| v),
+                .unwrap_or_else(|| DEFAULT_TYPEWRITER_MS_PER_CHAR),
             mouse_scroll_lines: f
                 .mouse_scroll_lines
-                .map_or(DEFAULT_MOUSE_SCROLL_LINES, |v| v),
-            max_input_lines: f.max_input_lines.map_or(DEFAULT_MAX_INPUT_LINES, |v| v),
-            show_thinking: f.show_thinking.is_none_or(|v| v),
+                .unwrap_or_else(|| DEFAULT_MOUSE_SCROLL_LINES),
+            max_input_lines: f.max_input_lines.unwrap_or_else(|| DEFAULT_MAX_INPUT_LINES),
+            show_thinking: f.show_thinking.unwrap_or_else(|| true),
+            theme: f.theme,
             tool_output_lines: ToolOutputLines::from_file(f.tool_output_lines),
         }
     }
@@ -1037,6 +1058,9 @@ pub struct AgentConfig {
     #[config(default = DEFAULT_COMPACTION_BUFFER, ty = "u32 | string", default_doc = "20%", desc = "Context reserved for compaction: token count or percent of the context window (e.g. \"20%\")")]
     pub compaction_buffer: CompactionBuffer,
 
+    #[config(default = DEFAULT_MCP_TOOL_DESC_MAX_CHARS, min = 10, desc = "Max MCP tool description length (characters)")]
+    pub mcp_tool_desc_max_chars: usize,
+
     #[config(skip, default = false)]
     pub no_rtk: bool,
 
@@ -1049,21 +1073,48 @@ pub struct AgentConfig {
     #[config(skip, default = "Vec::new()")]
     pub disabled_tools: Vec<String>,
 
-    #[config(skip, default = "None")]
-    pub max_input_tokens: Option<u32>,
+    #[config(skip, default = "DynamicToolConfig::default()")]
+    pub dynamic_tools: DynamicToolConfig,
+}
 
-    #[config(skip, default = "None")]
-    pub max_output_tokens: Option<u32>,
+#[derive(Debug, Clone, Serialize, Deserialize, ConfigSection)]
+#[config(section = "dynamic_tools", fields_only)]
+pub struct DynamicToolConfig {
+    #[config(
+        ty = "bool",
+        default = "false",
+        desc = "Enable mode-based dynamic tool loading"
+    )]
+    pub enabled: bool,
 
-    #[config(skip, default = "None")]
-    pub max_total_tokens: Option<u32>,
+    #[config(
+        ty = "String",
+        default = "\"default\"",
+        desc = "Default mode for tool filtering (e.g. \"default\", \"research\", \"build\")"
+    )]
+    pub default_mode: String,
+}
 
-    #[config(skip, default = "None")]
-    pub max_context_tokens: Option<u32>,
+impl Default for DynamicToolConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            default_mode: "default".to_string(),
+        }
+    }
 }
 
 impl AgentConfig {
-    fn from_file(file: &AgentFileConfig, no_rtk: bool, disabled_tools: Vec<String>) -> Self {
+    fn from_file(file: AgentFileConfig, no_rtk: bool, disabled_tools: Vec<String>) -> Self {
+        let dynamic_tools = if let Some(dt) = file.dynamic_tools {
+            DynamicToolConfig {
+                enabled: dt.enabled.unwrap_or_else(|| false),
+                default_mode: dt.default_mode.unwrap_or_else(|| "default".to_string()),
+            }
+        } else {
+            DynamicToolConfig::default()
+        };
+
         Self {
             no_rtk,
             max_output_bytes: file
@@ -1074,17 +1125,17 @@ impl AgentConfig {
                 .map_or(DEFAULT_MAX_OUTPUT_LINES, |v| v),
             max_continuation_turns: file
                 .max_continuation_turns
-                .map_or(DEFAULT_MAX_CONTINUATION_TURNS, |v| v),
+                .unwrap_or_else(|| DEFAULT_MAX_CONTINUATION_TURNS),
             compaction_buffer: file
                 .compaction_buffer
-                .map_or(DEFAULT_COMPACTION_BUFFER, |v| v),
+                .unwrap_or_else(|| DEFAULT_COMPACTION_BUFFER),
+            mcp_tool_desc_max_chars: file
+                .mcp_tool_desc_max_chars
+                .unwrap_or_else(|| DEFAULT_MCP_TOOL_DESC_MAX_CHARS),
             max_turns: None,
             allowed_tools: Vec::new(),
             disabled_tools,
-            max_input_tokens: file.max_input_tokens,
-            max_output_tokens: file.max_output_tokens,
-            max_total_tokens: file.max_total_tokens,
-            max_context_tokens: file.max_context_tokens,
+            dynamic_tools,
         }
     }
 }
@@ -1631,6 +1682,95 @@ fn collect_env_vars(path: &Path, vars: &mut HashMap<String, String>) {
 
 pub fn load_env_files(cwd: &Path) {
     load_env_files_with_global(cwd, global_dir().as_deref());
+}
+
+/// Error message shown when no Bash-compatible runtime is found on Windows.
+#[cfg(windows)]
+const BASH_NOT_FOUND_ERROR: &str = "bash not found on Windows. Install Git for Windows:\n  \
+     winget install --id Git.Git -e --source winget\n  \
+     or download from https://git-scm.com/download/win\n\n  \
+     Alternatively, enable WSL: \
+     https://learn.microsoft.com/en-us/windows/wsl/install";
+
+/// Search PATH and common install paths for a Bash executable.
+#[cfg(windows)]
+fn find_bash_on_path() -> Option<PathBuf> {
+    std::env::var_os("PATH")
+        .and_then(|paths| {
+            std::env::split_paths(&paths).find_map(|dir| {
+                let bash = dir.join("bash.exe");
+                if bash.is_file() { Some(bash) } else { None }
+            })
+        })
+        .or_else(|| {
+            let candidates = [
+                // Git for Windows
+                r"C:\Program Files\Git\bin\bash.exe",
+                r"C:\Program Files\Git\usr\bin\bash.exe",
+                r"C:\Program Files (x86)\Git\bin\bash.exe",
+                // Cygwin
+                r"C:\cygwin64\bin\bash.exe",
+                r"C:\cygwin\bin\bash.exe",
+                // MSYS2
+                r"C:\msys64\usr\bin\bash.exe",
+                r"C:\msys32\usr\bin\bash.exe",
+            ];
+            candidates.iter().find_map(|p| {
+                let path = PathBuf::from(p);
+                path.is_file().then_some(path)
+            })
+        })
+}
+
+/// Search PATH and System32 for `wsl.exe`.
+#[cfg(windows)]
+fn find_wsl() -> Option<PathBuf> {
+    std::env::var_os("PATH")
+        .and_then(|paths| {
+            std::env::split_paths(&paths).find_map(|dir| {
+                let wsl = dir.join("wsl.exe");
+                if wsl.is_file() { Some(wsl) } else { None }
+            })
+        })
+        .or_else(|| {
+            let path = PathBuf::from(r"C:\Windows\System32\wsl.exe");
+            path.is_file().then_some(path)
+        })
+}
+
+/// Build a `bash -c` command for the given shell string.
+///
+/// Mirrors Neovim's list-form `jobstart(['bash', '-c', ...])`: the command
+/// string is passed as a single argv element, so quoting is preserved by the
+/// C runtime / libuv argument parser instead of being reinterpreted by
+/// cmd.exe. On Windows, searches PATH and known install locations for Git
+/// Bash, Cygwin, MSYS2 and falls back to WSL's `wsl.exe -e bash -c`.
+///
+/// # Errors
+///
+/// Returns `Err` on Windows if no bash-compatible shell (Git Bash, Cygwin,
+/// MSYS2, or WSL) can be located.
+pub fn bash_command(cmd: &str) -> Result<Command, String> {
+    #[cfg(unix)]
+    {
+        let mut c = Command::new("bash");
+        c.arg("-c").arg(cmd);
+        Ok(c)
+    }
+    #[cfg(windows)]
+    {
+        if let Some(bash) = find_bash_on_path() {
+            let mut c = Command::new(bash);
+            c.arg("-c").arg(cmd);
+            return Ok(c);
+        }
+        if let Some(wsl) = find_wsl() {
+            let mut c = Command::new(wsl);
+            c.arg("-e").arg("bash").arg("-c").arg(cmd);
+            return Ok(c);
+        }
+        Err(BASH_NOT_FOUND_ERROR.to_string())
+    }
 }
 
 #[must_use]
