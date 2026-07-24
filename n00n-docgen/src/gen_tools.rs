@@ -38,6 +38,7 @@ const SECTIONS: &[(&str, &[&str])] = &[
         "Agent & Knowledge",
         &[
             "agent_control",
+            "blackboard",
             "team",
             "task",
             "workflow",
@@ -415,7 +416,7 @@ mod tests {
         assert!(cleaned.starts_with(remaining_prefix), "cleaned: {cleaned}");
     }
 
-    const MAX_TOOL_DEFINITION_BYTES: usize = 28_000;
+    const MAX_TOOL_DEFINITION_BYTES: usize = 36_000;
 
     #[test]
     fn tool_definitions_fit_byte_budget() {

@@ -60,6 +60,7 @@ pub const DEFAULT_BUILTINS: &[&str] = &[
     "arbor",
     "bash",
     "batch",
+    "blackboard",
     "code_execution",
     "codegraph",
     "edit",

@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-n00n ships with 27 built-in tools. This is the full reference.
+n00n ships with 28 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -185,8 +185,23 @@ Control background agents started by task, team, or workflow.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `message` | string | no | Steering instructions. |
+| `policy` | object | no | Policy data for policy action. |
 | `action` | string | yes | Control action. |
 | `agent_id` | string | no | Background agent id. |
+
+### `blackboard` *(lua plugin)*
+
+Shared coordination substrate for multi-agent sessions. Post observations, claim tasks atomically, and query coordination state.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `post` | object | no | Post data for write action. |
+| `action` | string | yes | Blackboard action. |
+| `query` | object | no | Query parameters for query action. |
+| `status` | string | no | Status for update_task action. |
+| `post_id` | string | no | Post ID for read action. |
+| `task_id` | string | no | Task ID for claim/release/update actions. |
+| `claim` | object | no | Claim data for claim_task action. |
 
 ### `team` *(lua plugin)*
 
