@@ -82,18 +82,7 @@ local function mktmpdir()
 end
 
 local function rmtree(dir)
-  local entries = n00n.fs.dir(dir)
-  if entries then
-    for _, e in ipairs(entries) do
-      local p = n00n.fs.joinpath(dir, e[1])
-      if e[2] == "directory" then
-        rmtree(p)
-      else
-        n00n.fs.rm(p)
-      end
-    end
-  end
-  n00n.fs.rm(dir)
+  n00n.fs.rm(dir, { recursive = true })
 end
 
 -- line_nr_fmt: table-driven across all boundaries + alignment
