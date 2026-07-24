@@ -1335,9 +1335,13 @@ Run a shell command in the background. The command runs through
 `bash -c` on Unix or `cmd /C` on Windows. You get back a job id
 that you can pass to `jobstop` or `jobwait` to control the process.
 
+For commands that don't need shell features (pipes, redirection, globs),
+pass an array to run the program directly with preserved argument quoting:
+`n00n.fn.jobstart({ "git", "commit", "-m", "feat: msg" })`
+
 **Parameters:**
 
-- `{cmd}` (`string`) Shell command to run.
+- `{cmd}` (`string|table`) Shell command string, or array of program + args.
 - `{opts?}` (`table?`) Optional settings:
   - `cwd` (`string?`) working directory (tilde is expanded).
   - `env` (`table?`) extra environment variables, `{ VAR = "value" }`.
@@ -1350,11 +1354,14 @@ that you can pass to `jobstop` or `jobwait` to control the process.
 **Example:**
 
 ```lua
+-- String mode (shell features available)
 local id = n00n.fn.jobstart("ls -la", {
   cwd = "~/projects",
   on_stdout = function(_, line) print(line) end,
   on_exit = function(_, code) print("exit: " .. code) end,
 })
+-- List mode (preserves argument quoting)
+local id = n00n.fn.jobstart({ "git", "commit", "-m", "feat: preserve spaces" }, opts)
 ```
 
 ---
@@ -1824,14 +1831,18 @@ if err then print("write failed: " .. err) end
 ### `n00n.fs.rm()` {#n00n-fs-rm}
 
 ```lua
-n00n.fs.rm({path})
+n00n.fs.rm({path}, {opts?})
 ```
 
-Delete the file at {path}. Does not remove directories.
+Delete the file, symlink, or directory at {path}.
+Pass `recursive = true` to remove a non-empty directory tree (like `rm -r`).
+Unlike `vim.fs.rm`, this also removes an empty directory without `recursive`.
+Symlinks are removed themselves, never followed.
 
 **Parameters:**
 
-- `{path}` (`string`) Path to the file to remove.
+- `{path}` (`string`) Path to the file or directory to remove.
+- `{opts?}` (`table?`) `recursive` (boolean, default false): remove a directory and its contents recursively. `force` (boolean, default false): silently ignore a missing path.
 
 **Returns:** (`true?`, `string?`) `true` on success, or nil plus an error message.
 
@@ -1840,6 +1851,7 @@ Delete the file at {path}. Does not remove directories.
 ```lua
 local ok, err = n00n.fs.rm("temp.txt")
 if err then print("rm failed: " .. err) end
+n00n.fs.rm("stale_dir", { recursive = true, force = true })
 ```
 
 ---
