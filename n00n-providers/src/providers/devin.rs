@@ -145,8 +145,8 @@ struct DevinInner {
 }
 
 impl DevinInner {
-    async fn spawn(api_key: Option<&str>) -> Result<Self, AgentError> {
-        let mut cmd = Command::new("devin");
+    async fn spawn(command: &str, api_key: Option<&str>) -> Result<Self, AgentError> {
+        let mut cmd = Command::new(command);
         cmd.arg("acp");
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
@@ -882,6 +882,7 @@ fn fallback_models() -> Vec<crate::model::ModelInfo> {
 pub struct Devin {
     inner: Arc<OnceCell<DevinInner>>,
     api_key: Option<String>,
+    command: String,
 }
 
 impl Devin {
@@ -895,10 +896,20 @@ impl Devin {
             .map(ToString::to_string)
     }
 
-    fn with_api_key(api_key: Option<String>) -> Self {
+    fn command_from_auth(auth: &ResolvedAuth) -> String {
+        auth.base_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "devin")
+            .to_string()
+    }
+
+    fn with_api_key(api_key: Option<String>, command: String) -> Self {
         Self {
             inner: Arc::new(OnceCell::new()),
             api_key,
+            command,
         }
     }
 
@@ -917,7 +928,7 @@ impl Devin {
             }
         };
 
-        Self::with_api_key(Self::api_key_from_auth(&auth))
+        Self::with_api_key(Self::api_key_from_auth(&auth), "devin".to_string())
     }
 
     #[allow(clippy::unnecessary_wraps)]
@@ -930,14 +941,18 @@ impl Devin {
             Err(e) => e.into_inner(),
         };
 
-        Ok(Self::with_api_key(Self::api_key_from_auth(&resolved)))
+        Ok(Self::with_api_key(
+            Self::api_key_from_auth(&resolved),
+            Self::command_from_auth(&resolved),
+        ))
     }
 
     async fn get_inner(&self) -> Result<&DevinInner, AgentError> {
         self.inner
             .get_or_try_init(|| async {
+                let command = self.command.clone();
                 let api_key = self.api_key.clone();
-                DevinInner::spawn(api_key.as_deref()).await
+                DevinInner::spawn(&command, api_key.as_deref()).await
             })
             .await
     }
