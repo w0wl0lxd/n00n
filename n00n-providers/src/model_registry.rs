@@ -122,14 +122,21 @@ impl ModelRegistry {
                 t => t,
             };
         }
-        if let Some(t) = static_tier {
-            return t;
-        }
         if let Some((_, model_id)) = spec.split_once('/')
             && let Some(models) = self.known_models.get(provider)
-            && let Some(pos) = models.iter().position(|m| m.id == model_id)
+            && let Some(model) = models.iter().find(|model| model.id == model_id)
         {
-            return tier_for_position(pos);
+            if let Some(tier) = model.tier {
+                return tier;
+            }
+            if static_tier.is_none()
+                && let Some(pos) = models.iter().position(|candidate| candidate.id == model_id)
+            {
+                return tier_for_position(pos);
+            }
+        }
+        if let Some(t) = static_tier {
+            return t;
         }
         ModelTier::Medium
     }
@@ -143,10 +150,20 @@ impl ModelRegistry {
             return Some(spec.clone());
         }
 
-        let candidate = Self::static_candidate(provider, tier)
+        let candidate = self
+            .metadata_candidate(provider, tier)
+            .or_else(|| Self::static_candidate(provider, tier))
             .or_else(|| self.positional_candidate(provider, tier))?;
 
         (!self.claimed_elsewhere(&candidate, tier)).then_some(candidate)
+    }
+
+    fn metadata_candidate(&self, provider: &str, tier: ModelTier) -> Option<String> {
+        self.known_models
+            .get(provider)?
+            .iter()
+            .find(|model| model.tier == Some(tier))
+            .map(|model| format!("{provider}/{}", model.id))
     }
 
     fn static_candidate(provider: &str, tier: ModelTier) -> Option<String> {
@@ -280,6 +297,42 @@ mod tests {
     }
 
     #[test]
+    fn discovered_category_tier_beats_position_and_static_fallback() {
+        let mut reg = make_map(&[], &[]);
+        reg.set_known_models(
+            &Arc::<str>::from("copilot"),
+            [
+                ("terra", ModelTier::Medium),
+                ("luna", ModelTier::Weak),
+                ("gpt-5.6-sol", ModelTier::Strong),
+            ]
+            .into_iter()
+            .map(|(id, tier)| ModelInfo {
+                tier: Some(tier),
+                ..ModelInfo::id_only(id.into())
+            })
+            .collect(),
+        );
+
+        assert_eq!(
+            reg.tier_for("copilot/gpt-5.6-sol", "copilot", Some(ModelTier::Medium)),
+            ModelTier::Strong
+        );
+        assert_eq!(
+            reg.tier_for("copilot/terra", "copilot", None),
+            ModelTier::Medium
+        );
+        assert_eq!(
+            reg.tier_for("copilot/luna", "copilot", None),
+            ModelTier::Weak
+        );
+        assert_eq!(
+            reg.spec_for_tier("copilot", ModelTier::Strong),
+            Some("copilot/gpt-5.6-sol".into())
+        );
+    }
+
+    #[test]
     fn tier_for_prefers_strongest_over_multi_tier_spec() {
         let mut reg = make_map(&[], &[]);
         reg.set("ollama/multi".into(), ModelTier::Medium);
@@ -348,6 +401,7 @@ mod tests {
                     pricing: None,
                     supports_thinking: None,
                     supports_vision: None,
+                    tier: None,
                     provider_info: None,
                 },
                 ModelInfo {
@@ -357,6 +411,7 @@ mod tests {
                     pricing: None,
                     supports_thinking: None,
                     supports_vision: None,
+                    tier: None,
                     provider_info: None,
                 },
             ],
