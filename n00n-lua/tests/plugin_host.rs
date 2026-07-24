@@ -2523,6 +2523,10 @@ fn register_command_happy_path() {
     r#"n00n.api.register_command({ name = "/test", description = "no handler" })"#,
     "handler" ; "missing_handler"
 )]
+#[test_case::test_case(
+    r#"n00n.api.register_command({ name = "/test", handler = function() end, max_args = -2 })"#,
+    "max_args" ; "negative_max_args"
+)]
 fn register_command_validation_rejects(src: &str, expected_err: &str) {
     let reg = fresh_registry();
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
@@ -2566,6 +2570,54 @@ fn unload_clears_commands() {
 
     host.unload("cmd_only").unwrap();
     assert_eq!(host.command_reader().load().commands.len(), 0);
+}
+
+#[test]
+fn register_command_max_args_custom() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    host.load_source(
+        "max_args_plugin",
+        r#"
+        n00n.api.register_command({
+            name = "/two_args",
+            description = "takes two args",
+            handler = function(args) end,
+            max_args = 2,
+        })
+        "#,
+    )
+    .unwrap();
+
+    let reader = host.command_reader();
+    let snap = reader.load();
+    assert_eq!(snap.commands.len(), 1);
+    assert_eq!(snap.commands[0].name.as_ref(), "/two_args");
+    assert_eq!(snap.commands[0].max_args, 2);
+}
+
+#[test]
+fn register_command_max_args_unlimited() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    host.load_source(
+        "unlimited_args_plugin",
+        r#"
+        n00n.api.register_command({
+            name = "/many",
+            description = "takes many args",
+            handler = function(args) end,
+            max_args = -1,
+        })
+        "#,
+    )
+    .unwrap();
+
+    let reader = host.command_reader();
+    let snap = reader.load();
+    assert_eq!(snap.commands.len(), 1);
+    assert_eq!(snap.commands[0].name.as_ref(), "/many");
+    assert_eq!(snap.commands[0].max_args, usize::MAX);
 }
 
 #[test]
