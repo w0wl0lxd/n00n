@@ -428,7 +428,7 @@ local function query_posts(filters)
   end
 
   table.sort(results, function(a, b)
-    return (a.timestamp or 0) < (b.timestamp or 0)
+    return (a.timestamp or 0) > (b.timestamp or 0)
   end)
 
   return results
