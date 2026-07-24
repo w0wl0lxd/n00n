@@ -1,0 +1,2 @@
+-- Lib: shared library modules for other plugins.
+-- This plugin provides reusable modules like live_context and checkpoint.
