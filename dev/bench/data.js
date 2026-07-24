@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784867535199,
+  "lastUpdate": 1784869289667,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -3671,6 +3671,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 108080,
             "range": "± 8405",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b78e22b3e8d53580602f9d49fa8ecac43d24d46f",
+          "message": "Merge pull request #99 from w0wl0lxd/fix/main-merged-upstream-followup\n\nfix(ui): avoid Windows dead code in color_compat and regenerate lua-api docs",
+          "timestamp": "2026-07-24T00:47:41-04:00",
+          "tree_id": "43a02bc5c3833fe0ab0494890ea079a008464645",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/b78e22b3e8d53580602f9d49fa8ecac43d24d46f"
+        },
+        "date": 1784869288746,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6648232,
+            "range": "± 154477",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2235948,
+            "range": "± 26449",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2208156,
+            "range": "± 35639",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 9255290,
+            "range": "± 30633",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4336621,
+            "range": "± 89078",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4362240,
+            "range": "± 26943",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 584124,
+            "range": "± 1611",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191799,
+            "range": "± 3519",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191617,
+            "range": "± 2210",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1059094,
+            "range": "± 5132",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 561989,
+            "range": "± 9825",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 562074,
+            "range": "± 3805",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 70477,
+            "range": "± 4498",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 175765,
+            "range": "± 16429",
             "unit": "ns/iter"
           }
         ]
