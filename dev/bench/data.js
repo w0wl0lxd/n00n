@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784869943533,
+  "lastUpdate": 1784870007527,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -3887,6 +3887,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 106668,
             "range": "± 13014",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1712d5bfca3f653c6ba981d384a5751287e6b91d",
+          "message": "Merge pull request #97 from w0wl0lxd/fold/upstream-pr-616\n\nci: add macos lint/test jobs and drop ripgrep install",
+          "timestamp": "2026-07-24T00:59:49-04:00",
+          "tree_id": "16de4e13c426a9765f5598409d18d4b76d9c0b80",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/1712d5bfca3f653c6ba981d384a5751287e6b91d"
+        },
+        "date": 1784870006143,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6626521,
+            "range": "± 65118",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2353428,
+            "range": "± 4648",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2332477,
+            "range": "± 82929",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 9215589,
+            "range": "± 258672",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4302751,
+            "range": "± 20633",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4367842,
+            "range": "± 59797",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 583032,
+            "range": "± 2051",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191709,
+            "range": "± 3770",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191716,
+            "range": "± 474",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1027951,
+            "range": "± 11482",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 561477,
+            "range": "± 17022",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 560629,
+            "range": "± 12734",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 67435,
+            "range": "± 5892",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 156772,
+            "range": "± 23889",
             "unit": "ns/iter"
           }
         ]
