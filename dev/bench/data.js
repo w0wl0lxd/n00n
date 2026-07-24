@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784856642563,
+  "lastUpdate": 1784857141400,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -2699,6 +2699,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 138206,
             "range": "± 11231",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e2d173a736e1c56855245b0a2fabf9ca9707b4ef",
+          "message": "Merge pull request #86 from w0wl0lxd/spec/almas-coordination-followup\n\nfeat(coordination): agent execution with waves, checkpoints, policy and live context",
+          "timestamp": "2026-07-23T21:33:02-04:00",
+          "tree_id": "fc9b5c03d0250a713f89c24e610082e82cc34d49",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/e2d173a736e1c56855245b0a2fabf9ca9707b4ef"
+        },
+        "date": 1784857140379,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6722642,
+            "range": "± 177299",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2446664,
+            "range": "± 17923",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2341042,
+            "range": "± 17631",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 9542695,
+            "range": "± 146565",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4312514,
+            "range": "± 19606",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4283794,
+            "range": "± 23677",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 585137,
+            "range": "± 5809",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 192060,
+            "range": "± 2813",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191937,
+            "range": "± 4139",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1029549,
+            "range": "± 11864",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 563844,
+            "range": "± 5488",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 564303,
+            "range": "± 2203",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 78160,
+            "range": "± 5235",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 131367,
+            "range": "± 24265",
             "unit": "ns/iter"
           }
         ]
