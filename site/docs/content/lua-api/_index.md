@@ -263,6 +263,8 @@ browsing memory files or toggling settings.
   - `name` (`string`) Required. The command name (without the leading slash).
   - `description` (`string`) Optional. Short description shown in the command palette.
   - `handler` (`function`) Required. Called when the user runs the command.
+  - `max_args` (`integer`) Optional. Maximum number of arguments the command accepts.
+    Default 0 (no arguments). -1 means unlimited.
 
 **Example:**
 

@@ -102,18 +102,21 @@ fn terminfo_advertises() -> bool {
 
 /// A terminal that applied the RGB background echoes `48:2` (or `48;2`)
 /// back in its DECRQSS SGR report; one that ignored it does not.
+#[cfg(any(unix, test))]
 fn decrqss_reply_supports_rgb(buf: &[u8]) -> bool {
     contains(buf, b"48:2") || contains(buf, b"48;2")
 }
 
 /// DA1 reply (`ESC [ ? ... c`) marks the end of the probe: it is requested
 /// last and every terminal answers it, so replies stay ordered.
+#[cfg(any(unix, test))]
 fn da1_answered(buf: &[u8]) -> bool {
     buf.windows(3)
         .position(|w| w == b"\x1b[?")
         .is_some_and(|start| buf[start + 3..].contains(&b'c'))
 }
 
+#[cfg(any(unix, test))]
 fn contains(hay: &[u8], needle: &[u8]) -> bool {
     hay.windows(needle.len()).any(|w| w == needle)
 }
