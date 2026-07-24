@@ -205,6 +205,18 @@ enable_free_models = true
 
 The default is `false`.
 
+### Windsurf / Devin
+
+- **Env var**: `WINDSURF_API_KEY`
+- **API**: `http://localhost:3003/v1 (WindsurfAPI/Devin Desktop proxy)`
+- **Features**: OpenAI-compatible endpoint for the Windsurf / Devin Desktop proxy; fully configurable base URL and model
+
+| Tier | Models | Pricing (in/out per 1M tokens) | Context |
+|------|--------|-------------------------------|---------|
+| Strong | **claude-sonnet-4.6** (default), **gpt-5.4** (default), **gemini-3.1-pro** (default) | $0.00 / $0.00 | 200K ctx / 128K out |
+
+Defaults: claude-sonnet-4.6 (strong), gpt-5.4 (strong), gemini-3.1-pro (strong)
+
 ## Model Identifiers
 
 Models are referenced as `provider/model_id`:
@@ -232,7 +244,7 @@ To add a custom provider or proxy, drop an executable script into `~/.config/n00
 
 `resolve` is called each time a new agent spawns, so scripts should read tokens from disk instead of caching them in memory. That way auth changes from other processes get picked up.
 
-The `base` field specifies which built-in provider to inherit the model catalog from. Valid values: `anthropic`, `openai`, `google`, `copilot`, `ollama`, `llama-cpp`, `mistral`, `zai`, `deepseek`, `openrouter`, `synthetic`, `tensorx`, `opencode`.
+The `base` field specifies which built-in provider to inherit the model catalog from. Valid values: `anthropic`, `openai`, `google`, `copilot`, `ollama`, `llama-cpp`, `mistral`, `zai`, `deepseek`, `openrouter`, `synthetic`, `tensorx`, `opencode`, `windsurf`.
 
 If your provider serves models not in the base catalog, add a `models` subcommand returning:
 

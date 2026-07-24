@@ -25,6 +25,7 @@ use crate::providers::opencode::Opencode;
 use crate::providers::openrouter::OpenRouter;
 use crate::providers::synthetic::Synthetic;
 use crate::providers::tensorx::TensorX;
+use crate::providers::windsurf::Windsurf;
 use crate::providers::zai::Zai;
 use crate::{
     AgentError, Message, OpenAiOptions, ProviderEvent, ProviderUsage, RequestOptions,
@@ -52,6 +53,8 @@ pub enum ProviderKind {
     TensorX,
     #[strum(serialize = "opencode")]
     Opencode,
+    #[strum(serialize = "windsurf")]
+    Windsurf,
 }
 
 impl ProviderKind {
@@ -71,6 +74,7 @@ impl ProviderKind {
             Self::Synthetic => "Synthetic",
             Self::TensorX => "TensorX",
             Self::Opencode => "Opencode",
+            Self::Windsurf => "Windsurf / Devin",
         }
     }
 
@@ -90,6 +94,7 @@ impl ProviderKind {
             Self::Synthetic => "SYNTHETIC_API_KEY",
             Self::TensorX => "TENSORX_API_KEY",
             Self::Opencode => "OPENCODE_API_KEY",
+            Self::Windsurf => "WINDSURF_API_KEY",
         }
     }
 
@@ -111,6 +116,7 @@ impl ProviderKind {
             Self::Synthetic => "https://api.synthetic.new/openai/v1",
             Self::TensorX => "https://api.tensorx.ai/v1",
             Self::Opencode => "https://opencode.ai/zen/v1",
+            Self::Windsurf => "http://localhost:3003/v1 (WindsurfAPI/Devin Desktop proxy)",
         }
     }
 
@@ -139,6 +145,9 @@ impl ProviderKind {
             Self::Opencode => Some(
                 "Dynamically discovered models via [models.dev](https://models.dev/) + all the models provided by Opencode Zen API",
             ),
+            Self::Windsurf => Some(
+                "OpenAI-compatible endpoint for the Windsurf / Devin Desktop proxy; fully configurable base URL and model",
+            ),
             _ => None,
         }
     }
@@ -156,7 +165,8 @@ impl ProviderKind {
             | Self::DeepSeek
             | Self::OpenRouter
             | Self::TensorX
-            | Self::Opencode => ModelFamily::Generic,
+            | Self::Opencode
+            | Self::Windsurf => ModelFamily::Generic,
             Self::Zai => ModelFamily::Glm,
             Self::Synthetic => ModelFamily::Synthetic,
         }
@@ -172,7 +182,7 @@ impl ProviderKind {
         match self {
             Self::OpenAi | Self::Copilot => Some(100_000),
             Self::Google => Some(65_536),
-            Self::Anthropic | Self::OpenRouter | Self::Opencode => Some(128_000),
+            Self::Anthropic | Self::OpenRouter | Self::Opencode | Self::Windsurf => Some(128_000),
             Self::Ollama => Some(16_384),
             Self::LlamaCpp | Self::TensorX => None,
             Self::Mistral | Self::Synthetic => Some(32_000),
@@ -184,9 +194,12 @@ impl ProviderKind {
     #[must_use]
     pub const fn fallback_context_window(self) -> u32 {
         match self {
-            Self::Anthropic | Self::OpenAi | Self::Copilot | Self::OpenRouter | Self::TensorX => {
-                200_000
-            }
+            Self::Anthropic
+            | Self::OpenAi
+            | Self::Copilot
+            | Self::OpenRouter
+            | Self::TensorX
+            | Self::Windsurf => 200_000,
             Self::Google | Self::DeepSeek => 1_000_000,
             Self::Ollama | Self::LlamaCpp | Self::Mistral | Self::Zai | Self::Synthetic => 128_000,
             Self::Opencode => 256_000,
@@ -237,6 +250,7 @@ impl ProviderKind {
             Self::Synthetic => Ok(Box::new(Synthetic::new(timeouts)?)),
             Self::TensorX => Ok(Box::new(TensorX::new(timeouts)?)),
             Self::Opencode => Ok(Box::new(Opencode::new(timeouts)?)),
+            Self::Windsurf => Ok(Box::new(Windsurf::new(timeouts)?)),
         }
     }
 }

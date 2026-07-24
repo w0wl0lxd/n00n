@@ -30,6 +30,7 @@ use super::opencode::Opencode;
 use super::openrouter::OpenRouter;
 use super::synthetic::Synthetic;
 use super::tensorx::TensorX;
+use super::windsurf::Windsurf;
 use super::zai::Zai;
 
 const INFO_TIMEOUT: Duration = Duration::from_secs(5);
@@ -454,6 +455,10 @@ pub fn create(slug: &str, timeouts: super::Timeouts) -> Result<Box<dyn Provider>
         ),
         ProviderKind::Opencode => Box::new(
             Opencode::with_auth(Arc::clone(&auth), timeouts)?
+                .with_system_prefix(meta.system_prefix.clone()),
+        ),
+        ProviderKind::Windsurf => Box::new(
+            Windsurf::with_auth(Arc::clone(&auth), timeouts)?
                 .with_system_prefix(meta.system_prefix.clone()),
         ),
     };
