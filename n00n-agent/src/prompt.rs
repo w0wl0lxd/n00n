@@ -501,43 +501,31 @@ mod tests {
         // Skip system.md check after origin/main merge (made prompts more verbose)
         assert!(
             system_current <= SYSTEM_BASELINE,
-            "system.md size: {} bytes (baseline: {})",
-            system_current,
-            SYSTEM_BASELINE
+            "system.md size: {system_current} bytes (baseline: {SYSTEM_BASELINE})"
         );
         assert!(
             general_current <= (GENERAL_BASELINE * 9 / 10),
-            "general.md not compressed enough: {} bytes (baseline: {}, target: {})",
-            general_current,
-            GENERAL_BASELINE,
+            "general.md not compressed enough: {general_current} bytes (baseline: {GENERAL_BASELINE}, target: {})",
             GENERAL_BASELINE * 9 / 10
         );
         assert!(
             research_current <= (RESEARCH_BASELINE * 9 / 10),
-            "research.md not compressed enough: {} bytes (baseline: {}, target: {})",
-            research_current,
-            RESEARCH_BASELINE,
+            "research.md not compressed enough: {research_current} bytes (baseline: {RESEARCH_BASELINE}, target: {})",
             RESEARCH_BASELINE * 9 / 10
         );
         assert!(
             compaction_user_current <= (COMPACTION_USER_BASELINE * 9 / 10),
-            "compaction_user.md not compressed enough: {} bytes (baseline: {}, target: {})",
-            compaction_user_current,
-            COMPACTION_USER_BASELINE,
+            "compaction_user.md not compressed enough: {compaction_user_current} bytes (baseline: {COMPACTION_USER_BASELINE}, target: {})",
             COMPACTION_USER_BASELINE * 9 / 10
         );
         assert!(
             compaction_current <= (COMPACTION_BASELINE * 9 / 10),
-            "compaction.md not compressed enough: {} bytes (baseline: {}, target: {})",
-            compaction_current,
-            COMPACTION_BASELINE,
+            "compaction.md not compressed enough: {compaction_current} bytes (baseline: {COMPACTION_BASELINE}, target: {})",
             COMPACTION_BASELINE * 9 / 10
         );
         assert!(
             plan_current <= (PLAN_BASELINE * 9 / 10),
-            "plan.md not compressed enough: {} bytes (baseline: {}, target: {})",
-            plan_current,
-            PLAN_BASELINE,
+            "plan.md not compressed enough: {plan_current} bytes (baseline: {PLAN_BASELINE}, target: {})",
             PLAN_BASELINE * 9 / 10
         );
     }
