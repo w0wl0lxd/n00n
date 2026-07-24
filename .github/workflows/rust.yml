@@ -96,7 +96,6 @@ jobs:
       - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
         with:
           install_args: just cargo:cargo-nextest
-      - run: sudo apt-get -o Acquire::Retries=5 install -y ripgrep
       - run: just test
 
   machete:
@@ -158,6 +157,21 @@ jobs:
           install_args: just
       - run: just lint
 
+  lint-macos:
+    name: Lint (macOS)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'  # v7
+        with:
+          persist-credentials: false
+      - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32'  # v2
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
+        with:
+          install_args: just
+      - run: just lint
+
   build-windows:
     name: Build (Windows)
     needs: changes
@@ -172,6 +186,21 @@ jobs:
         with:
           install_args: just
       - run: just build
+
+  test-macos:
+    name: Test (macOS)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'  # v7
+        with:
+          persist-credentials: false
+      - uses: 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32'  # v2
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
+        with:
+          install_args: just cargo:cargo-nextest
+      - run: just test
 
   test-windows:
     name: Test (Windows)
@@ -204,7 +233,6 @@ jobs:
       - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
         with:
           install_args: cargo:cargo-nextest cargo:cargo-llvm-cov
-      - run: sudo apt-get -o Acquire::Retries=5 install -y ripgrep
       - run: cargo llvm-cov nextest --workspace --lcov --output-path lcov.info --retries 2
       - uses: 'codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac'  # v5
         with:
@@ -251,7 +279,9 @@ jobs:
       - docs
       - build
       - lint-windows
+      - lint-macos
       - build-windows
+      - test-macos
       - test-windows
       - coverage
       - msrv
