@@ -337,8 +337,10 @@ impl App {
         self.state
             .session
             .prune_orphans(|m| m.tool_uses().map(|(id, _, _)| id.to_owned()).collect());
-        self.state.context_size =
-            n00n_agent::agent::estimate_message_tokens(&self.state.session.messages);
+        self.state.context_size = n00n_agent::agent::estimate_message_tokens(
+            &self.state.session.messages,
+            &self.state.model.id,
+        );
 
         self.reset_ui_chrome();
         self.restore_display();

@@ -1,27 +1,71 @@
 use serde_json::Value;
-use tiktoken_rs::cl100k_base_singleton;
+use tiktoken_rs::{cl100k_base_singleton, o200k_base_singleton};
 use tracing::warn;
 
 const TIKTOKEN_MAX_CHARS: usize = 4_096;
 const BYTES_PER_TOKEN_ESTIMATE: usize = 4;
 
+/// Returns the best-effort tiktoken tokenizer for a model id.
+///
+/// Modern `OpenAI` models (GPT-4o, GPT-4.1, GPT-5, o1, o3, o4) use the `o200k`
+/// vocabulary; everything else falls back to `cl100k`. This is intentionally a
+/// heuristic -- providers do not always expose their exact tokenizer -- but it
+/// is still a large improvement over always using `cl100k` for, e.g., GPT-4o.
 #[must_use]
-pub fn count_tokens(text: &str) -> usize {
+fn tokenizer_for_model(model_id: &str) -> &'static tiktoken_rs::CoreBPE {
+    if is_o200k_model(model_id) {
+        o200k_base_singleton()
+    } else {
+        cl100k_base_singleton()
+    }
+}
+
+fn is_o200k_model(model_id: &str) -> bool {
+    let id = model_id.to_lowercase();
+    id.contains("gpt-4o")
+        || id.contains("gpt-4.1")
+        || id.contains("gpt-5")
+        || id.starts_with("o1")
+        || id.starts_with("o3")
+        || id.starts_with("o4")
+        || id.contains("chatgpt-4o")
+}
+
+/// Count tokens using the tokenizer that best matches `model_id`.
+///
+/// Falls back to a bytes-per-token estimate for very long inputs to avoid
+/// quadratic work in the tiktoken encoder.
+#[must_use]
+pub fn count_tokens_for_model(model_id: &str, text: &str) -> usize {
     if text.len() > TIKTOKEN_MAX_CHARS {
         return text.len() / BYTES_PER_TOKEN_ESTIMATE;
     }
-    cl100k_base_singleton().encode_ordinary(text).len()
+    tokenizer_for_model(model_id).encode_ordinary(text).len()
 }
 
+/// Count tokens in a JSON value using the tokenizer that best matches `model_id`.
 #[must_use]
-pub fn count_json(value: &Value) -> usize {
+pub fn count_json_for_model(model_id: &str, value: &Value) -> usize {
     match serde_json::to_string(value) {
-        Ok(text) => count_tokens(&text),
+        Ok(text) => count_tokens_for_model(model_id, &text),
         Err(e) => {
             warn!(error = %e, "failed to serialize JSON for token count; using byte fallback");
-            count_tokens(&value.to_string())
+            count_tokens_for_model(model_id, &value.to_string())
         }
     }
+}
+
+/// Legacy token-count helper that uses cl100k for callers that do not know
+/// which model will consume the text.
+#[must_use]
+pub fn count_tokens(text: &str) -> usize {
+    count_tokens_for_model("", text)
+}
+
+/// Legacy JSON token-count helper that uses cl100k.
+#[must_use]
+pub fn count_json(value: &Value) -> usize {
+    count_json_for_model("", value)
 }
 
 #[cfg(test)]
@@ -104,6 +148,33 @@ mod tests {
     }
 
     #[test]
+    fn model_aware_tokenizer_uses_cl100k_by_default() {
+        // cl100k and o200k tokenize "hello world" to the same tokens, but
+        // this test documents the fallback path.
+        let tokens = count_tokens_for_model("anthropic/claude-sonnet-4-6", "hello world");
+        assert!(tokens > 0 && tokens < 10);
+    }
+
+    #[test]
+    fn model_aware_tokenizer_uses_o200k_for_gpt4o() {
+        let text = "hello world";
+        let cl = count_tokens_for_model("openai/gpt-4-turbo", text);
+        let o = count_tokens_for_model("openai/gpt-4o", text);
+        assert_eq!(
+            cl, o,
+            "common words tokenize the same under both vocabularies"
+        );
+    }
+
+    #[test]
+    fn model_aware_json_counts_match_legacy() {
+        let value = json!({"name": "skill", "list": true});
+        let legacy = count_json(&value);
+        let modern = count_json_for_model("openai/gpt-4o", &value);
+        assert_eq!(legacy, modern, "o200k gives same count for this fixture");
+    }
+
+    #[test]
     fn tokenize_fuzz_smoke() {
         fn xorshift64(state: &mut u64) -> u64 {
             *state ^= *state << 13;
@@ -179,6 +250,14 @@ mod tests {
             assert!(
                 tokens <= json_text.len().max(1),
                 "json token count {tokens} exceeds json length {}",
+                json_text.len()
+            );
+
+            // Model-aware path should also stay bounded.
+            let model_tokens = count_json_for_model("openai/gpt-4o", &value);
+            assert!(
+                model_tokens <= json_text.len().max(1),
+                "model-aware json token count {model_tokens} exceeds json length {}",
                 json_text.len()
             );
         }

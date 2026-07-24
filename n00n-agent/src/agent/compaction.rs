@@ -81,7 +81,7 @@ pub(super) async fn compact_history(
     strip_old_tool_results(&mut compaction_history);
 
     let context_window = model.context_window;
-    let current_usage = crate::agent::run::estimate_message_tokens(&compaction_history);
+    let current_usage = crate::agent::run::estimate_message_tokens(&compaction_history, &model.id);
     let remaining = context_window.saturating_sub(current_usage);
     let tier = CompactionTier::from_remaining_context(remaining, context_window);
     let budget = tier.token_budget(context_window);
