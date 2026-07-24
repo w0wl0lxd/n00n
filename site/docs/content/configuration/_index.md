@@ -23,6 +23,7 @@ n00n.setup({
     ui = {
         splash_animation = true,
         mouse_scroll_lines = 5,
+        theme = "tokyonight",
         tool_output_lines = {
             bash = 8,
             read = 5,
@@ -72,6 +73,12 @@ All fields are optional. Typos in field names cause an error right away.
 | `show_thinking` | bool | `true` | - | When true (default), show full model reasoning live and persisted. When false, hide reasoning behind an indicator (thinking> ...) with a click-to-expand hint, both while thinking and after it completes |
 | `mascot` | bool | `false` | - | Show the n00n mascot on the idle splash screen |
 
+### `ui.theme`
+
+Name of the color theme to load at startup, overriding the theme you last picked interactively. If unset, Maki keeps your last selection (the built-in default on first run). An unknown name is ignored with a warning.
+
+Available themes: `ayu_dark`, `ayu_light`, `ayu_mirage`, `carbonfox`, `catppuccin_frappe`, `catppuccin_latte`, `catppuccin_macchiato`, `catppuccin_mocha`, `dracula`, `everforest_dark`, `fleet_dark`, `github_dark`, `gruvbox`, `gruvbox_light`, `kanagawa`, `material_darker`, `monokai_pro`, `night_owl`, `nightfox`, `nord`, `onedark`, `rose_pine`, `rose_pine_dawn`, `rose_pine_moon`, `solarized_dark`, `solarized_light`, `tokyonight`, `vscode_dark_plus`, `zenburn`.
+
 ### `ui.tool_output_lines`
 
 How many lines of output to show per tool in the UI. All values are `usize` with a minimum of 1.
@@ -98,6 +105,7 @@ How many lines of output to show per tool in the UI. All values are `usize` with
 | `max_output_lines` | usize | `2000` | 10 | Max tool output lines |
 | `max_continuation_turns` | u32 | `3` | 1 | Max automatic continuation turns |
 | `compaction_buffer` | u32 \| string | `20%` | - | Context reserved for compaction: token count or percent of the context window (e.g. "20%") |
+| `mcp_tool_desc_max_chars` | usize | `300` | 10 | Max MCP tool description length (characters) |
 
 ### `provider`
 
@@ -149,8 +157,7 @@ n00n.setup({
 | `max_memory_mb` | integer | `50` | 10 | Memory limit for the Python sandbox (MB). |
 | `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool. |
 | `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
-| `ruff_fix` | boolean | `true` | - | Run Ruff --fix --unsafe-fixes and formatting before execution when Ruff is available. |
-| `timeout_secs` | integer | `30` | 5 | Stop the script after this many seconds. A call's `timeout` param overrides it. |
+| `timeout_secs` | integer | `30` | 5 | Script execution time budget in seconds; waiting on tool calls does not count. A call's `timeout` param overrides it. |
 
 ### `plugins.codegraph`
 

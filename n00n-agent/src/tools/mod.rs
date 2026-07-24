@@ -32,13 +32,12 @@ use serde_json::Value;
 
 use crate::agent::LoadedInstructions;
 use crate::cancel::{CancelMap, CancelToken};
-use crate::mcp::McpHandle;
+use crate::mcp::McpSession;
 use crate::permissions::PermissionManager;
 use crate::{AgentConfig, AgentMode, EventSender, SharedBuf};
 use n00n_config::ToolOutputLines;
 use n00n_providers::RequestOptions;
 use n00n_providers::provider::Provider;
-use n00n_providers::provider::ProviderKind;
 use n00n_providers::{Model, ModelFamily, ModelPricing, ModelTier, OpenAiOptions};
 use n00n_storage::id::SessionRef;
 
@@ -221,7 +220,7 @@ pub struct ToolContext {
     pub user_response_rx: Option<Arc<async_lock::Mutex<flume::Receiver<String>>>>,
     pub loaded_instructions: LoadedInstructions,
     pub cancel: CancelToken,
-    pub mcp: Option<McpHandle>,
+    pub mcp: Option<McpSession>,
     pub deadline: Deadline,
     pub config: AgentConfig,
     pub tool_output_lines: ToolOutputLines,
@@ -447,8 +446,7 @@ const FALLBACK_CONTEXT_WINDOW: u32 = 200_000;
 fn fallback_model() -> Model {
     Model {
         id: "anthropic/claude-3-haiku-20240307".into(),
-        provider: ProviderKind::Anthropic,
-        dynamic_slug: None,
+        provider: "anthropic".into(),
         tier: ModelTier::Medium,
         family: ModelFamily::Claude,
         supports_tool_examples_override: None,
