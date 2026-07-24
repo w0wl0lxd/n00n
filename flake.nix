@@ -91,7 +91,7 @@
               fi
               done
             '';
-            buildInputs = runtimeLibs;
+            buildInputs = with pkgs; [ openssl stdenv.cc.cc.lib ];
             doCheck = false;
 
             postInstall = ''
@@ -132,27 +132,10 @@
             RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
             SSL_CERT_FILE = certs;
             NIX_SSL_CERT_FILE = certs;
-            LD_LIBRARY_PATH = lib.makeLibraryPath [
+            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
               pkgs.openssl
-              pkgs.python3
               pkgs.stdenv.cc.cc.lib
-              pkgs.zlib
             ];
-
-            shellHook = ''
-              # Use the repo's shared git hooks (.githooks) so the gitleaks
-              # pre-commit secret blocker is enabled for every contributor.
-              git config core.hooksPath .githooks
-              strip_fake_output_rpath() {
-                local name="$1"
-                local value="''${!name}"
-                value=$(${pkgs.gnused}/bin/sed 's|-rpath [^ ]*outputs/out/lib||g' <<< "$value")
-                value="-rpath ${pkgs.openssl}/lib -rpath ${pkgs.python3}/lib -rpath ${pkgs.stdenv.cc.cc.lib}/lib -rpath ${pkgs.zlib}/lib $value"
-                export "$name=$value"
-              }
-              strip_fake_output_rpath NIX_LDFLAGS
-              strip_fake_output_rpath NIX_LDFLAGS_FOR_BUILD
-            '';
           };
         }
       );

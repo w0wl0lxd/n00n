@@ -190,7 +190,7 @@ impl SpawnCtx {
             keymap_reader: self.keymap_reader.clone(),
             hint_reader: self.hint_reader.clone(),
             storage_writer: Arc::clone(&self.storage_writer),
-            ui_config: self.ui_config,
+            ui_config: self.ui_config.clone(),
             input_history_size: self.input_history_size,
             permissions,
             custom_commands: Arc::clone(&self.custom_commands),
@@ -410,7 +410,8 @@ impl<'t> EventLoop<'t> {
 
         let storage_writer = Arc::new(StorageWriter::new(storage.clone())?);
         let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-        let (mcp_handle, mcp_config_errors) = smol::block_on(mcp::start(&cwd));
+        let (mcp_handle, mcp_config_errors) =
+            smol::block_on(mcp::start(&cwd, config.mcp_tool_desc_max_chars));
 
         let provider: Arc<dyn Provider> = if needs_login {
             Arc::from(from_model_fallback_with_openai_options(

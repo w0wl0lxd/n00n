@@ -6,6 +6,7 @@ on:
       - "Cargo.lock"
       - "**/Cargo.toml"
       - "deny.toml"
+      - ".cargo/audit.toml"
       - ".github/workflows/security.yml"
   pull_request:
     branches: ["main"]
@@ -13,6 +14,7 @@ on:
       - "Cargo.lock"
       - "**/Cargo.toml"
       - "deny.toml"
+      - ".cargo/audit.toml"
       - ".github/workflows/security.yml"
   schedule:
     - cron: "27 4 * * 1"
@@ -25,6 +27,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998  # v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -33,8 +37,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - uses: taiki-e/install-action@a6b2e2dcd845ddd7f509ce4f3ed3d922b80cc5d9  # v2
         with:
-          tool: cargo-deny
+          persist-credentials: false
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea  # v4.2.1
+        with:
+          install_args: cargo:cargo-deny
       - run: cargo deny --workspace check
         continue-on-error: true

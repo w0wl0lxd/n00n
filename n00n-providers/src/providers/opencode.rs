@@ -423,6 +423,7 @@ impl CatalogData {
 }
 
 static CATALOG_CHAT_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
+    slug: "opencode",
     api_key_env: "",
     base_url: "",
     max_tokens_field: "max_tokens",
@@ -535,6 +536,7 @@ impl Opencode {
             &system_blocks,
             tools,
             opts.thinking,
+            opts.message_cache_breakpoints,
         );
         body["model"] = json!(model.id);
         body["stream"] = json!(true);

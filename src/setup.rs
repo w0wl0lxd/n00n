@@ -4,19 +4,18 @@ use color_eyre::Result;
 use color_eyre::eyre::Context;
 
 use n00n_providers::model::{Model, ModelTier};
-use n00n_providers::provider::ProviderKind;
 use n00n_storage::StateDir;
 use n00n_storage::log::RotatingFileWriter;
 use n00n_storage::model::read_model;
 use tracing_subscriber::EnvFilter;
 
-const PROVIDER_PRIORITY: &[ProviderKind] = &[
-    ProviderKind::Anthropic,
-    ProviderKind::OpenAi,
-    ProviderKind::Copilot,
-    ProviderKind::Zai,
-    ProviderKind::Synthetic,
-    ProviderKind::DeepSeek,
+const PROVIDER_PRIORITY: &[&str] = &[
+    "anthropic",
+    "openai",
+    "copilot",
+    "zai",
+    "synthetic",
+    "deepseek",
 ];
 
 pub fn resolve_model(
@@ -46,9 +45,9 @@ pub fn resolve_model(
 
 fn auto_detect_model() -> Option<Model> {
     for tier in [ModelTier::Strong, ModelTier::Medium] {
-        for &provider in PROVIDER_PRIORITY {
-            if provider.is_available()
-                && let Ok(model) = Model::from_tier(provider, tier)
+        for &slug in PROVIDER_PRIORITY {
+            if n00n_providers::provider::provider_available(slug)
+                && let Ok(model) = Model::from_tier(slug, tier)
             {
                 return Some(model);
             }
