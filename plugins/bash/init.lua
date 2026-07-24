@@ -250,7 +250,7 @@ Commands run in ]] .. cwd .. [[ by default.
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Reserve `bash` for system commands (git, cargo, rg, grep, jq, yq, gh, find, ls, cat, head, tail, builds, tests). `bash` auto-rewrites supported commands through `rtk` when installed for 60-90% token savings. Do NOT use `bash` for file operations, including on files outside the working dir.",
+  content = "- Reserve `bash` for system commands (git, cargo, rg, grep, jq, yq, gh, find, ls, cat, head, tail, builds, tests). `bash` auto-rewrites supported commands through `rtk` when installed for 60-90% token savings. Do NOT use `bash` for destructive file operations (writes, moves, deletes, broad destructive operations). Read-only inspection (cat, head, tail) is allowed.",
 })
 
 local opts = n00n.api.register_options(output_limits.extend({
