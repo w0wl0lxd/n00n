@@ -168,6 +168,40 @@ local function clean_expired_claims()
   return true
 end
 
+local function list_claims(only_active)
+  local dir, err = claims_dir()
+  if not dir then
+    return nil, err
+  end
+
+  local entries = n00n.fs.dir(dir)
+  if not entries then
+    return {}
+  end
+
+  local claims = {}
+  for _, entry in ipairs(entries) do
+    if entry[2] == "directory" then
+      local claim_path = n00n.fs.joinpath(dir, entry[1], "claim.json")
+      local content, read_err = n00n.fs.read(claim_path)
+      if content then
+        local claim, dec_err = n00n.json.decode(content)
+        if claim then
+          if only_active == false or is_active_claim(claim) then
+            claims[#claims + 1] = claim
+          end
+        end
+      end
+    end
+  end
+
+  table.sort(claims, function(a, b)
+    return (a.claimed_at or 0) > (b.claimed_at or 0)
+  end)
+
+  return claims
+end
+
 local function claim_task(task_id, expires_in)
   local ok, vid = validate_id(task_id)
   if not ok then
@@ -409,7 +443,7 @@ local schema = {
   properties = {
     action = {
       type = "string",
-      enum = { "write", "read", "claim_task", "release_task", "update_task", "query" },
+      enum = { "write", "read", "claim_task", "release_task", "update_task", "query", "list_claims" },
       description = "Blackboard action.",
     },
     post = {
@@ -556,6 +590,17 @@ local function handler(input)
     end
 
     return { llm_output = "Task updated: " .. input.task_id .. " -> " .. input.status }
+  elseif action == "list_claims" then
+    local claims, err = list_claims(input.only_active)
+    if not claims then
+      return { llm_output = "Error: " .. tostring(err), is_error = true }
+    end
+
+    local encoded, enc_err = n00n.json.encode(claims)
+    if not encoded then
+      return { llm_output = "Error: encode failed", is_error = true }
+    end
+    return { llm_output = encoded, claims = claims }
   elseif action == "query" then
     local filters = input.query or {}
     local results, err = query_posts(filters)

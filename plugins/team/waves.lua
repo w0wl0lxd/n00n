@@ -27,4 +27,15 @@ function M.compute_waves(steps)
   return group_by_waves(steps)
 end
 
+function M.wave_names()
+  return { "plan", "implement", "validate" }
+end
+
+function M.is_empty(waves, name)
+  if not waves or not waves[name] then
+    return true
+  end
+  return #waves[name] == 0
+end
+
 return M

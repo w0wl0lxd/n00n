@@ -215,9 +215,12 @@ Run an ALMAS team for an SDLC goal. supervised returns a plan; autonomous execut
 | `goal` | string | yes |  | High-level SDLC goal. |
 | `use_summary` | boolean | no |  | Use the Summary Agent index for retrieval. |
 | `mode` | string | no |  | "supervised" (return plan), "autonomous" (run plan), "swarm" (decentralized rounds). |
+| `waves` | boolean | no |  | Execute plan in waves (plan, implement, validate) with validation gates. |
 | `max_agents` | integer | no | 16, max 24 | Team agent budget. |
+| `max_wave_retries` | integer | no | 3, max 5 | Max retries when validation gate fails. |
 | `compact` | boolean | no |  | TOON-encode retrieved context (token-saving). |
 | `model_tier` | string | no |  | Supervisor tier (weak/medium/strong). Default: strong. |
+| `checkpoints` | boolean | no |  | Persist checkpoints after each wave for resume capability. |
 | `max_steps` | integer | no | 6, max 8 | Max plan steps. |
 | `max_concurrent` | integer | no | 4, max 4 | Swarm concurrency. |
 | `quorum` | boolean | no |  | Require validator quorum for autonomous/swarm. |
