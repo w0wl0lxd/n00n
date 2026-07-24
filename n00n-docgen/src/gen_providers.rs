@@ -140,6 +140,8 @@ fn format_auth(kind: ProviderKind) -> String {
     let env = kind.api_key_env();
     if kind == ProviderKind::Ollama {
         format!("`OLLAMA_HOST` for local/remote (e.g. `http://localhost:11434`), `{env}` for auth")
+    } else if kind == ProviderKind::Windsurf {
+        format!("`{env}` or `WINDSURF_API_KEY`, falls back to Devin CLI `credentials.toml`")
     } else {
         format!("`{env}`")
     }

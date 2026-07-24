@@ -1,0 +1,1 @@
+The `windsurf` provider now reads Devin CLI credentials from `~/.local/share/devin/credentials.toml` (or `%APPDATA%\devin\credentials.toml` on Windows) after `devin auth login`, falling back from `DEVIN_API_KEY` or the legacy `WINDSURF_API_KEY` environment variable. Display name, login URL, and generated docs are updated to "Devin CLI".
