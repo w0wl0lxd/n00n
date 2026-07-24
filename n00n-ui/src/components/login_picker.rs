@@ -183,7 +183,8 @@ impl LoginPicker {
             .iter()
             .map(|b| {
                 let has_key = load_provider_credentials(&storage, b.slug).is_some();
-                let has_env = std::env::var(b.default_api_key_env).is_ok();
+                let has_env = std::env::var(b.default_api_key_env).is_ok()
+                    || (b.slug == "windsurf" && std::env::var("WINDSURF_API_KEY").is_ok());
                 let configured = !has_key
                     && !has_env
                     && config.get(b.slug).is_some_and(|d| d.base_url.is_some());
