@@ -292,7 +292,11 @@ impl App {
         let mut input_box = InputBox::new(InputHistory::load(&storage, input_history_size));
         input_box.set_max_input_lines(ui_config.max_input_lines);
         let mut app = Self {
-            chats: vec![Chat::new("Main".into(), ui_config, Arc::clone(&picker))],
+            chats: vec![Chat::new(
+                "Main".into(),
+                ui_config.clone(),
+                Arc::clone(&picker),
+            )],
             picker,
             active_chat: 0,
             chat_index: HashMap::new(),
@@ -1680,7 +1684,7 @@ impl App {
         }
         let mut chat = Chat::new(
             subagent.name.clone(),
-            self.ui_config,
+            self.ui_config.clone(),
             Arc::clone(&self.picker),
         );
         chat.set_restore_channel(self.lua_event_handle.clone(), self.restore_event_tx.clone());

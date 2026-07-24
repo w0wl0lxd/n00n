@@ -2,11 +2,13 @@ use std::sync::{Arc, Mutex};
 
 use flume::Sender;
 use n00n_storage::id::SessionRef;
+use serde::Deserialize;
 use serde_json::Value;
 use tracing::warn;
 
 use crate::model::{Model, ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider};
+use crate::types::{ProviderUsage, UsageLimit};
 use crate::{
     AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, ThinkingConfig, dialect,
 };
@@ -16,8 +18,10 @@ use super::{KeyPool, ResolvedAuth};
 
 const PAD: &str = "";
 const V4_MARKER: &str = "deepseek-v4";
+const BALANCE_URL: &str = "https://api.deepseek.com/user/balance";
 
 static CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
+    slug: "deepseek",
     api_key_env: "DEEPSEEK_API_KEY",
     base_url: "https://api.deepseek.com",
     max_tokens_field: "max_tokens",
@@ -39,7 +43,7 @@ inventory::submit!(n00n_config::providers::BuiltInProvider {
     needs_url: false,
 });
 
-pub(crate) fn models() -> &'static [ModelEntry] {
+pub(crate) const fn models() -> &'static [ModelEntry] {
     &[
         ModelEntry {
             prefixes: &["deepseek-v4-flash"],
@@ -51,7 +55,7 @@ pub(crate) fn models() -> &'static [ModelEntry] {
                 input: 0.14,
                 output: 0.28,
                 cache_write: 0.00,
-                cache_read: 0.00,
+                cache_read: 0.0028,
                 fast: None,
             },
             max_output_tokens: 384_000,
@@ -67,13 +71,58 @@ pub(crate) fn models() -> &'static [ModelEntry] {
                 input: 0.435,
                 output: 0.87,
                 cache_write: 0.00,
-                cache_read: 0.00,
+                cache_read: 0.003_625,
                 fast: None,
             },
             max_output_tokens: 384_000,
             context_window: 1_000_000,
         },
     ]
+}
+
+#[derive(Deserialize)]
+struct BalanceResponse {
+    balance_infos: Vec<BalanceInfo>,
+}
+
+#[derive(Deserialize)]
+struct BalanceInfo {
+    currency: String,
+    total_balance: String,
+    granted_balance: String,
+    topped_up_balance: String,
+}
+
+impl From<BalanceResponse> for ProviderUsage {
+    fn from(resp: BalanceResponse) -> Self {
+        let limits = resp
+            .balance_infos
+            .into_iter()
+            .map(|b| {
+                let symbol = match b.currency.as_str() {
+                    "USD" => "$",
+                    "CNY" => "¥",
+                    _ => "",
+                };
+
+                UsageLimit {
+                    label: "Balance".into(),
+                    percentage: None,
+                    reset_at: None,
+                    detail: Some(format!(
+                        "total: {}{}, topped-up: {}{}, granted: {}{}",
+                        symbol,
+                        b.total_balance,
+                        symbol,
+                        b.topped_up_balance,
+                        symbol,
+                        b.granted_balance
+                    )),
+                }
+            })
+            .collect();
+        ProviderUsage { plan: None, limits }
+    }
 }
 
 pub struct DeepSeek {
@@ -165,6 +214,19 @@ impl Provider for DeepSeek {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
             self.compat.do_list_models(&auth).await
+        })
+    }
+
+    fn fetch_usage(&self) -> BoxFuture<'_, Result<Option<ProviderUsage>, AgentError>> {
+        Box::pin(async move {
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            let body = self.compat.get_text(&auth, BALANCE_URL).await?;
+            let parsed: BalanceResponse = serde_json::from_str(&body)?;
+            Ok(Some(parsed.into()))
         })
     }
 

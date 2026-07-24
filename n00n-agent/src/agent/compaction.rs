@@ -64,6 +64,7 @@ impl CompactionTier {
             .max(MIN_COMPACTION_BUDGET)
     }
 }
+
 const IMAGE_PLACEHOLDER: &str = "[image]";
 
 pub(super) async fn compact_history(
@@ -355,11 +356,11 @@ mod tests {
     #[test_case(0,     0, CompactionTier::Normal    ; "zero_context_window_defaults_normal")]
     #[test_case(0,   100, CompactionTier::Minimal    ; "empty_remaining_is_minimal")]
     #[test_case(10,  100, CompactionTier::Minimal    ; "low_ratio_minimal")]
-    #[test_case(19,  100, CompactionTier::Minimal    ; "just_below_0_2_threshold")]
-    #[test_case(20,  100, CompactionTier::Aggressive ; "at_0_2_threshold")]
+    #[test_case(19,  100, CompactionTier::Minimal    ; "just_below_0_2")]
+    #[test_case(20,  100, CompactionTier::Aggressive ; "at_0_2_boundary")]
     #[test_case(30,  100, CompactionTier::Aggressive ; "mid_ratio_aggressive")]
-    #[test_case(39,  100, CompactionTier::Aggressive ; "just_below_0_4_threshold")]
-    #[test_case(40,  100, CompactionTier::Normal     ; "at_0_4_threshold")]
+    #[test_case(39,  100, CompactionTier::Aggressive ; "just_below_0_4")]
+    #[test_case(40,  100, CompactionTier::Normal     ; "at_0_4_boundary")]
     #[test_case(50,  100, CompactionTier::Normal     ; "high_ratio_normal")]
     #[test_case(199, 1000, CompactionTier::Minimal    ; "just_below_0_2_at_1000")]
     #[test_case(200, 1000, CompactionTier::Aggressive ; "at_0_2_boundary_1000")]
@@ -384,6 +385,7 @@ mod tests {
     #[test_case(CompactionTier::Aggressive, 100, 10 ; "aggressive_budget")]
     #[test_case(CompactionTier::Minimal,    100,  5 ; "minimal_budget")]
     #[test_case(CompactionTier::Minimal,      1,  1 ; "tiny_window_minimum_budget")]
+    #[test_case(CompactionTier::Minimal,      2,  1 ; "small_window_still_minimum")]
     #[test_case(CompactionTier::Normal,       0,  0 ; "zero_window_zero_budget")]
     fn compaction_tier_budget(tier: CompactionTier, context_window: u32, expected: u32) {
         assert_eq!(tier.token_budget(context_window), expected);
@@ -696,5 +698,45 @@ mod tests {
         truncate_oldest_round(&mut messages);
         assert!(!messages.is_empty());
         assert!(matches!(messages[0].role, Role::User));
+    }
+
+    #[test]
+    fn compact_produces_user_assistant_pair() {
+        smol::block_on(async {
+            let provider: std::sync::Arc<dyn Provider> =
+                std::sync::Arc::new(MockProvider::new(vec![text_response(StopReason::EndTurn)]));
+            let model = default_model();
+            let (raw_tx, _rx) = flume::unbounded();
+            let mut history = History::new(vec![
+                Message::user("first".into()),
+                Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::Text {
+                        text: "reply".into(),
+                    }],
+                    ..Default::default()
+                },
+            ]);
+
+            compact(
+                &*provider,
+                &model,
+                &mut history,
+                &EventSender::new(raw_tx, 0),
+            )
+            .await
+            .unwrap();
+
+            let msgs = history.as_slice();
+            assert_eq!(msgs.len(), 2);
+            assert!(matches!(msgs[0].role, Role::User));
+            assert!(matches!(msgs[1].role, Role::Assistant));
+            assert!(
+                msgs[0]
+                    .first_text_content()
+                    .unwrap()
+                    .contains("What did we do so far?")
+            );
+        });
     }
 }
