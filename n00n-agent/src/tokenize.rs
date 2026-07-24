@@ -5,6 +5,9 @@ use tracing::warn;
 const TIKTOKEN_MAX_CHARS: usize = 4_096;
 const BYTES_PER_TOKEN_ESTIMATE: usize = 4;
 
+const O200K_CONTAINS: &[&str] = &["gpt-4o", "gpt-4.1", "gpt-5", "chatgpt-4o"];
+const O200K_PREFIXES: &[&str] = &["o1", "o3", "o4"];
+
 /// Returns the best-effort tiktoken tokenizer for a model id.
 ///
 /// Modern `OpenAI` models (GPT-4o, GPT-4.1, GPT-5, o1, o3, o4) use the `o200k`
@@ -12,7 +15,7 @@ const BYTES_PER_TOKEN_ESTIMATE: usize = 4;
 /// heuristic -- providers do not always expose their exact tokenizer -- but it
 /// is still a large improvement over always using `cl100k` for, e.g., GPT-4o.
 #[must_use]
-fn tokenizer_for_model(model_id: &str) -> &'static tiktoken_rs::CoreBPE {
+pub(crate) fn tokenizer_for_model(model_id: &str) -> &'static tiktoken_rs::CoreBPE {
     if is_o200k_model(model_id) {
         o200k_base_singleton()
     } else {
@@ -21,14 +24,50 @@ fn tokenizer_for_model(model_id: &str) -> &'static tiktoken_rs::CoreBPE {
 }
 
 fn is_o200k_model(model_id: &str) -> bool {
-    let id = model_id.to_lowercase();
-    id.contains("gpt-4o")
-        || id.contains("gpt-4.1")
-        || id.contains("gpt-5")
-        || id.starts_with("o1")
-        || id.starts_with("o3")
-        || id.starts_with("o4")
-        || id.contains("chatgpt-4o")
+    O200K_CONTAINS
+        .iter()
+        .any(|p| contains_ignore_ascii_case(model_id, p))
+        || O200K_PREFIXES
+            .iter()
+            .any(|p| starts_with_ignore_ascii_case(model_id, p))
+}
+
+fn starts_with_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    haystack
+        .get(..needle.len())
+        .is_some_and(|s| s.eq_ignore_ascii_case(needle))
+}
+
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let n = needle.len();
+    haystack.as_bytes().windows(n).any(|w| {
+        // `w` is a valid UTF-8 slice when the haystack is ASCII at this offset.
+        // If it isn't, `from_utf8` fails and that window is skipped; model ids
+        // are ASCII in practice, so this is sufficient for our heuristic.
+        std::str::from_utf8(w).is_ok_and(|s| s.eq_ignore_ascii_case(needle))
+    })
+}
+
+#[must_use]
+pub(crate) fn count_tokens_with_tokenizer(tokenizer: &tiktoken_rs::CoreBPE, text: &str) -> usize {
+    if text.len() > TIKTOKEN_MAX_CHARS {
+        return text.len() / BYTES_PER_TOKEN_ESTIMATE;
+    }
+    tokenizer.encode_ordinary(text).len()
+}
+
+#[must_use]
+pub(crate) fn count_json_with_tokenizer(tokenizer: &tiktoken_rs::CoreBPE, value: &Value) -> usize {
+    match serde_json::to_string(value) {
+        Ok(text) => count_tokens_with_tokenizer(tokenizer, &text),
+        Err(e) => {
+            warn!(error = %e, "failed to serialize JSON for token count; using byte fallback");
+            count_tokens_with_tokenizer(tokenizer, &value.to_string())
+        }
+    }
 }
 
 /// Count tokens using the tokenizer that best matches `model_id`.
@@ -37,22 +76,13 @@ fn is_o200k_model(model_id: &str) -> bool {
 /// quadratic work in the tiktoken encoder.
 #[must_use]
 pub fn count_tokens_for_model(model_id: &str, text: &str) -> usize {
-    if text.len() > TIKTOKEN_MAX_CHARS {
-        return text.len() / BYTES_PER_TOKEN_ESTIMATE;
-    }
-    tokenizer_for_model(model_id).encode_ordinary(text).len()
+    count_tokens_with_tokenizer(tokenizer_for_model(model_id), text)
 }
 
 /// Count tokens in a JSON value using the tokenizer that best matches `model_id`.
 #[must_use]
 pub fn count_json_for_model(model_id: &str, value: &Value) -> usize {
-    match serde_json::to_string(value) {
-        Ok(text) => count_tokens_for_model(model_id, &text),
-        Err(e) => {
-            warn!(error = %e, "failed to serialize JSON for token count; using byte fallback");
-            count_tokens_for_model(model_id, &value.to_string())
-        }
-    }
+    count_json_with_tokenizer(tokenizer_for_model(model_id), value)
 }
 
 /// Legacy token-count helper that uses cl100k for callers that do not know
@@ -149,8 +179,6 @@ mod tests {
 
     #[test]
     fn model_aware_tokenizer_uses_cl100k_by_default() {
-        // cl100k and o200k tokenize "hello world" to the same tokens, but
-        // this test documents the fallback path.
         let tokens = count_tokens_for_model("anthropic/claude-sonnet-4-6", "hello world");
         assert!(tokens > 0 && tokens < 10);
     }
@@ -164,6 +192,25 @@ mod tests {
             cl, o,
             "common words tokenize the same under both vocabularies"
         );
+    }
+
+    #[test]
+    fn is_o200k_model_matches_variants() {
+        assert!(is_o200k_model("openai/gpt-4o"));
+        assert!(is_o200k_model("OPENAI/GPT-4O-MINI"));
+        assert!(is_o200k_model("openai/gpt-4.1"));
+        assert!(is_o200k_model("openai/gpt-5-preview"));
+        assert!(is_o200k_model("o1-preview"));
+        assert!(is_o200k_model("O3-MINI"));
+        assert!(is_o200k_model("chatgpt-4o-latest"));
+    }
+
+    #[test]
+    fn is_o200k_model_rejects_non_o200k() {
+        assert!(!is_o200k_model("openai/gpt-4-turbo"));
+        assert!(!is_o200k_model("openai/gpt-3.5-turbo"));
+        assert!(!is_o200k_model("anthropic/claude-sonnet-4-6"));
+        assert!(!is_o200k_model(""));
     }
 
     #[test]
@@ -253,7 +300,6 @@ mod tests {
                 json_text.len()
             );
 
-            // Model-aware path should also stay bounded.
             let model_tokens = count_json_for_model("openai/gpt-4o", &value);
             assert!(
                 model_tokens <= json_text.len().max(1),
