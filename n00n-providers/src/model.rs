@@ -55,6 +55,7 @@ pub struct ModelInfo {
     pub pricing: Option<ModelPricing>,
     pub supports_thinking: Option<bool>,
     pub supports_vision: Option<bool>,
+    pub tier: Option<ModelTier>,
     /// Store of additional metadata from the provider.
     pub provider_info: Option<Arc<dyn Any + Send + Sync>>,
 }
@@ -69,6 +70,7 @@ impl ModelInfo {
             pricing: None,
             supports_thinking: None,
             supports_vision: None,
+            tier: None,
             provider_info: None,
         }
     }
@@ -226,36 +228,26 @@ impl Model {
         let spec = format!("{slug}/{model_id}");
         // Discovery keys `known_models` by the builtin slug, so a dynamic or
         // custom slug reads positional tiers and metadata through its base.
-        let tier = model_registry()
+        let guard = model_registry()
             .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .tier_for(&spec, manifest.slug, static_entry.map(|e| e.tier));
-        let (family, pricing, max_output_tokens, context_window) = if let Some(e) = static_entry {
-            (
-                e.family,
-                e.pricing.clone(),
-                Some(e.max_output_tokens),
-                anthropic::shared::long_context_window(model_id)
-                    .unwrap_or_else(|| e.context_window),
-            )
-        } else {
-            let guard = model_registry()
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let discovered = guard.discovered(manifest.slug, model_id);
-            (
-                manifest.family,
-                discovered
-                    .and_then(|d| d.pricing.clone())
-                    .unwrap_or_else(ModelPricing::default),
-                discovered
-                    .and_then(|d| d.max_output_tokens)
-                    .or(manifest.fallback_max_output),
-                discovered
-                    .and_then(|d| d.context_window)
-                    .unwrap_or_else(|| manifest.fallback_context_window),
-            )
-        };
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let discovered = guard.discovered(manifest.slug, model_id);
+        let tier = guard.tier_for(&spec, manifest.slug, static_entry.map(|e| e.tier));
+        let family = static_entry.map_or(manifest.family, |entry| entry.family);
+        let pricing = discovered
+            .and_then(|info| info.pricing.clone())
+            .or_else(|| static_entry.map(|entry| entry.pricing.clone()))
+            .unwrap_or_else(ModelPricing::default);
+        let max_output_tokens = discovered
+            .and_then(|info| info.max_output_tokens)
+            .or_else(|| static_entry.map(|entry| entry.max_output_tokens))
+            .or(manifest.fallback_max_output);
+        let context_window = discovered
+            .and_then(|info| info.context_window)
+            .or_else(|| anthropic::shared::long_context_window(model_id))
+            .or_else(|| static_entry.map(|entry| entry.context_window))
+            .unwrap_or_else(|| manifest.fallback_context_window);
+        drop(guard);
         Self {
             id: model_id.to_string(),
             provider: Arc::from(slug),
@@ -973,6 +965,7 @@ mod tests {
                     pricing: None,
                     supports_thinking: None,
                     supports_vision: None,
+                    tier: None,
                     provider_info: None,
                 }],
             );
