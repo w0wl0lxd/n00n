@@ -1,0 +1,1 @@
+Use model-aware tiktoken vocabularies (cl100k/o200k) for context-size estimation, choosing o200k for GPT-4o/GPT-4.1/GPT-5/o-series models. Adjust Anthropic cache breakpoints by conversation length so short sessions pay for fewer cache writes and long sessions cache more prefixes.

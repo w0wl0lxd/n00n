@@ -2750,7 +2750,10 @@ fn rewind_to_middle_truncates_and_populates_input() {
     assert!(app.state.session.tool_outputs.contains_key("tool-1"));
     assert_eq!(app.input_box.buffer.value(), "second prompt");
     assert_eq!(app.run_id, old_run_id + 1);
-    let expected_ctx = n00n_agent::agent::estimate_message_tokens(&app.state.session.messages);
+    let expected_ctx = n00n_agent::agent::estimate_message_tokens(
+        &app.state.session.messages,
+        &app.state.model.id,
+    );
     assert_eq!(app.state.context_size, expected_ctx);
     assert_eq!(app.chats[0].context_size, expected_ctx);
 

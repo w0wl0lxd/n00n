@@ -5,7 +5,7 @@ use tracing::{error, info, warn};
 
 use n00n_providers::provider::Provider;
 use n00n_providers::{
-    ContentBlock, Message, Model, OpenAiOptions, RequestOptions, StopReason, StreamResponse,
+    ContentBlock, Message, Model, OpenAiOptions, RequestOptions, Role, StopReason, StreamResponse,
     TokenUsage,
 };
 
@@ -27,12 +27,42 @@ use crate::{
 use n00n_config::ToolOutputLines;
 use n00n_storage::id::SessionRef;
 
-use crate::tokenize::{count_json, count_tokens};
+use crate::tokenize::{
+    count_json_with_tokenizer, count_tokens_with_tokenizer, tokenizer_for_model,
+};
 
 const MAX_REAUTH_ATTEMPTS: u32 = 2;
 const NUDGE_PROMPT: &str = "You just executed tool calls but returned an empty response. Please process the tool results above and continue with the task.";
 const MAX_TOKENS_CONTINUE_PROMPT: &str = "Continue exactly where you stopped.";
 const IMAGE_TOKEN_ESTIMATE: usize = 2_048;
+
+const CACHE_BREAKPOINT_LONG_SESSION: usize = 60;
+const CACHE_BREAKPOINT_MEDIUM_SESSION: usize = 30;
+const CACHE_BREAKPOINT_SHORT_SESSION: usize = 10;
+
+const CACHE_BREAKPOINTS_LONG: usize = 4;
+const CACHE_BREAKPOINTS_MEDIUM: usize = 3;
+const CACHE_BREAKPOINTS_SHORT: usize = 2;
+const CACHE_BREAKPOINTS_MIN: usize = 1;
+
+/// Choose how many recent user-message breakpoints to mark for prompt caching.
+///
+/// Short conversations avoid paying for extra cache writes; longer
+/// conversations benefit from more breakpoints because larger stable prefixes
+/// can be reused on subsequent turns. The cap prevents runaway cache creation
+/// costs as sessions grow very long.
+#[must_use]
+fn adaptive_cache_breakpoints(user_message_count: usize) -> usize {
+    if user_message_count >= CACHE_BREAKPOINT_LONG_SESSION {
+        CACHE_BREAKPOINTS_LONG
+    } else if user_message_count >= CACHE_BREAKPOINT_MEDIUM_SESSION {
+        CACHE_BREAKPOINTS_MEDIUM
+    } else if user_message_count >= CACHE_BREAKPOINT_SHORT_SESSION {
+        CACHE_BREAKPOINTS_SHORT
+    } else {
+        CACHE_BREAKPOINTS_MIN
+    }
+}
 
 /// Resolves the model to use for compaction.
 ///
@@ -255,14 +285,20 @@ impl<'h> Agent<'h> {
             .unwrap_or_else(|| rollback_len);
         let msg = Message::user_with_images(input.message.clone(), input.images);
         self.history.push(msg);
-        self.context_size = estimate_message_tokens(self.history.as_slice())
-            .saturating_add(estimate_tool_tokens(&self.tools));
+        self.context_size = estimate_message_tokens(self.history.as_slice(), &self.model.id)
+            .saturating_add(estimate_tool_tokens(&self.tools, &self.model.id));
         self.mode = input.mode;
         self.workflow = input.workflow;
+        let user_message_count = self
+            .history
+            .as_slice()
+            .iter()
+            .filter(|m| matches!(m.role, Role::User))
+            .count();
         self.opts = RequestOptions {
             thinking: input.thinking,
             fast: input.fast,
-            message_cache_breakpoints: 2,
+            message_cache_breakpoints: adaptive_cache_breakpoints(user_message_count),
         };
 
         info!(
@@ -381,6 +417,7 @@ impl<'h> Agent<'h> {
             let tool_results_start = history_len_before.saturating_add(1);
             self.context_size = self.context_size.saturating_add(estimate_message_tokens(
                 &self.history.as_slice()[tool_results_start..],
+                &self.model.id,
             ));
         } else {
             let is_empty = response.message.content.is_empty();
@@ -406,6 +443,7 @@ impl<'h> Agent<'h> {
                     .push(Message::synthetic(MAX_TOKENS_CONTINUE_PROMPT.into()));
                 self.context_size = self.context_size.saturating_add(estimate_message_tokens(
                     &self.history.as_slice()[self.history.len().saturating_sub(1)..],
+                    &self.model.id,
                 ));
                 self.try_auto_compact().await?;
                 return Ok(TurnOutcome::Continue);
@@ -641,8 +679,8 @@ impl<'h> Agent<'h> {
         self.event_tx.send(AgentEvent::CompactionDone)?;
         self.history
             .push(Message::synthetic(CONTINUE_AFTER_COMPACT.into()));
-        self.context_size = estimate_message_tokens(self.history.as_slice())
-            .saturating_add(estimate_tool_tokens(&self.tools));
+        self.context_size = estimate_message_tokens(self.history.as_slice(), &self.model.id)
+            .saturating_add(estimate_tool_tokens(&self.tools, &self.model.id));
         Ok(())
     }
 
@@ -690,22 +728,30 @@ fn u32_from_usize_saturating(value: usize) -> u32 {
 }
 
 #[must_use]
-pub fn estimate_message_tokens(messages: &[Message]) -> u32 {
+pub fn estimate_message_tokens(messages: &[Message], model_id: &str) -> u32 {
     if messages.is_empty() {
         return 0;
     }
+    let tokenizer = tokenizer_for_model(model_id);
     let total: usize = messages
         .iter()
         .flat_map(|m| &m.content)
         .map(|b| match b {
-            ContentBlock::Text { text } => count_tokens(text),
+            ContentBlock::Text { text } => count_tokens_with_tokenizer(tokenizer, text),
             ContentBlock::Thinking {
                 thinking,
                 signature,
-            } => count_tokens(thinking) + signature.as_ref().map_or(0, |s| count_tokens(s)),
-            ContentBlock::RedactedThinking { data } => count_tokens(data),
-            ContentBlock::ToolResult { content, .. } => count_tokens(content),
-            ContentBlock::ToolUse { input, .. } => count_json(input),
+            } => {
+                count_tokens_with_tokenizer(tokenizer, thinking)
+                    + signature
+                        .as_ref()
+                        .map_or(0, |s| count_tokens_with_tokenizer(tokenizer, s))
+            }
+            ContentBlock::RedactedThinking { data } => count_tokens_with_tokenizer(tokenizer, data),
+            ContentBlock::ToolResult { content, .. } => {
+                count_tokens_with_tokenizer(tokenizer, content)
+            }
+            ContentBlock::ToolUse { input, .. } => count_json_with_tokenizer(tokenizer, input),
             ContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE,
         })
         .sum();
@@ -713,8 +759,9 @@ pub fn estimate_message_tokens(messages: &[Message]) -> u32 {
 }
 
 #[must_use]
-pub fn estimate_tool_tokens(tools: &Value) -> u32 {
-    u32_from_usize_saturating(count_json(tools))
+pub fn estimate_tool_tokens(tools: &Value, model_id: &str) -> u32 {
+    let tokenizer = tokenizer_for_model(model_id);
+    u32_from_usize_saturating(count_json_with_tokenizer(tokenizer, tools))
 }
 
 #[cfg(test)]
@@ -741,7 +788,7 @@ mod tests {
 
     #[test]
     fn estimate_message_tokens_empty_is_zero() {
-        assert_eq!(estimate_message_tokens(&[]), 0);
+        assert_eq!(estimate_message_tokens(&[], ""), 0);
     }
 
     const COST_EPSILON: f64 = 1e-12;
@@ -749,7 +796,7 @@ mod tests {
     #[test]
     fn estimate_message_tokens_counts_content_blocks() {
         let messages = vec![Message::user("hello world".into())];
-        let tokens = estimate_message_tokens(&messages);
+        let tokens = estimate_message_tokens(&messages, "");
         assert!(
             tokens >= 2,
             "expected at least two tokens for two words, got {tokens}"
@@ -759,14 +806,14 @@ mod tests {
     #[test]
     fn estimate_tool_tokens_counts_json() {
         let tools = serde_json::json!([{"name": "skill", "description": "A tool"}]);
-        let tokens = estimate_tool_tokens(&tools);
+        let tokens = estimate_tool_tokens(&tools, "");
         assert!(tokens > 0, "expected positive token count for tools");
     }
 
     #[test]
     fn estimate_tool_tokens_empty_array_is_nonzero() {
         let tools = json!([]);
-        let tokens = estimate_tool_tokens(&tools);
+        let tokens = estimate_tool_tokens(&tools, "");
         assert!(tokens > 0, "empty array JSON still has token count");
     }
 
@@ -793,7 +840,7 @@ mod tests {
             ],
             ..Default::default()
         }];
-        let tokens = estimate_message_tokens(&messages);
+        let tokens = estimate_message_tokens(&messages, "");
         assert!(
             tokens >= u32_from_usize_saturating(IMAGE_TOKEN_ESTIMATE),
             "image blocks should add {IMAGE_TOKEN_ESTIMATE} tokens"
@@ -815,7 +862,7 @@ mod tests {
             ],
             ..Default::default()
         }];
-        let tokens = estimate_message_tokens(&messages);
+        let tokens = estimate_message_tokens(&messages, "");
         assert!(
             tokens > 0,
             "thinking and redacted blocks should contribute tokens"
@@ -824,7 +871,7 @@ mod tests {
 
     #[test]
     fn estimate_tool_tokens_empty_array_costs_one() {
-        assert_eq!(estimate_tool_tokens(&serde_json::json!([])), 1);
+        assert_eq!(estimate_tool_tokens(&serde_json::json!([]), ""), 1);
     }
 
     struct MockInterruptSource {
@@ -1511,5 +1558,31 @@ mod tests {
                 .expect("expected Done event");
             assert_eq!(done, expected_turns);
         });
+    }
+
+    #[test]
+    fn adaptive_cache_breakpoints_scales_with_user_message_count() {
+        assert_eq!(adaptive_cache_breakpoints(0), CACHE_BREAKPOINTS_MIN);
+        assert_eq!(adaptive_cache_breakpoints(1), CACHE_BREAKPOINTS_MIN);
+        assert_eq!(
+            adaptive_cache_breakpoints(CACHE_BREAKPOINT_SHORT_SESSION - 1),
+            CACHE_BREAKPOINTS_MIN
+        );
+        assert_eq!(
+            adaptive_cache_breakpoints(CACHE_BREAKPOINT_SHORT_SESSION),
+            CACHE_BREAKPOINTS_SHORT
+        );
+        assert_eq!(
+            adaptive_cache_breakpoints(CACHE_BREAKPOINT_MEDIUM_SESSION),
+            CACHE_BREAKPOINTS_MEDIUM
+        );
+        assert_eq!(
+            adaptive_cache_breakpoints(CACHE_BREAKPOINT_LONG_SESSION),
+            CACHE_BREAKPOINTS_LONG
+        );
+        assert_eq!(
+            adaptive_cache_breakpoints(CACHE_BREAKPOINT_LONG_SESSION + 100),
+            CACHE_BREAKPOINTS_LONG
+        );
     }
 }
