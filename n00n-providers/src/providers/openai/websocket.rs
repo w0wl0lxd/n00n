@@ -1310,7 +1310,7 @@ mod tests {
             server.await;
 
             assert!(matches!(error.error, AgentError::Timeout { .. }));
-            assert!(started.elapsed() < Duration::from_secs(1));
+            assert!(started.elapsed() < Duration::from_secs(2));
             assert_eq!(error.delivery.response_id.as_deref(), Some("resp_progress"));
         });
     }

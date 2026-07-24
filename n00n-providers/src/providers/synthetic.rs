@@ -12,6 +12,7 @@ use super::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
 use super::{KeyPool, ResolvedAuth};
 
 static CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
+    slug: "synthetic",
     api_key_env: "SYNTHETIC_API_KEY",
     base_url: "https://api.synthetic.new/openai/v1",
     max_tokens_field: "max_completion_tokens",
@@ -33,7 +34,7 @@ inventory::submit!(n00n_config::providers::BuiltInProvider {
     needs_url: false,
 });
 
-pub(crate) fn models() -> &'static [ModelEntry] {
+pub(crate) const fn models() -> &'static [ModelEntry] {
     &[
         ModelEntry {
             prefixes: &["hf:moonshotai/Kimi-K2.5"],

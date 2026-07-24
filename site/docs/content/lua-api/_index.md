@@ -5146,6 +5146,16 @@ function ActivityPreview:update(progress, label, session_key)
 function ActivityPreview:prompt(sess, message, label)
 ```
 
+### `require("n00n.checkpoint")`
+
+```lua
+-- Checkpoint: save/load JSON snapshots for run lifecycle.
+function M.save(run_id, checkpoint_id, state)
+function M.load(run_id, checkpoint_id)
+function M.list(run_id)
+function M.latest(run_id)
+```
+
 ### `require("n00n.color")`
 
 ```lua
@@ -5210,6 +5220,40 @@ ListPicker.matches = matches
 ListPicker.highlight_spans = highlight_spans
 ```
 
+### `require("n00n.live_context")`
+
+```lua
+-- Live context: combine n00n.session.live() + blackboard query for visibility.
+local M = {}
+
+function M.snapshot()
+  local sessions, err = n00n.session.live()
+  if not sessions then
+    return nil, "failed to get live sessions: " .. tostring(err)
+  end
+
+  local enriched = {}
+  for _, session in ipairs(sessions) do
+    local entry = {
+      session_id = session.id,
+      agent_type = session.agent_type or "unknown",
+      status = session.status or "unknown",
+      last_activity = session.updated_at or os.time(),
+      active_task_id = nil,
+      metadata = {
+        title = session.title,
+        focused = session.focused,
+      },
+    }
+    enriched[#enriched + 1] = entry
+  end
+
+  return enriched
+end
+
+return M
+```
+
 ### `require("n00n.output_limits")`
 
 ```lua
@@ -5218,9 +5262,11 @@ ListPicker.highlight_spans = highlight_spans
 
 local DEFAULT_MAX_OUTPUT_LINES = 2000
 local DEFAULT_MAX_OUTPUT_BYTES = 50 * 1024
+local DEFAULT_MAX_LINE_BYTES = 500
 
 local M = {}
 
+M.DEFAULT_MAX_LINE_BYTES = DEFAULT_MAX_LINE_BYTES
 M.specs = {
   max_output_lines = { type = "integer", desc = "Override `agent.max_output_lines` for this tool." },
   max_output_bytes = { type = "integer", desc = "Override `agent.max_output_bytes` for this tool." },
@@ -5367,8 +5413,8 @@ function TextInput:render(prefix, prefix_width, width)
 
 -- opts: max_lines (default 80) shown while collapsed, keep "head"|"tail"
 -- (default "tail"), max_expand_lines (default 2000) kept for expansion,
--- max_line_bytes and max_width (optional) cap each complete rendered row,
--- and hide_collapsed (default false) reveals body lines only after a click.
+-- max_line_bytes (optional) per-line byte cap applied at render time,
+-- max_width (optional) display-width cap, hide_collapsed (default false).
 function ToolView.new(buf, opts)
 function ToolView:set_header(lines)
 function ToolView:clear()

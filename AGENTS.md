@@ -97,11 +97,13 @@ Every tool result spends context tokens. Prefer structural, pre-indexed tools ov
 - **Parallelize:** use `batch` for independent calls.
 - **Filter and pipeline with `code_execution`:** chain calls, filter large outputs, and transform data inside the sandboxed Python interpreter. Only the final result should reach the context window.
 - **AST-aware search (`ast-grep`):** if you configure the `ast-grep` MCP server, use it for AST-pattern structural search and safe refactoring. It is more precise than `grep` and safer than `sed` for code changes. Example `.n00n/mcp.toml`:
+
   ```toml
   [mcp.ast-grep]
   command = ["/path/to/ast-grep-mcp-host"]
   timeout = 300000
   ```
+
 - **Compress structured data:** prefer `n00n.json.tooned` (lossless JSON/TOON passthrough) over plain JSON when passing structured data between tools or scripts.
 - **Compress shell output with `rtk`:** the `bash` tool automatically rewrites supported commands through `rtk` when the `rtk` CLI is installed, typically cutting output tokens by 60-90%. Use `bash` (not raw `grep`/`read`/`cat`) for `git`, `cargo`, `rg`, `grep`, `jq`, `yq`, `gh`, `find`, `ls`, `cat`, `head`, `tail`, and other system commands. Use `rtk proxy <command>` when exact raw shell output is required. Combine with `context-mode` once installed.
 
