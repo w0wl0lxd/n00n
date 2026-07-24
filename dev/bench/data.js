@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784866527399,
+  "lastUpdate": 1784866726675,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -3023,6 +3023,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 153966,
             "range": "± 26620",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "293c4cd677feac108961670806291d661d0665f8",
+          "message": "Merge pull request #93 from w0wl0lxd/fold/upstream-pr-649\n\nfeat(lua): add list mode to n00n.fn.jobstart",
+          "timestamp": "2026-07-24T00:06:21-04:00",
+          "tree_id": "3a933e5c7154eceb94e25f86b3ab45c1fb9d2af0",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/293c4cd677feac108961670806291d661d0665f8"
+        },
+        "date": 1784866725814,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 4984127,
+            "range": "± 139930",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1838089,
+            "range": "± 8419",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1850099,
+            "range": "± 8289",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 5833394,
+            "range": "± 35659",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 2889773,
+            "range": "± 4644",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 2828546,
+            "range": "± 7471",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 429481,
+            "range": "± 1142",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 130281,
+            "range": "± 2504",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 130238,
+            "range": "± 272",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 800213,
+            "range": "± 3622",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 474804,
+            "range": "± 3561",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 491040,
+            "range": "± 5033",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 51489,
+            "range": "± 3022",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 136307,
+            "range": "± 7905",
             "unit": "ns/iter"
           }
         ]
