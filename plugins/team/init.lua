@@ -630,19 +630,50 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
       end
     else
       local wave_start_step = wave_idx == start_wave_index and start_step_index or 1
+
+      -- Copy wave steps so retry mutations do not leak into the original plan or subsequent waves.
+      local wave_steps = {}
+      for i, e in ipairs(computed_waves[wave_name]) do
+        local step_copy = {}
+        for k, v in pairs(e.step) do
+          step_copy[k] = v
+        end
+        wave_steps[i] = { index = e.index, step = step_copy, original_prompt = step_copy.prompt or "" }
+      end
+
       local retry_count = 0
       local wave_passed = false
+      local wave_cost = 0.0
+      local wave_usage = roles.usage()
+      local feedback
 
       while retry_count <= max_retries and not wave_passed do
+        if feedback then
+          for _, entry in ipairs(wave_steps) do
+            entry.step.prompt = entry.original_prompt
+              .. "\n\nValidation feedback (retry "
+              .. retry_count
+              .. "): "
+              .. feedback
+          end
+        else
+          for _, entry in ipairs(wave_steps) do
+            entry.step.prompt = entry.original_prompt
+          end
+        end
+
         local wave_result =
           run_wave(ctx, wave_name, wave_steps, goal, input, relay_k, logger, run_id, wave_idx, results, wave_start_step)
+
+        wave_cost = add_cost(wave_cost, wave_result.cost)
+        wave_usage = roles.add_usage(wave_usage, wave_result.usage)
 
         if wave_result.failures > 0 then
           if logger then
             logger.log("wave_error", { wave = wave_name, failures = wave_result.failures })
           end
-          total_cost = add_cost(total_cost, wave_result.cost)
-          total_usage = roles.add_usage(total_usage, wave_result.usage)
+          total_cost = add_cost(total_cost, wave_cost)
+          total_usage = roles.add_usage(total_usage, wave_usage)
           for _, r in ipairs(wave_result.results) do
             results[#results + 1] = r
           end
@@ -657,8 +688,8 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
         )
         if passed then
           wave_passed = true
-          total_cost = add_cost(total_cost, wave_result.cost)
-          total_usage = roles.add_usage(total_usage, wave_result.usage)
+          total_cost = add_cost(total_cost, wave_cost)
+          total_usage = roles.add_usage(total_usage, wave_usage)
           for _, r in ipairs(wave_result.results) do
             results[#results + 1] = r
           end
@@ -672,16 +703,10 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
           end
 
           if retry_count <= max_retries then
-            for i, entry in ipairs(wave_steps) do
-              entry.step.prompt = entry.step.prompt
-                .. "\n\nValidation feedback (retry "
-                .. retry_count
-                .. "): "
-                .. (validation_err or "failed")
-            end
+            feedback = validation_err or "failed"
           else
-            total_cost = add_cost(total_cost, wave_result.cost)
-            total_usage = roles.add_usage(total_usage, wave_result.usage)
+            total_cost = add_cost(total_cost, wave_cost)
+            total_usage = roles.add_usage(total_usage, wave_usage)
             for _, r in ipairs(wave_result.results) do
               results[#results + 1] = r
             end
