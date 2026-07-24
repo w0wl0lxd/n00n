@@ -48,6 +48,7 @@ use crate::components::{
 };
 use crate::input::InputReader;
 
+use crate::color_compat;
 use crate::storage_writer::StorageWriter;
 use crate::terminal;
 use crate::terminal_image;
@@ -1424,7 +1425,10 @@ fn draw_then_post_terminal<B>(
 where
     B: ratatui::backend::Backend,
 {
-    terminal.draw(draw)?;
+    terminal.draw(|f| {
+        draw(f);
+        color_compat::downgrade_if_needed(f.buffer_mut());
+    })?;
     after_draw();
     Ok(())
 }
