@@ -169,11 +169,11 @@ Update a task claim status (e.g., mark as done or failed).
 
 ### list_claims
 
-List active task claims.
+List task claims, optionally filtering by active status.
 
 **Input**:
 - `action`: "list_claims"
-- `only_active` (boolean, optional): If true (default), return only active, unexpired claims.
+- `only_active` (boolean, optional): If true (default when omitted), return only active, unexpired claims. If false, return all claims including expired and released. If not a boolean, returns an error.
 
 **Output**:
 - Success: `{ llm_output = "{encoded_claims}", claims = [{claim_objects}] }`
@@ -182,6 +182,7 @@ List active task claims.
 **Validation**:
 - Returns claims sorted by `claimed_at` descending (newest first).
 - Active claims have status `claimed` and `expires_at` in the future.
+- If `only_active` is nil, it defaults to true (active-only behavior).
 
 ### query
 
@@ -203,9 +204,9 @@ Query the blackboard for posts matching filters.
 **Validation**:
 - If `type` is present, it must be one of the allowed values.
 - If `limit` is present, it must be positive.
-- Results are returned in chronological order (newest first).
+- Results are returned sorted by timestamp descending (newest first).
 
-**Performance**: Query scans the JSONL file and applies filters. For large blackboards, a cached index may be added in a future iteration.
+**Performance**: Query scans the posts directory and applies filters. For large blackboards, a cached index may be added in a future iteration.
 
 ## Error Handling
 
@@ -219,7 +220,7 @@ All actions return errors in the format `{ llm_output = "Error: {message}", is_e
 
 ## Storage
 
-Posts are stored in `state_dir/projects/{pid}/blackboard/posts.jsonl` as append-only JSONL lines. Each line is a JSON object representing a post. A lockfile (`posts.lock`) ensures atomic operations.
+Posts are stored in `state_dir/projects/{pid}/blackboard/posts/*.json` as individual JSON files. Each file is a JSON object representing a post with a unique ID. Claims are stored in `state_dir/projects/{pid}/blackboard/claims/{task_id}/claim.json` as a JSON file per task.
 
 ## Integration
 

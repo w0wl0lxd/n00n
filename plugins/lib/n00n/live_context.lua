@@ -2,6 +2,10 @@
 local M = {}
 
 function M.snapshot(ctx)
+  if not ctx or (type(ctx) ~= "userdata" and type(ctx) ~= "table") then
+    return nil, "ctx is required"
+  end
+
   local sessions, err = n00n.session.live()
   if not sessions then
     return nil, "failed to get live sessions: " .. tostring(err)
@@ -10,37 +14,22 @@ function M.snapshot(ctx)
   local enriched = {}
   local bb_posts = {}
   local bb_claims = {}
+  local bb_error = nil
 
   local bb_ok, bb_result = pcall(function()
     local posts_result =
-      n00n.agent.call_tool(ctx or {}, "blackboard", { action = "query", query = { type = "status" } })
+      n00n.agent.call_tool(ctx, "blackboard", { action = "query", query = { type = "status", limit = 50 } })
     if posts_result and posts_result.results then
       bb_posts = posts_result.results
     end
-    local claims_result = n00n.agent.call_tool(ctx or {}, "blackboard", { action = "list_claims", only_active = true })
+    local claims_result = n00n.agent.call_tool(ctx, "blackboard", { action = "list_claims", only_active = true })
     if claims_result and claims_result.claims then
       bb_claims = claims_result.claims
     end
   end)
 
   if not bb_ok then
-    for _, session in ipairs(sessions) do
-      local entry = {
-        session_id = session.id,
-        agent_type = session.agent_type or "unknown",
-        status = session.status or "unknown",
-        last_activity = session.updated_at or os.time(),
-        active_task_id = nil,
-        active_claim = nil,
-        recent_posts = {},
-        metadata = {
-          title = session.title,
-          focused = session.focused,
-        },
-      }
-      enriched[#enriched + 1] = entry
-    end
-    return enriched
+    bb_error = tostring(bb_result)
   end
 
   for _, session in ipairs(sessions) do
@@ -99,6 +88,9 @@ function M.snapshot(ctx)
         focused = session.focused,
       },
     }
+    if bb_error then
+      entry.blackboard_error = bb_error
+    end
     enriched[#enriched + 1] = entry
   end
 

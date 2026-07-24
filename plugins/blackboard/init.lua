@@ -46,8 +46,14 @@ local function validate_id(id)
   if not id or id == "" then
     return nil, "id is required"
   end
-  if id == "." or id == ".." or id:find("[^%w%-%_.]") then
-    return nil, "id contains invalid characters (only alphanumeric, dash, underscore, dot allowed, not . or ..)"
+  if #id > 128 then
+    return nil, "id exceeds maximum length of 128"
+  end
+  if id:find("%.%.") or id:find("/") or id:find("\\") or id:find("%z") or id:find("%c") then
+    return nil, "id contains invalid characters (path traversal, control chars, or null not allowed)"
+  end
+  if id:find("[^%w%-%_.]") then
+    return nil, "id contains invalid characters (only alphanumeric, dash, underscore, dot allowed)"
   end
   return true
 end
@@ -499,6 +505,10 @@ local schema = {
         limit = { type = "integer", description = "Maximum results (default 100, max 1000)." },
       },
     },
+    only_active = {
+      type = "boolean",
+      description = "For list_claims: if true (default), return only active claims. If false, return all claims.",
+    },
   },
 }
 
@@ -591,7 +601,11 @@ local function handler(input)
 
     return { llm_output = "Task updated: " .. input.task_id .. " -> " .. input.status }
   elseif action == "list_claims" then
-    local claims, err = list_claims(input.only_active)
+    if input.only_active ~= nil and type(input.only_active) ~= "boolean" then
+      return { llm_output = "Error: only_active must be a boolean", is_error = true }
+    end
+    local only_active = input.only_active == nil and true or input.only_active
+    local claims, err = list_claims(only_active)
     if not claims then
       return { llm_output = "Error: " .. tostring(err), is_error = true }
     end

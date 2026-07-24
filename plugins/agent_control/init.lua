@@ -1,4 +1,5 @@
 local ok, memory_helpers = pcall(require, "memory.memory_helpers")
+local policy_ok, policy = pcall(require, "n00n.policy")
 
 local function project_id()
   if ok and memory_helpers then
@@ -9,6 +10,22 @@ local function project_id()
   local cwd = n00n.uv.cwd()
   local base = n00n.fs.basename(cwd) or "root"
   return base .. "-default"
+end
+
+local function validate_id(id)
+  if not id or id == "" then
+    return nil, "id is required"
+  end
+  if #id > 128 then
+    return nil, "id exceeds maximum length of 128"
+  end
+  if id:find("%.%.") or id:find("/") or id:find("\\") or id:find("%z") or id:find("%c") then
+    return nil, "id contains invalid characters (path traversal, control chars, or null not allowed)"
+  end
+  if id:find("[^%w%-%_.]") then
+    return nil, "id contains invalid characters (only alphanumeric, dash, underscore, dot allowed)"
+  end
+  return true
 end
 
 local description = [[Control background agents started by task, team, or workflow.
@@ -141,22 +158,29 @@ local function policy_set(rule)
   if not rule.id or rule.id == "" then
     return nil, "rule.id is required"
   end
+  local ok, vid = validate_id(rule.id)
+  if not ok then
+    return nil, "rule.id: " .. vid
+  end
   if not rule.scope then
     return nil, "rule.scope is required"
+  end
+  if type(rule.scope) ~= "table" then
+    return nil, "rule.scope must be a table"
   end
   if not rule.priority then
     return nil, "rule.priority is required"
   end
 
   local scope_keys = 0
-  if rule.scope.tag then
-    scope_keys = scope_keys + 1
-  end
-  if rule.scope.session_type then
-    scope_keys = scope_keys + 1
-  end
-  if rule.scope.agent_id then
-    scope_keys = scope_keys + 1
+  local valid_keys = { tag = true, session_type = true, agent_id = true }
+  for key, value in pairs(rule.scope) do
+    if not valid_keys[key] then
+      return nil, "rule.scope has unknown key: " .. tostring(key)
+    end
+    if value then
+      scope_keys = scope_keys + 1
+    end
   end
   if scope_keys ~= 1 then
     return nil, "rule.scope must have exactly one of tag, session_type, or agent_id"
@@ -238,92 +262,6 @@ local function policy_list()
   return policies.rules
 end
 
-local function evaluate_policy(agent_id, session_type, tags, tool_name)
-  local policies = load_policies()
-  if not policies or not policies.rules or #policies.rules == 0 then
-    return { allowed = true }
-  end
-
-  local matched_rules = {}
-  for _, rule in ipairs(policies.rules) do
-    local matches = false
-    local scope = rule.scope or {}
-
-    if scope.agent_id and scope.agent_id == agent_id then
-      matches = true
-    elseif scope.session_type and scope.session_type == session_type then
-      matches = true
-    elseif scope.tag and tags then
-      for _, tag in ipairs(tags) do
-        if tag == scope.tag then
-          matches = true
-          break
-        end
-      end
-    end
-
-    if matches then
-      matched_rules[#matched_rules + 1] = rule
-    end
-  end
-
-  if #matched_rules == 0 then
-    return { allowed = true }
-  end
-
-  table.sort(matched_rules, function(a, b)
-    if (a.priority or 0) ~= (b.priority or 0) then
-      return (a.priority or 0) > (b.priority or 0)
-    end
-    local a_specificity = 0
-    local b_specificity = 0
-    if a.scope.agent_id then
-      a_specificity = 3
-    elseif a.scope.session_type then
-      a_specificity = 2
-    elseif a.scope.tag then
-      a_specificity = 1
-    end
-    if b.scope.agent_id then
-      b_specificity = 3
-    elseif b.scope.session_type then
-      b_specificity = 2
-    elseif b.scope.tag then
-      b_specificity = 1
-    end
-    return a_specificity > b_specificity
-  end)
-
-  local rule = matched_rules[1]
-
-  if rule.paused then
-    return { allowed = false, reason = "agent paused by policy" }
-  end
-
-  if rule.restricted_tools and #rule.restricted_tools > 0 then
-    for _, restricted in ipairs(rule.restricted_tools) do
-      if restricted == tool_name then
-        return { allowed = false, reason = "tool " .. tool_name .. " is restricted by policy" }
-      end
-    end
-  end
-
-  if rule.allowed_tools and #rule.allowed_tools > 0 then
-    local allowed = false
-    for _, allowed_tool in ipairs(rule.allowed_tools) do
-      if allowed_tool == tool_name then
-        allowed = true
-        break
-      end
-    end
-    if not allowed then
-      return { allowed = false, reason = "tool " .. tool_name .. " is not in policy allowlist" }
-    end
-  end
-
-  return { allowed = true }
-end
-
 local function find_agent(id)
   local agents, err = n00n.session.live()
   if not agents then
@@ -363,7 +301,7 @@ local function handler(input)
       end
       local encoded, enc_err = n00n.json.encode(rule)
       if not encoded then
-        return { llm_output = "Policy set: " .. rule.id, policy = rule }
+        return { llm_output = "Error: encode failed", is_error = true }
       end
       return { llm_output = encoded, policy = rule }
     elseif paction == "get" then
@@ -417,9 +355,18 @@ local function handler(input)
       return { llm_output = "message is required for " .. input.action, is_error = true }
     end
 
-    local policy_result = evaluate_policy(input.agent_id, nil, nil, "session.prompt")
-    if not policy_result.allowed then
-      return { llm_output = "Policy blocked: " .. (policy_result.reason or "unknown"), is_error = true }
+    local session_type = nil
+    local tags = nil
+    if policy_ok and policy then
+      local status, status_err = n00n.session.status(input.agent_id)
+      if status then
+        session_type = status.session_type
+        tags = status.tags
+      end
+      local policy_result = policy.evaluate_policy(input.agent_id, session_type, tags, "session.prompt")
+      if not policy_result.allowed then
+        return { llm_output = "Policy blocked: " .. (policy_result.reason or "unknown"), is_error = true }
+      end
     end
 
     local state, err = n00n.session.prompt(input.message, { session = input.agent_id })
