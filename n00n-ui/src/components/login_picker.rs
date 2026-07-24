@@ -22,6 +22,10 @@ use crate::theme;
 const TITLE: &str = " Login ";
 const CATALOG_UNAVAILABLE_SLUG: &str = "catalog-unavailable";
 
+fn env_key_populated(var: &str) -> bool {
+    std::env::var(var).is_ok_and(|v| v.split(',').any(|s| !s.trim().is_empty()))
+}
+
 const PROTOCOLS: &[(&str, &str)] = &[
     ("openai", "OpenAI-compatible"),
     ("anthropic", "Anthropic"),
@@ -183,7 +187,7 @@ impl LoginPicker {
             .iter()
             .map(|b| {
                 let has_key = load_provider_credentials(&storage, b.slug).is_some();
-                let has_env = std::env::var(b.default_api_key_env).is_ok();
+                let has_env = env_key_populated(b.default_api_key_env);
                 let configured = !has_key
                     && !has_env
                     && config.get(b.slug).is_some_and(|d| d.base_url.is_some());
@@ -203,10 +207,7 @@ impl LoginPicker {
                 continue;
             }
             let has_key = load_provider_credentials(&storage, slug).is_some();
-            let has_env = def
-                .api_key_env
-                .as_deref()
-                .is_some_and(|e| std::env::var(e).is_ok());
+            let has_env = def.api_key_env.as_deref().is_some_and(env_key_populated);
             items.push(ProviderItem {
                 slug: slug.clone(),
                 display_name: def.display_name.clone().unwrap_or_else(|| slug.clone()),
