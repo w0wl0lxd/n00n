@@ -1335,9 +1335,13 @@ Run a shell command in the background. The command runs through
 `bash -c` on Unix or `cmd /C` on Windows. You get back a job id
 that you can pass to `jobstop` or `jobwait` to control the process.
 
+For commands that don't need shell features (pipes, redirection, globs),
+pass an array to run the program directly with preserved argument quoting:
+`n00n.fn.jobstart({ "git", "commit", "-m", "feat: msg" })`
+
 **Parameters:**
 
-- `{cmd}` (`string`) Shell command to run.
+- `{cmd}` (`string|table`) Shell command string, or array of program + args.
 - `{opts?}` (`table?`) Optional settings:
   - `cwd` (`string?`) working directory (tilde is expanded).
   - `env` (`table?`) extra environment variables, `{ VAR = "value" }`.
@@ -1350,11 +1354,14 @@ that you can pass to `jobstop` or `jobwait` to control the process.
 **Example:**
 
 ```lua
+-- String mode (shell features available)
 local id = n00n.fn.jobstart("ls -la", {
   cwd = "~/projects",
   on_stdout = function(_, line) print(line) end,
   on_exit = function(_, code) print("exit: " .. code) end,
 })
+-- List mode (preserves argument quoting)
+local id = n00n.fn.jobstart({ "git", "commit", "-m", "feat: preserve spaces" }, opts)
 ```
 
 ---
