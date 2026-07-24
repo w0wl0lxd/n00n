@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784877128970,
+  "lastUpdate": 1784930208204,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -4103,6 +4103,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 174145,
             "range": "± 14451",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c115a80ae1fd81c12658e82c41e6c4f185b5a5d7",
+          "message": "feat(providers): back windsurf provider with Devin CLI credentials (#101)\n\n* feat(providers): back windsurf provider with Devin CLI credentials\n\nThe windsurf provider was hard-wired to the `WINDSURF_API_KEY` environment\nvariable, which is outdated now that Devin CLI stores its token after\n`devin auth login` in `~/.local/share/devin/credentials.toml` (or\n`%APPDATA%\\devin\\credentials.toml` on Windows).\n\n- Read `windsurf_api_key` from Devin CLI's credentials.toml as a fallback.\n- Prefer `DEVIN_API_KEY` and keep `WINDSURF_API_KEY` as a legacy fallback.\n- Update display names, login URL, and generated docs to \"Devin CLI\".\n- Make `n00n auth status` and the login picker recognize `WINDSURF_API_KEY`\n  as an env-key source for the `windsurf` provider while the canonical env\n  var is `DEVIN_API_KEY`.\n\nThe provider still speaks the OpenAI-compatible `/v1` protocol and still\ndefaults to `http://localhost:3003/v1`, so the base URL remains fully\nconfigurable via `WINDSURF_BASE_URL` or `providers.toml`.\n\n* fix(devin-cli): validate blank credential keys and empty env vars",
+          "timestamp": "2026-07-24T17:43:13-04:00",
+          "tree_id": "1038e94611855dd8975a2f70d175671a1142a564",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/c115a80ae1fd81c12658e82c41e6c4f185b5a5d7"
+        },
+        "date": 1784930207235,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6648902,
+            "range": "± 65036",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2232040,
+            "range": "± 63834",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2227589,
+            "range": "± 5556",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 9478795,
+            "range": "± 120498",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4886738,
+            "range": "± 33843",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4533947,
+            "range": "± 115197",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 584027,
+            "range": "± 16970",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191542,
+            "range": "± 799",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191707,
+            "range": "± 233",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1079652,
+            "range": "± 10010",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 577557,
+            "range": "± 11315",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 581268,
+            "range": "± 9594",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 80921,
+            "range": "± 3018",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 173751,
+            "range": "± 18831",
             "unit": "ns/iter"
           }
         ]
