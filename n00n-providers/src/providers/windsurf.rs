@@ -96,9 +96,20 @@ fn resolve_api_key() -> Result<KeyPool, AgentError> {
             source = "credentials.toml",
             "resolved Devin API key from devin auth login"
         );
-        return Ok(KeyPool::from_keys(vec![creds.windsurf_api_key]));
+        let key = devin_key_from_creds(&creds)?;
+        return Ok(KeyPool::from_keys(vec![key]));
     }
     KeyPool::resolve(CONFIG.slug, CONFIG.api_key_env)
+}
+
+fn devin_key_from_creds(creds: &DevinCliCredentials) -> Result<String, AgentError> {
+    let key = creds.windsurf_api_key.trim();
+    if key.is_empty() {
+        return Err(AgentError::Config {
+            message: "Devin CLI credentials contain a blank API key".to_string(),
+        });
+    }
+    Ok(key.to_string())
 }
 
 pub(crate) const fn models() -> &'static [ModelEntry] {
@@ -280,6 +291,23 @@ devin_api_url = "https://api.example.com"
         write!(file, "not valid toml [").unwrap();
 
         let err = load_devin_credentials_at(file.path()).unwrap_err();
+        assert!(matches!(err, AgentError::Config { .. }));
+    }
+
+    #[test]
+    fn devin_key_from_creds_accepts_valid_key() {
+        let creds = DevinCliCredentials {
+            windsurf_api_key: "test-key".to_string(),
+        };
+        assert_eq!(devin_key_from_creds(&creds).unwrap(), "test-key");
+    }
+
+    #[test]
+    fn devin_key_from_creds_rejects_blank_value() {
+        let creds = DevinCliCredentials {
+            windsurf_api_key: "   ".to_string(),
+        };
+        let err = devin_key_from_creds(&creds).unwrap_err();
         assert!(matches!(err, AgentError::Config { .. }));
     }
 }

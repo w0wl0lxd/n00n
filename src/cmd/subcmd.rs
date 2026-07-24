@@ -27,11 +27,15 @@ use n00n_storage::model::persist_model;
 
 const WINDSURF_API_KEY_ENV: &str = "WINDSURF_API_KEY";
 
+fn env_key_populated(var: &str) -> bool {
+    env::var(var).is_ok_and(|v| v.split(',').any(|s| !s.trim().is_empty()))
+}
+
 fn builtin_env_key(b: &BuiltInProvider) -> Option<&'static str> {
-    if env::var(b.default_api_key_env).is_ok() {
+    if env_key_populated(b.default_api_key_env) {
         return Some(b.default_api_key_env);
     }
-    if b.slug == "windsurf" && env::var(WINDSURF_API_KEY_ENV).is_ok() {
+    if b.slug == "windsurf" && env_key_populated(WINDSURF_API_KEY_ENV) {
         return Some(WINDSURF_API_KEY_ENV);
     }
     None
