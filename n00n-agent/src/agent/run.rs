@@ -5,7 +5,7 @@ use tracing::{error, info, warn};
 
 use n00n_providers::provider::Provider;
 use n00n_providers::{
-    ContentBlock, Message, Model, OpenAiOptions, RequestOptions, StopReason, StreamResponse,
+    ContentBlock, Message, Model, OpenAiOptions, RequestOptions, Role, StopReason, StreamResponse,
     TokenUsage,
 };
 
@@ -27,12 +27,23 @@ use crate::{
 use n00n_config::ToolOutputLines;
 use n00n_storage::id::SessionRef;
 
-use crate::tokenize::{count_json_for_model, count_tokens_for_model};
+use crate::tokenize::{
+    count_json_with_tokenizer, count_tokens_with_tokenizer, tokenizer_for_model,
+};
 
 const MAX_REAUTH_ATTEMPTS: u32 = 2;
 const NUDGE_PROMPT: &str = "You just executed tool calls but returned an empty response. Please process the tool results above and continue with the task.";
 const MAX_TOKENS_CONTINUE_PROMPT: &str = "Continue exactly where you stopped.";
 const IMAGE_TOKEN_ESTIMATE: usize = 2_048;
+
+const CACHE_BREAKPOINT_LONG_SESSION: usize = 60;
+const CACHE_BREAKPOINT_MEDIUM_SESSION: usize = 30;
+const CACHE_BREAKPOINT_SHORT_SESSION: usize = 10;
+
+const CACHE_BREAKPOINTS_LONG: usize = 4;
+const CACHE_BREAKPOINTS_MEDIUM: usize = 3;
+const CACHE_BREAKPOINTS_SHORT: usize = 2;
+const CACHE_BREAKPOINTS_MIN: usize = 1;
 
 /// Choose how many recent user-message breakpoints to mark for prompt caching.
 ///
@@ -41,15 +52,15 @@ const IMAGE_TOKEN_ESTIMATE: usize = 2_048;
 /// can be reused on subsequent turns. The cap prevents runaway cache creation
 /// costs as sessions grow very long.
 #[must_use]
-fn adaptive_cache_breakpoints(message_count: usize) -> usize {
-    if message_count >= 60 {
-        4
-    } else if message_count >= 30 {
-        3
-    } else if message_count >= 10 {
-        2
+fn adaptive_cache_breakpoints(user_message_count: usize) -> usize {
+    if user_message_count >= CACHE_BREAKPOINT_LONG_SESSION {
+        CACHE_BREAKPOINTS_LONG
+    } else if user_message_count >= CACHE_BREAKPOINT_MEDIUM_SESSION {
+        CACHE_BREAKPOINTS_MEDIUM
+    } else if user_message_count >= CACHE_BREAKPOINT_SHORT_SESSION {
+        CACHE_BREAKPOINTS_SHORT
     } else {
-        1
+        CACHE_BREAKPOINTS_MIN
     }
 }
 
@@ -278,10 +289,16 @@ impl<'h> Agent<'h> {
             .saturating_add(estimate_tool_tokens(&self.tools, &self.model.id));
         self.mode = input.mode;
         self.workflow = input.workflow;
+        let user_message_count = self
+            .history
+            .as_slice()
+            .iter()
+            .filter(|m| matches!(m.role, Role::User))
+            .count();
         self.opts = RequestOptions {
             thinking: input.thinking,
             fast: input.fast,
-            message_cache_breakpoints: adaptive_cache_breakpoints(self.history.len()),
+            message_cache_breakpoints: adaptive_cache_breakpoints(user_message_count),
         };
 
         info!(
@@ -715,23 +732,26 @@ pub fn estimate_message_tokens(messages: &[Message], model_id: &str) -> u32 {
     if messages.is_empty() {
         return 0;
     }
+    let tokenizer = tokenizer_for_model(model_id);
     let total: usize = messages
         .iter()
         .flat_map(|m| &m.content)
         .map(|b| match b {
-            ContentBlock::Text { text } => count_tokens_for_model(model_id, text),
+            ContentBlock::Text { text } => count_tokens_with_tokenizer(tokenizer, text),
             ContentBlock::Thinking {
                 thinking,
                 signature,
             } => {
-                count_tokens_for_model(model_id, thinking)
+                count_tokens_with_tokenizer(tokenizer, thinking)
                     + signature
                         .as_ref()
-                        .map_or(0, |s| count_tokens_for_model(model_id, s))
+                        .map_or(0, |s| count_tokens_with_tokenizer(tokenizer, s))
             }
-            ContentBlock::RedactedThinking { data } => count_tokens_for_model(model_id, data),
-            ContentBlock::ToolResult { content, .. } => count_tokens_for_model(model_id, content),
-            ContentBlock::ToolUse { input, .. } => count_json_for_model(model_id, input),
+            ContentBlock::RedactedThinking { data } => count_tokens_with_tokenizer(tokenizer, data),
+            ContentBlock::ToolResult { content, .. } => {
+                count_tokens_with_tokenizer(tokenizer, content)
+            }
+            ContentBlock::ToolUse { input, .. } => count_json_with_tokenizer(tokenizer, input),
             ContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE,
         })
         .sum();
@@ -740,7 +760,8 @@ pub fn estimate_message_tokens(messages: &[Message], model_id: &str) -> u32 {
 
 #[must_use]
 pub fn estimate_tool_tokens(tools: &Value, model_id: &str) -> u32 {
-    u32_from_usize_saturating(count_json_for_model(model_id, tools))
+    let tokenizer = tokenizer_for_model(model_id);
+    u32_from_usize_saturating(count_json_with_tokenizer(tokenizer, tools))
 }
 
 #[cfg(test)]
@@ -1537,5 +1558,31 @@ mod tests {
                 .expect("expected Done event");
             assert_eq!(done, expected_turns);
         });
+    }
+
+    #[test]
+    fn adaptive_cache_breakpoints_scales_with_user_message_count() {
+        assert_eq!(adaptive_cache_breakpoints(0), CACHE_BREAKPOINTS_MIN);
+        assert_eq!(adaptive_cache_breakpoints(1), CACHE_BREAKPOINTS_MIN);
+        assert_eq!(
+            adaptive_cache_breakpoints(CACHE_BREAKPOINT_SHORT_SESSION - 1),
+            CACHE_BREAKPOINTS_MIN
+        );
+        assert_eq!(
+            adaptive_cache_breakpoints(CACHE_BREAKPOINT_SHORT_SESSION),
+            CACHE_BREAKPOINTS_SHORT
+        );
+        assert_eq!(
+            adaptive_cache_breakpoints(CACHE_BREAKPOINT_MEDIUM_SESSION),
+            CACHE_BREAKPOINTS_MEDIUM
+        );
+        assert_eq!(
+            adaptive_cache_breakpoints(CACHE_BREAKPOINT_LONG_SESSION),
+            CACHE_BREAKPOINTS_LONG
+        );
+        assert_eq!(
+            adaptive_cache_breakpoints(CACHE_BREAKPOINT_LONG_SESSION + 100),
+            CACHE_BREAKPOINTS_LONG
+        );
     }
 }
