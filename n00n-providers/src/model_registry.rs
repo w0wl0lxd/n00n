@@ -5,7 +5,7 @@
 //! position in `list_models()`.
 //!
 //! Discovered metadata (context windows, pricing) from `/models` endpoints is
-//! stored in `known_models` and consulted by [`crate::model::Model::from_base`].
+//! stored in `known_models` and consulted by `crate::model::Model::from_base`.
 //!
 //! All reads and writes go through [`model_registry`]. The module owns
 //! persistence: [`load_from_storage`] at startup, [`set_and_persist`] on user

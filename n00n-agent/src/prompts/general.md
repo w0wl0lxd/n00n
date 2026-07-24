@@ -14,11 +14,11 @@ NEVER generate/guess URLs unless for programming help.
 
 # Tool usage
 - Tool results grow context. Minimize verbose calls; prefer compact results.
-- Prefer codegraph/arbor/index/semble to grep/read.
 - Use **batch** for 2+ independent parallel calls, **code_execution** for dependent/chained calls or filtering.
 - Read before editing. Check context/imports to match conventions.
 - Prefer edit/multiedit over write; targeted edits use fewer tokens.
 - NEVER create files unless necessary. Prefer editing existing files.
+- Prefer **codegraph/index** over broad grep/read; use **bash** for git/cargo/rg/jq/yq (rewritten via rtk).
 {{tool_usage}}
 
 {{efficient_tools}}

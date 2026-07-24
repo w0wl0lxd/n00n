@@ -213,7 +213,7 @@ pub struct Model {
     pub supports_thinking_override: Option<bool>,
     pub supports_vision_override: Option<bool>,
     pub pricing: ModelPricing,
-    /// `None` when unknown, see [`ProviderKind::fallback_max_output`].
+    /// `None` when unknown, see [`ProviderManifest::fallback_max_output`].
     pub max_output_tokens: Option<u32>,
     pub context_window: u32,
 }

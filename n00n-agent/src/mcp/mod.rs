@@ -608,7 +608,7 @@ pub async fn start_with_config(config: McpConfig, max_desc_chars: usize) -> Opti
     Some(handle)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn log_initialized(inner: &McpManagerInner) {
     info!(
         running = inner
@@ -621,13 +621,13 @@ fn log_initialized(inner: &McpManagerInner) {
     );
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 enum InitializationWake {
     Complete,
     Command(Option<McpCommand>),
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 async fn initialize_deferred(
     inner: &mut McpManagerInner,
     index: &Arc<ArcSwap<ToolIndex>>,
@@ -1242,6 +1242,7 @@ fn intern(name: String) -> Arc<str> {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 struct PreparedManager {
     inner: McpManagerInner,
     index: Arc<ArcSwap<ToolIndex>>,

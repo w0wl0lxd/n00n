@@ -1,0 +1,47 @@
+amends "package://github.com/jdx/hk/releases/download/v1.51.0/hk@1.51.0#/Config.pkl"
+import "package://github.com/jdx/hk/releases/download/v1.51.0/hk@1.51.0#/Builtins.pkl"
+
+local linters = new Mapping<String, Step> {
+  ["gitleaks"] {
+    glob = List("**/*")
+    check = "gitleaks protect --staged --redact --no-banner --config .gitleaks.toml"
+  }
+
+  ["rustfmt"] {
+    glob = List("**/*.rs")
+    check = "rustfmt --edition 2024 --check {{files}}"
+    fix = "rustfmt --edition 2024 {{files}}"
+  }
+
+  ["stylua"] = (Builtins.stylua) {
+    check = "stylua --config-path .stylua.toml --check {{files}}"
+    fix = "stylua --config-path .stylua.toml {{files}}"
+  }
+
+  ["merge-conflict"] = Builtins.check_merge_conflict
+}
+
+hooks {
+  ["pre-commit"] {
+    fix = true
+    stash = "git"
+    steps = linters
+  }
+
+  ["commit-msg"] {
+    steps {
+      ["conventional-commit"] {
+        check = "bash -c 'first=$(grep -v \"^#\" \"{{commit_msg_file}}\" | sed \"/^$/d\" | head -n1); case \"$first\" in \"Merge \"* | \"Merge branch\"*) exit 0 ;; esac; hk util check-conventional-commit --allowed-types feat,fix,docs,style,refactor,perf,test,build,ci,chore,revert,merge \"{{commit_msg_file}}\"'"
+      }
+    }
+  }
+
+  ["check"] {
+    steps = linters
+  }
+
+  ["fix"] {
+    fix = true
+    steps = linters
+  }
+}

@@ -941,14 +941,12 @@ mod tests {
 
         // `/etc/hosts` is absolute on Unix (passed through unchanged) but
         // root-relative on Windows (no drive prefix, so `is_relative()` is
-        // true and it gets joined with cwd, producing e.g. `C:\etc\hosts`).
+        // true and it gets joined with the current drive root, producing
+        // e.g. `C:\etc\hosts`).
         #[cfg(windows)]
         {
-            let expected = PathBuf::from(format!("{}\\etc\\hosts", cwd.display()));
-            assert_eq!(
-                resolve_path("/etc/hosts").unwrap(),
-                expected.to_string_lossy()
-            );
+            let expected = cwd.ancestors().last().unwrap().join("etc").join("hosts");
+            assert_eq!(PathBuf::from(resolve_path("/etc/hosts").unwrap()), expected);
         }
         #[cfg(not(windows))]
         assert_eq!(resolve_path("/etc/hosts").unwrap(), "/etc/hosts");

@@ -17,9 +17,9 @@ NEVER generate/guess URLs unless for programming help.
 
 # Tool usage
 - Tool results grow context. Minimize verbose calls; prefer compact results.
-- Prefer codegraph/arbor/index/semble to grep/read.
 - Use **batch** for 2+ independent reads/greps/globs. Never call sequentially.
 - Use **code_execution** for dependent/chained calls (e.g. glob then read matches) or filtering large outputs.
+- codegraph/index for structure; grep for literals.
 {{tool_usage}}
 
 {{efficient_tools}}
