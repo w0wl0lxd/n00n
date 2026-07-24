@@ -1,7 +1,7 @@
 use crate::model::{ModelEntry, ModelFamily, ModelTier};
 use crate::providers::{
-    anthropic, copilot, custom, deepseek, dynamic, google, llama_cpp, mistral, ollama, openai,
-    openrouter, synthetic, tensorx, windsurf, zai,
+    anthropic, copilot, custom, deepseek, devin, dynamic, google, llama_cpp, mistral, ollama,
+    openai, openrouter, synthetic, tensorx, zai,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -159,20 +159,20 @@ const OPENCODE: ProviderManifest = ProviderManifest {
     models: &[],
 };
 
-const WINDSURF: ProviderManifest = ProviderManifest {
-    slug: "windsurf",
-    display_name: "Windsurf / Devin",
+const DEVIN: ProviderManifest = ProviderManifest {
+    slug: "devin",
+    display_name: "Devin",
     family: ModelFamily::Generic,
-    supports_thinking: false,
+    supports_thinking: true,
     accepts_arbitrary_models: true,
     fallback_max_output: Some(128_000),
     fallback_context_window: 200_000,
-    models: windsurf::models(),
+    models: devin::models(),
 };
 
 const BUILTINS: &[ProviderManifest] = &[
     ANTHROPIC, OPENAI, GOOGLE, COPILOT, OLLAMA, LLAMA_CPP, MISTRAL, ZAI, DEEPSEEK, OPENROUTER,
-    SYNTHETIC, TENSORX, OPENCODE, WINDSURF,
+    SYNTHETIC, TENSORX, OPENCODE, DEVIN,
 ];
 
 pub struct ManifestRegistry;

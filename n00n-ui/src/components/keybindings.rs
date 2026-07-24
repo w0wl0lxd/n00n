@@ -169,6 +169,13 @@ pub mod key {
         ),
         label: "Ctrl+Shift+C",
     };
+    pub const THINKING: Bind = Bind {
+        code: KeyCode::Char('t'),
+        modifiers: KeyModifiers::from_bits_truncate(
+            KeyModifiers::CONTROL.bits() | KeyModifiers::SHIFT.bits(),
+        ),
+        label: "Ctrl+Shift+T",
+    };
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter)]
@@ -379,6 +386,12 @@ pub const KEYBINDS: &[Keybind] = &[
     Keybind {
         label: KeyLabel::Single(key::COPY.label),
         description: "Copy selection",
+        context: KeybindContext::General,
+        platform: Platform::All,
+    },
+    Keybind {
+        label: KeyLabel::Single(key::THINKING.label),
+        description: "Cycle thinking level",
         context: KeybindContext::General,
         platform: Platform::All,
     },

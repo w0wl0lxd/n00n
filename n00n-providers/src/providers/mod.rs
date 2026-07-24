@@ -16,6 +16,7 @@ pub(crate) mod anthropic;
 pub(crate) mod copilot;
 pub mod custom;
 pub(crate) mod deepseek;
+pub(crate) mod devin;
 pub mod dynamic;
 pub(crate) mod google;
 pub(crate) mod llama_cpp;
@@ -28,7 +29,6 @@ pub mod opencode;
 pub(crate) mod openrouter;
 pub(crate) mod synthetic;
 pub(crate) mod tensorx;
-pub(crate) mod windsurf;
 pub(crate) mod zai;
 
 const LOW_SPEED_BYTES_PER_SEC: u32 = 1;

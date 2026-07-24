@@ -36,6 +36,7 @@ fn protocol_kind(protocol: Protocol) -> ProviderKind {
         Protocol::Openai | Protocol::OpenaiResponses => ProviderKind::OpenAi,
         Protocol::Anthropic => ProviderKind::Anthropic,
         Protocol::Google => ProviderKind::Google,
+        Protocol::Devin => ProviderKind::Devin,
     }
 }
 
@@ -90,9 +91,10 @@ pub fn create(slug: &str, timeouts: Timeouts) -> Result<Box<dyn Provider>, Agent
             protocol,
         })),
         ProviderKind::Google => Ok(Box::new(super::google::Google::with_auth(auth, timeouts)?)),
+        ProviderKind::Devin => Ok(Box::new(super::devin::Devin::with_auth(&auth, timeouts)?)),
         _ => Err(AgentError::Config {
             message: format!(
-                "unsupported protocol for custom provider '{slug}', only openai/anthropic/google are supported"
+                "unsupported protocol for custom provider '{slug}', only openai/anthropic/google/devin are supported"
             ),
         }),
     }
