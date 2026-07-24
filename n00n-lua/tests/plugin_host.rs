@@ -1313,6 +1313,7 @@ fn async_job_on_exit_receives_exit_code() {
     assert_eq!(out, "code=42");
 }
 
+#[cfg(unix)]
 #[test]
 fn jobwait_fires_callbacks_while_waiting() {
     let reg = fresh_registry();

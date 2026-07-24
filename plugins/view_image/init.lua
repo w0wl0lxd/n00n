@@ -1,16 +1,16 @@
 local shorten_path = require("n00n.shorten_path")
 
 local DESCRIPTION =
-  [[Lossless viewer: oversized images return native tile 1, never resized. GIF needs `allow_gif_animation=true` only for a known capable provider; otherwise `static_image=true` (also animated WebP).]]
+  [[View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read` for images. Paths: absolute, relative, or ~/. Oversized images downscaled automatically (animated gif/webp keep only first frame).]]
 
--- Anthropic's most restrictive supported transport caps one base64 image at
--- 5 MB. OpenAI's request cap is larger. Compare the exact encoded length so
--- every emitted image works with the conservative shared limit.
-local MAX_BASE64_BYTES = 5 * 1000 * 1000
--- `n00n.image.encode_limited` enforces this before its PNG buffer can grow.
-local MAX_PNG_BYTES = 3_750_000
--- Reading larger local sources is allowed for lossless tiling, but bounded.
--- n00n.image.decode separately enforces a host-side 50 MP decode-bomb cap.
+-- Anthropic rejects images over 5MB base64; 3MB raw is ~4MB encoded,
+-- which leaves headroom.
+local MAX_RAW_BYTES = 3 * 1024 * 1024
+-- Anthropic downscales anything over 1568px on the long edge server-side
+-- anyway, so ship fewer bytes and do it here.
+local MAX_EDGE = 1568
+-- Refuse absurdly large files up front; n00n.image.decode also enforces a
+-- host-side pixel cap against decode bombs.
 local MAX_INPUT_BYTES = 50 * 1024 * 1024
 local DEFAULT_TILE_EDGE = 2000
 -- 8000 is the conservative common provider hard edge. Do not resize sources
@@ -19,6 +19,10 @@ local MAX_PROVIDER_EDGE = 8000
 -- A cropped RGBA region can need four bytes per pixel. Four MP bounds the
 -- working crop to roughly 16 MB before the separately bounded PNG encoding.
 local MAX_CHUNK_PIXELS = 4 * 1000 * 1000
+-- Anthropic rejects images over 5 MB base64; 3 MB raw is ~4 MB encoded.
+local MAX_BASE64_BYTES = 4 * math.ceil(MAX_RAW_BYTES / 3)
+-- Host encode_limited cap for lossless PNG tiles.
+local MAX_PNG_BYTES = 3750000
 
 local MEDIA_TYPES = {
   png = "image/png",
@@ -304,7 +308,6 @@ n00n.api.register_tool({
     properties = {
       path = {
         type = "string",
-        description = "Path.",
         required = true,
         alias = "file_path",
       },

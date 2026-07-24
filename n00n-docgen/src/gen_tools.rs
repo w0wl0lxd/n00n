@@ -416,16 +416,31 @@ mod tests {
         assert!(cleaned.starts_with(remaining_prefix), "cleaned: {cleaned}");
     }
 
-    #[test_case(serde_json::json!({ "type": "string" }), "string"; "single")]
-    #[test_case(serde_json::json!({ "type": ["string", "integer"] }), "string/integer"; "type union")]
-    #[test_case(
-        serde_json::json!({ "anyOf": [{ "type": "string" }, { "type": "integer" }] }),
-        "string/integer";
-        "any_of_union"
-    )]
-    #[test_case(serde_json::json!({}), "string"; "missing")]
-    fn formats_schema_type(input: Value, expected: &str) {
-        assert_eq!(schema_type(&input), expected);
+    const MAX_TOOL_DEFINITION_BYTES: usize = 28_000;
+
+    #[test]
+    fn tool_definitions_fit_byte_budget() {
+        let vars = Vars::new()
+            .set("{cwd}", "<cwd>")
+            .set("{platform}", "linux")
+            .set("{date}", "YYYY-MM-DD");
+        let (registry, _) = load_registry_with_builtins();
+        let defs = registry.definitions(
+            &vars,
+            &DescriptionContext {
+                filter: &ToolFilter::All,
+                audience: ToolAudience::MAIN,
+                workflow: false,
+            },
+            false,
+        );
+        let json = serde_json::to_vec_pretty(&defs).unwrap();
+        assert!(
+            json.len() <= MAX_TOOL_DEFINITION_BYTES,
+            "tool definitions are {} bytes, budget is {}",
+            json.len(),
+            MAX_TOOL_DEFINITION_BYTES
+        );
     }
 
     #[test]

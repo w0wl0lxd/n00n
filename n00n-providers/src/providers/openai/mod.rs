@@ -23,7 +23,7 @@ inventory::submit!(n00n_config::providers::BuiltInProvider {
 });
 
 #[allow(clippy::too_many_lines)]
-pub(crate) fn models() -> &'static [ModelEntry] {
+pub(crate) const fn models() -> &'static [ModelEntry] {
     &[
         ModelEntry {
             prefixes: &["gpt-5.6-luna"],
