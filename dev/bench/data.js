@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784867347395,
+  "lastUpdate": 1784867535199,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -3563,6 +3563,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 195095,
             "range": "± 1724",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9d0e7fc457f012af75886d185f97679c2f0014eb",
+          "message": "feat(providers): use discovered copilot model metadata (#98)\n\n* feat(providers): use discovered copilot model metadata\n\nFolds upstream maki PR #601 into n00n.\n\n- Add `tier` to `ModelInfo` so discovered models can carry their own tier\n  assignment.\n- Let `Model::from_base` prefer discovered metadata (pricing, limits) over\n  static entries, falling back to manifest defaults.\n- Update `ModelRegistry::tier_for` and `spec_for_tier` to honor discovered\n  `tier` before positional/static fallbacks.\n- Parse Copilot `capabilities.limits`, `capabilities.supports`, and\n  `model_picker_category` from the models endpoint.\n- Build rich `ModelInfo` for Copilot discovered models and stash\n  `CopilotModelInfo` in `provider_info`.\n- Translate `ThinkingConfig` into a Copilot Responses `reasoning` object using\n  the model's supported reasoning efforts and dialect.\n- Add `Copilot::reasoning_info_for` to encapsulate registry-vs-local-cache\n  reasoning lookup.\n\nVerified:\n- cargo fmt --all\n- cargo clippy --all --tests -- -D warnings\n- cargo nextest run --workspace\n\n* chore: add changelog fragment",
+          "timestamp": "2026-07-24T00:25:54-04:00",
+          "tree_id": "6f090af23616654d4382b2d4d7f2f605328cf096",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/9d0e7fc457f012af75886d185f97679c2f0014eb"
+        },
+        "date": 1784867534566,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6119072,
+            "range": "± 75287",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1356129,
+            "range": "± 93362",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1354668,
+            "range": "± 44190",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 6763895,
+            "range": "± 467605",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 2433154,
+            "range": "± 167846",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 2376988,
+            "range": "± 64560",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 679429,
+            "range": "± 29497",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 76924,
+            "range": "± 1599",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 76767,
+            "range": "± 737",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 906721,
+            "range": "± 73668",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 397308,
+            "range": "± 18563",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 397212,
+            "range": "± 33296",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 44603,
+            "range": "± 3827",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 108080,
+            "range": "± 8405",
             "unit": "ns/iter"
           }
         ]
