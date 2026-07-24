@@ -581,6 +581,7 @@ impl Provider for DynamicProvider {
                     pricing: m.pricing.clone(),
                     supports_thinking: None,
                     supports_vision: m.supports_vision,
+                    tier: None,
                     provider_info: None,
                 })
                 .collect())
