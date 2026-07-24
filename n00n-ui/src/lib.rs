@@ -8,6 +8,7 @@ pub mod app;
 pub(crate) mod cast;
 pub mod chat;
 mod clipboard;
+mod color_compat;
 mod components;
 pub use components::command::{BUILTIN_COMMANDS, BuiltinCommand};
 pub use components::keybindings;
@@ -63,6 +64,7 @@ pub enum RunOutcome {
 pub fn run(params: EventLoopParams, initial_prompt: Option<String>) -> Result<RunOutcome> {
     let report = {
         let (_guard, mut terminal) = terminal::TerminalGuard::init()?;
+        color_compat::init();
         let el = event_loop::EventLoop::new(&mut terminal, params)?;
         el.run(initial_prompt)?
     };

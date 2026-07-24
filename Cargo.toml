@@ -236,6 +236,7 @@ notify = { version = "9.0.0-rc.2", default-features = false, features = [
 serde_yaml = "0.9"
 shell-words = "1"
 agent-client-protocol-schema = "0.13"
+termini = "1"
 
 wait-timeout = "0.2"
 inventory = "0.3"
