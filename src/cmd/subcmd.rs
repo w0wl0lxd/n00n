@@ -25,20 +25,12 @@ use n00n_storage::auth::{
 };
 use n00n_storage::model::persist_model;
 
-const WINDSURF_API_KEY_ENV: &str = "WINDSURF_API_KEY";
-
 fn env_key_populated(var: &str) -> bool {
     env::var(var).is_ok_and(|v| v.split(',').any(|s| !s.trim().is_empty()))
 }
 
 fn builtin_env_key(b: &BuiltInProvider) -> Option<&'static str> {
-    if env_key_populated(b.default_api_key_env) {
-        return Some(b.default_api_key_env);
-    }
-    if b.slug == "windsurf" && env_key_populated(WINDSURF_API_KEY_ENV) {
-        return Some(WINDSURF_API_KEY_ENV);
-    }
-    None
+    env_key_populated(b.default_api_key_env).then_some(b.default_api_key_env)
 }
 
 pub fn auth_login(provider: Option<&str>, storage: &StateDir) -> Result<()> {
@@ -47,14 +39,15 @@ pub fn auth_login(provider: Option<&str>, storage: &StateDir) -> Result<()> {
         Some("copilot") => copilot_auth::login(storage)?,
         Some(slug) => {
             let slug = slugify(slug);
-            if builtin_provider(&slug).is_none()
-                && dynamic::display_name(&slug).is_none()
-                && ProvidersConfig::load().get(&slug).is_none()
-                && let Some(provider_data) = n00n_providers::catalog_provider(&slug)
+            if builtin_provider(&slug).is_some()
+                || dynamic::display_name(&slug).is_some()
+                || ProvidersConfig::load().get(&slug).is_some()
             {
+                login_provider(&slug, storage)?;
+            } else if let Some(provider_data) = n00n_providers::catalog_provider(&slug) {
                 login_catalog_provider(&provider_data, storage)?;
             } else {
-                login_provider(&slug, storage)?;
+                login_custom(storage, Some(&slug))?;
             }
         }
         None => login_interactive(storage)?,
@@ -214,7 +207,7 @@ fn login_interactive(storage: &StateDir) -> Result<()> {
     }
 
     if choice == custom_idx {
-        login_custom(storage)?;
+        login_custom(storage, None)?;
     } else if choice <= builtins.len() {
         let slug = builtins[choice - 1].slug;
         login_provider(slug, storage)?;
@@ -266,21 +259,27 @@ fn login_catalog_provider(provider: &ProviderData, storage: &StateDir) -> Result
     Ok(())
 }
 
-fn login_custom(storage: &StateDir) -> Result<()> {
-    print!("  Provider name: ");
-    io::stdout().flush()?;
-    let mut name = String::new();
-    io::stdin().read_line(&mut name)?;
-    let slug = slugify(&name);
-    if slug.is_empty() {
-        bail!("provider name cannot be empty");
-    }
+fn login_custom(storage: &StateDir, slug: Option<&str>) -> Result<()> {
+    let slug = if let Some(s) = slug {
+        s.to_string()
+    } else {
+        print!("  Provider name: ");
+        io::stdout().flush()?;
+        let mut name = String::new();
+        io::stdin().read_line(&mut name)?;
+        let slug = slugify(&name);
+        if slug.is_empty() {
+            bail!("provider name cannot be empty");
+        }
+        slug
+    };
 
     println!("  Protocol:");
     println!("    1. openai   (OpenAI-compatible chat completions)");
     println!("    2. anthropic (Anthropic messages API)");
     println!("    3. google   (Google Gemini API)");
-    print!("  Select [1-3]: ");
+    println!("    4. devin    (Devin ACP via devin acp subprocess)");
+    print!("  Select [1-4]: ");
     io::stdout().flush()?;
     let mut proto_input = String::new();
     io::stdin().read_line(&mut proto_input)?;
@@ -288,17 +287,22 @@ fn login_custom(storage: &StateDir) -> Result<()> {
         "1" | "openai" => "openai",
         "2" | "anthropic" => "anthropic",
         "3" | "google" => "google",
+        "4" | "devin" => "devin",
         _ => {
             bail!("invalid protocol selection");
         }
     };
 
-    print!("  Base URL: ");
+    let needs_url = protocol != "devin";
+    print!(
+        "  Base URL{}: ",
+        if needs_url { "" } else { " (or Enter to skip)" }
+    );
     io::stdout().flush()?;
     let mut url_input = String::new();
     io::stdin().read_line(&mut url_input)?;
     let base_url = url_input.trim().to_string();
-    if base_url.is_empty() {
+    if needs_url && base_url.is_empty() {
         bail!("base URL cannot be empty");
     }
 
@@ -311,6 +315,12 @@ fn login_custom(storage: &StateDir) -> Result<()> {
     io::stdin().read_line(&mut key_input)?;
     let api_key = key_input.trim().to_string();
 
+    let default_model = if protocol == "devin" {
+        Some(format!("{slug}/swe-1-7-max"))
+    } else {
+        None
+    };
+
     let mut config = ProvidersConfig::load();
     let provider_def = ProviderDef {
         display_name: Some(display_name),
@@ -319,8 +329,13 @@ fn login_custom(storage: &StateDir) -> Result<()> {
                 .parse()
                 .map_err(|e: String| color_eyre::eyre::eyre!("{e}"))?,
         ),
-        base_url: Some(base_url.clone()),
+        base_url: if base_url.is_empty() {
+            None
+        } else {
+            Some(base_url.clone())
+        },
         api_key_env: Some(api_key_env.clone()),
+        default_model,
         discover_models: true,
         ..Default::default()
     };
@@ -339,7 +354,12 @@ fn login_custom(storage: &StateDir) -> Result<()> {
 
     println!();
     println!("  \x1b[32m✓\x1b[0m Configured: {slug}");
-    println!("  Endpoint: {base_url}");
+    if !base_url.is_empty() {
+        println!("  Endpoint: {base_url}");
+    }
+    if let Some(model) = config.get(&slug).and_then(|d| d.default_model.as_deref()) {
+        println!("  Default model: {model}");
+    }
     if has_key {
         println!("  Credentials: ~/.local/state/n00n/auth/{slug}.json");
     } else {

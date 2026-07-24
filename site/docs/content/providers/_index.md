@@ -205,17 +205,17 @@ enable_free_models = true
 
 The default is `false`.
 
-### Devin CLI
+### Devin
 
-- **Env var**: `DEVIN_API_KEY` or `WINDSURF_API_KEY`, falls back to Devin CLI `credentials.toml`
-- **API**: `http://localhost:3003/v1 (OpenAI-compatible proxy for Devin CLI)`
-- **Features**: OpenAI-compatible endpoint backed by Devin CLI credentials; fully configurable base URL and model
+- **Env var**: `DEVIN_API_KEY`
+- **API**: `devin acp subprocess (Agent Client Protocol)`
+- **Features**: Agent Client Protocol via devin acp subprocess
 
 | Tier | Models | Pricing (in/out per 1M tokens) | Context |
 |------|--------|-------------------------------|---------|
-| Strong | **claude-sonnet-4.6** (default), **gpt-5.4** (default), **gemini-3.1-pro** (default) | $0.00 / $0.00 | 200K ctx / 128K out |
+| Strong | swe-1-7, **swe-1-7-max** (default), claude-sonnet-4-6, gpt-5-4-none, gemini-3-1-pro-low | $0.00 / $0.00 | 200K ctx / 128K out |
 
-Defaults: claude-sonnet-4.6 (strong), gpt-5.4 (strong), gemini-3.1-pro (strong)
+Defaults: swe-1-7-max (strong)
 
 ## Model Identifiers
 
@@ -244,7 +244,7 @@ To add a custom provider or proxy, drop an executable script into `~/.config/n00
 
 `resolve` is called each time a new agent spawns, so scripts should read tokens from disk instead of caching them in memory. That way auth changes from other processes get picked up.
 
-The `base` field specifies which built-in provider to inherit the model catalog from. Valid values: `anthropic`, `openai`, `google`, `copilot`, `ollama`, `llama-cpp`, `mistral`, `zai`, `deepseek`, `openrouter`, `synthetic`, `tensorx`, `opencode`, `windsurf`.
+The `base` field specifies which built-in provider to inherit the model catalog from. Valid values: `anthropic`, `openai`, `google`, `copilot`, `ollama`, `llama-cpp`, `mistral`, `zai`, `deepseek`, `openrouter`, `synthetic`, `tensorx`, `opencode`, `devin`.
 
 If your provider serves models not in the base catalog, add a `models` subcommand returning:
 

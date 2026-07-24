@@ -23,6 +23,7 @@ On macOS, some bindings use Option or Fn keys instead (run `/help` for exact key
 | `Alt+T` | Toggle transcript details |
 | `Ctrl+X` | Open tasks |
 | `Ctrl+Shift+C` | Copy selection |
+| `Ctrl+Shift+T` | Cycle thinking level |
 
 ## Editing
 

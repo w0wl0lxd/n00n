@@ -21,7 +21,6 @@ use crate::theme;
 
 const TITLE: &str = " Login ";
 const CATALOG_UNAVAILABLE_SLUG: &str = "catalog-unavailable";
-const WINDSURF_API_KEY_ENV: &str = "WINDSURF_API_KEY";
 
 fn env_key_populated(var: &str) -> bool {
     std::env::var(var).is_ok_and(|v| v.split(',').any(|s| !s.trim().is_empty()))
@@ -188,8 +187,7 @@ impl LoginPicker {
             .iter()
             .map(|b| {
                 let has_key = load_provider_credentials(&storage, b.slug).is_some();
-                let has_env = env_key_populated(b.default_api_key_env)
-                    || (b.slug == "windsurf" && env_key_populated(WINDSURF_API_KEY_ENV));
+                let has_env = env_key_populated(b.default_api_key_env);
                 let configured = !has_key
                     && !has_env
                     && config.get(b.slug).is_some_and(|d| d.base_url.is_some());

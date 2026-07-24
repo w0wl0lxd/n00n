@@ -29,9 +29,9 @@ inventory = { workspace = true }
 jiff = { workspace = true }
 libc = { workspace = true }
 getrandom = { workspace = true }
-etcetera = { workspace = true }
-toml = { workspace = true }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
+async-process = { workspace = true }
+agent-client-protocol-schema = { workspace = true }
 
 [dev-dependencies]
 test-case = { workspace = true }
