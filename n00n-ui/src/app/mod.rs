@@ -59,7 +59,7 @@ use n00n_agent::{
 };
 use n00n_config::UiConfig;
 use n00n_lua::{EventHandle, HintReader, KeymapReader, LuaCommandReader};
-use n00n_providers::{Message, Model, ThinkingConfig};
+use n00n_providers::{Effort, Message, Model, ThinkingConfig};
 use n00n_storage::StateDir;
 use n00n_storage::input_history::InputHistory;
 use n00n_storage::model::persist_model;
@@ -90,6 +90,16 @@ const FLASH_NO_PLAN: &str = "No plan file";
 const FAST_UNSUPPORTED_MSG: &str = "Fast mode requires an Anthropic Opus 4.6+ model (API only)";
 const FAST_ON_MSG: &str = "Fast mode: on";
 const FAST_OFF_MSG: &str = "Fast mode: off";
+const THINKING_CYCLE: [ThinkingConfig; 8] = [
+    ThinkingConfig::Off,
+    ThinkingConfig::Adaptive,
+    ThinkingConfig::Effort(Effort::Minimal),
+    ThinkingConfig::Effort(Effort::Low),
+    ThinkingConfig::Effort(Effort::Medium),
+    ThinkingConfig::Effort(Effort::High),
+    ThinkingConfig::Effort(Effort::XHigh),
+    ThinkingConfig::Effort(Effort::Max),
+];
 const WORKFLOW_ON_MSG: &str = "Workflow mode: on";
 const WORKFLOW_OFF_MSG: &str = "Workflow mode: off";
 const IMPLEMENT_MSG_PREFIX: &str = "Implement the plan";
@@ -1009,6 +1019,19 @@ impl App {
                 self.file_picker.open(&self.state.session.cwd);
             } else if key.code == KeyCode::Char('v') && self.image_paste_rx.is_empty() {
                 self.start_image_paste();
+            } else if key::THINKING.matches(key) {
+                if !self.state.model.supports_thinking() {
+                    self.flash("Thinking requires a model that supports it".into());
+                    return vec![];
+                }
+                let idx = THINKING_CYCLE
+                    .iter()
+                    .position(|&c| c == self.state.thinking)
+                    .unwrap_or_else(|| 0);
+                let next = THINKING_CYCLE[(idx + 1) % THINKING_CYCLE.len()];
+                self.state.thinking = next;
+                self.flash(format!("Thinking: {next}"));
+                return vec![];
             } else if key::COPY.matches(key) {
                 if let Some(SelectionState::Dragging { sel, .. }) = self.selection_state.take()
                     && !sel.is_empty()

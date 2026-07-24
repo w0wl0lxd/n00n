@@ -3130,10 +3130,11 @@ dependencies = [
 name = "n00n-providers"
 version = "0.4.2"
 dependencies = [
+ "agent-client-protocol-schema",
  "async-lock",
+ "async-process",
  "async-tungstenite",
  "base64",
- "etcetera",
  "fastrand",
  "flume 0.11.1",
  "futures",
@@ -3157,7 +3158,6 @@ dependencies = [
  "tempfile",
  "test-case",
  "thiserror 2.0.19",
- "toml",
  "tracing",
  "wait-timeout",
 ]
