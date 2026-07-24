@@ -9,8 +9,9 @@ use color_eyre::eyre::{Context, bail};
 use n00n_agent::mcp::{config as mcp_config, oauth as mcp_oauth};
 use n00n_agent::tools::ToolRegistry;
 use n00n_config::providers::{
-    ProviderDef, ProvidersConfig, all_builtins, builtin_provider, resolve_api_key_env,
-    resolve_base_url, resolve_default_model, resolve_display_name, resolve_login_url, slugify,
+    BuiltInProvider, ProviderDef, ProvidersConfig, all_builtins, builtin_provider,
+    resolve_api_key_env, resolve_base_url, resolve_default_model, resolve_display_name,
+    resolve_login_url, slugify,
 };
 use n00n_config::{load_env_files, load_permissions};
 use n00n_lua::PluginHost;
@@ -23,6 +24,18 @@ use n00n_storage::auth::{
     delete_provider_credentials, load_provider_credentials, save_provider_credentials,
 };
 use n00n_storage::model::persist_model;
+
+const WINDSURF_API_KEY_ENV: &str = "WINDSURF_API_KEY";
+
+fn builtin_env_key(b: &BuiltInProvider) -> Option<&'static str> {
+    if env::var(b.default_api_key_env).is_ok() {
+        return Some(b.default_api_key_env);
+    }
+    if b.slug == "windsurf" && env::var(WINDSURF_API_KEY_ENV).is_ok() {
+        return Some(WINDSURF_API_KEY_ENV);
+    }
+    None
+}
 
 pub fn auth_login(provider: Option<&str>, storage: &StateDir) -> Result<()> {
     match provider {
@@ -146,7 +159,7 @@ fn login_interactive(storage: &StateDir) -> Result<()> {
     for (i, b) in builtins.iter().enumerate() {
         let status = if load_provider_credentials(storage, b.slug).is_some() {
             "\x1b[32m✓\x1b[0m"
-        } else if env::var(b.default_api_key_env).is_ok() {
+        } else if builtin_env_key(b).is_some() {
             "\x1b[33m~\x1b[0m"
         } else {
             " "
@@ -452,10 +465,10 @@ pub fn auth_status(storage: &StateDir) {
                 "  \x1b[32m✓\x1b[0m {:<14} {} (key: {}){}",
                 b.slug, display, masked, plan_info
             );
-        } else if env::var(b.default_api_key_env).is_ok() {
+        } else if let Some(env_key) = builtin_env_key(b) {
             println!(
                 "  \x1b[33m~\x1b[0m {:<14} {} (via {})",
-                b.slug, display, b.default_api_key_env
+                b.slug, display, env_key
             );
         } else if def.is_some_and(|d| d.base_url.is_some()) {
             println!("  \x1b[34m●\x1b[0m {:<14} {} (configured)", b.slug, display);
