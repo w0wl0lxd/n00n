@@ -260,7 +260,8 @@ browsing memory files or toggling settings.
 **Parameters:**
 
 - `{spec}` (`table`) Command specification:
-  - `name` (`string`) Required. The command name (without the leading slash).
+  - `name` (`string`) Required. The command name (e.g. "/hello"; a leading
+    slash is added when missing).
   - `description` (`string`) Optional. Short description shown in the command palette.
   - `handler` (`function`) Required. Called when the user runs the command.
 
@@ -716,7 +717,6 @@ available.
 
   - `only` (`string[]?`) include only these tool names.
   - `except` (`string[]?`) exclude these tool names.
-  - `include_mcp` (`boolean?`) include MCP tools. Default: `true`.
   - `workflow` (`boolean?`) use workflow-mode descriptions. Default: `false`.
   - `spec` (`string?`) evaluate capability exclusions against this model spec.
 
@@ -800,6 +800,10 @@ and tool set.
     `(string)` or `(nil, err)`.
   - `name` (`string?`) display name for logs and UI.
   - `audience` (`string?`) tool audience for capability gating. Default: `"general_sub"`.
+  - `mcp` (`boolean?`) give the session access to MCP tools. Their
+    definitions are injected automatically each turn (deferred behind
+    `tool_search`), so don't put MCP definitions in `tools`. The session
+    starts with no loaded tools of its own. Default: `true`.
   - `thinking` (`string|integer?`) thinking mode: `"off"`, `"adaptive"`, an
     effort level (`"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`,
     `"max"`), or a budget integer (token count). Inherits parent setting
@@ -922,6 +926,25 @@ call this multiple times safely. If you forget, it runs automatically when
 the session is garbage collected.
 
 ---
+
+### `Session:get_progress()` {#Session-get_progress}
+
+```lua
+Session:get_progress()
+```
+
+Poll the session for a progress snapshot while a prompt is running.
+
+Returns a table with:
+  `elapsed_ms` (integer): time since the session was created.
+  `current_tool` (string?): name of the tool currently running, if any.
+  `recent_tools` (table): names of the last few finished tools, oldest first.
+  `completed_count` (integer): total number of finished tools so far.
+  `done` (bool): true once the prompt has completed.
+
+The call returns at most every `PROGRESS_TIMEOUT_MS` milliseconds, or
+immediately when a tool starts or finishes.
+
 
 ### `Session:get_progress()` {#Session-get_progress}
 
@@ -1332,8 +1355,9 @@ n00n.fn.jobstart({cmd}, {opts?})
 ```
 
 Run a shell command in the background. The command runs through
-`bash -c` on Unix or `cmd /C` on Windows. You get back a job id
-that you can pass to `jobstop` or `jobwait` to control the process.
+`bash -c` on all platforms. On Windows, you need Git Bash or WSL
+installed. You get back a job id that you can pass to `jobstop`
+or `jobwait` to control the process.
 
 **Parameters:**
 
@@ -4178,7 +4202,54 @@ local half_width = math.floor(size.cols / 2)
 
 ---
 
-### `n00n.ui.display_width()` {#n00n-ui-display_width}
+### `maki.ui.display_width()` {#maki-ui-display_width}
+
+```lua
+maki.ui.display_width({text})
+```
+
+Returns the display width of a string in terminal cells, matching
+how `ratatui` measures text.
+
+**Parameters:**
+
+- `{text}` (`string`) The text to measure.
+
+**Returns:** (`integer`) Number of display cells the text occupies.
+
+**Example:**
+
+```lua
+local w = maki.ui.display_width("hello")
+```
+
+---
+
+### `maki.ui.truncate_text()` {#maki-ui-truncate_text}
+
+```lua
+maki.ui.truncate_text({text}, {max_width})
+```
+
+Splits a string at a display-cell boundary.
+
+**Parameters:**
+
+- `{text}` (`string`) The text to split.
+- `{max_width}` (`integer`) Maximum display cells for the head.
+
+**Returns:** (`table`) `{head = string, tail = string}`.
+
+**Example:**
+
+```lua
+local t = maki.ui.truncate_text("hello world", 5)
+-- t.head == "hello", t.tail == " world"
+```
+
+---
+
+### `maki.ui.flash()` {#maki-ui-flash}
 
 ```lua
 n00n.ui.display_width({text})

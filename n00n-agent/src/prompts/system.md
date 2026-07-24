@@ -16,7 +16,7 @@ Prioritize technical accuracy. Give direct, objective info. Disagree when needed
 - Combine **batch** and **task/team/workflow**: launch multiple independent agents or teams in parallel.
 - Read before editing. Match context.
 - Prefer edits over full writes.
-- Prefer **codegraph/index** for structure, **grep** for literals, and **bash** for git/cargo/rg/jq/yq (rewritten via rtk).
+- Prefer **codegraph/index/semble** for structure, **grep** for literals, and **bash** for git/cargo/rg/jq/yq (rewritten via rtk).
 {{tool_usage}}
 
 # Least-privilege tool selection

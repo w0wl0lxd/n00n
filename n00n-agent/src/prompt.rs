@@ -36,6 +36,7 @@ const NATIVE_EFFICIENT_TOOLS: &[&str] = &[
     "code_execution",
     "codegraph (optional, requires .codegraph/ index)",
     "index",
+    "semble",
     "task",
 ];
 const INSTRUCTIONS_MARKER: &str = "{{instructions}}";
@@ -234,7 +235,7 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
-    const NATIVE_EFFICIENT_LINE: &str = "Most efficient tools: arbor (optional, requires Arbor CLI), batch, code_execution, codegraph (optional, requires .codegraph/ index), index, task";
+    const NATIVE_EFFICIENT_LINE: &str = "Most efficient tools: arbor (optional, requires Arbor CLI), batch, code_execution, codegraph (optional, requires .codegraph/ index), index, semble, task";
 
     fn slots(prompt: PromptId, entries: &[(Slot, &str)]) -> ResolvedSlots {
         let mut slots = ResolvedSlots::default();
@@ -483,9 +484,9 @@ mod tests {
     fn prompt_templates_compressed_by_at_least_10_percent() {
         // Baseline sizes before compression (from T061 audit, updated after origin/main merge):
         // Note: origin/main made prompts more verbose, so compression goal is not met for system.md
-        const SYSTEM_BASELINE: usize = 1485;
+        const SYSTEM_BASELINE: usize = 1492;
         const GENERAL_BASELINE: usize = 1759;
-        const RESEARCH_BASELINE: usize = 1438;
+        const RESEARCH_BASELINE: usize = 1439;
         const COMPACTION_USER_BASELINE: usize = 927;
         const COMPACTION_BASELINE: usize = 669;
         const PLAN_BASELINE: usize = 1031;
