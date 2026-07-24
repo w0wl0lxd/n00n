@@ -682,6 +682,8 @@ fn register_tool(lua: &Lua, #[ctx] pending: PendingTools, spec: Table) -> LuaRes
 ///   name        (string)   Required. The command name (without the leading slash).
 ///   description (string)   Optional. Short description shown in the command palette.
 ///   handler     (function) Required. Called when the user runs the command.
+///   max_args    (integer)  Optional. Maximum number of arguments the command accepts.
+///                           Default 0 (no arguments). -1 means unlimited.
 /// @return
 /// @example
 /// n00n.api.register_command({
@@ -1243,6 +1245,18 @@ fn register_command_from_lua(lua: &Lua, spec: &Table, plugin: Arc<str>) -> LuaRe
     let handler: Function = spec
         .get("handler")
         .map_err(|_| mlua::Error::runtime("register_command: missing 'handler'"))?;
+    let max_args: i64 = spec.get("max_args").unwrap_or_else(|_| 0);
+    let max_args: usize = if max_args == -1 {
+        usize::MAX
+    } else if max_args < 0 {
+        return Err(mlua::Error::runtime(
+            "register_command: max_args must be -1 (unlimited) or a non-negative integer",
+        ));
+    } else {
+        max_args
+            .try_into()
+            .map_err(|_| mlua::Error::runtime("register_command: max_args out of range"))?
+    };
 
     let handler_key = lua.create_registry_value(handler)?;
     let name: Arc<str> = Arc::from(name.as_str());
@@ -1257,6 +1271,7 @@ fn register_command_from_lua(lua: &Lua, spec: &Table, plugin: Arc<str>) -> LuaRe
             CommandEntry {
                 handler: handler_key,
                 description,
+                max_args,
             },
         );
     }

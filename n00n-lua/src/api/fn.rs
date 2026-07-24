@@ -16,6 +16,12 @@ use crate::runtime::with_task_jobs;
 const READER_BUF_SIZE: usize = 8 * 1024;
 
 #[derive(Clone)]
+pub(crate) enum JobSpec {
+    Shell(String),
+    Program { program: String, args: Vec<String> },
+}
+
+#[derive(Clone)]
 pub(crate) enum JobEvent {
     Stdout(String),
     Stderr(String),
@@ -47,14 +53,21 @@ impl JobStore {
     #[allow(clippy::needless_pass_by_value)]
     pub fn start(
         &mut self,
-        cmd: &str,
+        spec: JobSpec,
         cwd: Option<String>,
         env: Option<HashMap<String, String>>,
         on_stdout: Option<RegistryKey>,
         on_stderr: Option<RegistryKey>,
         on_exit: Option<RegistryKey>,
     ) -> Result<u32, String> {
-        let mut command = shell_command(cmd);
+        let mut command = match spec {
+            JobSpec::Shell(cmd) => n00n_config::bash_command(&cmd)?,
+            JobSpec::Program { program, args } => {
+                let mut c = Command::new(&program);
+                c.args(&args);
+                c
+            }
+        };
         command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -99,6 +112,10 @@ impl JobStore {
                                     .lines()
                                     .map_while(Result::ok)
                                 {
+                                    let line = match line.strip_suffix('\r') {
+                                        Some(s) => s.to_string(),
+                                        None => line,
+                                    };
                                     if tx.send(JobEvent::$variant(line)).is_err() {
                                         break;
                                     }
@@ -206,21 +223,6 @@ impl JobStore {
     }
 }
 
-fn shell_command(cmd: &str) -> Command {
-    #[cfg(unix)]
-    {
-        let mut c = Command::new("bash");
-        c.arg("-c").arg(cmd);
-        c
-    }
-    #[cfg(windows)]
-    {
-        let mut c = Command::new("cmd.exe");
-        c.arg("/C").arg(cmd);
-        c
-    }
-}
-
 fn kill_job(meta: &mut JobMeta) {
     let pid = meta.pid;
     #[cfg(unix)]
@@ -245,7 +247,11 @@ fn kill_job(meta: &mut JobMeta) {
 /// `bash -c` on Unix or `cmd /C` on Windows. You get back a job id
 /// that you can pass to `jobstop` or `jobwait` to control the process.
 ///
-/// @param cmd string Shell command to run.
+/// For commands that don't need shell features (pipes, redirection, globs),
+/// pass an array to run the program directly with preserved argument quoting:
+/// `n00n.fn.jobstart({ "git", "commit", "-m", "feat: msg" })`
+///
+/// @param cmd string|table Shell command string, or array of program + args.
 /// @param opts table? Optional settings:
 ///   `cwd` (string?) working directory (tilde is expanded).
 ///   `env` (table?) extra environment variables, `{ VAR = "value" }`.
@@ -254,14 +260,49 @@ fn kill_job(meta: &mut JobMeta) {
 ///   `on_exit` (function?) called with `(job_id, code)` when the process finishes.
 /// @return (integer) Job id.
 /// @example
+/// -- String mode (shell features available)
 /// local id = n00n.fn.jobstart("ls -la", {
 ///   cwd = "~/projects",
 ///   on_stdout = function(_, line) print(line) end,
 ///   on_exit = function(_, code) print("exit: " .. code) end,
 /// })
+/// -- List mode (preserves argument quoting)
+/// local id = n00n.fn.jobstart({ "git", "commit", "-m", "feat: preserve spaces" }, opts)
 #[lua_fn(guard = Run)]
 #[allow(clippy::needless_pass_by_value)]
-fn jobstart(lua: &Lua, cmd: String, opts: Option<Table>) -> LuaResult<u32> {
+fn jobstart(lua: &Lua, cmd: Value, opts: Option<Table>) -> LuaResult<u32> {
+    let spec = match cmd {
+        Value::String(s) => {
+            let cmd = s.to_str()?.to_string();
+            JobSpec::Shell(cmd)
+        }
+        Value::Table(t) => {
+            let mut iter = t.sequence_values::<String>();
+            let program = match iter.next() {
+                Some(Ok(p)) => p,
+                Some(Err(e)) => return Err(e),
+                None => {
+                    return Err(mlua::Error::runtime(
+                        "jobstart: table must have at least a program",
+                    ));
+                }
+            };
+            if program.is_empty() {
+                return Err(mlua::Error::runtime("jobstart: program cannot be empty"));
+            }
+            let args: Vec<String> = iter
+                .filter_map(Result::ok)
+                .filter(|s| !s.is_empty())
+                .collect();
+            JobSpec::Program { program, args }
+        }
+        _ => {
+            return Err(mlua::Error::runtime(
+                "jobstart: cmd must be a string or table",
+            ));
+        }
+    };
+
     let (cwd, env, on_stdout, on_stderr, on_exit) = match opts {
         Some(ref opts) => {
             let cwd: Option<String> = opts.get("cwd").ok();
@@ -290,7 +331,7 @@ fn jobstart(lua: &Lua, cmd: String, opts: Option<Table>) -> LuaResult<u32> {
     };
 
     with_task_jobs(lua, |store| {
-        store.start(&cmd, cwd, env, on_stdout, on_stderr, on_exit)
+        store.start(spec, cwd, env, on_stdout, on_stderr, on_exit)
     })
     .map_err(mlua::Error::runtime)
 }
@@ -432,7 +473,14 @@ mod tests {
 
     fn start_echo(store: &mut JobStore) -> u32 {
         store
-            .start("echo hello", None, None, None, None, None)
+            .start(
+                JobSpec::Shell("echo hello".to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
             .unwrap()
     }
 
@@ -440,7 +488,7 @@ mod tests {
     fn start_invalid_cwd_returns_error() {
         let mut store = make_store();
         let result = store.start(
-            "echo hello",
+            JobSpec::Shell("echo hello".to_string()),
             Some("/nonexistent_dir_abc_xyz_123".into()),
             None,
             None,

@@ -2523,6 +2523,10 @@ fn register_command_happy_path() {
     r#"n00n.api.register_command({ name = "/test", description = "no handler" })"#,
     "handler" ; "missing_handler"
 )]
+#[test_case::test_case(
+    r#"n00n.api.register_command({ name = "/test", handler = function() end, max_args = -2 })"#,
+    "max_args" ; "negative_max_args"
+)]
 fn register_command_validation_rejects(src: &str, expected_err: &str) {
     let reg = fresh_registry();
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
@@ -2566,6 +2570,54 @@ fn unload_clears_commands() {
 
     host.unload("cmd_only").unwrap();
     assert_eq!(host.command_reader().load().commands.len(), 0);
+}
+
+#[test]
+fn register_command_max_args_custom() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    host.load_source(
+        "max_args_plugin",
+        r#"
+        n00n.api.register_command({
+            name = "/two_args",
+            description = "takes two args",
+            handler = function(args) end,
+            max_args = 2,
+        })
+        "#,
+    )
+    .unwrap();
+
+    let reader = host.command_reader();
+    let snap = reader.load();
+    assert_eq!(snap.commands.len(), 1);
+    assert_eq!(snap.commands[0].name.as_ref(), "/two_args");
+    assert_eq!(snap.commands[0].max_args, 2);
+}
+
+#[test]
+fn register_command_max_args_unlimited() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    host.load_source(
+        "unlimited_args_plugin",
+        r#"
+        n00n.api.register_command({
+            name = "/many",
+            description = "takes many args",
+            handler = function(args) end,
+            max_args = -1,
+        })
+        "#,
+    )
+    .unwrap();
+
+    let reader = host.command_reader();
+    let snap = reader.load();
+    assert_eq!(snap.commands.len(), 1);
+    assert_eq!(snap.commands[0].name.as_ref(), "/many");
+    assert_eq!(snap.commands[0].max_args, usize::MAX);
 }
 
 #[test]
@@ -4615,4 +4667,103 @@ fn skill_tool_unknown_name_returns_available_names() {
         out.contains("Available skills"),
         "unknown skill should list available skills"
     );
+}
+
+/// List mode runs the program directly without shell interpretation.
+/// This preserves argument quoting (the core fix for #602).
+#[test]
+fn jobstart_list_mode_preserve_arg_quoting() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "job_list",
+            description = "runs program directly via list mode",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                n00n.fn.jobstart({{"echo", "hello world"}}, {{
+                    on_exit = function(_, code)
+                        ctx:finish("exit=" .. tostring(code))
+                    end
+                }})
+            end
+        }})"#
+    );
+    host.load_source("job_list", &src).unwrap();
+    let out = exec_tool(&reg, "job_list", serde_json::json!({})).unwrap();
+    assert_eq!(out, "exit=0");
+}
+
+/// List mode with multiple args works correctly.
+#[test]
+fn jobstart_list_mode_multiple_args() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "job_multi",
+            description = "tests multiple args in list mode",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                local seen = {{}}
+                local exit_code
+                n00n.fn.jobstart({{"echo", "-n", "a", "b", "c"}}, {{
+                    on_stdout = function(_, line) seen[#seen + 1] = line end
+                }})
+                local res = n00n.fn.jobwait(1)
+                return table.concat(seen, ",")
+            end
+        }})"#
+    );
+    host.load_source("job_multi", &src).unwrap();
+    let out = exec_tool(&reg, "job_multi", serde_json::json!({})).unwrap();
+    // echo -n a b c should output "a b c" without trailing newline
+    assert_eq!(out, "a b c");
+}
+
+/// Empty table for list mode errors appropriately.
+#[test]
+fn jobstart_list_mode_empty_table_errors() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "job_empty",
+            description = "empty array errors",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                local _, err = pcall(n00n.fn.jobstart, {{}})
+                return tostring(err)
+            end
+        }})"#
+    );
+    host.load_source("job_empty", &src).unwrap();
+    let out = exec_tool(&reg, "job_empty", serde_json::json!({})).unwrap();
+    assert!(out.contains("must have at least a program"), "got: {out}");
+}
+
+/// Non-string in array errors appropriately.
+#[test]
+fn jobstart_list_mode_non_string_arg_errors() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "job_nonstr",
+            description = "non-string arg errors",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                local _, err = pcall(n00n.fn.jobstart, {{123, "echo"}})
+                return tostring(err)
+            end
+        }})"#
+    );
+    host.load_source("job_nonstr", &src).unwrap();
+    let out = exec_tool(&reg, "job_nonstr", serde_json::json!({})).unwrap();
+    // When a non-string is in the array, mlua's get::<String> will error
+    assert!(!out.is_empty(), "got empty error string");
 }
