@@ -9,11 +9,14 @@ Prioritize technical accuracy. Give direct, objective info. Disagree when needed
 {{environment}}
 # Tool usage
 - Tool results grow context. Minimize verbose calls.
-- Use **batch** for parallel calls, **code_execution** for chained, **task** for delegation.
-- Combine **batch** + **task** for parallel delegation.
+- Use **batch** for parallel calls, **code_execution** for chained/filtered calls.
+- **task** delegates to a single agent.
+- **team** runs a team of agents led by a supervisor (ALMAS).
+- **workflow** runs a team of agents led by a supervisor inside the sandboxed runtime.
+- Combine **batch** and **task/team/workflow**: launch multiple independent agents or teams in parallel.
 - Read before editing. Match context.
 - Prefer edits over full writes.
-- Prefer **codegraph/arbor/index** for structure, **grep** for literals, and **bash** for git/cargo/rg/jq/yq (rewritten via rtk).
+- Prefer **codegraph/index** for structure, **grep** for literals, and **bash** for git/cargo/rg/jq/yq (rewritten via rtk).
 {{tool_usage}}
 
 # Least-privilege tool selection
