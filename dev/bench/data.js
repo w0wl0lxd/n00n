@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784866751726,
+  "lastUpdate": 1784866772816,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -3239,6 +3239,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 110524,
             "range": "± 8767",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0ac56366fab5719443f447bd470f54456121aa80",
+          "message": "Merge pull request #94 from w0wl0lxd/fold/upstream-pr-647\n\nfix(ui): downgrade RGB to 256 colors when terminal lacks truecolor",
+          "timestamp": "2026-07-24T00:09:32-04:00",
+          "tree_id": "a792f32f7ef935ee049219925f234a504cc10fe7",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/0ac56366fab5719443f447bd470f54456121aa80"
+        },
+        "date": 1784866772369,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6490830,
+            "range": "± 118831",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2492144,
+            "range": "± 14860",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2495984,
+            "range": "± 13163",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7645223,
+            "range": "± 18124",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3779680,
+            "range": "± 10111",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3710413,
+            "range": "± 7235",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 557799,
+            "range": "± 1599",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 167771,
+            "range": "± 264",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 167807,
+            "range": "± 207",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1033175,
+            "range": "± 10700",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 602808,
+            "range": "± 7819",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 598831,
+            "range": "± 2468",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 75180,
+            "range": "± 2917",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 172939,
+            "range": "± 14478",
             "unit": "ns/iter"
           }
         ]
