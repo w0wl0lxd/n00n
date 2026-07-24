@@ -5154,6 +5154,7 @@ function M.save(run_id, checkpoint_id, state)
 function M.load(run_id, checkpoint_id)
 function M.list(run_id)
 function M.latest(run_id)
+function M.prune(run_id, keep_n)
 ```
 
 ### `require("n00n.color")`
@@ -5265,6 +5266,7 @@ return M
 
 ```lua
 -- Policy enforcement wrapper for tool calls.
+function M.evaluate_policy(agent_id, session_type, tags, tool_name)
 function M.call_tool(ctx, agent_id, session_type, tags, tool_name, input)
 ```
 
