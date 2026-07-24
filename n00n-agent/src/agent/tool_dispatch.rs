@@ -2,15 +2,15 @@ use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde_json::Value;
 use tracing::{debug, error, warn};
 
-use crate::mcp::{McpHandle, UNKNOWN_MCP};
+use crate::mcp::{McpSession, TOOL_SEARCH_TOOL_NAME, UNKNOWN_MCP};
 use crate::permissions::PermissionCheckContext;
 use crate::task_set::TaskSet;
-use crate::tools::registry::{ToolExecResult, ToolInvocation, ToolRegistry, ToolSource};
+use crate::tools::registry::{ToolInvocation, ToolRegistry};
 use crate::tools::{LocalToolFn, ToolContext};
 use crate::{AgentError, AgentEvent, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use n00n_config::ToolKey;
@@ -63,7 +63,7 @@ impl RecentCalls {
 /// shows a phantom spinner.
 pub async fn run(
     registry: &ToolRegistry,
-    mcp: Option<&McpHandle>,
+    mcp: Option<&McpSession>,
     id: String,
     name: &str,
     input: &Value,
@@ -160,13 +160,112 @@ pub async fn run(
         }
 
         let result = invocation.execute(ctx).await;
-        tool_done_from_result(result, id, tool_id, name, &entry.source, started.elapsed())
+
+        let elapsed = started.elapsed();
+        match result.output {
+            Ok(output) => {
+                debug!(
+                    tool = %name,
+                    source = %entry.source.as_log_field(),
+                    elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or_else(|_| u64::MAX),
+                    "tool ok"
+                );
+                let output = match result.telemetry {
+                    Some(telemetry) => output.with_telemetry(Some(telemetry)),
+                    None => output,
+                };
+                ToolDoneEvent {
+                    id,
+                    tool: tool_id,
+                    output,
+                    is_error: false,
+                    annotation: result.annotation,
+                    written_path: result.written_path,
+                }
+            }
+            Err(message) => {
+                warn!(
+                    tool = %name,
+                    source = %entry.source.as_log_field(),
+                    elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or_else(|_| u64::MAX),
+                    error = %message,
+                    "tool failed"
+                );
+                ToolDoneEvent {
+                    id,
+                    tool: tool_id,
+                    output: ToolOutput::Plain(crate::TextOutput {
+                        text: message,
+                        instructions: None,
+                        state: None,
+                        telemetry: result.telemetry,
+                    }),
+                    is_error: true,
+                    annotation: result.annotation,
+                    written_path: None,
+                }
+            }
+        }
+    } else if let Some(mcp) = mcp.filter(|_| name == TOOL_SEARCH_TOOL_NAME) {
+        run_tool_search(mcp, id, input, ctx, emit)
     } else if mcp.is_some_and(|m| m.has_tool(&mcp_lookup)) {
         execute_mcp_tool(ctx, &id, tool_id, &mcp_lookup, input, emit).await
     } else {
         let msg = format!("{UNKNOWN_TOOL_PREFIX}: {mcp_lookup}");
         warn!(tool = %mcp_lookup, "unknown tool");
         tool_done_error(id, tool_id, msg)
+    }
+}
+
+/// MCP, local, and search tools never go through invocation parsing,
+/// so there is no parsed input to show; the UI gets the raw JSON instead.
+fn emit_raw_start(
+    ctx: &ToolContext,
+    emit: Emit,
+    id: &str,
+    tool: &Arc<str>,
+    summary: String,
+    input: &Value,
+) {
+    if !matches!(emit, Emit::Notify) {
+        return;
+    }
+    let start = ToolStartEvent {
+        id: id.to_owned(),
+        tool: Arc::clone(tool),
+        summary,
+        render_header: None,
+        annotation: None,
+        input: None,
+        raw_input: Some(input.clone()),
+        output: None,
+    };
+    let _ = ctx.event_tx.send(AgentEvent::ToolStart(Box::new(start)));
+}
+
+/// Runs without a permission gate: search only reveals names the deferred
+/// catalog already showed the model.
+fn run_tool_search(
+    mcp: &McpSession,
+    id: String,
+    input: &Value,
+    ctx: &ToolContext,
+    emit: Emit,
+) -> ToolDoneEvent {
+    let tool_id: Arc<str> = Arc::from(TOOL_SEARCH_TOOL_NAME);
+    let query = input["query"].as_str().unwrap_or_else(Default::default);
+    emit_raw_start(ctx, emit, &id, &tool_id, query.to_owned(), input);
+    let (output, is_error) = match mcp.search_tools(query) {
+        Ok(out) => (out, false),
+        Err(e) => (e, true),
+    };
+    ToolDoneEvent {
+        id,
+        tool: tool_id,
+        output: ToolOutput::Markdown(output.into()),
+        is_error,
+        annotation: None,
+        written_path: None,
     }
 }
 
@@ -179,19 +278,7 @@ fn run_local_tool(
     emit: Emit,
 ) -> ToolDoneEvent {
     let tool_id: Arc<str> = Arc::from(name);
-    if matches!(emit, Emit::Notify) {
-        let start = ToolStartEvent {
-            id: id.clone(),
-            tool: Arc::clone(&tool_id),
-            summary: name.to_owned(),
-            render_header: None,
-            annotation: None,
-            input: None,
-            raw_input: Some(input.clone()),
-            output: None,
-        };
-        let _ = ctx.event_tx.send(AgentEvent::ToolStart(Box::new(start)));
-    }
+    emit_raw_start(ctx, emit, &id, &tool_id, name.to_owned(), input);
     let (output, is_error) = match local(input) {
         Ok(output) => (output, false),
         Err(e) => {
@@ -228,61 +315,6 @@ fn tool_done_plain(id: String, tool_id: Arc<str>, text: String) -> ToolDoneEvent
         is_error: false,
         annotation: None,
         written_path: None,
-    }
-}
-
-fn tool_done_from_result(
-    result: ToolExecResult,
-    id: String,
-    tool_id: Arc<str>,
-    name: &str,
-    source: &ToolSource,
-    elapsed: Duration,
-) -> ToolDoneEvent {
-    let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or_else(|_| u64::MAX);
-    match result.output {
-        Ok(output) => {
-            debug!(
-                tool = %name,
-                source = %source.as_log_field(),
-                elapsed_ms,
-                "tool ok"
-            );
-            let output = match result.telemetry {
-                Some(telemetry) => output.with_telemetry(Some(telemetry)),
-                None => output,
-            };
-            ToolDoneEvent {
-                id,
-                tool: tool_id,
-                output,
-                is_error: false,
-                annotation: result.annotation,
-                written_path: result.written_path,
-            }
-        }
-        Err(message) => {
-            warn!(
-                tool = %name,
-                source = %source.as_log_field(),
-                elapsed_ms,
-                error = %message,
-                "tool failed"
-            );
-            ToolDoneEvent {
-                id,
-                tool: tool_id,
-                output: ToolOutput::Plain(crate::TextOutput {
-                    text: message,
-                    instructions: None,
-                    state: None,
-                    telemetry: result.telemetry,
-                }),
-                is_error: true,
-                annotation: result.annotation,
-                written_path: None,
-            }
-        }
     }
 }
 
@@ -393,6 +425,9 @@ async fn execute_mcp_tool(
         );
     };
 
+    // A permitted call to a deferred tool counts as loading it, so its full
+    // definition joins the next request; a denied call must not load anything.
+    mcp.mark_loaded(tool_name);
     match mcp.call_tool(tool_name, input).await {
         Ok(text) => tool_done_plain(id.to_owned(), tool_id, text),
         Err(e) => tool_done_error(id.to_owned(), tool_id, e.to_string()),
@@ -403,7 +438,7 @@ async fn execute_mcp_tool(
 pub(super) async fn process_tool_calls(
     response: n00n_providers::StreamResponse,
     recent_calls: &mut RecentCalls,
-    mcp: Option<&McpHandle>,
+    mcp: Option<&McpSession>,
     history: &mut super::history::History,
     event_tx: &crate::EventSender,
     ctx: &ToolContext,
@@ -623,6 +658,149 @@ mod tests {
             assert_eq!(start.tool.as_ref(), "local_echo");
             assert_eq!(start.summary, "local_echo");
             assert_eq!(start.raw_input, Some(input));
+        });
+    }
+
+    #[test]
+    fn tool_search_routes_and_loads_matches() {
+        smol::block_on(async {
+            let mcp = crate::mcp::stub_session(&[("srv.fetch_issue", "Fetch a GitHub issue")]);
+            let ctx = crate::tools::test_support::stub_ctx(&AgentMode::Build);
+            let done = run(
+                ToolRegistry::global(),
+                Some(&mcp),
+                "t1".into(),
+                TOOL_SEARCH_TOOL_NAME,
+                &serde_json::json!({"query": "issue"}),
+                &ctx,
+                Emit::Silent,
+            )
+            .await;
+            assert!(!done.is_error, "got: {}", done.output.as_text());
+            assert_eq!(done.tool.as_ref(), TOOL_SEARCH_TOOL_NAME);
+            assert!(done.output.as_text().contains("srv__fetch_issue"));
+
+            let mut tools = serde_json::json!([]);
+            mcp.extend_tools(&mut tools);
+            assert!(
+                crate::mcp::tool_names(&tools).contains(&"srv__fetch_issue"),
+                "searched tool must join the next request"
+            );
+        });
+    }
+
+    #[test_case(serde_json::json!({"query": "  "}) ; "blank_query")]
+    #[test_case(serde_json::json!({}) ; "missing_query")]
+    #[allow(clippy::needless_pass_by_value)]
+    fn tool_search_bad_query_is_error_event(input: Value) {
+        smol::block_on(async {
+            let mcp = crate::mcp::stub_session(&[("srv.tool", "")]);
+            let ctx = crate::tools::test_support::stub_ctx(&AgentMode::Build);
+            let done = run(
+                ToolRegistry::global(),
+                Some(&mcp),
+                "t1".into(),
+                TOOL_SEARCH_TOOL_NAME,
+                &input,
+                &ctx,
+                Emit::Silent,
+            )
+            .await;
+            assert!(done.is_error);
+            assert_eq!(done.output.as_text(), crate::mcp::SEARCH_EMPTY_QUERY);
+        });
+    }
+
+    #[test]
+    fn calling_deferred_mcp_tool_marks_it_loaded() {
+        smol::block_on(async {
+            let mcp = crate::mcp::stub_session(&[("srv.fetch_issue", "")]);
+            let mut ctx = crate::tools::test_support::stub_ctx(&AgentMode::Build);
+            ctx.mcp = Some(mcp.clone());
+            let done = run(
+                ToolRegistry::global(),
+                Some(&mcp),
+                "t1".into(),
+                "srv__fetch_issue",
+                &serde_json::json!({}),
+                &ctx,
+                Emit::Silent,
+            )
+            .await;
+            assert_eq!(done.tool.as_ref(), "srv.fetch_issue", "must route to MCP");
+
+            let mut tools = serde_json::json!([]);
+            mcp.extend_tools(&mut tools);
+            assert_eq!(
+                crate::mcp::tool_names(&tools),
+                vec!["srv__fetch_issue"],
+                "called tool must join the next request"
+            );
+        });
+    }
+
+    #[test]
+    fn denied_mcp_call_does_not_load_definition() {
+        smol::block_on(async {
+            let mcp = crate::mcp::stub_session(&[("srv.fetch_issue", "")]);
+            let deny_cfg = PermissionsConfig {
+                rules: vec![PermissionRule {
+                    tool: ToolKey::parse("srv.fetch_issue").unwrap(),
+                    scope: None,
+                    effect: Effect::Deny,
+                }],
+                ..Default::default()
+            };
+            let dir = TempDir::new().unwrap();
+            let permissions = Arc::new(PermissionManager::new(deny_cfg, dir.path().to_path_buf()));
+            let mut ctx = crate::tools::test_support::stub_ctx_with_permissions(
+                &AgentMode::Build,
+                permissions,
+            );
+            ctx.mcp = Some(mcp.clone());
+            let done = run(
+                ToolRegistry::global(),
+                Some(&mcp),
+                "t1".into(),
+                "srv__fetch_issue",
+                &serde_json::json!({}),
+                &ctx,
+                Emit::Silent,
+            )
+            .await;
+            assert!(done.is_error);
+            assert!(
+                done.output.as_text().starts_with(PERMISSION_DENIED_PREFIX),
+                "got: {}",
+                done.output.as_text()
+            );
+
+            let mut tools = serde_json::json!([]);
+            mcp.extend_tools(&mut tools);
+            assert_eq!(
+                crate::mcp::tool_names(&tools),
+                vec![TOOL_SEARCH_TOOL_NAME],
+                "denied call must not load the definition"
+            );
+        });
+    }
+
+    #[test]
+    fn local_tool_named_tool_search_shadows_mcp_search() {
+        smol::block_on(async {
+            let mcp = crate::mcp::stub_session(&[("srv.tool", "")]);
+            let ctx = local_ctx(TOOL_SEARCH_TOOL_NAME, |_| Ok("local wins".into()));
+            let done = run(
+                ToolRegistry::global(),
+                Some(&mcp),
+                "t1".into(),
+                TOOL_SEARCH_TOOL_NAME,
+                &serde_json::json!({"query": "tool"}),
+                &ctx,
+                Emit::Silent,
+            )
+            .await;
+            assert_eq!(done.output.as_text(), "local wins");
         });
     }
 
@@ -906,6 +1084,46 @@ mod tests {
                 !executed.load(Ordering::SeqCst),
                 "execute must not run after denial"
             );
+        });
+    }
+
+    #[test]
+    fn local_tool_progress_keywords_in_project_output() {
+        smol::block_on(async {
+            const PROGRESS_TEXT: &str = "Building project... 100% complete ==> Done";
+            let ctx = local_ctx("progress", |_| Ok(PROGRESS_TEXT.to_string()));
+            let done = run(
+                ToolRegistry::global(),
+                None,
+                "t1".into(),
+                "progress",
+                &serde_json::json!({}),
+                &ctx,
+                Emit::Silent,
+            )
+            .await;
+            assert!(!done.is_error);
+            assert_eq!(done.output.as_text(), PROGRESS_TEXT);
+        });
+    }
+
+    #[test]
+    fn local_tool_error_preserves_message_unchanged() {
+        smol::block_on(async {
+            const ERROR_MSG: &str = "100% failed";
+            let ctx = local_ctx("fail", |_| Err(ERROR_MSG.to_string()));
+            let done = run(
+                ToolRegistry::global(),
+                None,
+                "t1".into(),
+                "fail",
+                &serde_json::json!({}),
+                &ctx,
+                Emit::Silent,
+            )
+            .await;
+            assert!(done.is_error);
+            assert_eq!(done.output.as_text(), ERROR_MSG);
         });
     }
 }

@@ -11,6 +11,52 @@ Install n00n, connect a provider, and run your first session. Takes a few minute
 
 ## Install
 
+### Linux / macOS
+
+```sh
+# Download and read the script first (don't blindly trust shell scripts).
+curl -fsSL https://maki.sh/install.sh -o install.sh
+cat install.sh
+
+# Then run.
+chmod +x install.sh && sh install.sh
+```
+
+One-liner:
+
+```sh
+curl -fsSL https://maki.sh/install.sh | sh
+```
+
+### Windows (PowerShell)
+
+```powershell
+# Download and read the script first (don't blindly trust remote scripts).
+irm https://maki.sh/install.ps1 -OutFile install.ps1
+Get-Content install.ps1
+
+# Then run.
+.\install.ps1
+```
+
+One-liner:
+
+```powershell
+irm https://maki.sh/install.ps1 | iex
+```
+
+### Windows (Git Bash)
+
+```sh
+curl -fsSL https://maki.sh/install.sh | sh
+```
+
+Both install to `%LOCALAPPDATA%\maki` and add it to your user PATH. Override with `MAKI_INSTALL_DIR` / `$env:MAKI_INSTALL_DIR`.
+
+> **Note for PowerShell users:** The bash tool requires Git for Windows or WSL.
+> The installer will prompt you to install Git for Windows via `winget` if bash is
+> not found. Or install it yourself: `winget install --id Git.Git -e --source winget`.
+
 ### Living on the edge (main branch)
 
 ```sh

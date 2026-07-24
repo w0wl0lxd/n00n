@@ -129,7 +129,7 @@ local function discover_skills()
 end
 
 local DESCRIPTION =
-  "Load a skill that provides instructions and workflows for specific tasks. Use `list=true` to enumerate available skills."
+  "Load a skill that provides instructions and workflows for specific tasks. Use `list=true` to enumerate available skills; then call with the exact skill `name`."
 
 n00n.api.register_tool({
   name = "skill",

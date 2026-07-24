@@ -29,6 +29,7 @@ use crate::providers::ResolvedAuth;
 use crate::providers::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
 
 static CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
+    slug: "openai",
     api_key_env: "OPENAI_API_KEY",
     base_url: "https://api.openai.com/v1",
     max_tokens_field: "max_completion_tokens",

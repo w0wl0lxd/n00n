@@ -20,17 +20,10 @@ local function line_nr_fmt(count)
   return "%" .. w .. "d "
 end
 
-local ELLIPSIS = "…"
-local ELLIPSIS_BYTES = #ELLIPSIS
+local ELLIPSIS_BYTES = 3
 
-local function utf8_prefix_bytes(s, max_bytes)
-  if #s <= max_bytes then
-    return s
-  end
-  if max_bytes <= 0 then
-    return ""
-  end
-  local i = max_bytes
+local function utf8_boundary(s, target)
+  local i = target
   while i > 0 do
     local next_b = s:byte(i + 1)
     if not next_b or next_b < 0x80 or next_b >= 0xC0 then
@@ -38,72 +31,122 @@ local function utf8_prefix_bytes(s, max_bytes)
     end
     i = i - 1
   end
-  return s:sub(1, i)
+  return i
 end
 
-local function line_metrics(line)
+-- Truncate a string so the *content* is capped at max_bytes and an ellipsis is
+-- appended. When max_bytes is too small for an ellipsis, just return the raw
+-- prefix so the result never exceeds max_bytes.
+local function utf8_truncate_bytes(s, max_bytes)
+  if #s <= max_bytes then
+    return s
+  end
+  if max_bytes <= 0 then
+    return ""
+  end
+  if max_bytes <= ELLIPSIS_BYTES then
+    local i = utf8_boundary(s, max_bytes)
+    return i > 0 and s:sub(1, i) or ""
+  end
+  local i = utf8_boundary(s, max_bytes)
+  return s:sub(1, i) .. "…"
+end
+
+-- Truncate a string so the *final* byte length, including any ellipsis, is at
+-- most max_bytes.
+local function utf8_truncate_bytes_final(s, max_bytes)
+  if #s <= max_bytes then
+    return s
+  end
+  if max_bytes <= 0 then
+    return ""
+  end
+  if max_bytes <= ELLIPSIS_BYTES then
+    local i = utf8_boundary(s, max_bytes)
+    return i > 0 and s:sub(1, i) or ""
+  end
+  local i = utf8_boundary(s, max_bytes - ELLIPSIS_BYTES)
+  if i > 0 then
+    return s:sub(1, i) .. "…"
+  end
+  return ""
+end
+
+local function line_text_bytes(line)
   if type(line) == "string" then
-    return #line, n00n.ui.display_width(line)
+    return #line
   end
-  local bytes, width = 0, 0
+  local n = 0
   for _, span in ipairs(line) do
-    local text = type(span) == "string" and span or (span[1] or "")
-    bytes = bytes + #text
-    width = width + n00n.ui.display_width(text)
+    if type(span) == "string" then
+      n = n + #span
+    else
+      n = n + #(span[1] or "")
+    end
   end
-  return bytes, width
+  return n
 end
 
-local function clip_text(text, max_bytes, max_width)
-  local clipped = utf8_prefix_bytes(text, max_bytes)
-  if n00n.ui.display_width(clipped) > max_width then
-    clipped = n00n.ui.truncate_text(clipped, max_width).head
+local function line_text(line)
+  if type(line) == "string" then
+    return line
   end
-  return clipped
+  local parts = {}
+  for _, span in ipairs(line) do
+    parts[#parts + 1] = type(span) == "string" and span or (span[1] or "")
+  end
+  return table.concat(parts)
 end
 
 local function truncate_line(line, max_bytes, max_width)
-  local byte_limit = max_bytes and math.max(max_bytes, 0) or math.huge
-  local width_limit = max_width and math.max(max_width, 0) or math.huge
-  local bytes, width = line_metrics(line)
-  if bytes <= byte_limit and width <= width_limit then
-    return line
-  end
-
-  local add_ellipsis = byte_limit >= ELLIPSIS_BYTES and width_limit >= 1
-  local byte_budget = byte_limit - (add_ellipsis and ELLIPSIS_BYTES or 0)
-  local width_budget = width_limit - (add_ellipsis and 1 or 0)
-  local used_bytes, used_width = 0, 0
-
-  if type(line) == "string" then
-    local head = clip_text(line, byte_budget, width_budget)
-    return head .. (add_ellipsis and ELLIPSIS or "")
-  end
-
-  local out = {}
-  for _, span in ipairs(line) do
-    if used_bytes >= byte_budget or used_width >= width_budget then
-      break
+  if max_width and max_width > 0 then
+    local text = line_text(line)
+    local truncated = n00n.ui.truncate_text(text, max_width)
+    local head = truncated.head
+    if max_bytes and max_bytes > 0 then
+      head = utf8_truncate_bytes_final(head, max_bytes)
     end
-    local text = type(span) == "string" and span or (span[1] or "")
-    local style = type(span) == "table" and span[2] or nil
-    text = clip_text(text, byte_budget - used_bytes, width_budget - used_width)
-    if text ~= "" then
-      out[#out + 1] = style and { text, style } or text
-      used_bytes = used_bytes + #text
-      used_width = used_width + n00n.ui.display_width(text)
+    return head
+  end
+  if max_bytes and max_bytes > 0 then
+    if type(line) == "string" then
+      return utf8_truncate_bytes(line, max_bytes)
+    end
+    if line_text_bytes(line) > max_bytes then
+      local out = {}
+      local used = 0
+      for _, span in ipairs(line) do
+        if used >= max_bytes then
+          break
+        end
+        local text, style
+        if type(span) == "string" then
+          text = span
+        else
+          text = span[1] or ""
+          style = span[2]
+        end
+        local remaining = max_bytes - used
+        if #text > remaining then
+          text = utf8_truncate_bytes(text, remaining)
+        end
+        if style then
+          out[#out + 1] = { text, style }
+        else
+          out[#out + 1] = text
+        end
+        used = used + #text
+      end
+      return out
     end
   end
-  if add_ellipsis then
-    out[#out + 1] = { ELLIPSIS, "dim" }
-  end
-  return out
+  return line
 end
 
 -- opts: max_lines (default 80) shown while collapsed, keep "head"|"tail"
 -- (default "tail"), max_expand_lines (default 2000) kept for expansion,
--- max_line_bytes and max_width (optional) cap each complete rendered row,
--- and hide_collapsed (default false) reveals body lines only after a click.
+-- max_line_bytes (optional) per-line byte cap applied at render time,
+-- max_width (optional) display-width cap, hide_collapsed (default false).
 function ToolView.new(buf, opts)
   local self = setmetatable({}, ToolView)
   self.buf = buf
@@ -268,12 +311,12 @@ function ToolView:flush()
   local lines = {}
 
   for _, h in ipairs(self.header) do
-    lines[#lines + 1] = h
+    lines[#lines + 1] = truncate_line(h, self.max_line_bytes)
   end
 
   if self.expanded then
     for _, line in ipairs(self.all_lines) do
-      lines[#lines + 1] = line
+      lines[#lines + 1] = truncate_line(line, self.max_line_bytes)
     end
     if self.all_skipped > 0 then
       lines[#lines + 1] = { { self.all_skipped .. " lines omitted", "dim" } }
@@ -285,18 +328,18 @@ function ToolView:flush()
       or nil
 
     if self.keep == "tail" and notice then
-      lines[#lines + 1] = notice
+      lines[#lines + 1] = truncate_line(notice, self.max_line_bytes)
     end
 
     for i = 0, self.ring_count - 1 do
       -- Modulo only after the ring wrapped: `x % math.huge` is NaN in Luau,
       -- and uncapped views (max_lines = math.huge) never wrap.
       local idx = self.ring_start == 1 and (i + 1) or (((self.ring_start - 1 + i) % self.max) + 1)
-      lines[#lines + 1] = self.ring[idx]
+      lines[#lines + 1] = truncate_line(self.ring[idx], self.max_line_bytes)
     end
 
     if self.keep == "head" and notice then
-      lines[#lines + 1] = notice
+      lines[#lines + 1] = truncate_line(notice, self.max_line_bytes)
     end
   end
 
