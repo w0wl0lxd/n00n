@@ -114,7 +114,13 @@ pub fn incremental_canonicalize(path: &Path) -> Option<PathBuf> {
     if current.as_os_str().is_empty() {
         None
     } else {
-        Some(current)
+        // Make the result absolute in a platform-consistent way (e.g. turn a
+        // Windows root-relative path like `\home\...` into `C:\home\...`),
+        // so it can be compared with `canonicalize_clean` using `starts_with`.
+        Some(match std::path::absolute(&current) {
+            Ok(abs) => abs,
+            Err(_) => current,
+        })
     }
 }
 

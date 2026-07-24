@@ -9,11 +9,25 @@
 # via the `py-setup` task below, not as a mise python tool.
 
 [tools]
+hk = "latest"
+just = "latest"
 gitleaks = "latest"
 actionlint = "latest"
 stylua = "latest"
 taplo = "latest"
 uv = "latest"
+typos = "latest"
+zizmor = "latest"
+lychee = "latest"
+zola = "0.19.2"
+yamllint = "latest"
+ruff = "latest"
+ty = "latest"
+cargo-binstall = "latest"
+"cargo:cargo-nextest" = "latest"
+"cargo:cargo-machete" = "latest"
+"cargo:cargo-llvm-cov" = "latest"
+"cargo:cargo-deny" = "latest"
 
 # Create a uv venv with the Python tooling the repo's scripts need
 # (e.g. YAML validation). Run `mise run py-setup`, then use `.venv/bin/python`.

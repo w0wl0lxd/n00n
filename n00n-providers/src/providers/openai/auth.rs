@@ -202,7 +202,12 @@ fn open_credentials_lock(path: &Path) -> Result<File, AgentError> {
     options.mode(AUTH_LOCK_MODE);
     let file = match options.open(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == ErrorKind::AlreadyExists => open_existing_lock(path)?,
+        Err(error)
+            if error.kind() == ErrorKind::AlreadyExists
+                || error.kind() == ErrorKind::PermissionDenied =>
+        {
+            open_existing_lock(path)?
+        }
         Err(error) => return Err(error.into()),
     };
     validate_lock_metadata(&file.metadata()?)?;

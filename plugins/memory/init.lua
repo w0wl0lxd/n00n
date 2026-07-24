@@ -116,10 +116,7 @@ end
 
 n00n.api.register_tool({
   name = "memory",
-  description = "Persistent, project-scoped scratchpad for learnings, patterns, decisions, and gotchas across sessions.\n\n"
-    .. "- Save important context before compaction or to build up project knowledge.\n"
-    .. "- Keep entries concise and current. Delete outdated information.",
-  defer_loading = true,
+  description = "Persistent, project-scoped scratchpad for learnings, patterns, decisions, and gotchas across sessions. Save important context before compaction or to build project knowledge. Keep entries concise and current. Delete outdated information.",
 
   schema = {
     type = "object",

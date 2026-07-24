@@ -12,6 +12,7 @@ use super::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
 use super::{KeyPool, ResolvedAuth};
 
 static CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
+    slug: "tensorx",
     api_key_env: "TENSORX_API_KEY",
     base_url: "https://api.tensorx.ai/v1",
     max_tokens_field: "max_tokens",
@@ -33,7 +34,7 @@ inventory::submit!(n00n_config::providers::BuiltInProvider {
     needs_url: false,
 });
 
-pub(crate) fn models() -> &'static [ModelEntry] {
+pub(crate) const fn models() -> &'static [ModelEntry] {
     &[]
 }
 
@@ -108,11 +109,13 @@ impl Provider for TensorX {
             );
 
             let (has_thinking, has_reasoning_effort) = {
+                // Discovery keys by the builtin slug; a dynamic wrap's model
+                // carries its own slug, so don't key by model.provider.
                 let guard = crate::model_registry::model_registry()
                     .read()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let info = guard
-                    .discovered(model.provider, &model.id)
+                    .discovered("tensorx", &model.id)
                     .and_then(|d| d.provider_info.clone())
                     .and_then(|arc| {
                         Arc::downcast::<TensorXModelInfo>(arc).map_or_else(|_| None, Some)
