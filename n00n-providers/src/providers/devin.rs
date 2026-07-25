@@ -63,7 +63,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
                 fast: None,
             },
             max_output_tokens: 128_000,
-            context_window: 200_000,
+            context_window: 262_144,
         },
         ModelEntry {
             prefixes: &["swe-1-7-max"],
@@ -79,7 +79,23 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
                 fast: None,
             },
             max_output_tokens: 128_000,
-            context_window: 200_000,
+            context_window: 262_144,
+        },
+        ModelEntry {
+            prefixes: &["swe-1-7-lightning"],
+            tier: ModelTier::Strong,
+            family: ModelFamily::Generic,
+            vision: true,
+            default: false,
+            pricing: ModelPricing {
+                input: 0.00,
+                output: 0.00,
+                cache_write: 0.00,
+                cache_read: 0.00,
+                fast: None,
+            },
+            max_output_tokens: 128_000,
+            context_window: 262_144,
         },
         ModelEntry {
             prefixes: &["claude-sonnet-4-6"],
@@ -908,9 +924,31 @@ fn fallback_models() -> Vec<crate::model::ModelInfo> {
             supports_thinking: None,
             supports_vision: Some(e.vision),
             tier: Some(e.tier),
+            is_free: None,
+            is_promo: None,
             provider_info: None,
         })
         .collect()
+}
+
+fn infer_context_window(model_id: &str) -> Option<u32> {
+    let lower = model_id.to_lowercase();
+    if lower.contains("swe-1-7") {
+        Some(262_144)
+    } else if lower.contains("-1m") {
+        Some(1_000_000)
+    } else {
+        None
+    }
+}
+
+fn infer_free_status(model_id: &str) -> Option<bool> {
+    let lower = model_id.to_lowercase();
+    if lower.contains("swe-1-7") {
+        Some(true)
+    } else {
+        None
+    }
 }
 
 pub struct Devin {
@@ -1144,13 +1182,33 @@ impl Provider for Devin {
                             _ => Vec::new(),
                         };
                         for option in options {
-                            let mut info =
-                                crate::model::ModelInfo::id_only(option.value.to_string());
+                            let value_str = option.value.to_string();
+                            let mut info = crate::model::ModelInfo::id_only(value_str.clone());
                             info.supports_vision = option
                                 .meta
                                 .as_ref()
                                 .and_then(|m| m.get("cognition.ai/supportsImages"))
                                 .and_then(Value::as_bool);
+                            if let Some(meta) = &option.meta {
+                                info.context_window = meta
+                                    .get("cognition.ai/contextWindow")
+                                    .and_then(Value::as_u64)
+                                    .map(clamped_u32)
+                                    .or_else(|| infer_context_window(&value_str));
+                                info.max_output_tokens = meta
+                                    .get("cognition.ai/maxOutputTokens")
+                                    .and_then(Value::as_u64)
+                                    .map(clamped_u32);
+                                info.is_free = meta
+                                    .get("cognition.ai/free")
+                                    .and_then(Value::as_bool)
+                                    .or_else(|| infer_free_status(&value_str));
+                                info.is_promo =
+                                    meta.get("cognition.ai/promo").and_then(Value::as_bool);
+                            } else {
+                                info.context_window = infer_context_window(&value_str);
+                                info.is_free = infer_free_status(&value_str);
+                            }
                             models.push(info);
                         }
                     }

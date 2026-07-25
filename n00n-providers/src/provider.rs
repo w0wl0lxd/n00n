@@ -192,12 +192,10 @@ impl ProviderKind {
     #[must_use]
     pub const fn fallback_context_window(self) -> u32 {
         match self {
-            Self::Anthropic
-            | Self::OpenAi
-            | Self::Copilot
-            | Self::OpenRouter
-            | Self::TensorX
-            | Self::Devin => 200_000,
+            Self::Anthropic | Self::OpenAi | Self::Copilot | Self::OpenRouter | Self::TensorX => {
+                200_000
+            }
+            Self::Devin => 262_144,
             Self::Google | Self::DeepSeek => 1_000_000,
             Self::Ollama | Self::LlamaCpp | Self::Mistral | Self::Zai | Self::Synthetic => 128_000,
             Self::Opencode => 256_000,

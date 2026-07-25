@@ -426,6 +426,8 @@ impl CopilotModel {
             ),
             supports_vision: Some(supports.vision),
             tier: self.model_picker_category.map(CopilotModelCategory::tier),
+            is_free: None,
+            is_promo: None,
             provider_info: Some(Arc::new(reasoning)),
         }
     }

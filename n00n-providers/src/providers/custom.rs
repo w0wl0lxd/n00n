@@ -58,17 +58,47 @@ fn resolve_custom_auth(slug: &str) -> Result<ResolvedAuth, AgentError> {
         message: format!("unknown custom provider '{slug}'"),
     })?;
 
-    let resolved_env = resolve_api_key_env(slug, Some(def));
-    let env_var = def
-        .api_key_env
-        .as_deref()
-        .unwrap_or_else(|| resolved_env.as_str());
-    let pool = super::KeyPool::resolve(slug, env_var)?;
+    let protocol = resolve_protocol(slug, Some(def)).unwrap_or_else(|| Protocol::Openai);
 
     let base_url = resolve_base_url(slug, Some(def));
-    let mut auth = ResolvedAuth::bearer(pool.current());
-    auth.base_url = base_url;
-    Ok(auth)
+
+    // Devin uses its own CLI credentials when no API key is provided
+    if protocol == Protocol::Devin {
+        let resolved_env = resolve_api_key_env(slug, Some(def));
+        let env_var = def
+            .api_key_env
+            .as_deref()
+            .unwrap_or_else(|| resolved_env.as_str());
+        match super::KeyPool::resolve(slug, env_var) {
+            Ok(pool) => {
+                let mut auth = ResolvedAuth::bearer(pool.current());
+                auth.base_url = base_url;
+                Ok(auth)
+            }
+            Err(e) => {
+                tracing::debug!(
+                    slug,
+                    error = %e,
+                    "no devin API key configured; devin acp will use its own credentials"
+                );
+                Ok(ResolvedAuth {
+                    base_url,
+                    headers: Vec::new(),
+                })
+            }
+        }
+    } else {
+        let resolved_env = resolve_api_key_env(slug, Some(def));
+        let env_var = def
+            .api_key_env
+            .as_deref()
+            .unwrap_or_else(|| resolved_env.as_str());
+        let pool = super::KeyPool::resolve(slug, env_var)?;
+
+        let mut auth = ResolvedAuth::bearer(pool.current());
+        auth.base_url = base_url;
+        Ok(auth)
+    }
 }
 
 pub fn create(slug: &str, timeouts: Timeouts) -> Result<Box<dyn Provider>, AgentError> {
