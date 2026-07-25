@@ -13,23 +13,14 @@ use crate::{
     AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, ThinkingConfig, dialect,
 };
 
-use super::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
+use super::openai_compat::OpenAiCompatProvider;
 use super::{KeyPool, ResolvedAuth};
 
 const PAD: &str = "";
 const V4_MARKER: &str = "deepseek-v4";
 const BALANCE_URL: &str = "https://api.deepseek.com/user/balance";
 
-static CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
-    slug: "deepseek",
-    api_key_env: "DEEPSEEK_API_KEY",
-    base_url: "https://api.deepseek.com",
-    max_tokens_field: "max_tokens",
-    include_stream_usage: true,
-    provider_name: "DeepSeek",
-    supports_prompt_cache_key: false,
-    supports_prompt_cache_breakpoint: false,
-};
+include!(concat!(env!("OUT_DIR"), "/provider_configs/deepseek.rs"));
 
 inventory::submit!(n00n_config::providers::BuiltInProvider {
     slug: "deepseek",

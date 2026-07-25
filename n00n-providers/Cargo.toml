@@ -2,6 +2,7 @@
 name = "n00n-providers"
 version.workspace = true
 edition.workspace = true
+build = "build.rs"
 
 [dependencies]
 serde = { workspace = true }
@@ -36,6 +37,9 @@ agent-client-protocol-schema = { workspace = true }
 [dev-dependencies]
 test-case = { workspace = true }
 tempfile = { workspace = true }
+
+[build-dependencies]
+toml = { workspace = true }
 
 [lints]
 workspace = true

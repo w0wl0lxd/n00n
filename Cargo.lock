@@ -3158,6 +3158,7 @@ dependencies = [
  "tempfile",
  "test-case",
  "thiserror 2.0.19",
+ "toml",
  "tracing",
  "wait-timeout",
 ]

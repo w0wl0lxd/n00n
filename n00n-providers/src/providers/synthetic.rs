@@ -8,19 +8,10 @@ use crate::model::{Model, ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider};
 use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, dialect};
 
-use super::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
+use super::openai_compat::OpenAiCompatProvider;
 use super::{KeyPool, ResolvedAuth};
 
-static CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
-    slug: "synthetic",
-    api_key_env: "SYNTHETIC_API_KEY",
-    base_url: "https://api.synthetic.new/openai/v1",
-    max_tokens_field: "max_completion_tokens",
-    include_stream_usage: false,
-    provider_name: "Synthetic",
-    supports_prompt_cache_key: false,
-    supports_prompt_cache_breakpoint: false,
-};
+include!(concat!(env!("OUT_DIR"), "/provider_configs/synthetic.rs"));
 
 inventory::submit!(n00n_config::providers::BuiltInProvider {
     slug: "synthetic",

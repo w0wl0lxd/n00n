@@ -396,6 +396,7 @@ mod tests {
             vec![
                 ModelInfo {
                     id: "model-a".into(),
+                    name: None,
                     context_window: Some(32_000),
                     max_output_tokens: None,
                     pricing: None,
@@ -408,6 +409,7 @@ mod tests {
                 },
                 ModelInfo {
                     id: "model-b".into(),
+                    name: None,
                     context_window: Some(128_000),
                     max_output_tokens: None,
                     pricing: None,

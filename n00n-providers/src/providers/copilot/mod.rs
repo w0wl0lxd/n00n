@@ -242,7 +242,7 @@ impl Copilot {
         let wire_tools = openai_compat::convert_tools(tools);
         let mut body = json!({
             "model": model.id,
-            "messages": openai_compat::convert_messages(messages, system),
+            "messages": openai_compat::convert_messages(messages, system, false),
             "n": 1,
             "stream": true,
             "temperature": 0.1,
@@ -415,6 +415,7 @@ impl CopilotModel {
         let reasoning = self.reasoning_info();
         ModelInfo {
             id: self.id.clone(),
+            name: None,
             context_window: self.capabilities.limits.max_context_window_tokens,
             max_output_tokens: self.capabilities.limits.max_output_tokens,
             pricing: None,

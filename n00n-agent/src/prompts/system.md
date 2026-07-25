@@ -38,5 +38,6 @@ Prefer lower-privilege tools:
 {{conventions}}
 
 # When done
+- When you finish reasoning or using tools, end with a concise, user-facing answer.
 - Summarize changes concisely.
 {{instructions}}{{after_instructions}}
