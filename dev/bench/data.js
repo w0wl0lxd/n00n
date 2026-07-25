@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784957302458,
+  "lastUpdate": 1784960153695,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -4749,6 +4749,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 181011,
             "range": "± 875",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "distinct": true,
+          "id": "1c1d33a822d29d941002a7781bd466698640f031",
+          "message": "fix: devin2 auth, SWE-1.7 context window, free/promo markers, codex-spark\n\n- Allow custom Devin providers to use CLI credentials when no API key is configured\n- Update SWE-1.7 context window to 262K tokens (from 200K)\n- Add is_free and is_promo fields to ModelInfo for Devin free/promo markers\n- Add gpt-5.3-codex-spark model to OpenAI provider\n- Update Devin fallback context window to 262_144 in ProviderKind\n- Add discover_models = true to devin2 providers.toml config",
+          "timestamp": "2026-07-25T02:10:06-04:00",
+          "tree_id": "2b9e97339c66abe38e23e75a0abfc032b555aa71",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/1c1d33a822d29d941002a7781bd466698640f031"
+        },
+        "date": 1784960152301,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 5102789,
+            "range": "± 144641",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1838389,
+            "range": "± 10387",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1846649,
+            "range": "± 16915",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 5835492,
+            "range": "± 53828",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 2832061,
+            "range": "± 7103",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 2830338,
+            "range": "± 23015",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 430937,
+            "range": "± 861",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 130283,
+            "range": "± 419",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 130252,
+            "range": "± 1161",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 798365,
+            "range": "± 2473",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 503824,
+            "range": "± 5780",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 508198,
+            "range": "± 4555",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 42807,
+            "range": "± 3311",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 136801,
+            "range": "± 4975",
             "unit": "ns/iter"
           }
         ]
