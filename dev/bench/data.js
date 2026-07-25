@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784954038482,
+  "lastUpdate": 1784957302458,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -4643,6 +4643,112 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 153248,
             "range": "± 1843",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd",
+            "email": "w0wl0lxd@tuta.com"
+          },
+          "committer": {
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd",
+            "email": "w0wl0lxd@tuta.com"
+          },
+          "id": "3d926b084101be74591347e84127617c37242cdc",
+          "message": "fix(agent): skip compaction hooks with if filter and default timeout to 30s\n\nClaude Code's if hook-filter is only evaluated for tool events; a\n\nPreCompact/PostCompact hook with if set would never run in Claude Code,\n\nso n00n now skips those and logs at debug. Default timeout reduced from\n\n600s to 30s so a stuck hook does not block compaction for 10 minutes.",
+          "timestamp": "2026-07-25T04:27:48Z",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/3d926b084101be74591347e84127617c37242cdc"
+        },
+        "date": 1784957301362,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6454654,
+            "range": "± 122461",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2502177,
+            "range": "± 9839",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2489696,
+            "range": "± 63568",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7537037,
+            "range": "± 26462",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3690314,
+            "range": "± 26821",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3684905,
+            "range": "± 40929",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 554482,
+            "range": "± 11112",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 167955,
+            "range": "± 285",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 167673,
+            "range": "± 504",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1039878,
+            "range": "± 6878",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 614137,
+            "range": "± 5534",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 610727,
+            "range": "± 5891",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 49716,
+            "range": "± 2430",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 181011,
+            "range": "± 875",
             "unit": "ns/iter"
           }
         ]
