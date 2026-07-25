@@ -78,14 +78,20 @@ local function has_option(command, option)
 end
 
 local function has_output_cap(command)
-  return command:find("|%s*head", 1) ~= nil or command:find("|%s*tail", 1) ~= nil
+  local normalized = trim(command):lower()
+  if normalized == "" then
+    return false
+  end
+  return normalized:find("|%s*head", 1) ~= nil or normalized:find("|%s*tail", 1) ~= nil
 end
 
-local function broad_bash_command_reason(command)
+local function broad_bash_command_reason(command, full_command)
   local normalized = trim(command):lower()
   if normalized == "" then
     return nil
   end
+
+  local context = trim(full_command or command):lower()
 
   local cmd = normalized:match("^(%S+)")
   if not cmd then
@@ -96,16 +102,45 @@ local function broad_bash_command_reason(command)
     return "find without a max depth bound"
   end
 
-  if (cmd == "rg" or cmd == "grep") and not has_output_cap(normalized) then
+  if (cmd == "rg" or cmd == "grep") and not has_output_cap(context) then
     if has_option(normalized, "-m") or has_option(normalized, "--max-count") then
       return nil
     end
     return "search with unbounded result size"
   end
 
+  if
+    cmd == "ls"
+    and (has_option(normalized, "--recursive") or has_option(command, "-R"))
+    and not has_output_cap(context)
+  then
+    return "recursive ls without output cap"
+  end
+
+  if cmd == "du" and not has_output_cap(context) then
+    if
+      not has_option(normalized, "-d")
+      and not has_option(normalized, "--max-depth")
+      and not has_option(normalized, "-s")
+      and not has_option(normalized, "--summarize")
+    then
+      return "du without depth/summarize bound"
+    end
+  end
+
+  if cmd == "tree" and not has_output_cap(context) then
+    if not has_option(command, "-L") and not has_option(normalized, "--max-depth") then
+      return "tree without depth bound"
+    end
+  end
+
   if cmd == "git" then
     local subcommand = normalized:match("^git%s+(%S+)")
-    if subcommand and (subcommand == "log" or subcommand == "reflog") and not has_output_cap(normalized) then
+    if
+      subcommand
+      and (subcommand == "log" or subcommand == "reflog" or subcommand == "rev-list")
+      and not has_output_cap(context)
+    then
       if has_option(normalized, "-n") or has_option(normalized, "--max-count") then
         return nil
       end
@@ -314,7 +349,7 @@ Commands run in ]] .. cwd .. [[ by default.
 - Do NOT use to communicate text to the user.
 - Chain dependent commands with `&&`. Use batch for independent ones.
 - Provide a short `description` (3-5 words).
-- Broad/unbounded commands (for example, `find` without `-maxdepth` or `git log`/`rg` without result limits) require `justification`.
+- Broad/unbounded commands (for example, `find` without `-maxdepth`, recursive `ls`, `du` without `--max-depth`/`-d`/`-s`, `tree` without `-L`, or `git log`/`rg` without result limits) require `justification`.
 - Output truncated beyond 2000 lines or 50KB.
 - Interactive commands (sudo, ssh prompts) fail immediately.]]
 
@@ -369,7 +404,7 @@ n00n.api.register_tool({
       segments = { command }
     end
     for _, segment in ipairs(segments) do
-      if broad_bash_command_reason(segment) then
+      if broad_bash_command_reason(segment, command) then
         return { scopes = segments, force_prompt = true }
       end
     end
@@ -422,7 +457,7 @@ n00n.api.register_tool({
     end
 
     local command, workdir = parse_cd_hint(input)
-    local reason = broad_bash_command_reason(command)
+    local reason = broad_bash_command_reason(command, command)
     if reason and (not input.justification or trim(input.justification) == "") then
       return { llm_output = BROAD_COMMAND_JUSTIFICATION_REQUIRED .. ": " .. reason, is_error = true }
     end
