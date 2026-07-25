@@ -1,4 +1,5 @@
 mod compaction;
+mod compaction_hooks;
 mod history;
 mod instructions;
 mod run;

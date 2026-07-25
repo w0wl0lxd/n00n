@@ -10,6 +10,7 @@ use n00n_providers::{
 };
 
 use super::compaction::{self, CONTINUE_AFTER_COMPACT};
+use super::compaction_hooks::CompactionTrigger;
 use super::history::{History, sanitize_cancelled_history};
 use super::instructions::LoadedInstructions;
 use super::streaming::stream_with_retry;
@@ -665,12 +666,17 @@ impl<'h> Agent<'h> {
             self.timeouts,
             self.openai_options,
         );
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
         let usage = compaction::compact_history(
             &*compact_provider,
             &compact_model,
             self.history,
             &self.event_tx,
             &self.cancel,
+            CompactionTrigger::Auto,
+            self.session_id.as_ref(),
+            &cwd,
+            None,
         )
         .await?;
         let cost = usage.cost(&compact_model.pricing, false);
