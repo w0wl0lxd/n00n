@@ -18,6 +18,8 @@ local RTK_UNSUPPORTED_FLAGS = {
   " -fprintf ",
 }
 local SEPARATOR = "──────"
+local BROAD_COMMAND_JUSTIFICATION_REQUIRED = "error: justification is required for unbounded command execution"
+local JUSTIFICATION_FIELD = "justification"
 
 local rtk_available
 
@@ -45,6 +47,74 @@ local function parse_cd_hint(input)
     end
   end
   return input.command, nil
+end
+
+local function trim(s)
+  return s:match("^%s*(.-)%s*$")
+end
+
+local function has_option(command, option)
+  if command == option then
+    return true
+  end
+
+  if command:sub(1, #option + 1) == option .. " " then
+    return true
+  end
+
+  if command:sub(1, #option + 1) == option .. "=" then
+    return true
+  end
+
+  local padded = " " .. command .. " "
+  if padded:find(" " .. option .. " ", 1, true) then
+    return true
+  end
+
+  if padded:find(" " .. option .. "=", 1, true) then
+    return true
+  end
+
+  return false
+end
+
+local function has_output_cap(command)
+  return command:find("|%s*head", 1) ~= nil or command:find("|%s*tail", 1) ~= nil
+end
+
+local function broad_bash_command_reason(command)
+  local normalized = trim(command):lower()
+  if normalized == "" then
+    return nil
+  end
+
+  local cmd = normalized:match("^(%S+)")
+  if not cmd then
+    return nil
+  end
+
+  if cmd == "find" and not has_option(normalized, "-maxdepth") and not has_option(normalized, "--maxdepth") then
+    return "find without a max depth bound"
+  end
+
+  if (cmd == "rg" or cmd == "grep") and not has_output_cap(normalized) then
+    if has_option(normalized, "-m") or has_option(normalized, "--max-count") then
+      return nil
+    end
+    return "search with unbounded result size"
+  end
+
+  if cmd == "git" then
+    local subcommand = normalized:match("^git%s+(%S+)")
+    if subcommand and (subcommand == "log" or subcommand == "reflog") and not has_output_cap(normalized) then
+      if has_option(normalized, "-n") or has_option(normalized, "--max-count") then
+        return nil
+      end
+      return subcommand .. " history without a max count"
+    end
+  end
+
+  return nil
 end
 
 local function normalize_sep(s)
@@ -245,6 +315,7 @@ Commands run in ]] .. cwd .. [[ by default.
 - Do NOT use to communicate text to the user.
 - Chain dependent commands with `&&`. Use batch for independent ones.
 - Provide a short `description` (3-5 words).
+- Broad/unbounded commands (for example, `find` without `-maxdepth` or `git log`/`rg` without result limits) require `justification`.
 - Output truncated beyond 2000 lines or 50KB.
 - Interactive commands (sudo, ssh prompts) fail immediately.]]
 
@@ -272,6 +343,10 @@ n00n.api.register_tool({
       timeout = { type = "integer", description = "Timeout in seconds (default 120)" },
       workdir = { type = "string", description = "Working directory (default: cwd)" },
       description = { type = "string", description = "Short description (3-5 words) of what the command does" },
+      justification = {
+        type = "string",
+        description = "Required when command is broad/unbounded. Explain scope and bound assumptions.",
+      },
     },
   },
   permission_scopes = function(input)
@@ -293,6 +368,11 @@ n00n.api.register_tool({
     local segments = collect_commands(root, command)
     if #segments == 0 then
       segments = { command }
+    end
+    for _, segment in ipairs(segments) do
+      if broad_bash_command_reason(segment) then
+        return { scopes = segments, force_prompt = true }
+      end
     end
     return { scopes = segments, force_prompt = false }
   end,
@@ -343,7 +423,12 @@ n00n.api.register_tool({
     end
 
     local command, workdir = parse_cd_hint(input)
+    local reason = broad_bash_command_reason(command)
+    if reason and (not input.justification or trim(input.justification) == "") then
+      return { llm_output = BROAD_COMMAND_JUSTIFICATION_REQUIRED .. ": " .. reason, is_error = true }
+    end
     local timeout_secs = input.timeout or opts.timeout_secs
+
     local max_lines, max_bytes = output_limits.resolve(opts, ctx)
 
     ctx:set_deadline(timeout_secs)

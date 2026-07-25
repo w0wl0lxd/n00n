@@ -2848,6 +2848,74 @@ fn bash_permission_scopes_never_falls_back_to_json(command: &str) {
         scopes.scopes
     );
 }
+#[test]
+fn bash_permission_scopes_marks_broad_commands_for_prompt() {
+    let (reg, _host) = builtins_host();
+
+    let input = serde_json::json!({ "command": "find . -type f" });
+    let entry = reg.get("bash").expect("bash registered");
+    let inv = entry.tool.parse(&input).expect("parse failed");
+    let scopes = smol::block_on(inv.permission_scopes())
+        .expect("permission_scopes returned None for bash command");
+
+    assert!(
+        scopes.force_prompt,
+        "expected broad command to require a prompt"
+    );
+}
+
+#[test]
+fn bash_permission_scopes_allows_bounded_find_without_prompt() {
+    let (reg, _host) = builtins_host();
+
+    let input = serde_json::json!({ "command": "find . -maxdepth 1 -type f" });
+    let entry = reg.get("bash").expect("bash registered");
+    let inv = entry.tool.parse(&input).expect("parse failed");
+    let scopes = smol::block_on(inv.permission_scopes())
+        .expect("permission_scopes returned None for bash command");
+
+    assert!(
+        !scopes.force_prompt,
+        "expected bounded find to avoid forced prompt"
+    );
+}
+
+#[test]
+fn bash_handler_blocks_broad_command_without_justification() {
+    let (reg, _host) = builtins_host();
+
+    let err = exec_tool(
+        &reg,
+        "bash",
+        serde_json::json!({ "command": "find . -type f" }),
+    )
+    .unwrap_err();
+
+    assert!(
+        err.contains("justification is required"),
+        "missing guardrail feedback: {err}"
+    );
+}
+
+#[test]
+fn bash_handler_allows_broad_command_with_justification() {
+    let (reg, _host) = builtins_host();
+
+    let out = exec_tool(
+        &reg,
+        "bash",
+        serde_json::json!({
+            "command": "find .",
+            "justification": "Need to confirm the repository tree before a migration, constrained by test budget"
+        }),
+    )
+    .unwrap();
+
+    assert!(
+        !out.contains("justification is required"),
+        "expected justification to allow command: {out}"
+    );
+}
 
 fn exec_tool_with_perms(
     perms: n00n_lua::PluginPermissions,
