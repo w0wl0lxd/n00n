@@ -1,0 +1,1 @@
+Correct Devin free-preview heuristic so only standard SWE-1.7 variants are marked free, not the paid Lightning tier.

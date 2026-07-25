@@ -924,7 +924,7 @@ fn fallback_models() -> Vec<crate::model::ModelInfo> {
             supports_thinking: None,
             supports_vision: Some(e.vision),
             tier: Some(e.tier),
-            is_free: None,
+            is_free: infer_free_status(e.prefixes[0]),
             is_promo: None,
             provider_info: None,
         })
@@ -943,8 +943,10 @@ fn infer_context_window(model_id: &str) -> Option<u32> {
 }
 
 fn infer_free_status(model_id: &str) -> Option<bool> {
+    // Standard SWE-1.7 is in a free preview for paid Devin users until 2026-08-08.
+    // The Lightning variant is a paid, faster tier and is not part of the preview.
     let lower = model_id.to_lowercase();
-    if lower.contains("swe-1-7") {
+    if lower.starts_with("swe-1-7") && !lower.contains("lightning") {
         Some(true)
     } else {
         None
