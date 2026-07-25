@@ -9,7 +9,7 @@ use futures_lite::StreamExt;
 use futures_lite::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use n00n_storage::id::SessionRef;
 use serde_json::Value;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use agent_client_protocol_schema::{ClientCapabilities, InitializeRequest, InitializeResponse};
 use agent_client_protocol_schema::{
@@ -44,6 +44,8 @@ inventory::submit!(n00n_config::providers::BuiltInProvider {
     login_url: None,
     needs_url: false,
 });
+
+const DEFAULT_COMMAND: &str = "devin";
 
 pub(crate) const fn models() -> &'static [ModelEntry] {
     &[
@@ -896,13 +898,26 @@ impl Devin {
             .map(ToString::to_string)
     }
 
+    fn is_safe_command_name(s: &str) -> bool {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_alphanumeric() || c == '.' || c == '_' || c == '-')
+    }
+
     fn command_from_auth(auth: &ResolvedAuth) -> String {
-        auth.base_url
+        let candidate = auth
+            .base_url
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "devin")
-            .to_string()
+            .unwrap_or_else(|| DEFAULT_COMMAND);
+
+        if Self::is_safe_command_name(candidate) {
+            candidate.to_string()
+        } else {
+            warn!(command = %candidate, "ignoring unsafe devin command override");
+            DEFAULT_COMMAND.to_string()
+        }
     }
 
     fn with_api_key(api_key: Option<String>, command: String) -> Self {
@@ -928,7 +943,10 @@ impl Devin {
             }
         };
 
-        Self::with_api_key(Self::api_key_from_auth(&auth), "devin".to_string())
+        Self::with_api_key(
+            Self::api_key_from_auth(&auth),
+            Self::command_from_auth(&auth),
+        )
     }
 
     #[allow(clippy::unnecessary_wraps)]
