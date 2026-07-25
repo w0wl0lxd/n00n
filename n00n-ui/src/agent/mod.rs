@@ -27,7 +27,7 @@ use crate::app::App;
 
 use self::agent_loop::{AgentLoop, AgentLoopInit};
 use self::command_router::spawn_command_router;
-pub(crate) use self::shared_queue::{QueueSender, QueuedMessage};
+pub(crate) use self::shared_queue::{QueueItem, QueueSender, QueuedMessage};
 
 pub(crate) struct ModelSlot {
     pub(crate) model: Model,
@@ -152,6 +152,12 @@ impl AgentHandles {
             lua_handle,
         );
         let old = mem::replace(self, new);
+        // Drain pending messages from the old queue and push them to the new queue
+        // to avoid losing work during agent respawn.
+        let pending = old.queue.drain_all();
+        for item in pending {
+            self.queue.push(item);
+        }
         // Repoint the app at the new queue before dropping `old`, otherwise the app keeps
         // the last old `QueueSender` alive and the old loop parks in `recv_notify` forever.
         self.apply_to_app(app);

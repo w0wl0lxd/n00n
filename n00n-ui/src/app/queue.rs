@@ -79,12 +79,10 @@ impl MessageQueue {
         let Some(shared) = self.shared.clone() else {
             return;
         };
-        if shared.contains_submission(dispatch.submission_id) {
-            return;
-        }
+        // Atomic check-and-push: hold the lock across both operations to prevent race
         let image_count = dispatch.input.images.len();
         let text = dispatch.input.message.clone();
-        shared.push_front(QueueItem::Message {
+        shared.push_front_if_missing(QueueItem::Message {
             text,
             image_count,
             input: dispatch.input,
