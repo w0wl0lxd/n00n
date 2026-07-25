@@ -317,6 +317,7 @@ impl LocalEndpoint {
                 let supports_vision = arch.map(|a| a.input_modalities.iter().any(|m| m == "image"));
                 Some(crate::model::ModelInfo {
                     id: m.id,
+                    name: None,
                     context_window: Some(context_window),
                     max_output_tokens: None,
                     pricing: Some(crate::model::ModelPricing::ZERO),
@@ -428,6 +429,7 @@ impl LocalEndpoint {
             .zip(context_windows)
             .map(|(m, context_window)| crate::model::ModelInfo {
                 id: m.id,
+                name: None,
                 context_window,
                 max_output_tokens: None,
                 pricing: Some(crate::model::ModelPricing::ZERO),

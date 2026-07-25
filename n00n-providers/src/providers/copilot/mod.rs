@@ -415,6 +415,7 @@ impl CopilotModel {
         let reasoning = self.reasoning_info();
         ModelInfo {
             id: self.id.clone(),
+            name: None,
             context_window: self.capabilities.limits.max_context_window_tokens,
             max_output_tokens: self.capabilities.limits.max_output_tokens,
             pricing: None,

@@ -50,6 +50,7 @@ pub struct ModelPricing {
 #[derive(Debug, Clone)]
 pub struct ModelInfo {
     pub id: String,
+    pub name: Option<String>,
     pub context_window: Option<u32>,
     pub max_output_tokens: Option<u32>,
     pub pricing: Option<ModelPricing>,
@@ -67,6 +68,7 @@ impl ModelInfo {
     pub fn id_only(id: String) -> Self {
         Self {
             id,
+            name: None,
             context_window: None,
             max_output_tokens: None,
             pricing: None,
@@ -964,6 +966,7 @@ mod tests {
                 &slug,
                 vec![ModelInfo {
                     id: model_id.to_string(),
+                    name: None,
                     context_window: Some(expected_window),
                     max_output_tokens: None,
                     pricing: None,

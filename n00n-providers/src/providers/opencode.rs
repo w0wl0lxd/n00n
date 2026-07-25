@@ -233,6 +233,7 @@ impl ProviderData {
                 }
                 Some(ModelInfo {
                     id: format!("{}/{}", self.slug, model_id),
+                    name: None,
                     context_window: Some(meta.context),
                     max_output_tokens: Some(meta.output),
                     pricing: Some(ModelPricing {

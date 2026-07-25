@@ -34,6 +34,7 @@ use crate::tokenize::{
 
 const MAX_REAUTH_ATTEMPTS: u32 = 2;
 const NUDGE_PROMPT: &str = "You just executed tool calls but returned an empty response. Please process the tool results above and continue with the task.";
+const THINKING_NUDGE_PROMPT: &str = "You provided reasoning but no final response. Please summarize your reasoning into a concise answer for the user.";
 const MAX_TOKENS_CONTINUE_PROMPT: &str = "Continue exactly where you stopped.";
 const IMAGE_TOKEN_ESTIMATE: usize = 2_048;
 
@@ -145,6 +146,7 @@ pub struct Agent<'h> {
     tool_output_lines: ToolOutputLines,
     reauth_attempts: u32,
     post_tool_empty_retried: bool,
+    thinking_empty_retried: bool,
     permissions: Arc<PermissionManager>,
     opts: RequestOptions,
     session_id: Option<SessionRef>,
@@ -195,6 +197,7 @@ impl<'h> Agent<'h> {
             mcp: None,
             reauth_attempts: 0,
             post_tool_empty_retried: false,
+            thinking_empty_retried: false,
             opts: RequestOptions::default(),
             session_id: params.session_id,
             file_tracker: params.file_tracker,
@@ -422,12 +425,31 @@ impl<'h> Agent<'h> {
             ));
         } else {
             let is_empty = response.message.content.is_empty();
+            let has_text = response
+                .message
+                .content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { text } if !text.is_empty()));
 
             if is_empty && !self.post_tool_empty_retried && self.history.ends_with_tool_results() {
                 self.post_tool_empty_retried = true;
                 warn!("empty response after tool calls, nudging model to continue");
                 self.event_tx.send(AgentEvent::Nudge)?;
                 self.history.push(Message::synthetic(NUDGE_PROMPT.into()));
+                return Ok(TurnOutcome::Continue);
+            }
+
+            if !has_tools
+                && !has_text
+                && !response.message.content.is_empty()
+                && !self.thinking_empty_retried
+            {
+                self.thinking_empty_retried = true;
+                warn!("assistant produced only reasoning, nudging for final answer");
+                self.history.push(response.message);
+                self.event_tx.send(AgentEvent::Nudge)?;
+                self.history
+                    .push(Message::synthetic(THINKING_NUDGE_PROMPT.into()));
                 return Ok(TurnOutcome::Continue);
             }
 

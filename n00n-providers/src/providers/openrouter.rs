@@ -164,6 +164,7 @@ fn parse_model(m: &Value) -> Option<ModelInfo> {
 
     Some(ModelInfo {
         id: id.to_string(),
+        name: None,
         context_window,
         max_output_tokens: None,
         pricing: Some(pricing),

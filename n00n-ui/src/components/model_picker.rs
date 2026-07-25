@@ -65,6 +65,7 @@ pub enum ModelPickerAction {
 struct ModelEntry {
     spec: String,
     id: String,
+    name: Option<String>,
     provider_display: String,
     suffix: Option<String>,
     tier: String,
@@ -73,7 +74,7 @@ struct ModelEntry {
 
 impl PickerItem for ModelEntry {
     fn label(&self) -> &str {
-        &self.id
+        self.name.as_deref().unwrap_or(&self.id)
     }
 
     fn suffix(&self) -> Option<&str> {
@@ -236,6 +237,9 @@ fn parse_model_entry(spec: &str) -> Option<ModelEntry> {
     let map = model_registry::model_registry()
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let name = map
+        .discovered(provider_str, model_id)
+        .and_then(|info| info.name.clone());
     let override_tiers: Vec<ModelTier> = [
         ModelTier::Strong,
         ModelTier::Medium,
@@ -254,6 +258,7 @@ fn parse_model_entry(spec: &str) -> Option<ModelEntry> {
     Some(ModelEntry {
         spec: spec.to_string(),
         id: model_id.to_string(),
+        name,
         provider_display,
         suffix: None,
         tier,

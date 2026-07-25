@@ -334,6 +334,7 @@ impl OpenAiCompatProvider {
             .unwrap_or_else(Default::default);
         Some(crate::model::ModelInfo {
             id: id.to_string(),
+            name: None,
             context_window,
             max_output_tokens,
             pricing: Some(pricing),
@@ -436,10 +437,7 @@ pub fn convert_messages(messages: &[Message], system: &str) -> Vec<Value> {
                     if !text.is_empty() {
                         msg_obj["content"] = Value::String(text);
                     } else if !reasoning_text.is_empty() {
-                        msg_obj["content"] = Value::String(String::new());
-                    }
-                    if !reasoning_text.is_empty() {
-                        msg_obj["reasoning_content"] = Value::String(reasoning_text);
+                        msg_obj["content"] = Value::String(reasoning_text);
                     }
                     if !tool_calls.is_empty() {
                         msg_obj["tool_calls"] = Value::Array(tool_calls);

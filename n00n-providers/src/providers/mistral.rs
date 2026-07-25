@@ -270,6 +270,7 @@ impl Provider for Mistral {
                         .unwrap_or_else(|| false);
                     Some(crate::model::ModelInfo {
                         id: id.to_string(),
+                        name: None,
                         context_window,
                         max_output_tokens: None,
                         pricing: None,

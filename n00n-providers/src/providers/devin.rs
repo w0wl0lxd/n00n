@@ -164,6 +164,7 @@ struct DevinInner {
     next_id: Arc<AsyncMutex<i64>>,
     event_tx: Arc<AsyncMutex<Option<Sender<ProviderEvent>>>>,
     text: Arc<AsyncMutex<String>>,
+    thinking: Arc<AsyncMutex<String>>,
     usage: Arc<AsyncMutex<TokenUsage>>,
     agent_capabilities: Arc<AsyncMutex<Option<AgentCapabilities>>>,
 }
@@ -203,6 +204,7 @@ impl DevinInner {
         let stdin_arc = Arc::new(AsyncMutex::new(stdin));
         let event_tx = Arc::new(AsyncMutex::new(None));
         let text = Arc::new(AsyncMutex::new(String::new()));
+        let thinking = Arc::new(AsyncMutex::new(String::new()));
         let usage = Arc::new(AsyncMutex::new(TokenUsage::default()));
         let agent_capabilities = Arc::new(AsyncMutex::new(None));
 
@@ -210,6 +212,7 @@ impl DevinInner {
         let stdin_clone = Arc::clone(&stdin_arc);
         let event_tx_clone = Arc::clone(&event_tx);
         let text_clone = Arc::clone(&text);
+        let thinking_clone = Arc::clone(&thinking);
         let usage_clone = Arc::clone(&usage);
 
         smol::spawn(async move {
@@ -224,6 +227,7 @@ impl DevinInner {
                         &stdin_clone,
                         &event_tx_clone,
                         &text_clone,
+                        &thinking_clone,
                         &usage_clone,
                     )
                     .await
@@ -271,6 +275,7 @@ impl DevinInner {
             next_id,
             event_tx,
             text,
+            thinking,
             usage,
             agent_capabilities,
         };
@@ -463,6 +468,7 @@ impl DevinInner {
         stdin: &Arc<AsyncMutex<async_process::ChildStdin>>,
         event_tx: &Arc<AsyncMutex<Option<Sender<ProviderEvent>>>>,
         text: &Arc<AsyncMutex<String>>,
+        thinking: &Arc<AsyncMutex<String>>,
         usage: &Arc<AsyncMutex<TokenUsage>>,
     ) -> Result<(), AgentError> {
         let value: Value = serde_json::from_str(line).map_err(|e| AgentError::Config {
@@ -656,6 +662,9 @@ impl DevinInner {
                 } else {
                     String::new()
                 };
+                let mut thinking_guard = thinking.lock().await;
+                thinking_guard.push_str(&delta_text);
+                drop(thinking_guard);
                 let tx = event_tx.lock().await.as_ref().cloned();
                 if let Some(tx) = tx
                     && let Err(e) = tx
@@ -1043,6 +1052,7 @@ fn fallback_models() -> Vec<crate::model::ModelInfo> {
         .iter()
         .map(|e| crate::model::ModelInfo {
             id: e.prefixes[0].to_string(),
+            name: None,
             context_window: Some(e.context_window),
             max_output_tokens: Some(e.max_output_tokens),
             pricing: Some(e.pricing.clone()),
@@ -1062,6 +1072,142 @@ fn infer_context_window(model_id: &str) -> Option<u32> {
         Some(262_144)
     } else if lower.contains("-1m") {
         Some(1_000_000)
+    } else if matches!(
+        model_id,
+        "MODEL_PRIVATE_11" | "MODEL_PRIVATE_2" | "MODEL_PRIVATE_3"
+    ) || (lower.contains("claude")
+        && (lower.contains("4.5") || lower.contains("haiku-4.5") || lower.contains("sonnet-4.5")))
+    {
+        Some(200_000)
+    } else if matches!(
+        model_id,
+        "MODEL_PRIVATE_12"
+            | "MODEL_PRIVATE_13"
+            | "MODEL_PRIVATE_14"
+            | "MODEL_PRIVATE_15"
+            | "MODEL_PRIVATE_19"
+            | "MODEL_PRIVATE_20"
+            | "MODEL_PRIVATE_21"
+            | "MODEL_PRIVATE_22"
+            | "MODEL_PRIVATE_23"
+    ) || lower.contains("gpt-5.1")
+    {
+        Some(400_000)
+    } else {
+        None
+    }
+}
+
+fn infer_max_output_tokens(model_id: &str) -> Option<u32> {
+    let lower = model_id.to_lowercase();
+    if matches!(
+        model_id,
+        "MODEL_PRIVATE_11" | "MODEL_PRIVATE_2" | "MODEL_PRIVATE_3"
+    ) || (lower.contains("claude") && (lower.contains("4.5") || lower.contains("haiku-4.5")))
+    {
+        Some(64_000)
+    } else if matches!(
+        model_id,
+        "MODEL_PRIVATE_12"
+            | "MODEL_PRIVATE_13"
+            | "MODEL_PRIVATE_14"
+            | "MODEL_PRIVATE_15"
+            | "MODEL_PRIVATE_19"
+            | "MODEL_PRIVATE_20"
+            | "MODEL_PRIVATE_21"
+            | "MODEL_PRIVATE_22"
+            | "MODEL_PRIVATE_23"
+    ) || lower.contains("gpt-5.1")
+    {
+        Some(128_000)
+    } else if lower.contains("swe-1-7") {
+        Some(128_000)
+    } else {
+        None
+    }
+}
+
+fn parse_pricing(value: &serde_json::Value) -> Option<crate::model::ModelPricing> {
+    let input = value.get("input_cost_per_million_usd")?.as_f64()?;
+    let output = value.get("output_cost_per_million_usd")?.as_f64()?;
+    let cache_write = value
+        .get("cache_write_cost_per_million_usd")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let cache_read = value
+        .get("cache_read_cost_per_million_usd")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    Some(crate::model::ModelPricing {
+        input,
+        output,
+        cache_write,
+        cache_read,
+        fast: None,
+    })
+}
+
+fn infer_pricing(model_id: &str) -> Option<crate::model::ModelPricing> {
+    match model_id {
+        "MODEL_PRIVATE_11" => Some(crate::model::ModelPricing {
+            input: 1.00,
+            output: 5.00,
+            cache_write: 1.25,
+            cache_read: 0.10,
+            fast: None,
+        }),
+        "MODEL_PRIVATE_2" | "MODEL_PRIVATE_3" => Some(crate::model::ModelPricing {
+            input: 3.00,
+            output: 15.00,
+            cache_write: 3.75,
+            cache_read: 0.30,
+            fast: None,
+        }),
+        "MODEL_PRIVATE_12" | "MODEL_PRIVATE_13" | "MODEL_PRIVATE_14" | "MODEL_PRIVATE_15"
+        | "MODEL_PRIVATE_19" | "MODEL_PRIVATE_20" | "MODEL_PRIVATE_21" | "MODEL_PRIVATE_22"
+        | "MODEL_PRIVATE_23" => Some(crate::model::ModelPricing {
+            input: 1.25,
+            output: 10.00,
+            cache_write: 0.00,
+            cache_read: 0.125,
+            fast: None,
+        }),
+        _ => {
+            let lower = model_id.to_lowercase();
+            if lower.contains("gpt-5.1") {
+                Some(crate::model::ModelPricing {
+                    input: 1.25,
+                    output: 10.00,
+                    cache_write: 0.00,
+                    cache_read: 0.125,
+                    fast: None,
+                })
+            } else if lower.contains("claude") {
+                Some(crate::model::ModelPricing {
+                    input: 3.00,
+                    output: 15.00,
+                    cache_write: 3.75,
+                    cache_read: 0.30,
+                    fast: None,
+                })
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn infer_is_free(model_id: &str) -> Option<bool> {
+    if model_id.starts_with("MODEL_PRIVATE_") {
+        Some(false)
+    } else {
+        infer_free_status(model_id)
+    }
+}
+
+fn infer_is_promo(model_id: &str) -> Option<bool> {
+    if model_id.starts_with("MODEL_PRIVATE_") {
+        Some(true)
     } else {
         None
     }
@@ -1257,6 +1403,10 @@ impl Provider for Devin {
                 text.clear();
             }
             {
+                let mut thinking = inner.thinking.lock().await;
+                thinking.clear();
+            }
+            {
                 *inner.usage.lock().await = TokenUsage::default();
             }
             {
@@ -1278,11 +1428,28 @@ impl Provider for Devin {
             };
 
             let final_text = inner.text.lock().await.clone();
+            let thinking = inner.thinking.lock().await.clone();
             *inner.event_tx.lock().await = None;
+
+            let mut content_blocks = Vec::new();
+            if !thinking.is_empty() {
+                content_blocks.push(crate::types::ContentBlock::Thinking {
+                    thinking,
+                    signature: None,
+                });
+            }
+            if !final_text.is_empty() {
+                content_blocks.push(crate::types::ContentBlock::Text { text: final_text });
+            }
+            if content_blocks.is_empty() {
+                content_blocks.push(crate::types::ContentBlock::Text {
+                    text: String::new(),
+                });
+            }
 
             let message = Message {
                 role: Role::Assistant,
-                content: vec![crate::types::ContentBlock::Text { text: final_text }],
+                content: content_blocks,
                 display_text: None,
             };
 
@@ -1331,6 +1498,7 @@ impl Provider for Devin {
                         for option in options {
                             let value_str = option.value.to_string();
                             let mut info = crate::model::ModelInfo::id_only(value_str.clone());
+                            info.name = Some(option.name.clone());
                             info.supports_vision = option
                                 .meta
                                 .as_ref()
@@ -1345,16 +1513,26 @@ impl Provider for Devin {
                                 info.max_output_tokens = meta
                                     .get("cognition.ai/maxOutputTokens")
                                     .and_then(Value::as_u64)
-                                    .map(clamped_u32);
+                                    .map(clamped_u32)
+                                    .or_else(|| infer_max_output_tokens(&value_str));
+                                info.pricing = meta
+                                    .get("cognition.ai/pricing")
+                                    .and_then(parse_pricing)
+                                    .or_else(|| infer_pricing(&value_str));
                                 info.is_free = meta
                                     .get("cognition.ai/free")
                                     .and_then(Value::as_bool)
-                                    .or_else(|| infer_free_status(&value_str));
-                                info.is_promo =
-                                    meta.get("cognition.ai/promo").and_then(Value::as_bool);
+                                    .or_else(|| infer_is_free(&value_str));
+                                info.is_promo = meta
+                                    .get("cognition.ai/promo")
+                                    .and_then(Value::as_bool)
+                                    .or_else(|| infer_is_promo(&value_str));
                             } else {
                                 info.context_window = infer_context_window(&value_str);
-                                info.is_free = infer_free_status(&value_str);
+                                info.max_output_tokens = infer_max_output_tokens(&value_str);
+                                info.pricing = infer_pricing(&value_str);
+                                info.is_free = infer_is_free(&value_str);
+                                info.is_promo = infer_is_promo(&value_str);
                             }
                             models.push(info);
                         }
