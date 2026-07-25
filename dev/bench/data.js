@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784946153810,
+  "lastUpdate": 1784946375938,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -4427,6 +4427,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 98306,
             "range": "± 6067",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "distinct": true,
+          "id": "f678b54604d3ff38b0212cb4d8e8e0c3b8a014be",
+          "message": "refactor(devin): demote known PreCompact/PostCompact config-importer warnings\n\ndevin acp still warns about valid Claude Code PreCompact/PostCompact hook\n\nnames because its config importer is outdated. n00n-agent now runs those\n\nhooks, so this change logs those specific lines at debug to keep\n\nn00n.log clean without hiding other devin warnings.",
+          "timestamp": "2026-07-24T22:11:49-04:00",
+          "tree_id": "72f2b67d733ac4a2e0b2345c322144641424e321",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/f678b54604d3ff38b0212cb4d8e8e0c3b8a014be"
+        },
+        "date": 1784946375289,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6698449,
+            "range": "± 29706",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2227832,
+            "range": "± 2757",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2209290,
+            "range": "± 60353",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 9206191,
+            "range": "± 76868",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4519657,
+            "range": "± 14807",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4417569,
+            "range": "± 27782",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 585962,
+            "range": "± 4745",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 190461,
+            "range": "± 373",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191807,
+            "range": "± 501",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1034858,
+            "range": "± 4637",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 563046,
+            "range": "± 1622",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 562786,
+            "range": "± 2095",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 48889,
+            "range": "± 1957",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 149699,
+            "range": "± 13734",
             "unit": "ns/iter"
           }
         ]
