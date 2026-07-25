@@ -412,6 +412,8 @@ impl<'h> Agent<'h> {
         self.context_size = usage.context_tokens();
         self.emit_turn_complete(&response)?;
 
+        let after_tool_results = self.history.ends_with_tool_results();
+
         if has_tools {
             let history_len_before = self.history.len();
             let tool_results = self.process_tool_calls(response).await?;
@@ -424,7 +426,6 @@ impl<'h> Agent<'h> {
                 &self.model.id,
             ));
         } else {
-            let is_empty = response.message.content.is_empty();
             let has_text = response
                 .message
                 .content
@@ -437,20 +438,20 @@ impl<'h> Agent<'h> {
                 )
             });
 
-            if is_empty && !self.post_tool_empty_retried && self.history.ends_with_tool_results() {
+            if !has_text && !self.post_tool_empty_retried && after_tool_results {
                 self.post_tool_empty_retried = true;
-                warn!("empty response after tool calls, nudging model to continue");
+                if !response.message.content.is_empty() {
+                    self.history.push(response.message);
+                }
+                warn!(
+                    "empty or reasoning-only response after tool calls, nudging model to continue"
+                );
                 self.event_tx.send(AgentEvent::Nudge)?;
                 self.history.push(Message::synthetic(NUDGE_PROMPT.into()));
                 return Ok(TurnOutcome::Continue);
             }
 
-            if !has_tools
-                && !has_text
-                && has_thinking
-                && !self.history.ends_with_tool_results()
-                && !self.thinking_empty_retried
-            {
+            if !has_text && has_thinking && !after_tool_results && !self.thinking_empty_retried {
                 self.thinking_empty_retried = true;
                 warn!("assistant produced only reasoning, nudging for final answer");
                 self.history.push(response.message);
@@ -461,6 +462,13 @@ impl<'h> Agent<'h> {
             }
 
             self.history.push(response.message);
+
+            if has_text {
+                self.thinking_empty_retried = false;
+                if after_tool_results {
+                    self.post_tool_empty_retried = false;
+                }
+            }
 
             if stop_reason == Some(StopReason::MaxTokens)
                 && self.num_turns <= self.config.max_continuation_turns
@@ -560,6 +568,7 @@ impl<'h> Agent<'h> {
         response: StreamResponse,
     ) -> Result<Vec<ToolDoneEvent>, AgentError> {
         self.post_tool_empty_retried = false;
+        self.thinking_empty_retried = false;
         let ctx = self.tool_context();
         tool_dispatch::process_tool_calls(
             response,
@@ -1568,9 +1577,26 @@ mod tests {
         vec![
             tool_call_response("glob", "t1"),
             thinking_response(),
+            text_response(StopReason::EndTurn),
         ],
-        2, false
-        ; "no_nudge_on_reasoning_after_tools"
+        3, true
+        ; "nudge_on_reasoning_after_tools"
+    )]
+    #[test_case(
+        vec![
+            thinking_response(),
+            text_response(StopReason::EndTurn),
+        ],
+        2, true
+        ; "nudge_on_first_turn_reasoning"
+    )]
+    #[test_case(
+        vec![
+            thinking_response(),
+            thinking_response(),
+        ],
+        2, true
+        ; "no_nudge_on_repeated_reasoning"
     )]
     fn nudge_behavior(responses: Vec<StreamResponse>, expected_turns: u32, expect_nudge: bool) {
         smol::block_on(async {

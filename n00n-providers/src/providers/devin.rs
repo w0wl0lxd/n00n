@@ -657,24 +657,26 @@ impl DevinInner {
                 }
             }
             SessionUpdate::AgentThoughtChunk(chunk) => {
-                #[allow(clippy::manual_unwrap_or_default)]
-                let delta_text = if let AcpContentBlock::Text(t) = chunk.content {
-                    t.text
-                } else if let Some(text) = Self::acp_content_to_text(&chunk.content) {
-                    text
+                if let AcpContentBlock::Text(t) = chunk.content {
+                    let delta_text = t.text;
+                    if !delta_text.is_empty() {
+                        let mut thinking_guard = thinking.lock().await;
+                        thinking_guard.push_str(&delta_text);
+                        drop(thinking_guard);
+                        let tx = event_tx.lock().await.as_ref().cloned();
+                        if let Some(tx) = tx
+                            && let Err(e) = tx
+                                .send_async(ProviderEvent::ThinkingDelta { text: delta_text })
+                                .await
+                        {
+                            debug!(error = %e, "failed to send thinking delta");
+                        }
+                    }
                 } else {
-                    String::new()
-                };
-                let mut thinking_guard = thinking.lock().await;
-                thinking_guard.push_str(&delta_text);
-                drop(thinking_guard);
-                let tx = event_tx.lock().await.as_ref().cloned();
-                if let Some(tx) = tx
-                    && let Err(e) = tx
-                        .send_async(ProviderEvent::ThinkingDelta { text: delta_text })
-                        .await
-                {
-                    debug!(error = %e, "failed to send thinking delta");
+                    debug!(
+                        content = ?chunk.content,
+                        "ignoring non-text agent thought chunk"
+                    );
                 }
             }
             SessionUpdate::ToolCall(call) => {
@@ -1069,32 +1071,254 @@ fn fallback_models() -> Vec<crate::model::ModelInfo> {
         .collect()
 }
 
+#[derive(Debug, Clone)]
+struct DevinModelMeta {
+    id: &'static str,
+    context_window: Option<u32>,
+    max_output_tokens: Option<u32>,
+    pricing: Option<ModelPricing>,
+}
+
+const DEVIN_PRIVATE_MODELS: &[DevinModelMeta] = &[
+    // Claude 4.5 family (Cognition private preview)
+    DevinModelMeta {
+        id: "MODEL_PRIVATE_2",
+        context_window: Some(200_000),
+        max_output_tokens: Some(64_000),
+        pricing: Some(ModelPricing {
+            input: 3.0,
+            output: 15.0,
+            cache_write: 3.75,
+            cache_read: 0.30,
+            fast: None,
+        }),
+    },
+    DevinModelMeta {
+        id: "MODEL_PRIVATE_3",
+        context_window: Some(200_000),
+        max_output_tokens: Some(64_000),
+        pricing: Some(ModelPricing {
+            input: 3.0,
+            output: 15.0,
+            cache_write: 3.75,
+            cache_read: 0.30,
+            fast: None,
+        }),
+    },
+    DevinModelMeta {
+        id: "MODEL_PRIVATE_11",
+        context_window: Some(200_000),
+        max_output_tokens: Some(64_000),
+        pricing: Some(ModelPricing {
+            input: 1.0,
+            output: 5.0,
+            cache_write: 1.25,
+            cache_read: 0.10,
+            fast: None,
+        }),
+    },
+    // GPT-5.1 family
+    DevinModelMeta {
+        id: "MODEL_PRIVATE_12",
+        context_window: Some(400_000),
+        max_output_tokens: Some(128_000),
+        pricing: Some(ModelPricing {
+            input: 1.25,
+            output: 10.0,
+            cache_write: 0.0,
+            cache_read: 0.125,
+            fast: None,
+        }),
+    },
+    DevinModelMeta {
+        id: "MODEL_PRIVATE_13",
+        context_window: Some(400_000),
+        max_output_tokens: Some(128_000),
+        pricing: Some(ModelPricing {
+            input: 1.25,
+            output: 10.0,
+            cache_write: 0.0,
+            cache_read: 0.125,
+            fast: None,
+        }),
+    },
+    DevinModelMeta {
+        id: "MODEL_PRIVATE_14",
+        context_window: Some(400_000),
+        max_output_tokens: Some(128_000),
+        pricing: Some(ModelPricing {
+            input: 1.25,
+            output: 10.0,
+            cache_write: 0.0,
+            cache_read: 0.125,
+            fast: None,
+        }),
+    },
+    DevinModelMeta {
+        id: "MODEL_PRIVATE_15",
+        context_window: Some(400_000),
+        max_output_tokens: Some(128_000),
+        pricing: Some(ModelPricing {
+            input: 1.25,
+            output: 10.0,
+            cache_write: 0.0,
+            cache_read: 0.125,
+            fast: None,
+        }),
+    },
+    DevinModelMeta {
+        id: "MODEL_PRIVATE_19",
+        context_window: Some(400_000),
+        max_output_tokens: Some(128_000),
+        pricing: Some(ModelPricing {
+            input: 1.25,
+            output: 10.0,
+            cache_write: 0.0,
+            cache_read: 0.125,
+            fast: None,
+        }),
+    },
+    // GPT-5.1 Fast family (2x standard GPT-5.1 pricing)
+    DevinModelMeta {
+        id: "MODEL_PRIVATE_20",
+        context_window: Some(400_000),
+        max_output_tokens: Some(128_000),
+        pricing: Some(ModelPricing {
+            input: 2.5,
+            output: 20.0,
+            cache_write: 0.0,
+            cache_read: 0.25,
+            fast: None,
+        }),
+    },
+    DevinModelMeta {
+        id: "MODEL_PRIVATE_21",
+        context_window: Some(400_000),
+        max_output_tokens: Some(128_000),
+        pricing: Some(ModelPricing {
+            input: 2.5,
+            output: 20.0,
+            cache_write: 0.0,
+            cache_read: 0.25,
+            fast: None,
+        }),
+    },
+    DevinModelMeta {
+        id: "MODEL_PRIVATE_22",
+        context_window: Some(400_000),
+        max_output_tokens: Some(128_000),
+        pricing: Some(ModelPricing {
+            input: 2.5,
+            output: 20.0,
+            cache_write: 0.0,
+            cache_read: 0.25,
+            fast: None,
+        }),
+    },
+    DevinModelMeta {
+        id: "MODEL_PRIVATE_23",
+        context_window: Some(400_000),
+        max_output_tokens: Some(128_000),
+        pricing: Some(ModelPricing {
+            input: 2.5,
+            output: 20.0,
+            cache_write: 0.0,
+            cache_read: 0.25,
+            fast: None,
+        }),
+    },
+    // xAI Grok
+    DevinModelMeta {
+        id: "MODEL_PRIVATE_4",
+        context_window: None,
+        max_output_tokens: None,
+        pricing: Some(ModelPricing {
+            input: 0.2,
+            output: 1.5,
+            cache_write: 0.0,
+            cache_read: 0.02,
+            fast: None,
+        }),
+    },
+    // GPT-5 family (context/output sizes not yet documented)
+    DevinModelMeta {
+        id: "MODEL_PRIVATE_5",
+        context_window: None,
+        max_output_tokens: None,
+        pricing: Some(ModelPricing {
+            input: 1.25,
+            output: 10.0,
+            cache_write: 0.0,
+            cache_read: 0.125,
+            fast: None,
+        }),
+    },
+    DevinModelMeta {
+        id: "MODEL_PRIVATE_6",
+        context_window: None,
+        max_output_tokens: None,
+        pricing: Some(ModelPricing {
+            input: 1.25,
+            output: 10.0,
+            cache_write: 0.0,
+            cache_read: 0.125,
+            fast: None,
+        }),
+    },
+    DevinModelMeta {
+        id: "MODEL_PRIVATE_7",
+        context_window: None,
+        max_output_tokens: None,
+        pricing: Some(ModelPricing {
+            input: 1.25,
+            output: 10.0,
+            cache_write: 0.0,
+            cache_read: 0.125,
+            fast: None,
+        }),
+    },
+    DevinModelMeta {
+        id: "MODEL_PRIVATE_8",
+        context_window: None,
+        max_output_tokens: None,
+        pricing: Some(ModelPricing {
+            input: 1.25,
+            output: 10.0,
+            cache_write: 0.0,
+            cache_read: 0.125,
+            fast: None,
+        }),
+    },
+    // GPT-5.1-Codex Medium
+    DevinModelMeta {
+        id: "MODEL_PRIVATE_9",
+        context_window: Some(400_000),
+        max_output_tokens: Some(128_000),
+        pricing: Some(ModelPricing {
+            input: 0.25,
+            output: 2.0,
+            cache_write: 0.0,
+            cache_read: 0.025,
+            fast: None,
+        }),
+    },
+];
+
 fn infer_context_window(model_id: &str) -> Option<u32> {
+    if let Some(meta) = DEVIN_PRIVATE_MODELS.iter().find(|m| m.id == model_id) {
+        return meta.context_window;
+    }
+
     let lower = model_id.to_lowercase();
     if lower.contains("swe-1-7") {
         Some(262_144)
     } else if lower.contains("-1m") {
         Some(1_000_000)
-    } else if matches!(
-        model_id,
-        "MODEL_PRIVATE_11" | "MODEL_PRIVATE_2" | "MODEL_PRIVATE_3"
-    ) || (lower.contains("claude")
-        && (lower.contains("4.5") || lower.contains("haiku-4.5") || lower.contains("sonnet-4.5")))
+    } else if lower.contains("claude")
+        && (lower.contains("4.5") || lower.contains("haiku-4.5") || lower.contains("sonnet-4.5"))
     {
         Some(200_000)
-    } else if matches!(
-        model_id,
-        "MODEL_PRIVATE_12"
-            | "MODEL_PRIVATE_13"
-            | "MODEL_PRIVATE_14"
-            | "MODEL_PRIVATE_15"
-            | "MODEL_PRIVATE_19"
-            | "MODEL_PRIVATE_20"
-            | "MODEL_PRIVATE_21"
-            | "MODEL_PRIVATE_22"
-            | "MODEL_PRIVATE_23"
-    ) || lower.contains("gpt-5.1")
-    {
+    } else if lower.contains("gpt-5.1") {
         Some(400_000)
     } else {
         None
@@ -1102,27 +1326,16 @@ fn infer_context_window(model_id: &str) -> Option<u32> {
 }
 
 fn infer_max_output_tokens(model_id: &str) -> Option<u32> {
+    if let Some(meta) = DEVIN_PRIVATE_MODELS.iter().find(|m| m.id == model_id) {
+        return meta.max_output_tokens;
+    }
+
     let lower = model_id.to_lowercase();
-    if matches!(
-        model_id,
-        "MODEL_PRIVATE_11" | "MODEL_PRIVATE_2" | "MODEL_PRIVATE_3"
-    ) || (lower.contains("claude") && (lower.contains("4.5") || lower.contains("haiku-4.5")))
+    if lower.contains("claude")
+        && (lower.contains("4.5") || lower.contains("haiku-4.5") || lower.contains("sonnet-4.5"))
     {
         Some(64_000)
-    } else if matches!(
-        model_id,
-        "MODEL_PRIVATE_12"
-            | "MODEL_PRIVATE_13"
-            | "MODEL_PRIVATE_14"
-            | "MODEL_PRIVATE_15"
-            | "MODEL_PRIVATE_19"
-            | "MODEL_PRIVATE_20"
-            | "MODEL_PRIVATE_21"
-            | "MODEL_PRIVATE_22"
-            | "MODEL_PRIVATE_23"
-    ) || lower.contains("gpt-5.1")
-        || lower.contains("swe-1-7")
-    {
+    } else if lower.contains("gpt-5.1") || lower.contains("swe-1-7") {
         Some(128_000)
     } else {
         None
@@ -1149,53 +1362,100 @@ fn parse_pricing(value: &serde_json::Value) -> Option<crate::model::ModelPricing
     })
 }
 
-fn infer_pricing(model_id: &str) -> Option<crate::model::ModelPricing> {
-    match model_id {
-        "MODEL_PRIVATE_11" => Some(crate::model::ModelPricing {
-            input: 1.00,
-            output: 5.00,
-            cache_write: 1.25,
-            cache_read: 0.10,
-            fast: None,
-        }),
-        "MODEL_PRIVATE_2" | "MODEL_PRIVATE_3" => Some(crate::model::ModelPricing {
-            input: 3.00,
-            output: 15.00,
-            cache_write: 3.75,
-            cache_read: 0.30,
-            fast: None,
-        }),
-        "MODEL_PRIVATE_12" | "MODEL_PRIVATE_13" | "MODEL_PRIVATE_14" | "MODEL_PRIVATE_15"
-        | "MODEL_PRIVATE_19" | "MODEL_PRIVATE_20" | "MODEL_PRIVATE_21" | "MODEL_PRIVATE_22"
-        | "MODEL_PRIVATE_23" => Some(crate::model::ModelPricing {
+fn infer_pricing(model_id: &str) -> Option<ModelPricing> {
+    if let Some(meta) = DEVIN_PRIVATE_MODELS.iter().find(|m| m.id == model_id) {
+        return meta.pricing.clone();
+    }
+
+    // For non-private Devin models, only apply family fallbacks we can do accurately.
+    // Unknown MODEL_PRIVATE_* entries should not silently get a generic price.
+    if model_id.starts_with("MODEL_PRIVATE_") {
+        return None;
+    }
+
+    let lower = model_id.to_lowercase();
+    if lower.contains("gpt-5.1") {
+        if lower.contains("codex medium") {
+            Some(ModelPricing {
+                input: 0.25,
+                output: 2.0,
+                cache_write: 0.0,
+                cache_read: 0.025,
+                fast: None,
+            })
+        } else if lower.contains("fast") {
+            Some(ModelPricing {
+                input: 2.5,
+                output: 20.0,
+                cache_write: 0.0,
+                cache_read: 0.25,
+                fast: None,
+            })
+        } else {
+            Some(ModelPricing {
+                input: 1.25,
+                output: 10.0,
+                cache_write: 0.0,
+                cache_read: 0.125,
+                fast: None,
+            })
+        }
+    } else if lower.contains("gpt-5") {
+        Some(ModelPricing {
             input: 1.25,
-            output: 10.00,
-            cache_write: 0.00,
+            output: 10.0,
+            cache_write: 0.0,
             cache_read: 0.125,
             fast: None,
-        }),
-        _ => {
-            let lower = model_id.to_lowercase();
-            if lower.contains("gpt-5.1") {
-                Some(crate::model::ModelPricing {
-                    input: 1.25,
-                    output: 10.00,
-                    cache_write: 0.00,
-                    cache_read: 0.125,
-                    fast: None,
-                })
-            } else if lower.contains("claude") {
-                Some(crate::model::ModelPricing {
-                    input: 3.00,
-                    output: 15.00,
-                    cache_write: 3.75,
-                    cache_read: 0.30,
+        })
+    } else if lower.contains("claude") {
+        if lower.contains("opus") {
+            if lower.contains("4.5") {
+                Some(ModelPricing {
+                    input: 5.0,
+                    output: 25.0,
+                    cache_write: 6.25,
+                    cache_read: 0.5,
                     fast: None,
                 })
             } else {
-                None
+                Some(ModelPricing {
+                    input: 15.0,
+                    output: 75.0,
+                    cache_write: 18.75,
+                    cache_read: 1.5,
+                    fast: None,
+                })
             }
+        } else if lower.contains("haiku") {
+            Some(ModelPricing {
+                input: 1.0,
+                output: 5.0,
+                cache_write: 1.25,
+                cache_read: 0.1,
+                fast: None,
+            })
+        } else if lower.contains("sonnet") {
+            Some(ModelPricing {
+                input: 3.0,
+                output: 15.0,
+                cache_write: 3.75,
+                cache_read: 0.3,
+                fast: None,
+            })
+        } else {
+            None
         }
+    } else if lower.contains("grok") {
+        Some(ModelPricing {
+            input: 0.2,
+            output: 1.5,
+            cache_write: 0.0,
+            cache_read: 0.02,
+            fast: None,
+        })
+    } else {
+        None
     }
 }
 
@@ -1500,7 +1760,7 @@ impl Provider for Devin {
                         for option in options {
                             let value_str = option.value.to_string();
                             let mut info = crate::model::ModelInfo::id_only(value_str.clone());
-                            info.name = Some(option.name.clone());
+                            info.name = Some(option.name.clone()).filter(|n| !n.trim().is_empty());
                             info.supports_vision = option
                                 .meta
                                 .as_ref()

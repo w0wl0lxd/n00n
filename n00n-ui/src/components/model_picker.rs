@@ -74,10 +74,11 @@ struct ModelEntry {
 
 impl PickerItem for ModelEntry {
     fn label(&self) -> &str {
-        match self.name.as_deref() {
-            Some(name) => name,
-            None => &self.id,
-        }
+        self.name
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| &self.id)
     }
 
     fn suffix(&self) -> Option<&str> {
