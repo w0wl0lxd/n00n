@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::Value;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::AgentError;
 
@@ -40,6 +40,8 @@ struct Handler {
     args: Vec<String>,
     #[serde(default = "default_timeout")]
     timeout: u64,
+    #[serde(rename = "if", default)]
+    if_condition: Option<String>,
 }
 
 fn default_handler_type() -> String {
@@ -47,8 +49,9 @@ fn default_handler_type() -> String {
 }
 
 fn default_timeout() -> u64 {
-    // Claude Code command hooks default to 600 seconds.
-    600
+    // 30 seconds is a reasonable default for compaction hooks; they should
+    // be fast, and a stuck hook blocks the conversation.
+    30
 }
 
 #[derive(Debug, Deserialize)]
@@ -230,6 +233,10 @@ fn should_run_hook(matcher: &Option<String>, trigger: CompactionTrigger) -> bool
     }
 }
 
+fn compaction_hook_has_if(handler: &Handler) -> bool {
+    handler.if_condition.as_ref().is_some_and(|c| !c.is_empty())
+}
+
 #[allow(clippy::redundant_closure_for_method_calls)]
 fn build_precompact_input(
     trigger: CompactionTrigger,
@@ -394,6 +401,10 @@ pub async fn run_precompact_hooks(
             if handler.r#type != "command" {
                 continue;
             }
+            if compaction_hook_has_if(handler) {
+                debug!(command = %handler.command, "skipping compaction hook: `if` is only evaluated for tool events");
+                continue;
+            }
 
             match run_command_hook(
                 cwd,
@@ -470,6 +481,10 @@ pub async fn run_postcompact_hooks(
 
         for handler in &entry.hooks {
             if handler.r#type != "command" {
+                continue;
+            }
+            if compaction_hook_has_if(handler) {
+                debug!(command = %handler.command, "skipping compaction hook: `if` is only evaluated for tool events");
                 continue;
             }
 
@@ -647,5 +662,43 @@ mod tests {
         assert_eq!(input["trigger"], "manual");
         assert_eq!(input["compact_summary"], "summary text");
         assert_eq!(input["hook_event_name"], "PostCompact");
+    }
+
+    #[test]
+    fn default_timeout_is_30_seconds() {
+        assert_eq!(default_timeout(), 30);
+    }
+
+    #[test]
+    fn compaction_hook_with_if_is_skipped() {
+        let with_if = Handler {
+            r#type: "command".to_string(),
+            command: "true".to_string(),
+            args: Vec::new(),
+            timeout: default_timeout(),
+            if_condition: Some("Bash(*)".to_string()),
+        };
+        assert!(compaction_hook_has_if(&with_if));
+    }
+
+    #[test]
+    fn compaction_hook_without_if_runs() {
+        let without_if = Handler {
+            r#type: "command".to_string(),
+            command: "true".to_string(),
+            args: Vec::new(),
+            timeout: default_timeout(),
+            if_condition: None,
+        };
+        assert!(!compaction_hook_has_if(&without_if));
+
+        let empty_if = Handler {
+            r#type: "command".to_string(),
+            command: "true".to_string(),
+            args: Vec::new(),
+            timeout: default_timeout(),
+            if_condition: Some(String::new()),
+        };
+        assert!(!compaction_hook_has_if(&empty_if));
     }
 }
