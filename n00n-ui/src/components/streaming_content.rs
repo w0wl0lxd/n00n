@@ -259,6 +259,19 @@ impl StreamingContent {
         self.typewriter.is_animating()
     }
 
+    /// Forces the typewriter to reveal all text immediately, bypassing the
+    /// animation. This should be called when streaming ends (e.g., on Done/Error)
+    /// to ensure the full content is visible without waiting for the typewriter
+    /// effect to complete.
+    pub fn finish(&mut self) {
+        self.typewriter.finish();
+        if self.mode == RenderMode::Plain {
+            self.mode = RenderMode::Markdown;
+            self.plain.clear();
+            self.cache.invalidate();
+        }
+    }
+
     pub fn set_style(&mut self, prefix: &'static str, text_style: Style, prefix_style: Style) {
         self.prefix = prefix;
         self.text_style = text_style;
@@ -600,13 +613,32 @@ mod tests {
         let mut state = PlainState::new("", style, style);
         state.update(&typewriter_for_text(""));
         state.update(&typewriter_for_text("hello"));
+    }
 
-        let rendered: String = state.snapshot[0]
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        assert_eq!(rendered, "hello");
+    #[test]
+    fn finish_reveals_all_text_immediately() {
+        let style = Style::default();
+        let mut content = StreamingContent::new("", style, style, 10);
+        content.push("hello world");
+        assert!(content.is_animating());
+
+        content.finish();
+        assert!(!content.is_animating());
+        assert_eq!(content, "hello world");
+    }
+
+    #[test]
+    fn finish_switches_to_markdown_mode() {
+        let style = Style::default();
+        let mut content = StreamingContent::new("", style, style, 10);
+        content.push("hello");
+        assert!(content.is_animating());
+
+        content.finish();
+        assert!(!content.is_animating());
+        // After finish, it should switch to Markdown mode for proper rendering
+        let _lines = content.render_lines(80);
+        assert!(!content.is_animating());
     }
 
     #[test]

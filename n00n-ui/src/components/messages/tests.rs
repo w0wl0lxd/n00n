@@ -184,6 +184,25 @@ fn tool_start_flushes_streaming_text() {
 }
 
 #[test]
+fn flush_persists_full_streaming_text() {
+    let config = UiConfig {
+        typewriter_ms_per_char: 10,
+        ..Default::default()
+    };
+    let mut panel = test_panel_with_config(config);
+    panel.streaming_text.push("streaming response");
+
+    assert!(panel.streaming_text.is_animating());
+
+    panel.flush();
+
+    assert!(panel.streaming_text.is_empty());
+    assert_eq!(panel.messages.len(), 1);
+    assert_eq!(panel.messages[0].role, DisplayRole::Assistant);
+    assert_eq!(panel.messages[0].text, "streaming response");
+}
+
+#[test]
 fn thinking_delta_separate_from_text() {
     let mut panel = test_panel();
     panel.thinking_delta("reasoning");
@@ -195,6 +214,25 @@ fn thinking_delta_separate_from_text() {
     assert_eq!(panel.streaming_text, "output");
     assert_eq!(panel.messages[0].role, DisplayRole::Thinking);
     assert_eq!(panel.messages[0].text, "reasoning");
+}
+
+#[test]
+fn flush_persists_full_streaming_thinking() {
+    let config = UiConfig {
+        typewriter_ms_per_char: 10,
+        ..Default::default()
+    };
+    let mut panel = test_panel_with_config(config);
+    panel.streaming_thinking.push("thinking content");
+
+    assert!(panel.streaming_thinking.is_animating());
+
+    panel.flush();
+
+    assert!(panel.streaming_thinking.is_empty());
+    assert_eq!(panel.messages.len(), 1);
+    assert_eq!(panel.messages[0].role, DisplayRole::Thinking);
+    assert_eq!(panel.messages[0].text, "thinking content");
 }
 
 #[test]
