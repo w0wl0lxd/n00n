@@ -464,7 +464,6 @@ impl From<TokenUsage> for StoredTokenUsage {
             cache_creation: u.cache_creation,
             cache_read: u.cache_read,
             savings_tokens: 0,
-            savings_cost: 0.0,
         }
     }
 }

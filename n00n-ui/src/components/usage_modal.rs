@@ -515,7 +515,6 @@ mod tests {
             cache_read: 30,
             cache_creation: 40,
             savings_tokens: 0,
-            savings_cost: 0.0,
         };
         let row = model_row("gpt", &usage, None, 10, Style::new(), Style::new())
             .iter()

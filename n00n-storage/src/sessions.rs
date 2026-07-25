@@ -75,8 +75,6 @@ pub struct StoredTokenUsage {
     pub cache_read: u32,
     #[serde(default)]
     pub savings_tokens: u64,
-    #[serde(default)]
-    pub savings_cost: f64,
 }
 
 impl StoredTokenUsage {
@@ -98,7 +96,6 @@ impl std::ops::AddAssign for StoredTokenUsage {
         self.cache_creation += rhs.cache_creation;
         self.cache_read += rhs.cache_read;
         self.savings_tokens += rhs.savings_tokens;
-        self.savings_cost += rhs.savings_cost;
     }
 }
 
@@ -1980,7 +1977,6 @@ mod tests {
                 cache_creation: 5,
                 cache_read: 40,
                 savings_tokens: 0,
-                savings_cost: 0.0,
             },
         );
         session.meta.usage_by_model.insert(
@@ -1991,7 +1987,6 @@ mod tests {
                 cache_creation: 0,
                 cache_read: 0,
                 savings_tokens: 0,
-                savings_cost: 0.0,
             },
         );
         session.save_to(dir).unwrap();
