@@ -191,6 +191,11 @@ struct PendingSubmission {
     display_len_before: usize,
 }
 
+pub(crate) struct PendingPlanSubmit {
+    pub(crate) message: QueuedMessage,
+    pub(crate) plan: Option<(String, String)>,
+}
+
 pub enum Msg {
     Key(KeyEvent),
     Paste(String),
@@ -234,6 +239,7 @@ pub struct App {
     pub(crate) run_id: u64,
     next_submission_id: u64,
     pending_submission: Option<PendingSubmission>,
+    pub(crate) pending_plan_submit: Option<PendingPlanSubmit>,
     submission_clock: Arc<dyn SubmissionClock>,
     pub(super) retry_info: Option<RetryInfo>,
     pub(super) zones: ZoneRegistry,
@@ -349,6 +355,7 @@ impl App {
             run_id: 0,
             next_submission_id: 0,
             pending_submission: None,
+            pending_plan_submit: None,
             submission_clock: Arc::new(SystemSubmissionClock),
             retry_info: None,
             zones: ZoneRegistry::new(),
@@ -2132,31 +2139,36 @@ impl App {
 
         self.state.mode = Mode::Build;
 
-        let mut actions = if clear_context {
-            self.reset_session()
-        } else {
-            vec![]
-        };
-
-        let text = if let Some((content, path_str)) = plan_snapshot {
+        let text = if let Some((content, path_str)) = plan_snapshot.as_ref() {
             let text = if parallel {
                 format!("{IMPLEMENT_MSG_PREFIX} at `{path_str}`. {IMPLEMENT_PARALLEL_HINT}")
             } else {
                 format!("{IMPLEMENT_MSG_PREFIX} at `{path_str}`.")
             };
-            self.main_chat()
-                .push(DisplayMessage::plan(content, path_str));
+            if !clear_context {
+                self.main_chat()
+                    .push(DisplayMessage::plan(content.clone(), path_str.clone()));
+            }
             text
         } else {
             format!("{IMPLEMENT_MSG_PREFIX}.")
         };
-        self.run_id += 1;
+
         let msg = QueuedMessage {
             text,
             images: vec![],
         };
-        actions.extend(self.start_from_queue(&msg));
-        actions
+
+        if clear_context {
+            self.pending_plan_submit = Some(PendingPlanSubmit {
+                message: msg,
+                plan: plan_snapshot,
+            });
+            self.reset_session()
+        } else {
+            self.run_id += 1;
+            self.start_from_queue(&msg)
+        }
     }
 }
 
