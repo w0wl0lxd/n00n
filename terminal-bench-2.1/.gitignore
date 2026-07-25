@@ -1,0 +1,7 @@
+.env
+.env.local
+.env.*
+jobs/
+trials/
+*.log
+__pycache__/
