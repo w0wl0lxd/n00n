@@ -578,6 +578,7 @@ impl Provider for DynamicProvider {
                 .iter()
                 .map(|m| crate::model::ModelInfo {
                     id: m.id.clone(),
+                    name: None,
                     context_window: Some(m.context_window),
                     max_output_tokens: Some(m.max_output_tokens),
                     pricing: m.pricing.clone(),

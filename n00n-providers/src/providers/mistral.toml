@@ -1,0 +1,10 @@
+slug = "mistral"
+api_key_env = "MISTRAL_API_KEY"
+base_url = "https://api.mistral.ai/v1"
+max_tokens_field = "max_tokens"
+include_stream_usage = true
+provider_name = "Mistral"
+supports_prompt_cache_key = true
+supports_prompt_cache_breakpoint = false
+emit_reasoning_content = true
+const_name = "CONFIG"

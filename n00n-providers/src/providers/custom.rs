@@ -10,7 +10,7 @@ use n00n_storage::id::SessionRef;
 
 use super::ResolvedAuth;
 use super::openai::responses;
-use super::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
+use super::openai_compat::OpenAiCompatProvider;
 use crate::manifest::ManifestRegistry;
 use crate::model::{FastPricing, Model, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider, ProviderKind};
@@ -18,18 +18,7 @@ use crate::providers::Timeouts;
 use crate::types::ThinkingConfig;
 use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse};
 
-static CUSTOM_OPENAI_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
-    // Custom providers resolve their own base URL (including any override) from
-    // config, so the compat-layer fallback slug is unused here.
-    slug: "",
-    api_key_env: "",
-    base_url: "",
-    max_tokens_field: "max_tokens",
-    include_stream_usage: true,
-    provider_name: "custom",
-    supports_prompt_cache_key: false,
-    supports_prompt_cache_breakpoint: false,
-};
+include!(concat!(env!("OUT_DIR"), "/provider_configs/custom.rs"));
 
 fn protocol_kind(protocol: Protocol) -> ProviderKind {
     match protocol {
@@ -116,7 +105,7 @@ pub fn create(slug: &str, timeouts: Timeouts) -> Result<Box<dyn Provider>, Agent
             auth, timeouts,
         )?)),
         ProviderKind::OpenAi => Ok(Box::new(CustomOpenAiProvider {
-            compat: OpenAiCompatProvider::new(&CUSTOM_OPENAI_CONFIG, timeouts)?,
+            compat: OpenAiCompatProvider::new(&CONFIG, timeouts)?,
             auth,
             protocol,
         })),

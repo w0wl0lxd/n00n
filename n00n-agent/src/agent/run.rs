@@ -34,6 +34,7 @@ use crate::tokenize::{
 
 const MAX_REAUTH_ATTEMPTS: u32 = 2;
 const NUDGE_PROMPT: &str = "You just executed tool calls but returned an empty response. Please process the tool results above and continue with the task.";
+const THINKING_NUDGE_PROMPT: &str = "You provided reasoning but no final response. Please summarize your reasoning into a concise answer for the user.";
 const MAX_TOKENS_CONTINUE_PROMPT: &str = "Continue exactly where you stopped.";
 const IMAGE_TOKEN_ESTIMATE: usize = 2_048;
 
@@ -145,6 +146,7 @@ pub struct Agent<'h> {
     tool_output_lines: ToolOutputLines,
     reauth_attempts: u32,
     post_tool_empty_retried: bool,
+    thinking_empty_retried: bool,
     permissions: Arc<PermissionManager>,
     opts: RequestOptions,
     session_id: Option<SessionRef>,
@@ -195,6 +197,7 @@ impl<'h> Agent<'h> {
             mcp: None,
             reauth_attempts: 0,
             post_tool_empty_retried: false,
+            thinking_empty_retried: false,
             opts: RequestOptions::default(),
             session_id: params.session_id,
             file_tracker: params.file_tracker,
@@ -409,6 +412,8 @@ impl<'h> Agent<'h> {
         self.context_size = usage.context_tokens();
         self.emit_turn_complete(&response)?;
 
+        let after_tool_results = self.history.ends_with_tool_results();
+
         if has_tools {
             let history_len_before = self.history.len();
             let tool_results = self.process_tool_calls(response).await?;
@@ -421,17 +426,49 @@ impl<'h> Agent<'h> {
                 &self.model.id,
             ));
         } else {
-            let is_empty = response.message.content.is_empty();
+            let has_text = response
+                .message
+                .content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { text } if !text.is_empty()));
+            let has_thinking = response.message.content.iter().any(|b| {
+                matches!(
+                    b,
+                    ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. }
+                )
+            });
 
-            if is_empty && !self.post_tool_empty_retried && self.history.ends_with_tool_results() {
+            if !has_text && !self.post_tool_empty_retried && after_tool_results {
                 self.post_tool_empty_retried = true;
-                warn!("empty response after tool calls, nudging model to continue");
+                if !response.message.content.is_empty() {
+                    self.history.push(response.message);
+                }
+                warn!(
+                    "empty or reasoning-only response after tool calls, nudging model to continue"
+                );
                 self.event_tx.send(AgentEvent::Nudge)?;
                 self.history.push(Message::synthetic(NUDGE_PROMPT.into()));
                 return Ok(TurnOutcome::Continue);
             }
 
+            if !has_text && has_thinking && !after_tool_results && !self.thinking_empty_retried {
+                self.thinking_empty_retried = true;
+                warn!("assistant produced only reasoning, nudging for final answer");
+                self.history.push(response.message);
+                self.event_tx.send(AgentEvent::Nudge)?;
+                self.history
+                    .push(Message::synthetic(THINKING_NUDGE_PROMPT.into()));
+                return Ok(TurnOutcome::Continue);
+            }
+
             self.history.push(response.message);
+
+            if has_text {
+                self.thinking_empty_retried = false;
+                if after_tool_results {
+                    self.post_tool_empty_retried = false;
+                }
+            }
 
             if stop_reason == Some(StopReason::MaxTokens)
                 && self.num_turns <= self.config.max_continuation_turns
@@ -531,6 +568,7 @@ impl<'h> Agent<'h> {
         response: StreamResponse,
     ) -> Result<Vec<ToolDoneEvent>, AgentError> {
         self.post_tool_empty_retried = false;
+        self.thinking_empty_retried = false;
         let ctx = self.tool_context();
         tool_dispatch::process_tool_calls(
             response,
@@ -1516,7 +1554,7 @@ mod tests {
             empty_response(),
             text_response(StopReason::EndTurn),
         ],
-        3, true
+        3, 1
         ; "nudge_on_empty_after_tools"
     )]
     #[test_case(
@@ -1524,7 +1562,7 @@ mod tests {
             tool_call_response("glob", "t1"),
             text_response(StopReason::EndTurn),
         ],
-        2, false
+        2, 0
         ; "no_nudge_when_text_after_tools"
     )]
     #[test_case(
@@ -1532,18 +1570,35 @@ mod tests {
             empty_response(),
             text_response(StopReason::EndTurn),
         ],
-        1, false
+        1, 0
         ; "no_nudge_without_recent_tools"
     )]
     #[test_case(
         vec![
             tool_call_response("glob", "t1"),
             thinking_response(),
+            text_response(StopReason::EndTurn),
         ],
-        2, false
-        ; "no_nudge_on_reasoning_after_tools"
+        3, 1
+        ; "nudge_on_reasoning_after_tools"
     )]
-    fn nudge_behavior(responses: Vec<StreamResponse>, expected_turns: u32, expect_nudge: bool) {
+    #[test_case(
+        vec![
+            thinking_response(),
+            text_response(StopReason::EndTurn),
+        ],
+        2, 1
+        ; "nudge_on_first_turn_reasoning"
+    )]
+    #[test_case(
+        vec![
+            thinking_response(),
+            thinking_response(),
+        ],
+        2, 1
+        ; "nudge_only_once_on_repeated_reasoning"
+    )]
+    fn nudge_behavior(responses: Vec<StreamResponse>, expected_turns: u32, expected_nudges: usize) {
         smol::block_on(async {
             let mut history = History::new(Vec::new());
             let (mut agent, event_rx) = make_agent(MockProvider::new(responses), &mut history);
@@ -1551,10 +1606,12 @@ mod tests {
             drop(agent);
             let events = drain_events(&event_rx);
 
-            assert_eq!(
-                has_event(&events, |e| matches!(e, AgentEvent::Nudge)),
-                expect_nudge,
-            );
+            let nudges = events
+                .iter()
+                .filter(|e| matches!(e.event, AgentEvent::Nudge))
+                .count();
+            assert_eq!(nudges, expected_nudges);
+
             let done = events
                 .iter()
                 .find_map(|e| match &e.event {

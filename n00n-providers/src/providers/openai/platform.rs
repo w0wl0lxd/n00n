@@ -26,18 +26,9 @@ use crate::{
 
 use super::auth;
 use crate::providers::ResolvedAuth;
-use crate::providers::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
+use crate::providers::openai_compat::OpenAiCompatProvider;
 
-static CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
-    slug: "openai",
-    api_key_env: "OPENAI_API_KEY",
-    base_url: "https://api.openai.com/v1",
-    max_tokens_field: "max_completion_tokens",
-    include_stream_usage: true,
-    provider_name: "OpenAI",
-    supports_prompt_cache_key: true,
-    supports_prompt_cache_breakpoint: true,
-};
+include!(concat!(env!("OUT_DIR"), "/provider_configs/openai.rs"));
 
 // Non-codex models OpenAI offers for subscription usage via the Coding Plan.
 // Codex models are matched by their `-codex` substring in
