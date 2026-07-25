@@ -25,6 +25,15 @@ const LINE_DELIMITER: u8 = b'\n';
 
 use crate::ChildGuard;
 
+fn looks_like_warning_or_error(line: &str) -> bool {
+    line.split_whitespace().take(3).any(|token| {
+        matches!(
+            token.trim_start_matches('[').trim_end_matches(']'),
+            "ERROR" | "WARN" | "FATAL" | "CRITICAL"
+        )
+    })
+}
+
 pub struct StdioTransport {
     name: Arc<str>,
     stdin: Mutex<async_process::ChildStdin>,
@@ -119,8 +128,13 @@ impl StdioTransport {
                         Ok(0) | Err(_) => break,
                         Ok(_) => {
                             let trimmed = line.trim();
-                            if !trimmed.is_empty() {
+                            if trimmed.is_empty() {
+                                continue;
+                            }
+                            if looks_like_warning_or_error(trimmed) {
                                 warn!(server = &*name, "{trimmed}");
+                            } else {
+                                debug!(server = &*name, "{trimmed}");
                             }
                         }
                     }
