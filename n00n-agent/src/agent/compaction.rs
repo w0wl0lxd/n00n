@@ -6,6 +6,7 @@ use n00n_providers::{
 };
 use tracing::info;
 
+use super::compaction_hooks::{CompactionTrigger, run_postcompact_hooks, run_precompact_hooks};
 use super::history::History;
 use super::streaming::stream_with_retry;
 use crate::cancel::CancelToken;
@@ -73,7 +74,13 @@ pub(super) async fn compact_history(
     history: &mut History,
     event_tx: &EventSender,
     cancel: &CancelToken,
+    trigger: CompactionTrigger,
+    session_id: Option<&n00n_storage::id::SessionRef>,
+    cwd: &std::path::Path,
+    transcript_path: Option<&std::path::Path>,
 ) -> Result<TokenUsage, AgentError> {
+    run_precompact_hooks(trigger, session_id, cwd, transcript_path).await?;
+
     let compact_start = std::time::Instant::now();
     let mut compaction_history: Vec<Message> = history.as_slice().to_vec();
     strip_images(&mut compaction_history);
@@ -97,10 +104,8 @@ pub(super) async fn compact_history(
     compaction_history.push(Message::user(user_prompt));
 
     let empty_tools = serde_json::json!([]);
-    let max_attempts = 3;
-    let mut last_error = None;
 
-    for attempt in 0..max_attempts {
+    let response = loop {
         match stream_with_retry(super::streaming::StreamContext {
             provider,
             model,
@@ -114,32 +119,28 @@ pub(super) async fn compact_history(
         })
         .await
         {
-            Ok(response) => {
-                if attempt > 0 {
-                    info!(
-                        attempt,
-                        "compaction succeeded after truncating oldest rounds"
-                    );
-                }
-                return Ok(finish_compact(
-                    response,
-                    history,
-                    event_tx,
-                    compact_start,
-                    model,
-                ));
-            }
-            Err(e) if e.is_context_overflow() && attempt < max_attempts - 1 => {
-                last_error = Some(e);
+            Ok(response) => break response,
+            Err(e) if e.is_context_overflow() => {
                 truncate_oldest_round(&mut compaction_history);
             }
             Err(e) => return Err(e),
         }
-    }
+    };
 
-    Err(last_error.unwrap_or_else(|| AgentError::Config {
-        message: "compaction failed after all attempts".to_string(),
-    }))
+    let summary = response
+        .message
+        .first_text_content()
+        .map_or_else(String::new, std::string::ToString::to_string);
+
+    run_postcompact_hooks(trigger, session_id, cwd, transcript_path, &summary).await;
+
+    Ok(finish_compact(
+        response,
+        history,
+        event_tx,
+        compact_start,
+        model,
+    ))
 }
 
 fn finish_compact(
@@ -182,7 +183,19 @@ pub async fn compact(
     event_tx: &EventSender,
 ) -> Result<(), AgentError> {
     let cancel = CancelToken::none();
-    let usage = compact_history(provider, model, history, event_tx, &cancel).await?;
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
+    let usage = compact_history(
+        provider,
+        model,
+        history,
+        event_tx,
+        &cancel,
+        CompactionTrigger::Manual,
+        None,
+        &cwd,
+        None,
+    )
+    .await?;
     event_tx.send(AgentEvent::CompactionDone)?;
 
     event_tx.send(AgentEvent::Done {
