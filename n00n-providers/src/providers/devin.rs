@@ -11,7 +11,10 @@ use n00n_storage::id::SessionRef;
 use serde_json::Value;
 use tracing::{debug, error, warn};
 
-use agent_client_protocol_schema::{ClientCapabilities, InitializeRequest, InitializeResponse};
+use agent_client_protocol_schema::{
+    AgentCapabilities, ClientCapabilities, EmbeddedResourceResource, ImageContent,
+    InitializeRequest, InitializeResponse,
+};
 use agent_client_protocol_schema::{
     ContentBlock as AcpContentBlock, Error as AcpError, JsonRpcMessage, NewSessionRequest,
     NewSessionResponse, Notification, PermissionOptionKind, PromptRequest, ProtocolVersion,
@@ -20,8 +23,10 @@ use agent_client_protocol_schema::{
     SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption,
     SessionConfigSelectOptions, SessionConfigValueId, SessionId, SessionNotification,
     SessionUpdate, SetSessionConfigOptionRequest, StopReason as AcpStopReason, TextContent,
-    UsageUpdate,
+    ToolCallContent, UsageUpdate,
 };
+#[allow(unused_imports)]
+use agent_client_protocol_schema::{ToolCall, ToolCallUpdate};
 
 use crate::model::{ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider};
@@ -160,6 +165,7 @@ struct DevinInner {
     event_tx: Arc<AsyncMutex<Option<Sender<ProviderEvent>>>>,
     text: Arc<AsyncMutex<String>>,
     usage: Arc<AsyncMutex<TokenUsage>>,
+    agent_capabilities: Arc<AsyncMutex<Option<AgentCapabilities>>>,
 }
 
 impl DevinInner {
@@ -198,6 +204,7 @@ impl DevinInner {
         let event_tx = Arc::new(AsyncMutex::new(None));
         let text = Arc::new(AsyncMutex::new(String::new()));
         let usage = Arc::new(AsyncMutex::new(TokenUsage::default()));
+        let agent_capabilities = Arc::new(AsyncMutex::new(None));
 
         let pending_clone = Arc::clone(&pending);
         let stdin_clone = Arc::clone(&stdin_arc);
@@ -265,6 +272,7 @@ impl DevinInner {
             event_tx,
             text,
             usage,
+            agent_capabilities,
         };
 
         inner.initialize().await?;
@@ -290,6 +298,8 @@ impl DevinInner {
                 ),
             });
         }
+
+        *self.agent_capabilities.lock().await = Some(response.agent_capabilities);
 
         Ok(())
     }
@@ -594,6 +604,23 @@ impl DevinInner {
         Ok(())
     }
 
+    fn acp_content_to_text(block: &AcpContentBlock) -> Option<String> {
+        match block {
+            AcpContentBlock::Text(t) => Some(t.text.clone()),
+            AcpContentBlock::Image(_) => Some("[image]".to_string()),
+            AcpContentBlock::Audio(_) => Some("[audio]".to_string()),
+            AcpContentBlock::ResourceLink(r) => Some(format!("[resource: {}]", r.uri)),
+            AcpContentBlock::Resource(r) => match &r.resource {
+                EmbeddedResourceResource::TextResourceContents(t) => Some(t.text.clone()),
+                EmbeddedResourceResource::BlobResourceContents(b) => {
+                    Some(format!("[binary resource: {}]", b.uri))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     async fn handle_session_update(
         update: SessionUpdate,
         event_tx: &Arc<AsyncMutex<Option<Sender<ProviderEvent>>>>,
@@ -601,9 +628,11 @@ impl DevinInner {
         usage: &Arc<AsyncMutex<TokenUsage>>,
     ) -> Result<(), AgentError> {
         match update {
+            SessionUpdate::UserMessageChunk(_) => {
+                // Ignore: echo of user message
+            }
             SessionUpdate::AgentMessageChunk(chunk) => {
-                if let AcpContentBlock::Text(t) = chunk.content {
-                    let chunk_text = t.text;
+                if let Some(chunk_text) = Self::acp_content_to_text(&chunk.content) {
                     {
                         let mut text = text.lock().await;
                         text.push_str(&chunk_text);
@@ -619,16 +648,107 @@ impl DevinInner {
                 }
             }
             SessionUpdate::AgentThoughtChunk(chunk) => {
-                if let AcpContentBlock::Text(t) = chunk.content {
+                #[allow(clippy::manual_unwrap_or_default)]
+                let delta_text = if let AcpContentBlock::Text(t) = chunk.content {
+                    t.text
+                } else if let Some(text) = Self::acp_content_to_text(&chunk.content) {
+                    text
+                } else {
+                    String::new()
+                };
+                let tx = event_tx.lock().await.as_ref().cloned();
+                if let Some(tx) = tx
+                    && let Err(e) = tx
+                        .send_async(ProviderEvent::ThinkingDelta { text: delta_text })
+                        .await
+                {
+                    debug!(error = %e, "failed to send thinking delta");
+                }
+            }
+            SessionUpdate::ToolCall(call) => {
+                let tx = event_tx.lock().await.as_ref().cloned();
+                if let Some(tx) = tx
+                    && let Err(e) = tx
+                        .send_async(ProviderEvent::ToolUseStart {
+                            id: call.tool_call_id.to_string(),
+                            name: call.title,
+                        })
+                        .await
+                {
+                    debug!(error = %e, "failed to send tool use start");
+                }
+            }
+            SessionUpdate::ToolCallUpdate(update) => {
+                if let Some(content) = update.fields.content {
                     let tx = event_tx.lock().await.as_ref().cloned();
-                    if let Some(tx) = tx
-                        && let Err(e) = tx
-                            .send_async(ProviderEvent::ThinkingDelta { text: t.text })
-                            .await
-                    {
-                        debug!(error = %e, "failed to send thinking delta");
+                    if let Some(tx) = tx {
+                        for item in content {
+                            let text = match item {
+                                ToolCallContent::Content(c) => {
+                                    Self::acp_content_to_text(&c.content)
+                                }
+                                ToolCallContent::Diff(d) => {
+                                    let mut s =
+                                        format!("[diff: {}]\n{}", d.path.display(), d.new_text);
+                                    if let Some(old) = &d.old_text {
+                                        use std::fmt::Write;
+                                        let _ = write!(s, "\n(old: {old})");
+                                    }
+                                    Some(s)
+                                }
+                                ToolCallContent::Terminal(_) => {
+                                    Some("[terminal output]".to_string())
+                                }
+                                _ => None,
+                            };
+                            if let Some(text) = text
+                                && let Err(e) =
+                                    tx.send_async(ProviderEvent::TextDelta { text }).await
+                            {
+                                debug!(error = %e, "failed to send tool call content");
+                            }
+                        }
                     }
                 }
+                if update.fields.title.is_some()
+                    || update.fields.status.is_some()
+                    || update.fields.kind.is_some()
+                    || update.fields.locations.is_some()
+                    || update.fields.raw_input.is_some()
+                    || update.fields.raw_output.is_some()
+                {
+                    debug!(
+                        tool_call_id = %update.tool_call_id,
+                        "received tool call update with non-content fields"
+                    );
+                }
+            }
+            SessionUpdate::Plan(_) => {
+                debug!(method = "session/update", "received ACP plan update");
+            }
+            SessionUpdate::AvailableCommandsUpdate(_) => {
+                debug!(
+                    method = "session/update",
+                    "received ACP available commands update"
+                );
+            }
+            SessionUpdate::CurrentModeUpdate(_) => {
+                debug!(
+                    method = "session/update",
+                    "received ACP current mode update"
+                );
+            }
+            SessionUpdate::ConfigOptionUpdate(_) => {
+                debug!(
+                    method = "session/update",
+                    "received ACP config option update"
+                );
+            }
+            SessionUpdate::SessionInfoUpdate(_) => {
+                debug!(
+                    method = "session/update",
+                    "received ACP session info update"
+                );
             }
             SessionUpdate::UsageUpdate(UsageUpdate {
                 meta: Some(meta), ..
@@ -640,7 +760,12 @@ impl DevinInner {
                     cache_creation: meta_get_u32(&meta, "cognition.ai/cachedWriteTokens"),
                 };
             }
-            _ => {}
+            _ => {
+                debug!(
+                    method = "session/update",
+                    "received unhandled ACP session update"
+                );
+            }
         }
 
         Ok(())
@@ -1047,7 +1172,16 @@ impl Devin {
             .await
     }
 
-    fn convert_content_block(block: &crate::types::ContentBlock) -> AcpContentBlock {
+    async fn convert_content_block(&self, block: &crate::types::ContentBlock) -> AcpContentBlock {
+        let inner = self.get_inner().await;
+        let capabilities = if let Ok(i) = inner {
+            i.agent_capabilities.lock().await.clone()
+        } else {
+            None
+        };
+
+        let supports_image = capabilities.is_some_and(|c| c.prompt_capabilities.image);
+
         match block {
             crate::types::ContentBlock::Text { text } => {
                 AcpContentBlock::Text(TextContent::new(text.clone()))
@@ -1067,8 +1201,17 @@ impl Devin {
                 let label = if *is_error { "error" } else { "result" };
                 AcpContentBlock::Text(TextContent::new(format!("[tool {label}: {content}]")))
             }
-            crate::types::ContentBlock::Image { .. } => {
-                AcpContentBlock::Text(TextContent::new("[image not yet supported]".to_string()))
+            crate::types::ContentBlock::Image { source } => {
+                if supports_image {
+                    AcpContentBlock::Image(ImageContent::new(
+                        source.data.to_string(),
+                        source.media_type.mime().to_string(),
+                    ))
+                } else {
+                    AcpContentBlock::Text(TextContent::new(
+                        "[image not supported by this Devin session]".to_string(),
+                    ))
+                }
             }
         }
     }
@@ -1099,11 +1242,13 @@ impl Provider for Devin {
                 message: "no messages provided".to_string(),
             })?;
 
-            let content: Vec<AcpContentBlock> = last_message
-                .content
-                .iter()
-                .map(Self::convert_content_block)
-                .collect();
+            let content: Vec<AcpContentBlock> = {
+                let mut blocks = Vec::new();
+                for block in &last_message.content {
+                    blocks.push(self.convert_content_block(block).await);
+                }
+                blocks
+            };
 
             let req = PromptRequest::new(session_id, content);
 
