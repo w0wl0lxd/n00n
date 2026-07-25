@@ -133,6 +133,8 @@ pub struct Agent<'h> {
     cancel: CancelToken,
     total_usage: TokenUsage,
     total_cost: f64,
+    total_savings_tokens: u64,
+    total_savings_cost: f64,
     context_size: u32,
     num_turns: u32,
     recent_calls: RecentCalls,
@@ -186,6 +188,8 @@ impl<'h> Agent<'h> {
             cancel: CancelToken::none(),
             total_usage: TokenUsage::default(),
             total_cost: 0.0,
+            total_savings_tokens: 0,
+            total_savings_cost: 0.0,
             context_size: 0,
             num_turns: 0,
             recent_calls: RecentCalls::new(),
@@ -537,15 +541,31 @@ impl<'h> Agent<'h> {
     fn record_usage(&mut self, usage: TokenUsage, cost: f64) {
         self.total_usage += usage;
         self.total_cost += cost;
+        self.total_savings_tokens += usage.savings_tokens();
+        self.total_savings_cost += usage.savings_cost(&self.model.pricing, self.opts.fast);
     }
 
     fn emit_turn_complete(&self, response: &StreamResponse) -> Result<(), AgentError> {
+        let savings_tokens = response.usage.savings_tokens();
+        let savings_cost = response
+            .usage
+            .savings_cost(&self.model.pricing, self.opts.fast);
         self.event_tx
             .send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
                 message: response.message.clone(),
                 usage: response.usage,
                 model: self.model.id.clone(),
                 context_size: Some(response.usage.context_tokens()),
+                savings_tokens: if savings_tokens > 0 {
+                    Some(savings_tokens)
+                } else {
+                    None
+                },
+                savings_cost: if savings_cost > 0.0 {
+                    Some(savings_cost)
+                } else {
+                    None
+                },
             })))
     }
 

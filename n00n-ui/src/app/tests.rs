@@ -1041,6 +1041,8 @@ fn turn_complete_tracks_usage_and_context_per_chat() {
             usage: main_usage,
             model: "test".into(),
             context_size: None,
+            savings_tokens: None,
+            savings_cost: None,
         },
     ))));
 
@@ -1055,6 +1057,8 @@ fn turn_complete_tracks_usage_and_context_per_chat() {
             usage: sub_usage,
             model: "test".into(),
             context_size: None,
+            savings_tokens: None,
+            savings_cost: None,
         })),
         "task1",
         None,
@@ -1121,6 +1125,8 @@ fn subagent_compaction_completion_uses_live_summary_without_touching_main_transc
             usage: TokenUsage::default(),
             model: "test".into(),
             context_size: None,
+            savings_tokens: None,
+            savings_cost: None,
         })),
         "task1",
         Some("research"),
@@ -1164,6 +1170,8 @@ fn turn_complete_accumulates_usage_by_model() {
             },
             model: "main-model".into(),
             context_size: None,
+            savings_tokens: None,
+            savings_cost: None,
         },
     ))));
     app.update(subagent_msg(
@@ -1176,6 +1184,8 @@ fn turn_complete_accumulates_usage_by_model() {
             },
             model: "sub-model".into(),
             context_size: None,
+            savings_tokens: None,
+            savings_cost: None,
         })),
         "task1",
         None,
@@ -3409,6 +3419,8 @@ fn stale_non_terminal_event_does_not_save_session() {
             usage: TokenUsage::default(),
             model: "mock".into(),
             context_size: None,
+            savings_tokens: None,
+            savings_cost: None,
         })),
         old_run_id,
     ));

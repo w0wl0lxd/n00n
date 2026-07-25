@@ -63,7 +63,7 @@ pub enum SessionError {
 /// Per-model token breakdown entry. Mirrors the four usage counters tracked by
 /// the active provider; kept storage-local to avoid a circular dependency on
 /// `n00n-providers`.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct StoredTokenUsage {
     #[serde(default)]
     pub input: u32,
@@ -73,6 +73,10 @@ pub struct StoredTokenUsage {
     pub cache_creation: u32,
     #[serde(default)]
     pub cache_read: u32,
+    #[serde(default)]
+    pub savings_tokens: u64,
+    #[serde(default)]
+    pub savings_cost: f64,
 }
 
 impl StoredTokenUsage {
@@ -93,6 +97,8 @@ impl std::ops::AddAssign for StoredTokenUsage {
         self.output += rhs.output;
         self.cache_creation += rhs.cache_creation;
         self.cache_read += rhs.cache_read;
+        self.savings_tokens += rhs.savings_tokens;
+        self.savings_cost += rhs.savings_cost;
     }
 }
 
@@ -1973,6 +1979,8 @@ mod tests {
                 output: 20,
                 cache_creation: 5,
                 cache_read: 40,
+                savings_tokens: 0,
+                savings_cost: 0.0,
             },
         );
         session.meta.usage_by_model.insert(
@@ -1980,12 +1988,16 @@ mod tests {
             super::StoredTokenUsage {
                 input: 30,
                 output: 10,
-                ..Default::default()
+                cache_creation: 0,
+                cache_read: 0,
+                savings_tokens: 0,
+                savings_cost: 0.0,
             },
         );
         session.save_to(dir).unwrap();
 
         let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert!(!loaded.meta.usage_by_model.is_empty());
         let sonnet = &loaded.meta.usage_by_model["claude-sonnet-4"];
         assert_eq!(sonnet.input, 100);
         assert_eq!(sonnet.output, 20);

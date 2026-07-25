@@ -152,11 +152,23 @@ fn finish_compact(
     compact_start: std::time::Instant,
     model: &Model,
 ) -> TokenUsage {
+    let savings_tokens = response.usage.savings_tokens();
+    let savings_cost = response.usage.savings_cost(&model.pricing, false);
     let _ = event_tx.send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
         message: response.message.clone(),
         usage: response.usage,
         model: model.id.clone(),
         context_size: Some(response.usage.output),
+        savings_tokens: if savings_tokens > 0 {
+            Some(savings_tokens)
+        } else {
+            None
+        },
+        savings_cost: if savings_cost > 0.0 {
+            Some(savings_cost)
+        } else {
+            None
+        },
     })));
 
     history.compact_boundary(

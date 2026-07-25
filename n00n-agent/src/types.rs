@@ -1175,6 +1175,10 @@ pub struct TurnCompleteEvent {
     pub model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_size: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub savings_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub savings_cost: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
