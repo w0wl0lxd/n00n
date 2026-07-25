@@ -1284,4 +1284,46 @@ mod tests {
             "claude-opus-5-medium-fast"
         );
     }
+
+    #[test]
+    fn is_safe_command_name_accepts_simple_names() {
+        assert!(Devin::is_safe_command_name("devin"));
+        assert!(Devin::is_safe_command_name("devin2"));
+        assert!(Devin::is_safe_command_name("my-devin.cli_2"));
+    }
+
+    #[test]
+    fn is_safe_command_name_rejects_unsafe_inputs() {
+        assert!(!Devin::is_safe_command_name(""));
+        assert!(!Devin::is_safe_command_name("devin acp"));
+        assert!(!Devin::is_safe_command_name("/tmp/devin"));
+        assert!(!Devin::is_safe_command_name("https://example.com"));
+    }
+
+    #[test]
+    fn command_from_auth_defaults_to_devin() {
+        let auth = ResolvedAuth {
+            base_url: None,
+            headers: Vec::new(),
+        };
+        assert_eq!(Devin::command_from_auth(&auth), "devin");
+    }
+
+    #[test]
+    fn command_from_auth_uses_safe_base_url() {
+        let auth = ResolvedAuth {
+            base_url: Some("devin2".to_string()),
+            headers: Vec::new(),
+        };
+        assert_eq!(Devin::command_from_auth(&auth), "devin2");
+    }
+
+    #[test]
+    fn command_from_auth_falls_back_for_unsafe_base_url() {
+        let auth = ResolvedAuth {
+            base_url: Some("/tmp/evil".to_string()),
+            headers: Vec::new(),
+        };
+        assert_eq!(Devin::command_from_auth(&auth), "devin");
+    }
 }
