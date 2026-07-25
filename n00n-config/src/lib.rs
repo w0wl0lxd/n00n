@@ -2089,6 +2089,7 @@ fn insert_permission_entry(
 mod tests {
     use super::*;
     use n00n_storage::sessions::Effort;
+    use serde_json::json;
     use std::fs;
     use tempfile::TempDir;
     use test_case::test_case;
@@ -2137,11 +2138,11 @@ mod tests {
     fn compaction_buffer_serializes_percent_as_string() {
         assert_eq!(
             serde_json::to_value(CompactionBuffer::Percent(20)).unwrap(),
-            serde_json::json!("20%")
+            json!("20%")
         );
         assert_eq!(
             serde_json::to_value(CompactionBuffer::Tokens(9_000)).unwrap(),
-            serde_json::json!(9_000)
+            json!(9_000)
         );
     }
 
@@ -2734,12 +2735,12 @@ mod tests {
         );
         assert_eq!(
             grep.opts["search_result_limit"],
-            serde_json::json!(50),
+            json!(50),
             "overlay opt wins"
         );
         assert_eq!(
             grep.opts["max_line_bytes"],
-            serde_json::json!(900),
+            json!(900),
             "base opt preserved"
         );
     }
@@ -2804,7 +2805,7 @@ mod tests {
             toml::from_str("[plugins.bash]\nenabled = true\ntimeout_secs = 180\n").unwrap();
         let bash = &raw.plugins["bash"];
         assert_eq!(bash.enabled, Some(true));
-        assert_eq!(bash.opts["timeout_secs"], serde_json::json!(180));
+        assert_eq!(bash.opts["timeout_secs"], json!(180));
     }
 
     #[test]
@@ -2820,10 +2821,7 @@ mod tests {
             config.plugins.names.contains(&"index".to_string()),
             "untouched builtin stays"
         );
-        assert_eq!(
-            config.plugins.opts["bash"]["timeout_secs"],
-            serde_json::json!(180)
-        );
+        assert_eq!(config.plugins.opts["bash"]["timeout_secs"], json!(180));
         assert!(
             !config.plugins.opts.contains_key("websearch"),
             "enabled-only tables produce no opts"
@@ -2961,7 +2959,7 @@ mod tests {
         assert!(!config.plugins.names.contains(&"bash".to_string()));
         assert_eq!(
             config.plugins.opts["bash"]["timeout_secs"],
-            serde_json::json!(180),
+            json!(180),
             "opts survive for when the plugin is re-enabled"
         );
     }
@@ -2971,14 +2969,8 @@ mod tests {
         let raw: RawConfig =
             toml::from_str("[plugins.edit]\nmultiedit = false\nedit_lines = true\n").unwrap();
         let config = raw.into_config(false).unwrap();
-        assert_eq!(
-            config.plugins.opts["edit"]["multiedit"],
-            serde_json::json!(false)
-        );
-        assert_eq!(
-            config.plugins.opts["edit"]["edit_lines"],
-            serde_json::json!(true)
-        );
+        assert_eq!(config.plugins.opts["edit"]["multiedit"], json!(false));
+        assert_eq!(config.plugins.opts["edit"]["edit_lines"], json!(true));
         assert!(config.agent.disabled_tools.is_empty());
     }
 

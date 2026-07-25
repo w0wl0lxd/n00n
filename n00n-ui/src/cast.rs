@@ -20,6 +20,10 @@ pub(crate) const fn usize_to_f64(v: usize) -> f64 {
     v as f64
 }
 
+pub(crate) const fn u128_to_f64(v: u128) -> f64 {
+    v as f64
+}
+
 pub(crate) fn f64_to_usize(v: f64) -> usize {
     let v = v.max(0.0);
     if v > usize::MAX as f64 {

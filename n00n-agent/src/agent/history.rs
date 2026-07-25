@@ -290,6 +290,7 @@ pub(crate) fn sanitize_cancelled_history(history: &mut History, rollback_len: us
 mod tests {
     use n00n_providers::{ContentBlock, Message, Role};
     use n00n_storage::sessions::TranscriptEntry;
+    use serde_json::json;
     use test_case::test_case;
 
     use super::*;
@@ -509,7 +510,7 @@ mod tests {
                 .map(|id| ContentBlock::ToolUse {
                     id: id.to_string(),
                     name: "read".into(),
-                    input: serde_json::json!({}),
+                    input: json!({}),
                 })
                 .collect(),
             ..Default::default()

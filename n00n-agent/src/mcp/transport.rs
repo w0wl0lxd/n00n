@@ -5,7 +5,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use tracing::info;
 
 use std::collections::HashMap;
@@ -114,7 +114,7 @@ pub async fn get_prompt<S: std::hash::BuildHasher>(
     name: &str,
     arguments: &HashMap<String, String, S>,
 ) -> Result<Vec<super::protocol::PromptMessage>, McpError> {
-    let params = serde_json::json!({ "name": name, "arguments": arguments });
+    let params = json!({ "name": name, "arguments": arguments });
     let result = transport.send_request("prompts/get", Some(params)).await?;
     let parsed: GetPromptResult =
         serde_json::from_value(result).map_err(|e| invalid_response(transport.server_name(), e))?;
@@ -133,7 +133,7 @@ pub async fn call_tool(
 ) -> Result<String, McpError> {
     let server = &**transport.server_name();
     let start = Instant::now();
-    let params = serde_json::json!({
+    let params = json!({
         "name": tool_name,
         "arguments": args,
     });

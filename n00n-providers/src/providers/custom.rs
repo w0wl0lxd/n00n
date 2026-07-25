@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use flume::Sender;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use n00n_config::providers::{
     Protocol, ProviderDef, ProvidersConfig, resolve_api_key_env, resolve_base_url, resolve_protocol,
@@ -312,7 +312,7 @@ impl Provider for CustomOpenAiProvider {
                 session_id.map(n00n_storage::id::SessionRef::as_str),
             );
             if matches!(opts.thinking, ThinkingConfig::Off) {
-                body["thinking"] = serde_json::json!({"type": "disabled"});
+                body["thinking"] = json!({"type": "disabled"});
             }
             self.compat
                 .do_stream(model, &[], &body, event_tx, &auth)

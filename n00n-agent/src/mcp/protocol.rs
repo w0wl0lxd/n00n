@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 pub const LATEST_PROTOCOL_VERSION: &str = "2025-11-25";
 
@@ -58,7 +58,7 @@ pub struct JsonRpcError {
 
 #[must_use]
 pub fn initialize_params() -> Value {
-    serde_json::json!({
+    json!({
         "protocolVersion": LATEST_PROTOCOL_VERSION,
         "capabilities": {},
         "clientInfo": {

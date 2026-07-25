@@ -9,6 +9,7 @@ use std::sync::{Arc, atomic::AtomicBool};
 
 pub(crate) use crate::agent::shared_queue::QueuedMessage;
 
+use serde_json::json;
 pub(crate) const EMPTY_PROMPT_ERR: &str = "prompt is empty";
 pub(crate) const NO_QUEUE_ERR: &str = "session cannot queue messages";
 
@@ -386,7 +387,7 @@ impl App {
         paint_required: bool,
     ) -> Vec<Action> {
         self.status = Status::Streaming;
-        self.fire_session_autocmd("TurnStart", serde_json::json!({}));
+        self.fire_session_autocmd("TurnStart", json!({}));
         let display_len_before = self.main_chat().message_count();
         if paint_required {
             self.main_chat()

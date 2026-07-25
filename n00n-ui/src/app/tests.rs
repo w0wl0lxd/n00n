@@ -26,6 +26,7 @@ use test_case::test_case;
 
 const WRITER_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
+use serde_json::json;
 fn set_zone(app: &mut App, zone: SelectionZone, area: Rect) {
     app.zones.push(SelectableZone {
         area,
@@ -2712,7 +2713,7 @@ fn build_rewind_app() -> App {
                 ContentBlock::ToolUse {
                     id: "tool-1".into(),
                     name: "bash".into(),
-                    input: serde_json::json!({}),
+                    input: json!({}),
                 },
             ],
             ..Default::default()

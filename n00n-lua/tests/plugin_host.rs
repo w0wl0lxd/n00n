@@ -268,7 +268,7 @@ fn register_echo_tool() {
     );
     assert_eq!(entry.tool.tool_kind(), None);
 
-    let out = exec_tool(&reg, "echo_", serde_json::json!({"msg": "hello"})).unwrap();
+    let out = exec_tool(&reg, "echo_", json!({"msg": "hello"})).unwrap();
     assert_eq!(out, "hello");
 }
 
@@ -406,7 +406,7 @@ fn get_tool_returns_normalized_header_and_restore_handles() {
     );
     host.load_source("get_tool_plugin", &src).unwrap();
 
-    let out = exec_tool(&reg, "handle_probe", serde_json::json!({})).unwrap();
+    let out = exec_tool(&reg, "handle_probe", json!({})).unwrap();
     assert_eq!(
         out,
         "styled_tool|H:abc/tool|nil|userdata|true|true|true|nil"
@@ -430,12 +430,12 @@ fn handler_state_flows_to_tool_output_and_serde() {
     host.load_source("state_plugin", &src).unwrap();
 
     let entry = reg.get("stateful").unwrap();
-    let inv = entry.tool.parse(&serde_json::json!({})).unwrap();
+    let inv = entry.tool.parse(&json!({})).unwrap();
     let ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
     let out = smol::block_on(async { inv.execute(&ctx).await })
         .output
         .unwrap();
-    let expected = serde_json::json!({ "n": 3, "tag": "hi" });
+    let expected = json!({ "n": 3, "tag": "hi" });
     assert_eq!(out.state(), Some(&expected));
 
     let json = serde_json::to_string(&out).unwrap();
@@ -472,8 +472,8 @@ fn handler_usage_metadata_flows_to_tool_output_without_private_fields() {
     );
     host.load_source("usage_metadata_plugin", &src).unwrap();
 
-    let output = exec_tool_output(&reg, "usage_metadata", serde_json::json!({})).unwrap();
-    let expected = serde_json::json!({
+    let output = exec_tool_output(&reg, "usage_metadata", json!({})).unwrap();
+    let expected = json!({
         "cost": 0.125,
         "usage": {
             "fresh_input_tokens": 5,
@@ -486,7 +486,7 @@ fn handler_usage_metadata_flows_to_tool_output_without_private_fields() {
     assert_eq!(serde_json::to_value(output.telemetry()).unwrap(), expected);
     assert_eq!(
         output.state(),
-        Some(&serde_json::json!({ "restore": "kept" })),
+        Some(&json!({ "restore": "kept" })),
         "telemetry must not replace restore state"
     );
 
@@ -500,10 +500,7 @@ fn handler_usage_metadata_flows_to_tool_output_without_private_fields() {
         expected,
         "telemetry must survive serde"
     );
-    assert_eq!(
-        restored.state(),
-        Some(&serde_json::json!({ "restore": "kept" }))
-    );
+    assert_eq!(restored.state(), Some(&json!({ "restore": "kept" })));
 }
 
 #[test]
@@ -540,11 +537,11 @@ fn image_and_diff_outputs_preserve_first_class_telemetry() {
     );
     host.load_source("telemetry_variants", &src).unwrap();
 
-    let image = exec_tool_output(&reg, "telemetry_image", serde_json::json!({})).unwrap();
+    let image = exec_tool_output(&reg, "telemetry_image", json!({})).unwrap();
     assert!(matches!(image, n00n_agent::ToolOutput::Image { .. }));
     assert_eq!(image.telemetry().and_then(|value| value.cost), Some(0.25));
 
-    let diff = exec_tool_output(&reg, "telemetry_diff", serde_json::json!({})).unwrap();
+    let diff = exec_tool_output(&reg, "telemetry_diff", json!({})).unwrap();
     assert!(matches!(diff, n00n_agent::ToolOutput::Diff { .. }));
     assert_eq!(
         diff.telemetry()
@@ -577,7 +574,7 @@ fn restore_snapshot_text(
             tool: Arc::from(tool),
             tool_use_id: "restore_id".to_owned(),
             output: "ok".to_owned(),
-            input: serde_json::json!({}),
+            input: json!({}),
             is_error: false,
             tool_output_lines: ToolOutputLines::default(),
             theme_gen: None,
@@ -604,7 +601,7 @@ fn restore_snapshot_text(
 #[test_case::test_case(true, "n=3 tag=hi" ; "state_present")]
 #[test_case::test_case(false, "no state" ; "state_absent_falls_back")]
 fn restore_reads_persisted_state(with_state: bool, expected: &str) {
-    let state = with_state.then(|| serde_json::json!({ "n": 3, "tag": "hi" }));
+    let state = with_state.then(|| json!({ "n": 3, "tag": "hi" }));
     let src = format!(
         r#"n00n.api.register_tool({{
             name = "state_restore",
@@ -657,7 +654,7 @@ fn restore_ctx_is_userdata_with_gated_capabilities() {
         &src,
         "ctx_restore",
         Vec::new(),
-        Some(serde_json::json!({ "tag": "hi" })),
+        Some(json!({ "tag": "hi" })),
     );
     assert!(
         text.contains("hi tol_ok config_err finish_err deadline_err cancelled_ok"),
@@ -707,7 +704,7 @@ n00n.api.register_tool({{
 }})"#
     );
     host.load_source("restore_compose_plugin", &src).unwrap();
-    let out = exec_tool(&reg, "restore_driver", serde_json::json!({})).unwrap();
+    let out = exec_tool(&reg, "restore_driver", json!({})).unwrap();
     assert_eq!(
         out, "buf_ok state_ok tol_ok buf2_ok ud_ok default_ok",
         "wrap_restore ctx normalization mismatch"
@@ -737,7 +734,7 @@ fn agent_api_value_failures_return_err_pairs() {
         }})"#
     );
     host.load_source("agent_pairs_plugin", &src).unwrap();
-    let out = exec_tool(&reg, "agent_pairs_probe", serde_json::json!({})).unwrap();
+    let out = exec_tool(&reg, "agent_pairs_probe", json!({})).unwrap();
     assert_eq!(out, "prompt_err tools_err model_err");
 }
 
@@ -795,7 +792,7 @@ fn examples_table_flows_to_trait() {
     let entry = reg.get("with_examples").expect("tool not registered");
     assert_eq!(
         entry.tool.examples(),
-        Some(serde_json::json!([{"url": "https://example.com"}]))
+        Some(json!([{"url": "https://example.com"}]))
     );
 }
 
@@ -825,7 +822,7 @@ n00n.api.register_tool({{
     host.load_source("loop_plugin", &src).unwrap();
 
     let entry = reg.get("infinite_loop_").expect("loop tool not registered");
-    let inv = entry.tool.parse(&serde_json::json!({})).unwrap();
+    let inv = entry.tool.parse(&json!({})).unwrap();
     let mut ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
     ctx.deadline = n00n_agent::tools::Deadline::after(std::time::Duration::from_secs(5));
 
@@ -833,7 +830,7 @@ n00n.api.register_tool({{
 
     assert!(result.output.is_err(), "expected error from timed-out loop");
 
-    let ok = exec_tool(&reg, "noop_after_loop", serde_json::json!({}));
+    let ok = exec_tool(&reg, "noop_after_loop", json!({}));
     assert!(ok.is_ok(), "VM poisoned after interrupt: {ok:?}");
 }
 
@@ -888,7 +885,7 @@ fn is_error_propagated_as_error() {
     );
     host.load_source("err_plugin", &src).unwrap();
 
-    let err = exec_tool(&reg, "returns_error", serde_json::json!({})).unwrap_err();
+    let err = exec_tool(&reg, "returns_error", json!({})).unwrap_err();
     assert_eq!(err, "boom");
 }
 
@@ -907,7 +904,7 @@ fn handler_bad_return_type_is_error() {
     );
     host.load_source("bad_ret", &src).unwrap();
 
-    let err = exec_tool(&reg, "bad_ret_num", serde_json::json!({})).unwrap_err();
+    let err = exec_tool(&reg, "bad_ret_num", json!({})).unwrap_err();
     assert!(err.contains("must return string"), "got: {err}");
 }
 
@@ -923,7 +920,7 @@ fn handler_nil_without_jobs_is_error() {
         handler = function() return nil end
     })"#;
     host.load_source("nil_no_jobs", src).unwrap();
-    let err = exec_tool(&reg, "nil_no_jobs", serde_json::json!({})).unwrap_err();
+    let err = exec_tool(&reg, "nil_no_jobs", json!({})).unwrap_err();
     assert!(err.contains(NIL_WITHOUT_JOBS_ERR), "got: {err}");
 }
 
@@ -949,12 +946,8 @@ fn handler_nil_waits_for_owned_async_run() {
     host.load_source("async_finish", src).unwrap();
     let first_registry = Arc::clone(&reg);
     let second_registry = Arc::clone(&reg);
-    let first = std::thread::spawn(move || {
-        exec_tool(&first_registry, "async_finish", serde_json::json!({}))
-    });
-    let second = std::thread::spawn(move || {
-        exec_tool(&second_registry, "async_finish", serde_json::json!({}))
-    });
+    let first = std::thread::spawn(move || exec_tool(&first_registry, "async_finish", json!({})));
+    let second = std::thread::spawn(move || exec_tool(&second_registry, "async_finish", json!({})));
 
     assert_eq!(first.join().unwrap().unwrap(), "finished");
     assert_eq!(second.join().unwrap().unwrap(), "finished");
@@ -976,7 +969,7 @@ fn handler_lua_error_surfaces_as_tool_error() {
     );
     host.load_source("thrower_plugin", &src).unwrap();
 
-    let err = exec_tool(&reg, "thrower", serde_json::json!({})).unwrap_err();
+    let err = exec_tool(&reg, "thrower", json!({})).unwrap_err();
     assert!(err.contains("intentional kaboom"), "got: {err}");
 }
 
@@ -1002,17 +995,12 @@ n00n.api.register_tool({
     let entry = reg.get("needs_name").unwrap();
     let err = entry
         .tool
-        .parse(&serde_json::json!({"count": 1}))
+        .parse(&json!({"count": 1}))
         .err()
         .expect("missing required field should fail");
     assert!(err.to_string().contains("name"));
 
-    assert!(
-        entry
-            .tool
-            .parse(&serde_json::json!({"name": "alice"}))
-            .is_ok()
-    );
+    assert!(entry.tool.parse(&json!({"name": "alice"})).is_ok());
 }
 
 #[test]
@@ -1265,7 +1253,7 @@ fn ctx_finish_called_twice_is_error() {
         }})"#,
     );
     host.load_source("double_finish", &src).unwrap();
-    let err = exec_tool(&reg, "double_finish", serde_json::json!({})).unwrap_err();
+    let err = exec_tool(&reg, "double_finish", json!({})).unwrap_err();
     assert!(err.contains(FINISH_CALLED_TWICE_ERR), "got: {err}");
 }
 
@@ -1285,7 +1273,7 @@ fn ctx_finish_with_is_error_propagates() {
         }})"#,
     );
     host.load_source("finish_err", &src).unwrap();
-    let err = exec_tool(&reg, "finish_err", serde_json::json!({})).unwrap_err();
+    let err = exec_tool(&reg, "finish_err", json!({})).unwrap_err();
     assert_eq!(err, "async boom");
 }
 
@@ -1309,7 +1297,7 @@ fn async_job_on_exit_receives_exit_code() {
         }})"#,
     );
     host.load_source("job_exit_code", &src).unwrap();
-    let out = exec_tool(&reg, "job_exit_code", serde_json::json!({})).unwrap();
+    let out = exec_tool(&reg, "job_exit_code", json!({})).unwrap();
     assert_eq!(out, "code=42");
 }
 
@@ -1339,7 +1327,7 @@ fn jobwait_fires_callbacks_while_waiting() {
         }})"#,
     );
     host.load_source("job_stream", &src).unwrap();
-    let out = exec_tool(&reg, "job_stream", serde_json::json!({})).unwrap();
+    let out = exec_tool(&reg, "job_stream", json!({})).unwrap();
     assert_eq!(out, "a,b exit=7 stdout=a,b");
 }
 
@@ -1360,7 +1348,7 @@ fn jobstart_invalid_cwd_errors_with_expanded_path() {
         }})"#,
     );
     host.load_source("job_bad_cwd", &src).unwrap();
-    let out = exec_tool(&reg, "job_bad_cwd", serde_json::json!({})).unwrap();
+    let out = exec_tool(&reg, "job_bad_cwd", json!({})).unwrap();
     let expanded = n00n_storage::paths::home()
         .expect("home dir")
         .join(JOB_BAD_CWD.strip_prefix("~/").unwrap());
@@ -1386,7 +1374,7 @@ fn async_job_exits_without_finish_is_error() {
         }})"#,
     );
     host.load_source("job_no_finish", &src).unwrap();
-    let err = exec_tool(&reg, "job_no_finish", serde_json::json!({})).unwrap_err();
+    let err = exec_tool(&reg, "job_no_finish", json!({})).unwrap_err();
     assert!(err.contains(NIL_WITHOUT_JOBS_ERR), "got: {err}");
 }
 
@@ -1410,7 +1398,7 @@ fn async_job_callback_error_surfaces() {
         }})"#,
     );
     host.load_source("job_cb_err", &src).unwrap();
-    let err = exec_tool(&reg, "job_cb_err", serde_json::json!({})).unwrap_err();
+    let err = exec_tool(&reg, "job_cb_err", json!({})).unwrap_err();
     assert!(err.contains("callback exploded"), "got: {err}");
 }
 
@@ -1426,7 +1414,7 @@ fn click_until_finished(
 ) -> String {
     let eh = host.event_handle().expect("event handle available");
     let entry = reg.get(tool).expect("tool registered");
-    let inv = entry.tool.parse(&serde_json::json!({})).expect("parse");
+    let inv = entry.tool.parse(&json!({})).expect("parse");
     let worker = std::thread::spawn(move || {
         let ctx = n00n_agent::tools::test_support::stub_ctx_with(
             &n00n_agent::AgentMode::Build,
@@ -1574,7 +1562,7 @@ fn warm_restore_item(id: &str, clicks: Vec<usize>) -> n00n_lua::RestoreItem {
         tool: Arc::from(WARM_TOOL_NAME),
         tool_use_id: id.to_owned(),
         output: "done".to_owned(),
-        input: serde_json::json!({}),
+        input: json!({}),
         is_error: false,
         tool_output_lines: ToolOutputLines::default(),
         theme_gen: None,
@@ -1625,7 +1613,7 @@ fn exec_warm_tool(
         .get(tool)
         .expect("tool registered")
         .tool
-        .parse(&serde_json::json!({}))
+        .parse(&json!({}))
         .expect("parse failed");
     smol::block_on(inv.execute(ctx)).output
 }
@@ -1814,7 +1802,7 @@ n00n.api.register_tool({{
         tool: Arc::from(TOOL),
         tool_use_id: evicted_id.to_owned(),
         output: OUTPUT.to_owned(),
-        input: serde_json::json!({}),
+        input: json!({}),
         is_error: false,
         tool_output_lines: ToolOutputLines::default(),
         theme_gen: None,
@@ -1997,13 +1985,7 @@ n00n.api.register_tool({{
 "#,
     );
     host.load_source("call_tool_live", &src).unwrap();
-    let out = exec_tool_in(
-        &reg,
-        "driver",
-        serde_json::json!({}),
-        Some(Arc::clone(&reg)),
-    )
-    .expect("driver ok");
+    let out = exec_tool_in(&reg, "driver", json!({}), Some(Arc::clone(&reg))).expect("driver ok");
     assert_eq!(
         out,
         "child_done/5 items stream_done/streamed line/1 lines boom/nil"
@@ -2031,7 +2013,7 @@ fn jobstop_kills_running_job() {
         }})"#,
     );
     host.load_source("job_stop", &src).unwrap();
-    let out = exec_tool(&reg, "job_stop", serde_json::json!({})).unwrap();
+    let out = exec_tool(&reg, "job_stop", json!({})).unwrap();
     assert_eq!(out, "killed=true");
 }
 
@@ -2062,9 +2044,9 @@ n00n.api.register_tool({{
 "#,
     );
     host.load_source("recovery", &src).unwrap();
-    let out1 = exec_tool(&reg, "async_first", serde_json::json!({})).unwrap();
+    let out1 = exec_tool(&reg, "async_first", json!({})).unwrap();
     assert_eq!(out1, "ok1");
-    let out2 = exec_tool(&reg, "sync_after", serde_json::json!({})).unwrap();
+    let out2 = exec_tool(&reg, "sync_after", json!({})).unwrap();
     assert_eq!(out2, "ok2");
 }
 
@@ -2190,10 +2172,7 @@ fn setup_all_sections_at_once() {
     );
     assert_eq!(raw.storage.max_log_files, Some(3));
     assert_eq!(raw.plugins["bash"].enabled, Some(true));
-    assert_eq!(
-        raw.plugins["bash"].opts["timeout_secs"],
-        serde_json::json!(180)
-    );
+    assert_eq!(raw.plugins["bash"].opts["timeout_secs"], json!(180));
     assert_eq!(raw.plugins["websearch"].enabled, Some(false));
 }
 
@@ -2235,7 +2214,7 @@ const UNDECLARED_OPTS_ERR: &str = "unknown options in plugins.bare_plugin: timeo
 (this plugin declares no options via n00n.api.register_options)";
 
 fn probe_opts(reg: &ToolRegistry) -> serde_json::Value {
-    let out = exec_tool(reg, "opts_probe", serde_json::json!({})).unwrap();
+    let out = exec_tool(reg, "opts_probe", json!({})).unwrap();
     serde_json::from_str(&out).unwrap()
 }
 
@@ -2244,13 +2223,13 @@ fn json_obj(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> 
 }
 
 #[test_case::test_case(
-    serde_json::json!({}),
-    serde_json::json!(120), serde_json::Value::Null
+    json!({}),
+    json!(120), serde_json::Value::Null
     ; "defaults_without_user_opts"
 )]
 #[test_case::test_case(
-    serde_json::json!({ "timeout_secs": 30, "label": "x" }),
-    serde_json::json!(30), serde_json::json!("x")
+    json!({ "timeout_secs": 30, "label": "x" }),
+    json!(30), json!("x")
     ; "user_opts_win"
 )]
 fn register_options_merges(
@@ -2268,10 +2247,10 @@ fn register_options_merges(
     assert_eq!(snap["label"], label);
 }
 
-#[test_case::test_case(serde_json::json!({ "typo": 1 }), UNKNOWN_OPTION_ERR ; "unknown_key")]
-#[test_case::test_case(serde_json::json!({ "timeout_secs": "abc" }), OPTION_TYPE_ERR ; "wrong_type")]
-#[test_case::test_case(serde_json::json!({ "timeout_secs": 12.5 }), OPTION_TYPE_ERR ; "float_for_integer")]
-#[test_case::test_case(serde_json::json!({ "timeout_secs": 1 }), OPTION_MIN_ERR ; "below_min")]
+#[test_case::test_case(json!({ "typo": 1 }), UNKNOWN_OPTION_ERR ; "unknown_key")]
+#[test_case::test_case(json!({ "timeout_secs": "abc" }), OPTION_TYPE_ERR ; "wrong_type")]
+#[test_case::test_case(json!({ "timeout_secs": 12.5 }), OPTION_TYPE_ERR ; "float_for_integer")]
+#[test_case::test_case(json!({ "timeout_secs": 1 }), OPTION_MIN_ERR ; "below_min")]
 fn register_options_rejects_bad_user_opts(opts: serde_json::Value, expected: &str) {
     let reg = fresh_registry();
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
@@ -2360,12 +2339,12 @@ fn builtin_opts_flow_from_setup_plugins() {
 }
 
 #[test_case::test_case(
-    serde_json::json!({}),
+    json!({}),
     &["edit", "multiedit"], &["edit_lines", "insert_lines"]
     ; "multiedit_on_others_opt_in"
 )]
 #[test_case::test_case(
-    serde_json::json!({ "multiedit": false, "edit_lines": true }),
+    json!({ "multiedit": false, "edit_lines": true }),
     &["edit", "edit_lines"], &["multiedit", "insert_lines"]
     ; "toggles_flip_sub_tools"
 )]
@@ -2394,7 +2373,7 @@ fn undeclared_opts_fail_the_load() {
         .load_source_with_opts(
             "bare_plugin",
             "local x = 1",
-            json_obj(serde_json::json!({ "timeout_secs": 30 })),
+            json_obj(json!({ "timeout_secs": 30 })),
         )
         .expect_err("plugin load should fail");
     assert!(err.to_string().contains(UNDECLARED_OPTS_ERR), "got: {err}");
@@ -2405,10 +2384,9 @@ fn opts_for_unknown_plugin_fail_load_builtins() {
     let reg = fresh_registry();
     let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
     let mut config = PluginsConfig::from_plugins(&HashMap::new());
-    config.opts.insert(
-        "bsah".to_owned(),
-        json_obj(serde_json::json!({ "timeout_secs": 5 })),
-    );
+    config
+        .opts
+        .insert("bsah".to_owned(), json_obj(json!({ "timeout_secs": 5 })));
     let err = host
         .load_builtins(&config)
         .expect_err("load_builtins should fail");
@@ -2441,10 +2419,7 @@ fn disabled_plugin_opts_are_ignored_not_rejected() {
     let config = PluginsConfig {
         enabled: true,
         names: vec!["grep".to_owned()],
-        opts: HashMap::from([(
-            "bash".to_owned(),
-            json_obj(serde_json::json!({ "timeout_secs": 180 })),
-        )]),
+        opts: HashMap::from([("bash".to_owned(), json_obj(json!({ "timeout_secs": 180 })))]),
     };
     host.load_builtins(&config).unwrap();
     assert!(reg.get("bash").is_none(), "bash stays disabled");
@@ -2653,7 +2628,7 @@ fn job_callback_finishes_after_handler_returns_nil() {
         }})"#,
     );
     host.load_source("job_after_return", &src).unwrap();
-    let out = exec_tool(&reg, "job_after_return", serde_json::json!({})).unwrap();
+    let out = exec_tool(&reg, "job_after_return", json!({})).unwrap();
     assert_eq!(out, "exit=0");
 }
 
@@ -2677,7 +2652,7 @@ fn ctx_set_deadline_times_out() {
         }})"#,
     );
     host.load_source("deadline_test", &src).unwrap();
-    let err = exec_tool(&reg, "deadline_test", serde_json::json!({})).unwrap_err();
+    let err = exec_tool(&reg, "deadline_test", json!({})).unwrap_err();
     assert!(err.contains(TIMED_OUT_SUBSTR), "got: {err}");
 }
 
@@ -2698,7 +2673,7 @@ fn ctx_set_deadline_twice_errors() {
         }})"#,
     );
     host.load_source("deadline_twice", &src).unwrap();
-    let err = exec_tool(&reg, "deadline_twice", serde_json::json!({})).unwrap_err();
+    let err = exec_tool(&reg, "deadline_twice", json!({})).unwrap_err();
     assert!(err.contains(DEADLINE_ALREADY_SET_ERR), "got: {err}");
 }
 
@@ -2706,7 +2681,7 @@ fn ctx_set_deadline_twice_errors() {
 fn restore_tool_async_ordering_and_delivery() {
     let (_reg, host) = builtins_host();
 
-    let input = serde_json::json!({"command": "echo ok", "timeout": 1});
+    let input = json!({"command": "echo ok", "timeout": 1});
 
     let handle = host.event_handle().expect("event handle available");
     let (tx, rx) = flume::unbounded();
@@ -2727,7 +2702,7 @@ fn restore_tool_async_ordering_and_delivery() {
         tool: Arc::from("definitely_not_a_tool"),
         tool_use_id: "unknown_id".to_owned(),
         output: "ignored".to_owned(),
-        input: serde_json::json!({}),
+        input: json!({}),
         is_error: false,
         tool_output_lines: ToolOutputLines::default(),
         theme_gen: None,
@@ -2767,14 +2742,14 @@ fn restore_tool_async_ordering_and_delivery() {
 
 #[test_case::test_case(
     "write",
-    serde_json::json!({"path": "/tmp/x.md", "content": "alpha\nbeta"}),
+    json!({"path": "/tmp/x.md", "content": "alpha\nbeta"}),
     "wrote 10 bytes to /tmp/x.md",
     &["alpha", "beta"]
     ; "write_tool_restores_file_content"
 )]
 #[test_case::test_case(
     "memory",
-    serde_json::json!({"command": "write", "path": "n.md", "content": "gamma"}),
+    json!({"command": "write", "path": "n.md", "content": "gamma"}),
     "wrote n.md (1 lines)",
     &["gamma"]
     ; "memory_write_restores_saved_content"
@@ -2836,7 +2811,7 @@ fn restore_rebuilds_body_from_input_content(
 fn bash_permission_scopes_never_falls_back_to_json(command: &str) {
     let (reg, _host) = builtins_host();
 
-    let input = serde_json::json!({ "command": command });
+    let input = json!({ "command": command });
     let entry = reg.get("bash").expect("bash registered");
     let inv = entry.tool.parse(&input).expect("parse failed");
     let scopes = smol::block_on(inv.permission_scopes())
@@ -2902,7 +2877,7 @@ fn denied_permission_blocks_api(tool_name: &str, handler_body: &str, expected_pe
         n00n_lua::PluginPermissions::denied(),
         &src,
         tool_name,
-        serde_json::json!({}),
+        json!({}),
     )
     .unwrap();
     assert!(result.contains(PERMISSION_DENIED_MSG), "got: {result}");
@@ -2919,7 +2894,7 @@ fn user_plugin_with_fs_read_can_read_but_not_write() {
     );
     let mut perms = n00n_lua::PluginPermissions::denied();
     perms.set(n00n_lua::Permission::FsRead, true);
-    let result = exec_tool_with_perms(perms, &src, "rw_test", serde_json::json!({})).unwrap();
+    let result = exec_tool_with_perms(perms, &src, "rw_test", json!({})).unwrap();
     assert!(result.contains("read=true"), "got: {result}");
     assert!(result.contains("write=false"), "got: {result}");
 }
@@ -2936,7 +2911,7 @@ fn builtin_plugin_has_all_permissions() {
         n00n_lua::PluginPermissions::trusted(),
         &src,
         "trusted_test",
-        serde_json::json!({}),
+        json!({}),
     )
     .unwrap();
     assert!(result.contains("cwd=true"), "got: {result}");
@@ -2957,7 +2932,7 @@ fn env_permission_guards_uv_and_env() {
         n00n_lua::PluginPermissions::denied(),
         &src,
         "env_guard_test",
-        serde_json::json!({}),
+        json!({}),
     )
     .unwrap();
     assert!(result.contains("cwd=false"), "got: {result}");
@@ -3018,7 +2993,7 @@ fn mutable_path_returns_path_from_input() {
     let entry = reg.get("mp_read").expect("tool not registered");
     let inv = entry
         .tool
-        .parse(&serde_json::json!({ "path": "/tmp/foo.txt" }))
+        .parse(&json!({ "path": "/tmp/foo.txt" }))
         .expect("parse failed");
     assert_eq!(inv.mutable_path(), Some(Path::new("/tmp/foo.txt")));
 }
@@ -3036,7 +3011,7 @@ fn pure_functions_not_guarded() {
         n00n_lua::PluginPermissions::denied(),
         &src,
         "pure_test",
-        serde_json::json!({}),
+        json!({}),
     )
     .unwrap();
     assert!(result.contains("dirname=true"), "got: {result}");
@@ -3069,7 +3044,7 @@ fn runaway_allocation_hits_memory_limit_instead_of_oom() {
 #[test]
 fn start_hook_publishes_live_buf_for_tool_use_id() {
     let (reg, _host) = start_hook_fixture();
-    let rx = run_start(&reg, "st_tool", serde_json::json!({"code": "line1\nline2"}));
+    let rx = run_start(&reg, "st_tool", json!({"code": "line1\nline2"}));
     let body = recv_live_buf(&rx, START_TOOL_USE_ID).expect("start must publish a LiveToolBuf");
     let text = body.take().text();
     assert!(text.contains("line1"), "preview must render input: {text}");
@@ -3078,15 +3053,15 @@ fn start_hook_publishes_live_buf_for_tool_use_id() {
 #[test]
 fn start_hook_error_does_not_fail_tool() {
     let (reg, _host) = start_hook_fixture();
-    let _rx = run_start(&reg, "st_boom", serde_json::json!({"code": "x"}));
-    let out = exec_tool(&reg, "st_boom", serde_json::json!({"code": "x"})).expect("handler ok");
+    let _rx = run_start(&reg, "st_boom", json!({"code": "x"}));
+    let out = exec_tool(&reg, "st_boom", json!({"code": "x"})).expect("handler ok");
     assert_eq!(out, "handled");
 }
 
 #[test]
 fn start_skipped_for_tool_without_start_fn() {
     let (reg, _host) = start_hook_fixture();
-    let rx = run_start(&reg, "st_plain", serde_json::json!({"code": "x"}));
+    let rx = run_start(&reg, "st_plain", json!({"code": "x"}));
     assert!(
         recv_live_buf(&rx, START_TOOL_USE_ID).is_none(),
         "no start fn must mean no preview"
@@ -3098,7 +3073,7 @@ fn start_skipped_for_tool_without_start_fn() {
 #[test]
 fn start_ctx_capabilities() {
     let (reg, _host) = start_hook_fixture();
-    let rx = run_start(&reg, "st_probe", serde_json::json!({"code": "x"}));
+    let rx = run_start(&reg, "st_probe", json!({"code": "x"}));
     let body = recv_live_buf(&rx, START_TOOL_USE_ID).expect("probe publishes a buf");
     let text = body.take().text();
     assert_eq!(
@@ -3221,7 +3196,7 @@ fn start_annotation_timeout_happy_path() {
     let entry = reg.get("sa_to").expect("tool not registered");
     let inv = entry
         .tool
-        .parse(&serde_json::json!({"timeout": 90}))
+        .parse(&json!({"timeout": 90}))
         .expect("parse failed");
     assert_eq!(inv.start_annotation(), Some(timeout_annotation(90)));
 }
@@ -3243,7 +3218,7 @@ fn start_annotation_count_happy_path() {
     let entry = reg.get("sa_ct").expect("tool not registered");
     let inv = entry
         .tool
-        .parse(&serde_json::json!({"edits": [1, 2, 3]}))
+        .parse(&json!({"edits": [1, 2, 3]}))
         .expect("parse failed");
     assert_eq!(inv.start_annotation(), Some("3 edits".to_owned()));
 }
@@ -3291,7 +3266,7 @@ fn interpreter_on_output_streams_lines() {
         }})"#,
     );
     host.load_source("interp_stream_plugin", &src).unwrap();
-    let out = exec_tool(&reg, "interp_stream", serde_json::json!({})).unwrap();
+    let out = exec_tool(&reg, "interp_stream", json!({})).unwrap();
     assert_eq!(out, "a|b;stdout=a\nb");
 }
 
@@ -3329,7 +3304,7 @@ fn interpreter_tools_fn_map_kwargs_reach_lua_tool() {
         "{ greet = function(input) return 'hi:' .. input.name end }",
     );
     host.load_source("interp_tools_plugin", &src).unwrap();
-    let out = exec_tool(&reg, "interp_tools", serde_json::json!({})).unwrap();
+    let out = exec_tool(&reg, "interp_tools", json!({})).unwrap();
     assert_eq!(out, "hi:bob");
 }
 
@@ -3343,7 +3318,7 @@ fn interpreter_tools_nil_err_pair_fails_call() {
         "{ bad = function(input) return nil, 'boom' end }",
     );
     host.load_source("interp_err_plugin", &src).unwrap();
-    let out = exec_tool(&reg, "interp_err", serde_json::json!({})).unwrap();
+    let out = exec_tool(&reg, "interp_err", json!({})).unwrap();
     assert!(out.starts_with("err: "), "got: {out}");
     assert!(out.contains("boom"), "got: {out}");
 }
@@ -3358,7 +3333,7 @@ fn interpreter_tools_gather_resolves_parallel_batch() {
         "{ t_a = function(input) return 'A' end, t_b = function(input) return 'B' end }",
     );
     host.load_source("interp_gather_plugin", &src).unwrap();
-    let out = exec_tool(&reg, "interp_gather", serde_json::json!({})).unwrap();
+    let out = exec_tool(&reg, "interp_gather", json!({})).unwrap();
     assert_eq!(out, "A|B");
 }
 
@@ -3384,13 +3359,7 @@ fn call_tool_resolves_lua_tool_and_reports_unknown() {
         }})"#
     );
     host.load_source("call_tool_plugin", &src).unwrap();
-    let out = exec_tool_in(
-        &reg,
-        "call_tool_probe",
-        serde_json::json!({}),
-        Some(Arc::clone(&reg)),
-    )
-    .unwrap();
+    let out = exec_tool_in(&reg, "call_tool_probe", json!({}), Some(Arc::clone(&reg))).unwrap();
     assert_eq!(out, "hello");
     host.unload("call_tool_plugin").unwrap();
     host.unload("echo_plugin").unwrap();
@@ -3472,7 +3441,7 @@ fn run_session_usage_probe(provider: ScriptedSessionProvider, fast: bool) -> ser
     host.load_source("session_usage_plugin", &source).unwrap();
 
     let entry = registry.get("session_usage_probe").unwrap();
-    let invocation = entry.tool.parse(&serde_json::json!({})).unwrap();
+    let invocation = entry.tool.parse(&json!({})).unwrap();
     let (event_tx, event_rx) = flume::unbounded();
     let event_tx = n00n_agent::EventSender::new(event_tx, 0);
     let mut ctx = n00n_agent::tools::test_support::stub_ctx_with(
@@ -3536,7 +3505,7 @@ fn session_prompt_returns_charged_usage_with_later_error() {
                 vec![ContentBlock::ToolUse {
                     id: "charged-call".to_owned(),
                     name: "missing_tool".to_owned(),
-                    input: serde_json::json!({}),
+                    input: json!({}),
                 }],
                 usage,
                 StopReason::ToolUse,
@@ -3580,7 +3549,7 @@ fn session_close_idempotent_and_prompt_after_close_errors() {
         }})"#
     );
     host.load_source("session_plugin", &src).unwrap();
-    let out = exec_tool(&reg, "session_probe", serde_json::json!({})).unwrap();
+    let out = exec_tool(&reg, "session_probe", json!({})).unwrap();
     assert_eq!(out, SESSION_CLOSED_ERR);
 }
 
@@ -3625,7 +3594,7 @@ fn lua_subagent_keeps_generated_session_ref_when_provider_reaches_network() {
         );
         host.load_source("session_network_plugin", &src).unwrap();
         let entry = reg.get("session_network_probe").unwrap();
-        let invocation = entry.tool.parse(&serde_json::json!({})).unwrap();
+        let invocation = entry.tool.parse(&json!({})).unwrap();
         let mut ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
         ctx.provider = Arc::new(NetworkSessionProbe {
             address,
@@ -3664,7 +3633,7 @@ fn session_opts_validation_rejects(opts: &str, expected: &str) {
         }})"#
     );
     host.load_source("session_opts_plugin", &src).unwrap();
-    let out = exec_tool(&reg, "session_opts_probe", serde_json::json!({})).unwrap();
+    let out = exec_tool(&reg, "session_opts_probe", json!({})).unwrap();
     assert!(out.contains(expected), "got: {out}");
 }
 
@@ -3691,7 +3660,7 @@ fn lua_tool_image_reply_maps_to_image_output() {
     let reg = fresh_registry();
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
     load_img_tool(&host);
-    let out = exec_tool_output(&reg, "img_probe", serde_json::json!({})).unwrap();
+    let out = exec_tool_output(&reg, "img_probe", json!({})).unwrap();
     let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
         panic!("expected Image output, got {out:?}");
     };
@@ -3720,13 +3689,7 @@ fn call_tool_flattens_image_output_with_not_visible_note() {
         }})"#
     );
     host.load_source("img_caller_plugin", &src).unwrap();
-    let out = exec_tool_in(
-        &reg,
-        "img_caller",
-        serde_json::json!({}),
-        Some(Arc::clone(&reg)),
-    )
-    .unwrap();
+    let out = exec_tool_in(&reg, "img_caller", json!({}), Some(Arc::clone(&reg))).unwrap();
     assert_eq!(out, format!("[image: test 1x1] ({IMAGE_NOT_VISIBLE_NOTE})"));
 }
 
@@ -3748,12 +3711,8 @@ fn view_image_tool_returns_image_output() {
     img.save_with_format(&path, image::ImageFormat::Png)
         .unwrap();
 
-    let out = exec_tool_output(
-        &reg,
-        "view_image",
-        serde_json::json!({"path": path.to_str().unwrap()}),
-    )
-    .unwrap();
+    let out =
+        exec_tool_output(&reg, "view_image", json!({"path": path.to_str().unwrap()})).unwrap();
     let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
         panic!("expected Image output, got {out:?}");
     };
@@ -3770,8 +3729,7 @@ fn view_image_tool_returns_image_output() {
 #[test]
 fn view_image_rejects_non_regular_file_before_reading() {
     let (reg, _host) = builtins_host();
-    let err =
-        exec_tool_output(&reg, "view_image", serde_json::json!({"path": "/dev/zero"})).unwrap_err();
+    let err = exec_tool_output(&reg, "view_image", json!({"path": "/dev/zero"})).unwrap_err();
     assert!(err.contains("not a regular file"), "got: {err}");
 }
 
@@ -3781,12 +3739,8 @@ fn view_image_tool_rejects_non_image() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("notes.txt");
     std::fs::write(&path, "plain text").unwrap();
-    let err = exec_tool_output(
-        &reg,
-        "view_image",
-        serde_json::json!({"path": path.to_str().unwrap()}),
-    )
-    .unwrap_err();
+    let err =
+        exec_tool_output(&reg, "view_image", json!({"path": path.to_str().unwrap()})).unwrap_err();
     assert!(err.contains("not an image"), "got: {err}");
 }
 
@@ -3852,12 +3806,8 @@ fn view_image_rejects_decode_bomb_before_shipping_bytes() {
     bytes[29..33].copy_from_slice(&crc.to_be_bytes());
     std::fs::write(&path, bytes).unwrap();
 
-    let err = exec_tool_output(
-        &reg,
-        "view_image",
-        serde_json::json!({"path": path.to_str().unwrap()}),
-    )
-    .unwrap_err();
+    let err =
+        exec_tool_output(&reg, "view_image", json!({"path": path.to_str().unwrap()})).unwrap_err();
     assert!(err.contains("10000x10000"), "got: {err}");
     assert!(err.contains("limit 50000000 pixels"), "got: {err}");
 }
@@ -3876,12 +3826,8 @@ fn view_image_tall_png_returns_first_lossless_tile_with_schema_guidance() {
         .save_with_format(&path, image::ImageFormat::Png)
         .unwrap();
 
-    let out = exec_tool_output(
-        &reg,
-        "view_image",
-        serde_json::json!({"path": path.to_str().unwrap()}),
-    )
-    .unwrap();
+    let out =
+        exec_tool_output(&reg, "view_image", json!({"path": path.to_str().unwrap()})).unwrap();
     let n00n_agent::ToolOutput::Image {
         source: output,
         text,
@@ -3917,12 +3863,8 @@ fn view_image_provider_safe_tall_png_passes_through_byte_for_byte() {
         .unwrap();
     let original = std::fs::read(&path).unwrap();
 
-    let out = exec_tool_output(
-        &reg,
-        "view_image",
-        serde_json::json!({"path": path.to_str().unwrap()}),
-    )
-    .unwrap();
+    let out =
+        exec_tool_output(&reg, "view_image", json!({"path": path.to_str().unwrap()})).unwrap();
     let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
         panic!("expected Image output, got {out:?}");
     };
@@ -3946,12 +3888,8 @@ fn view_image_over_transport_limit_returns_lossless_tile_without_jpeg_fallback()
     original.resize(4 * 1024 * 1024, 0);
     std::fs::write(&path, &original).unwrap();
 
-    let tile = exec_tool_output(
-        &reg,
-        "view_image",
-        serde_json::json!({"path": path.to_str().unwrap()}),
-    )
-    .unwrap();
+    let tile =
+        exec_tool_output(&reg, "view_image", json!({"path": path.to_str().unwrap()})).unwrap();
     let n00n_agent::ToolOutput::Image { source, text, .. } = tile else {
         panic!("expected Image output, got {tile:?}");
     };
@@ -3995,7 +3933,7 @@ fn view_image_lossless_tiles_cover_source_once_without_gaps() {
         let out = exec_tool_output(
             &reg,
             "view_image",
-            serde_json::json!({
+            json!({
                 "path": path.to_str().unwrap(),
                 "tile_index": tile_index,
                 "tile_width": 3,
@@ -4059,7 +3997,7 @@ fn view_image_rejects_crop_area_before_allocating_or_encoding() {
     let err = exec_tool_output(
         &reg,
         "view_image",
-        serde_json::json!({
+        json!({
             "path": path.to_str().unwrap(),
             "crop": [0, 0, 8000, 8000],
         }),
@@ -4086,12 +4024,8 @@ fn view_image_rejects_incompressible_tile_at_bounded_encode_limit() {
         .save_with_format(&path, image::ImageFormat::Png)
         .unwrap();
 
-    let err = exec_tool_output(
-        &reg,
-        "view_image",
-        serde_json::json!({"path": path.to_str().unwrap()}),
-    )
-    .unwrap_err();
+    let err =
+        exec_tool_output(&reg, "view_image", json!({"path": path.to_str().unwrap()})).unwrap_err();
     assert!(err.contains("bounded"), "got: {err}");
     assert!(err.contains("retry with smaller"), "got: {err}");
 }
@@ -4108,7 +4042,7 @@ fn view_image_lossless_crop_reports_exact_source_bounds() {
     let out = exec_tool_output(
         &reg,
         "view_image",
-        serde_json::json!({
+        json!({
             "path": path.to_str().unwrap(),
             "crop": [1, 1, 3, 2],
         }),
@@ -4137,12 +4071,8 @@ fn view_image_unicode_path_passes_through_unchanged() {
         .unwrap();
     let original = std::fs::read(&path).unwrap();
 
-    let out = exec_tool_output(
-        &reg,
-        "view_image",
-        serde_json::json!({"path": path.to_str().unwrap()}),
-    )
-    .unwrap();
+    let out =
+        exec_tool_output(&reg, "view_image", json!({"path": path.to_str().unwrap()})).unwrap();
     let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
         panic!("expected Image output, got {out:?}");
     };
@@ -4169,19 +4099,15 @@ fn view_image_animated_gif_requires_explicit_capability_or_static_opt_in() {
     assert_eq!(frames, 2, "fixture must contain multiple GIF frames");
     std::fs::write(&path, &fixture).unwrap();
 
-    let err = exec_tool_output(
-        &reg,
-        "view_image",
-        serde_json::json!({"path": path.to_str().unwrap()}),
-    )
-    .unwrap_err();
+    let err =
+        exec_tool_output(&reg, "view_image", json!({"path": path.to_str().unwrap()})).unwrap_err();
     assert!(err.contains("GIF"), "got: {err}");
     assert!(err.contains("allow_gif_animation=true"), "got: {err}");
 
     let raw = exec_tool_output(
         &reg,
         "view_image",
-        serde_json::json!({"path": path.to_str().unwrap(), "allow_gif_animation": true}),
+        json!({"path": path.to_str().unwrap(), "allow_gif_animation": true}),
     )
     .unwrap();
     let n00n_agent::ToolOutput::Image { source, .. } = raw else {
@@ -4198,7 +4124,7 @@ fn view_image_animated_gif_requires_explicit_capability_or_static_opt_in() {
     let out = exec_tool_output(
         &reg,
         "view_image",
-        serde_json::json!({"path": path.to_str().unwrap(), "static_image": true}),
+        json!({"path": path.to_str().unwrap(), "static_image": true}),
     )
     .unwrap();
     let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
@@ -4224,19 +4150,15 @@ fn view_image_animated_webp_requires_explicit_static_opt_in() {
     assert!(fixture.windows(4).any(|chunk| chunk == b"ANMF"));
     std::fs::write(&path, fixture).unwrap();
 
-    let err = exec_tool_output(
-        &reg,
-        "view_image",
-        serde_json::json!({"path": path.to_str().unwrap()}),
-    )
-    .unwrap_err();
+    let err =
+        exec_tool_output(&reg, "view_image", json!({"path": path.to_str().unwrap()})).unwrap_err();
     assert!(err.contains("animated webp"), "got: {err}");
     assert!(err.contains("static_image=true"), "got: {err}");
 
     let out = exec_tool_output(
         &reg,
         "view_image",
-        serde_json::json!({"path": path.to_str().unwrap(), "static_image": true}),
+        json!({"path": path.to_str().unwrap(), "static_image": true}),
     )
     .unwrap();
     let n00n_agent::ToolOutput::Image { source, text, .. } = out else {
@@ -4260,7 +4182,7 @@ fn interpreter_bridge_flattens_image_with_visibility_note() {
     let out = smol::block_on(n00n_agent::tools::interpreter_bridge::dispatch(
         &ctx,
         "img_probe",
-        &serde_json::json!({}),
+        &json!({}),
     ))
     .unwrap();
     assert!(out.starts_with("[image: test 1x1]"), "got: {out}");
@@ -4277,7 +4199,7 @@ fn bundled_todo_panel_keeps_current_todo_stable_in_hint() {
     exec_tool(
         &reg,
         "todo_write",
-        serde_json::json!({
+        json!({
             "todos": [
                 { "content": "Run tests", "status": "in_progress", "priority": "high" }
             ]
@@ -4308,7 +4230,7 @@ fn bundled_todo_panel_keeps_current_todo_stable_in_hint() {
     }
     handle.fire_autocmd(
         "ToolStart",
-        serde_json::json!({
+        json!({
             "id": "cmd-1",
             "tool": "bash",
             "summary": "cargo test --workspace",
@@ -4332,7 +4254,7 @@ fn bundled_todo_panel_keeps_current_todo_stable_in_hint() {
 
     handle.fire_autocmd(
         "ToolDone",
-        serde_json::json!({ "id": "cmd-1", "tool": "bash", "is_error": false }),
+        json!({ "id": "cmd-1", "tool": "bash", "is_error": false }),
     );
 }
 
@@ -4343,13 +4265,13 @@ fn bundled_todo_running_click_toggles_and_final_done_resets_collapsed() {
     let handle = host.event_handle().unwrap();
     handle.fire_autocmd(
         "ToolStart",
-        serde_json::json!({ "id": "cmd-1", "tool": "bash", "summary": "cargo test" }),
+        json!({ "id": "cmd-1", "tool": "bash", "summary": "cargo test" }),
     );
     barrier(&host);
     exec_tool(
         &reg,
         "todo_write",
-        serde_json::json!({
+        json!({
             "todos": [
                 { "content": "Run tests", "status": "in_progress", "priority": "high" }
             ]
@@ -4395,11 +4317,11 @@ fn bundled_todo_running_click_toggles_and_final_done_resets_collapsed() {
     wait_for("Running ▾");
     handle.fire_autocmd(
         "ToolDone",
-        serde_json::json!({ "id": "cmd-1", "tool": "bash", "is_error": false }),
+        json!({ "id": "cmd-1", "tool": "bash", "is_error": false }),
     );
     handle.fire_autocmd(
         "ToolStart",
-        serde_json::json!({ "id": "cmd-2", "tool": "bash", "summary": "cargo clippy" }),
+        json!({ "id": "cmd-2", "tool": "bash", "summary": "cargo clippy" }),
     );
     barrier(&host);
     wait_for("Running ▸");
@@ -4511,7 +4433,7 @@ fn team_launcher_uses_native_model_picker_and_amp_labels() {
         text.contains("model_tier: strong"),
         "tier routing default was not retained: {text}"
     );
-    reply_tx.send(Ok(serde_json::json!("started"))).unwrap();
+    reply_tx.send(Ok(json!("started"))).unwrap();
 }
 
 #[test]
@@ -4562,7 +4484,7 @@ fn team_launcher_collects_goal_and_submits_configured_prompt() {
     );
     assert!(text.contains("thinking: max"), "submitted prompt: {text}");
     assert!(text.contains("auto_tier: true"), "submitted prompt: {text}");
-    reply_tx.send(Ok(serde_json::json!("started"))).unwrap();
+    reply_tx.send(Ok(json!("started"))).unwrap();
 }
 
 /// The sessions picker parks its command handler in a `win:recv` loop while a
@@ -4632,7 +4554,7 @@ fn job_callbacks_fire_while_command_handler_parked() {
 #[test]
 fn skill_tool_list_returns_catalog() {
     let (reg, _host) = builtins_host();
-    let out = exec_tool(&reg, "skill", serde_json::json!({"list": true})).unwrap();
+    let out = exec_tool(&reg, "skill", json!({"list": true})).unwrap();
     assert!(
         out.contains("<available_skills>"),
         "list=true should return skill catalog"
@@ -4642,7 +4564,7 @@ fn skill_tool_list_returns_catalog() {
 #[test]
 fn skill_tool_missing_name_returns_available_names() {
     let (reg, _host) = builtins_host();
-    let out = exec_tool(&reg, "skill", serde_json::json!({})).unwrap_err();
+    let out = exec_tool(&reg, "skill", json!({})).unwrap_err();
     assert!(out.contains("error:"), "missing name should be an error");
     assert!(
         out.contains("Available skills"),
@@ -4653,12 +4575,7 @@ fn skill_tool_missing_name_returns_available_names() {
 #[test]
 fn skill_tool_unknown_name_returns_available_names() {
     let (reg, _host) = builtins_host();
-    let out = exec_tool(
-        &reg,
-        "skill",
-        serde_json::json!({"name": "nonexistent-skill"}),
-    )
-    .unwrap_err();
+    let out = exec_tool(&reg, "skill", json!({"name": "nonexistent-skill"})).unwrap_err();
     assert!(
         out.contains("skill not found"),
         "unknown skill should be reported"
@@ -4691,7 +4608,7 @@ fn jobstart_list_mode_preserve_arg_quoting() {
         }})"#
     );
     host.load_source("job_list", &src).unwrap();
-    let out = exec_tool(&reg, "job_list", serde_json::json!({})).unwrap();
+    let out = exec_tool(&reg, "job_list", json!({})).unwrap();
     assert_eq!(out, "exit=0");
 }
 
@@ -4718,7 +4635,7 @@ fn jobstart_list_mode_multiple_args() {
         }})"#
     );
     host.load_source("job_multi", &src).unwrap();
-    let out = exec_tool(&reg, "job_multi", serde_json::json!({})).unwrap();
+    let out = exec_tool(&reg, "job_multi", json!({})).unwrap();
     // echo -n a b c should output "a b c" without trailing newline
     assert_eq!(out, "a b c");
 }
@@ -4741,7 +4658,7 @@ fn jobstart_list_mode_empty_table_errors() {
         }})"#
     );
     host.load_source("job_empty", &src).unwrap();
-    let out = exec_tool(&reg, "job_empty", serde_json::json!({})).unwrap();
+    let out = exec_tool(&reg, "job_empty", json!({})).unwrap();
     assert!(out.contains("must have at least a program"), "got: {out}");
 }
 
@@ -4763,7 +4680,9 @@ fn jobstart_list_mode_non_string_arg_errors() {
         }})"#
     );
     host.load_source("job_nonstr", &src).unwrap();
-    let out = exec_tool(&reg, "job_nonstr", serde_json::json!({})).unwrap();
+    let out = exec_tool(&reg, "job_nonstr", json!({})).unwrap();
     // When a non-string is in the array, mlua's get::<String> will error
     assert!(!out.is_empty(), "got empty error string");
 }
+
+use serde_json::json;

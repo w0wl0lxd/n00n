@@ -21,6 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::AppSession;
+use crate::bunny::Bunny;
 use crate::chat::Chat;
 use crate::chat::{CANCELLED_TEXT, ChatEventResult, DONE_TEXT, ERROR_TEXT, transcript_to_display};
 use crate::clipboard::ClipboardState;
@@ -69,10 +70,12 @@ use ratatui::layout::Position;
 use ratatui_image::picker::Picker;
 
 pub(crate) use crate::agent::QueuedMessage;
+
 pub(crate) use mode::{Mode, PlanState, PlanTrigger};
 #[cfg(test)]
 use mouse::EDGE_SCROLL_LINES;
 pub(crate) use queue::{MessageQueue, SubmitOutcome};
+use serde_json::json;
 pub(crate) use session::session_has_content;
 use session_state::SessionState;
 
@@ -220,6 +223,7 @@ pub struct App {
     pub(super) plan_form: PlanForm,
     pub(super) status_bar: StatusBar,
     pub status: Status,
+    pub(crate) bunny: Bunny,
     pub(crate) state: session_state::SessionState,
     pub exit_request: ExitRequest,
     pub(crate) exit_on_done: bool,
@@ -334,6 +338,7 @@ impl App {
             plan_form: PlanForm::new(),
             status_bar: StatusBar::new(ui_config.flash_duration()),
             status: Status::Idle,
+            bunny: Bunny::new(),
             state,
             exit_request: ExitRequest::None,
             exit_on_done: false,
@@ -1294,10 +1299,7 @@ impl App {
                 DisplayRole::Error,
                 PERSISTENCE_FAILURE_MSG.into(),
             ));
-            self.fire_session_autocmd(
-                "TurnError",
-                serde_json::json!({ "message": PERSISTENCE_FAILURE_MSG }),
-            );
+            self.fire_session_autocmd("TurnError", json!({ "message": PERSISTENCE_FAILURE_MSG }));
         }
     }
     pub(crate) fn preserve_submission_for_shutdown(&mut self, dispatch: SubmissionDispatch) {
@@ -1511,7 +1513,7 @@ impl App {
         if let AgentEvent::ToolStart(ref e) = envelope.event {
             self.fire_session_autocmd(
                 "ToolStart",
-                serde_json::json!({
+                json!({
                     "id": e.id,
                     "tool": e.tool,
                     "summary": e.summary,
@@ -1523,7 +1525,7 @@ impl App {
         if let AgentEvent::ToolDone(ref e) = envelope.event {
             self.fire_session_autocmd(
                 "ToolDone",
-                serde_json::json!({
+                json!({
                     "id": e.id,
                     "tool": e.tool,
                     "is_error": e.is_error,
@@ -1658,7 +1660,7 @@ impl App {
                     self.subagent_answers.clear();
                     self.subagent_prompts.clear();
                     self.status = Status::Idle;
-                    self.fire_session_autocmd("TurnEnd", serde_json::json!({}));
+                    self.fire_session_autocmd("TurnEnd", json!({}));
                     if self.exit_on_done {
                         self.exit_request = ExitRequest::Success;
                     }
@@ -1676,10 +1678,7 @@ impl App {
                     for chat in &mut self.chats {
                         chat.fail_in_progress_with_message(message.as_str());
                     }
-                    self.fire_session_autocmd(
-                        "TurnError",
-                        serde_json::json!({ "message": message }),
-                    );
+                    self.fire_session_autocmd("TurnError", json!({ "message": message }));
                     if self.exit_on_done {
                         self.exit_request = ExitRequest::Error;
                     }

@@ -71,7 +71,7 @@ fn finish_with_live_buf(
     buf.set_lines(vec![snap_line(text)]);
     panel.register_live_buf(id.into(), Arc::clone(&buf));
     let mut ev = start(id, BASH_TOOL_NAME);
-    ev.raw_input = Some(serde_json::json!({ "command": "true" }));
+    ev.raw_input = Some(json!({ "command": "true" }));
     panel.tool_start(ev);
     panel.tool_done(ToolDoneEvent {
         is_error,
@@ -1066,6 +1066,7 @@ fn stream_reset_clears_streaming_and_fails_tools() {
 
 const N00N_PREFIX_LEN: u16 = 6;
 
+use serde_json::json;
 fn make_sel(area: Rect, anchor: (u32, u16), cursor: (u32, u16)) -> Selection {
     let mut sel = Selection::start(
         area.y + u16::try_from(anchor.0).unwrap_or_else(|_| u16::MAX),
@@ -2111,7 +2112,7 @@ fn tool_done_without_live_buf_is_not_watched_and_click_restores() {
     let mut panel = test_panel();
     panel.set_restore_channel(Some(eh), Some(EventSender::new(tx, 0)));
     let mut ev = start("t1", BASH_TOOL_NAME);
-    ev.raw_input = Some(serde_json::json!({ "command": "true" }));
+    ev.raw_input = Some(json!({ "command": "true" }));
     panel.tool_start(ev);
     panel.tool_snapshot(
         "t1",
@@ -2143,7 +2144,7 @@ fn cancel_in_progress_retires_live_buf_to_watched() {
     let buf = Arc::new(n00n_agent::SharedBuf::new());
     buf.set_lines(vec![snap_line("body")]);
     let mut ev = start("t1", BASH_TOOL_NAME);
-    ev.raw_input = Some(serde_json::json!({ "command": "true" }));
+    ev.raw_input = Some(json!({ "command": "true" }));
     panel.tool_start(ev);
     panel.register_live_buf("t1".into(), Arc::clone(&buf));
 
@@ -2328,7 +2329,7 @@ fn rendered_snapshot() -> BufferSnapshot {
 fn rebake_walk_requests_without_stamping_displayed_generation() {
     let mut panel = bash_tool_with_snapshot("t1");
     panel.find_tool_msg_mut("t1").unwrap().tool_raw_input =
-        Some(Arc::new(serde_json::json!({ "command": "echo" })));
+        Some(Arc::new(json!({ "command": "echo" })));
     panel.push(DisplayMessage::new(DisplayRole::Assistant, "plain".into()));
     panel.set_restore_channel(
         Some(n00n_lua::EventHandle::disconnected_for_test()),
@@ -2384,7 +2385,7 @@ fn tool_start_propagates_raw_input(pre_pending: bool) {
         panel.tool_pending("t1".into(), BASH_TOOL_NAME);
     }
     let mut event = start("t1", BASH_TOOL_NAME);
-    event.raw_input = Some(serde_json::json!({"command": "echo"}));
+    event.raw_input = Some(json!({"command": "echo"}));
     panel.tool_start(event);
 
     let raw = panel
@@ -2395,7 +2396,7 @@ fn tool_start_propagates_raw_input(pre_pending: bool) {
     assert!(raw.is_some(), "{RAW_INPUT_SET_MSG}");
     assert_eq!(
         raw.unwrap().as_ref(),
-        &serde_json::json!({"command": "echo"}),
+        &json!({"command": "echo"}),
         "{RAW_INPUT_SET_MSG}"
     );
 }
@@ -2424,7 +2425,7 @@ fn live_snapshot_uses_panel_generation() {
 fn rebake_without_channel_is_noop() {
     let mut panel = bash_tool_with_snapshot("t1");
     panel.find_tool_msg_mut("t1").unwrap().tool_raw_input =
-        Some(Arc::new(serde_json::json!({"command": "echo"})));
+        Some(Arc::new(json!({"command": "echo"})));
     let baked_gen = panel.snapshot_gen_of("t1").unwrap();
 
     panel.rebake_stale_snapshots(baked_gen + 1);
@@ -2615,7 +2616,7 @@ fn mixed_messages(n: usize) -> Vec<DisplayMessage> {
                     })),
                     format!("tool {i}"),
                 );
-                m.tool_raw_input = Some(Arc::new(serde_json::json!({ "command": "echo" })));
+                m.tool_raw_input = Some(Arc::new(json!({ "command": "echo" })));
                 m.tool_output = Some(Arc::new(ToolOutput::Plain(format!("out {i}").into())));
                 m
             } else if i % 2 == 0 {

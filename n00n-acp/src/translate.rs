@@ -263,6 +263,7 @@ fn mime_type(media: ImageMediaType) -> &'static str {
 #[cfg(test)]
 mod tests {
     use n00n_providers::ImageSource;
+    use serde_json::json;
     use test_case::test_case;
 
     use super::*;
@@ -312,7 +313,7 @@ mod tests {
                 MsgBlock::ToolUse {
                     id: "tu-1".into(),
                     name: "bash".into(),
-                    input: serde_json::json!({"command": "ls"}),
+                    input: json!({"command": "ls"}),
                 },
             ]),
             Message {

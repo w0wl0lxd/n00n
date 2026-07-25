@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tracing::{debug, warn};
 
 use crate::AgentError;
@@ -244,7 +244,7 @@ fn build_precompact_input(
     cwd: &Path,
     transcript_path: Option<&Path>,
 ) -> Value {
-    let mut obj = serde_json::json!({
+    let mut obj = json!({
         "session_id": session_id.map(|s| s.to_string()),
         "cwd": cwd.to_string_lossy().to_string(),
         "transcript_path": transcript_path.map(|p| p.to_string_lossy().to_string()),
@@ -267,7 +267,7 @@ fn build_postcompact_input(
     transcript_path: Option<&Path>,
     compact_summary: &str,
 ) -> Value {
-    let mut obj = serde_json::json!({
+    let mut obj = json!({
         "session_id": session_id.map(|s| s.to_string()),
         "cwd": cwd.to_string_lossy().to_string(),
         "transcript_path": transcript_path.map(|p| p.to_string_lossy().to_string()),

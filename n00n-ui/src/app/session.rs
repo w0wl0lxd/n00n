@@ -24,6 +24,7 @@ use crate::agent::QueuedMessage;
 /// iff this holds, and the shutdown path reuses it to tell which tabs were
 /// saved, so the report and the disk can never disagree. Sync the session
 /// first (`save_session` does).
+use serde_json::json;
 pub(crate) fn session_has_content(session: &AppSession) -> bool {
     !session.messages.is_empty()
         || !session.subagent_messages.is_empty()
@@ -311,7 +312,7 @@ impl App {
             self.enter_plan();
         }
         self.state.session = AppSession::new(&self.state.session.model, &self.state.session.cwd);
-        self.fire_session_autocmd("SessionReset", serde_json::json!({}));
+        self.fire_session_autocmd("SessionReset", json!({}));
         vec![Action::NewSession]
     }
 

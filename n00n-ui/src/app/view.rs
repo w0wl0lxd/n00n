@@ -20,6 +20,7 @@ use super::{App, Mode, Status};
 struct ViewLayout {
     msg_area: Rect,
     bottom_area: Rect,
+    bunny_area: Rect,
     status_area: Rect,
     queue_area: Rect,
     panel_windows: Vec<(usize, Rect)>,
@@ -88,8 +89,12 @@ impl App {
 
         // The `below` split lives outside `inner` (drawn by render_splits), so
         // the bottom panel only ever splits the chat region.
-        let [msg_area, bottom_area] =
-            Layout::vertical([Constraint::Min(1), Constraint::Length(bottom_height)]).areas(inner);
+        let [msg_area, bottom_area, bunny_area] = Layout::vertical([
+            Constraint::Min(1),
+            Constraint::Length(bottom_height),
+            Constraint::Length(2),
+        ])
+        .areas(inner);
 
         let panel_reqs = if bottom_takeover {
             Vec::new()
@@ -121,6 +126,7 @@ impl App {
         ViewLayout {
             msg_area,
             bottom_area,
+            bunny_area,
             status_area,
             queue_area,
             panel_windows,
@@ -213,6 +219,12 @@ impl App {
                 panel_hint,
             );
             self.command_palette.view(frame, layout.input_area);
+            self.bunny.render(
+                layout.bunny_area,
+                frame.buffer_mut(),
+                &theme::current(),
+                streaming,
+            );
         }
     }
 

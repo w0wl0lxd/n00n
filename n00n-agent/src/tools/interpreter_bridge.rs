@@ -1,4 +1,4 @@
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::agent::tool_dispatch::{self, Emit};
 
@@ -66,7 +66,7 @@ pub fn build_tool_input(args: &[Value], kwargs: &[(String, Value)]) -> Result<Va
     }
 
     if args.is_empty() {
-        return Ok(serde_json::json!({}));
+        return Ok(json!({}));
     }
 
     Err("pass arguments as keyword arguments (e.g. read(path='/file'))".into())
