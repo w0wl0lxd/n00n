@@ -9,7 +9,7 @@ use futures_lite::StreamExt;
 use futures_lite::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use n00n_storage::id::SessionRef;
 use serde_json::Value;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use agent_client_protocol_schema::{ClientCapabilities, InitializeRequest, InitializeResponse};
 use agent_client_protocol_schema::{
@@ -152,7 +152,7 @@ impl DevinInner {
         cmd.arg("acp");
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::inherit());
+        cmd.stderr(Stdio::piped());
 
         if let Some(key) = api_key {
             cmd.env("DEVIN_API_KEY", key);
@@ -168,6 +168,10 @@ impl DevinInner {
 
         let stdout = child.stdout.take().ok_or_else(|| AgentError::Config {
             message: "failed to capture stdout".to_string(),
+        })?;
+
+        let stderr = child.stderr.take().ok_or_else(|| AgentError::Config {
+            message: "failed to capture stderr".to_string(),
         })?;
 
         let pending = Arc::new(AsyncMutex::new(HashMap::new()));
@@ -202,6 +206,26 @@ impl DevinInner {
                     .await
                 {
                     debug!(error = %e, "failed to handle ACP line");
+                }
+            }
+        })
+        .detach();
+
+        smol::spawn(async move {
+            let reader = BufReader::new(stderr);
+            let mut lines = reader.lines();
+
+            while let Some(Ok(line)) = lines.next().await {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if trimmed.contains(" ERROR ") {
+                    error!("devin acp stderr: {trimmed}");
+                } else if trimmed.contains(" WARN ") {
+                    warn!("devin acp stderr: {trimmed}");
+                } else {
+                    debug!("devin acp stderr: {trimmed}");
                 }
             }
         })
