@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use n00n_storage::StateDir;
-use n00n_storage::id::N00nId;
+use n00n_storage::id::n00nId;
 use n00n_storage::sessions::{SESSIONS_DIR, SessionError, SessionLog};
 use tracing::warn;
 
@@ -24,7 +24,7 @@ struct PendingSnapshot {
     session: Box<AppSession>,
 }
 
-type Pending = Arc<Mutex<HashMap<N00nId, PendingSnapshot>>>;
+type Pending = Arc<Mutex<HashMap<n00nId, PendingSnapshot>>>;
 
 type DeleteCallback = Box<dyn FnOnce(Result<(), SessionError>) + Send>;
 type PersistCallback = Box<dyn FnOnce(Result<(), SessionError>) + Send>;
@@ -38,7 +38,7 @@ enum Op {
         done: PersistCallback,
     },
     Delete {
-        id: N00nId,
+        id: n00nId,
         done: DeleteCallback,
     },
 }
@@ -59,8 +59,8 @@ impl StorageWriter {
         std::thread::Builder::new()
             .name("storage-writer".into())
             .spawn(move || {
-                let mut logs: HashMap<N00nId, SessionLog> = HashMap::new();
-                let mut durable_revisions: HashMap<N00nId, u64> = HashMap::new();
+                let mut logs: HashMap<n00nId, SessionLog> = HashMap::new();
+                let mut durable_revisions: HashMap<n00nId, u64> = HashMap::new();
                 let mut retry_pending = false;
                 loop {
                     let op = if retry_pending {
@@ -141,7 +141,7 @@ impl StorageWriter {
     /// Delete a session's files on the writer thread, discarding any pending
     /// snapshot first. Runs after already-queued flushes; `done` fires on the
     /// writer thread, so callers never block on disk.
-    pub fn delete(&self, id: N00nId, done: impl FnOnce(Result<(), SessionError>) + Send + 'static) {
+    pub fn delete(&self, id: n00nId, done: impl FnOnce(Result<(), SessionError>) + Send + 'static) {
         let op = Op::Delete {
             id,
             done: Box::new(done),
@@ -159,7 +159,7 @@ impl StorageWriter {
     }
 }
 
-fn lock(pending: &Pending) -> std::sync::MutexGuard<'_, HashMap<N00nId, PendingSnapshot>> {
+fn lock(pending: &Pending) -> std::sync::MutexGuard<'_, HashMap<n00nId, PendingSnapshot>> {
     pending
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -171,8 +171,8 @@ fn writer_gone() -> SessionError {
 
 fn flush(
     pending: &Pending,
-    logs: &mut HashMap<N00nId, SessionLog>,
-    durable_revisions: &mut HashMap<N00nId, u64>,
+    logs: &mut HashMap<n00nId, SessionLog>,
+    durable_revisions: &mut HashMap<n00nId, u64>,
     dir: &StateDir,
 ) -> bool {
     let mut pending_guard = lock(pending);
@@ -206,8 +206,8 @@ fn flush(
 
 fn persist_session(
     pending: &Pending,
-    logs: &mut HashMap<N00nId, SessionLog>,
-    durable_revisions: &mut HashMap<N00nId, u64>,
+    logs: &mut HashMap<n00nId, SessionLog>,
+    durable_revisions: &mut HashMap<n00nId, u64>,
     dir: &StateDir,
     session: &AppSession,
 ) -> Result<(), SessionError> {
@@ -243,8 +243,8 @@ fn append_or_compact_result(
 }
 fn write_session(
     sessions_dir: &Path,
-    logs: &mut HashMap<N00nId, SessionLog>,
-    durable_revisions: &mut HashMap<N00nId, u64>,
+    logs: &mut HashMap<n00nId, SessionLog>,
+    durable_revisions: &mut HashMap<n00nId, u64>,
     session: &AppSession,
 ) -> Result<(), SessionError> {
     if durable_revisions
@@ -278,8 +278,8 @@ fn write_session(
 }
 
 fn write_session_if_newer(
-    logs: &mut HashMap<N00nId, SessionLog>,
-    durable_revisions: &mut HashMap<N00nId, u64>,
+    logs: &mut HashMap<n00nId, SessionLog>,
+    durable_revisions: &mut HashMap<n00nId, u64>,
     dir: &StateDir,
     session: &AppSession,
 ) -> Result<(), SessionError> {
