@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784961198919,
+  "lastUpdate": 1784963269330,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -4965,6 +4965,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 173837,
             "range": "± 15164",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "distinct": true,
+          "id": "d8baf2e62ec782da79dd296618e589a0d9051dbe",
+          "message": "feat(devin): implement proper ACP content-block and tool-call handling",
+          "timestamp": "2026-07-25T02:58:42-04:00",
+          "tree_id": "61b2d8b49a8c077def8078c55f4864776e26ae64",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/d8baf2e62ec782da79dd296618e589a0d9051dbe"
+        },
+        "date": 1784963268657,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6597093,
+            "range": "± 140665",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2264837,
+            "range": "± 7444",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2226249,
+            "range": "± 7803",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 9413133,
+            "range": "± 33054",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4392605,
+            "range": "± 52267",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4274352,
+            "range": "± 93554",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 582559,
+            "range": "± 2060",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 190035,
+            "range": "± 302",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 190078,
+            "range": "± 529",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1018905,
+            "range": "± 12481",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 563082,
+            "range": "± 2610",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 562582,
+            "range": "± 1142",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 60671,
+            "range": "± 5102",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 191800,
+            "range": "± 3860",
             "unit": "ns/iter"
           }
         ]
