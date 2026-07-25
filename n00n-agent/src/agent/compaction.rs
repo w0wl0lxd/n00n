@@ -122,8 +122,12 @@ pub(super) async fn compact_history(
         .await
         {
             Ok(response) => break response,
-            Err(e) if e.is_context_overflow() => {
+            Err(error) if error.is_context_overflow() => {
+                let previous_len = compaction_history.len();
                 truncate_oldest_round(&mut compaction_history);
+                if compaction_history.len() == previous_len {
+                    return Err(error);
+                }
             }
             Err(e) => return Err(e),
         }

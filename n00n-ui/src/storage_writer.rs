@@ -235,13 +235,21 @@ fn flush(
             return true;
         }
     };
-    for snapshot in batch.into_values() {
+    let mut failed = false;
+    for (id, snapshot) in batch {
         if let Err(error) = write_session(&sessions_dir, logs, durable_revisions, &snapshot.session)
         {
             warn!(error = %error, id = %snapshot.session.id, "session write failed");
+            let replace = pending_guard
+                .get(&id)
+                .is_none_or(|current| current.revision < snapshot.revision);
+            if replace {
+                pending_guard.insert(id, snapshot);
+            }
+            failed = true;
         }
     }
-    false
+    failed
 }
 
 fn persist_session(
@@ -440,6 +448,39 @@ mod tests {
         assert!(done_rx.recv_timeout(DRAIN_TIMEOUT).unwrap().is_ok());
         assert_eq!(AppSession::load(id, &dir).unwrap().title, "periodic save");
         writer.shutdown(DRAIN_TIMEOUT);
+    }
+
+    #[test]
+    fn failed_snapshot_remains_pending_for_retry() {
+        let (_tmp, dir) = state_dir();
+        let session = AppSession::new("test-model", "/tmp/retry");
+        let id = session.id;
+        let revision = session.meta.revision;
+        let sessions_dir = dir.ensure_subdir(SESSIONS_DIR).unwrap();
+        let blocked_log = sessions_dir.join(format!("{id}.jsonl"));
+        std::fs::create_dir(&blocked_log).unwrap();
+
+        let pending: Pending = Arc::default();
+        lock(&pending).insert(
+            id,
+            PendingSnapshot {
+                revision,
+                session: Box::new(session),
+            },
+        );
+        let mut logs = HashMap::new();
+        let mut durable_revisions = HashMap::new();
+
+        assert!(flush(&pending, &mut logs, &mut durable_revisions, &dir));
+        assert_eq!(
+            lock(&pending).get(&id).map(|item| item.revision),
+            Some(revision)
+        );
+
+        std::fs::remove_dir(&blocked_log).unwrap();
+        assert!(!flush(&pending, &mut logs, &mut durable_revisions, &dir));
+        assert!(lock(&pending).is_empty());
+        assert!(AppSession::load(id, &dir).is_ok());
     }
 
     #[test]
