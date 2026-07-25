@@ -161,11 +161,6 @@ impl QueueSender {
         let _ = self.notify_tx.try_send(());
     }
 
-    pub(crate) fn push_front(&self, entry: QueueItem) {
-        lock(&self.items).push_front(entry);
-        let _ = self.notify_tx.try_send(());
-    }
-
     pub(crate) fn push_front_if_missing(&self, entry: QueueItem) {
         let mut items = lock(&self.items);
         let submission_id = match &entry {
@@ -234,7 +229,7 @@ impl QueueSender {
         let drained = std::mem::take(&mut *items);
         drop(items);
         let _ = self.notify_tx.try_send(());
-        drained
+        drained.into()
     }
 
     pub(crate) fn remove_submission(&self, submission_id: u64) {
@@ -254,12 +249,6 @@ impl QueueSender {
         if removed {
             let _ = self.notify_tx.try_send(());
         }
-    }
-
-    pub(crate) fn contains_submission(&self, submission_id: u64) -> bool {
-        lock(&self.items).iter().any(|item| {
-            matches!(item, QueueItem::Message { submission_id: id, .. } if *id == submission_id)
-        })
     }
 
     pub(crate) fn mark_submission_ready(&self, submission_id: u64, input: AgentInput) -> bool {

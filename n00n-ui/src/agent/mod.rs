@@ -27,7 +27,7 @@ use crate::app::App;
 
 use self::agent_loop::{AgentLoop, AgentLoopInit};
 use self::command_router::spawn_command_router;
-pub(crate) use self::shared_queue::{QueueItem, QueueSender, QueuedMessage};
+pub(crate) use self::shared_queue::{QueueSender, QueuedMessage};
 
 pub(crate) struct ModelSlot {
     pub(crate) model: Model,
