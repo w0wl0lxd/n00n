@@ -521,8 +521,10 @@ impl DevinInner {
                     if let Some(params) = notification.params {
                         match serde_json::from_value::<SessionNotification>(params) {
                             Ok(sn) => {
-                                Self::handle_session_update(sn.update, event_tx, text, usage)
-                                    .await?;
+                                Self::handle_session_update(
+                                    sn.update, event_tx, text, thinking, usage,
+                                )
+                                .await?;
                             }
                             Err(e) => {
                                 debug!(error = %e, "failed to parse session/update");
@@ -631,6 +633,7 @@ impl DevinInner {
         update: SessionUpdate,
         event_tx: &Arc<AsyncMutex<Option<Sender<ProviderEvent>>>>,
         text: &Arc<AsyncMutex<String>>,
+        thinking: &Arc<AsyncMutex<String>>,
         usage: &Arc<AsyncMutex<TokenUsage>>,
     ) -> Result<(), AgentError> {
         match update {
@@ -1118,9 +1121,8 @@ fn infer_max_output_tokens(model_id: &str) -> Option<u32> {
             | "MODEL_PRIVATE_22"
             | "MODEL_PRIVATE_23"
     ) || lower.contains("gpt-5.1")
+        || lower.contains("swe-1-7")
     {
-        Some(128_000)
-    } else if lower.contains("swe-1-7") {
         Some(128_000)
     } else {
         None
@@ -1132,12 +1134,12 @@ fn parse_pricing(value: &serde_json::Value) -> Option<crate::model::ModelPricing
     let output = value.get("output_cost_per_million_usd")?.as_f64()?;
     let cache_write = value
         .get("cache_write_cost_per_million_usd")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
+        .and_then(Value::as_f64)
+        .unwrap_or_else(|| 0.0);
     let cache_read = value
         .get("cache_read_cost_per_million_usd")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
+        .and_then(Value::as_f64)
+        .unwrap_or_else(|| 0.0);
     Some(crate::model::ModelPricing {
         input,
         output,

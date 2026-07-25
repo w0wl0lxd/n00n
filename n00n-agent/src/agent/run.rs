@@ -430,6 +430,12 @@ impl<'h> Agent<'h> {
                 .content
                 .iter()
                 .any(|b| matches!(b, ContentBlock::Text { text } if !text.is_empty()));
+            let has_thinking = response.message.content.iter().any(|b| {
+                matches!(
+                    b,
+                    ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. }
+                )
+            });
 
             if is_empty && !self.post_tool_empty_retried && self.history.ends_with_tool_results() {
                 self.post_tool_empty_retried = true;
@@ -441,7 +447,8 @@ impl<'h> Agent<'h> {
 
             if !has_tools
                 && !has_text
-                && !response.message.content.is_empty()
+                && has_thinking
+                && !self.history.ends_with_tool_results()
                 && !self.thinking_empty_retried
             {
                 self.thinking_empty_retried = true;

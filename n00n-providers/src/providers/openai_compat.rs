@@ -1168,7 +1168,7 @@ data: [DONE]\n";
         let asst = &wire[1];
         assert_eq!(asst["role"], "assistant");
         assert_eq!(asst["content"], "Hello");
-        assert_eq!(asst["reasoning_content"], "Let me think...");
+        assert!(!asst.as_object().unwrap().contains_key("reasoning_content"));
     }
 
     #[test]
@@ -1184,8 +1184,8 @@ data: [DONE]\n";
         let wire = convert_messages(&messages, "");
         let asst = &wire[1];
         assert_eq!(asst["role"], "assistant");
-        assert_eq!(asst["reasoning_content"], "Just thinking...");
-        assert_eq!(asst["content"], "");
+        assert_eq!(asst["content"], "Just thinking...");
+        assert!(!asst.as_object().unwrap().contains_key("reasoning_content"));
     }
 
     #[test]
