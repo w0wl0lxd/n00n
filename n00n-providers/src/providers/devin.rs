@@ -1304,6 +1304,23 @@ const DEVIN_PRIVATE_MODELS: &[DevinModelMeta] = &[
     },
 ];
 
+fn is_gpt_5_1(lower: &str) -> bool {
+    lower.contains("gpt") && (lower.contains("5_1") || lower.contains("5.1"))
+}
+
+fn is_gpt_5(lower: &str) -> bool {
+    lower.contains("gpt") && lower.contains('5') && !is_gpt_5_1(lower)
+}
+
+fn is_claude_4(lower: &str) -> bool {
+    lower.contains("claude")
+        && (lower.contains("_4") || lower.contains("-4") || lower.contains("4.5"))
+}
+
+fn is_claude_4_5(lower: &str) -> bool {
+    lower.contains("4.5") || lower.contains("4_5") || lower.contains("4-5")
+}
+
 fn infer_context_window(model_id: &str) -> Option<u32> {
     if let Some(meta) = DEVIN_PRIVATE_MODELS.iter().find(|m| m.id == model_id) {
         return meta.context_window;
@@ -1314,11 +1331,9 @@ fn infer_context_window(model_id: &str) -> Option<u32> {
         Some(262_144)
     } else if lower.contains("-1m") {
         Some(1_000_000)
-    } else if lower.contains("claude")
-        && (lower.contains("4.5") || lower.contains("haiku-4.5") || lower.contains("sonnet-4.5"))
-    {
+    } else if is_claude_4(&lower) {
         Some(200_000)
-    } else if lower.contains("gpt-5.1") {
+    } else if is_gpt_5_1(&lower) {
         Some(400_000)
     } else {
         None
@@ -1331,11 +1346,9 @@ fn infer_max_output_tokens(model_id: &str) -> Option<u32> {
     }
 
     let lower = model_id.to_lowercase();
-    if lower.contains("claude")
-        && (lower.contains("4.5") || lower.contains("haiku-4.5") || lower.contains("sonnet-4.5"))
-    {
+    if is_claude_4(&lower) {
         Some(64_000)
-    } else if lower.contains("gpt-5.1") || lower.contains("swe-1-7") {
+    } else if is_gpt_5_1(&lower) || lower.contains("swe-1-7") {
         Some(128_000)
     } else {
         None
@@ -1347,12 +1360,10 @@ fn parse_pricing(value: &serde_json::Value) -> Option<crate::model::ModelPricing
     let output = value.get("output_cost_per_million_usd")?.as_f64()?;
     let cache_write = value
         .get("cache_write_cost_per_million_usd")
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| 0.0);
+        .and_then(Value::as_f64)?;
     let cache_read = value
         .get("cache_read_cost_per_million_usd")
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| 0.0);
+        .and_then(Value::as_f64)?;
     Some(crate::model::ModelPricing {
         input,
         output,
@@ -1374,8 +1385,8 @@ fn infer_pricing(model_id: &str) -> Option<ModelPricing> {
     }
 
     let lower = model_id.to_lowercase();
-    if lower.contains("gpt-5.1") {
-        if lower.contains("codex medium") {
+    if is_gpt_5_1(&lower) {
+        if lower.contains("codex") && lower.contains("medium") {
             Some(ModelPricing {
                 input: 0.25,
                 output: 2.0,
@@ -1400,7 +1411,7 @@ fn infer_pricing(model_id: &str) -> Option<ModelPricing> {
                 fast: None,
             })
         }
-    } else if lower.contains("gpt-5") {
+    } else if is_gpt_5(&lower) {
         Some(ModelPricing {
             input: 1.25,
             output: 10.0,
@@ -1410,7 +1421,7 @@ fn infer_pricing(model_id: &str) -> Option<ModelPricing> {
         })
     } else if lower.contains("claude") {
         if lower.contains("opus") {
-            if lower.contains("4.5") {
+            if is_claude_4_5(&lower) {
                 Some(ModelPricing {
                     input: 5.0,
                     output: 25.0,

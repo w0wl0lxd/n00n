@@ -11,23 +11,14 @@ use crate::{
     dialect,
 };
 
-use super::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
+use super::openai_compat::OpenAiCompatProvider;
 use super::{KeyPool, ResolvedAuth};
 
 const REFERER: &str = "https://github.com/w0wl0lxd/n00n";
 const APP_TITLE: &str = "n00n";
 const PER_MILLION: f64 = 1_000_000.0;
 
-static CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
-    slug: "openrouter",
-    api_key_env: "OPENROUTER_API_KEY",
-    base_url: "https://openrouter.ai/api/v1",
-    max_tokens_field: "max_tokens",
-    include_stream_usage: true,
-    provider_name: "OpenRouter",
-    supports_prompt_cache_key: true,
-    supports_prompt_cache_breakpoint: true,
-};
+include!(concat!(env!("OUT_DIR"), "/provider_configs/openrouter.rs"));
 
 pub(crate) const fn models() -> &'static [ModelEntry] {
     &[]

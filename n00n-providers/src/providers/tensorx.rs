@@ -8,19 +8,10 @@ use crate::model::{Model, ModelEntry, ModelInfo, ModelPricing};
 use crate::provider::{BoxFuture, Provider};
 use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, dialect};
 
-use super::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
+use super::openai_compat::OpenAiCompatProvider;
 use super::{KeyPool, ResolvedAuth};
 
-static CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
-    slug: "tensorx",
-    api_key_env: "TENSORX_API_KEY",
-    base_url: "https://api.tensorx.ai/v1",
-    max_tokens_field: "max_tokens",
-    include_stream_usage: true,
-    provider_name: "TensorX",
-    supports_prompt_cache_key: false,
-    supports_prompt_cache_breakpoint: false,
-};
+include!(concat!(env!("OUT_DIR"), "/provider_configs/tensorx.rs"));
 
 inventory::submit!(n00n_config::providers::BuiltInProvider {
     slug: "tensorx",

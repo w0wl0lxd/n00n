@@ -1,0 +1,10 @@
+slug = "tensorx"
+api_key_env = "TENSORX_API_KEY"
+base_url = "https://api.tensorx.ai/v1"
+max_tokens_field = "max_tokens"
+include_stream_usage = true
+provider_name = "TensorX"
+supports_prompt_cache_key = false
+supports_prompt_cache_breakpoint = false
+emit_reasoning_content = false
+const_name = "CONFIG"

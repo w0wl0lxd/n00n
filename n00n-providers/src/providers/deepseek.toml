@@ -1,0 +1,10 @@
+slug = "deepseek"
+api_key_env = "DEEPSEEK_API_KEY"
+base_url = "https://api.deepseek.com"
+max_tokens_field = "max_tokens"
+include_stream_usage = true
+provider_name = "DeepSeek"
+supports_prompt_cache_key = false
+supports_prompt_cache_breakpoint = false
+emit_reasoning_content = false
+const_name = "CONFIG"

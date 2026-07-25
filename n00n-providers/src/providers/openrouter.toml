@@ -1,0 +1,10 @@
+slug = "openrouter"
+api_key_env = "OPENROUTER_API_KEY"
+base_url = "https://openrouter.ai/api/v1"
+max_tokens_field = "max_tokens"
+include_stream_usage = true
+provider_name = "OpenRouter"
+supports_prompt_cache_key = true
+supports_prompt_cache_breakpoint = true
+emit_reasoning_content = false
+const_name = "CONFIG"

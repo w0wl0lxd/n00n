@@ -9,7 +9,7 @@ use tracing::warn;
 
 use crate::model::{Model, ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider};
-use crate::providers::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
+use crate::providers::openai_compat::OpenAiCompatProvider;
 use crate::{
     AgentError, Message, ProviderEvent, ProviderUsage, RequestOptions, StreamResponse, UsageLimit,
     dialect,
@@ -17,16 +17,7 @@ use crate::{
 
 use super::{KeyPool, ResolvedAuth};
 
-static CONFIG_STANDARD: OpenAiCompatConfig = OpenAiCompatConfig {
-    slug: "zai",
-    api_key_env: "ZHIPU_API_KEY",
-    base_url: "https://api.z.ai/api/paas/v4",
-    max_tokens_field: "max_tokens",
-    include_stream_usage: false,
-    provider_name: "Z.AI",
-    supports_prompt_cache_key: false,
-    supports_prompt_cache_breakpoint: false,
-};
+include!(concat!(env!("OUT_DIR"), "/provider_configs/zai.rs"));
 
 const QUOTA_LIMIT_URL: &str = "https://api.z.ai/api/monitor/usage/quota/limit";
 
@@ -255,7 +246,7 @@ pub struct Zai {
 
 impl Zai {
     pub fn new(timeouts: super::Timeouts) -> Result<Self, AgentError> {
-        let pool = KeyPool::resolve("zai", CONFIG_STANDARD.api_key_env)?;
+        let pool = KeyPool::resolve("zai", CONFIG.api_key_env)?;
         let mut auth = ResolvedAuth::bearer(pool.current());
         let provider_config = n00n_config::providers::ProvidersConfig::load();
         if let Some(url) =
@@ -264,7 +255,7 @@ impl Zai {
             auth.base_url = Some(url);
         }
         Ok(Self {
-            compat: OpenAiCompatProvider::new(&CONFIG_STANDARD, timeouts)?,
+            compat: OpenAiCompatProvider::new(&CONFIG, timeouts)?,
             auth: Arc::new(Mutex::new(auth)),
             key_pool: Some(pool),
             system_prefix: None,
@@ -276,7 +267,7 @@ impl Zai {
         timeouts: super::Timeouts,
     ) -> Result<Self, AgentError> {
         Ok(Self {
-            compat: OpenAiCompatProvider::new(&CONFIG_STANDARD, timeouts)?,
+            compat: OpenAiCompatProvider::new(&CONFIG, timeouts)?,
             auth,
             key_pool: None,
             system_prefix: None,

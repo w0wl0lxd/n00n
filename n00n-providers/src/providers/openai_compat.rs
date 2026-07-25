@@ -53,6 +53,7 @@ fn value_hash(value: &Value) -> u64 {
     hasher.finish()
 }
 
+#[derive(Copy, Clone)]
 pub(crate) struct OpenAiCompatConfig {
     pub slug: &'static str,
     pub api_key_env: &'static str,
@@ -62,6 +63,7 @@ pub(crate) struct OpenAiCompatConfig {
     pub provider_name: &'static str,
     pub supports_prompt_cache_key: bool,
     pub supports_prompt_cache_breakpoint: bool,
+    pub emit_reasoning_content: bool,
 }
 
 pub(crate) struct OpenAiCompatProvider {
@@ -174,7 +176,7 @@ impl OpenAiCompatProvider {
         tools: &Value,
         session_id: Option<&str>,
     ) -> Value {
-        let wire_messages = convert_messages(messages, system);
+        let wire_messages = convert_messages(messages, system, self.config.emit_reasoning_content);
         let wire_tools = self.wire_tools(tools);
 
         let mut body = json!({
@@ -356,7 +358,11 @@ impl OpenAiCompatProvider {
     }
 }
 
-pub fn convert_messages(messages: &[Message], system: &str) -> Vec<Value> {
+pub fn convert_messages(
+    messages: &[Message],
+    system: &str,
+    emit_reasoning_content: bool,
+) -> Vec<Value> {
     let mut out = vec![json!({"role": "system", "content": system})];
 
     for msg in messages {
@@ -434,10 +440,24 @@ pub fn convert_messages(messages: &[Message], system: &str) -> Vec<Value> {
 
                 if !text.is_empty() || !tool_calls.is_empty() || !reasoning_text.is_empty() {
                     let mut msg_obj = json!({"role": "assistant"});
-                    if !text.is_empty() {
-                        msg_obj["content"] = Value::String(text);
-                    } else if !reasoning_text.is_empty() {
-                        msg_obj["content"] = Value::String(reasoning_text);
+                    if emit_reasoning_content {
+                        // Emit reasoning_content as a separate field (Mistral)
+                        if !reasoning_text.is_empty() {
+                            msg_obj["reasoning_content"] = Value::String(reasoning_text.clone());
+                        }
+                        if !text.is_empty() {
+                            msg_obj["content"] = Value::String(text);
+                        } else if reasoning_text.is_empty() {
+                            // No text and no reasoning - set empty content
+                            msg_obj["content"] = Value::String(String::new());
+                        }
+                    } else {
+                        // Current behavior: put reasoning in content if no text
+                        if !text.is_empty() {
+                            msg_obj["content"] = Value::String(text);
+                        } else if !reasoning_text.is_empty() {
+                            msg_obj["content"] = Value::String(reasoning_text);
+                        }
                     }
                     if !tool_calls.is_empty() {
                         msg_obj["tool_calls"] = Value::Array(tool_calls);
@@ -948,7 +968,7 @@ data: [DONE]\n";
             },
         ];
 
-        let wire = convert_messages(&messages, "be helpful");
+        let wire = convert_messages(&messages, "be helpful", false);
 
         assert_eq!(wire[0]["role"], "system");
         assert_eq!(wire[0]["content"], "be helpful");
@@ -1102,7 +1122,7 @@ data: [DONE]\n";
         use std::sync::Arc;
         let source = ImageSource::new(ImageMediaType::Png, Arc::from("abc123"));
         let msgs = vec![Message::user_with_images("describe".into(), vec![source])];
-        let result = convert_messages(&msgs, "system");
+        let result = convert_messages(&msgs, "system", false);
         let user = &result[1];
         let content = user["content"].as_array().unwrap();
         assert_eq!(content.len(), 2);
@@ -1135,7 +1155,7 @@ data: [DONE]\n";
             ],
             ..Default::default()
         }];
-        let result = convert_messages(&msgs, "system");
+        let result = convert_messages(&msgs, "system", false);
         assert_eq!(result[1]["role"], "tool");
         assert_eq!(result[1]["tool_call_id"], "t1");
         assert_eq!(result[2]["role"], "user");
@@ -1145,7 +1165,7 @@ data: [DONE]\n";
     #[test]
     fn convert_messages_user_text_only_stays_string() {
         let msgs = vec![Message::user("hello".into())];
-        let result = convert_messages(&msgs, "system");
+        let result = convert_messages(&msgs, "system", false);
         assert!(result[1]["content"].is_string());
     }
 
@@ -1164,7 +1184,7 @@ data: [DONE]\n";
             ],
             ..Default::default()
         }];
-        let wire = convert_messages(&messages, "");
+        let wire = convert_messages(&messages, "", false);
         let asst = &wire[1];
         assert_eq!(asst["role"], "assistant");
         assert_eq!(asst["content"], "Hello");
@@ -1181,7 +1201,7 @@ data: [DONE]\n";
             }],
             ..Default::default()
         }];
-        let wire = convert_messages(&messages, "");
+        let wire = convert_messages(&messages, "", false);
         let asst = &wire[1];
         assert_eq!(asst["role"], "assistant");
         assert_eq!(asst["content"], "Just thinking...");
@@ -1255,6 +1275,7 @@ data: [DONE]\n";
             provider_name: "Test",
             supports_prompt_cache_key: true,
             supports_prompt_cache_breakpoint: false,
+            emit_reasoning_content: false,
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
@@ -1284,6 +1305,7 @@ data: [DONE]\n";
             provider_name: "Test",
             supports_prompt_cache_key: true,
             supports_prompt_cache_breakpoint: false,
+            emit_reasoning_content: false,
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
@@ -1307,6 +1329,7 @@ data: [DONE]\n";
             provider_name: "Test",
             supports_prompt_cache_key: false,
             supports_prompt_cache_breakpoint: true,
+            emit_reasoning_content: false,
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();

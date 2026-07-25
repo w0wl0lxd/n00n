@@ -1,0 +1,10 @@
+slug = "openai"
+api_key_env = "OPENAI_API_KEY"
+base_url = "https://api.openai.com/v1"
+max_tokens_field = "max_completion_tokens"
+include_stream_usage = true
+provider_name = "OpenAI"
+supports_prompt_cache_key = true
+supports_prompt_cache_breakpoint = true
+emit_reasoning_content = false
+const_name = "CONFIG"

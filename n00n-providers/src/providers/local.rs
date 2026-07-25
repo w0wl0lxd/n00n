@@ -515,6 +515,9 @@ fn ollama_extract_num_ctx(params: &str) -> Option<u32> {
     None
 }
 
+include!(concat!(env!("OUT_DIR"), "/provider_configs/ollama.rs"));
+include!(concat!(env!("OUT_DIR"), "/provider_configs/llama-cpp.rs"));
+
 pub(crate) const OLLAMA: LocalEndpointConfig = LocalEndpointConfig {
     slug: "ollama",
     display_name: "Ollama",
@@ -524,16 +527,7 @@ pub(crate) const OLLAMA: LocalEndpointConfig = LocalEndpointConfig {
     default_model: "ollama/qwen3",
     cloud_fallback_url: Some("https://ollama.com/v1"),
     discovery_mode: DiscoveryMode::Ollama,
-    compat: OpenAiCompatConfig {
-        slug: "ollama",
-        api_key_env: "",
-        base_url: "http://localhost:11434/v1",
-        max_tokens_field: "max_tokens",
-        include_stream_usage: true,
-        provider_name: "Ollama",
-        supports_prompt_cache_key: false,
-        supports_prompt_cache_breakpoint: false,
-    },
+    compat: OLLAMA_CONFIG,
     thinking_budget_field: false,
 };
 
@@ -546,16 +540,7 @@ pub(crate) const LLAMACPP: LocalEndpointConfig = LocalEndpointConfig {
     default_model: "llama-cpp/default",
     cloud_fallback_url: None,
     discovery_mode: DiscoveryMode::LlamaCpp,
-    compat: OpenAiCompatConfig {
-        slug: "llama-cpp",
-        api_key_env: "",
-        base_url: "http://localhost:8080/v1",
-        max_tokens_field: "max_tokens",
-        include_stream_usage: true,
-        provider_name: "LlamaCpp",
-        supports_prompt_cache_key: false,
-        supports_prompt_cache_breakpoint: false,
-    },
+    compat: LLAMACPP_CONFIG,
     thinking_budget_field: true,
 };
 

@@ -1554,7 +1554,7 @@ mod tests {
             empty_response(),
             text_response(StopReason::EndTurn),
         ],
-        3, true
+        3, 1
         ; "nudge_on_empty_after_tools"
     )]
     #[test_case(
@@ -1562,7 +1562,7 @@ mod tests {
             tool_call_response("glob", "t1"),
             text_response(StopReason::EndTurn),
         ],
-        2, false
+        2, 0
         ; "no_nudge_when_text_after_tools"
     )]
     #[test_case(
@@ -1570,7 +1570,7 @@ mod tests {
             empty_response(),
             text_response(StopReason::EndTurn),
         ],
-        1, false
+        1, 0
         ; "no_nudge_without_recent_tools"
     )]
     #[test_case(
@@ -1579,7 +1579,7 @@ mod tests {
             thinking_response(),
             text_response(StopReason::EndTurn),
         ],
-        3, true
+        3, 1
         ; "nudge_on_reasoning_after_tools"
     )]
     #[test_case(
@@ -1587,7 +1587,7 @@ mod tests {
             thinking_response(),
             text_response(StopReason::EndTurn),
         ],
-        2, true
+        2, 1
         ; "nudge_on_first_turn_reasoning"
     )]
     #[test_case(
@@ -1595,10 +1595,10 @@ mod tests {
             thinking_response(),
             thinking_response(),
         ],
-        2, true
-        ; "no_nudge_on_repeated_reasoning"
+        2, 1
+        ; "nudge_only_once_on_repeated_reasoning"
     )]
-    fn nudge_behavior(responses: Vec<StreamResponse>, expected_turns: u32, expect_nudge: bool) {
+    fn nudge_behavior(responses: Vec<StreamResponse>, expected_turns: u32, expected_nudges: usize) {
         smol::block_on(async {
             let mut history = History::new(Vec::new());
             let (mut agent, event_rx) = make_agent(MockProvider::new(responses), &mut history);
@@ -1606,10 +1606,12 @@ mod tests {
             drop(agent);
             let events = drain_events(&event_rx);
 
-            assert_eq!(
-                has_event(&events, |e| matches!(e, AgentEvent::Nudge)),
-                expect_nudge,
-            );
+            let nudges = events
+                .iter()
+                .filter(|e| matches!(e.event, AgentEvent::Nudge))
+                .count();
+            assert_eq!(nudges, expected_nudges);
+
             let done = events
                 .iter()
                 .find_map(|e| match &e.event {

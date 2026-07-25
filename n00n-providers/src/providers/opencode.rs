@@ -18,7 +18,7 @@ use n00n_storage::auth::load_provider_credentials;
 
 use crate::model::{Model, ModelInfo, ModelPricing};
 use crate::provider::{BoxFuture, Provider};
-use crate::providers::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
+use crate::providers::openai_compat::OpenAiCompatProvider;
 use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, dialect};
 
 use super::{ResolvedAuth, http_client};
@@ -426,16 +426,7 @@ impl CatalogData {
     }
 }
 
-static CATALOG_CHAT_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
-    slug: "opencode",
-    api_key_env: "",
-    base_url: "",
-    max_tokens_field: "max_tokens",
-    include_stream_usage: true,
-    provider_name: "Opencode (Catalog)",
-    supports_prompt_cache_key: false,
-    supports_prompt_cache_breakpoint: false,
-};
+include!(concat!(env!("OUT_DIR"), "/provider_configs/opencode.rs"));
 
 pub struct Opencode {
     client: HttpClient,
@@ -458,7 +449,7 @@ impl Opencode {
     ) -> Result<Self, AgentError> {
         Ok(Self {
             client: http_client(timeouts)?,
-            chat_compat: OpenAiCompatProvider::new(&CATALOG_CHAT_CONFIG, timeouts)?,
+            chat_compat: OpenAiCompatProvider::new(&CONFIG, timeouts)?,
             auth,
             system_prefix: None,
             stream_timeout: timeouts.stream,
