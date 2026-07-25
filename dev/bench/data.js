@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784960153695,
+  "lastUpdate": 1784961198919,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -4857,6 +4857,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 136801,
             "range": "± 4975",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "distinct": true,
+          "id": "907c8ae8259038838ddfe9fd9d0543c1558e0a54",
+          "message": "fix(devin): exclude Lightning from SWE-1.7 free-preview heuristic\n\nStandard SWE-1.7 is free for paid Devin users until 2026-08-08, but\nSWE-1.7 Lightning is a paid, faster tier and is not part of the preview.\nAlso propagate the heuristic to fallback model listings.",
+          "timestamp": "2026-07-25T02:27:03-04:00",
+          "tree_id": "e41fe9b51e5e301d4753d5af7e542091f5c947aa",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/907c8ae8259038838ddfe9fd9d0543c1558e0a54"
+        },
+        "date": 1784961197461,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6624209,
+            "range": "± 77482",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2354864,
+            "range": "± 13784",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2343317,
+            "range": "± 41639",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 9171422,
+            "range": "± 16240",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4361382,
+            "range": "± 27055",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4355089,
+            "range": "± 27160",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 585222,
+            "range": "± 1847",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191667,
+            "range": "± 552",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191650,
+            "range": "± 1026",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1030566,
+            "range": "± 8606",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 563362,
+            "range": "± 9124",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 562956,
+            "range": "± 1159",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 58310,
+            "range": "± 6277",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 173837,
+            "range": "± 15164",
             "unit": "ns/iter"
           }
         ]
