@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784963269330,
+  "lastUpdate": 1784983119089,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -5073,6 +5073,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 191800,
             "range": "± 3860",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "99f5d3f58fbcf3fb763a0a9d9e44517f8fa6e284",
+          "message": "fix(devin): model names/pricing, thinking hang, and provider-config TOML migration (#105)\n\n* fix(devin): model names/pricing and thinking hang\n\nAdd display names and pricing for Devin ACP private models, and fix hang\nwhen models emit only reasoning without final text.\n\n- Add name field to ModelInfo and populate from Devin's session options\n- Add heuristics for MODEL_PRIVATE_* context window, output tokens, pricing\n- Update model picker to display discovered names instead of raw IDs\n- Capture thinking deltas in Devin provider and build proper content blocks\n- Remove invalid reasoning_content from OpenAI compat message conversion\n- Add nudge logic when assistant produces only reasoning without text\n- Add system prompt instruction to always end with user-facing answer\n\n* fix(devin): wire thinking buffer, nudge guard, and lints\n\n- Pass the Devin thinking Arc into handle_session_update and accumulate\n  AgentThoughtChunk deltas.\n- Only trigger the reasoning-only nudge when the assistant actually\n  emitted a Thinking block and is not immediately after tool results.\n- Fix openai_compat tests for the removal of reasoning_content.\n- Resolve clippy disallowed-method/identical-block warnings and update\n  system.md size baseline.\n\n* docs: changelog fragments for PR #105\n\n* docs: expand changelog fragments for PR #105\n\n* refactor: address review feedback on Devin thinking/names fixes\n\n- Consolidate Devin private model metadata into a single table\n  (DEVIN_PRIVATE_MODELS) used for context_window, max_output_tokens,\n  and pricing; fixes Fast-variant pricing (2x) and adds missing\n  MODEL_PRIVATE_4/5/6/7/8/9/20/21/22/23 entries.\n- Make finish_turn nudges content-aware: nudge after tools when the\n  response has no text (empty or reasoning-only), and reset\n  thinking_empty_retried after tool calls and text responses.\n- Add first-turn/repeated reasoning nudge tests.\n- Move final-answer instruction to system.md # When done and tighten\n  wording; rename prompt baseline test to reflect its cap semantics.\n- Guard empty/whitespace model names in Devin provider and model picker.\n- Restrict AgentThoughtChunk handling to non-empty text deltas.\n\n* fix(n00n-providers): correct Devin fallback matching and migrate compat configs to TOML\n\n- Add helpers to detect GPT-5.1, GPT-5, and Claude 4 families by both\n  dashed/underscored UID patterns, so public Devin model UIDs such as\n  MODEL_GPT_5_1_CODEX_MEDIUM are priced and dimensioned correctly.\n- Require cache pricing fields in Devin payload or fall back to infer_pricing,\n  avoiding silently advertised zero cache prices.\n- Migrate all OpenAiCompatConfig definitions into per-provider TOML files\n  generated at build time via n00n-providers/build.rs.\n- Add emit_reasoning_content to OpenAiCompatConfig and enable it only for\n  Mistral; generic OpenAI Chat Completions continues to omit the unsupported\n  field while Mistral's converter receives the reasoning_content it expects.\n- Update copilot and openai_compat tests for the convert_messages signature\n  change.\n- Tighten nudge_behavior tests to count Nudge events, catching a repeated\n  reasoning nudge bug.",
+          "timestamp": "2026-07-25T12:32:40Z",
+          "tree_id": "d7faf415b7964a79486f22360fb1ce1630080848",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/99f5d3f58fbcf3fb763a0a9d9e44517f8fa6e284"
+        },
+        "date": 1784983118649,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 7398875,
+            "range": "± 222638",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2349405,
+            "range": "± 2922",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2350574,
+            "range": "± 94999",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8519378,
+            "range": "± 35777",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4310318,
+            "range": "± 10783",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4309139,
+            "range": "± 30692",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 584367,
+            "range": "± 1278",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191400,
+            "range": "± 2141",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191281,
+            "range": "± 347",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1026274,
+            "range": "± 9770",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 557979,
+            "range": "± 2761",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 557916,
+            "range": "± 1315",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 68701,
+            "range": "± 3932",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 159595,
+            "range": "± 22910",
             "unit": "ns/iter"
           }
         ]
