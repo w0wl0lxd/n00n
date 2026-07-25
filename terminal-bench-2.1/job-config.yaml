@@ -1,4 +1,4 @@
-job_name: tb-2-1-swe-1-7-max
+job_name: tb-2-1-n00n-swe-1-7
 n_concurrent_trials: 1
 n_attempts: 5
 quiet: false
@@ -7,9 +7,7 @@ environment:
   type: daytona
 
 agents:
-  - name: devin
-    # `swe-1-7` is the Devin CLI model UID for SWE-1.7 Max (262K context, free beta).
-    # The `swe-1.7` family slug also resolves to this model.
+  - name: n00n_agent:n00nAgent
     model_name: swe-1-7
 
 datasets:

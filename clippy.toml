@@ -24,7 +24,7 @@ disallowed-methods = [
   { path = "std::string::String::from_utf8_unchecked", reason = "use from_utf8 with proper error handling" },
   { path = "std::time::Instant::duration_since", reason = "use saturating_duration_since to handle clock anomalies" },
   { path = "std::vec::Vec::swap_remove", reason = "use swap_remove with bounds checking or get_mut" },
-  { path = "uuid::Uuid::new_v4", reason = "use n00n_storage::id::N00nId::generate (base58-encoded UUIDv7)", allow-invalid = true },
-  { path = "uuid::Uuid::new_v7", reason = "use n00n_storage::id::N00nId::generate (base58-encoded UUIDv7)", allow-invalid = true },
-  { path = "uuid::Uuid::now_v7", reason = "use n00n_storage::id::N00nId::generate (base58-encoded UUIDv7)", allow-invalid = true },
+  { path = "uuid::Uuid::new_v4", reason = "use n00n_storage::id::n00nId::generate (base58-encoded UUIDv7)", allow-invalid = true },
+  { path = "uuid::Uuid::new_v7", reason = "use n00n_storage::id::n00nId::generate (base58-encoded UUIDv7)", allow-invalid = true },
+  { path = "uuid::Uuid::now_v7", reason = "use n00n_storage::id::n00nId::generate (base58-encoded UUIDv7)", allow-invalid = true },
 ]

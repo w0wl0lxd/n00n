@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use async_lock::Mutex as AsyncMutex;
 use flume::Sender;
 use n00n_storage::StateDir;
-use n00n_storage::id::{N00nId, SessionRef};
+use n00n_storage::id::{SessionRef, n00nId};
 use n00n_storage::now_epoch;
 use n00n_storage::sessions::{
     OPENAI_RESPONSE_CHAIN_TTL_SECONDS, OpenAiResponseChainLock, StoredOpenAiResponseChain,
@@ -278,7 +278,7 @@ fn suppress_retry_after_send(error: AgentError) -> AgentError {
     }
 }
 
-fn canonical_session_key(session_id: &SessionRef) -> N00nId {
+fn canonical_session_key(session_id: &SessionRef) -> n00nId {
     session_id.id()
 }
 
@@ -470,9 +470,9 @@ pub struct OpenAi {
     websocket_connect_timeout: Duration,
     coding_plan_slots: u8,
     system_prefix: Option<String>,
-    session_state: Arc<Mutex<HashMap<N00nId, OpenAiSessionState>>>,
-    response_connections: Arc<Mutex<HashMap<N00nId, ResponseConnectionSlot>>>,
-    response_operations: Arc<Mutex<HashMap<N00nId, Weak<AsyncMutex<()>>>>>,
+    session_state: Arc<Mutex<HashMap<n00nId, OpenAiSessionState>>>,
+    response_connections: Arc<Mutex<HashMap<n00nId, ResponseConnectionSlot>>>,
+    response_operations: Arc<Mutex<HashMap<n00nId, Weak<AsyncMutex<()>>>>>,
 }
 
 impl OpenAi {
@@ -837,7 +837,7 @@ impl OpenAi {
         full_history_body: &mut Option<Value>,
         full_history_fallback_available: bool,
         mut build_full_history: F,
-        chain_session: Option<N00nId>,
+        chain_session: Option<n00nId>,
         admission_scope: Option<&str>,
         event_tx: &Sender<ProviderEvent>,
         _auth: &ResolvedAuth,
@@ -1126,7 +1126,7 @@ impl OpenAi {
         }
     }
 
-    fn reset_connection_local_chain(&self, session_id: Option<N00nId>) {
+    fn reset_connection_local_chain(&self, session_id: Option<n00nId>) {
         if let Some(session_id) = session_id {
             self.session_state
                 .lock()
@@ -1135,7 +1135,7 @@ impl OpenAi {
         }
     }
 
-    fn clear_local_response_chain(&self, session_id: N00nId) {
+    fn clear_local_response_chain(&self, session_id: n00nId) {
         self.session_state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2650,7 +2650,7 @@ mod tests {
                 .unwrap();
             let session_id = std::env::var(SESSION_ENV)
                 .unwrap()
-                .parse::<N00nId>()
+                .parse::<n00nId>()
                 .unwrap();
             let ready = std::env::var_os(READY_ENV)
                 .map(std::path::PathBuf::from)
