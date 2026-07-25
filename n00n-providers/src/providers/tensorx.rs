@@ -240,6 +240,8 @@ impl Provider for TensorX {
                                     supports_thinking,
                                     supports_vision: Some(supports_vision),
                                     tier: None,
+                                    is_free: None,
+                                    is_promo: None,
                                     provider_info: supported_params.map(|p| {
                                         Arc::new(p) as Arc<dyn std::any::Any + Send + Sync>
                                     }),

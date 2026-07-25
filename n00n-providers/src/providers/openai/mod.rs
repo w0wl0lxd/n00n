@@ -218,6 +218,22 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             context_window: 200_000,
         },
         ModelEntry {
+            prefixes: &["gpt-5.3-codex-spark"],
+            tier: ModelTier::Strong,
+            family: ModelFamily::Gpt,
+            vision: false,
+            default: false,
+            pricing: ModelPricing {
+                input: 1.75,
+                output: 14.00,
+                cache_write: 0.00,
+                cache_read: 0.175,
+                fast: None,
+            },
+            max_output_tokens: 32_000,
+            context_window: 128_000,
+        },
+        ModelEntry {
             prefixes: &["gpt-5.3-codex"],
             tier: ModelTier::Strong,
             family: ModelFamily::Gpt,

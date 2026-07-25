@@ -56,6 +56,8 @@ pub struct ModelInfo {
     pub supports_thinking: Option<bool>,
     pub supports_vision: Option<bool>,
     pub tier: Option<ModelTier>,
+    pub is_free: Option<bool>,
+    pub is_promo: Option<bool>,
     /// Store of additional metadata from the provider.
     pub provider_info: Option<Arc<dyn Any + Send + Sync>>,
 }
@@ -71,6 +73,8 @@ impl ModelInfo {
             supports_thinking: None,
             supports_vision: None,
             tier: None,
+            is_free: None,
+            is_promo: None,
             provider_info: None,
         }
     }
@@ -966,6 +970,8 @@ mod tests {
                     supports_thinking: None,
                     supports_vision: None,
                     tier: None,
+                    is_free: None,
+                    is_promo: None,
                     provider_info: None,
                 }],
             );

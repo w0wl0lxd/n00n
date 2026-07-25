@@ -166,7 +166,7 @@ const DEVIN: ProviderManifest = ProviderManifest {
     supports_thinking: true,
     accepts_arbitrary_models: true,
     fallback_max_output: Some(128_000),
-    fallback_context_window: 200_000,
+    fallback_context_window: 262_144,
     models: devin::models(),
 };
 

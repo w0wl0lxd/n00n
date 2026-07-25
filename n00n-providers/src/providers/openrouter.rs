@@ -170,6 +170,8 @@ fn parse_model(m: &Value) -> Option<ModelInfo> {
         supports_thinking: Some(supports_thinking),
         supports_vision: Some(supports_vision),
         tier: None,
+        is_free: None,
+        is_promo: None,
         provider_info: reasoning.map(|r| Arc::new(r) as Arc<dyn std::any::Any + Send + Sync>),
     })
 }

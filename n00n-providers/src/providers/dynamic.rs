@@ -584,6 +584,8 @@ impl Provider for DynamicProvider {
                     supports_thinking: None,
                     supports_vision: m.supports_vision,
                     tier: None,
+                    is_free: None,
+                    is_promo: None,
                     provider_info: None,
                 })
                 .collect())

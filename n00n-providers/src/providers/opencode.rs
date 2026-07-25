@@ -245,6 +245,8 @@ impl ProviderData {
                     supports_thinking: None,
                     supports_vision: None,
                     tier: None,
+                    is_free: None,
+                    is_promo: None,
                     provider_info: None,
                 })
             })
