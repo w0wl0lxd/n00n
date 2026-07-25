@@ -1195,6 +1195,17 @@ impl<'t> EventLoop<'t> {
             }
             Action::NewSession => {
                 self.respawn_agent(idx, Vec::new(), Vec::new());
+                if let Some(pending) = self.sessions[idx].app.pending_plan_submit.take() {
+                    let actions = {
+                        let app = &mut self.sessions[idx].app;
+                        if let Some((content, path)) = pending.plan {
+                            app.main_chat().push(DisplayMessage::plan(content, path));
+                        }
+                        app.run_id += 1;
+                        app.start_from_queue(&pending.message)
+                    };
+                    self.dispatch(idx, actions);
+                }
             }
             Action::LoadSession(loaded) => {
                 let loaded = *loaded;

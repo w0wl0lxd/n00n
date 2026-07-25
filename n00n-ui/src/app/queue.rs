@@ -371,7 +371,7 @@ impl App {
 
     /// Immediate path: kick off the agent and draw the bubble in the same
     /// frame, so the user sees their message land where it will stay.
-    pub(super) fn start_from_queue(&mut self, msg: &QueuedMessage) -> Vec<Action> {
+    pub(crate) fn start_from_queue(&mut self, msg: &QueuedMessage) -> Vec<Action> {
         self.start_submission(msg, self.build_agent_input(msg), true)
     }
 
