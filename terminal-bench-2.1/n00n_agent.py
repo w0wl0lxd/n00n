@@ -93,12 +93,13 @@ class n00nAgent(BaseInstalledAgent):
         escaped = shlex.quote(instruction)
 
         devin_model = model.split("/", 1)[1] if "/" in model else model
-        env = {
-            "DEVIN_API_KEY": self._get_env("DEVIN_API_KEY") or "",
+        env: dict[str, str] = {
             "DEVIN_MODEL": devin_model,
             "DEVIN_PERMISSION_MODE": "dangerous",
             "WINDSURF_API_KEY": self._get_env("WINDSURF_API_KEY") or "",
         }
+        if devin_api_key := self._get_env("DEVIN_API_KEY"):
+            env["DEVIN_API_KEY"] = devin_api_key
 
         command = (
             f'export PATH="/opt/n00n/bin:$PATH"; '
