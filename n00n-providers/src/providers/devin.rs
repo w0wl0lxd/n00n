@@ -901,7 +901,7 @@ impl Devin {
     fn is_safe_command_name(s: &str) -> bool {
         !s.is_empty()
             && s.chars()
-                .all(|c| c.is_alphanumeric() || c == '.' || c == '_' || c == '-')
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
     }
 
     fn command_from_auth(auth: &ResolvedAuth) -> String {
@@ -1298,6 +1298,7 @@ mod tests {
         assert!(!Devin::is_safe_command_name("devin acp"));
         assert!(!Devin::is_safe_command_name("/tmp/devin"));
         assert!(!Devin::is_safe_command_name("https://example.com"));
+        assert!(!Devin::is_safe_command_name("dévïn"));
     }
 
     #[test]
