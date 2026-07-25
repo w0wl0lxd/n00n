@@ -19,7 +19,6 @@ local RTK_UNSUPPORTED_FLAGS = {
 }
 local SEPARATOR = "──────"
 local BROAD_COMMAND_JUSTIFICATION_REQUIRED = "error: justification is required for unbounded command execution"
-local JUSTIFICATION_FIELD = "justification"
 
 local rtk_available
 
