@@ -222,6 +222,14 @@ impl DevinInner {
                 }
                 if trimmed.contains(" ERROR ") {
                     error!("devin acp stderr: {trimmed}");
+                } else if trimmed.contains(" WARN ")
+                    && trimmed.contains("config_importers")
+                    && trimmed.contains("Failed to parse JSONC")
+                    && (trimmed.contains("PreCompact") || trimmed.contains("PostCompact"))
+                {
+                    // n00n-agent implements these hooks directly; devin's config importer
+                    // is outdated and logs a warning for valid Claude Code hook names.
+                    debug!("devin acp stderr: {trimmed}");
                 } else if trimmed.contains(" WARN ") {
                     warn!("devin acp stderr: {trimmed}");
                 } else {
