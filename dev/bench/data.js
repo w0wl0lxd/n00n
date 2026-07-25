@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784932951107,
+  "lastUpdate": 1784946153810,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -4319,6 +4319,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 165338,
             "range": "± 9786",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "distinct": true,
+          "id": "aa92fb55496e744f8e0031fb0fa81daee5cd1cd6",
+          "message": "feat(agent): run Claude Code PreCompact/PostCompact hooks around compaction\n\nn00n-agent now reads ~/.claude/settings.json and invokes command hooks for\n\nPreCompact (blocking) and PostCompact (non-blocking) during conversation\n\ncompaction, so the same hook config works across Claude Code and n00n.",
+          "timestamp": "2026-07-24T22:08:41-04:00",
+          "tree_id": "900e7709bd99008a181e3ed820bd1a57562519fa",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/aa92fb55496e744f8e0031fb0fa81daee5cd1cd6"
+        },
+        "date": 1784946152694,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 7962731,
+            "range": "± 160057",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1989867,
+            "range": "± 6254",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1920544,
+            "range": "± 30717",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 9052662,
+            "range": "± 226734",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3484998,
+            "range": "± 15089",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3481127,
+            "range": "± 5454",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 809474,
+            "range": "± 3064",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 112087,
+            "range": "± 620",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 112192,
+            "range": "± 909",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1149779,
+            "range": "± 22388",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 500266,
+            "range": "± 2354",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 500134,
+            "range": "± 1354",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 63763,
+            "range": "± 1040",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 98306,
+            "range": "± 6067",
             "unit": "ns/iter"
           }
         ]
