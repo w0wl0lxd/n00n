@@ -81,18 +81,6 @@ fn setup() -> (Arc<ToolRegistry>, PluginHost) {
     (reg, host)
 }
 
-/// Uses the global native registry because `interpreter_bridge::dispatch` does.
-/// Safe: nextest runs each test in its own process.
-fn setup_native() -> (Arc<ToolRegistry>, PluginHost) {
-    let reg = Arc::clone(ToolRegistry::global_arc());
-    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
-    host.load_source("code_execution", CODE_EXECUTION_SRC)
-        .expect("real plugin should load");
-    host.load_source("policy_fixtures", &fixture_plugin())
-        .expect("fixture plugin should load");
-    (reg, host)
-}
-
 fn describe(
     reg: &ToolRegistry,
     filter: &ToolFilter,
@@ -173,7 +161,7 @@ fn except_filter_removes_tool_from_description() {
 
 #[test]
 fn interpreter_calls_advertised_tool_end_to_end() {
-    let (reg, _host) = setup_native();
+    let (reg, _host) = setup();
     let ctx = stub_ctx_for(&reg, &AgentMode::Build);
     let out = exec_code(
         &reg,
@@ -186,7 +174,7 @@ fn interpreter_calls_advertised_tool_end_to_end() {
 
 #[test]
 fn workflow_tool_not_callable_when_workflow_false() {
-    let (reg, _host) = setup_native();
+    let (reg, _host) = setup();
     let ctx = stub_ctx_for(&reg, &AgentMode::Build);
     let err = exec_code(&reg, &ctx, "await wf_task(prompt='x')")
         .expect_err("workflow tool must not be in the fn-map when workflow=false");
@@ -198,7 +186,7 @@ fn workflow_tool_not_callable_when_workflow_false() {
 /// workflow tools stay callable when `ctx.workflow = true`.
 #[test]
 fn workflow_tool_callable_when_workflow_true() {
-    let (reg, _host) = setup_native();
+    let (reg, _host) = setup();
     let mut ctx = stub_ctx_for(&reg, &AgentMode::Build);
     ctx.workflow = true;
     let out = exec_code(
@@ -304,7 +292,7 @@ fn final_body_text(rx: &flume::Receiver<n00n_agent::Envelope>) -> String {
 /// Some call paths skip `start`, so `handler` must render the script itself.
 #[test]
 fn handler_renders_script_when_start_never_ran() {
-    let (reg, _host) = setup_native();
+    let (reg, _host) = setup();
     let inv = parse_code(&reg, "print('hi')");
     let (ctx, rx) = event_ctx(&reg);
     smol::block_on(inv.execute(&ctx))
@@ -331,7 +319,7 @@ fn start_preview_renders_single_line(code: &str) {
 
 #[test]
 fn handler_error_keeps_script_and_drops_waiting_notice() {
-    let (reg, _host) = setup_native();
+    let (reg, _host) = setup();
     let inv = parse_code(&reg, "print(boom_undefined)");
     let (ctx, rx) = event_ctx(&reg);
     let err = smol::block_on(inv.execute(&ctx))
