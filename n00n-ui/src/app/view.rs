@@ -92,7 +92,7 @@ impl App {
         let [msg_area, bottom_area, bunny_area] = Layout::vertical([
             Constraint::Min(1),
             Constraint::Length(bottom_height),
-            Constraint::Length(2),
+            Constraint::Length(3),
         ])
         .areas(inner);
 

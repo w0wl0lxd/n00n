@@ -4194,7 +4194,13 @@ fn lua_panel_click_is_consumed_before_underlying_chat_selection() {
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal.draw(|frame| app.view(frame)).unwrap();
 
-    app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 1, 34));
+    let (_msg, bottom_area, _status, _input, _splits) = app.layout_geometry(TEST_AREA);
+    let panel_click_y = bottom_area.y + 1;
+    app.update(mouse_event(
+        MouseEventKind::Down(MouseButton::Left),
+        1,
+        panel_click_y,
+    ));
 
     assert!(app.selection_state.is_none());
 }
