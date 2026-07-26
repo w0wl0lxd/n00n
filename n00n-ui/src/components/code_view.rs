@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use crate::highlight::{fallback_span, highlight_line};
@@ -5,7 +6,8 @@ use crate::markdown::{should_truncate, truncation_notice};
 use crate::theme;
 
 use n00n_agent::diff::{DiffLine, DiffSpan, compute_hunks};
-use n00n_agent::{GrepFileEntry, InstructionBlock, ToolInput, ToolOutput};
+use n00n_agent::types::{TodoItem, TodoPriority, TodoStatus};
+use n00n_agent::{GrepFileEntry, InstructionBlock, ToolInput, ToolOutput, ToolTelemetry};
 use n00n_highlight::Theme;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -24,6 +26,76 @@ pub(crate) fn instruction_limit(expanded: bool) -> usize {
 
 fn nr_width(max_nr: usize) -> usize {
     max_nr.max(1).ilog10() as usize + 1
+}
+
+pub(crate) fn telemetry_text(telemetry: &ToolTelemetry) -> String {
+    let mut out = String::new();
+    if let Some(cost) = telemetry.cost {
+        let _ = write!(out, "${cost:.4}");
+    }
+    if let Some(usage) = &telemetry.usage {
+        if !out.is_empty() {
+            out.push_str(" · ");
+        }
+        let _ = write!(
+            out,
+            "{}↑ {}↓ (cache: {}R {}W)",
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cache_read_tokens,
+            usage.cache_write_tokens
+        );
+    }
+    if out.is_empty() {
+        return "no telemetry".to_owned();
+    }
+    out
+}
+
+pub(crate) fn json_text(value: &serde_json::Value) -> String {
+    match serde_json::to_string_pretty(value) {
+        Ok(s) => s,
+        Err(e) => format!("<invalid JSON: {e}>"),
+    }
+}
+
+fn todo_status_style(status: TodoStatus) -> Style {
+    match status {
+        TodoStatus::Completed => theme::current().tool_success,
+        TodoStatus::Cancelled => theme::current().tool_error,
+        TodoStatus::InProgress => theme::current().tool_annotation,
+        TodoStatus::Pending => theme::current().tool_dim,
+    }
+}
+
+fn render_todo_list(items: &[TodoItem], max_lines: usize) -> (Vec<Line<'static>>, bool) {
+    if items.is_empty() {
+        return (Vec::new(), false);
+    }
+    let mut lines = Vec::new();
+    let mut budget = max_lines;
+    for item in items {
+        if budget == 0 {
+            break;
+        }
+        let priority = match item.priority {
+            TodoPriority::High => "high",
+            TodoPriority::Medium => "medium",
+            TodoPriority::Low => "low",
+        };
+        let text = format!("{} {} · {}", item.status.marker(), priority, item.content);
+        lines.push(Line::from(Span::styled(
+            text,
+            todo_status_style(item.status),
+        )));
+        budget -= 1;
+    }
+    let hidden = items.len().saturating_sub(lines.len());
+    let truncated = should_truncate(hidden);
+    if truncated {
+        lines.push(truncation_line(hidden));
+    }
+    (lines, truncated)
 }
 
 fn gutter(nr_str: &str) -> Span<'static> {
@@ -455,6 +527,7 @@ pub struct ToolContent {
 
 pub fn render_tool_content(
     input: Option<&ToolInput>,
+    raw_input: Option<&serde_json::Value>,
     output: Option<&ToolOutput>,
     highlight: bool,
     limits: RenderLimits,
@@ -475,6 +548,22 @@ pub fn render_tool_content(
         let total = code_lines.len();
         let hl = highlight.then(|| n00n_highlight::Highlighter::for_token(language));
         let (code_result, trunc) = render_code(hl, 1, &code_lines, total, limits.script);
+        truncation.script = trunc;
+        if trunc {
+            truncation_actions.push(TruncationAction {
+                line: lines.len() + code_result.len().saturating_sub(1),
+                section: SectionFlags {
+                    script: true,
+                    output: false,
+                },
+            });
+        }
+        lines.extend(code_result);
+    } else if let Some(raw) = raw_input {
+        let json = json_text(raw);
+        let code_lines: Vec<String> = json.lines().map(String::from).collect();
+        let total = code_lines.len();
+        let (code_result, trunc) = render_code(None, 1, &code_lines, total, limits.script);
         truncation.script = trunc;
         if trunc {
             truncation_actions.push(TruncationAction {
@@ -515,18 +604,24 @@ pub fn render_tool_content(
             path,
             before,
             after,
+            telemetry,
             ..
         }) => {
             let theme = n00n_highlight::theme();
-            (
-                render_diff(
-                    highlight.then(|| n00n_highlight::syntax_for_path(path)),
-                    before,
-                    after,
-                    &theme,
-                ),
-                false,
-            )
+            let mut diff_lines = render_diff(
+                highlight.then(|| n00n_highlight::syntax_for_path(path)),
+                before,
+                after,
+                &theme,
+            );
+            if let Some(tel) = telemetry {
+                diff_lines.push(Line::default());
+                diff_lines.push(Line::from(Span::styled(
+                    telemetry_text(tel),
+                    theme::current().tool_annotation,
+                )));
+            }
+            (diff_lines, false)
         }
         Some(ToolOutput::GrepResult { entries }) => {
             render_grep_results(entries, limits.output, highlight)
@@ -537,6 +632,7 @@ pub fn render_tool_content(
                 render_instructions(blocks, &mut instruction_lines, limits.output, highlight);
             (instruction_lines, trunc)
         }
+        Some(ToolOutput::TodoList(items)) => render_todo_list(items, limits.output),
         _ => (Vec::new(), false),
     };
     truncation.output = output_trunc;
