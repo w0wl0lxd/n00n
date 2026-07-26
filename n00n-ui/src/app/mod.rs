@@ -21,7 +21,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::AppSession;
-use crate::bunny::Bunny;
 use crate::chat::Chat;
 use crate::chat::{CANCELLED_TEXT, ChatEventResult, DONE_TEXT, ERROR_TEXT, transcript_to_display};
 use crate::clipboard::ClipboardState;
@@ -228,7 +227,6 @@ pub struct App {
     pub(super) plan_form: PlanForm,
     pub(super) status_bar: StatusBar,
     pub status: Status,
-    pub(crate) bunny: Bunny,
     pub(crate) state: session_state::SessionState,
     pub exit_request: ExitRequest,
     pub(crate) exit_on_done: bool,
@@ -317,7 +315,6 @@ impl App {
                 ui_config.clone(),
                 Arc::clone(&picker),
             )],
-            bunny: Bunny::new(Arc::clone(&picker)),
             picker,
             active_chat: 0,
             chat_index: HashMap::new(),

@@ -73,7 +73,7 @@
               packageName
             ];
             nativeBuildInputs = with pkgs; [
-              makeWrapper
+              patchelf
               pkg-config
               perl
               python3
@@ -91,12 +91,20 @@
               fi
               done
             '';
-            buildInputs = with pkgs; [ openssl stdenv.cc.cc.lib ];
+            buildInputs = with pkgs; [
+              openssl
+              stdenv.cc.cc.lib
+            ];
             doCheck = false;
+            meta.mainProgram = "n00n";
 
             postInstall = ''
-              wrapProgram $out/bin/n00n \
-                --prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath runtimeLibs}"
+              # Embed the runtime library search path in the ELF itself so the
+              # binary is usable without a LD_LIBRARY_PATH wrapper (e.g. when
+              # copied into ~/.cargo/bin or ~/.local/bin on NixOS).
+              old_rpath="$(patchelf --print-rpath "$out/bin/${packageName}" 2>/dev/null || true)"
+              new_rpath="${lib.makeLibraryPath runtimeLibs}''${old_rpath:+:$old_rpath}"
+              patchelf --set-rpath "$new_rpath" "$out/bin/${packageName}"
             '';
           };
         in

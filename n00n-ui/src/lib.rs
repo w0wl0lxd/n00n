@@ -15,7 +15,6 @@ pub use components::keybindings;
 mod highlight;
 pub use highlight::highlight_ansi;
 pub use theme::BUNDLED_THEMES;
-pub mod bunny;
 pub mod image;
 mod markdown;
 pub mod mascot;

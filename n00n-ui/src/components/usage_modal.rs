@@ -95,7 +95,7 @@ impl UsageModal {
         let total = u16::try_from(lines.len()).unwrap_or_else(|_| u16::MAX);
         let modal = Modal {
             title: TITLE,
-            width_percent: 60,
+            width_percent: 90,
             max_height_percent: 70,
         };
         let (popup, inner) = modal.render(frame, area, total);
@@ -192,13 +192,18 @@ fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line
 
     for (id, usage) in entries {
         let pricing = pricing_for(id, ctx.model);
-        let cost = pricing
-            .as_ref()
-            .map(|p| TokenUsage::from(*usage).cost(p, ctx.fast));
+        let token_usage = TokenUsage::from(*usage);
+        let (cost, savings) = pricing.as_ref().map_or((None, None), |p| {
+            (
+                Some(token_usage.cost(p, ctx.fast)),
+                Some(token_usage.savings_cost(p, ctx.fast)),
+            )
+        });
         lines.push(Line::from(model_row(
             id,
             usage,
             cost,
+            savings,
             model_w,
             fg,
             theme.status_dim,
@@ -217,7 +222,7 @@ fn totals_row(
         Span::raw(PREFIX),
         Span::styled(
             format!(
-                "in {:<7} out {:<7} cache read {:<7} cache write {:<7} total {:<7}",
+                "in {:<7} out {:<7} read {:<7} write {:<7} total {:<7}",
                 format_tokens(total.input),
                 format_tokens(total.output),
                 format_tokens(total.cache_read),
@@ -253,7 +258,7 @@ fn header_row(model_w: usize, theme: &crate::theme::Theme) -> Vec<Span<'static>>
         gap(),
         h("total"),
         gap(),
-        h("saved"),
+        h("saved $"),
         gap(),
         Span::styled(format!("{:>6}", "cost"), theme.status_dim),
     ]
@@ -263,18 +268,19 @@ fn model_row(
     id: &str,
     usage: &StoredTokenUsage,
     cost: Option<f64>,
+    savings: Option<f64>,
     model_w: usize,
     fg: Style,
     dim: Style,
 ) -> Vec<Span<'static>> {
     let num = |v: u32| Span::styled(format!("{:>NUM_COL$}", format_tokens(v)), fg);
     let gap = || Span::raw(" ".repeat(COL_GAP));
-    let saved = if usage.savings_tokens > 0 {
-        #[allow(clippy::cast_precision_loss)]
-        let tokens_f = usage.savings_tokens as f64;
-        format!("{:.1}k", tokens_f / 1_000.0)
-    } else {
-        String::new()
+    let money = |v: Option<f64>| match v {
+        Some(v) if v > 0.0 => {
+            let s = format!("${v:.3}");
+            Span::styled(format!("{s:>NUM_COL$}"), fg)
+        }
+        _ => Span::styled(format!("{:>NUM_COL$}", "—"), dim),
     };
     vec![
         Span::raw(PREFIX),
@@ -290,7 +296,7 @@ fn model_row(
         gap(),
         num(usage.total()),
         gap(),
-        Span::styled(format!("{saved:>NUM_COL$}"), fg),
+        money(savings),
         gap(),
         match cost {
             Some(c) => Span::styled(format!("{c:>6.3}"), fg),
@@ -516,7 +522,7 @@ mod tests {
             cache_creation: 40,
             savings_tokens: 0,
         };
-        let row = model_row("gpt", &usage, None, 10, Style::new(), Style::new())
+        let row = model_row("gpt", &usage, None, None, 10, Style::new(), Style::new())
             .iter()
             .map(|span| span.content.as_ref())
             .collect::<String>();

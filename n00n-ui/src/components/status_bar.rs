@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use super::{RetryInfo, Status};
 
-use crate::animation::spinner_frame;
+use crate::animation::{animation_elapsed_ms, spinner_frame};
 use crate::cast;
 use crate::theme;
 
@@ -53,7 +53,6 @@ pub struct StatusBarContext<'a> {
 
 pub struct StatusBar {
     flash: Option<(String, Instant)>,
-    started_at: Instant,
     cwd_branch: String,
     pub flash_duration: Duration,
     branch_update_rx: Option<flume::Receiver<()>>,
@@ -63,7 +62,6 @@ impl StatusBar {
     pub fn new(flash_duration: Duration) -> Self {
         Self {
             flash: None,
-            started_at: Instant::now(),
             cwd_branch: cwd_branch_label(),
             flash_duration,
             branch_update_rx: spawn_branch_watcher(),
@@ -109,8 +107,8 @@ impl StatusBar {
     pub fn view(&self, frame: &mut Frame, area: Rect, ctx: &StatusBarContext) {
         let mut left_spans = Vec::new();
 
-        if ctx.restoring {
-            let ch = spinner_frame(self.started_at.elapsed().as_millis());
+        if ctx.restoring || matches!(ctx.status, Status::Streaming) {
+            let ch = spinner_frame(animation_elapsed_ms());
             left_spans.push(Span::styled(
                 format!(" {ch}"),
                 theme::current().status_notice,
@@ -185,46 +183,35 @@ impl StatusBar {
                 right_spans.push(Span::styled(WORKFLOW_LABEL, theme::current().status_dim));
             }
 
-            let context_text = format!(
-                "  {}/{} ({}%)",
+            let mut usage_parts = vec![format!(
+                "{}/{} ({}%)",
                 format_tokens(ctx.stats.context_size),
                 format_tokens(ctx.stats.context_window),
                 pct,
-            );
-            let rest_text = if ctx.stats.pricing.is_zero() {
-                format!("{context_text} ")
-            } else {
+            )];
+            if !ctx.stats.pricing.is_zero() {
                 let cost = ctx.stats.usage.cost(ctx.stats.pricing, ctx.fast);
                 let savings = ctx.stats.usage.savings_cost(ctx.stats.pricing, ctx.fast);
-                let savings_text = if savings > 0.0 {
-                    format!(" saved ${savings:.3}")
-                } else {
-                    String::new()
-                };
-                format!("{context_text} ${cost:.3}{savings_text} ")
-            };
+                usage_parts.push(format!("cost ${cost:.3}"));
+                if savings > 0.0 {
+                    usage_parts.push(format!("saved ${savings:.3}"));
+                }
+                if ctx.stats.show_global {
+                    let global_cost = ctx.stats.global_usage.cost(ctx.stats.pricing, ctx.fast);
+                    let global_savings = ctx
+                        .stats
+                        .global_usage
+                        .savings_cost(ctx.stats.pricing, ctx.fast);
+                    usage_parts.push(format!("Σ cost ${global_cost:.3}"));
+                    if global_savings > 0.0 {
+                        usage_parts.push(format!("Σ saved ${global_savings:.3}"));
+                    }
+                }
+            }
             right_spans.push(Span::styled(
-                rest_text,
+                format!("  {}", usage_parts.join(" · ")),
                 Style::new().fg(theme::current().foreground),
             ));
-
-            if ctx.stats.show_global && !ctx.stats.pricing.is_zero() {
-                let global_cost = ctx.stats.global_usage.cost(ctx.stats.pricing, ctx.fast);
-                let global_savings = ctx
-                    .stats
-                    .global_usage
-                    .savings_cost(ctx.stats.pricing, ctx.fast);
-                let global_savings_text = if global_savings > 0.0 {
-                    format!(" saved ${global_savings:.3}")
-                } else {
-                    String::new()
-                };
-                let global_text = format!(" \u{03a3}${global_cost:.3}{global_savings_text} ");
-                right_spans.push(Span::styled(
-                    global_text,
-                    Style::new().fg(theme::current().foreground),
-                ));
-            }
         }
 
         if let Some((ref msg, _)) = self.flash {
