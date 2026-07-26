@@ -89,6 +89,17 @@ local function build_header_lines(command)
   return header
 end
 
+local RTK_GIT_FALLBACK = {
+  remote = true,
+  config = true,
+  tag = true,
+  blame = true,
+  shortlog = true,
+  ["show-ref"] = true,
+  ["for-each-ref"] = true,
+  ["rev-parse"] = true,
+}
+
 local function rtk_find_unsupported(cmd)
   if not cmd:match("^rtk find ") then
     return false
@@ -99,6 +110,19 @@ local function rtk_find_unsupported(cmd)
     end
   end
   return false
+end
+
+local function normalize_command(command)
+  -- rtk rewrite recognizes `head -N` and `head --lines=N` but not `head -n N`.
+  local n, rest = command:match("^head%s+%-n%s+(%d+)(.*)$")
+  if n then
+    return "head -" .. n .. rest
+  end
+  n, rest = command:match("^head%s+%-n(%d+)(.*)$")
+  if n then
+    return "head -" .. n .. rest
+  end
+  return command
 end
 
 local function rtk_rewrite(command, ctx)
@@ -122,12 +146,14 @@ local function rtk_rewrite(command, ctx)
     return nil
   end
 
-  local cmd = command:match("^%s*(.-)%s*$")
-  if cmd:match("^cargo ") and cmd:find(" -- ", 1, true) then
-    return nil
+  local cmd = normalize_command(command:match("^%s*(.-)%s*$"))
+
+  -- rtk rewrite does not know about `cargo nextest run`, but `rtk cargo nextest` exists.
+  if cmd:match("^cargo%s+nextest$") or cmd:match("^cargo%s+nextest%s+run") then
+    return "rtk " .. cmd
   end
 
-  local id = n00n.fn.jobstart("rtk rewrite " .. shell_quote(command))
+  local id = n00n.fn.jobstart("rtk rewrite " .. shell_quote(cmd))
   local result = n00n.fn.jobwait(id, RTK_REWRITE_TIMEOUT_MS)
   if not result then
     n00n.fn.jobstop(id)
@@ -135,11 +161,18 @@ local function rtk_rewrite(command, ctx)
   end
 
   if result.exit_code ~= 0 and result.exit_code ~= 3 then
+    -- rtk's rewrite has no equivalent for this command. For a small set of
+    -- read-only `git` subcommands we can still route through `rtk git`, which
+    -- falls back to generic git filtering for unsupported subcommands.
+    local git_sub = cmd:match("^git%s+(%S+)")
+    if git_sub and RTK_GIT_FALLBACK[git_sub] then
+      return "rtk " .. cmd
+    end
     return nil
   end
 
   local rewritten = (result.stdout or ""):match("^%s*(.-)%s*$")
-  if rewritten == "" or rewritten == command:match("^%s*(.-)%s*$") then
+  if rewritten == "" or rewritten == cmd then
     return nil
   end
   if rtk_find_unsupported(rewritten) then
@@ -239,8 +272,8 @@ local description = [[Execute a bash command.
 Commands run in ]] .. cwd .. [[ by default.
 
 - **DO NOT** use for file ops! Only git, builds, tests, and system commands.
-- When `rtk` is installed, commands are auto-rewritten through `rtk` for 60-90% token savings (e.g. `git status` -> `rtk git status`, `rg` -> `rtk rg`, `jq`/`yq` -> `rtk jq`/`rtk yq`).
-- Use `bash` for `git`, `cargo`, `rg`, `grep`, `jq`, `yq`, `gh`, `find`, `ls`, `cat`, `head`, `tail`, and similar system commands.
+- When `rtk` is installed, supported commands are auto-rewritten for 60-90% token savings (e.g. `git status` -> `rtk git status`, `cargo test` -> `rtk cargo test`, `rg` -> `rtk rg`, `cat file` -> `rtk read file`). `jq`/`yq` and unsupported flags run unchanged.
+- Use `bash` for `git`, `cargo`, `rg`, `grep`, `gh`, `find`, `ls`, `cat`, `head`, `tail`, and similar system commands.
 - Use `workdir` param instead of `cd <dir> && <cmd>` patterns.
 - Do NOT use to communicate text to the user.
 - Chain dependent commands with `&&`. Use batch for independent ones.
@@ -250,7 +283,7 @@ Commands run in ]] .. cwd .. [[ by default.
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Reserve `bash` for system commands (git, cargo, rg, grep, jq, yq, gh, find, ls, cat, head, tail, builds, tests). `bash` auto-rewrites supported commands through `rtk` when installed for 60-90% token savings. Do NOT use `bash` for destructive file operations (writes, moves, deletes, broad destructive operations). Read-only inspection (cat, head, tail) is allowed.",
+  content = "- Reserve `bash` for system commands (git, cargo, rg, grep, gh, find, ls, cat, head, tail, builds, tests). `bash` auto-rewrites supported commands through `rtk` when installed for 60-90% token savings; `jq`/`yq` and unsupported invocations run unchanged. Do NOT use `bash` for destructive file operations (writes, moves, deletes, broad destructive operations). Read-only inspection (cat, head, tail) is allowed.",
 })
 
 local opts = n00n.api.register_options(output_limits.extend({

@@ -108,16 +108,24 @@ impl JobStore {
                         thread::Builder::new()
                             .name($name.into())
                             .spawn(move || {
-                                for line in BufReader::with_capacity(READER_BUF_SIZE, stream)
-                                    .lines()
-                                    .map_while(Result::ok)
-                                {
-                                    let line = match line.strip_suffix('\r') {
-                                        Some(s) => s.to_string(),
-                                        None => line,
-                                    };
-                                    if tx.send(JobEvent::$variant(line)).is_err() {
-                                        break;
+                                let mut reader = BufReader::with_capacity(READER_BUF_SIZE, stream);
+                                let mut line = String::new();
+                                loop {
+                                    line.clear();
+                                    match reader.read_line(&mut line) {
+                                        Ok(0) => break,
+                                        Ok(_) => {
+                                            if line.ends_with('\n') {
+                                                line.pop();
+                                                if line.ends_with('\r') {
+                                                    line.pop();
+                                                }
+                                            }
+                                            if tx.send(JobEvent::$variant(line.clone())).is_err() {
+                                                break;
+                                            }
+                                        }
+                                        Err(_) => break,
                                     }
                                 }
                             })
