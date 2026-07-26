@@ -1343,7 +1343,7 @@ async fn prompt(
             s.params.clone(),
             AgentRunParams {
                 history: &mut s.history,
-                system: s.system.clone(),
+                system: s.system.clone().into(),
                 event_tx: s.sub_event_tx.clone(),
                 tools: s.tools.clone(),
                 tool_filter: s.tool_filter.clone(),

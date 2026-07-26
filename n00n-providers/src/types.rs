@@ -135,6 +135,122 @@ impl Role {
     }
 }
 
+/// Whether a system block ends a reusable prompt prefix that should be cached
+/// by the provider.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum CacheControl {
+    /// Static content that is not itself a cache boundary. It is included in the
+    /// cached prefix when a later `Ephemeral` block marks the boundary.
+    #[default]
+    None,
+    /// Mark the end of the cacheable prefix at this block.
+    Ephemeral,
+    /// Dynamic content that may change during the session and should never be
+    /// treated as a cache boundary.
+    Dynamic,
+}
+
+/// A single section of a system prompt with an optional cache boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemBlock {
+    pub text: String,
+    pub cache: CacheControl,
+}
+
+impl SystemBlock {
+    #[must_use]
+    pub fn new(text: impl Into<String>, cache: CacheControl) -> Self {
+        Self {
+            text: text.into(),
+            cache,
+        }
+    }
+}
+
+/// A provider-agnostic system prompt split into cacheable blocks.
+///
+/// Static session context (identity, conventions, AGENTS.md/CLAUDE.md) is placed
+/// first and marked as the cached prefix; dynamic content (environment, model,
+/// plan) follows after the cache boundary so a change to it does not invalidate
+/// the cached static prefix.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct System {
+    blocks: Vec<SystemBlock>,
+}
+
+impl System {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.blocks.is_empty()
+    }
+
+    #[must_use]
+    pub fn blocks(&self) -> &[SystemBlock] {
+        &self.blocks
+    }
+
+    pub fn push(&mut self, block: SystemBlock) {
+        self.blocks.push(block);
+    }
+
+    pub fn push_static(&mut self, text: impl Into<String>) {
+        self.push(SystemBlock::new(text, CacheControl::None));
+    }
+
+    pub fn push_dynamic(&mut self, text: impl Into<String>) {
+        self.seal_static_boundary();
+        self.push(SystemBlock::new(text, CacheControl::Dynamic));
+    }
+
+    /// Mark the last static block as the end of the cached prefix. This is a
+    /// no-op if the system contains no static blocks.
+    pub fn seal(&mut self) {
+        self.seal_static_boundary();
+    }
+
+    fn seal_static_boundary(&mut self) {
+        if let Some(last_static) = self
+            .blocks
+            .iter_mut()
+            .rev()
+            .find(|b| b.cache == CacheControl::None)
+        {
+            last_static.cache = CacheControl::Ephemeral;
+        }
+    }
+}
+
+impl std::fmt::Display for System {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for block in &self.blocks {
+            write!(f, "{}", block.text)?;
+        }
+        Ok(())
+    }
+}
+
+impl From<&str> for System {
+    fn from(text: &str) -> Self {
+        let mut system = Self::new();
+        if !text.is_empty() {
+            system.push_static(text);
+            system.seal();
+        }
+        system
+    }
+}
+
+impl From<String> for System {
+    fn from(text: String) -> Self {
+        Self::from(text.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {

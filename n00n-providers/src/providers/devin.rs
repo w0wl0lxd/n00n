@@ -30,7 +30,7 @@ use agent_client_protocol_schema::{ToolCall, ToolCallUpdate};
 
 use crate::model::{ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider};
-use crate::types::Role;
+use crate::types::{Role, System};
 use crate::{
     AgentError, Effort, Message, ProviderEvent, RequestOptions, StopReason, StreamResponse,
     ThinkingConfig, TokenUsage,
@@ -381,7 +381,7 @@ impl DevinInner {
     async fn get_or_create_session(
         &self,
         session_ref: &SessionRef,
-        system: &str,
+        system: &System,
     ) -> Result<SessionInfo, AgentError> {
         {
             let sessions = self.sessions.lock().await;
@@ -394,7 +394,8 @@ impl DevinInner {
             Ok(p) => p,
             Err(_) => PathBuf::from("."),
         };
-        let req = NewSessionRequest::new(cwd).meta(system_prompt_meta(system));
+        let system_text = system.to_string();
+        let req = NewSessionRequest::new(cwd).meta(system_prompt_meta(&system_text));
         let response: NewSessionResponse =
             self.send_request("session/new", req)
                 .await
@@ -1680,7 +1681,7 @@ impl Provider for Devin {
         &'a self,
         model: &'a crate::model::Model,
         messages: &'a [Message],
-        system: &'a str,
+        system: &'a System,
         _tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
@@ -1700,11 +1701,12 @@ impl Provider for Devin {
                 message: "no messages provided".to_string(),
             })?;
 
+            let system_text = system.to_string();
             let content: Vec<AcpContentBlock> = {
                 let mut blocks = Vec::new();
-                if !session.system_sent && !system.trim().is_empty() {
+                if !session.system_sent && !system_text.trim().is_empty() {
                     blocks.push(AcpContentBlock::Text(TextContent::new(format!(
-                        "[system instructions]\n{system}\n[/system instructions]\n\n"
+                        "[system instructions]\n{system_text}\n[/system instructions]\n\n"
                     ))));
                 }
                 for block in &last_message.content {

@@ -11,7 +11,7 @@ use tracing::{debug, warn};
 use crate::providers::ResolvedAuth;
 use crate::{
     AgentError, ContentBlock, Message, ProviderEvent, RequestDeliveryMetadata,
-    RequestDeliveryPhase, Role, StopReason, StreamResponse, TokenUsage,
+    RequestDeliveryPhase, Role, StopReason, StreamResponse, System, TokenUsage,
 };
 
 const RESPONSES_PATH: &str = "/responses";
@@ -27,7 +27,7 @@ pub(crate) fn response_in_flight_timeout(stream_timeout: Duration) -> Duration {
 pub(crate) fn build_body(
     model: &crate::model::Model,
     messages: &[Message],
-    system: &str,
+    system: &System,
     tools: &Value,
     previous_response_id: Option<&str>,
     prompt_cache_key: Option<&str>,
@@ -38,7 +38,7 @@ pub(crate) fn build_body(
 
     let mut body = json!({
         "model": model.id,
-        "instructions": system,
+        "instructions": system.to_string(),
         "input": input,
         "stream": true,
         "store": store,
@@ -1511,7 +1511,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
         let body = build_body(
             &model,
             &[],
-            "system",
+            &System::from("system"),
             &json!([]),
             Some("resp_1"),
             Some("session_1"),

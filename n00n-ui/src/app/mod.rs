@@ -60,7 +60,7 @@ use n00n_agent::{
 };
 use n00n_config::UiConfig;
 use n00n_lua::{EventHandle, HintReader, KeymapReader, LuaCommandReader};
-use n00n_providers::{Effort, Message, Model, ThinkingConfig};
+use n00n_providers::{Effort, Message, Model, System, ThinkingConfig};
 use n00n_storage::StateDir;
 use n00n_storage::input_history::InputHistory;
 use n00n_storage::model::persist_model;
@@ -252,7 +252,7 @@ pub struct App {
     pub(crate) usage_slot: Arc<ArcSwapOption<UsageFetchState>>,
     pub(crate) shared_history: Option<Arc<ArcSwap<Vec<Message>>>>,
     pub(crate) shared_transcript: Option<n00n_agent::SharedTranscript>,
-    pub(crate) btw_system: Option<Arc<ArcSwap<String>>>,
+    pub(crate) btw_system: Option<Arc<ArcSwap<System>>>,
     pub(crate) shared_tool_outputs: Option<Arc<Mutex<HashMap<String, ToolOutput>>>>,
     pub(crate) image_paste_rx: Vec<flume::Receiver<Result<ImageSource, String>>>,
     storage_writer: Arc<StorageWriter>,

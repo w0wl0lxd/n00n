@@ -5,6 +5,7 @@ use async_lock::Mutex;
 use flume::Receiver;
 use n00n_providers::Message;
 use n00n_providers::OpenAiOptions;
+use n00n_providers::System;
 use n00n_providers::Timeouts;
 use n00n_providers::TokenUsage;
 use n00n_providers::model::Model;
@@ -384,7 +385,9 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                     model = new_model;
                 }
 
-                let mut system = params.system_prompt_override.clone().unwrap_or_else(|| {
+                let mut system = if let Some(override_) = params.system_prompt_override.as_deref() {
+                    System::from(override_)
+                } else {
                     agent::build_system_prompt(
                         &vars,
                         &input.mode,
@@ -392,10 +395,9 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                         &params.prompt_slots,
                         &model,
                     )
-                });
+                };
                 if let Some(append) = &params.append_system_prompt {
-                    system.push('\n');
-                    system.push_str(append);
+                    system.push_static(format!("\n{append}"));
                 }
 
                 let (trigger, cancel) = CancelToken::new();

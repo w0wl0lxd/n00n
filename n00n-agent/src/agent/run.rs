@@ -6,7 +6,7 @@ use tracing::{error, info, warn};
 use n00n_providers::provider::Provider;
 use n00n_providers::{
     ContentBlock, Message, Model, OpenAiOptions, RequestOptions, Role, StopReason, StreamResponse,
-    TokenUsage,
+    System, TokenUsage,
 };
 
 use super::compaction::{self, CONTINUE_AFTER_COMPACT};
@@ -114,7 +114,7 @@ pub struct AgentParams {
 
 pub struct AgentRunParams<'h> {
     pub history: &'h mut History,
-    pub system: String,
+    pub system: System,
     pub event_tx: EventSender,
     pub tools: Value,
     pub tool_filter: ToolFilter,
@@ -124,7 +124,7 @@ pub struct Agent<'h> {
     provider: Arc<dyn Provider>,
     model: Arc<Model>,
     history: &'h mut History,
-    system: String,
+    system: System,
     event_tx: EventSender,
     tools: Value,
     mode: AgentMode,
@@ -1001,7 +1001,7 @@ mod tests {
             &'a self,
             _: &'a Model,
             messages: &'a [Message],
-            _: &'a str,
+            _: &'a System,
             _: &'a Value,
             _: &'a flume::Sender<ProviderEvent>,
             _: RequestOptions,
@@ -1099,7 +1099,7 @@ mod tests {
             },
             AgentRunParams {
                 history,
-                system: "system".into(),
+                system: System::from("system"),
                 event_tx: EventSender::new(raw_tx, 0),
                 tools: json!([]),
                 tool_filter: ToolFilter::All,
@@ -1433,7 +1433,7 @@ mod tests {
                     &'a self,
                     _: &'a Model,
                     _: &'a [Message],
-                    _: &'a str,
+                    _: &'a System,
                     _: &'a Value,
                     _: &'a flume::Sender<ProviderEvent>,
                     _: RequestOptions,
@@ -1482,7 +1482,7 @@ mod tests {
                 },
                 AgentRunParams {
                     history: &mut history,
-                    system: "system".into(),
+                    system: System::from("system"),
                     event_tx: EventSender::new(raw_tx, 0),
                     tools: json!([]),
                     tool_filter: ToolFilter::All,
