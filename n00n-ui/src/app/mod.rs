@@ -989,10 +989,13 @@ impl App {
                     vec![]
                 }
             }
+            InputAction::OpenFilePicker => {
+                self.file_picker.open_via_at(&self.state.session.cwd);
+                vec![]
+            }
             InputAction::Passthrough(_)
             | InputAction::ContinueLine
             | InputAction::None
-            | InputAction::OpenFilePicker
             | InputAction::PaletteSync(_) => vec![],
         }
     }

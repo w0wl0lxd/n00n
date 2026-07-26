@@ -13,7 +13,7 @@ use n00n_lua::Split;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Widget};
+use ratatui::widgets::{Block, Widget};
 
 use super::{App, Mode, Status};
 
@@ -77,14 +77,14 @@ impl App {
             0
         } else if form_visible {
             self.plan_form.height().min(max_bottom)
-        } else if self.is_main_chat() {
-            let panel_h: u16 = self.float_mgr.panel_reqs().iter().map(|(_, h)| *h).sum();
-            queue_panel::height(self.queue.panel_len())
-                + panel_h
-                + self.input_box.height(inner.width)
         } else {
             let panel_h: u16 = self.float_mgr.panel_reqs().iter().map(|(_, h)| *h).sum();
-            if panel_h > 0 { panel_h + 1 } else { 1 }
+            let queue_h = if self.is_main_chat() {
+                queue_panel::height(self.queue.panel_len())
+            } else {
+                0
+            };
+            queue_h + panel_h + self.input_box.height(inner.width)
         };
 
         // The `below` split lives outside `inner` (drawn by render_splits), so
@@ -102,7 +102,7 @@ impl App {
             self.float_mgr.panel_reqs()
         };
 
-        let queue_height = if bottom_takeover {
+        let queue_height = if bottom_takeover || !self.is_main_chat() {
             0
         } else {
             queue_panel::height(self.queue.panel_len())
@@ -168,43 +168,19 @@ impl App {
     fn render_bottom_panel(&mut self, frame: &mut Frame, layout: &ViewLayout) {
         if self.permission_prompt.is_open() {
             self.permission_prompt.view(frame, layout.bottom_area);
-        } else if !self.is_main_chat() {
-            let panel_reqs = self.float_mgr.panel_reqs();
-            let panel_h: u16 = panel_reqs.iter().map(|(_, h)| *h).sum();
-            let (panel_areas, sep_area) = if panel_h > 0 {
-                let [panels, s] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)])
-                    .areas(layout.bottom_area);
-                let constraints: Vec<_> = panel_reqs
-                    .iter()
-                    .map(|&(_, h)| Constraint::Length(h))
-                    .collect();
-                let sub = Layout::vertical(constraints).split(panels);
-                let areas: Vec<(usize, Rect)> = panel_reqs
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &(idx, _))| (idx, sub[i]))
-                    .collect();
-                (Some(areas), s)
-            } else {
-                (None, layout.bottom_area)
-            };
-            if let Some(areas) = panel_areas {
-                for (idx, rect) in areas {
-                    self.float_mgr.view_panel(frame, idx, rect);
-                }
-            }
-            let sep = Block::default()
-                .borders(Borders::TOP)
-                .border_style(self.separator_style());
-            frame.render_widget(sep, sep_area);
         } else if self.plan_form_active() {
             self.plan_form.view(frame, layout.bottom_area);
         } else if layout.bottom_area.height > 0 {
-            let queue_entries = self.queue.panel_entries();
-            queue_panel::view(frame, layout.queue_area, &queue_entries, self.queue.focus());
+            // Render queue only for main chat
+            if self.is_main_chat() {
+                let queue_entries = self.queue.panel_entries();
+                queue_panel::view(frame, layout.queue_area, &queue_entries, self.queue.focus());
+            }
+            // Render panels for all chats
             for &(idx, rect) in &layout.panel_windows {
                 self.float_mgr.view_panel(frame, idx, rect);
             }
+            // Render input box for all chats
             let streaming = self.status == Status::Streaming;
             let panel_hint = (self.state.mode == Mode::Plan)
                 .then(|| self.plan_form.hint_line())
@@ -218,7 +194,11 @@ impl App {
                 !self.any_overlay_open(),
                 panel_hint,
             );
-            self.command_palette.view(frame, layout.input_area);
+            // Command palette only when is_main_chat or when synced
+            if self.is_main_chat() {
+                self.command_palette.view(frame, layout.input_area);
+            }
+            // Bunny for all chats
             self.bunny.render(
                 layout.bunny_area,
                 frame.buffer_mut(),
@@ -346,7 +326,7 @@ impl App {
             scroll_info: msg_scroll,
         });
 
-        if layout.input_area.height > 0 && !layout.bottom_takeover && self.is_main_chat() {
+        if layout.input_area.height > 0 && !layout.bottom_takeover {
             let input_inner = Rect::new(
                 layout.input_area.x,
                 layout.input_area.y + 1,
@@ -369,10 +349,6 @@ impl App {
 
         for &(_, rect) in &layout.panel_windows {
             self.zones.push_overlay(selection::inset_border(rect));
-        }
-
-        if !self.is_main_chat() && layout.bottom_area.height > 0 {
-            self.zones.push_overlay(layout.bottom_area);
         }
 
         if layout.queue_area.height > 0 && !layout.bottom_takeover {

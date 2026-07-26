@@ -1662,10 +1662,12 @@ fn row_truncation_actions_expand_only_their_section_in_mixed_states() {
     const SCRIPT: SectionFlags = SectionFlags {
         script: true,
         output: false,
+        details: false,
     };
     const OUTPUT: SectionFlags = SectionFlags {
         script: false,
         output: true,
+        details: false,
     };
 
     fn panel_with_truncated_script_and_output() -> MessagesPanel {
@@ -1703,6 +1705,7 @@ fn row_truncation_actions_expand_only_their_section_in_mixed_states() {
         Some(&SectionFlags {
             script: true,
             output: true,
+            details: false,
         })
     );
 
@@ -1719,6 +1722,7 @@ fn row_truncation_actions_expand_only_their_section_in_mixed_states() {
         Some(&SectionFlags {
             script: true,
             output: true,
+            details: false,
         })
     );
 }
@@ -1807,6 +1811,7 @@ fn running_live_tool_native_truncation_expands_but_header_routes_lua() {
     const SCRIPT: SectionFlags = SectionFlags {
         script: true,
         output: false,
+        details: false,
     };
 
     let mut panel = test_panel();

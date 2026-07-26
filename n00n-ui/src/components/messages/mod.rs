@@ -958,7 +958,7 @@ impl MessagesPanel {
     }
 
     fn toggle_tool_section(&mut self, tool_id: &str, section: SectionFlags) -> bool {
-        if section.script == section.output {
+        if !section.any() {
             return false;
         }
         let tool_id = tool_id.to_owned();
@@ -966,8 +966,10 @@ impl MessagesPanel {
         let entry = self.expanded_tools.entry(tool_id.clone()).or_default();
         if section.script {
             entry.script = !entry.script;
-        } else {
+        } else if section.output {
             entry.output = !entry.output;
+        } else {
+            entry.details = !entry.details;
         }
         self.rebuild_expanded_tool(&tool_id);
         self.preserve_anchor(old_start, old_height, &tool_id);
@@ -981,6 +983,8 @@ impl MessagesPanel {
         let entry = self.expanded_tools.entry(tool_id.clone()).or_default();
         if truncation.output || entry.output {
             entry.output = !entry.output;
+        } else if truncation.details || entry.details {
+            entry.details = !entry.details;
         } else if truncation.script || entry.script {
             entry.script = !entry.script;
         } else {

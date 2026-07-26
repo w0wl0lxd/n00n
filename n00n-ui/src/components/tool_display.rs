@@ -463,6 +463,7 @@ impl ToolLineBuilder {
         let content = code_view::render_tool_content(input, raw_input, output, false, self.limits);
         self.truncation.script |= content.truncation.script;
         self.truncation.output |= content.truncation.output;
+        self.truncation.details |= content.truncation.details;
         let start = self.lines.len();
         self.truncation_actions
             .extend(content.truncation_actions.into_iter().map(|mut action| {
@@ -534,6 +535,7 @@ impl ToolLineBuilder {
                 section: SectionFlags {
                     script: false,
                     output: true,
+                    details: false,
                 },
             });
             let text = truncation_notice(skipped);
@@ -785,6 +787,7 @@ pub fn build_instructions_lines(
     let exp = SectionFlags {
         script: false,
         output: expanded,
+        details: false,
     };
     let mut b = ToolLineBuilder::new(width, exp, code_view::instruction_limit(expanded));
     b.push_header("load", header, annotation.as_deref(), None);
@@ -800,6 +803,7 @@ pub fn build_instructions_lines(
             section: SectionFlags {
                 script: false,
                 output: true,
+                details: false,
             },
         });
     }
@@ -845,6 +849,7 @@ mod tests {
         SectionFlags {
             script: both,
             output: both,
+            details: false,
         }
     }
 

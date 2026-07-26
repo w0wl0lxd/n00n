@@ -4393,3 +4393,49 @@ fn subagent_cancel_then_navigate_back_main_unaffected() {
     assert_eq!(app.status, Status::Streaming);
     assert!(!app.chats[0].is_finished());
 }
+
+#[test]
+fn input_area_visible_in_subagent_chat() {
+    let mut app = app_with_subagent();
+    app.update(Msg::Key(kb::NEXT_CHAT.to_key_event()));
+    assert_eq!(app.active_chat, 1);
+
+    let area = Rect::new(0, 0, 80, 24);
+    let (_msg_area, _bottom_area, _status_area, input_area, _splits) = app.layout_geometry(area);
+    assert!(
+        input_area.height > 0,
+        "input_area should be visible in subagent chat"
+    );
+}
+
+#[test]
+fn typing_routes_to_subagent_prompt() {
+    let mut app = app_with_subagent();
+    app.update(Msg::Key(kb::NEXT_CHAT.to_key_event()));
+    assert_eq!(app.active_chat, 1);
+
+    // Type some characters
+    app.update(Msg::Key(key(KeyCode::Char('h'))));
+    app.update(Msg::Key(key(KeyCode::Char('i'))));
+
+    assert_eq!(app.input_box.buffer.value(), "hi");
+}
+
+#[test]
+fn input_box_rendered_in_subagent_chat() {
+    let mut app = app_with_subagent();
+    app.update(Msg::Key(kb::NEXT_CHAT.to_key_event()));
+    assert_eq!(app.active_chat, 1);
+
+    // Render the app to register zones
+    let area = Rect::new(0, 0, 80, 24);
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+    terminal.draw(|frame| app.view(frame)).unwrap();
+
+    // Check that the Input zone is registered
+    let has_input_zone = app.zones.find(SelectionZone::Input).is_some();
+    assert!(
+        has_input_zone,
+        "Input zone should be registered in subagent chat"
+    );
+}
