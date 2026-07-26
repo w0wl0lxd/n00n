@@ -2,7 +2,7 @@ use std::io::Read;
 use std::net::IpAddr;
 
 use isahc::HttpClient;
-use isahc::http::Request;
+use isahc::http::{Request, Uri};
 use serde::Deserialize;
 
 use super::OAuthError;
@@ -98,7 +98,7 @@ pub(super) fn server_origin(server_url: &str) -> String {
 
 fn validate_endpoint_url(url: &str) -> Result<(), OAuthError> {
     let uri = url
-        .parse::<isahc::http::Uri>()
+        .parse::<Uri>()
         .map_err(|error| OAuthError::Other(format!("invalid endpoint URL '{url}': {error}")))?;
     let scheme = uri.scheme_str();
     let host = uri.host();

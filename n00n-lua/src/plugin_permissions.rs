@@ -2,6 +2,7 @@ use std::fmt;
 use std::path::Path;
 
 use mlua::{Error as LuaError, Function, IntoLuaMulti, Lua, Result as LuaResult};
+use toml::Value;
 use tracing::warn;
 
 const MANIFEST_FILE: &str = "plugin.toml";
@@ -70,7 +71,7 @@ impl PluginPermissions {
         for perm in Permission::ALL {
             allowed[perm as usize] = perms
                 .and_then(|p| p.get(perm.manifest_key()))
-                .and_then(toml::Value::as_bool)
+                .and_then(Value::as_bool)
                 == Some(true);
         }
         Self { allowed }
