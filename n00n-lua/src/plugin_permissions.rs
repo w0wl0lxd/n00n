@@ -181,13 +181,13 @@ mod tests {
         let val: toml::Value = toml::from_str(
             r"
             [permissions]
-            fs_read = false
+            fs_read = true
             net = false
             ",
         )
         .unwrap();
         let p = PluginPermissions::from_manifest(&val);
-        assert!(!p.is_allowed(Permission::FsRead));
+        assert!(p.is_allowed(Permission::FsRead));
         assert!(!p.is_allowed(Permission::FsWrite));
         assert!(!p.is_allowed(Permission::Net));
         assert!(!p.is_allowed(Permission::Run));

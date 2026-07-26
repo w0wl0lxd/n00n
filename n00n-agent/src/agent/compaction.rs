@@ -328,11 +328,15 @@ mod tests {
     use crate::AgentConfig;
 
     struct MockProvider {
-        responses: Mutex<Vec<StreamResponse>>,
+        responses: Mutex<Vec<Result<StreamResponse, AgentError>>>,
     }
 
     impl MockProvider {
         fn new(responses: Vec<StreamResponse>) -> Self {
+            Self::with_results(responses.into_iter().map(Ok).collect())
+        }
+
+        fn with_results(responses: Vec<Result<StreamResponse, AgentError>>) -> Self {
             Self {
                 responses: Mutex::new(responses),
             }
@@ -353,7 +357,7 @@ mod tests {
             Box::pin(async {
                 let mut responses = self.responses.lock().unwrap();
                 assert!(!responses.is_empty(), "MockProvider: no more responses");
-                Ok(responses.remove(0))
+                responses.remove(0)
             })
         }
 
@@ -455,6 +459,36 @@ mod tests {
             assert_eq!(msgs.len(), 2);
             assert!(matches!(msgs[0].role, Role::User));
             assert!(matches!(msgs[1].role, Role::Assistant));
+        });
+    }
+
+    #[test]
+    fn compact_history_returns_overflow_when_nothing_can_be_truncated() {
+        smol::block_on(async {
+            let provider = MockProvider::with_results(vec![Err(AgentError::Api {
+                status: 413,
+                message: "context overflow".into(),
+            })]);
+            let model = default_model();
+            let (raw_tx, _rx) = flume::unbounded();
+            let mut history = History::new(Vec::new());
+
+            let error = compact_history(
+                &provider,
+                &model,
+                &mut history,
+                &EventSender::new(raw_tx, 0),
+                &CancelToken::none(),
+                CompactionTrigger::Manual,
+                None,
+                std::path::Path::new("/tmp"),
+                None,
+            )
+            .await
+            .unwrap_err();
+
+            assert!(error.is_context_overflow());
+            assert!(history.as_slice().is_empty());
         });
     }
 
