@@ -122,7 +122,11 @@ fn render_details(
             theme::current().tool_annotation,
         )));
         content.push(Line::from(Span::styled(
-            format!("{:?} ({} bytes)", source.media_type, source.data.len()),
+            format!(
+                "{} ({} base64 bytes)",
+                source.media_type.mime(),
+                source.data.len()
+            ),
             theme::current().tool,
         )));
     }
@@ -775,7 +779,7 @@ fn merge_syntax_with_diff(
 mod tests {
     use super::*;
     use crate::markdown::TRUNCATION_PREFIX;
-    use n00n_agent::GrepMatchGroup;
+    use n00n_agent::{GrepMatchGroup, ImageMediaType, ImageSource};
     use serde_json::json;
     use test_case::test_case;
 
@@ -1057,7 +1061,6 @@ mod tests {
 
     #[test]
     fn render_details_image_source_metadata() {
-        use n00n_providers::{ImageMediaType, ImageSource};
         let source = ImageSource::new(ImageMediaType::Png, Arc::from("aGVsbG8="));
         let output = ToolOutput::Image {
             source,
@@ -1068,7 +1071,7 @@ mod tests {
         assert!(!truncated);
         let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(text.contains("Image source:"));
-        assert!(text.contains("Png"));
-        assert!(text.contains("8 bytes"));
+        assert!(text.contains("image/png"));
+        assert!(text.contains("8 base64 bytes"));
     }
 }

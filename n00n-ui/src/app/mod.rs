@@ -395,6 +395,13 @@ impl App {
         self.active_chat == 0
     }
 
+    fn set_active_chat(&mut self, idx: usize) {
+        if idx != self.active_chat {
+            self.input_box.clear();
+        }
+        self.active_chat = idx;
+    }
+
     fn plan_form_active(&self) -> bool {
         self.state.mode == Mode::Plan && self.plan_form.is_visible()
     }
@@ -682,11 +689,11 @@ impl App {
             return Some(vec![]);
         }
         if key::PREV_CHAT.matches(key) {
-            self.active_chat = self.active_chat.saturating_sub(1);
+            self.set_active_chat(self.active_chat.saturating_sub(1));
             return Some(vec![]);
         }
         if key::NEXT_CHAT.matches(key) {
-            self.active_chat = (self.active_chat + 1).min(self.chats.len() - 1);
+            self.set_active_chat((self.active_chat + 1).min(self.chats.len() - 1));
             return Some(vec![]);
         }
         if key::SCROLL_HALF_UP.matches(key) {
@@ -843,11 +850,12 @@ impl App {
                 PickerAction::Consumed | PickerAction::Toggle(..) => vec![],
                 PickerAction::Select(idx, _) => {
                     self.task_picker_original = None;
-                    self.active_chat = idx;
+                    self.set_active_chat(idx);
                     vec![]
                 }
                 PickerAction::Close => {
-                    self.active_chat = self.task_picker_original.take().unwrap_or_else(|| 0);
+                    let original = self.task_picker_original.take().unwrap_or_else(|| 0);
+                    self.set_active_chat(original);
                     vec![]
                 }
             });
@@ -964,12 +972,12 @@ impl App {
     fn handle_subagent_chat_key(&mut self, key: KeyEvent) -> Vec<Action> {
         let finished = self.chats[self.active_chat].is_finished();
         if key.code == KeyCode::Left {
-            self.active_chat = 0;
+            self.set_active_chat(0);
             self.last_esc = None;
             return vec![];
         }
         if finished && key.code == KeyCode::Esc {
-            self.active_chat = 0;
+            self.set_active_chat(0);
             return vec![];
         }
         if key.code != KeyCode::Esc {
@@ -990,7 +998,11 @@ impl App {
                 }
             }
             InputAction::OpenFilePicker => {
-                self.file_picker.open_via_at(&self.state.session.cwd);
+                if finished {
+                    self.flash(STEERING_UNAVAILABLE_MSG.into());
+                } else {
+                    self.file_picker.open_via_at(&self.state.session.cwd);
+                }
                 vec![]
             }
             InputAction::Passthrough(_)

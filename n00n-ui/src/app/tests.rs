@@ -4439,3 +4439,26 @@ fn input_box_rendered_in_subagent_chat() {
         "Input zone should be registered in subagent chat"
     );
 }
+
+#[test]
+fn input_draft_is_cleared_when_switching_chats() {
+    let mut app = app_with_subagent();
+
+    // Type a draft in the main chat
+    app.update(Msg::Key(key(KeyCode::Char('m'))));
+    assert_eq!(app.input_box.buffer.value(), "m");
+
+    // Switch to the subagent chat: draft must not persist
+    app.update(Msg::Key(kb::NEXT_CHAT.to_key_event()));
+    assert_eq!(app.active_chat, 1);
+    assert!(app.input_box.is_empty());
+
+    // Type a draft in the subagent chat
+    app.update(Msg::Key(key(KeyCode::Char('s'))));
+    assert_eq!(app.input_box.buffer.value(), "s");
+
+    // Switch back to the main chat: draft must not persist
+    app.update(Msg::Key(kb::PREV_CHAT.to_key_event()));
+    assert_eq!(app.active_chat, 0);
+    assert!(app.input_box.is_empty());
+}

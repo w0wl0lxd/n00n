@@ -281,6 +281,15 @@ impl InputBox {
         self.buffer.value().trim().is_empty() && self.pending_images.is_empty()
     }
 
+    pub(crate) fn clear(&mut self) {
+        self.buffer = TextBuffer::new("");
+        self.pending_images.clear();
+        self.scroll_y = 0;
+        self.follow_cursor = true;
+        self.draft = String::new();
+        self.history_index = None;
+    }
+
     pub fn attach_image(&mut self, source: ImageSource) {
         self.pending_images.push(source);
     }

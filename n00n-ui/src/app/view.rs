@@ -194,7 +194,7 @@ impl App {
                 !self.any_overlay_open(),
                 panel_hint,
             );
-            // Command palette only when is_main_chat or when synced
+            // Command palette only for main chat
             if self.is_main_chat() {
                 self.command_palette.view(frame, layout.input_area);
             }
