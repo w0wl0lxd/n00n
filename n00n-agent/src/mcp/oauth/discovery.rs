@@ -1,7 +1,8 @@
 use std::io::Read;
+use std::net::IpAddr;
 
 use isahc::HttpClient;
-use isahc::http::Request;
+use isahc::http::{Request, Uri};
 use serde::Deserialize;
 
 use super::OAuthError;
@@ -96,16 +97,26 @@ pub(super) fn server_origin(server_url: &str) -> String {
 }
 
 fn validate_endpoint_url(url: &str) -> Result<(), OAuthError> {
-    if url.starts_with("https://")
-        || url.starts_with("http://127.0.0.1")
-        || url.starts_with("http://localhost")
-    {
-        Ok(())
-    } else {
-        Err(OAuthError::Other(format!(
-            "endpoint URL must use HTTPS: {url}"
-        )))
+    let uri = url
+        .parse::<Uri>()
+        .map_err(|error| OAuthError::Other(format!("invalid endpoint URL '{url}': {error}")))?;
+    let scheme = uri.scheme_str();
+    let host = uri.host();
+    let secure = scheme == Some("https") && host.is_some();
+    let loopback = scheme == Some("http")
+        && host.is_some_and(|host| {
+            let host = host.trim_start_matches('[').trim_end_matches(']');
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .parse::<IpAddr>()
+                    .is_ok_and(|address| address.is_loopback())
+        });
+    if secure || loopback {
+        return Ok(());
     }
+    Err(OAuthError::Other(format!(
+        "endpoint URL must use HTTPS or an exact loopback host: {url}"
+    )))
 }
 
 /// Validates that all required endpoints in auth server metadata use HTTPS.
@@ -278,10 +289,15 @@ mod tests {
         assert_eq!(well_known_url(base, name), expected);
     }
 
-    #[test_case("https://example.com/token",   true  ; "https_valid")]
-    #[test_case("http://127.0.0.1:8080/token", true  ; "localhost_valid")]
-    #[test_case("http://example.com/token",    false ; "http_rejected")]
-    #[test_case("ftp://example.com/token",     false ; "ftp_rejected")]
+    #[test_case("https://example.com/token",                  true  ; "https_valid")]
+    #[test_case("http://127.0.0.1:8080/token",                true  ; "ipv4_loopback_valid")]
+    #[test_case("http://[::1]:8080/token",                    true  ; "ipv6_loopback_valid")]
+    #[test_case("http://localhost:8080/token",                true  ; "localhost_valid")]
+    #[test_case("http://localhost.attacker.invalid/token",    false ; "localhost_prefix_rejected")]
+    #[test_case("http://127.0.0.1.attacker.invalid/token",    false ; "ipv4_prefix_rejected")]
+    #[test_case("http://example.com/token",                   false ; "http_rejected")]
+    #[test_case("ftp://example.com/token",                    false ; "ftp_rejected")]
+    #[test_case("not a url",                                  false ; "malformed_rejected")]
     fn endpoint_url_validation(url: &str, should_pass: bool) {
         assert_eq!(validate_endpoint_url(url).is_ok(), should_pass);
     }
