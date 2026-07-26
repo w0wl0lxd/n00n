@@ -38,6 +38,7 @@ const NATIVE_EFFICIENT_TOOLS: &[&str] = &[
     "index",
     "semble",
     "task",
+    "thoughtbox",
 ];
 const INSTRUCTIONS_MARKER: &str = "{{instructions}}";
 
@@ -235,7 +236,7 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
-    const NATIVE_EFFICIENT_LINE: &str = "Most efficient tools: arbor (optional, requires Arbor CLI), batch, code_execution, codegraph (optional, requires .codegraph/ index), index, semble, task";
+    const NATIVE_EFFICIENT_LINE: &str = "Most efficient tools: arbor (optional, requires Arbor CLI), batch, code_execution, codegraph (optional, requires .codegraph/ index), index, semble, task, thoughtbox";
 
     fn slots(prompt: PromptId, entries: &[(Slot, &str)]) -> ResolvedSlots {
         let mut slots = ResolvedSlots::default();
