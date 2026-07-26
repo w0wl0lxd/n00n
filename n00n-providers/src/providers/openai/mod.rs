@@ -7,7 +7,6 @@ pub use platform::{OpenAi, OpenAiOptions};
 
 use crate::model::{ModelEntry, ModelFamily, ModelPricing, ModelTier};
 
-const GPT_5_6_CONTEXT_WINDOW: u32 = 372_000;
 const GPT_5_6_MAX_OUTPUT_TOKENS: u32 = 128_000;
 
 inventory::submit!(n00n_config::providers::BuiltInProvider {
@@ -39,7 +38,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
                 fast: None,
             },
             max_output_tokens: GPT_5_6_MAX_OUTPUT_TOKENS,
-            context_window: GPT_5_6_CONTEXT_WINDOW,
+            context_window: platform::CODING_PLAN_CONTEXT_WINDOW,
         },
         ModelEntry {
             prefixes: &["gpt-5.6-terra"],
@@ -55,7 +54,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
                 fast: None,
             },
             max_output_tokens: GPT_5_6_MAX_OUTPUT_TOKENS,
-            context_window: GPT_5_6_CONTEXT_WINDOW,
+            context_window: platform::CODING_PLAN_CONTEXT_WINDOW,
         },
         ModelEntry {
             prefixes: &["gpt-5.6-sol"],
@@ -71,7 +70,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
                 fast: None,
             },
             max_output_tokens: GPT_5_6_MAX_OUTPUT_TOKENS,
-            context_window: GPT_5_6_CONTEXT_WINDOW,
+            context_window: platform::CODING_PLAN_CONTEXT_WINDOW,
         },
         ModelEntry {
             prefixes: &["gpt-5.4-nano"],
@@ -247,7 +246,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
                 fast: None,
             },
             max_output_tokens: 128_000,
-            context_window: 400_000,
+            context_window: platform::CODING_PLAN_CONTEXT_WINDOW,
         },
         ModelEntry {
             prefixes: &["gpt-5.2-codex"],
@@ -263,7 +262,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
                 fast: None,
             },
             max_output_tokens: 128_000,
-            context_window: 400_000,
+            context_window: platform::CODING_PLAN_CONTEXT_WINDOW,
         },
         ModelEntry {
             prefixes: &["gpt-5.1-codex-mini"],
@@ -279,7 +278,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
                 fast: None,
             },
             max_output_tokens: 128_000,
-            context_window: 400_000,
+            context_window: platform::CODING_PLAN_CONTEXT_WINDOW,
         },
         ModelEntry {
             prefixes: &["gpt-5.1-codex-max"],
@@ -295,7 +294,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
                 fast: None,
             },
             max_output_tokens: 128_000,
-            context_window: 400_000,
+            context_window: platform::CODING_PLAN_CONTEXT_WINDOW,
         },
         ModelEntry {
             prefixes: &["gpt-5.1-codex"],
@@ -311,7 +310,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
                 fast: None,
             },
             max_output_tokens: 128_000,
-            context_window: 400_000,
+            context_window: platform::CODING_PLAN_CONTEXT_WINDOW,
         },
     ]
 }
@@ -340,7 +339,7 @@ mod tests {
             .expect("GPT-5.6 model should be registered");
 
         assert_eq!(model.tier, tier);
-        assert_eq!(model.context_window, GPT_5_6_CONTEXT_WINDOW);
+        assert_eq!(model.context_window, platform::CODING_PLAN_CONTEXT_WINDOW);
         assert_eq!(model.pricing.input, input);
         assert_eq!(model.pricing.cache_read, cache_read);
         assert_eq!(model.pricing.cache_write, cache_write);
