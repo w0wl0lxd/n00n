@@ -20,7 +20,7 @@ use n00n_lua::{PluginError, PluginHost, WARM_TOOL_CAP};
 use n00n_providers::provider::{BoxFuture, Provider};
 use n00n_providers::{
     AgentError, ContentBlock, Message, Model, ProviderEvent, RequestOptions, Role, StopReason,
-    StreamResponse, TokenUsage,
+    StreamResponse, System, TokenUsage,
 };
 use n00n_storage::id::SessionRef;
 
@@ -40,7 +40,7 @@ impl Provider for NetworkSessionProbe {
         &'a self,
         _: &'a Model,
         _: &'a [Message],
-        _: &'a str,
+        _: &'a System,
         _: &'a serde_json::Value,
         _: &'a flume::Sender<ProviderEvent>,
         _: RequestOptions,
@@ -3413,7 +3413,7 @@ impl Provider for ScriptedSessionProvider {
         &'a self,
         _: &'a Model,
         _: &'a [Message],
-        _: &'a str,
+        _: &'a System,
         _: &'a serde_json::Value,
         _: &'a flume::Sender<ProviderEvent>,
         _: RequestOptions,

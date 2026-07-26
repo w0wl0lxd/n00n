@@ -1,6 +1,6 @@
 use n00n_providers::provider::Provider;
 use n00n_providers::retry::{MAX_RETRIES, RetryState};
-use n00n_providers::{Message, Model, ProviderEvent, RequestOptions, StreamResponse};
+use n00n_providers::{Message, Model, ProviderEvent, RequestOptions, StreamResponse, System};
 use n00n_storage::id::SessionRef;
 use serde_json::Value;
 use tracing::warn;
@@ -12,7 +12,7 @@ pub(crate) struct StreamContext<'a> {
     pub provider: &'a dyn Provider,
     pub model: &'a Model,
     pub messages: &'a [Message],
-    pub system: &'a str,
+    pub system: &'a System,
     pub tools: &'a Value,
     pub event_tx: &'a EventSender,
     pub cancel: &'a CancelToken,
@@ -138,7 +138,7 @@ mod tests {
             &'a self,
             _: &'a Model,
             _: &'a [Message],
-            _: &'a str,
+            _: &'a System,
             _: &'a Value,
             _: &'a flume::Sender<ProviderEvent>,
             _: RequestOptions,
@@ -172,7 +172,7 @@ mod tests {
                 provider: &provider,
                 model: &model,
                 messages: &[Message::user("task".into())],
-                system: "system",
+                system: &System::from("system"),
                 tools: &serde_json::json!([]),
                 event_tx: &event_tx,
                 cancel: &CancelToken::none(),

@@ -21,7 +21,7 @@ use crate::model::Model;
 use crate::provider::{BoxFuture, Provider};
 use crate::{
     AgentError, Message, ProviderEvent, RequestDeliveryMetadata, RequestDeliveryPhase,
-    RequestOptions, StreamResponse, dialect,
+    RequestOptions, StreamResponse, System, dialect,
 };
 
 use super::auth;
@@ -1204,7 +1204,7 @@ impl OpenAi {
         &self,
         model: &Model,
         messages: &[Message],
-        system: &str,
+        system: &System,
         tools: &Value,
         tools_hash: &str,
         event_tx: &Sender<ProviderEvent>,
@@ -1511,7 +1511,7 @@ impl OpenAi {
         &self,
         model: &Model,
         messages: &[Message],
-        system: &str,
+        system: &System,
         tools: &Value,
         tools_hash: &str,
         event_tx: &Sender<ProviderEvent>,
@@ -1715,17 +1715,20 @@ impl Provider for OpenAi {
         &'a self,
         model: &'a Model,
         messages: &'a [Message],
-        system: &'a str,
+        system: &'a System,
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
         session_id: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
+            let system_text = system.to_string();
             let mut buf = String::new();
-            let system = super::super::with_prefix(self.system_prefix.as_deref(), system, &mut buf);
+            let prefixed_system =
+                super::super::with_prefix(self.system_prefix.as_deref(), &system_text, &mut buf);
 
             if is_codex_model(&model.id) {
+                let codex_system = System::from(prefixed_system);
                 let operation_slot = self.response_operation_slot(session_id);
                 let _operation_guard = match operation_slot.as_ref() {
                     Some(operation) => Some(operation.lock().await),
@@ -1737,7 +1740,7 @@ impl Provider for OpenAi {
                     .run_codex_attempt_with_auth_retry(
                         model,
                         messages,
-                        system,
+                        &codex_system,
                         tools,
                         &tools_hash,
                         event_tx,
@@ -1762,7 +1765,7 @@ impl Provider for OpenAi {
                     .run_codex_attempt_with_auth_retry(
                         model,
                         messages,
-                        system,
+                        &codex_system,
                         tools,
                         &tools_hash,
                         event_tx,
@@ -1781,6 +1784,7 @@ impl Provider for OpenAi {
                 system,
                 tools,
                 prompt_cache_key.as_deref(),
+                self.system_prefix.as_deref(),
             );
             opts.thinking
                 .apply_reasoning_effort(&mut body, &dialect::STANDARD, model);
@@ -2435,7 +2439,7 @@ mod tests {
                 .stream_message(
                     &model,
                     &first_messages,
-                    "",
+                    &System::from(""),
                     &tools,
                     &event_tx,
                     RequestOptions::default(),
@@ -2452,7 +2456,7 @@ mod tests {
                 .stream_message(
                     &model,
                     &second_messages,
-                    "",
+                    &System::from(""),
                     &tools,
                     &event_tx,
                     RequestOptions::default(),
@@ -3071,11 +3075,12 @@ mod tests {
             let tools = serde_json::json!([]);
             let (event_tx, _) = flume::unbounded();
 
+            let system = System::from("");
             let attempt = provider
                 .run_codex_attempt(
                     &model,
                     &[Message::user("hello".into())],
-                    "",
+                    &system,
                     &tools,
                     TOOLS_HASH,
                     &event_tx,
@@ -3620,11 +3625,12 @@ mod tests {
             let (second_tx, _) = flume::unbounded();
             let first_session = SessionRef::generate();
             let second_session = SessionRef::generate();
+            let system = System::from("");
 
             let first = provider.stream_message(
                 &model,
                 &messages,
-                "",
+                &system,
                 &tools,
                 &first_tx,
                 RequestOptions::default(),
@@ -3633,7 +3639,7 @@ mod tests {
             let second = provider.stream_message(
                 &model,
                 &messages,
-                "",
+                &system,
                 &tools,
                 &second_tx,
                 RequestOptions::default(),

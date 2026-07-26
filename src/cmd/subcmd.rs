@@ -724,8 +724,8 @@ pub fn prompt(variant: &crate::cli::PromptVariant, flags: PromptFlags) -> Result
             let model = Model::from_spec(model_spec).context("invalid default model")?;
             build_system_prompt(&vars, &mode, &instructions, &slots, &model)
         }
-        PromptVariant::Research => assemble(PromptId::Research, &slots, &instructions),
-        PromptVariant::General => assemble(PromptId::General, &slots, &instructions),
+        PromptVariant::Research => assemble(PromptId::Research, &slots, &instructions).into(),
+        PromptVariant::General => assemble(PromptId::General, &slots, &instructions).into(),
     };
 
     print!("{output}");

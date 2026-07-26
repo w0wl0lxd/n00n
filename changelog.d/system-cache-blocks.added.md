@@ -1,0 +1,1 @@
+Added a `System` cache-block type with `CacheControl` support across providers and the agent, enabling static session context (rules, AGENTS.md, CLAUDE.md, etc.) to participate in provider prompt-caching APIs.

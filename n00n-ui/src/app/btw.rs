@@ -3,7 +3,7 @@ use std::sync::Arc;
 use flume::Sender;
 use futures_lite::future;
 use n00n_providers::provider::Provider;
-use n00n_providers::{Message, Model, ProviderEvent, RequestOptions};
+use n00n_providers::{Message, Model, ProviderEvent, RequestOptions, System};
 use serde_json::Value;
 
 use crate::components::btw_modal::BtwEvent;
@@ -33,9 +33,9 @@ impl App {
         let system = self
             .btw_system
             .as_ref()
-            .map(|s| String::clone(&s.load()))
+            .map(|s| System::clone(&s.load()))
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| BTW_FALLBACK_SYSTEM.to_string());
+            .unwrap_or_else(|| System::from(BTW_FALLBACK_SYSTEM));
         messages.push(btw_question(question));
 
         let (tx, rx) = flume::bounded(64);
@@ -48,7 +48,7 @@ impl App {
 async fn run_btw(
     provider: Arc<dyn Provider>,
     model: Model,
-    system: String,
+    system: System,
     messages: Vec<Message>,
     btw_tx: Sender<BtwEvent>,
 ) {

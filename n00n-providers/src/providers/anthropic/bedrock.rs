@@ -17,7 +17,9 @@ use tracing::{debug, warn};
 
 use crate::model::Model;
 use crate::provider::{BoxFuture, Provider};
-use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse};
+use crate::{
+    AgentError, CacheControl, Message, ProviderEvent, RequestOptions, StreamResponse, System,
+};
 
 use super::shared;
 
@@ -540,7 +542,7 @@ impl Provider for Bedrock {
         &'a self,
         model: &'a Model,
         messages: &'a [Message],
-        system: &'a str,
+        system: &'a System,
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
@@ -560,14 +562,20 @@ impl Provider for Bedrock {
             let long_context = requested_id.ends_with(shared::LONG_CONTEXT_SUFFIX);
             let model_id = shared::strip_long_context(&requested_id).to_string();
 
+            let system_blocks: Vec<shared::SystemBlock<'_>> = system
+                .blocks()
+                .iter()
+                .map(|block| shared::SystemBlock {
+                    r#type: "text",
+                    text: &block.text,
+                    cache_control: (block.cache == CacheControl::Ephemeral)
+                        .then_some(shared::EPHEMERAL),
+                })
+                .collect();
             let mut body = shared::build_request_body_with_system(
                 model,
                 messages,
-                &[shared::SystemBlock {
-                    r#type: "text",
-                    text: system,
-                    cache_control: Some(shared::EPHEMERAL),
-                }],
+                &system_blocks,
                 tools,
                 opts.thinking,
                 opts.message_cache_breakpoints,
