@@ -300,6 +300,8 @@ pub struct Message {
     pub content: Vec<ContentBlock>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_text: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub control: bool,
 }
 
 impl Message {
@@ -318,6 +320,17 @@ impl Message {
             role: Role::User,
             content: vec![ContentBlock::Text { text: ai_text }],
             display_text: Some(display),
+            control: false,
+        }
+    }
+
+    #[must_use]
+    pub fn control_display(ai_text: String, display: String) -> Self {
+        Self {
+            role: Role::User,
+            content: vec![ContentBlock::Text { text: ai_text }],
+            display_text: Some(display),
+            control: true,
         }
     }
 
@@ -343,6 +356,7 @@ impl Message {
             role: Role::User,
             content: vec![ContentBlock::Text { text }],
             display_text: Some(String::new()),
+            control: false,
         }
     }
 
@@ -811,6 +825,25 @@ mod tests {
     #[test_case("unknown", StopReason::EndTurn    ; "unknown_defaults_to_end_turn")]
     fn stop_reason_from_openai(input: &str, expected: StopReason) {
         assert_eq!(StopReason::from_openai(input), expected);
+    }
+
+    #[test]
+    fn message_control_flag_is_backward_compatible() {
+        let legacy: Message = serde_json::from_value(serde_json::json!({
+            "role": "user",
+            "content": [{ "type": "text", "text": "hello" }]
+        }))
+        .unwrap();
+        assert!(!legacy.control);
+        assert!(
+            serde_json::to_value(&legacy)
+                .unwrap()
+                .get("control")
+                .is_none()
+        );
+
+        let control = Message::control_display("wrapped".into(), "display".into());
+        assert_eq!(serde_json::to_value(control).unwrap()["control"], true);
     }
 
     #[test]

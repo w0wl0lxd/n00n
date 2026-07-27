@@ -56,6 +56,7 @@ impl Provider for NetworkSessionProbe {
                         text: "network reached".into(),
                     }],
                     display_text: None,
+                    control: false,
                 },
                 usage: TokenUsage::default(),
                 stop_reason: Some(StopReason::EndTurn),
@@ -4852,7 +4853,7 @@ fn team_launcher_collects_goal_and_submits_configured_prompt() {
     let n00n_lua::UiAction::Session { req, reply_tx } = action else {
         panic!("expected Team session prompt");
     };
-    let n00n_lua::SessionRequest::Prompt { id, text } = req else {
+    let n00n_lua::SessionRequest::Prompt { id, text, .. } = req else {
         panic!("expected a prompt request");
     };
     assert!(id.is_none());
@@ -4871,6 +4872,64 @@ fn team_launcher_collects_goal_and_submits_configured_prompt() {
     assert!(text.contains("thinking: max"), "submitted prompt: {text}");
     assert!(text.contains("auto_tier: true"), "submitted prompt: {text}");
     reply_tx.send(Ok(serde_json::json!("started"))).unwrap();
+}
+
+#[test]
+fn agent_control_resume_preserves_paused_team_mode() {
+    let (reg, host) = builtins_host();
+    let rx = host.ui_action_rx().unwrap();
+    let worker = std::thread::spawn(move || {
+        exec_tool(
+            &reg,
+            "agent_control",
+            serde_json::json!({
+                "action": "resume",
+                "agent_id": "agent-1",
+                "message": "continue carefully"
+            }),
+        )
+    });
+
+    let n00n_lua::UiAction::Session { req, reply_tx } = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("agent_control did not request session status")
+    else {
+        panic!("expected session status request");
+    };
+    assert!(matches!(req, n00n_lua::SessionRequest::Status { .. }));
+    reply_tx
+        .send(Ok(serde_json::json!({
+            "id": "agent-1",
+            "session_type": "background",
+            "tags": [],
+            "paused_team": {
+                "paused": true,
+                "run_id": "run-1",
+                "mode": "swarm"
+            }
+        })))
+        .unwrap();
+
+    let n00n_lua::UiAction::Session { req, reply_tx } = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("agent_control did not submit resume prompt")
+    else {
+        panic!("expected session prompt request");
+    };
+    let n00n_lua::SessionRequest::Prompt {
+        text,
+        steer,
+        control,
+        ..
+    } = req
+    else {
+        panic!("expected session prompt request");
+    };
+    assert!(steer, "resume must be submitted as a steering interrupt");
+    assert!(control, "resume must be tagged as a control message");
+    assert!(text.contains(r#""mode":"swarm""#), "resume prompt: {text}");
+    reply_tx.send(Ok(serde_json::json!("queued"))).unwrap();
+    assert!(worker.join().unwrap().is_ok());
 }
 
 /// The sessions picker parks its command handler in a `win:recv` loop while a

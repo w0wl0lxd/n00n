@@ -1660,6 +1660,7 @@ mod tests {
                 tool_use("gone__tool"),
             ],
             display_text: None,
+            control: false,
         }];
         let restored = McpSession::new(session.handle, &history);
         let mut tools = json!([]);
@@ -1743,6 +1744,7 @@ mod tests {
                 input: json!({}),
             }],
             display_text: None,
+            control: false,
         }];
         let restored = McpSession::new(session.handle, &history);
         let mut tools = json!([]);
