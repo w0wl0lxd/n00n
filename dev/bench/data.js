@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785118440620,
+  "lastUpdate": 1785124785352,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -6153,6 +6153,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 97776,
             "range": "± 9202",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5883bbf94867ef4a0da2c80376e68848b14e43ef",
+          "message": "fix(terminal-bench): hardcode n00n wrapper DIR before symlinking into PATH (#131)\n\n* fix(terminal-bench): hardcode n00n wrapper DIR before symlinking into PATH\n\nThe bundled n00n launcher computes its lib/bin paths from $0. When it is symlinked from /usr/local/bin the dirname becomes /usr/local/bin, so it tries to load /usr/local/bin/lib/ld-linux-x86-64.so.2 and fails. Patch the wrapper to use /opt/n00n before creating the symlink so n00n is reachable via PATH in the sandbox.\n\n* fix(terminal-bench,devin): PATH ordering, flush ACP stdin, and avoid inherited LD_LIBRARY_PATH\n\n- n00n_agent.py: put /opt/n00n before /opt/n00n/bin in PATH so the wrapper script is found before the raw ELF binary.\n\n- devin.rs: flush stdin after each ACP message to avoid deadlocks with line-buffered subprocesses; remove LD_LIBRARY_PATH so the Devin CLI doesn't load n00n's bundled glibc; use session/set_config_option method name.",
+          "timestamp": "2026-07-27T03:48:19Z",
+          "tree_id": "c3b593399ec027aa8587e40ee39b2a0a390ec559",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/5883bbf94867ef4a0da2c80376e68848b14e43ef"
+        },
+        "date": 1785124784329,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6087196,
+            "range": "± 247232",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1344403,
+            "range": "± 27021",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1342618,
+            "range": "± 8881",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 6788330,
+            "range": "± 89321",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 2457838,
+            "range": "± 16871",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 2463624,
+            "range": "± 9011",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 613458,
+            "range": "± 2418",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 75535,
+            "range": "± 1409",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 76858,
+            "range": "± 905",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 905784,
+            "range": "± 7900",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 411532,
+            "range": "± 1864",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 411378,
+            "range": "± 43174",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 32557,
+            "range": "± 1739",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 110577,
+            "range": "± 8538",
             "unit": "ns/iter"
           }
         ]
