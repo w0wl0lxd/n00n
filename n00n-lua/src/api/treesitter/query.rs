@@ -151,6 +151,10 @@ fn parse(_lua: &Lua, lang: String, query: String) -> mlua::Result<LuaQuery> {
 /// if q then print(#q.captures) end
 #[lua_fn]
 fn get(_lua: &Lua, lang: String, name: String) -> mlua::Result<(Option<LuaQuery>, Option<String>)> {
+    let Some(language) = Language::from_name(&lang) else {
+        return Ok((None, Some(format!("unknown language: {lang}"))));
+    };
+
     let query_path = format!("{lang}/{name}.scm");
     let Some(query_file) = QUERIES.get_file(&query_path) else {
         return Ok((None, Some(format!("query not found: {query_path}"))));
@@ -160,11 +164,7 @@ fn get(_lua: &Lua, lang: String, name: String) -> mlua::Result<(Option<LuaQuery>
         return Ok((None, Some("query file is not valid UTF-8".to_owned())));
     };
 
-    let Some(language) = Language::from_name(&lang) else {
-        return Ok((None, Some(format!("unknown language: {lang}"))));
-    };
     let ts_lang = language.ts_language();
-
     let q = match Query::new(&ts_lang, query_str) {
         Ok(q) => q,
         Err(e) => return Ok((None, Some(format!("query parse error: {e}")))),

@@ -3077,13 +3077,28 @@ Checks whether {node} fully contains the given {range}.
 n00n.treesitter.get_node({opts?})
 ```
 
-Placeholder for cursor-based node lookup (not yet implemented, always returns nil).
+Gets the node at the given cursor position in the source code.
+Parses the source and returns the smallest node containing the position.
 
 **Parameters:**
 
-- `{opts?}` (`table?`) Options (currently unused).
+- `{opts?}` (`table`) Options with keys:
+  - `source` (`string, required`) source code to parse.
+  - `lang` (`string, required`) language name, e.g. `"lua"`.
+  - `pos` (`table, required`) `{row, col}` with 0-based row and column.
+  - `bufnr` (`integer, optional`) accepted for Neovim compatibility but ignored.
 
-**Returns:** ([`Node|nil`](#n00n-treesitter-Node)) Always nil.
+**Returns:** ([`Node|nil`](#n00n-treesitter-Node), `string?`) Node at position, or nil and an error message.
+
+**Example:**
+
+```lua
+local node, err = n00n.treesitter.get_node({
+  source = "local x = 1",
+  lang = "lua",
+  pos = {0, 6}
+})
+```
 
 
 ## n00n.treesitter.language {#n00n-treesitter-language}
@@ -3107,7 +3122,7 @@ n00n.treesitter.language.add({lang}, {opts?})
 ```
 
 Registers {lang} for use with tree-sitter.
-Call this to confirm a language grammar is available. Throws if {lang} is unknown.
+Call this to confirm a language grammar is available.
 Custom grammar paths are not yet supported.
 
 **Parameters:**
@@ -3115,10 +3130,13 @@ Custom grammar paths are not yet supported.
 - `{lang}` (`string`) Language name, e.g. `"rust"`.
 - `{opts?}` (`table?`) Options table (the `path` key is not yet supported).
 
+**Returns:** (`boolean`, `string?`) true on success, or false and an error message.
+
 **Example:**
 
 ```lua
-n00n.treesitter.language.add("lua")
+local ok, err = n00n.treesitter.language.add("lua")
+if not ok then print("error: " .. err) end
 ```
 
 ---
@@ -3260,14 +3278,22 @@ local q = n00n.treesitter.query.parse("lua", "(identifier) @id")
 n00n.treesitter.query.get({lang}, {name})
 ```
 
-Looks up a named built-in query for {lang} (not yet implemented, always returns nil).
+Looks up a named built-in query for {lang}.
+Returns a compiled query object from bundled query files.
 
 **Parameters:**
 
 - `{lang}` (`string`) Language name.
 - `{name}` (`string`) Query name, e.g. `"highlights"`.
 
-**Returns:** ([`Query|nil`](#n00n-treesitter-Query)) Query object, or nil if not found.
+**Returns:** ([`Query|nil`](#n00n-treesitter-Query), `string?`) Query object, or nil and an error message.
+
+**Example:**
+
+```lua
+local q, err = n00n.treesitter.query.get("lua", "highlights")
+if q then print(#q.captures) end
+```
 
 
 ## n00n.treesitter.Query {#n00n-treesitter-Query}

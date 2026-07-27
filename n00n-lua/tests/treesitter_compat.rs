@@ -406,6 +406,28 @@ local node, err = n00n.treesitter.get_node({
 assert(err == nil, "should not error: " .. (err or "nil"))
 assert(node ~= nil, "should return a node")
 assert(node:type() == "identifier", "node type should be identifier, got " .. node:type())
+
+-- Missing/empty opts
+local node2, err2 = n00n.treesitter.get_node({})
+assert(node2 == nil, "should return nil for empty opts")
+assert(err2 ~= nil, "should return error for empty opts")
+
+-- Unknown language
+local node3, err3 = n00n.treesitter.get_node({
+    source = "local x = 1",
+    lang = "not_a_lang",
+    pos = {0, 6}
+})
+assert(node3 == nil, "should return nil for unknown language")
+assert(err3 ~= nil, "should return error for unknown language")
+
+-- Missing required option (pos)
+local node4, err4 = n00n.treesitter.get_node({
+    source = "local x = 1",
+    lang = "lua"
+})
+assert(node4 == nil, "should return nil for missing pos")
+assert(err4 ~= nil, "should return error for missing pos")
 "#,
     );
 }
