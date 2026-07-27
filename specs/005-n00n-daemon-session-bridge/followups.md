@@ -48,13 +48,16 @@ Out of #149 once the above lands: declare draft ready for review on the control-
 
 ```text
 #149 daemon plane + TUI registration + scoped tools
-  ├─ PR-B  absorb #134 worker runtime (stacked)
-  └─ PR-C  steer/control flags (#129 + MessageOpts wiring)
+  ├─ #129 control/steer + team resume   (absorbed)
+  └─ #134 background worker socks/CLI   (absorbed)
+
+Optional later: sock ownership lockfile, Windows transport, peercred, ACP registration
 ```
 
 ## Verification gates (any PR in this stack)
 
 - `cargo test -p n00n-daemon`
-- `cargo clippy -p n00n-daemon -p n00n --all-targets -- -D warnings`
+- `cargo clippy -p n00n-daemon -p n00n --tests -- -D warnings`
 - Manual: TUI up → second terminal `n00n agent list` shows `backend=tui` row
 - Manual: `n00n agent pause <tui-id>` → typed unsupported (not cancel)
+- Manual: `n00n agent run --background` then list/pause/message/stop
