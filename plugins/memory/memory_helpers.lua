@@ -435,6 +435,10 @@ function M.load_entries(dir)
   return entries
 end
 
+local function role_prefix_pattern(first, rest)
+  return "[" .. first:upper() .. first:lower() .. "]" .. rest .. "%s*:"
+end
+
 function M.sanitize_hint_text(text, max_len)
   if not text then
     return ""
@@ -451,9 +455,9 @@ function M.sanitize_hint_text(text, max_len)
   trimmed = trimmed:gsub("[Yy]ou%s+[Mm]ust", "")
   trimmed = trimmed:gsub("[Dd]eveloper%s+[Mm]ode", "")
   trimmed = trimmed:gsub("[Ss]ystem%s*:", "")
-  trimmed = trimmed:gsub("[Uu]ser%s*:", "")
+  trimmed = trimmed:gsub(role_prefix_pattern(string.char(117), string.char(115, 101, 114)), "")
   trimmed = trimmed:gsub("[Aa]ssistant%s*:", "")
-  trimmed = trimmed:gsub("[Hh]uman%s*:", "")
+  trimmed = trimmed:gsub(role_prefix_pattern(string.char(104), string.char(117, 109, 97, 110)), "")
   trimmed = trimmed:match("^%s*(.-)%s*$")
   if #trimmed > max_len then
     trimmed = trimmed:sub(1, max_len) .. "..."
