@@ -2,6 +2,7 @@
 
 import json
 import shlex
+import tempfile
 from pathlib import Path
 
 from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_template
@@ -9,6 +10,75 @@ from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
 AGENT_LOG_FILE = "n00n.txt"
+
+# devin-real block-buffers stdout when run through a pipe; run it under a
+# pseudo-tty so ACP traffic is line-buffered and n00n sees responses promptly.
+_DEVIN_WRAPPER = """#!/usr/bin/env python3
+import os
+import pty
+import select
+import subprocess
+import sys
+import termios
+import threading
+import tty
+
+REAL = "/opt/n00n/bin/devin-real"
+LOG = "/tmp/devin-acp.log"
+
+
+def main() -> int:
+    # n00n already passes the "acp" subcommand; do not duplicate it.
+    argv = [REAL, "--permission-mode", "dangerous"] + sys.argv[1:]
+    log = open(LOG, "wb")
+    master, slave = pty.openpty()
+    tty.setraw(master, termios.TCSANOW)
+    p = subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave)
+    os.close(slave)
+
+    def forward_input():
+        try:
+            fd = sys.stdin.buffer.fileno()
+            while True:
+                data = os.read(fd, 4096)
+                if not data:
+                    break
+                log.write(b"IN>> " + data)
+                log.flush()
+                os.write(master, data)
+        except OSError:
+            pass
+
+    t = threading.Thread(target=forward_input)
+    t.start()
+
+    try:
+        while True:
+            r, _, _ = select.select([master], [], [], 0.1)
+            if not r:
+                if p.poll() is not None:
+                    break
+                continue
+            data = os.read(master, 4096)
+            if not data:
+                break
+            log.write(b"OUT<< " + data)
+            log.flush()
+            sys.stdout.buffer.write(data)
+            sys.stdout.buffer.flush()
+    except OSError:
+        pass
+
+    t.join()
+    rc = p.wait()
+    log.write(f"EXIT rc={rc}\\n".encode())
+    log.close()
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+"""
 
 
 def _parse_stream_json(log_text: str) -> dict:
@@ -55,7 +125,7 @@ class N00nAgent(BaseInstalledAgent):
         return "n00n"
 
     def get_version_command(self) -> str | None:
-        return "export PATH=/opt/n00n/bin:$PATH && devin --version && n00n --version"
+        return "export PATH=/opt/n00n/bin:$PATH && n00n --version"
 
     async def install(self, environment: BaseEnvironment) -> None:
         # Upload the bundled n00n binary (glibc-linked with its own loader/libs).
@@ -65,7 +135,8 @@ class N00nAgent(BaseInstalledAgent):
         await self.exec_as_root(
             environment,
             command=(
-                "mkdir -p /opt/n00n /opt/n00n/.config /opt/n00n/.local/share /opt/n00n/.cache "
+                "mkdir -p /opt/n00n /opt/n00n/.config "
+                "/opt/n00n/.local/share /opt/n00n/.cache "
                 "&& tar -xzf /tmp/n00n-bundle.tar.gz -C /opt/n00n --strip-components=1 "
                 "&& chmod -R a+rX /opt/n00n "
                 "&& ln -sf /opt/n00n/n00n /usr/local/bin/n00n "
@@ -73,7 +144,61 @@ class N00nAgent(BaseInstalledAgent):
             ),
         )
 
-        # The n00n-bundle already contains a static-pie Devin CLI at /opt/n00n/bin/devin.
+        # devin-real block-buffers stdout when run through a pipe; replace the
+        # bundled wrapper with one that runs devin-real under a pseudo-tty.
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as tmp:
+            tmp.write(_DEVIN_WRAPPER)
+            wrapper_path = Path(tmp.name)
+        try:
+            await environment.upload_file(wrapper_path, "/opt/n00n/bin/devin")
+        finally:
+            wrapper_path.unlink(missing_ok=True)
+
+        await self.exec_as_root(
+            environment,
+            command="chmod +x /opt/n00n/bin/devin",
+        )
+
+        # The Devin CLI bundled with n00n stores Windsurf credentials in a TOML file.
+        # Write that credential file so the isolated XDG dirs contain a valid API key
+        # and server endpoints, matching what the Devin CLI expects when running ACP.
+        api_key = self._get_env("WINDSURF_API_KEY") or ""
+        if api_key:
+            config_json = '{"shell":{"setup_complete":true}}'
+            credentials_toml = (
+                f"api_key = {json.dumps(api_key)}\n"
+                f"windsurf_api_key = {json.dumps(api_key)}\n"
+                'api_server_url = "https://server.codeium.com"\n'
+                'devin_webapp_host = "app.devin.ai"\n'
+                'devin_api_url = "https://api.devin.ai"\n'
+            )
+
+            files = {
+                "/opt/n00n/.config/devin/config.json": config_json,
+                "/opt/n00n/.local/share/devin/credentials.toml": credentials_toml,
+            }
+            for remote, content in files.items():
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=Path(remote).suffix, delete=False
+                ) as tmp:
+                    tmp.write(content)
+                    tmp_path = Path(tmp.name)
+                try:
+                    await environment.upload_file(tmp_path, remote)
+                finally:
+                    tmp_path.unlink(missing_ok=True)
+
+            await self.exec_as_root(
+                environment,
+                command=(
+                    "mkdir -p /opt/n00n/.config/devin "
+                    "/opt/n00n/.local/share/devin "
+                    "&& chmod -R a+rwx /opt/n00n/.config "
+                    "/opt/n00n/.local /opt/n00n/.cache "
+                    "&& chmod 644 /opt/n00n/.local/share/devin/credentials.toml "
+                    "&& chmod 644 /opt/n00n/.config/devin/config.json"
+                ),
+            )
 
     @with_prompt_template
     async def run(
@@ -106,8 +231,10 @@ class N00nAgent(BaseInstalledAgent):
 
         command = (
             f'export PATH="/opt/n00n/bin:$PATH"; '
-            f"/opt/n00n/n00n --print --yolo --verbose --output-format stream-json "
-            f"--model {shlex.quote(model)} -- {escaped} 2>&1 | tee /logs/agent/{AGENT_LOG_FILE}"
+            f"/opt/n00n/n00n --print --yolo --verbose "
+            f"--output-format stream-json "
+            f"--model {shlex.quote(model)} -- {escaped} "
+            f"2>&1 | tee /logs/agent/{AGENT_LOG_FILE}"
         )
 
         await self.exec_as_agent(environment, command=command, env=env)
@@ -139,3 +266,8 @@ class N00nAgent(BaseInstalledAgent):
             "num_turns": result.get("num_turns"),
             "is_error": result.get("is_error", False),
         }
+
+
+# Harbor's -a import path uses the literal class name; provide a lowercase alias
+# so `n00n_agent:n00nAgent` works alongside the conventional `N00nAgent`.
+n00nAgent = N00nAgent
