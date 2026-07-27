@@ -691,11 +691,11 @@ impl ToolOutput {
                     let has_context = entry.groups.iter().any(|g| g.lines.len() > 1);
                     for (gi, group) in entry.groups.iter().enumerate() {
                         if gi > 0 && has_context {
-                            out.push_str("\n  --");
+                            out.push_str("\n--");
                         }
                         for line in &group.lines {
                             let sep = if line.is_match { ":" } else { " " };
-                            let _ = write!(out, "\n  {}{sep} {}", line.line_nr, line.text);
+                            let _ = write!(out, "\n{}{sep} {}", line.line_nr, line.text);
                         }
                     }
                 }
