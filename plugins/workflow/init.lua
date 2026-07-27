@@ -609,7 +609,7 @@ local function make_progress(ctx)
   local function refresh_header()
     local elapsed = math.max(os.time() - started_at, 0)
     local header = {
-      { state.name .. " · " .. state.phase .. " · " .. n00n.ui.humantime(elapsed), "bold" },
+      { { state.name .. " · " .. state.phase .. " · " .. n00n.ui.humantime(elapsed), "bold" } },
     }
     if state.agents > 0 or state.cached > 0 then
       header[#header + 1] = {

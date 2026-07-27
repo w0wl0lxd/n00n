@@ -22,6 +22,7 @@ const BASH_SRC: &str = include_str!("../../plugins/bash/init.lua");
 const BATCH_SRC: &str = include_str!("../../plugins/batch/init.lua");
 const CODEGRAPH_SRC: &str = include_str!("../../plugins/codegraph/init.lua");
 const GREP_SRC: &str = include_str!("../../plugins/grep/init.lua");
+const WORKFLOW_SRC: &str = include_str!("../../plugins/workflow/init.lua");
 
 /// Only the real `ToolView` emits this when collapsed.
 const EXPAND_HINT: &str = "click to expand";
@@ -45,6 +46,70 @@ fn load_host() -> PluginHost {
     host.load_source("codegraph", CODEGRAPH_SRC).unwrap();
     host.load_source("grep", GREP_SRC).unwrap();
     host
+}
+
+fn assert_publishes_live_buf(tool: &str, source: &str, input: Value, expected: &str) {
+    let reg = Arc::new(ToolRegistry::new());
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    if tool == "workflow" {
+        host.load_source(
+            "disable_workflow_state",
+            "n00n.env.state_dir = function() return nil end",
+        )
+        .unwrap();
+    }
+    host.load_source("live_preview", source).unwrap();
+
+    let (tx, rx) = flume::unbounded();
+    let event_tx = n00n_agent::EventSender::new(tx, 0);
+    let mut ctx = n00n_agent::tools::test_support::stub_ctx_with(
+        &n00n_agent::AgentMode::Build,
+        Some(&event_tx),
+        Some("live-preview"),
+    );
+    ctx.registry = Arc::clone(&reg);
+    let (cancel, token) = n00n_agent::CancelToken::new();
+    ctx.cancel = token;
+    let inv = reg.get(tool).unwrap().tool.parse(&input).unwrap();
+    let execution = std::thread::spawn(move || smol::block_on(inv.execute(&ctx)));
+
+    let body = loop {
+        let env = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("plugin did not publish a live preview");
+        if let AgentEvent::LiveToolBuf { id, body } = env.event
+            && id == "live-preview"
+        {
+            break body;
+        }
+    };
+    assert!(
+        body.read()
+            .iter()
+            .flat_map(|line| &line.spans)
+            .any(|span| span.text.contains(expected))
+    );
+
+    cancel.cancel();
+    execution.join().expect("tool execution panicked");
+}
+
+#[test_case::test_case(
+    "bash",
+    BASH_SRC,
+    json!({ "command": "printf live-preview" }),
+    "live-preview";
+    "bash"
+)]
+#[test_case::test_case(
+    "workflow",
+    WORKFLOW_SRC,
+    json!({ "script": "meta({ name = 'preview' }) return 'done'" }),
+    "workflow";
+    "workflow"
+)]
+fn running_plugin_publishes_live_preview(tool: &str, source: &str, input: Value, expected: &str) {
+    assert_publishes_live_buf(tool, source, input, expected);
 }
 
 fn batch_state() -> Value {
