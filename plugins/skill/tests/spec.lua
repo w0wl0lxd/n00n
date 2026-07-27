@@ -425,6 +425,27 @@ case("builtin_index_line_numbers_match_reference", function()
   assert(checked > 100, "expected the index to cover the reference, checked " .. checked)
 end)
 
+case("path_matches_pattern_matches_nested_paths", function()
+  local root = "/tmp/project"
+  assert(helpers.path_matches_pattern("/tmp/project/src/api/agent.rs", "src/**", root))
+  assert(helpers.path_matches_pattern("/tmp/project/docs/guide.md", "src/**", root) == false)
+end)
+
+case("skill_fingerprint_includes_content_digest", function()
+  local tmpdir = "/tmp/n00n_spec_skill_fp_" .. tostring(os.clock()):gsub("%.", "")
+  n00n.fs.mkdir(tmpdir)
+  local path = n00n.fs.joinpath(tmpdir, "SKILL.md")
+  n00n.fs.write(path, "body")
+  local fp = helpers.skill_fingerprint(path)
+  assert(fp, "fingerprint should exist")
+  local parts = {}
+  for part in fp:gmatch("[^:]+") do
+    parts[#parts + 1] = part
+  end
+  eq(#parts, 4, "fingerprint should include path, mtime, size, digest")
+  n00n.fs.rm(tmpdir, { recursive = true })
+end)
+
 if #failures > 0 then
   error(#failures .. " case(s) failed:\n\n" .. table.concat(failures, "\n\n"))
 end

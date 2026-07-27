@@ -73,8 +73,60 @@ function M.skill_fingerprint(path)
   if not meta then
     return nil
   end
+  local content = n00n.fs.read(path) or ""
+  local ok_hash, memory_helpers = pcall(require, "memory.memory_helpers")
+  local digest = "0"
+  if ok_hash and memory_helpers and memory_helpers.fnv1a_64 then
+    digest = memory_helpers.fnv1a_64(content)
+  else
+    digest = tostring(#content)
+  end
   local stamp = meta.mtime or 0
-  return path .. ":" .. tostring(stamp) .. ":" .. tostring(meta.size)
+  return path .. ":" .. tostring(stamp) .. ":" .. tostring(meta.size) .. ":" .. digest
+end
+
+function M.glob_pattern_to_lua(pattern)
+  local glob = pattern:gsub("\\", "/")
+  local out = "^"
+  local i = 1
+  while i <= #glob do
+    if glob:sub(i, i + 1) == "**" then
+      out = out .. ".*"
+      i = i + 2
+    elseif glob:sub(i, i) == "*" then
+      out = out .. "[^/]*"
+      i = i + 1
+    elseif glob:sub(i, i) == "?" then
+      out = out .. "[^/]"
+      i = i + 1
+    else
+      local c = glob:sub(i, i)
+      if c:find("[%^%$%(%)%%%.%[%]%+%-%?]") then
+        out = out .. "%" .. c
+      else
+        out = out .. c
+      end
+      i = i + 1
+    end
+  end
+  return out .. "$"
+end
+
+function M.path_matches_pattern(focus_path, pattern, scope_root)
+  if not focus_path or focus_path == "" or not pattern or pattern == "" then
+    return false
+  end
+  local focus = focus_path:gsub("\\", "/")
+  local root = (scope_root or "."):gsub("\\", "/")
+  if root:sub(-1) ~= "/" then
+    root = root .. "/"
+  end
+  local rel = focus
+  if focus:sub(1, #root) == root then
+    rel = focus:sub(#root + 1)
+  end
+  local lua_pat = M.glob_pattern_to_lua(pattern)
+  return rel:match(lua_pat) ~= nil or focus:match(lua_pat) ~= nil
 end
 
 function M.collect_skill_fingerprints(dir, entries)
