@@ -88,9 +88,11 @@ class N00nAgent(BaseInstalledAgent):
                     await self.exec_as_root(
                         environment,
                         command=(
+                            "if [ -d /mnt/n00n-auth ] && [ -n "
+                            '"$(ls -A /mnt/n00n-auth 2>/dev/null)" ]; then '
                             "mkdir -p /root/.n00n/auth && "
-                            "cp -r /mnt/n00n-auth/. /root/.n00n/auth/ "
-                            "2>/dev/null || true"
+                            "cp -r /mnt/n00n-auth/. /root/.n00n/auth/; "
+                            "fi"
                         ),
                     )
 
@@ -102,11 +104,12 @@ class N00nAgent(BaseInstalledAgent):
                     await self.exec_as_root(
                         environment,
                         command=(
+                            "if [ -d /mnt/n00n-providers ] && [ -n "
+                            '"$(ls -A /mnt/n00n-providers 2>/dev/null)" ]; then '
                             "mkdir -p /root/.n00n/providers && "
-                            "cp -r /mnt/n00n-providers/. /root/.n00n/providers/ "
-                            "2>/dev/null || true && "
-                            "chmod +x /root/.n00n/providers/* "
-                            "2>/dev/null || true"
+                            "cp -r /mnt/n00n-providers/. /root/.n00n/providers/ && "
+                            "chmod -R +x /root/.n00n/providers; "
+                            "fi"
                         ),
                     )
             else:
@@ -161,7 +164,7 @@ class N00nAgent(BaseInstalledAgent):
         )
 
         config_json = '{"shell":{"setup_complete":true}}'
-        credentials_toml = f'windsurf_api_key = "{windsurf_api_key}"\n'
+        credentials_toml = f"windsurf_api_key = {json.dumps(windsurf_api_key)}\n"
 
         await self._upload_text(environment, config_json, f"{config_dir}/config.json")
         await self._upload_text(
@@ -227,7 +230,7 @@ class N00nAgent(BaseInstalledAgent):
                 env["WINDSURF_API_KEY"] = windsurf_key
 
         command = (
-            f"n00n --print --yolo --verbose --output-format stream-json "
+            f"n00n --print --exit-on-done --yolo --verbose --output-format stream-json "
             f"--model {shlex.quote(model)} -- {escaped} 2>&1 | "
             f"tee /logs/agent/{AGENT_LOG_FILE}"
         )
