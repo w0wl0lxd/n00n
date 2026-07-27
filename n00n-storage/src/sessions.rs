@@ -493,12 +493,22 @@ fn truncate_label(text: &str) -> String {
     }
 }
 
-fn strip_tool_directive(text: &str) -> Option<(&str, &str)> {
+fn strip_tool_directive(text: &str) -> Option<(&'static str, &str)> {
     let text = text.strip_prefix("Use the ")?;
     let end = text.find(" tool now")?;
-    let kind = &text[..end];
+    let requested_kind = &text[..end];
+    let (_, kind) = SUBTASK_TITLE_PREFIXES
+        .iter()
+        .find(|(_, kind)| *kind == requested_kind)?;
     let after = &text[end + " tool now".len()..];
-    let body = after.split_once("\n\n").map_or(after, |(_, b)| b);
+    if after
+        .chars()
+        .next()
+        .is_some_and(|c| !c.is_whitespace() && !c.is_ascii_punctuation())
+    {
+        return None;
+    }
+    let body = after.split_once("\n\n").map_or(after, |(_, body)| body);
     Some((kind, body.trim_start()))
 }
 
@@ -1654,7 +1664,7 @@ where
     let _ = fs::remove_file(dir.join(SCAN_CACHE_FILE_V2));
 
     let mut order: Vec<usize> = (0..with_created.len()).collect();
-    order.sort_by_key(|i| with_created[*i].0);
+    order.sort_unstable_by_key(|i| (with_created[*i].0, *with_created[*i].1.id.as_bytes()));
     let mut last_main: Option<N00nId> = None;
     for i in order {
         let summary = &mut with_created[i].1;
@@ -2042,7 +2052,7 @@ where
     /// Returns `SessionError` if the scan fails.
     pub fn list_in(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, SessionError> {
         let mut summaries = scan_headers::<M>(cwd, dir)?;
-        summaries.sort_unstable_by_key(|s| Reverse(s.updated_at));
+        summaries.sort_unstable_by_key(|s| (Reverse(s.updated_at), *s.id.as_bytes()));
         Ok(summaries)
     }
 
@@ -2107,8 +2117,8 @@ mod tests {
     use super::ThinkingParseError;
     use super::{
         CWD_INDEX_FILE, DEFAULT_TITLE, LOG_FORMAT_VERSION, LogRecord, MAX_TITLE_LEN,
-        SESSION_VERSION, StoredSubagent, append_record, encode_frame, generate_title, jsonl_path,
-        load_cwd_index, now_epoch, update_cwd_index,
+        SESSION_VERSION, StoredSubagent, append_record, classify_and_display, encode_frame,
+        generate_title, jsonl_path, load_cwd_index, now_epoch, update_cwd_index,
     };
     use super::{
         OPENAI_RESPONSE_CHAIN_TTL_SECONDS, SESSIONS_DIR, StoredOpenAiResponseChain,
@@ -3268,6 +3278,67 @@ mod tests {
             vec![user_message(input)]
         };
         assert_eq!(generate_title(&messages), expected);
+    }
+
+    #[test_case(
+        "Use the team tool now. Do not only describe this request.\n\n{\"goal\":\"fix grouping\"}",
+        "fix grouping",
+        "team"
+        ; "recognized_directive"
+    )]
+    #[test_case(
+        "Use the bash tool now.\n\n{\"prompt\":\"not a sub-task\"}",
+        "Use the bash tool now.",
+        "main"
+        ; "unrecognized_tool"
+    )]
+    #[test_case(
+        "Use the team tool nowish.\n\n{\"goal\":\"not a directive\"}",
+        "Use the team tool nowish.",
+        "main"
+        ; "malformed_directive"
+    )]
+    fn display_title_only_classifies_known_tool_directives(
+        message: &str,
+        expected_title: &str,
+        expected_kind: &str,
+    ) {
+        let (title, kind) = classify_and_display(DEFAULT_TITLE, Some(message));
+        assert_eq!(title, expected_title);
+        assert_eq!(kind, expected_kind);
+    }
+
+    #[test]
+    fn equal_creation_times_group_and_sort_deterministically() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let ids = [
+            "00000000-0000-7000-8000-000000000001",
+            "00000000-0000-7000-8000-000000000002",
+            "00000000-0000-7000-8000-000000000003",
+            "00000000-0000-7000-8000-000000000004",
+        ]
+        .map(|id| id.parse::<N00nId>().unwrap());
+        let titles = ["main one", "task: child one", "main two", "team: child two"];
+
+        for (id, title) in ids.into_iter().zip(titles) {
+            let mut session: TestSession = Session::new("m", "/project");
+            session.id = id;
+            session.title = title.into();
+            session.created_at = 100;
+            session.updated_at = 200;
+            SessionLog::create(dir, &session).unwrap();
+        }
+
+        let list = TestSession::list_in("/project", dir).unwrap();
+        assert_eq!(
+            list.iter().map(|summary| summary.id).collect::<Vec<_>>(),
+            ids
+        );
+        assert_eq!(list[0].parent_id, None);
+        assert_eq!(list[1].parent_id, Some(ids[0]));
+        assert_eq!(list[2].parent_id, None);
+        assert_eq!(list[3].parent_id, Some(ids[2]));
     }
 
     #[test]

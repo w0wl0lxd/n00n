@@ -2633,6 +2633,52 @@ fn sessions_plugin_registers_commands() {
 }
 
 #[test]
+fn sessions_picker_groups_more_than_twenty_children() {
+    let registry = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&registry)).unwrap();
+    let mut source = include_str!("../../plugins/sessions/init.lua").to_string();
+    source.push_str(
+        r#"
+n00n.api.register_tool({
+  name = "sessions_group_probe",
+  description = "test",
+  schema = { type = "object", properties = {} },
+  audiences = { "main" },
+  handler = function()
+    local parent = { id = "parent", children = {} }
+    local all_nodes = { parent }
+    local rank = { parent = 0 }
+    for i = 1, 21 do
+      local child = { id = "child-" .. i, updated_at = 100 - i, children = {} }
+      rank[child.id] = i
+      parent.children[i] = child
+      all_nodes[#all_nodes + 1] = child
+    end
+    local expanded_state = { ["group:parent:1"] = true }
+    group_node(parent, all_nodes, rank, expanded_state)
+    return n00n.json.encode({
+      buckets = #parent.children,
+      first_id = parent.children[1].id,
+      first_expanded = parent.children[1].expanded,
+      first_children = #parent.children[1].children,
+      second_children = #parent.children[2].children,
+    })
+  end,
+})
+"#,
+    );
+    host.load_source("sessions_group_test", &source).unwrap();
+
+    let output = exec_tool(&registry, "sessions_group_probe", serde_json::json!({})).unwrap();
+    let grouped: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(grouped["buckets"], serde_json::json!(2));
+    assert_eq!(grouped["first_id"], serde_json::json!("group:parent:1"));
+    assert_eq!(grouped["first_expanded"], serde_json::json!(true));
+    assert_eq!(grouped["first_children"], serde_json::json!(20));
+    assert_eq!(grouped["second_children"], serde_json::json!(1));
+}
+
+#[test]
 fn job_callback_finishes_after_handler_returns_nil() {
     let reg = fresh_registry();
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();

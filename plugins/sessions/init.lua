@@ -86,7 +86,11 @@ local function by_recency(a, b)
   if rb then
     return false
   end
-  return (a.updated_at or 0) > (b.updated_at or 0)
+  local a_updated, b_updated = a.updated_at or 0, b.updated_at or 0
+  if a_updated ~= b_updated then
+    return a_updated > b_updated
+  end
+  return (a.id or "") < (b.id or "")
 end
 
 -- Assign stable ranks to new nodes so they keep their position while the
@@ -195,8 +199,9 @@ local function group_label(children, start_idx, finish)
 end
 
 local function make_bucket(parent, children, start_idx, finish, all_nodes, rank, expanded_state)
+  local bucket_id = GROUP_PREFIX .. parent.id .. ":" .. start_idx
   local bucket = {
-    id = GROUP_PREFIX .. parent.id .. ":" .. start_idx,
+    id = bucket_id,
     title = "",
     display_title = group_label(children, start_idx, finish),
     kind = GROUP_KIND,
@@ -207,7 +212,7 @@ local function make_bucket(parent, children, start_idx, finish, all_nodes, rank,
     focused = false,
     live = false,
     status = "idle",
-    expanded = expanded_state[bucket.id] or false,
+    expanded = expanded_state[bucket_id] or false,
     depth = 0,
   }
   rank[bucket.id] = rank[children[start_idx].id] - 0.5
