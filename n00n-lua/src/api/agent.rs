@@ -1259,6 +1259,7 @@ impl n00n_agent::InterruptSource for PromptInterruptSource {
                     thinking: self.thinking,
                     fast: self.fast,
                     workflow: false,
+                    control: false,
                     prompt: None,
                 },
                 0,
@@ -1367,6 +1368,7 @@ async fn prompt(
             thinking: s.thinking,
             fast: s.fast,
             workflow: false,
+            control: false,
             prompt: None,
         };
         let barrier_target = s.progress.next_forwarder_barrier();

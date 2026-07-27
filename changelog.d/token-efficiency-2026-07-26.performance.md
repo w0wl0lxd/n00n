@@ -1,0 +1,1 @@
+Reduced per-turn token overhead by compressing system/subagent prompts, tightening default output limits, and improving `dynamic_tool_size` observability. Prompt templates are smaller, tool-output line/byte defaults are lower, and the token-measurement binary now reports per-tool and per-prompt costs.

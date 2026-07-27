@@ -742,6 +742,7 @@ fn handle_user_message(
         thinking: n00n_providers::ThinkingConfig::default(),
         fast,
         workflow,
+        control: false,
         prompt: None,
     };
     handle.input_tx.send(input).is_ok()

@@ -1750,6 +1750,7 @@ impl Provider for Devin {
                 role: Role::Assistant,
                 content: content_blocks,
                 display_text: None,
+                control: false,
             };
 
             Ok(StreamResponse {

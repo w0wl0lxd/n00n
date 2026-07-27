@@ -174,6 +174,7 @@ impl AgentLoop {
                         text,
                         image_count,
                         images: input.images.clone(),
+                        control: input.control,
                     });
                 }
                 self.do_agent_run(input, event_tx, run_id, pre_dispatch_gate)
