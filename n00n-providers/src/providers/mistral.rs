@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use crate::model::{Model, ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider};
-use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, dialect};
+use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, System, dialect};
 
 use super::openai_compat::OpenAiCompatProvider;
 use super::{KeyPool, ResolvedAuth};
@@ -184,7 +184,7 @@ impl Provider for Mistral {
         &'a self,
         model: &'a Model,
         messages: &'a [Message],
-        system: &'a str,
+        system: &'a System,
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
@@ -196,14 +196,13 @@ impl Provider for Mistral {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
-            let mut buf = String::new();
-            let system = super::with_prefix(self.system_prefix.as_deref(), system, &mut buf);
             let mut body = self.compat.build_body_with_session(
                 model,
                 messages,
                 system,
                 tools,
                 session_id.map(n00n_storage::id::SessionRef::as_str),
+                self.system_prefix.as_deref(),
             );
             opts.thinking
                 .apply_reasoning_effort(&mut body, &dialect::HIGH_ONLY, model);

@@ -18,9 +18,10 @@ Commands run in <cwd> by default.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `command` | string | yes |  | The bash command to execute |
 | `workdir` | string | no | cwd | Working directory |
 | `timeout` | integer | no | 120 | Timeout in seconds |
+| `command` | string | yes |  | The bash command to execute |
+| `justification` | string | no |  | Required when command is broad/unbounded. Explain scope and bound assumptions. |
 | `description` | string | no |  | Short description (3-5 words) of what the command does |
 
 ### `read` *(lua plugin)*
@@ -35,7 +36,7 @@ Read a file or directory. Returns contents with line numbers (1-indexed).
 
 ### `write` *(lua plugin)*
 
-Write content to a file, replacing existing content. Creates parent directories. Always read first. Never create files unless necessary. Never proactively create docs (*.md, README) unless requested.
+Write content to a file. Prefer edit or edit_lines for existing files.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -44,7 +45,7 @@ Write content to a file, replacing existing content. Creates parent directories.
 
 ### `edit` *(lua plugin)*
 
-Replace an exact string match in a file. old_string must appear exactly once unless replace_all is true. Read file first. When copying from read output, exclude line number prefix (e.g. `42: `). Prefer over write for targeted changes. Use replace_all for renaming.
+Replace exact string match in a file. `old_string` must match uniquely unless `replace_all` is true. Read file first.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -55,16 +56,16 @@ Replace an exact string match in a file. old_string must appear exactly once unl
 
 ### `multiedit` *(lua plugin)*
 
-Make multiple find-and-replace edits to a single file atomically. Prefer over edit for multiple changes. Read file first. old_string must match exactly, including whitespace. Each edit must match exactly once unless replace_all. Edits applied in sequence. If any edit fails, none are written. Ensure earlier edits don't affect later edits.
+Apply multiple non-adjacent string edits to a single file atomically. Applied in sequence; all roll back if one fails.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `edits` | array | yes |  |
 | `path` | string | yes |  |
 
-### `edit_lines` *(lua plugin, opt-in)*
+### `edit_lines` *(lua plugin)*
 
-Edit lines by number. Replaces lines from `start` to `end` (inclusive) with `new_string`. Use empty `new_string` to delete. Do not use with batch.
+Replace lines from `start` to `end` (inclusive) with `new_string`. Use empty `new_string` to delete.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -73,9 +74,9 @@ Edit lines by number. Replaces lines from `start` to `end` (inclusive) with `new
 | `new_string` | string | yes |  |
 | `end` | integer | yes |  |
 
-### `insert_lines` *(lua plugin, opt-in)*
+### `insert_lines` *(lua plugin)*
 
-Insert lines before a given line number. Lines at `line` and below shift down. Existing lines preserved. Do not use with batch.
+Insert lines before `line` number. Existing lines shift down.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -85,7 +86,7 @@ Insert lines before a given line number. Lines at `line` and below shift down. E
 
 ### `glob` *(lua plugin)*
 
-Find files by glob pattern. Respects .gitignore. Returns absolute paths sorted by modification time (newest first). Prefer speculative parallel searches over sequential glob+grep.
+Find files by glob pattern. Respects .gitignore. Returns matching paths sorted by mtime.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

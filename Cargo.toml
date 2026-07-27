@@ -194,7 +194,7 @@ cortexkit-tree-sitter-scss = "1.0.1"
 tree-sitter-svelte-ng = "1.0"
 tree-sitter-vue-next = "0.1"
 include_dir = "0.7"
-mlua = { version = "0.11", features = [
+mlua = { version = "0.12.0", features = [
   "luau",
   "luau-jit",
   "async",

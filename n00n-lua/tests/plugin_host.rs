@@ -20,7 +20,7 @@ use n00n_lua::{PluginError, PluginHost, WARM_TOOL_CAP};
 use n00n_providers::provider::{BoxFuture, Provider};
 use n00n_providers::{
     AgentError, ContentBlock, Message, Model, ProviderEvent, RequestOptions, Role, StopReason,
-    StreamResponse, TokenUsage,
+    StreamResponse, System, TokenUsage,
 };
 use n00n_storage::id::SessionRef;
 
@@ -40,7 +40,7 @@ impl Provider for NetworkSessionProbe {
         &'a self,
         _: &'a Model,
         _: &'a [Message],
-        _: &'a str,
+        _: &'a System,
         _: &'a serde_json::Value,
         _: &'a flume::Sender<ProviderEvent>,
         _: RequestOptions,
@@ -2361,11 +2361,11 @@ fn builtin_opts_flow_from_setup_plugins() {
 
 #[test_case::test_case(
     serde_json::json!({}),
-    &["edit", "multiedit"], &["edit_lines", "insert_lines"]
-    ; "multiedit_on_others_opt_in"
+    &["edit", "multiedit", "edit_lines", "insert_lines"], &[]
+    ; "all_edit_tools_on_by_default"
 )]
 #[test_case::test_case(
-    serde_json::json!({ "multiedit": false, "edit_lines": true }),
+    serde_json::json!({ "multiedit": false, "edit_lines": true, "insert_lines": false }),
     &["edit", "edit_lines"], &["multiedit", "insert_lines"]
     ; "toggles_flip_sub_tools"
 )]
@@ -2848,7 +2848,218 @@ fn bash_permission_scopes_never_falls_back_to_json(command: &str) {
         scopes.scopes
     );
 }
+#[test]
+fn bash_permission_scopes_marks_broad_commands_for_prompt() {
+    let (reg, _host) = builtins_host();
 
+    let input = serde_json::json!({ "command": "find . -type f" });
+    let entry = reg.get("bash").expect("bash registered");
+    let inv = entry.tool.parse(&input).expect("parse failed");
+    let scopes = smol::block_on(inv.permission_scopes())
+        .expect("permission_scopes returned None for bash command");
+
+    assert!(
+        scopes.force_prompt,
+        "expected broad command to require a prompt"
+    );
+}
+
+#[test]
+fn bash_permission_scopes_marks_broad_recursive_ls_for_prompt() {
+    let (reg, _host) = builtins_host();
+
+    let input = serde_json::json!({ "command": "ls -R ." });
+    let entry = reg.get("bash").expect("bash registered");
+    let inv = entry.tool.parse(&input).expect("parse failed");
+    let scopes = smol::block_on(inv.permission_scopes())
+        .expect("permission_scopes returned None for bash command");
+
+    assert!(
+        scopes.force_prompt,
+        "expected recursive ls to require a prompt"
+    );
+}
+
+#[test]
+fn bash_permission_scopes_marks_broad_du_for_prompt() {
+    let (reg, _host) = builtins_host();
+
+    let input = serde_json::json!({ "command": "du ." });
+    let entry = reg.get("bash").expect("bash registered");
+    let inv = entry.tool.parse(&input).expect("parse failed");
+    let scopes = smol::block_on(inv.permission_scopes())
+        .expect("permission_scopes returned None for bash command");
+
+    assert!(
+        scopes.force_prompt,
+        "expected unbounded du to require a prompt"
+    );
+}
+
+#[test]
+fn bash_permission_scopes_marks_broad_tree_for_prompt() {
+    let (reg, _host) = builtins_host();
+
+    let input = serde_json::json!({ "command": "tree ." });
+    let entry = reg.get("bash").expect("bash registered");
+    let inv = entry.tool.parse(&input).expect("parse failed");
+    let scopes = smol::block_on(inv.permission_scopes())
+        .expect("permission_scopes returned None for bash command");
+
+    assert!(
+        scopes.force_prompt,
+        "expected broad tree listing to require a prompt"
+    );
+}
+
+#[test]
+fn bash_permission_scopes_allows_bounded_find_without_prompt() {
+    let (reg, _host) = builtins_host();
+
+    let input = serde_json::json!({ "command": "find . -maxdepth 1 -type f" });
+    let entry = reg.get("bash").expect("bash registered");
+    let inv = entry.tool.parse(&input).expect("parse failed");
+    let scopes = smol::block_on(inv.permission_scopes())
+        .expect("permission_scopes returned None for bash command");
+
+    assert!(
+        !scopes.force_prompt,
+        "expected bounded find to avoid forced prompt"
+    );
+}
+
+#[test]
+fn bash_permission_scopes_allows_head_capped_search_without_prompt() {
+    let (reg, _host) = builtins_host();
+
+    let input = serde_json::json!({ "command": "rg 'fn' plugins/bash/init.lua | head -n 3" });
+    let entry = reg.get("bash").expect("bash registered");
+    let inv = entry.tool.parse(&input).expect("parse failed");
+    let scopes = smol::block_on(inv.permission_scopes())
+        .expect("permission_scopes returned None for bash command");
+
+    assert!(
+        !scopes.force_prompt,
+        "expected piped search to avoid forced prompt"
+    );
+}
+
+#[test]
+fn bash_permission_scopes_allows_bounded_du_without_prompt() {
+    let (reg, _host) = builtins_host();
+
+    let input = serde_json::json!({ "command": "du -s ." });
+    let entry = reg.get("bash").expect("bash registered");
+    let inv = entry.tool.parse(&input).expect("parse failed");
+    let scopes = smol::block_on(inv.permission_scopes())
+        .expect("permission_scopes returned None for bash command");
+
+    assert!(
+        !scopes.force_prompt,
+        "expected summarized du to avoid forced prompt"
+    );
+}
+
+#[test_case::test_case("rg -m 1 needle ." ; "rg_max_count_is_per_file")]
+#[test_case::test_case("git grep -m 1 needle" ; "git_grep_max_count_is_per_file")]
+#[test_case::test_case("rg needle . && printf done | head -n 1" ; "head_caps_only_its_pipeline")]
+#[test_case::test_case("rg needle . && printf done | tail -n 1" ; "tail_caps_only_its_pipeline")]
+#[test_case::test_case("LC_ALL=C rg needle ." ; "leading_environment_assignment")]
+#[test_case::test_case("LABEL='two words' rg needle ." ; "quoted_environment_assignment")]
+fn bash_permission_scopes_marks_reviewed_unbounded_commands_for_prompt(command: &str) {
+    let (reg, _host) = builtins_host();
+
+    let input = serde_json::json!({ "command": command });
+    let entry = reg.get("bash").expect("bash registered");
+    let inv = entry.tool.parse(&input).expect("parse failed");
+    let scopes = smol::block_on(inv.permission_scopes())
+        .expect("permission_scopes returned None for bash command");
+
+    assert!(
+        scopes.force_prompt,
+        "expected unbounded command to require a prompt: {command}"
+    );
+}
+
+#[test_case::test_case("rg -m 1 needle ." ; "rg_max_count_is_per_file")]
+#[test_case::test_case("rg needle . && printf done | head -n 1" ; "head_caps_only_its_pipeline")]
+#[test_case::test_case("LC_ALL=C rg needle ." ; "leading_environment_assignment")]
+fn bash_handler_blocks_reviewed_unbounded_commands(command: &str) {
+    let (reg, _host) = builtins_host();
+
+    let err = exec_tool(&reg, "bash", serde_json::json!({ "command": command })).unwrap_err();
+
+    assert!(
+        err.contains("justification is required"),
+        "missing guardrail feedback for {command}: {err}"
+    );
+}
+
+#[test]
+fn bash_handler_blocks_broad_command_without_justification() {
+    let (reg, _host) = builtins_host();
+
+    let err = exec_tool(&reg, "bash", serde_json::json!({ "command": "du ." })).unwrap_err();
+
+    assert!(
+        err.contains("justification is required"),
+        "missing guardrail feedback: {err}"
+    );
+}
+
+#[test]
+fn bash_handler_blocks_broad_command_later_in_chain_without_justification() {
+    let (reg, _host) = builtins_host();
+
+    let err = exec_tool(
+        &reg,
+        "bash",
+        serde_json::json!({ "command": "echo checking && find . -type f" }),
+    )
+    .unwrap_err();
+
+    assert!(
+        err.contains("justification is required"),
+        "missing guardrail feedback: {err}"
+    );
+}
+
+#[test]
+fn bash_handler_allows_broad_command_with_justification() {
+    let (reg, _host) = builtins_host();
+
+    let out = exec_tool(
+        &reg,
+        "bash",
+        serde_json::json!({
+            "command": "du .",
+            "justification": "Need a quick repository size estimate before cleanup"
+        }),
+    )
+    .unwrap();
+
+    assert!(
+        !out.contains("justification is required"),
+        "expected justification to allow command: {out}"
+    );
+}
+
+#[test]
+fn bash_handler_allows_head_capped_search_without_justification() {
+    let (reg, _host) = builtins_host();
+
+    let out = exec_tool(
+        &reg,
+        "bash",
+        serde_json::json!({ "command": "rg 'fn' plugins/bash/init.lua | head -n 3" }),
+    )
+    .unwrap();
+
+    assert!(
+        !out.contains("justification is required"),
+        "expected capped search output to run without justification: {out}"
+    );
+}
 fn exec_tool_with_perms(
     perms: n00n_lua::PluginPermissions,
     src: &str,
@@ -3413,7 +3624,7 @@ impl Provider for ScriptedSessionProvider {
         &'a self,
         _: &'a Model,
         _: &'a [Message],
-        _: &'a str,
+        _: &'a System,
         _: &'a serde_json::Value,
         _: &'a flume::Sender<ProviderEvent>,
         _: RequestOptions,
@@ -4766,4 +4977,155 @@ fn jobstart_list_mode_non_string_arg_errors() {
     let out = exec_tool(&reg, "job_nonstr", serde_json::json!({})).unwrap();
     // When a non-string is in the array, mlua's get::<String> will error
     assert!(!out.is_empty(), "got empty error string");
+}
+
+#[test]
+fn live_debloat_tool_invocation_suite() {
+    let reg = fresh_registry();
+    let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let config = PluginsConfig {
+        enabled: true,
+        names: vec!["write".into(), "read".into(), "edit".into()],
+        opts: HashMap::new(),
+    };
+    host.load_builtins(&config).unwrap();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let test_file = temp_dir.path().join("debloat_live_test.txt");
+    let test_path = test_file.to_str().unwrap();
+
+    // 1. Live write call
+    let write_out = exec_tool_output(
+        &reg,
+        "write",
+        serde_json::json!({
+            "path": test_path,
+            "content": "line 1\nline 2\nline 3\n"
+        }),
+    )
+    .unwrap();
+    assert!(write_out.as_text().contains("wrote 21 bytes"));
+
+    // 2. Live read call
+    let read_out = exec_tool_output(
+        &reg,
+        "read",
+        serde_json::json!({
+            "path": test_path
+        }),
+    )
+    .unwrap();
+    assert!(read_out.as_text().contains("line 1"));
+    assert!(read_out.as_text().contains("line 2"));
+
+    // 3. Live edit_lines call
+    let edit_lines_out = exec_tool_output(
+        &reg,
+        "edit_lines",
+        serde_json::json!({
+            "path": test_path,
+            "start": 2,
+            "end": 2,
+            "new_string": "line 2 modified"
+        }),
+    )
+    .unwrap();
+    assert!(edit_lines_out.as_text().contains("replaced lines 2-2"));
+
+    // 4. Live insert_lines call
+    let insert_out = exec_tool_output(
+        &reg,
+        "insert_lines",
+        serde_json::json!({
+            "path": test_path,
+            "line": 2,
+            "new_string": "inserted line"
+        }),
+    )
+    .unwrap();
+    assert!(insert_out.as_text().contains("inserted at line 2"));
+
+    // 5. Live edit (string replace) call
+    let edit_out = exec_tool_output(
+        &reg,
+        "edit",
+        serde_json::json!({
+            "path": test_path,
+            "old_string": "line 1",
+            "new_string": "line 1 updated"
+        }),
+    )
+    .unwrap();
+    assert!(edit_out.as_text().contains("edited"));
+
+    let final_content = std::fs::read_to_string(&test_file).unwrap();
+    assert_eq!(
+        final_content,
+        "line 1 updated\ninserted line\nline 2 modified\nline 3\n"
+    );
+}
+
+#[test]
+fn live_followup_schema_debloat_suite() {
+    let reg = fresh_registry();
+    let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let config = PluginsConfig {
+        enabled: true,
+        names: vec!["glob".into(), "bash".into()],
+        opts: HashMap::new(),
+    };
+    host.load_builtins(&config).unwrap();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let test_file = temp_dir.path().join("live_test_file.rs");
+    std::fs::write(&test_file, "// live test file\n").unwrap();
+
+    // 1. Live glob call
+    let glob_out = exec_tool(
+        &reg,
+        "glob",
+        serde_json::json!({
+            "pattern": "*.rs",
+            "path": temp_dir.path().to_str().unwrap()
+        }),
+    )
+    .unwrap();
+    assert!(glob_out.contains("live_test_file.rs"));
+
+    // 2. Live bash call
+    let bash_out = exec_tool(
+        &reg,
+        "bash",
+        serde_json::json!({
+            "command": "echo 'followup live debloat test'",
+            "description": "test echo"
+        }),
+    )
+    .unwrap();
+    assert!(bash_out.contains("followup live debloat test"));
+
+    // 3. Schema minification check
+    let verbose_mcp = serde_json::json!({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "FastMCPInput",
+        "$comment": "Internal SDK comment",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "query": { "type": "string", "title": "Query", "description": "search query" },
+            "verbose": { "type": "boolean", "description": "" }
+        }
+    });
+
+    let minified = n00n_agent::tools::schema::sanitize_tool_input_schema(verbose_mcp);
+    assert!(minified.get("$schema").is_none());
+    assert!(minified.get("title").is_none());
+    assert!(minified.get("$comment").is_none());
+    assert!(minified.get("additionalProperties").is_none());
+    assert!(minified["properties"]["query"].get("title").is_none());
+    assert!(
+        minified["properties"]["verbose"]
+            .get("description")
+            .is_none()
+    );
 }

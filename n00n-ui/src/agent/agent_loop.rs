@@ -17,7 +17,7 @@ use n00n_agent::{
     McpHandle, PromptRole, ToolOutputLines,
 };
 use n00n_lua::EventHandle;
-use n00n_providers::{AgentError, Message, Model, OpenAiOptions, TokenUsage};
+use n00n_providers::{AgentError, Message, Model, OpenAiOptions, System, TokenUsage};
 use n00n_storage::id::SessionRef;
 use n00n_storage::sessions::TranscriptEntry;
 use serde_json::Value;
@@ -37,7 +37,7 @@ pub(super) struct AgentLoop {
     tool_filter: ToolFilter,
     mcp: Option<McpSession>,
     history: History,
-    btw_system: Arc<ArcSwap<String>>,
+    btw_system: Arc<ArcSwap<System>>,
     cancel_map: Arc<RunCancelMap>,
     init_cancel: CancelToken,
     permissions: Arc<PermissionManager>,
@@ -72,7 +72,7 @@ pub(super) struct AgentLoopInit {
     pub(super) initial_transcript: Vec<TranscriptEntry<Message>>,
     pub(super) shared_history: Arc<ArcSwap<Vec<Message>>>,
     pub(super) shared_transcript: n00n_agent::SharedTranscript,
-    pub(super) btw_system: Arc<ArcSwap<String>>,
+    pub(super) btw_system: Arc<ArcSwap<System>>,
     pub(super) mcp_handle: Option<McpHandle>,
     pub(super) permissions: Arc<PermissionManager>,
     pub(super) agent_tx: flume::Sender<Envelope>,

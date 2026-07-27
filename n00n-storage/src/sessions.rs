@@ -8,7 +8,7 @@ use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -17,7 +17,7 @@ use std::time::UNIX_EPOCH;
 
 use tracing::warn;
 
-use crate::id::{N00nId, N00nIdParseError};
+use crate::id::{n00nId, n00nIdParseError};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use zstd::stream::{Decoder, Encoder};
@@ -49,12 +49,12 @@ pub enum SessionError {
     #[error("incompatible session version {found} (expected {expected})")]
     VersionMismatch { found: u32, expected: u32 },
     #[error("session ID mismatch: log owns {log_id}, got {given_id}")]
-    IdMismatch { log_id: N00nId, given_id: N00nId },
+    IdMismatch { log_id: n00nId, given_id: n00nId },
     #[error("session log {path} has header id {raw_id:?} that is not a valid id: {source}")]
     CorruptHeaderId {
         path: String,
         raw_id: String,
-        source: N00nIdParseError,
+        source: n00nIdParseError,
     },
     #[error("cursor ahead of session (log has {saved}, session has {actual}); compact required")]
     CursorAhead { saved: usize, actual: usize },
@@ -210,7 +210,7 @@ pub enum TranscriptEntry<M> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session<M, U, T> {
     pub version: u32,
-    pub id: N00nId,
+    pub id: n00nId,
     pub title: String,
     pub cwd: String,
     pub model: String,
@@ -232,7 +232,7 @@ pub struct Session<M, U, T> {
 
 #[derive(Serialize, Deserialize)]
 pub struct SessionSummary {
-    pub id: N00nId,
+    pub id: n00nId,
     pub title: String,
     pub updated_at: u64,
     #[serde(default)]
@@ -470,7 +470,7 @@ enum LogRecord<M, U, T> {
     #[serde(rename = "header")]
     Header {
         v: u32,
-        id: N00nId,
+        id: n00nId,
         #[serde(default)]
         model: String,
         cwd: String,
@@ -503,7 +503,7 @@ enum LogRecord<M, U, T> {
 // -- SessionLog: append-only persistence --
 
 pub struct SessionLog {
-    session_id: N00nId,
+    session_id: n00nId,
     dir: PathBuf,
     file: File,
     saved_messages: MessageCursor,
@@ -569,7 +569,7 @@ impl SessionLog {
     /// or if the session ID does not match.
     pub fn open<M, U, T>(
         dir: &Path,
-        session_id: N00nId,
+        session_id: n00nId,
     ) -> Result<(Session<M, U, T>, Self), SessionError>
     where
         M: Serialize + DeserializeOwned + Clone + Default,
@@ -600,11 +600,12 @@ impl SessionLog {
         };
         let appended_frames = if rewrite { 0 } else { log_appends };
         let log = Self::cursor_from(dir, &session, file, appended_frames)?;
+        update_cwd_index(dir, &session.cwd, session.id)?;
         Ok((session, log))
     }
 
     #[must_use]
-    pub fn session_id(&self) -> N00nId {
+    pub fn session_id(&self) -> n00nId {
         self.session_id
     }
 
@@ -768,6 +769,7 @@ impl SessionLog {
 
         let file = write_session_file(dir, session)?;
         *self = Self::cursor_from(dir, session, file, 0)?;
+        update_cwd_index(dir, &session.cwd, session.id)?;
 
         Ok(())
     }
@@ -971,7 +973,7 @@ enum RawTag {
 }
 
 struct SessionBuilder<M, U, T> {
-    id: Option<N00nId>,
+    id: Option<n00nId>,
     model: String,
     cwd: String,
     created_at: u64,
@@ -1034,7 +1036,7 @@ where
             Err(error) => {
                 if !got_header
                     && let Ok(RawTag::Header { id: raw_id }) = serde_json::from_str::<RawTag>(line)
-                    && let Err(source) = raw_id.parse::<N00nId>()
+                    && let Err(source) = raw_id.parse::<n00nId>()
                 {
                     return Err(SessionError::CorruptHeaderId {
                         path: path.display().to_string(),
@@ -1187,7 +1189,7 @@ fn load_cwd_index(dir: &Path) -> HashMap<String, String> {
         .unwrap_or_else(HashMap::new)
 }
 
-fn update_cwd_index(dir: &Path, cwd: &str, session_id: N00nId) -> Result<(), StorageError> {
+fn update_cwd_index(dir: &Path, cwd: &str, session_id: n00nId) -> Result<(), StorageError> {
     let mut index = load_cwd_index(dir);
     let id_str = session_id.to_string();
     if index.get(cwd).is_some_and(|v| *v == id_str) {
@@ -1197,15 +1199,15 @@ fn update_cwd_index(dir: &Path, cwd: &str, session_id: N00nId) -> Result<(), Sto
     atomic_write(&dir.join(CWD_INDEX_FILE), &serde_json::to_vec(&index)?)
 }
 
-fn jsonl_path(dir: &Path, id: N00nId) -> PathBuf {
+fn jsonl_path(dir: &Path, id: n00nId) -> PathBuf {
     dir.join(format!("{id}.jsonl"))
 }
 
-fn openai_response_chain_path(dir: &Path, id: N00nId) -> PathBuf {
+fn openai_response_chain_path(dir: &Path, id: n00nId) -> PathBuf {
     dir.join(format!("{id}.{OPENAI_RESPONSE_CHAIN_SUFFIX}"))
 }
 
-fn openai_response_chain_lock_path(dir: &Path, id: N00nId) -> PathBuf {
+fn openai_response_chain_lock_path(dir: &Path, id: n00nId) -> PathBuf {
     dir.join(format!("{id}.{OPENAI_RESPONSE_CHAIN_LOCK_SUFFIX}"))
 }
 
@@ -1215,7 +1217,7 @@ fn openai_response_chain_lock_path(dir: &Path, id: N00nId) -> PathBuf {
 /// Returns an error when the sessions directory or lock file cannot be opened or locked.
 pub fn lock_openai_response_chain(
     state_dir: &StateDir,
-    session_id: N00nId,
+    session_id: n00nId,
 ) -> Result<OpenAiResponseChainLock, StorageError> {
     let sessions_dir = state_dir.ensure_subdir(SESSIONS_DIR)?;
     lock_openai_response_chain_in(&sessions_dir, session_id)
@@ -1223,7 +1225,7 @@ pub fn lock_openai_response_chain(
 
 fn lock_openai_response_chain_in(
     sessions_dir: &Path,
-    session_id: N00nId,
+    session_id: n00nId,
 ) -> Result<OpenAiResponseChainLock, StorageError> {
     let file = open_openai_response_chain_lock(sessions_dir, session_id)?;
     file.lock()?;
@@ -1239,7 +1241,7 @@ fn lock_openai_response_chain_in(
 /// Returns an error when the sessions directory or lock file cannot be opened or locked.
 pub fn try_lock_openai_response_chain(
     state_dir: &StateDir,
-    session_id: N00nId,
+    session_id: n00nId,
 ) -> Result<Option<OpenAiResponseChainLock>, StorageError> {
     let sessions_dir = state_dir.ensure_subdir(SESSIONS_DIR)?;
     let file = open_openai_response_chain_lock(&sessions_dir, session_id)?;
@@ -1252,7 +1254,7 @@ pub fn try_lock_openai_response_chain(
 
 fn open_openai_response_chain_lock(
     sessions_dir: &Path,
-    session_id: N00nId,
+    session_id: n00nId,
 ) -> Result<File, StorageError> {
     let mut options = OpenOptions::new();
     options.create(true).truncate(false).read(true).write(true);
@@ -1280,7 +1282,7 @@ fn open_openai_response_chain_lock(
 /// Returns an error when the sessions directory cannot be opened.
 pub fn openai_response_chain_parent_exists(
     state_dir: &StateDir,
-    session_id: N00nId,
+    session_id: n00nId,
 ) -> Result<bool, StorageError> {
     let sessions_dir = state_dir.ensure_subdir(SESSIONS_DIR)?;
     Ok(locate_session_file(&sessions_dir, session_id).is_some())
@@ -1295,7 +1297,7 @@ pub fn openai_response_chain_parent_exists(
 /// or an expired state file cannot be removed.
 pub fn load_openai_response_chain(
     state_dir: &StateDir,
-    session_id: N00nId,
+    session_id: n00nId,
     lock: &OpenAiResponseChainLock,
 ) -> Result<Option<StoredOpenAiResponseChain>, StorageError> {
     load_openai_response_chain_at(state_dir, session_id, now_epoch(), lock)
@@ -1303,7 +1305,7 @@ pub fn load_openai_response_chain(
 
 fn load_openai_response_chain_at(
     state_dir: &StateDir,
-    session_id: N00nId,
+    session_id: n00nId,
     now: u64,
     lock: &OpenAiResponseChainLock,
 ) -> Result<Option<StoredOpenAiResponseChain>, StorageError> {
@@ -1329,7 +1331,7 @@ fn load_openai_response_chain_at(
 /// Returns an error when the sessions directory cannot be created or the state cannot be written.
 pub fn save_openai_response_chain(
     state_dir: &StateDir,
-    session_id: N00nId,
+    session_id: n00nId,
     chain: &StoredOpenAiResponseChain,
     lock: &OpenAiResponseChainLock,
 ) -> Result<(), StorageError> {
@@ -1354,7 +1356,7 @@ pub fn save_openai_response_chain(
 /// Returns an error when the sessions directory cannot be opened or the file cannot be removed.
 pub fn delete_openai_response_chain(
     state_dir: &StateDir,
-    session_id: N00nId,
+    session_id: n00nId,
     lock: &OpenAiResponseChainLock,
 ) -> Result<(), StorageError> {
     let _ = lock;
@@ -1379,7 +1381,7 @@ fn try_remove(path: &Path) -> Result<bool, StorageError> {
     }
 }
 
-fn remove_from_cwd_index(dir: &Path, session_id: N00nId) -> Result<(), StorageError> {
+fn remove_from_cwd_index(dir: &Path, session_id: n00nId) -> Result<(), StorageError> {
     let mut index = load_cwd_index(dir);
     let before = index.len();
     let session_id = session_id.to_string();
@@ -1395,7 +1397,7 @@ fn remove_from_cwd_index(dir: &Path, session_id: N00nId) -> Result<(), StorageEr
 #[derive(Deserialize)]
 struct ZstHeader {
     v: u32,
-    id: N00nId,
+    id: n00nId,
     #[serde(default)]
     model: String,
     cwd: String,
@@ -1404,19 +1406,17 @@ struct ZstHeader {
 }
 
 #[derive(Deserialize)]
-#[serde(tag = "t", rename_all = "snake_case")]
-enum ScanRecord {
-    Meta {
-        title: String,
-        updated_at: u64,
-    },
-    #[serde(other)]
-    Other,
+#[serde(rename_all = "snake_case")]
+struct MetaScan {
+    title: String,
+    updated_at: u64,
 }
+
+const META_RECORD_PREFIX: &str = r#"{"t":"meta""#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ScannedHeader {
-    id: N00nId,
+    id: n00nId,
     cwd: String,
     title: String,
     updated_at: u64,
@@ -1501,44 +1501,142 @@ fn scan_headers(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, StorageErr
     Ok(summaries)
 }
 
-fn scan_zst_header(path: &Path) -> Option<ScannedHeader> {
-    let mut header = None;
-    let mut meta_title = String::new();
-    let mut updated_at = 0u64;
-    if let Err(error) = visit_zstd_lines(path, |line| {
-        if line.is_empty() {
-            return Ok(());
-        }
-        if header.is_none() {
-            let parsed: ZstHeader = serde_json::from_str(line).map_err(StorageError::from)?;
-            if parsed.v != LOG_FORMAT_VERSION {
-                return Err(SessionError::VersionMismatch {
-                    found: parsed.v,
-                    expected: LOG_FORMAT_VERSION,
-                });
+const ZSTD_MAGIC: &[u8] = &[0x28, 0xb5, 0x2f, 0xfd];
+const LAST_FRAME_SEARCH_CHUNK: usize = 1024 * 1024;
+const MAX_LAST_FRAME_SEARCH_BYTES: u64 = 64 * 1024 * 1024;
+
+fn try_decode_header_at(path: &Path, offset: u64) -> Option<ZstHeader> {
+    let file = File::open(path).ok()?;
+    let mut file = file;
+    file.seek(SeekFrom::Start(offset)).ok()?;
+    let decoder = Decoder::new(file).ok()?;
+    let mut reader = BufReader::new(decoder);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => return None,
+            Ok(_) => {}
+            Err(error) => {
+                warn!(path = %path.display(), error = %error, "failed to read zstd header");
+                return None;
             }
-            header = Some(parsed);
-            return Ok(());
         }
-        if let Ok(ScanRecord::Meta {
-            title,
-            updated_at: record_updated_at,
-        }) = serde_json::from_str(line)
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            continue;
+        }
+        let parsed: ZstHeader = serde_json::from_str(trimmed).ok()?;
+        return Some(parsed);
+    }
+}
+
+fn try_decode_last_meta_at(path: &Path, offset: u64) -> Option<(String, u64)> {
+    let file = File::open(path).ok()?;
+    let mut file = file;
+    file.seek(SeekFrom::Start(offset)).ok()?;
+    let decoder = Decoder::new(file).ok()?;
+    let mut reader = BufReader::new(decoder);
+    let mut line = String::new();
+    let mut title = String::new();
+    let mut updated_at = 0u64;
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(_) => return None,
+        }
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with(META_RECORD_PREFIX)
+            && let Ok(MetaScan {
+                title: t,
+                updated_at: u,
+            }) = serde_json::from_str(trimmed)
         {
-            meta_title = title;
-            updated_at = record_updated_at;
+            title = t;
+            updated_at = u;
         }
-        Ok(())
-    }) {
-        warn!(
-            path = %path.display(),
-            error = %error,
-            "failed to scan session header"
-        );
+    }
+    if updated_at == 0 && title.is_empty() {
+        return None;
+    }
+    Some((title, updated_at))
+}
+
+fn find_last_frame_meta(path: &Path) -> Option<(String, u64)> {
+    let file_len = fs::metadata(path).ok()?.len();
+    if file_len < ZSTD_MAGIC.len() as u64 {
+        return None;
+    }
+    let mut file = File::open(path).ok()?;
+    let mut end = file_len;
+    let mut start = file_len.saturating_sub(LAST_FRAME_SEARCH_CHUNK as u64);
+    let mut searched = 0u64;
+    let mut buf = Vec::new();
+    loop {
+        file.seek(SeekFrom::Start(start)).ok()?;
+        let chunk_len = usize::try_from(end - start).ok()?;
+        searched += end - start;
+        buf.resize(chunk_len, 0);
+        file.read_exact(&mut buf).ok()?;
+
+        let mut positions: Vec<usize> = buf
+            .windows(ZSTD_MAGIC.len())
+            .enumerate()
+            .filter(|(_, w)| *w == ZSTD_MAGIC)
+            .map(|(i, _)| i)
+            .collect();
+        positions.sort_unstable();
+
+        for &pos in positions.iter().rev() {
+            let offset = start + pos as u64;
+            if let Some(meta) = try_decode_last_meta_at(path, offset) {
+                return Some(meta);
+            }
+        }
+
+        if searched >= MAX_LAST_FRAME_SEARCH_BYTES {
+            return try_decode_last_meta_at(path, 0);
+        }
+
+        if start == 0 {
+            break;
+        }
+        end = start + (ZSTD_MAGIC.len() as u64 - 1);
+        start = end.saturating_sub(LAST_FRAME_SEARCH_CHUNK as u64);
+    }
+    None
+}
+
+fn scan_zst_header(path: &Path) -> Option<ScannedHeader> {
+    let header = try_decode_header_at(path, 0)?;
+    if header.v != LOG_FORMAT_VERSION {
         return None;
     }
 
-    let header = header?;
+    let (meta_title, updated_at) = find_last_frame_meta(path).unwrap_or_else(|| {
+        let mut title = String::new();
+        let mut updated_at = 0u64;
+        let _ = visit_zstd_lines(path, |line| {
+            if !line.is_empty()
+                && line.starts_with(META_RECORD_PREFIX)
+                && let Ok(MetaScan {
+                    title: t,
+                    updated_at: u,
+                }) = serde_json::from_str(line)
+            {
+                title = t;
+                updated_at = u;
+            }
+            Ok(())
+        });
+        (title, updated_at)
+    });
+
     Some(ScannedHeader {
         id: header.id,
         cwd: header.cwd,
@@ -1570,7 +1668,7 @@ fn is_session_file(path: &Path) -> bool {
         && path
             .file_stem()
             .and_then(|stem| stem.to_str())
-            .and_then(|stem| stem.parse::<N00nId>().ok())
+            .and_then(|stem| stem.parse::<n00nId>().ok())
             .is_some_and(|id| {
                 let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
                 match parent {
@@ -1580,7 +1678,7 @@ fn is_session_file(path: &Path) -> bool {
             })
 }
 
-fn locate_session_file(dir: &Path, id: N00nId) -> Option<PathBuf> {
+fn locate_session_file(dir: &Path, id: n00nId) -> Option<PathBuf> {
     let path = jsonl_path(dir, id);
     (path.exists() && file_is_zst(&path)).then_some(path)
 }
@@ -1607,7 +1705,7 @@ where
         let now = now_epoch();
         Self {
             version: SESSION_VERSION,
-            id: N00nId::generate(),
+            id: n00nId::generate(),
             title: DEFAULT_TITLE.into(),
             cwd: cwd.into(),
             model: model.into(),
@@ -1671,7 +1769,7 @@ where
 
     /// # Errors
     /// Returns `SessionError` if the sessions directory cannot be created or the session cannot be loaded.
-    pub fn load(id: N00nId, dir: &StateDir) -> Result<Self, SessionError> {
+    pub fn load(id: n00nId, dir: &StateDir) -> Result<Self, SessionError> {
         let sessions_dir = dir.ensure_subdir(SESSIONS_DIR)?;
         Self::load_from(id, &sessions_dir)
     }
@@ -1679,7 +1777,7 @@ where
     /// # Errors
     /// Returns `SessionError` if the session file cannot be found, read, or parsed,
     /// or if the session ID does not match.
-    pub fn load_from(id: N00nId, dir: &Path) -> Result<Self, SessionError> {
+    pub fn load_from(id: n00nId, dir: &Path) -> Result<Self, SessionError> {
         let Some(path) = locate_session_file(dir, id) else {
             return Err(StorageError::NotFound(id.to_string()).into());
         };
@@ -1718,26 +1816,16 @@ where
     /// # Errors
     /// Returns `SessionError` if the scan or load fails.
     pub fn latest_in(cwd: &str, dir: &Path) -> Result<Option<Self>, SessionError> {
-        let cached = load_cwd_index(dir)
-            .remove(cwd)
-            .and_then(|s| match s.parse::<N00nId>() {
-                Ok(id) => Some(id),
-                Err(e) => {
-                    warn!(error = %e, cwd, "indexed session id unparseable; rescanning");
-                    None
-                }
-            });
-        if let Some(id) = cached {
-            match Self::load_from(id, dir) {
-                Ok(s) => return Ok(Some(s)),
-                Err(e) => warn!(error = %e, cwd, "indexed session missing on disk; rescanning"),
-            }
-        }
-
-        scan_headers(cwd, dir)?
+        let latest = scan_headers(cwd, dir)?
             .into_iter()
-            .max_by_key(|s| s.updated_at)
-            .map_or(Ok(None), |s| Self::load_from(s.id, dir).map(Some))
+            .max_by_key(|s| s.updated_at);
+        match latest {
+            Some(summary) => {
+                update_cwd_index(dir, cwd, summary.id)?;
+                Self::load_from(summary.id, dir).map(Some)
+            }
+            None => Ok(None),
+        }
     }
 
     pub fn update_title_if_default(&mut self) {
@@ -1748,14 +1836,14 @@ where
 
     /// # Errors
     /// Returns `SessionError` if the sessions directory cannot be created or the delete fails.
-    pub fn delete(id: N00nId, dir: &StateDir) -> Result<(), SessionError> {
+    pub fn delete(id: n00nId, dir: &StateDir) -> Result<(), SessionError> {
         let sessions_dir = dir.ensure_subdir(SESSIONS_DIR)?;
         Self::delete_from(id, &sessions_dir)
     }
 
     /// # Errors
     /// Returns `SessionError` if the session file cannot be found or removed.
-    pub fn delete_from(id: N00nId, dir: &Path) -> Result<(), SessionError> {
+    pub fn delete_from(id: n00nId, dir: &Path) -> Result<(), SessionError> {
         let _lock = lock_openai_response_chain_in(dir, id)?;
         let Some(path) = locate_session_file(dir, id) else {
             return Err(StorageError::NotFound(id.to_string()).into());
@@ -1793,7 +1881,7 @@ mod tests {
         TitleSource, TranscriptEntry,
     };
     use crate::StateDir;
-    use crate::id::N00nId;
+    use crate::id::n00nId;
     use serde::Serializer;
     use serde_json::Value;
     use std::collections::HashMap;
@@ -2547,7 +2635,7 @@ mod tests {
     #[test]
     fn load_nonexistent_returns_not_found() {
         let tmp = TempDir::new().unwrap();
-        let id = N00nId::generate();
+        let id = n00nId::generate();
         let err = TestSession::load_from(id, tmp.path()).unwrap_err();
         assert!(matches!(
             err,
@@ -2606,7 +2694,7 @@ mod tests {
                 .map(std::path::PathBuf::from)
                 .unwrap();
             let state_dir = StateDir::from_path(dir);
-            let session_id = SESSION_ID.parse::<N00nId>().unwrap();
+            let session_id = SESSION_ID.parse::<n00nId>().unwrap();
             let _lock = lock_openai_response_chain(&state_dir, session_id).unwrap();
             fs::write(ready, b"ready").unwrap();
             std::thread::sleep(std::time::Duration::from_millis(500));
@@ -2632,7 +2720,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(ready.exists());
-        let session_id = SESSION_ID.parse::<N00nId>().unwrap();
+        let session_id = SESSION_ID.parse::<n00nId>().unwrap();
         assert!(
             try_lock_openai_response_chain(&state_dir, session_id)
                 .unwrap()
@@ -2686,7 +2774,7 @@ mod tests {
     fn deleting_openai_response_chain_is_idempotent() {
         let tmp = TempDir::new().unwrap();
         let state_dir = StateDir::from_path(tmp.path().to_path_buf());
-        let session_id = N00nId::generate();
+        let session_id = n00nId::generate();
 
         let lock = lock_openai_response_chain(&state_dir, session_id).unwrap();
         delete_openai_response_chain(&state_dir, session_id, &lock).unwrap();
@@ -2697,7 +2785,7 @@ mod tests {
     fn response_chain_write_cannot_recreate_a_deleted_session_sidecar() {
         let tmp = TempDir::new().unwrap();
         let state_dir = StateDir::from_path(tmp.path().to_path_buf());
-        let session_id = N00nId::generate();
+        let session_id = n00nId::generate();
         let chain = StoredOpenAiResponseChain {
             response_id: "resp_1".into(),
             message_count: 1,
@@ -2716,7 +2804,7 @@ mod tests {
     fn response_chain_lock_serializes_same_session_across_file_handles() {
         let tmp = TempDir::new().unwrap();
         let state_dir = StateDir::from_path(tmp.path().to_path_buf());
-        let session_id = N00nId::generate();
+        let session_id = n00nId::generate();
         let first = lock_openai_response_chain(&state_dir, session_id).unwrap();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
@@ -2961,7 +3049,7 @@ mod tests {
     #[test]
     fn delete_nonexistent_returns_not_found() {
         let tmp = TempDir::new().unwrap();
-        let id = N00nId::generate();
+        let id = n00nId::generate();
         let err = TestSession::delete_from(id, tmp.path()).unwrap_err();
         assert!(matches!(
             err,
@@ -3151,5 +3239,73 @@ mod tests {
         let list = TestSession::list_in("/project", dir).unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].title, "big-meta");
+    }
+
+    #[test]
+    fn latest_fallback_rewrites_cwd_index() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        let mut older: TestSession = Session::new("m", "/project");
+        older.title = "older".into();
+        save_with_time(&mut older, dir, 1000);
+
+        let mut newer: TestSession = Session::new("m", "/project");
+        newer.title = "newer".into();
+        save_with_time(&mut newer, dir, 2000);
+
+        fs::remove_file(dir.join(CWD_INDEX_FILE)).unwrap();
+
+        let latest = TestSession::latest_in("/project", dir).unwrap().unwrap();
+        assert_eq!(latest.id, newer.id);
+
+        let index = load_cwd_index(dir);
+        assert_eq!(index.get("/project"), Some(&newer.id.to_string()));
+    }
+
+    #[test]
+    fn session_log_open_updates_missing_cwd_index() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let session: TestSession = Session::new("m", "/project");
+        SessionLog::create(dir, &session).unwrap();
+
+        fs::remove_file(dir.join(CWD_INDEX_FILE)).unwrap();
+
+        let _ = SessionLog::open::<Value, Value, Value>(dir, session.id).unwrap();
+
+        let index = load_cwd_index(dir);
+        assert_eq!(index.get("/project"), Some(&session.id.to_string()));
+    }
+
+    #[test]
+    fn session_log_compact_updates_cwd_index() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let session: TestSession = Session::new("m", "/project");
+        let mut log = SessionLog::create(dir, &session).unwrap();
+
+        fs::remove_file(dir.join(CWD_INDEX_FILE)).unwrap();
+
+        log.compact(dir, &session).unwrap();
+
+        let index = load_cwd_index(dir);
+        assert_eq!(index.get("/project"), Some(&session.id.to_string()));
+    }
+
+    #[test]
+    fn scan_header_skips_huge_non_meta_records() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.title = "huge-output".into();
+        session
+            .tool_outputs
+            .insert("tool-1".into(), Value::String("x".repeat(1_000_000)));
+        SessionLog::create(dir, &session).unwrap();
+
+        let list = TestSession::list_in("/project", dir).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].title, "huge-output");
     }
 }

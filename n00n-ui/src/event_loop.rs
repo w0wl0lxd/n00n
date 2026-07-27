@@ -32,7 +32,7 @@ use n00n_providers::provider::{
 use n00n_providers::{Message, Model, OpenAiOptions};
 use n00n_storage::StateDir;
 use n00n_storage::StorageError;
-use n00n_storage::id::{N00nId, N00nIdParseError, SessionRef};
+use n00n_storage::id::{SessionRef, n00nId, n00nIdParseError};
 use n00n_storage::sessions::{SessionError, TranscriptEntry, normalize_title};
 use serde_json::json;
 use tracing::warn;
@@ -60,6 +60,7 @@ const PERIODIC_SAVE_INTERVAL: Duration = Duration::from_secs(1);
 /// Max events handled per frame so a flood cannot starve rendering.
 const DRAIN_BUDGET: usize = 256;
 const AGENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
+const STORAGE_WRITER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const DELETE_FOCUSED_ERR: &str = "cannot delete the focused session";
 const NOT_LIVE_ERR: &str = "session not live";
 
@@ -120,8 +121,8 @@ impl SessionStatus {
     }
 }
 
-fn parse_session_id(id: &str) -> Result<N00nId, String> {
-    id.parse().map_err(|e: N00nIdParseError| e.to_string())
+fn parse_session_id(id: &str) -> Result<n00nId, String> {
+    id.parse().map_err(|e: n00nIdParseError| e.to_string())
 }
 
 struct SessionRuntime {
@@ -133,7 +134,7 @@ struct SessionRuntime {
 }
 
 impl SessionRuntime {
-    fn id(&self) -> N00nId {
+    fn id(&self) -> n00nId {
         self.app.state.session.id
     }
 }
@@ -224,7 +225,7 @@ pub(crate) struct EventLoop<'t> {
     ui_action_rx: Option<flume::Receiver<UiAction>>,
     submission_persist_tx: flume::Sender<SubmissionPersistence>,
     submission_persist_rx: flume::Receiver<SubmissionPersistence>,
-    post_draw_submissions: Vec<(N00nId, SubmissionDispatch)>,
+    post_draw_submissions: Vec<(n00nId, SubmissionDispatch)>,
     last_save: Instant,
     _model_fetch_task: smol::Task<()>,
     /// Set when UI state changed and a fresh frame must be painted. Draws are
@@ -236,7 +237,7 @@ pub(crate) struct EventLoop<'t> {
 /// One item from any of the event loop's sources; `None` from `next_wake`
 /// means the wait timed out (animation/idle tick).
 struct SubmissionPersistence {
-    session_id: N00nId,
+    session_id: n00nId,
     dispatch: SubmissionDispatch,
     result: Result<(), SessionError>,
 }
@@ -653,11 +654,11 @@ impl<'t> EventLoop<'t> {
         if self.last_save.elapsed() < PERIODIC_SAVE_INTERVAL {
             return;
         }
-        let app = &mut self.sessions[self.focused].app;
-        if app.status != Status::Streaming {
-            return;
+        for rt in &mut self.sessions {
+            if should_save_periodically(&rt.app.status) {
+                rt.app.save_session();
+            }
         }
-        app.save_session();
         self.last_save = Instant::now();
     }
 
@@ -946,7 +947,7 @@ impl<'t> EventLoop<'t> {
         }
     }
 
-    fn position(&self, id: N00nId) -> Option<usize> {
+    fn position(&self, id: n00nId) -> Option<usize> {
         self.sessions.iter().position(|rt| rt.id() == id)
     }
 
@@ -978,7 +979,7 @@ impl<'t> EventLoop<'t> {
     /// Focus a live session, or bring a stored one up: in place when the
     /// focused session is a blank idle one (nothing worth keeping), otherwise
     /// as a new runtime so the session you came from stays live.
-    fn focus_session(&mut self, id: N00nId) -> Result<(), String> {
+    fn focus_session(&mut self, id: n00nId) -> Result<(), String> {
         if let Some(i) = self.position(id) {
             self.set_focus(i);
             return Ok(());
@@ -1195,6 +1196,17 @@ impl<'t> EventLoop<'t> {
             }
             Action::NewSession => {
                 self.respawn_agent(idx, Vec::new(), Vec::new());
+                if let Some(pending) = self.sessions[idx].app.pending_plan_submit.take() {
+                    let actions = {
+                        let app = &mut self.sessions[idx].app;
+                        if let Some((content, path)) = pending.plan {
+                            app.main_chat().push(DisplayMessage::plan(content, path));
+                        }
+                        app.run_id += 1;
+                        app.start_from_queue(&pending.message)
+                    };
+                    self.dispatch(idx, actions);
+                }
             }
             Action::LoadSession(loaded) => {
                 let loaded = *loaded;
@@ -1404,7 +1416,7 @@ impl<'t> EventLoop<'t> {
             smol::block_on(h.shutdown());
         }
         match Arc::try_unwrap(self.ctx.storage_writer) {
-            Ok(writer) => writer.shutdown(AGENT_SHUTDOWN_TIMEOUT),
+            Ok(writer) => writer.shutdown(STORAGE_WRITER_SHUTDOWN_TIMEOUT),
             Err(_) => {
                 warn!("storage writer has outstanding references, skipping graceful shutdown");
             }
@@ -1434,9 +1446,9 @@ where
 }
 
 fn take_painted_submissions<T>(
-    pending: &mut Vec<(N00nId, T)>,
-    painted_session: N00nId,
-) -> Vec<(N00nId, T)> {
+    pending: &mut Vec<(n00nId, T)>,
+    painted_session: n00nId,
+) -> Vec<(n00nId, T)> {
     let submissions = std::mem::take(pending);
     let mut ready = Vec::new();
     for (session_id, submission) in submissions {
@@ -1447,6 +1459,10 @@ fn take_painted_submissions<T>(
         }
     }
     ready
+}
+
+fn should_save_periodically(status: &Status) -> bool {
+    matches!(status, Status::Streaming)
 }
 
 fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
@@ -1461,8 +1477,12 @@ fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{DRAIN_BUDGET, DrainScheduler, draw_then_post_terminal, take_painted_submissions};
-    use n00n_storage::id::N00nId;
+    use super::{
+        DRAIN_BUDGET, DrainScheduler, draw_then_post_terminal, should_save_periodically,
+        take_painted_submissions,
+    };
+    use crate::components::Status;
+    use n00n_storage::id::n00nId;
     use ratatui::{
         Terminal,
         backend::{Backend, ClearType, TestBackend, WindowSize},
@@ -1540,9 +1560,16 @@ mod tests {
     }
 
     #[test]
+    fn periodic_save_skips_unchanged_idle_sessions() {
+        assert!(!should_save_periodically(&Status::Idle));
+        assert!(!should_save_periodically(&Status::error("failed".into())));
+        assert!(should_save_periodically(&Status::Streaming));
+    }
+
+    #[test]
     fn painted_submission_waits_for_its_session_after_focus_switch() {
-        let first = N00nId::generate();
-        let second = N00nId::generate();
+        let first = n00nId::generate();
+        let second = n00nId::generate();
         let mut pending = vec![(first, "first"), (second, "second")];
 
         let released = take_painted_submissions(&mut pending, second);

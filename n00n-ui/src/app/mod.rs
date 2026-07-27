@@ -59,7 +59,7 @@ use n00n_agent::{
 };
 use n00n_config::UiConfig;
 use n00n_lua::{EventHandle, HintReader, KeymapReader, LuaCommandReader};
-use n00n_providers::{Effort, Message, Model, ThinkingConfig};
+use n00n_providers::{Effort, Message, Model, System, ThinkingConfig};
 use n00n_storage::StateDir;
 use n00n_storage::input_history::InputHistory;
 use n00n_storage::model::persist_model;
@@ -188,6 +188,11 @@ struct PendingSubmission {
     display_len_before: usize,
 }
 
+pub(crate) struct PendingPlanSubmit {
+    pub(crate) message: QueuedMessage,
+    pub(crate) plan: Option<(String, String)>,
+}
+
 pub enum Msg {
     Key(KeyEvent),
     Paste(String),
@@ -230,6 +235,7 @@ pub struct App {
     pub(crate) run_id: u64,
     next_submission_id: u64,
     pending_submission: Option<PendingSubmission>,
+    pub(crate) pending_plan_submit: Option<PendingPlanSubmit>,
     submission_clock: Arc<dyn SubmissionClock>,
     pub(super) retry_info: Option<RetryInfo>,
     pub(super) zones: ZoneRegistry,
@@ -242,7 +248,7 @@ pub struct App {
     pub(crate) usage_slot: Arc<ArcSwapOption<UsageFetchState>>,
     pub(crate) shared_history: Option<Arc<ArcSwap<Vec<Message>>>>,
     pub(crate) shared_transcript: Option<n00n_agent::SharedTranscript>,
-    pub(crate) btw_system: Option<Arc<ArcSwap<String>>>,
+    pub(crate) btw_system: Option<Arc<ArcSwap<System>>>,
     pub(crate) shared_tool_outputs: Option<Arc<Mutex<HashMap<String, ToolOutput>>>>,
     pub(crate) image_paste_rx: Vec<flume::Receiver<Result<ImageSource, String>>>,
     storage_writer: Arc<StorageWriter>,
@@ -344,6 +350,7 @@ impl App {
             run_id: 0,
             next_submission_id: 0,
             pending_submission: None,
+            pending_plan_submit: None,
             submission_clock: Arc::new(SystemSubmissionClock),
             retry_info: None,
             zones: ZoneRegistry::new(),
@@ -2034,7 +2041,8 @@ impl App {
 
     #[must_use]
     pub fn is_animating(&self) -> bool {
-        !self.image_paste_rx.is_empty()
+        self.status == Status::Streaming
+            || !self.image_paste_rx.is_empty()
             || self.btw_modal.is_animating()
             || self.file_picker.is_loading()
             || self.float_mgr.is_open()
@@ -2133,31 +2141,36 @@ impl App {
 
         self.state.mode = Mode::Build;
 
-        let mut actions = if clear_context {
-            self.reset_session()
-        } else {
-            vec![]
-        };
-
-        let text = if let Some((content, path_str)) = plan_snapshot {
+        let text = if let Some((content, path_str)) = plan_snapshot.as_ref() {
             let text = if parallel {
                 format!("{IMPLEMENT_MSG_PREFIX} at `{path_str}`. {IMPLEMENT_PARALLEL_HINT}")
             } else {
                 format!("{IMPLEMENT_MSG_PREFIX} at `{path_str}`.")
             };
-            self.main_chat()
-                .push(DisplayMessage::plan(content, path_str));
+            if !clear_context {
+                self.main_chat()
+                    .push(DisplayMessage::plan(content.clone(), path_str.clone()));
+            }
             text
         } else {
             format!("{IMPLEMENT_MSG_PREFIX}.")
         };
-        self.run_id += 1;
+
         let msg = QueuedMessage {
             text,
             images: vec![],
         };
-        actions.extend(self.start_from_queue(&msg));
-        actions
+
+        if clear_context {
+            self.pending_plan_submit = Some(PendingPlanSubmit {
+                message: msg,
+                plan: plan_snapshot,
+            });
+            self.reset_session()
+        } else {
+            self.run_id += 1;
+            self.start_from_queue(&msg)
+        }
     }
 }
 

@@ -443,7 +443,7 @@ impl ToolOutput {
             Self::GrepResult { entries } => Some(Self::grep_summary(entries)),
             Self::ReadDir(t) => {
                 let n = t.text.lines().count();
-                Some(format!("{n} entries"))
+                Some(format!("{n} {}", if n == 1 { "entry" } else { "entries" }))
             }
             Self::Plain(text) | Self::Markdown(text) if !text.text.is_empty() => {
                 let n = text.text.lines().count();
@@ -454,6 +454,10 @@ impl ToolOutput {
                     .and_then(|t| t.strip_suffix(']'))
                     .map_or_else(|| text.clone(), std::string::ToString::to_string),
             ),
+            Self::TodoList(items) => {
+                let n = items.len();
+                Some(format!("{n} todo{}", if n == 1 { "" } else { "s" }))
+            }
             _ => None,
         }
     }
@@ -687,11 +691,11 @@ impl ToolOutput {
                     let has_context = entry.groups.iter().any(|g| g.lines.len() > 1);
                     for (gi, group) in entry.groups.iter().enumerate() {
                         if gi > 0 && has_context {
-                            out.push_str("\n  --");
+                            out.push_str("\n--");
                         }
                         for line in &group.lines {
                             let sep = if line.is_match { ":" } else { " " };
-                            let _ = write!(out, "\n  {}{sep} {}", line.line_nr, line.text);
+                            let _ = write!(out, "\n{}{sep} {}", line.line_nr, line.text);
                         }
                     }
                 }
@@ -765,7 +769,7 @@ impl ToolDoneEvent {
 /// Inspired by Perplexity's approach: drop repeated headers, excessive blank lines, and progress bars.
 fn filter_tool_result(content: &str, is_error: bool) -> String {
     if is_error {
-        return content.to_string();
+        return content.trim_end().to_string();
     }
 
     let lines: Vec<&str> = content.lines().collect();
@@ -810,7 +814,7 @@ fn filter_tool_result(content: &str, is_error: bool) -> String {
         filtered.push(*line);
     }
 
-    filtered.join("\n")
+    filtered.join("\n").trim_end().to_string()
 }
 
 #[must_use]
@@ -1274,6 +1278,8 @@ mod tests {
     #[test_case(ToolOutput::ReadCode { path: "a.rs".into(), start_line: 10, lines: vec!["x".into(); 5], total_lines: 100, instructions: None }, Some("5 of 100 lines") ; "read_code_partial")]
     #[test_case(ToolOutput::WriteCode { path: "a.rs".into(), byte_count: 99, lines: vec![] }, Some("99 bytes") ; "write_code_bytes")]
     #[test_case(ToolOutput::GrepResult { entries: vec![GrepFileEntry { path: "a.rs".into(), groups: vec![GrepMatchGroup::single(1, "hit")] }] }, Some("1 match in 1 file") ; "grep_file_count")]
+    #[test_case(ToolOutput::ReadDir("a.rs".into()),                   Some("1 entry")     ; "readdir_singular_annotates")]
+    #[test_case(ToolOutput::ReadDir("a.rs\nb.rs".into()),             Some("2 entries")   ; "readdir_plural_annotates")]
     #[test_case(ToolOutput::Diff { path: "a.rs".into(), before: String::new(), after: String::new(), summary: "ok".into(), telemetry: None }, None ; "diff_no_annotation")]
     #[allow(clippy::needless_pass_by_value)]
     fn annotation_cases(output: ToolOutput, expected: Option<&str>) {
