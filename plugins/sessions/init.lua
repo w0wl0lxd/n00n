@@ -1,7 +1,8 @@
--- The /sessions picker: one flat list of every session in this directory,
--- live or stored. Live ones get a colored icon, and row order is frozen
--- while the picker is open so rows never jump around under the cursor
--- while background agents keep working.
+-- The /sessions picker: a tree of sessions in this directory. Main sessions
+-- are shown by default; sub-tasks are grouped underneath them and can be
+-- expanded with the Right arrow. Live sessions get a colored icon, and row
+-- order is frozen while the picker is open so rows never jump around under
+-- the cursor while background agents keep working.
 
 local TextInput = require("n00n.text_input")
 local ListPicker = require("n00n.list_picker")
@@ -33,6 +34,8 @@ local FILTER_KEYS = {
   { "Ctrl+N", "new" },
   { "Ctrl+R", "rename" },
   { "Ctrl+D", "delete" },
+  { "Right", "expand" },
+  { "Left", "collapse" },
 }
 local RENAME_KEYS = {
   { "Enter", "save" },
@@ -57,17 +60,25 @@ local function icon_of(s)
   return "  ", "dim"
 end
 
--- Current session first, then most recently opened.
 local function by_recency(a, b)
   if a.focused ~= b.focused then
     return a.focused
   end
+  local ra, rb = board.rank[a.id], board.rank[b.id]
+  if ra and rb then
+    return ra < rb
+  end
+  if ra then
+    return true
+  end
+  if rb then
+    return false
+  end
   return (a.updated_at or 0) > (b.updated_at or 0)
 end
 
--- Rows keep their rank for the picker's lifetime; new ones enter above
--- existing ones so nothing already on screen moves. Within one batch
--- (notably the first full refresh) recency decides.
+-- Assign stable ranks to new nodes so they keep their position while the
+-- picker is open, even if their `updated_at` keeps changing.
 local function assign_ranks(fresh)
   table.sort(fresh, by_recency)
   local base = board.min_rank - #fresh
@@ -75,6 +86,181 @@ local function assign_ranks(fresh)
     board.rank[s.id] = base + i
   end
   board.min_rank = base
+end
+
+local function dispw(s)
+  return utf8.len(s) or #s
+end
+
+local function age(updated_at)
+  local secs = math.max(os.time() - (updated_at or 0), 0)
+  for _, u in ipairs(AGE_UNITS) do
+    if secs >= u[1] then
+      return math.floor(secs / u[1]) .. u[2] .. " ago"
+    end
+  end
+  return "just now"
+end
+
+local function filter_words()
+  return ListPicker.split_words(board.input:value())
+end
+
+local function sel_index()
+  for i, s in ipairs(board.items) do
+    if s.id == board.sel_id then
+      return i
+    end
+  end
+  return nil
+end
+
+local function selected()
+  local idx = sel_index()
+  return idx and board.items[idx] or nil
+end
+
+local function find_stored(id)
+  for i, st in ipairs(board.stored or {}) do
+    if st.id == id then
+      return i
+    end
+  end
+  return nil
+end
+
+local function normalize_session(s, expanded_state)
+  s.title = s.title or ""
+  s.display_title = s.display_title or s.title
+  if s.display_title == "" then
+    s.display_title = "New session"
+  end
+  s.kind = s.kind or "main"
+  s.updated_at = s.updated_at or 0
+  s.children = {}
+  s.expanded = expanded_state[s.id] or false
+  s.depth = 0
+end
+
+local function collect_nodes(roots, out)
+  for _, n in ipairs(roots) do
+    out[#out + 1] = n
+    collect_nodes(n.children, out)
+  end
+end
+
+local function sort_tree(nodes)
+  table.sort(nodes, by_recency)
+  for _, n in ipairs(nodes) do
+    if #n.children > 0 then
+      sort_tree(n.children)
+    end
+  end
+end
+
+local function build_tree(sessions)
+  local by_id = {}
+  for _, s in ipairs(sessions) do
+    by_id[s.id] = s
+  end
+  local roots = {}
+  for _, s in ipairs(sessions) do
+    local p = s.parent_id
+    if p and by_id[p] then
+      table.insert(by_id[p].children, s)
+    else
+      table.insert(roots, s)
+    end
+  end
+  sort_tree(roots)
+  return roots
+end
+
+local function flatten_visible(nodes, depth, items)
+  for _, n in ipairs(nodes) do
+    n.depth = depth
+    table.insert(items, n)
+    if n.expanded and #n.children > 0 then
+      flatten_visible(n.children, depth + 1, items)
+    end
+  end
+end
+
+local function apply_filter()
+  local prev_pos = sel_index() or 1
+  local words = filter_words()
+  board.items = {}
+  if #words == 0 then
+    flatten_visible(board.roots, 0, board.items)
+  else
+    for _, n in ipairs(board.nodes) do
+      n.depth = 0
+      if ListPicker.matches(n.display_title, words) or ListPicker.matches(n.title, words) then
+        table.insert(board.items, n)
+      end
+    end
+  end
+  local idx = sel_index() or math.min(prev_pos, math.max(#board.items, 1))
+  board.sel_id = board.items[idx] and board.items[idx].id or nil
+end
+
+-- Selection restarts from the top on every query change, so clearing the
+-- filter never leaves the list scrolled to wherever a match happened to sit.
+local function filter_changed()
+  board.sel_id = nil
+  board.confirm = nil
+  apply_filter()
+end
+
+local function set_sel(i)
+  board.sel_id = board.items[i] and board.items[i].id or nil
+  board.confirm = nil
+  render()
+end
+
+local function move_sel(delta, wrap)
+  local n = #board.items
+  if n == 0 then
+    return
+  end
+  local cur = sel_index() or 1
+  if wrap then
+    set_sel((cur - 1 + delta) % n + 1)
+  else
+    set_sel(math.min(math.max(cur + delta, 1), n))
+  end
+end
+
+local function page_size()
+  return math.max(board.height - board.reserved - 1, 1)
+end
+
+local function toggle_expand()
+  local s = selected()
+  if not s or #s.children == 0 then
+    return
+  end
+  s.expanded = not s.expanded
+  apply_filter()
+  render()
+end
+
+local function collapse_or_parent()
+  local s = selected()
+  if not s then
+    return
+  end
+  if #s.children > 0 and s.expanded then
+    s.expanded = false
+    apply_filter()
+    render()
+    return
+  end
+  if s.parent_id then
+    board.sel_id = s.parent_id
+    apply_filter()
+    render()
+  end
 end
 
 local function update_footer()
@@ -93,63 +279,6 @@ local function update_footer()
     footer[#footer + 1] = f
   end
   board.win:set_config({ footer = footer })
-end
-
-local function filter_words()
-  return ListPicker.split_words(board.input:value())
-end
-
-local function sel_index()
-  for i, s in ipairs(board.items) do
-    if s.id == board.sel_id then
-      return i
-    end
-  end
-  return nil
-end
-
-local function find_stored(id)
-  for i, st in ipairs(board.stored or {}) do
-    if st.id == id then
-      return i
-    end
-  end
-  return nil
-end
-
-local function apply_filter()
-  local prev_pos = sel_index() or 1
-  local words = filter_words()
-  board.items = {}
-  for _, s in ipairs(board.all) do
-    if ListPicker.matches(s.title, words) then
-      board.items[#board.items + 1] = s
-    end
-  end
-  local idx = sel_index() or math.min(prev_pos, math.max(#board.items, 1))
-  board.sel_id = board.items[idx] and board.items[idx].id or nil
-end
-
--- Selection restarts from the top on every query change, so clearing the
--- filter never leaves the list scrolled to wherever a match happened to sit.
-local function filter_changed()
-  board.sel_id = nil
-  board.confirm = nil
-  apply_filter()
-end
-
-local function age(updated_at)
-  local secs = math.max(os.time() - (updated_at or 0), 0)
-  for _, u in ipairs(AGE_UNITS) do
-    if secs >= u[1] then
-      return math.floor(secs / u[1]) .. u[2] .. " ago"
-    end
-  end
-  return "just now"
-end
-
-local function dispw(s)
-  return utf8.len(s) or #s
 end
 
 local function render()
@@ -177,16 +306,18 @@ local function render()
     if selected then
       icon_style = "selected"
     end
-    -- Prefix after selection so a working row keeps animating host-side
-    -- on the selection background.
     if spinning then
       icon_style = "spinner:" .. icon_style
     end
-    local line = { { "  ", base }, { icon, icon_style } }
-    for _, sp in ipairs(ListPicker.highlight_spans(s.title, words, base, selected and "match_selected" or "match")) do
+    local expand = (#s.children > 0) and (s.expanded and "▾ " or "▸ ") or "  "
+    local indent = string.rep("  ", s.depth or 0)
+    local line = { { indent, base }, { expand, base }, { icon, icon_style } }
+    for _, sp in
+      ipairs(ListPicker.highlight_spans(s.display_title, words, base, selected and "match_selected" or "match"))
+    do
       line[#line + 1] = sp
     end
-    local used = 2 + dispw(icon) + dispw(s.title)
+    local used = (2 * (s.depth or 0)) + dispw(expand) + dispw(icon) + dispw(s.display_title)
     if board.confirm == s.id then
       line[#line + 1] = { CONFIRM_HINT, selected and "match_selected" or "error" }
       used = used + dispw(CONFIRM_HINT)
@@ -202,18 +333,19 @@ local function render()
   if board.loading then
     lines[#lines + 1] = { { LOADING_HINT, "dim" } }
   elseif #board.items == 0 then
-    lines[#lines + 1] = { { #board.all == 0 and EMPTY_HINT or NO_MATCHES_HINT, "dim" } }
+    lines[#lines + 1] = { { #board.nodes == 0 and EMPTY_HINT or NO_MATCHES_HINT, "dim" } }
   end
   board.buf:set_lines(lines)
   board.win:set_cursor(cursor_line)
 end
 
--- Rebuilds the list from live runtimes and the stored snapshot, then
--- renders. Live runtimes win over their stored copies; stored-only sessions
--- are idle. Until the background scan lands (`board.stored`) only live
--- sessions are shown. `live()` suspends this coroutine, and the picker may
--- close or another refresh may finish meanwhile, so bail out unless this
--- board is still current.
+-- Rebuilds the tree from live runtimes and the stored snapshot, then
+-- renders. Live runtimes win over their stored copies for status and focus,
+-- but the stored copy contributes its richer metadata (display_title,
+-- parent_id, kind) for grouping and labelling. Until the background scan
+-- lands (`board.stored`) only live sessions are shown. `live()` suspends
+-- this coroutine, and the picker may close or another refresh may finish
+-- meanwhile, so bail out unless this board is still current.
 local function refresh()
   local this_board = board
   local live, live_err = n00n.session.live()
@@ -225,27 +357,50 @@ local function refresh()
     render()
     return
   end
+
+  local stored_map = {}
+  for _, st in ipairs(board.stored or {}) do
+    stored_map[st.id] = st
+  end
+
+  local expanded_state = {}
+  for _, n in ipairs(board.nodes or {}) do
+    expanded_state[n.id] = n.expanded
+  end
+
   local seen, all = {}, {}
   for _, s in ipairs(live) do
     seen[s.id] = true
     s.live = true
+    local st = stored_map[s.id]
+    if st then
+      s.display_title = s.display_title or st.display_title
+      s.title = s.title or st.title
+      s.kind = s.kind or st.kind
+      s.parent_id = s.parent_id or st.parent_id
+      s.updated_at = s.updated_at or st.updated_at
+    end
+    normalize_session(s, expanded_state)
     all[#all + 1] = s
   end
-  for _, s in ipairs(board.stored or {}) do
-    if not seen[s.id] then
-      s.status = "idle"
-      s.focused = false
-      all[#all + 1] = s
+  for _, st in ipairs(board.stored or {}) do
+    if not seen[st.id] then
+      st.status = "idle"
+      st.focused = false
+      normalize_session(st, expanded_state)
+      all[#all + 1] = st
     end
   end
+
   board.counts = { needs_input = 0, working = 0 }
   for _, s in ipairs(all) do
     if board.counts[s.status] then
       board.counts[s.status] = board.counts[s.status] + 1
     end
   end
+
   if board.loading then
-    table.sort(all, by_recency)
+    assign_ranks(all)
   else
     local fresh = {}
     for _, s in ipairs(all) do
@@ -256,14 +411,10 @@ local function refresh()
     if #fresh > 0 then
       assign_ranks(fresh)
     end
-    table.sort(all, function(a, b)
-      if a.focused ~= b.focused then
-        return a.focused
-      end
-      return board.rank[a.id] < board.rank[b.id]
-    end)
   end
-  board.all = all
+
+  board.nodes = all
+  board.roots = build_tree(all)
   apply_filter()
   update_footer()
   render()
@@ -274,34 +425,6 @@ local function close()
     board.win:close()
     board = nil
   end
-end
-
-local function selected()
-  local idx = sel_index()
-  return idx and board.items[idx] or nil
-end
-
-local function set_sel(i)
-  board.sel_id = board.items[i] and board.items[i].id or nil
-  board.confirm = nil
-  render()
-end
-
-local function move_sel(delta, wrap)
-  local n = #board.items
-  if n == 0 then
-    return
-  end
-  local cur = sel_index() or 1
-  if wrap then
-    set_sel((cur - 1 + delta) % n + 1)
-  else
-    set_sel(math.min(math.max(cur + delta, 1), n))
-  end
-end
-
-local function page_size()
-  return math.max(board.height - board.reserved - 1, 1)
 end
 
 local function open_selected()
@@ -362,7 +485,7 @@ local function start_rename()
     return
   end
   local input = TextInput.new()
-  input:insert_text(s.title)
+  input:insert_text(s.display_title or s.title)
   board.rename = { id = s.id, input = input }
   board.confirm = nil
   update_footer()
@@ -386,9 +509,16 @@ local function commit_rename()
   if err then
     n00n.ui.flash(err)
   else
+    for _, n in ipairs(board.nodes) do
+      if n.id == id then
+        n.title = title
+        n.display_title = title
+      end
+    end
     local si = find_stored(id)
     if si then
       board.stored[si].title = title
+      board.stored[si].display_title = title
     end
   end
   refresh()
@@ -430,6 +560,10 @@ local function handle_key(key)
     move_sel(-page_size())
   elseif key == "pagedown" then
     move_sel(page_size())
+  elseif key == "right" then
+    toggle_expand()
+  elseif key == "left" then
+    collapse_or_parent()
   elseif key == "enter" then
     open_selected()
   elseif key == "ctrl+n" then
@@ -472,7 +606,8 @@ local function open()
     height = win.height,
     reserved = 2,
     input = TextInput.new(),
-    all = {},
+    nodes = {},
+    roots = {},
     items = {},
     rank = {},
     deleted = {},
@@ -482,9 +617,6 @@ local function open()
     frame = 0,
     loading = true,
   }
-  -- Two-phase load: live sessions are cheap, so they show up and take keys
-  -- right away; the stored scan can be slow, so a background task merges it
-  -- in once it lands.
   refresh()
   local this_board = board
   n00n.async.run(function()
