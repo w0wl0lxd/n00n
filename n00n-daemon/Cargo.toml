@@ -9,15 +9,14 @@ repository.workspace = true
 [dependencies]
 n00n-storage = { workspace = true }
 serde = { workspace = true }
-# Wire JSON: sonic-rs. serde_json only for SessionReply / toon boundaries.
 sonic-rs = { workspace = true }
-serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 smol = { workspace = true }
 futures-lite = { workspace = true }
 flume = { workspace = true }
 rustix = { workspace = true }
+process_alive = { workspace = true }
 
 [dev-dependencies]
 test-case = { workspace = true }

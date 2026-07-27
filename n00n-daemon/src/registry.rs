@@ -422,6 +422,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn write_worker_fixture(
         dir: &std::path::Path,
         id: &str,
