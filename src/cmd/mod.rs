@@ -98,8 +98,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     crate::print::OutputFormat::Json
                 ))?;
             }
-            AgentCommand::Status { id: _ } => {
-                eprintln!("Agent status command is not yet implemented (Phase 3)");
+            AgentCommand::Status { id } => {
+                agent::status_client(
+                    &id,
+                    matches!(cli.output_format, crate::print::OutputFormat::Json),
+                )?;
             }
             AgentCommand::Message { id, text } => {
                 agent::message_client(
@@ -108,17 +111,17 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     matches!(cli.output_format, crate::print::OutputFormat::Json),
                 )?;
             }
-            AgentCommand::Pause { id: _ } => {
-                eprintln!("Agent pause command is not yet implemented (Phase 3)");
+            AgentCommand::Pause { id } => {
+                agent::pause_client(&id)?;
             }
-            AgentCommand::Resume { id: _ } => {
-                eprintln!("Agent resume command is not yet implemented (Phase 3)");
+            AgentCommand::Resume { id } => {
+                agent::resume_client(&id)?;
             }
             AgentCommand::Stop { id } => {
                 agent::stop_client(&id)?;
             }
             AgentCommand::Policy { action: _ } => {
-                eprintln!("Agent policy command is not yet implemented (Phase 3)");
+                eprintln!("Agent policy command is not yet implemented");
             }
         },
         None => {

@@ -2,6 +2,7 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_lock::Mutex;
@@ -170,6 +171,8 @@ struct AgentState {
 #[serde(tag = "cmd", rename_all = "snake_case")]
 enum ClientCommand {
     Message { text: String },
+    Pause,
+    Resume,
     Stop,
 }
 
@@ -356,6 +359,7 @@ pub fn server(
     let listener = UnixListener::bind(&socket_path_value).wrap_err("failed to bind socket")?;
 
     let message_lock = Arc::new(Mutex::new(()));
+    let paused = Arc::new(AtomicBool::new(false));
 
     if !prompt.is_empty() {
         let _lock = smol::block_on(message_lock.lock());
@@ -388,6 +392,7 @@ pub fn server(
             let event_rx = handle.event_rx.clone();
             let cancel_tx = handle.cancel_tx.clone();
             let message_lock = Arc::clone(&message_lock);
+            let paused = Arc::clone(&paused);
             let storage_clone = storage.clone();
             let agent_id_clone = agent_id.clone();
             let mode_clone = mode;
@@ -399,6 +404,7 @@ pub fn server(
                     event_rx,
                     cancel_tx,
                     message_lock,
+                    paused,
                     &storage_clone,
                     &agent_id_clone,
                     mode_clone,
@@ -432,6 +438,7 @@ async fn handle_connection(
     event_rx: flume::Receiver<Envelope>,
     cancel_tx: Sender<()>,
     message_lock: Arc<Mutex<()>>,
+    paused: Arc<AtomicBool>,
     storage: &StateDir,
     agent_id: &str,
     mode: CliAgentMode,
@@ -453,6 +460,15 @@ async fn handle_connection(
     match cmd {
         ClientCommand::Message { text } => {
             let _lock = message_lock.lock().await;
+
+            if paused.load(Ordering::Relaxed) {
+                let response = serde_json::json!({"ok": false, "error": "agent is paused"});
+                let response_json = serde_json::to_string(&response)?;
+                write_line(&mut writer, &response_json)
+                    .await
+                    .wrap_err("failed to write response")?;
+                return Ok(());
+            }
 
             let mut state = read_agent_state(storage, agent_id)?;
             state.status = "working".to_string();
@@ -539,6 +555,34 @@ async fn handle_connection(
             state.status = "running".to_string();
             state.updated_at = now_epoch();
             write_agent_state(storage, &state)?;
+        }
+        ClientCommand::Pause => {
+            paused.store(true, Ordering::Relaxed);
+
+            let mut state = read_agent_state(storage, agent_id)?;
+            state.status = "paused".to_string();
+            state.updated_at = now_epoch();
+            write_agent_state(storage, &state)?;
+
+            let response = serde_json::json!({ "ok": true });
+            let response_json = serde_json::to_string(&response)?;
+            write_line(&mut writer, &response_json)
+                .await
+                .wrap_err("failed to write response")?;
+        }
+        ClientCommand::Resume => {
+            paused.store(false, Ordering::Relaxed);
+
+            let mut state = read_agent_state(storage, agent_id)?;
+            state.status = "running".to_string();
+            state.updated_at = now_epoch();
+            write_agent_state(storage, &state)?;
+
+            let response = serde_json::json!({ "ok": true });
+            let response_json = serde_json::to_string(&response)?;
+            write_line(&mut writer, &response_json)
+                .await
+                .wrap_err("failed to write response")?;
         }
         ClientCommand::Stop => {
             let mut state = read_agent_state(storage, agent_id)?;
@@ -695,6 +739,71 @@ pub fn list_client(json: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+pub fn status_client(id: &str, json: bool) -> Result<()> {
+    let storage = StateDir::resolve().wrap_err("failed to resolve state directory")?;
+    let state = read_agent_state(&storage, id).wrap_err("failed to read agent state")?;
+
+    if json {
+        let output =
+            serde_json::to_string_pretty(&state).wrap_err("failed to serialize agent status")?;
+        println!("{output}");
+    } else {
+        println!("Agent: {}", state.id);
+        println!("  session:  {}", state.session_id);
+        println!("  status:   {}", state.status);
+        println!("  model:    {}", state.model);
+        println!("  prompt:   {}", state.prompt);
+        println!("  socket:   {}", state.socket_path);
+        println!("  pid:      {}", state.pid);
+        println!("  created:  {}", state.created_at);
+        println!("  updated:  {}", state.updated_at);
+    }
+
+    Ok(())
+}
+
+pub fn pause_client(id: &str) -> Result<()> {
+    control_command_client(id, &ClientCommand::Pause, "paused")
+}
+
+pub fn resume_client(id: &str) -> Result<()> {
+    control_command_client(id, &ClientCommand::Resume, "resumed")
+}
+
+fn control_command_client(id: &str, command: &ClientCommand, success_label: &str) -> Result<()> {
+    let storage = StateDir::resolve().wrap_err("failed to resolve state directory")?;
+    let state = read_agent_state(&storage, id).wrap_err("failed to read agent state")?;
+    let stream = smol::block_on(UnixStream::connect(&state.socket_path))
+        .wrap_err("failed to connect to agent socket")?;
+
+    let cmd_json = serde_json::to_string(&command).wrap_err("failed to serialize command")?;
+
+    smol::block_on(async {
+        let (reader, mut writer) = split(stream);
+        let mut reader = BufReader::new(reader);
+
+        write_line(&mut writer, &cmd_json)
+            .await
+            .wrap_err("failed to send command")?;
+
+        let mut line = String::new();
+        let _ = reader
+            .read_line(&mut line)
+            .await
+            .wrap_err("failed to read response")?;
+
+        let response: serde_json::Value =
+            serde_json::from_str(&line).wrap_err("failed to parse response")?;
+
+        match response.get("ok").and_then(serde_json::Value::as_bool) {
+            Some(true) => println!("Agent {id} {success_label}"),
+            _ => eprintln!("Failed to update agent {id}"),
+        }
+
+        Ok(())
+    })
 }
 
 #[cfg(test)]
