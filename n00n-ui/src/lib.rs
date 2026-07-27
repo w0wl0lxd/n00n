@@ -36,7 +36,7 @@ use color_eyre::Result;
 use n00n_agent::ToolOutput;
 use n00n_providers::Message;
 use n00n_providers::TokenUsage;
-use n00n_storage::id::n00nId;
+use n00n_storage::id::N00nId;
 
 pub type AppSession = n00n_storage::sessions::Session<Message, TokenUsage, ToolOutput>;
 
@@ -47,7 +47,7 @@ pub use event_loop::EventLoopParams;
 /// session so the caller reopens everything without re-reading from disk.
 pub enum RunOutcome {
     Exit {
-        session_id: Option<n00nId>,
+        session_id: Option<N00nId>,
         code: i32,
     },
     Reload {

@@ -12,7 +12,7 @@ Run a single task:
     harbor run \
       -t terminal-bench/fix-git \
       -m anthropic/claude-sonnet-4-6 \
-      --agent-import-path tbench_n00n_agent:n00nAgent \
+      --agent-import-path tbench_n00n_agent:N00nAgent \
       --mounts-json "$MOUNTS" \
       -n 1 -y
 
@@ -20,7 +20,7 @@ Run the full suite:
     harbor run \
       -d terminal-bench/terminal-bench-2 \
       -m anthropic/claude-sonnet-4-6 \
-      --agent-import-path tbench_n00n_agent:n00nAgent \
+      --agent-import-path tbench_n00n_agent:N00nAgent \
       --mounts-json "$MOUNTS" \
       -n 4 -y
 
@@ -122,7 +122,7 @@ def parse_stream_json(log_text: str) -> tuple[dict, dict[int, dict], list[dict]]
     return result, turn_usage, tool_calls
 
 
-class n00nAgent(BaseInstalledAgent):
+class N00nAgent(BaseInstalledAgent):
     _last_instruction: str = ""
 
     @staticmethod
