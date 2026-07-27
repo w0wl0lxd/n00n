@@ -6,7 +6,6 @@ use color_eyre::eyre::bail;
 
 use n00n_agent::tools::{all_builtin_tool_names, is_builtin_tool};
 
-use crate::cmd::agent::AgentMode;
 use crate::print::OutputFormat;
 
 #[derive(Clone, ValueEnum, Default)]
@@ -15,6 +14,16 @@ pub enum PromptVariant {
     System,
     Research,
     General,
+}
+
+#[derive(Clone, Copy, ValueEnum, Default, Debug, PartialEq, Eq)]
+pub enum AgentMode {
+    #[default]
+    General,
+    Research,
+    Task,
+    Team,
+    Workflow,
 }
 
 #[derive(Clone, ValueEnum, Default)]
@@ -300,20 +309,26 @@ pub enum AgentCommand {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Run in background mode
+        #[arg(long)]
+        background: bool,
+        /// Agent ID (for background mode)
+        #[arg(long)]
+        id: Option<String>,
     },
-    /// List background agents (stub for Phase 3)
+    /// List background agents
     List,
-    /// Show agent status (stub for Phase 3)
+    /// Show agent status
     Status { id: String },
-    /// Send message to agent (stub for Phase 3)
+    /// Send message to agent
     Message { id: String, text: String },
-    /// Pause agent (stub for Phase 3)
+    /// Pause agent
     Pause { id: String },
-    /// Resume agent (stub for Phase 3)
+    /// Resume agent
     Resume { id: String },
-    /// Stop agent (stub for Phase 3)
+    /// Stop agent
     Stop { id: String },
-    /// Agent policy management (stub for Phase 3)
+    /// Agent policy management
     Policy {
         #[command(subcommand)]
         action: PolicyAction,
@@ -407,5 +422,71 @@ mod tests {
     #[test]
     fn normalize_tool_name_multi_edit_rejects_snake_variant() {
         assert!(normalize_tool_name("MultiEdit").is_err());
+    }
+
+    #[test]
+    fn agent_run_parse_background_flag() {
+        let cli = Cli::parse_from(["n00n", "agent", "run", "--prompt", "test", "--background"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Agent {
+                action: AgentCommand::Run {
+                    background: true,
+                    ..
+                }
+            })
+        ));
+    }
+
+    #[test]
+    fn agent_run_parse_id_flag() {
+        let cli = Cli::parse_from([
+            "n00n", "agent", "run", "--prompt", "test", "--id", "my-agent",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Agent {
+                action: AgentCommand::Run {
+                    id: Some(id),
+                    ..
+                }
+            }) if id == "my-agent"
+        ));
+    }
+
+    #[test]
+    fn agent_message_parse() {
+        let cli = Cli::parse_from(["n00n", "agent", "message", "agent-id", "hello"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Agent {
+                action: AgentCommand::Message {
+                    id,
+                    text,
+                }
+            }) if id == "agent-id" && text == "hello"
+        ));
+    }
+
+    #[test]
+    fn agent_stop_parse() {
+        let cli = Cli::parse_from(["n00n", "agent", "stop", "agent-id"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Agent {
+                action: AgentCommand::Stop { id }
+            }) if id == "agent-id"
+        ));
+    }
+
+    #[test]
+    fn agent_list_parse() {
+        let cli = Cli::parse_from(["n00n", "agent", "list"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Agent {
+                action: AgentCommand::List
+            })
+        ));
     }
 }

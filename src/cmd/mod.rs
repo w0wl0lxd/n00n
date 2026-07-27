@@ -68,25 +68,45 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 mode,
                 goal: _,
                 json,
+                background,
+                id,
             } => {
-                agent::run(
-                    &prompt,
-                    model.as_deref(),
-                    mode,
-                    None,
-                    json,
-                    cli.permission_flags.yolo,
-                    cli.plugin_flags.no_jit,
-                )?;
+                if background {
+                    agent::server(
+                        &prompt,
+                        model.as_deref(),
+                        mode,
+                        id,
+                        cli.permission_flags.yolo,
+                        cli.plugin_flags.no_jit,
+                    )?;
+                } else {
+                    agent::run(
+                        &prompt,
+                        model.as_deref(),
+                        mode,
+                        None,
+                        json,
+                        cli.permission_flags.yolo,
+                        cli.plugin_flags.no_jit,
+                    )?;
+                }
             }
             AgentCommand::List => {
-                eprintln!("Agent list command is not yet implemented (Phase 3)");
+                agent::list_client(matches!(
+                    cli.output_format,
+                    crate::print::OutputFormat::Json
+                ))?;
             }
             AgentCommand::Status { id: _ } => {
                 eprintln!("Agent status command is not yet implemented (Phase 3)");
             }
-            AgentCommand::Message { id: _, text: _ } => {
-                eprintln!("Agent message command is not yet implemented (Phase 3)");
+            AgentCommand::Message { id, text } => {
+                agent::message_client(
+                    &id,
+                    &text,
+                    matches!(cli.output_format, crate::print::OutputFormat::Json),
+                )?;
             }
             AgentCommand::Pause { id: _ } => {
                 eprintln!("Agent pause command is not yet implemented (Phase 3)");
@@ -94,8 +114,8 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             AgentCommand::Resume { id: _ } => {
                 eprintln!("Agent resume command is not yet implemented (Phase 3)");
             }
-            AgentCommand::Stop { id: _ } => {
-                eprintln!("Agent stop command is not yet implemented (Phase 3)");
+            AgentCommand::Stop { id } => {
+                agent::stop_client(&id)?;
             }
             AgentCommand::Policy { action: _ } => {
                 eprintln!("Agent policy command is not yet implemented (Phase 3)");

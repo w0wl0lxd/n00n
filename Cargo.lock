@@ -2865,6 +2865,7 @@ dependencies = [
 name = "n00n"
 version = "0.4.2"
 dependencies = [
+ "async-lock",
  "clap",
  "color-eyre",
  "flume 0.11.1",
