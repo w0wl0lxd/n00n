@@ -1,6 +1,5 @@
 use std::env;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,6 +31,8 @@ use n00n_providers::{Model, OpenAiOptions, ThinkingConfig, Timeouts};
 use n00n_storage::StateDir;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+
+#[cfg(unix)]
 use smol::net::unix::{UnixListener, UnixStream};
 
 use crate::cli::AgentMode as CliAgentMode;
@@ -528,6 +529,22 @@ fn socket_path(state_dir: &StateDir, agent_id: &str) -> Result<PathBuf> {
     Ok(agent_dir(state_dir, agent_id)?.join(SOCKET_FILE))
 }
 
+#[cfg(unix)]
+fn restrict_dir_permissions(path: &std::path::Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        .wrap_err("failed to set agent directory permissions")
+}
+
+#[cfg(unix)]
+fn restrict_file_permissions(path: &std::path::Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        .wrap_err("failed to set socket permissions")
+}
+
 fn state_file_path(state_dir: &StateDir, agent_id: &str) -> Result<PathBuf> {
     Ok(agent_dir(state_dir, agent_id)?.join(STATE_FILE))
 }
@@ -576,6 +593,20 @@ fn now_epoch() -> u64 {
 }
 
 pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()> {
+    #[cfg(not(unix))]
+    {
+        let _ = (opts, agent_id);
+        return Err(eyre!("background agent server requires unix"));
+    }
+
+    #[cfg(unix)]
+    {
+        server_unix(opts, agent_id)
+    }
+}
+
+#[cfg(unix)]
+fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()> {
     let env = prepare_agent_env(opts.model, opts.yolo, opts.no_jit)?;
     let message = build_message(
         opts.mode,
@@ -615,8 +646,7 @@ pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()
 
     let agent_dir_path = agent_dir(&storage, &agent_id)?;
     fs::create_dir_all(&agent_dir_path).wrap_err("failed to create agent directory")?;
-    fs::set_permissions(&agent_dir_path, fs::Permissions::from_mode(0o700))
-        .wrap_err("failed to set agent directory permissions")?;
+    restrict_dir_permissions(&agent_dir_path)?;
 
     let socket_path_value = socket_path(&storage, &agent_id)?;
 
@@ -638,8 +668,7 @@ pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()
     write_agent_state(&storage, &state)?;
 
     let listener = UnixListener::bind(&socket_path_value).wrap_err("failed to bind socket")?;
-    fs::set_permissions(&socket_path_value, fs::Permissions::from_mode(0o600))
-        .wrap_err("failed to set socket permissions")?;
+    restrict_file_permissions(&socket_path_value)?;
 
     let message_lock = Arc::new(Mutex::new(()));
     let paused = Arc::new(AtomicBool::new(false));
@@ -720,6 +749,7 @@ fn wait_for_run_done(event_rx: &flume::Receiver<Envelope>) {
     }
 }
 
+#[cfg(unix)]
 async fn handle_connection(
     stream: UnixStream,
     input_tx: Sender<AgentInput>,
@@ -931,58 +961,66 @@ pub fn message_client(
     let storage = agent_storage(&state_dir);
     let state = read_agent_state(&storage, id).wrap_err("failed to read agent state")?;
 
-    let stream = smol::block_on(UnixStream::connect(&state.socket_path))
-        .wrap_err("failed to connect to agent socket")?;
+    #[cfg(not(unix))]
+    {
+        return Err(eyre!("direct agent socket control requires unix"));
+    }
 
-    let cmd = ClientCommand::Message {
-        text: text.to_string(),
-    };
-    let cmd_json = serde_json::to_string(&cmd).wrap_err("failed to serialize command")?;
+    #[cfg(unix)]
+    {
+        let stream = smol::block_on(UnixStream::connect(&state.socket_path))
+            .wrap_err("failed to connect to agent socket")?;
 
-    smol::block_on(async {
-        let (reader, mut writer) = split(stream);
-        let mut reader = BufReader::new(reader);
+        let cmd = ClientCommand::Message {
+            text: text.to_string(),
+        };
+        let cmd_json = serde_json::to_string(&cmd).wrap_err("failed to serialize command")?;
 
-        write_line(&mut writer, &cmd_json)
-            .await
-            .wrap_err("failed to send command")?;
+        smol::block_on(async {
+            let (reader, mut writer) = split(stream);
+            let mut reader = BufReader::new(reader);
 
-        let mut line = String::new();
+            write_line(&mut writer, &cmd_json)
+                .await
+                .wrap_err("failed to send command")?;
 
-        while let Ok(n) = reader.read_line(&mut line).await {
-            if n == 0 {
-                break;
-            }
+            let mut line = String::new();
 
-            if json {
-                print!("{line}");
-            } else if let Ok(event) = serde_json::from_str::<ServerEvent>(&line) {
-                match event {
-                    ServerEvent::TextDelta { text } => {
-                        print!("{text}");
-                    }
-                    ServerEvent::Done {
-                        error: Some(message),
-                        ..
-                    } => {
-                        eprintln!("\nError: {message}");
-                        return Err(color_eyre::eyre::eyre!(message));
-                    }
-                    ServerEvent::Done { .. } => {
-                        println!();
-                    }
-                    ServerEvent::Error { message } => {
-                        eprintln!("Error: {message}");
-                        return Err(color_eyre::eyre::eyre!(message));
-                    }
-                    ServerEvent::ToolOutput { .. } => {}
+            while let Ok(n) = reader.read_line(&mut line).await {
+                if n == 0 {
+                    break;
                 }
-            }
-            line.clear();
-        }
 
-        Ok(())
-    })
+                if json {
+                    print!("{line}");
+                } else if let Ok(event) = serde_json::from_str::<ServerEvent>(&line) {
+                    match event {
+                        ServerEvent::TextDelta { text } => {
+                            print!("{text}");
+                        }
+                        ServerEvent::Done {
+                            error: Some(message),
+                            ..
+                        } => {
+                            eprintln!("\nError: {message}");
+                            return Err(color_eyre::eyre::eyre!(message));
+                        }
+                        ServerEvent::Done { .. } => {
+                            println!();
+                        }
+                        ServerEvent::Error { message } => {
+                            eprintln!("Error: {message}");
+                            return Err(color_eyre::eyre::eyre!(message));
+                        }
+                        ServerEvent::ToolOutput { .. } => {}
+                    }
+                }
+                line.clear();
+            }
+
+            Ok(())
+        })
+    }
 }
 
 pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> {
@@ -1006,36 +1044,44 @@ pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> 
         return Ok(());
     };
 
-    let stream = smol::block_on(UnixStream::connect(&state.socket_path))
-        .wrap_err("failed to connect to agent socket")?;
+    #[cfg(not(unix))]
+    {
+        return Err(eyre!("direct agent socket control requires unix"));
+    }
 
-    let cmd = ClientCommand::Stop;
-    let cmd_json = serde_json::to_string(&cmd).wrap_err("failed to serialize command")?;
+    #[cfg(unix)]
+    {
+        let stream = smol::block_on(UnixStream::connect(&state.socket_path))
+            .wrap_err("failed to connect to agent socket")?;
 
-    smol::block_on(async {
-        let (reader, mut writer) = split(stream);
-        let mut reader = BufReader::new(reader);
+        let cmd = ClientCommand::Stop;
+        let cmd_json = serde_json::to_string(&cmd).wrap_err("failed to serialize command")?;
 
-        write_line(&mut writer, &cmd_json)
-            .await
-            .wrap_err("failed to send command")?;
+        smol::block_on(async {
+            let (reader, mut writer) = split(stream);
+            let mut reader = BufReader::new(reader);
 
-        let mut line = String::new();
-        let _ = reader
-            .read_line(&mut line)
-            .await
-            .wrap_err("failed to read response")?;
+            write_line(&mut writer, &cmd_json)
+                .await
+                .wrap_err("failed to send command")?;
 
-        let response: serde_json::Value =
-            serde_json::from_str(&line).wrap_err("failed to parse response")?;
+            let mut line = String::new();
+            let _ = reader
+                .read_line(&mut line)
+                .await
+                .wrap_err("failed to read response")?;
 
-        match response.get("ok").and_then(serde_json::Value::as_bool) {
-            Some(true) => println!("Agent {id} stopped"),
-            _ => eprintln!("Failed to stop agent {id}"),
-        }
+            let response: serde_json::Value =
+                serde_json::from_str(&line).wrap_err("failed to parse response")?;
 
-        Ok(())
-    })
+            match response.get("ok").and_then(serde_json::Value::as_bool) {
+                Some(true) => println!("Agent {id} stopped"),
+                _ => eprintln!("Failed to stop agent {id}"),
+            }
+
+            Ok(())
+        })
+    }
 }
 
 fn agent_state_to_record(state: &AgentState) -> AgentRecord {
@@ -1263,35 +1309,44 @@ fn control_command_client(
 ) -> Result<()> {
     let storage = agent_storage(state_dir);
     let state = read_agent_state(&storage, id).wrap_err("failed to read agent state")?;
-    let stream = smol::block_on(UnixStream::connect(&state.socket_path))
-        .wrap_err("failed to connect to agent socket")?;
 
-    let cmd_json = serde_json::to_string(&command).wrap_err("failed to serialize command")?;
+    #[cfg(not(unix))]
+    {
+        return Err(eyre!("direct agent socket control requires unix"));
+    }
 
-    smol::block_on(async {
-        let (reader, mut writer) = split(stream);
-        let mut reader = BufReader::new(reader);
+    #[cfg(unix)]
+    {
+        let stream = smol::block_on(UnixStream::connect(&state.socket_path))
+            .wrap_err("failed to connect to agent socket")?;
 
-        write_line(&mut writer, &cmd_json)
-            .await
-            .wrap_err("failed to send command")?;
+        let cmd_json = serde_json::to_string(&command).wrap_err("failed to serialize command")?;
 
-        let mut line = String::new();
-        let _ = reader
-            .read_line(&mut line)
-            .await
-            .wrap_err("failed to read response")?;
+        smol::block_on(async {
+            let (reader, mut writer) = split(stream);
+            let mut reader = BufReader::new(reader);
 
-        let response: serde_json::Value =
-            serde_json::from_str(&line).wrap_err("failed to parse response")?;
+            write_line(&mut writer, &cmd_json)
+                .await
+                .wrap_err("failed to send command")?;
 
-        match response.get("ok").and_then(serde_json::Value::as_bool) {
-            Some(true) => println!("Agent {id} {success_label}"),
-            _ => eprintln!("Failed to update agent {id}"),
-        }
+            let mut line = String::new();
+            let _ = reader
+                .read_line(&mut line)
+                .await
+                .wrap_err("failed to read response")?;
 
-        Ok(())
-    })
+            let response: serde_json::Value =
+                serde_json::from_str(&line).wrap_err("failed to parse response")?;
+
+            match response.get("ok").and_then(serde_json::Value::as_bool) {
+                Some(true) => println!("Agent {id} {success_label}"),
+                _ => eprintln!("Failed to update agent {id}"),
+            }
+
+            Ok(())
+        })
+    }
 }
 
 #[cfg(test)]
