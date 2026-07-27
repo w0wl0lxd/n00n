@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785142969125,
+  "lastUpdate": 1785143261181,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -7449,6 +7449,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 160744,
             "range": "± 14163",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "038c23e7f5325261fc8f6d5c82c2faadb7116291",
+          "message": "feat(openai): split Codex plan into its own provider (#136)\n\n* feat(openai): split Codex plan into its own provider\n\nCodex (ChatGPT Coding Plan) OAuth and the full OpenAI API key flow were\nboth exposed under the `openai` provider, causing identical model IDs to\nappear with different context windows and auth requirements. Introduce a\ndedicated `codex` provider so:\n\n- Codex plan models (`codex/gpt-5.6-luna`, `codex/gpt-5.3-codex`, etc.)\n  resolve to the 272K plan context and OAuth auth.\n- Full OpenAI API models (`openai/gpt-5.5`, `openai/gpt-5.6-luna`, etc.)\n  keep their larger context and API-key auth.\n- Auth commands (`n00n auth login/logout codex`) and the status table\n  treat Codex separately while sharing OAuth state with OpenAI.\n\n* chore(changelog): add fragment for Codex provider split",
+          "timestamp": "2026-07-27T08:48:23Z",
+          "tree_id": "85c93c36470e45a2ecfd0c3bbd63211428694dde",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/038c23e7f5325261fc8f6d5c82c2faadb7116291"
+        },
+        "date": 1785143260637,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6693967,
+            "range": "± 95785",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2222083,
+            "range": "± 9516",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2217252,
+            "range": "± 50528",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8341563,
+            "range": "± 33459",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4337164,
+            "range": "± 26514",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4313648,
+            "range": "± 13444",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 582163,
+            "range": "± 1372",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191458,
+            "range": "± 445",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191905,
+            "range": "± 286",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1038513,
+            "range": "± 9159",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 588753,
+            "range": "± 1645",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 587891,
+            "range": "± 837",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 47108,
+            "range": "± 5321",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 124083,
+            "range": "± 6422",
             "unit": "ns/iter"
           }
         ]
