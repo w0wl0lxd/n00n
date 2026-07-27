@@ -134,7 +134,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 agent::stop_client(&id, state_dir)?;
             }
             AgentCommand::Daemon { state_dir } => {
-                agent::daemon_serve(state_dir)?;
+                agent::daemon_serve(state_dir.as_ref())?;
             }
         },
         None => {
