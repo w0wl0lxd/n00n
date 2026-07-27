@@ -1176,23 +1176,28 @@ impl OpenAi {
                 .session_state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let Some(state) = states.get(&session_id) else {
-                return;
-            };
-            match state.last_response_id.as_ref() {
-                Some(_) => CacheHealth {
-                    kind: CacheKind::ResponseChain,
-                    valid_until: state.expires_at,
-                    ttl_seconds: OPENAI_RESPONSE_CHAIN_TTL_SECONDS,
-                    hit,
-                },
-                None => CacheHealth {
+            states.get(&session_id).map_or_else(
+                || CacheHealth {
                     kind: CacheKind::ResponseChain,
                     valid_until: 0,
                     ttl_seconds: 0,
                     hit: false,
                 },
-            }
+                |state| match state.last_response_id.as_ref() {
+                    Some(_) => CacheHealth {
+                        kind: CacheKind::ResponseChain,
+                        valid_until: state.expires_at,
+                        ttl_seconds: OPENAI_RESPONSE_CHAIN_TTL_SECONDS,
+                        hit,
+                    },
+                    None => CacheHealth {
+                        kind: CacheKind::ResponseChain,
+                        valid_until: 0,
+                        ttl_seconds: 0,
+                        hit: false,
+                    },
+                },
+            )
         };
         if let Err(error) = event_tx
             .send_async(ProviderEvent::CacheHealth { cache: health })
@@ -1262,6 +1267,7 @@ impl OpenAi {
         attempt: CodexAttempt,
         session_id: Option<&SessionRef>,
         response_chain_lock: Option<&OpenAiResponseChainLock>,
+        event_tx: &Sender<ProviderEvent>,
     ) -> CodexAttempt {
         if attempt.previous_response_id.is_some()
             && (is_missing_previous_response(&attempt)
@@ -1269,6 +1275,7 @@ impl OpenAi {
         {
             self.clear_response_chain(session_id, response_chain_lock)
                 .await;
+            self.emit_cache_health(session_id, false, event_tx).await;
         }
         attempt
     }
@@ -1513,6 +1520,7 @@ impl OpenAi {
                                         },
                                         session_id,
                                         response_chain_lock.as_ref(),
+                                        event_tx,
                                     )
                                     .await;
                             }
@@ -1541,6 +1549,7 @@ impl OpenAi {
                                     },
                                     session_id,
                                     response_chain_lock.as_ref(),
+                                    event_tx,
                                 )
                                 .await;
                         }
@@ -1559,6 +1568,7 @@ impl OpenAi {
                                     },
                                     session_id,
                                     response_chain_lock.as_ref(),
+                                    event_tx,
                                 )
                                 .await;
                         }
@@ -1587,6 +1597,7 @@ impl OpenAi {
                                     },
                                     session_id,
                                     response_chain_lock.as_ref(),
+                                    event_tx,
                                 )
                                 .await;
                         }
@@ -1598,6 +1609,7 @@ impl OpenAi {
                             CodexAttempt::from_websocket_error(previous_response_id, store, error),
                             session_id,
                             response_chain_lock.as_ref(),
+                            event_tx,
                         )
                         .await;
                 }
