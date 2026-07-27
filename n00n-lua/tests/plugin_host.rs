@@ -5117,6 +5117,35 @@ fn memory_tool_append_preserves_frontmatter() {
     assert!(view.contains("line two"), "appended body present: {view}");
 }
 
+#[test]
+fn memory_tool_search_omits_non_matching_query() {
+    let (reg, _host) = builtins_host();
+    exec_tool(
+        &reg,
+        "memory",
+        serde_json::json!({
+            "command": "write",
+            "path": "alpha.md",
+            "content": "architecture notes",
+            "importance": 5
+        }),
+    )
+    .expect("seed memory");
+    let out = exec_tool(
+        &reg,
+        "memory",
+        serde_json::json!({
+            "command": "search",
+            "query": "zzzznonexistent"
+        }),
+    )
+    .expect("search memories");
+    assert!(
+        out.contains("No matching memories"),
+        "search should omit importance-only matches: {out}"
+    );
+}
+
 /// List mode runs the program directly without shell interpretation.
 /// This preserves argument quoting (the core fix for #602).
 #[test]

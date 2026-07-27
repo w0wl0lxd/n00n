@@ -164,7 +164,10 @@ local function cmd_write(path, content, metadata, dir, ctx)
   if not file_path then
     return nil, err
   end
-  local payload = build_frontmatter(metadata, content)
+  local payload, fm_err = build_frontmatter(metadata, content)
+  if not payload then
+    return nil, fm_err or "failed to build frontmatter"
+  end
   local meta = n00n.fs.metadata(file_path)
   local existing_size = meta and meta.size or 0
   if helpers.dir_total_bytes(dir) - existing_size + #payload > helpers.MAX_DIR_BYTES then
@@ -195,12 +198,16 @@ local function cmd_append(path, content, dir, ctx)
   local existing = ""
   local meta = n00n.fs.metadata(file_path)
   if meta then
-    local read_ok, text = pcall(n00n.fs.read, file_path)
-    if read_ok and text then
-      existing = text
+    local text, read_err = n00n.fs.read(file_path)
+    if not text then
+      return nil, "read error: " .. tostring(read_err)
     end
+    existing = text
   end
-  local payload = append_body(existing, content)
+  local payload, fm_err = append_body(existing, content)
+  if not payload then
+    return nil, fm_err or "failed to build frontmatter"
+  end
   local lc = helpers.count_lines(payload)
   if lc > helpers.MAX_LINES_PER_FILE then
     return nil, "content exceeds " .. helpers.MAX_LINES_PER_FILE .. " lines (" .. lc .. " lines); reduce content size"
@@ -278,9 +285,25 @@ n00n.api.register_tool({
   end,
 
   restore = function(input, output, _is_error, ctx)
-    local content = (input.command == "write" and input.content)
-      or (input.command == "append" and input.content)
-      or output
+    if input.command == "append" and input.path then
+      local dir = resolve_dir()
+      if dir then
+        local file_path, resolve_err = helpers.safe_resolve(dir, input.path)
+        if file_path then
+          local raw, read_err = n00n.fs.read(file_path)
+          if raw then
+            local entry = helpers.parse_memory_file(input.path, raw)
+            return render_content(entry.body, input.path, ctx)
+          end
+          if read_err then
+            return render_content(output, input.path, ctx)
+          end
+        elseif resolve_err then
+          return render_content(output, input.path, ctx)
+        end
+      end
+    end
+    local content = (input.command == "write" and input.content) or output
     return render_content(content, input.path or "file.md", ctx)
   end,
 
