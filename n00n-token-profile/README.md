@@ -8,8 +8,8 @@ Offline cold-start token profiling and CI regression gates.
 |---------|------|-------|
 | `main_tools_schemas` | hard | `{name,input_schema}` only, sorted; exact tool_count |
 | `system_prompt` | hard | pinned Vars, empty instructions/slots, Build mode |
-| `main_tools_payload` | soft | full `definitions_active` (includes `code_execution` describe) |
-| `cache_prefix` | soft | non-dynamic system blocks + schemas |
+| `main_tools_payload` | soft | full `definitions_active` (includes `code_execution` describe); stderr warn only |
+| `cache_prefix` | soft | non-dynamic system blocks + schemas; stderr warn only |
 
 Fixture matches production cold-start: `ToolFilter::from_config`, `ActiveTools::default()`, fresh registry + builtins. MCP and live AGENTS.md are excluded.
 
