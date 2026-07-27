@@ -11,7 +11,7 @@ environment:
 
 agents:
   - name: n00n_agent:n00nAgent
-    model_name: swe-1-7
+    model_name: devin/swe-1-7
 
 datasets:
   - name: terminal-bench/terminal-bench-2-1

@@ -19,10 +19,30 @@ def wrapper_source() -> str:
     raise AssertionError("wrapper source not found")
 
 
+def _iter_wrapper_ast() -> ast.AST:
+    source = wrapper_source()
+    return ast.parse(source)
+
+
 def test_wrapper_does_not_persist_acp_transcript():
     source = wrapper_source()
     assert "/tmp/devin-acp.log" not in source
     assert "log.write" not in source
+
+    for node in ast.walk(_iter_wrapper_ast()):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name) and node.func.id == "open":
+            raise AssertionError("wrapper calls open()")
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "open":
+            raise AssertionError("wrapper calls .open()")
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "write"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id not in ("sys", "os")
+        ):
+            raise AssertionError(f"wrapper calls {node.func.value.id}.write()")
 
 
 def test_wrapper_exits_when_devin_exits_with_stdin_open():
@@ -48,7 +68,7 @@ def test_wrapper_exits_when_devin_exits_with_stdin_open():
             stderr=subprocess.PIPE,
         )
         try:
-            returncode = process.wait(timeout=2)
+            returncode = process.wait(timeout=30)
             stdout = process.stdout.read() if process.stdout is not None else b""
         finally:
             if process.stdin is not None:

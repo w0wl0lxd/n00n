@@ -8,18 +8,18 @@ HARBOR_TIMEOUT="${HARBOR_TIMEOUT:-0}"
 
 trap 'if [[ "$?" -eq 124 ]]; then echo "harbor run timed out after ${HARBOR_TIMEOUT}s" >&2; fi' EXIT
 
+PYTHONPATH="${PWD}${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH
+
+args=(
+  --config job-config.yaml
+  --env-file .env
+  --yes
+  "$@"
+)
+
 if [[ "${HARBOR_TIMEOUT}" == "0" ]]; then
-  PYTHONPATH="$(dirname "$0")${PYTHONPATH:+:$PYTHONPATH}" \
-    harbor run \
-    --config job-config.yaml \
-    --env-file .env \
-    --yes \
-    "$@"
+  harbor run "${args[@]}"
 else
-  PYTHONPATH="$(dirname "$0")${PYTHONPATH:+:$PYTHONPATH}" \
-    timeout "${HARBOR_TIMEOUT}" harbor run \
-    --config job-config.yaml \
-    --env-file .env \
-    --yes \
-    "$@"
+  timeout "${HARBOR_TIMEOUT}" harbor run "${args[@]}"
 fi
