@@ -48,12 +48,28 @@ te: trailers
 
 ## Unary RPCs
 
-Same headers (without streaming body). Response: single Connect data frame or JSON error.
+Same auth/client headers. **Unary calls on api2 use `application/json`**, not Connect framing:
+
+```http
+POST /agent.v1.AgentService/GetUsableModels HTTP/2
+Host: api2.cursor.sh
+Authorization: Bearer <access_token>
+Content-Type: application/json
+Connect-Protocol-Version: 1
+x-cursor-client-type: cli
+x-cursor-client-version: cli-<version>
+
+{}
+```
+
+Response: JSON (`GetUsableModelsResponse.models[]` with `modelId`, `displayModelId`, `aliases`).
 
 | RPC | Request | Response |
 |-----|---------|----------|
-| `GetUsableModels` | `agent.v1.GetUsableModelsRequest` | `agent.v1.GetUsableModelsResponse` |
-| `GetServerConfig` | `{ "telem_enabled": false }` (JSON on api2) | `agentUrlConfig.agentnUrl` |
+| `GetUsableModels` | `{}` | JSON model catalog |
+| `GetServerConfig` | `{"telemEnabled":false}` | JSON incl. `agentUrlConfig.agentnUrl` |
+
+Bidirectional `Run` uses Connect frames (see HTTP Request section above).
 
 ## Model Identifier Mapping (n00n → wire)
 
