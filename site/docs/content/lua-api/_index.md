@@ -2642,7 +2642,8 @@ n00n.session.list()
 Lists sessions stored for the current project. Answered from a
 background scan, so a slow disk never blocks the UI.
 
-**Returns:** (`table|nil`, `string|nil`) Array of `{id, title, updated_at}`, or nil and an error.
+**Returns:** (`table|nil`, `string|nil`) Array of `{id, title, display_title, kind,
+parent_id, updated_at, cwd, model}`, or nil and an error.
 
 **Example:**
 
@@ -2677,13 +2678,14 @@ local live, err = n00n.session.live()
 n00n.session.status({id})
 ```
 
-Returns one live session with its status and latest assistant text output.
+Returns one live session with its status, latest assistant text output,
+and paused team run metadata when the latest tool result is from `team`.
 
 **Parameters:**
 
 - `{id}` (`string`) Live session id.
 
-**Returns:** (`table|nil`, `string|nil`) `{id, title, status, updated_at, focused, output?}`, or nil and an error.
+**Returns:** (`table|nil`, `string|nil`) `{id, title, status, updated_at, focused, output?, paused_team?}` where `paused_team` is `{paused, run_id, mode?, ...}` when a paused team run is present, or nil and an error.
 
 ---
 
@@ -2762,8 +2764,9 @@ Starts a new session in the current project.
 
 - `{opts?}` (`table?`) Optional fields: prompt (string) first user message
 
-  to submit right away; focus (boolean) switch the UI to the new session.
+  to submit right away; focus (boolean) switch the UI to the new session;
 
+  - `parent_id` (`string?`) session that spawned this session.
 
 **Returns:** (`string|nil`, `string|nil`) New session id, or nil and an error.
 
@@ -2791,7 +2794,13 @@ the prompt is queued and picked up when the agent reaches it.
 - `{text}` (`string`) The prompt to send. Must not be blank.
 - `{opts?}` (`table?`) Optional fields: session (string) id of a live
 
-  session; defaults to the focused one.
+  session (defaults to the focused one); steer (boolean) request
+
+
+  delivery as a steering interrupt when the session is busy; control
+
+
+  (boolean) mark the message as an agent-to-agent control message.
 
 
 **Returns:** (`string|nil`, `string|nil`) "started" or "queued", or nil and an error.
@@ -2799,7 +2808,7 @@ the prompt is queued and picked up when the agent reaches it.
 **Example:**
 
 ```lua
-local state, err = n00n.session.prompt("run the tests", { session = id })
+local state, err = n00n.session.prompt("run the tests", { session = id, steer = true, control = true })
 ```
 
 ---
@@ -5248,9 +5257,9 @@ function M.snapshot(ctx)
 -- Shared per-tool output limit options, so the tools that support them
 -- cannot drift apart.
 
-local DEFAULT_MAX_OUTPUT_LINES = 2000
-local DEFAULT_MAX_OUTPUT_BYTES = 50 * 1024
-local DEFAULT_MAX_LINE_BYTES = 500
+local DEFAULT_MAX_OUTPUT_LINES = 500
+local DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024
+local DEFAULT_MAX_LINE_BYTES = 400
 
 local M = {}
 
