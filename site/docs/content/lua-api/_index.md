@@ -2763,8 +2763,8 @@ Starts a new session in the current project.
 
 - `{opts?}` (`table?`) Optional fields: prompt (string) first user message
 
-  to submit right away; focus (boolean) switch the UI to the new session.
-
+  to submit right away; focus (boolean) switch the UI to the new session;
+  parent_id (string?) session that spawned this session.
 
 **Returns:** (`string|nil`, `string|nil`) New session id, or nil and an error.
 

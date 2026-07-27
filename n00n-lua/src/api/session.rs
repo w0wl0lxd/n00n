@@ -115,7 +115,8 @@ async fn delete(
 /// Starts a new session in the current project.
 ///
 /// @param opts table? Optional fields: prompt (string) first user message
-///   to submit right away; focus (boolean) switch the UI to the new session.
+///   to submit right away; focus (boolean) switch the UI to the new session;
+///   parent_id (string?) session that spawned this session.
 /// @return (string|nil, string|nil) New session id, or nil and an error.
 /// @example
 /// local id, err = n00n.session.new({ prompt = "fix the tests", focus = true })
@@ -125,14 +126,24 @@ async fn new(
     #[ctx] tx: Option<flume::Sender<UiAction>>,
     opts: Option<Table>,
 ) -> LuaResult<Pair> {
-    let (prompt, focus) = match opts {
+    let (prompt, focus, parent_id) = match opts {
         Some(opts) => (
             opts.get("prompt")?,
             opts.get("focus").unwrap_or_else(|_| false),
+            opts.get("parent_id")?,
         ),
-        None => (None, false),
+        None => (None, false, None),
     };
-    roundtrip(lua, tx, SessionRequest::New { prompt, focus }).await
+    roundtrip(
+        lua,
+        tx,
+        SessionRequest::New {
+            prompt,
+            focus,
+            parent_id,
+        },
+    )
+    .await
 }
 
 /// Sends {text} as a regular user prompt to a live session. The text is

@@ -2649,19 +2649,28 @@ n00n.api.register_tool({
     local all_nodes = { parent }
     local rank = { parent = 0 }
     for i = 1, 21 do
-      local child = { id = "child-" .. i, updated_at = 100 - i, children = {} }
+      local child = { id = "child-" .. i, parent_id = parent.id, updated_at = 100 - i, children = {} }
       rank[child.id] = i
       parent.children[i] = child
       all_nodes[#all_nodes + 1] = child
     end
     local expanded_state = { ["group:parent:1"] = true }
-    group_node(parent, all_nodes, rank, expanded_state)
-    return n00n.json.encode({
+     group_node(parent, all_nodes, rank, expanded_state)
+     local first_child = parent.children[1].children[1]
+     local original_parent = first_child.parent_id
+     local group_id = first_child.group_id
+     group_node(parent, all_nodes, rank, expanded_state)
+     return n00n.json.encode({
       buckets = #parent.children,
       first_id = parent.children[1].id,
       first_expanded = parent.children[1].expanded,
       first_children = #parent.children[1].children,
-      second_children = #parent.children[2].children,
+       second_children = #parent.children[2].children,
+       child_parent = original_parent,
+       child_group = group_id,
+       child_parent_after_refresh = parent.children[1].children[1].parent_id,
+       child_group_after_refresh = parent.children[1].children[1].group_id,
+
     })
   end,
 })
@@ -2676,6 +2685,16 @@ n00n.api.register_tool({
     assert_eq!(grouped["first_expanded"], serde_json::json!(true));
     assert_eq!(grouped["first_children"], serde_json::json!(20));
     assert_eq!(grouped["second_children"], serde_json::json!(1));
+    assert_eq!(grouped["child_parent"], serde_json::json!("parent"));
+    assert_eq!(grouped["child_group"], serde_json::json!("group:parent:1"));
+    assert_eq!(
+        grouped["child_parent_after_refresh"],
+        serde_json::json!("parent")
+    );
+    assert_eq!(
+        grouped["child_group_after_refresh"],
+        serde_json::json!("group:parent:1")
+    );
 }
 
 #[test]

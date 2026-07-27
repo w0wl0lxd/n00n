@@ -185,11 +185,19 @@ local function build_tree(sessions)
   return roots
 end
 
+local function task_count(count)
+  return count .. (count == 1 and " task" or " tasks")
+end
+
 local function group_label(children, start_idx, finish)
   local count = finish - start_idx + 1
-  local count_text = count .. (count == 1 and " task" or " tasks")
+  local count_text = task_count(count)
   local newest = children[start_idx].updated_at
-  local oldest = children[finish].updated_at
+  local oldest = children[start_idx].updated_at
+  for i = start_idx + 1, finish do
+    newest = math.max(newest, children[i].updated_at)
+    oldest = math.min(oldest, children[i].updated_at)
+  end
   local newest_age = age(newest)
   local oldest_age = age(oldest)
   if newest_age == oldest_age then
@@ -218,7 +226,7 @@ local function make_bucket(parent, children, start_idx, finish, all_nodes, rank,
   rank[bucket.id] = rank[children[start_idx].id] - 0.5
   for i = start_idx, finish do
     local child = children[i]
-    child.parent_id = bucket.id
+    child.group_id = bucket.id
     table.insert(bucket.children, child)
   end
   table.insert(all_nodes, bucket)
@@ -258,7 +266,7 @@ local function apply_filter()
   else
     for _, n in ipairs(board.nodes) do
       n.depth = 0
-      if ListPicker.matches(n.display_title, words) or ListPicker.matches(n.title, words) then
+      if not n.is_group and (ListPicker.matches(n.display_title, words) or ListPicker.matches(n.title, words)) then
         table.insert(board.items, n)
       end
     end
@@ -319,8 +327,9 @@ local function collapse_or_parent()
     render()
     return
   end
-  if s.parent_id then
-    board.sel_id = s.parent_id
+  local parent_id = s.group_id or s.parent_id
+  if parent_id then
+    board.sel_id = parent_id
     apply_filter()
     render()
   end
@@ -344,7 +353,9 @@ local function update_footer()
   board.win:set_config({ footer = footer })
 end
 
-local function render()
+local render
+
+render = function()
   local lines = {}
   local inner = board.width - 4
   local input = board.rename and board.rename.input or board.input
@@ -367,7 +378,7 @@ local function render()
     local right, right_style
     if s.is_group then
       local count = #s.children
-      right = count .. (count == 1 and " task" or " tasks")
+      right = task_count(count)
       right_style = selected and "selected" or "dim"
     else
       right = s.focused and CURRENT_LABEL or age(s.updated_at)
@@ -407,21 +418,6 @@ local function render()
   end
   board.buf:set_lines(lines)
   board.win:set_cursor(cursor_line)
-end
-
-local function classify_live_prefix(s)
-  local lower = s.display_title:lower()
-  for _, pair in ipairs(SUBTASK_PREFIXES) do
-    local prefix = pair[1]
-    if lower:sub(1, #prefix) == prefix then
-      local rest = s.display_title:sub(#prefix + 1):match("^%s*(.-)%s*$")
-      s.kind = pair[2]
-      if rest ~= "" then
-        s.display_title = rest
-      end
-      return
-    end
-  end
 end
 
 -- Rebuilds the tree from live runtimes and the stored snapshot, then
@@ -466,9 +462,6 @@ local function refresh()
       s.updated_at = s.updated_at or st.updated_at
     end
     normalize_session(s, expanded_state)
-    if s.kind == "main" then
-      classify_live_prefix(s)
-    end
     all[#all + 1] = s
   end
   for _, st in ipairs(board.stored or {}) do
@@ -603,17 +596,19 @@ end
 local function commit_rename()
   local title = board.rename.input:value():match("^%s*(.-)%s*$")
   local id = board.rename.id
+  local current = selected()
+  local stored_title = current and current.kind ~= "main" and (current.kind .. ": " .. title) or title
   stop_rename()
   if title == "" then
     return
   end
-  local _, err = n00n.session.set_title({ id = id, title = title })
+  local _, err = n00n.session.set_title({ id = id, title = stored_title })
   if err then
     n00n.ui.flash(err)
   else
     for _, n in ipairs(board.nodes) do
       if n.id == id then
-        n.title = title
+        n.title = stored_title
         n.display_title = title
       end
     end

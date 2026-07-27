@@ -41,6 +41,9 @@ const MAX_TITLE_LEN: usize = 60;
 const MAX_SNIPPET_BYTES: usize = 256;
 const MAX_FIRST_MESSAGE_LINE_BYTES: usize = 64 * 1024;
 const MAX_FIRST_MESSAGE_TEXT_BYTES: usize = 1024;
+const MAX_FIRST_MESSAGE_BYTES: usize = 256 * 1024;
+const META_RECORD_PREFIX: &str = r#"{"t":"meta""#;
+const MSG_RECORD_PREFIX: &str = r#"{"t":"msg""#;
 const OPENAI_RESPONSE_CHAIN_SUFFIX: &str = "openai-response.json";
 const OPENAI_RESPONSE_CHAIN_LOCK_SUFFIX: &str = "openai-response.lock";
 const OPENAI_RESPONSE_CHAIN_FILE_MODE: u32 = 0o600;
@@ -142,6 +145,8 @@ pub struct StoredQueuedMessage {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionMeta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<N00nId>,
     #[serde(default)]
     pub mode: Option<StoredMode>,
     #[serde(default)]
@@ -458,18 +463,7 @@ pub fn generate_title<M: TitleSource>(messages: &[M]) -> String {
     let Some(text) = first_user_text.map(str::trim).filter(|t| !t.is_empty()) else {
         return DEFAULT_TITLE.into();
     };
-    let text = normalize_title(text);
-
-    if text.len() <= MAX_TITLE_LEN {
-        return text;
-    }
-
-    let boundary = text.floor_char_boundary(MAX_TITLE_LEN);
-    let truncated = &text[..boundary];
-    match truncated.rfind(' ') {
-        Some(pos) if pos > MAX_TITLE_LEN / 2 => format!("{}…", &truncated[..pos]),
-        _ => format!("{truncated}…"),
-    }
+    truncate_label(text)
 }
 
 const SUBTASK_TITLE_PREFIXES: &[(&str, &str)] = &[
@@ -566,11 +560,12 @@ fn snippet_from_text(text: &str) -> Option<String> {
 
 fn classify_and_display(title: &str, first_message: Option<&str>) -> (String, String) {
     let title_norm = normalize_title(title);
+    let title_norm_lower = title_norm.to_ascii_lowercase();
     let message = first_message.map(str::trim).filter(|t| !t.is_empty());
 
     for (prefix, kind) in SUBTASK_TITLE_PREFIXES {
-        if let Some(rest) = title_norm.strip_prefix(prefix) {
-            let rest = rest.trim();
+        if title_norm_lower.starts_with(prefix) {
+            let rest = title_norm[prefix.len()..].trim();
             let display = if rest.is_empty() {
                 message
                     .and_then(snippet_from_text)
@@ -589,11 +584,7 @@ fn classify_and_display(title: &str, first_message: Option<&str>) -> (String, St
         return (truncate_label(&display), kind.to_string());
     }
 
-    let display = if title_norm == DEFAULT_TITLE {
-        message
-            .and_then(snippet_from_text)
-            .unwrap_or_else(|| title_norm.clone())
-    } else if title_norm.starts_with("Use the ") {
+    let display = if title_norm == DEFAULT_TITLE || title_norm.starts_with("Use the ") {
         message
             .and_then(snippet_from_text)
             .unwrap_or_else(|| title_norm.clone())
@@ -618,6 +609,8 @@ enum LogRecord<M, U, T> {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
         created_at: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_id: Option<N00nId>,
     },
     #[serde(rename = "msg")]
     Msg { d: M },
@@ -1046,6 +1039,7 @@ where
             cwd: session.cwd.clone(),
             title: Some(session.title.clone()),
             created_at: session.created_at,
+            parent_id: session.meta.parent_id,
         },
     )?;
     for msg in &session.messages {
@@ -1239,6 +1233,7 @@ where
             cwd: h_cwd,
             title: h_title,
             created_at: h_created,
+            parent_id: h_parent,
         } => {
             if v != LOG_FORMAT_VERSION {
                 return Err(SessionError::VersionMismatch {
@@ -1250,6 +1245,7 @@ where
             builder.model = h_model;
             builder.cwd = h_cwd;
             builder.created_at = h_created;
+            builder.meta.parent_id = h_parent;
             if let Some(t) = h_title {
                 builder.title = t;
             }
@@ -1546,6 +1542,8 @@ struct ZstHeader {
     title: Option<String>,
     #[serde(default)]
     created_at: u64,
+    #[serde(default)]
+    parent_id: Option<N00nId>,
 }
 
 #[derive(Deserialize)]
@@ -1554,9 +1552,6 @@ struct MetaScan {
     title: String,
     updated_at: u64,
 }
-
-const META_RECORD_PREFIX: &str = r#"{"t":"meta""#;
-const MSG_RECORD_PREFIX: &str = r#"{"t":"msg""#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ScannedHeader {
@@ -1570,6 +1565,8 @@ struct ScannedHeader {
     created_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     first_message: Option<String>,
+    #[serde(default)]
+    parent_id: Option<N00nId>,
 }
 
 /// Cached scan result for one session file, keyed by file name and validated
@@ -1645,7 +1642,7 @@ where
                     title: normalize_title(&h.title),
                     display_title,
                     kind,
-                    parent_id: None,
+                    parent_id: h.parent_id,
                     updated_at: h.updated_at,
                     cwd: h.cwd.clone(),
                     model: h.model.clone(),
@@ -1661,7 +1658,11 @@ where
     {
         warn!(error = %e, "failed to write session scan cache");
     }
-    let _ = fs::remove_file(dir.join(SCAN_CACHE_FILE_V2));
+    if let Err(error) = fs::remove_file(dir.join(SCAN_CACHE_FILE_V2))
+        && error.kind() != ErrorKind::NotFound
+    {
+        warn!(error = %error, "failed to remove stale v2 session scan cache");
+    }
 
     let mut order: Vec<usize> = (0..with_created.len()).collect();
     order.sort_unstable_by_key(|i| (with_created[*i].0, *with_created[*i].1.id.as_bytes()));
@@ -1670,8 +1671,9 @@ where
         let summary = &mut with_created[i].1;
         if summary.kind == "main" {
             last_main = Some(summary.id);
-            summary.parent_id = None;
-        } else if let Some(parent) = last_main {
+        } else if summary.parent_id.is_none()
+            && let Some(parent) = last_main
+        {
             summary.parent_id = Some(parent);
         }
     }
@@ -1758,8 +1760,6 @@ where
     }
     Some((title, updated_at, first_message))
 }
-
-const MAX_FIRST_MESSAGE_BYTES: usize = 256 * 1024;
 
 fn try_decode_first_message_at<M>(path: &Path, offset: u64) -> Option<String>
 where
@@ -1900,6 +1900,7 @@ where
         model: header.model,
         created_at: header.created_at,
         first_message,
+        parent_id: header.parent_id,
     })
 }
 
@@ -2605,6 +2606,7 @@ mod tests {
                 cwd: session.cwd.clone(),
                 title: Some(session.title.clone()),
                 created_at: session.created_at,
+                parent_id: None,
             },
         )
         .unwrap();
@@ -2648,6 +2650,7 @@ mod tests {
                 cwd: session.cwd.clone(),
                 title: Some(session.title.clone()),
                 created_at: session.created_at,
+                parent_id: None,
             },
         )
         .unwrap();
@@ -3506,6 +3509,7 @@ mod tests {
             model: session.model.clone(),
             cwd: session.cwd.clone(),
             created_at: session.created_at,
+            parent_id: None,
             title: Some("header title".into()),
         };
         let mut bytes = Vec::new();
