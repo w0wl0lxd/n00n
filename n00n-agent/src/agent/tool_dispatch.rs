@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -23,9 +24,205 @@ pub enum Emit {
 
 const DOOM_LOOP_THRESHOLD: usize = 3;
 const DOOM_LOOP_MESSAGE: &str = "You have called this tool with identical input 3 times in a row. You are stuck in a loop. Break out and try a different approach.";
-const MCP_BLOCKED_IN_PLAN: &str = "MCP tools are not available in plan mode";
+const MCP_MUTATION_BLOCKED_IN_PLAN: &str =
+    "MCP tool is not explicitly marked read-only and cannot run in plan mode";
+const CODE_EXECUTION_BLOCKED_IN_PLAN: &str = "code_execution is not available in plan mode";
 const UNKNOWN_TOOL_PREFIX: &str = "unknown tool";
 const TOOL_AUDIENCE_DENIED: &str = "tool is not available to this agent audience";
+const BASH_BLOCKED_IN_PLAN: &str = "bash command is not provably read-only in plan mode";
+
+/// Returns true when `command` contains shell metacharacters that are outside
+/// any quote and not escaped by a backslash. These are the characters that let
+/// a single command string request additional programs or I/O redirection.
+fn has_unquoted_shell_meta(command: &str) -> bool {
+    let mut chars = command.chars().peekable();
+    let mut in_single = false;
+    let mut in_double = false;
+    while let Some(c) = chars.next() {
+        if c == '\\' && !in_single {
+            // Escaped characters are literal. Skip the next char if there is one.
+            chars.next();
+            continue;
+        }
+        if in_single {
+            if c == '\'' {
+                in_single = false;
+            }
+            continue;
+        }
+        if in_double {
+            if c == '"' {
+                in_double = false;
+                continue;
+            }
+            // Command substitution still happens inside double quotes.
+            if c == '$' && chars.peek() == Some(&'(') {
+                return true;
+            }
+            if c == '`' {
+                return true;
+            }
+            continue;
+        }
+        if c == '\'' {
+            in_single = true;
+            continue;
+        }
+        if c == '"' {
+            in_double = true;
+            continue;
+        }
+        if matches!(
+            c,
+            '\n' | '\r' | ';' | '|' | '&' | '>' | '<' | '(' | ')' | '{' | '}'
+        ) {
+            return true;
+        }
+        if c == '$' && chars.peek() == Some(&'(') {
+            return true;
+        }
+        if c == '`' {
+            return true;
+        }
+    }
+    false
+}
+
+fn plan_bash_is_read_only(input: &Value) -> bool {
+    let Some(command) = input.get("command").and_then(Value::as_str) else {
+        return false;
+    };
+    let command = command.trim();
+    if command.is_empty() || command.contains('\n') || command.contains('\r') {
+        return false;
+    }
+    if has_unquoted_shell_meta(command) {
+        return false;
+    }
+    let Ok(words) = shell_words::split(command) else {
+        return false;
+    };
+    let Some(program) = words.first().map(String::as_str) else {
+        return false;
+    };
+    let arguments: Vec<&str> = words.iter().skip(1).map(String::as_str).collect();
+    match program {
+        "pwd" => arguments.is_empty(),
+        "ls" | "cat" | "head" | "tail" | "wc" | "grep" | "stat" | "file" | "du" | "df"
+        | "realpath" | "readlink" | "jq" => true,
+        "rg" => !arguments
+            .iter()
+            .any(|argument| argument.starts_with("--pre") || *argument == "--generate"),
+        "find" => !arguments.iter().any(|argument| {
+            matches!(
+                *argument,
+                "-delete" | "-exec" | "-execdir" | "-ok" | "-okdir"
+            ) || argument.starts_with("-fls")
+                || argument.starts_with("-fprint")
+                || argument.starts_with("-fprintf")
+        }),
+        "yq" => !arguments.iter().any(|argument| {
+            *argument == "-i" || argument.starts_with("-i=") || argument.starts_with("--inplace")
+        }),
+        "git" => plan_git_is_read_only(&arguments),
+        "gh" => plan_gh_is_read_only(&arguments),
+        _ => false,
+    }
+}
+
+fn plan_git_is_read_only(arguments: &[&str]) -> bool {
+    let mut index = 0;
+    while let Some(argument) = arguments.get(index) {
+        match *argument {
+            "-C" => index += 2,
+            value if value.starts_with("-C") => index += 1,
+            "--git-dir" | "--work-tree" => index += 2,
+            value if value.starts_with("--git-dir=") || value.starts_with("--work-tree=") => {
+                index += 1;
+            }
+            // Allow the safe `-c core.fsmonitor=false` override injected by the
+            // bash sanitizer. All other `-c` values can introduce aliases,
+            // pagers, external diff/hook tools, etc.
+            "-c" => {
+                if let Some(next) = arguments.get(index + 1)
+                    && next.to_lowercase() == "core.fsmonitor=false"
+                {
+                    index += 2;
+                    continue;
+                }
+                return false;
+            }
+            value if value.starts_with("-c") => return false,
+            value if value.starts_with("--config-env") || value.starts_with("--exec-path") => {
+                return false;
+            }
+            value if value.starts_with('-') => index += 1,
+            subcommand => {
+                let subcommand_arguments = &arguments[index + 1..];
+                if subcommand_arguments.iter().any(|argument| {
+                    *argument == "--output"
+                        || argument.starts_with("--output=")
+                        || *argument == "--ext-diff"
+                        || *argument == "--recurse-submodules"
+                        || argument.starts_with("--submodule")
+                }) {
+                    return false;
+                }
+                return matches!(
+                    subcommand,
+                    "status"
+                        | "diff"
+                        | "log"
+                        | "show"
+                        | "rev-parse"
+                        | "ls-files"
+                        | "ls-tree"
+                        | "describe"
+                        | "blame"
+                        | "shortlog"
+                ) || subcommand == "remote"
+                    && matches!(
+                        subcommand_arguments,
+                        [] | ["-v" | "--verbose"] | ["get-url", ..]
+                    );
+            }
+        }
+    }
+    false
+}
+
+fn plan_gh_is_read_only(arguments: &[&str]) -> bool {
+    match arguments {
+        ["pr", operation, ..] => {
+            matches!(*operation, "list" | "view" | "status" | "checks" | "diff")
+        }
+        ["issue", operation, ..] => matches!(*operation, "list" | "view" | "status"),
+        ["run", operation, ..] => matches!(*operation, "list" | "view" | "watch"),
+        ["repo", operation, ..] => matches!(*operation, "list" | "view"),
+        _ => false,
+    }
+}
+
+fn is_authorized_plan_target(plan_path: &Path, target: &Path) -> bool {
+    let is_symlink = |path: &Path| {
+        std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink())
+    };
+    if is_symlink(plan_path) || is_symlink(target) {
+        return false;
+    }
+    let normalize = |path: &Path| -> Option<std::path::PathBuf> {
+        let absolute = std::path::absolute(path).ok()?;
+        n00n_storage::paths::incremental_canonicalize(&absolute)
+            .or(Some(n00n_storage::paths::normalize_path(&absolute)))
+    };
+    let Some(plan) = normalize(plan_path) else {
+        return false;
+    };
+    let Some(target) = normalize(target) else {
+        return false;
+    };
+    plan == target
+}
 
 pub(super) struct RecentCalls(VecDeque<(String, u64)>);
 
@@ -72,6 +269,23 @@ pub async fn run(
 ) -> ToolDoneEvent {
     // GPT-5.6 was likely trained on Codex sessions where tools are `functions.<name>`
     let name = name.strip_prefix("functions.").map_or_else(|| name, |v| v);
+    if ctx.mode.plan_path().is_some() && name == crate::tools::CODE_EXECUTION_TOOL_NAME {
+        return tool_done_error(
+            id,
+            Arc::from(crate::tools::CODE_EXECUTION_TOOL_NAME),
+            CODE_EXECUTION_BLOCKED_IN_PLAN.into(),
+        );
+    }
+    if ctx.mode.plan_path().is_some()
+        && name == crate::tools::BASH_TOOL_NAME
+        && !plan_bash_is_read_only(input)
+    {
+        return tool_done_error(
+            id,
+            Arc::from(crate::tools::BASH_TOOL_NAME),
+            BASH_BLOCKED_IN_PLAN.into(),
+        );
+    }
     if let Some(local) = ctx.local_tools.get(name) {
         return run_local_tool(local, id, name, input, ctx, emit);
     }
@@ -90,6 +304,19 @@ pub async fn run(
         .or_else(|| mcp.map(|m| m.interned_name(&mcp_lookup)))
         .unwrap_or_else(|| Arc::from(UNKNOWN_MCP));
     let started = Instant::now();
+
+    if ctx.mode.plan_path().is_some()
+        && name != crate::tools::BASH_TOOL_NAME
+        && entry
+            .as_ref()
+            .is_some_and(|entry| entry.tool.tool_kind() == Some("execute"))
+    {
+        return tool_done_error(
+            id.clone(),
+            Arc::clone(&tool_id),
+            CODE_EXECUTION_BLOCKED_IN_PLAN.into(),
+        );
+    }
 
     if entry
         .as_ref()
@@ -118,7 +345,10 @@ pub async fn run(
         };
 
         if let Some(target) = invocation.mutable_path() {
-            let is_plan_target = ctx.mode.plan_path().is_some_and(|pp| target == pp);
+            let is_plan_target = ctx
+                .mode
+                .plan_path()
+                .is_some_and(|plan_path| is_authorized_plan_target(plan_path, target));
             if !is_plan_target {
                 if ctx.mode.plan_path().is_some() {
                     warn!(
@@ -373,14 +603,22 @@ async fn execute_mcp_tool(
         let _ = ctx.event_tx.send(AgentEvent::ToolStart(Box::new(start)));
     }
 
-    if ctx.mode.plan_path().is_some() {
+    let in_plan_mode = ctx.mode.plan_path().is_some();
+    let plan_read_only = in_plan_mode
+        && ctx
+            .mcp
+            .as_ref()
+            .is_some_and(|mcp| mcp.is_tool_read_only(tool_name));
+    if in_plan_mode && !plan_read_only {
         return tool_done_error(
             id.to_owned(),
             Arc::clone(&tool_id),
-            MCP_BLOCKED_IN_PLAN.into(),
+            MCP_MUTATION_BLOCKED_IN_PLAN.into(),
         );
     }
 
+    // Plan-mode read-only classification only bypasses the mutation gate above.
+    // Configured MCP allow/deny rules still apply.
     let perm_tool = match ToolKey::parse(tool_name) {
         Ok(k) => k,
         Err(e) => {
@@ -867,7 +1105,120 @@ mod tests {
     }
 
     #[test]
-    fn mcp_tool_blocked_in_plan_mode() {
+    fn plan_target_requires_same_normalized_path() {
+        let dir = TempDir::new().unwrap();
+        let plan = dir.path().join("plan.md");
+        let equivalent = dir.path().join(".").join("plan.md");
+
+        assert!(is_authorized_plan_target(&plan, &equivalent));
+        assert!(!is_authorized_plan_target(
+            &plan,
+            &dir.path().join("other.md")
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plan_target_rejects_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TempDir::new().unwrap();
+        let actual = dir.path().join("actual.md");
+        std::fs::write(&actual, "plan").unwrap();
+        let linked = dir.path().join("plan.md");
+        symlink(&actual, &linked).unwrap();
+
+        assert!(!is_authorized_plan_target(&linked, &linked));
+    }
+
+    #[test_case("git status", true ; "git_status")]
+    #[test_case("git -C repo diff --stat", true ; "git_with_directory")]
+    #[test_case("gh pr checks 42", true ; "github_checks")]
+    #[test_case("rg pattern src", true ; "ripgrep")]
+    #[test_case("find . -name Cargo.toml", true ; "find_read")]
+    #[test_case("find . -name '*.rs'", true ; "find_quoted_glob")]
+    #[test_case("grep 'a|b' file", true ; "grep_quoted_pipe")]
+    #[test_case("grep '$(rm)' file", true ; "grep_quoted_dollar_paren")]
+    #[test_case("git remote -v", true ; "git_remote_list")]
+    #[test_case("git commit -am nope", false ; "git_commit")]
+    #[test_case("git branch -D old", false ; "git_branch_delete")]
+    #[test_case("git diff --output=patch", false ; "git_output_file")]
+    #[test_case("gh pr merge 42", false ; "github_merge")]
+    #[test_case("find . -delete", false ; "find_delete")]
+    #[test_case("find . '-delete'", false ; "find_quoted_delete")]
+    #[test_case("find . -fprint0 output", false ; "find_print_file")]
+    #[test_case("yq -i '.x = 1' file.yml", false ; "yq_in_place")]
+    #[test_case("yq '-i' expression file.yml", false ; "yq_quoted_in_place")]
+    #[test_case("tree -o output", false ; "tree_output")]
+    #[test_case("cargo test", false ; "code_execution")]
+    #[test_case("cat file > copy", false ; "redirect")]
+    #[test_case("git status && rm file", false ; "command_chain")]
+    #[test_case("cat $(ls)", false ; "command_substitution")]
+    #[test_case("cat `ls`", false ; "backtick_substitution")]
+    #[test_case("cat <(ls)", false ; "process_substitution")]
+    #[test_case("grep \"$(rm)\" file", false ; "double_quoted_command_substitution")]
+    #[test_case("git -c core.pager=cat log", false ; "git_dash_c_rejected")]
+    #[test_case("git --config-env=FOO=BAR log", false ; "git_config_env_rejected")]
+    #[test_case("git --exec-path=/mal log", false ; "git_exec_path_rejected")]
+    #[test_case("git diff --ext-diff", false ; "git_ext_diff_rejected")]
+    #[test_case("git diff --recurse-submodules", false ; "git_recurse_submodules_rejected")]
+    #[test_case("git diff --submodule=log", false ; "git_submodule_rejected")]
+    #[test_case("git -c core.fsmonitor=false status", true ; "git_fsmonitor_false_allowed")]
+    #[test_case("git -c core.fsmonitor=true status", false ; "git_fsmonitor_true_rejected")]
+    #[test_case("git -c CORE.FSMONITOR=FALSE -C repo diff --stat", true ; "git_fsmonitor_false_case_insensitive")]
+    #[test_case("python -c 'print(1)'", false ; "interpreter")]
+    fn classifies_plan_bash_commands(command: &str, expected: bool) {
+        assert_eq!(
+            plan_bash_is_read_only(&serde_json::json!({"command": command})),
+            expected
+        );
+    }
+
+    #[test]
+    fn mutating_bash_blocked_in_plan_mode_before_lookup() {
+        smol::block_on(async {
+            let ctx = crate::tools::test_support::stub_ctx(&AgentMode::Plan(PathBuf::from(
+                "/tmp/plan.md",
+            )));
+            let result = run(
+                ToolRegistry::global(),
+                None,
+                "t1".into(),
+                crate::tools::BASH_TOOL_NAME,
+                &serde_json::json!({"command": "rm -rf project"}),
+                &ctx,
+                Emit::Silent,
+            )
+            .await;
+
+            assert!(result.is_error);
+            assert_eq!(result.output.as_text(), BASH_BLOCKED_IN_PLAN);
+        });
+    }
+
+    #[test]
+    fn code_execution_blocked_in_plan_mode_before_lookup() {
+        smol::block_on(async {
+            let ctx = crate::tools::test_support::stub_ctx(&AgentMode::Plan(PathBuf::from(
+                "/tmp/plan.md",
+            )));
+            let result = run(
+                ToolRegistry::global(),
+                None,
+                "t1".into(),
+                crate::tools::CODE_EXECUTION_TOOL_NAME,
+                &serde_json::json!({"code": "print('no')"}),
+                &ctx,
+                Emit::Silent,
+            )
+            .await;
+
+            assert!(result.is_error);
+            assert_eq!(result.output.as_text(), CODE_EXECUTION_BLOCKED_IN_PLAN);
+        });
+    }
+    #[test]
+    fn mcp_unannotated_tool_blocked_in_plan_mode() {
         smol::block_on(async {
             let result = dispatch_mcp(
                 &crate::tools::test_support::stub_ctx(&AgentMode::Plan(PathBuf::from(
@@ -879,7 +1230,60 @@ mod tests {
             )
             .await;
             assert!(result.is_error);
-            assert_eq!(result.output.as_text(), MCP_BLOCKED_IN_PLAN);
+            assert_eq!(result.output.as_text(), MCP_MUTATION_BLOCKED_IN_PLAN);
+        });
+    }
+
+    #[test]
+    fn mcp_read_only_tool_allowed_in_plan_mode() {
+        smol::block_on(async {
+            let session =
+                crate::mcp::stub_session_with_read_only(&[("myserver.mytool", "read-only")], true);
+            let mut ctx = crate::tools::test_support::stub_ctx(&AgentMode::Plan(PathBuf::from(
+                "/tmp/plan.md",
+            )));
+            ctx.mcp = Some(session);
+
+            let result = dispatch_mcp(&ctx, "t1", "myserver.mytool", &serde_json::json!({})).await;
+
+            assert!(result.is_error);
+            assert_ne!(result.output.as_text(), MCP_MUTATION_BLOCKED_IN_PLAN);
+            assert!(result.output.as_text().contains("tools/call"));
+        });
+    }
+
+    #[test]
+    fn mcp_read_only_plan_mode_still_enforces_deny_rules() {
+        smol::block_on(async {
+            let session =
+                crate::mcp::stub_session_with_read_only(&[("myserver.mytool", "read-only")], true);
+            let deny_cfg = PermissionsConfig {
+                rules: vec![PermissionRule {
+                    tool: ToolKey::parse("myserver.mytool").unwrap(),
+                    scope: None,
+                    effect: Effect::Deny,
+                }],
+                ..Default::default()
+            };
+            let dir = TempDir::new().unwrap();
+            let permissions = Arc::new(PermissionManager::new(deny_cfg, dir.path().to_path_buf()));
+            let mut ctx = crate::tools::test_support::stub_ctx_with_permissions(
+                &AgentMode::Plan(PathBuf::from("/tmp/plan.md")),
+                permissions,
+            );
+            ctx.mcp = Some(session);
+
+            let result = dispatch_mcp(&ctx, "t1", "myserver.mytool", &serde_json::json!({})).await;
+
+            assert!(result.is_error);
+            assert!(
+                result
+                    .output
+                    .as_text()
+                    .starts_with(PERMISSION_DENIED_PREFIX),
+                "plan-mode read-only must not skip deny rules, got: {}",
+                result.output.as_text()
+            );
         });
     }
 
@@ -1084,6 +1488,71 @@ mod tests {
                 !executed.load(Ordering::SeqCst),
                 "execute must not run after denial"
             );
+        });
+    }
+
+    const RENAMED_EXECUTE_NAME: &str = "shell";
+
+    #[derive(Default)]
+    struct RenamedExecuteTool;
+
+    struct RenamedExecuteInvocation;
+
+    impl ToolInvocation for RenamedExecuteInvocation {
+        fn start_header(&self) -> HeaderFuture {
+            HeaderFuture::Ready(HeaderResult::plain("renamed execute".into()))
+        }
+        fn execute(self: Box<Self>, _ctx: &ToolContext) -> ExecFuture<'_> {
+            Box::pin(async {
+                ToolExecResult::from(Ok::<_, String>(ToolOutput::Plain("ran".into())))
+            })
+        }
+    }
+
+    impl Tool for RenamedExecuteTool {
+        fn name(&self) -> &str {
+            RENAMED_EXECUTE_NAME
+        }
+        fn description(&self, _ctx: &DescriptionContext) -> std::borrow::Cow<'_, str> {
+            "renamed execute".into()
+        }
+        fn schema(&self) -> Value {
+            serde_json::json!({"type": "object", "properties": {}, "additionalProperties": false})
+        }
+        fn tool_kind(&self) -> Option<&str> {
+            Some("execute")
+        }
+        fn parse(&self, _input: &Value) -> Result<Box<dyn ToolInvocation>, ParseError> {
+            Ok(Box::new(RenamedExecuteInvocation))
+        }
+    }
+
+    #[test]
+    fn renamed_execute_tool_blocked_in_plan_mode() {
+        smol::block_on(async {
+            let ctx = crate::tools::test_support::stub_ctx(&AgentMode::Plan(PathBuf::from(
+                "/tmp/plan.md",
+            )));
+            let registry = ToolRegistry::new();
+            let tool: Arc<dyn Tool> = Arc::new(RenamedExecuteTool);
+            let source = ToolSource::Lua {
+                plugin: "test".into(),
+            };
+            registry.register(&tool, &source).unwrap();
+
+            let result = run(
+                &registry,
+                None,
+                "t1".into(),
+                RENAMED_EXECUTE_NAME,
+                &serde_json::json!({}),
+                &ctx,
+                Emit::Silent,
+            )
+            .await;
+
+            assert!(result.is_error);
+            assert_eq!(result.output.as_text(), CODE_EXECUTION_BLOCKED_IN_PLAN);
         });
     }
 

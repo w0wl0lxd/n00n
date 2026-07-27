@@ -130,7 +130,7 @@ View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read`
 
 ### `codegraph` *(lua plugin)*
 
-Query a pre-indexed semantic codegraph for cross-file structural analysis. Returns verbatim source grouped by file plus a blast-radius summary. Typically cheaper than broad grep + read for cross-file questions.
+Query a semantic codegraph for cross-file structural analysis. Missing or stale project indexes are initialized or refreshed automatically. Returns verbatim source grouped by file plus a blast-radius summary. Typically cheaper than broad grep + read for cross-file questions.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
