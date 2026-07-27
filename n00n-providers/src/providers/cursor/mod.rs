@@ -52,8 +52,11 @@ inventory::submit!(n00n_config::providers::BuiltInProvider {
 include!("models_data.rs");
 
 mod auth;
+mod checkpoint;
 mod connect;
 mod discovery;
+mod proto;
+mod run;
 mod wire;
 
 pub(crate) const fn models() -> &'static [ModelEntry] {

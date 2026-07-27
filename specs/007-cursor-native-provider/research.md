@@ -199,14 +199,38 @@ n00n must implement heartbeat sender concurrent with response decoder.
 
 Response includes `agentUrlConfig.agentnUrl` → `https://agentn.global.api5.cursor.sh`.
 
+### HTTP/2 client choice
+
+Prefer enabling workspace `isahc` feature `http2` (curl/nghttp2) over adding `reqwest`/`tokio`. n00n is smol-based; isahc already powers all other providers.
+
+### Checkpoint / KV protocol (user-required multi-turn)
+
+From `cursor-agent` 2026.07.26 bundle:
+
+| Direction | Message | Fields |
+|-----------|---------|--------|
+| Server → client | `AgentServerMessage.kv_server_message` (f4) | id; get_blob_args{blob_id} \| set_blob_args{blob_id,blob_data} |
+| Client → server | `AgentClientMessage.kv_client_message` (f3) | id; get_blob_result{blob_data?} \| set_blob_result{error?} |
+| Resume | `UserMessage.conversation_state_blob_id` (f10 bytes) | Opaque blob id from prior set |
+
+n00n implements a per-session blob store (`checkpoint.rs`) and must answer get/set during `Run`, then attach `conversation_state_blob_id` on follow-up turns.
+
+Capture helper: `mise run mitm-setup` then `scripts/cursor_capture.sh`.
+
 ---
 
-- [ ] Capture mitmproxy traces: `GetServerConfig`, `GetUsableModels`, `Run` with `default`
-- [ ] Extract minimal protobuf field map from traces + shunt encoder
-- [ ] Implement Rust frame codec + fuzz target
+## Phase 0 Tasks
+
+- [x] JSON unary discovery (`GetUsableModels`, `GetServerConfig`)
+- [x] Connect frame codec + unit tests
+- [x] Hand-rolled Run frame encoder (`proto.rs`)
+- [x] Checkpoint blob store + Kv parse/encode (`checkpoint.rs`)
+- [x] mitmproxy via `mise run mitm-setup` + `scripts/cursor_capture.sh`
+- [ ] Live `AgentService/Run` spike (isahc http2)
 - [ ] Run entitlement experiment matrix (A–D)
-- [ ] Document checksum requirement (is `x-cursor-checksum` mandatory on agent hosts?)
-- [ ] Confirm heartbeats interval and stream lifetime limits
+- [ ] Document checksum requirement
+- [ ] Two-turn checkpoint replay live test
+- [ ] Fuzz target for Connect frames
 
 ---
 

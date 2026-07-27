@@ -12,8 +12,9 @@ Replace the merged `cursor-agent` subprocess provider with a **native HTTP/2 Con
 
 **Language/Version**: Rust (workspace `rust-toolchain.toml`)
 
-**Primary Dependencies** (new):
-- HTTP/2 client: `hyper` + `hyper-rustls` + `h2` **or** `reqwest` with `http2` feature (spike in Phase 0)
+**Primary Dependencies** (new / changed):
+- HTTP/2: enable `isahc` `http2` feature (curl/nghttp2) — preferred over `reqwest`/`tokio` to stay on smol
+- `rusqlite` (bundled) for IDE `state.vscdb` token read
 - Existing: `n00n-providers`, `n00n-storage`, `n00n-config`, `serde_json`, `smol`
 
 **Storage**: n00n credential store + optional read of Cursor IDE SQLite (`state.vscdb`)
@@ -38,7 +39,7 @@ Replace the merged `cursor-agent` subprocess provider with a **native HTTP/2 Con
 |------|--------|
 | TDD: failing tests before implementation | Required per phase |
 | Typed errors, no unwrap in prod | Required |
-| New deps in workspace `Cargo.toml` first | HTTP/2 stack pending Phase 0 spike |
+| New deps in workspace `Cargo.toml` first | `isahc` http2 + `rusqlite` landed; Run spike in progress |
 | Trust boundary: provider output untrusted | Frame size caps, recursion limits on protobuf decode |
 | Tests for auth/refusal paths | Required in SC-004 |
 
@@ -62,25 +63,21 @@ specs/007-cursor-native-provider/
 ### Source Code
 
 ```text
-n00n-providers/src/providers/
-├── cursor/
-│   ├── mod.rs           # Provider facade, transport selection
-│   ├── native/
-│   │   ├── mod.rs
-│   │   ├── connect.rs   # Frame codec + stream driver
-│   │   ├── agent.rs     # Run request/response mapping
-│   │   ├── auth.rs      # Token resolve + refresh
-│   │   ├── discovery.rs # GetUsableModels + cache
-│   │   └── proto.rs     # Minimal hand-rolled protobuf
-│   └── cli.rs           # Legacy subprocess (from current cursor.rs)
-├── cursor_models.rs     # DELETE after discovery lands
-n00n-providers/fuzz/
-└── connect_frame.rs       # libFuzzer target
+n00n-providers/src/providers/cursor/
+├── mod.rs           # Legacy CLI Provider (current default)
+├── models_data.rs   # Static registry (DELETE after discovery lands)
+├── connect.rs       # Connect frame codec
+├── wire.rs          # Headers + auto→default map
+├── auth.rs          # IDE sqlite + API key resolve
+├── discovery.rs     # JSON unary GetUsableModels / GetServerConfig
+├── proto.rs         # Hand-rolled AgentClientMessage encode/decode
+├── run.rs           # HTTP/2 AgentService/Run driver + heartbeats
+└── checkpoint.rs    # KvClientMessage blob store (multi-turn)
 scripts/
-└── cursor_capture.sh    # mitmproxy helper for Phase 0
+└── cursor_capture.sh    # mitmproxy helper (`mise run mitm-setup`)
 ```
 
-**Structure Decision**: Sub-module `cursor/` replaces monolithic `cursor.rs`; native and CLI transports are separate files behind one `Provider` facade.
+**Structure Decision**: Flat `cursor/` modules (no nested `native/` yet). CLI stays in `mod.rs` until Phase 4; native Run lives in `run.rs` and is selected via env/`Provider` facade later.
 
 ## Phased Delivery
 
@@ -90,13 +87,14 @@ scripts/
 
 | Task | Method |
 |------|--------|
-| HTTP/2 spike | `reqwest` vs `hyper` POST to `GetUsableModels` |
-| Frame codec | Port shunt/pi_agent_rust encode/decode + unit tests |
+| Unary discovery | JSON `application/json` on api2 via isahc (**done**) |
+| HTTP/2 Run spike | isahc `http2` POST to `agentn…/AgentService/Run` |
+| Frame codec | Port shunt encode/decode + unit tests (**done**) |
 | Auto experiment A–D | Live scripts, document in `research.md` |
 | Checksum probe | Compare requests with/without `x-cursor-checksum` |
-| Binary analysis | Extract header setter `f._5` from cursor-agent bundle |
+| Checkpoint RE | Capture `KvServerMessage` get/set blob cycle; implement store |
 
-**Exit gate**: Experiment A (cli + default) succeeds from standalone Rust client calling `GetUsableModels` (done via JSON unary on api2). Two-turn spike using **KvClientMessage checkpoint replay** (user decision) passes before Phase 1.
+**Exit gate**: Live Rust `GetUsableModels` (**done**). Live `AgentService/Run` with wire `default` + empty tools returns text. Two-turn spike using **KvClientMessage checkpoint replay** (user decision) passes before Phase 1.
 
 ### Phase 1 — Native MVP (`cursor/default` + streaming)
 
@@ -108,7 +106,7 @@ scripts/
 - Inactivity timeout on stream read
 - ~~Legacy P1 bugs~~ (done on `feat/cursor-native` bf05b4d1f)
 
-**Exit gate**: SC-001, SC-006 on live tests; two-turn `conversation_id` without duplicate context.
+**Exit gate**: SC-001, SC-006 on live tests; two-turn checkpoint blob replay without duplicate/lost context.
 
 ### Phase 2 — Dynamic model catalog
 
@@ -121,9 +119,9 @@ scripts/
 ### Phase 3 — n00n harness hardening
 
 - Tool frame detection → typed error (no Cursor execution)
-- Multi-turn history strategy (full history v1; checkpoint resume spike)
+- Multi-turn via **KvClientMessage checkpoint store** (user decision); conversation_id is secondary
 - Usage/token accounting from stream frames
-- Persist cursor conversation id in n00n session storage
+- Persist conversation_id + blob store keys in n00n session storage
 
 **Exit gate**: User Story 2 acceptance scenarios.
 
