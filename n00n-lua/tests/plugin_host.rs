@@ -4978,3 +4978,68 @@ fn jobstart_list_mode_non_string_arg_errors() {
     // When a non-string is in the array, mlua's get::<String> will error
     assert!(!out.is_empty(), "got empty error string");
 }
+
+#[test]
+fn live_followup_schema_debloat_suite() {
+    let reg = fresh_registry();
+    let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let config = PluginsConfig {
+        enabled: true,
+        names: vec!["glob".into(), "bash".into()],
+        opts: HashMap::new(),
+    };
+    host.load_builtins(&config).unwrap();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let test_file = temp_dir.path().join("live_test_file.rs");
+    std::fs::write(&test_file, "// live test file\n").unwrap();
+
+    // 1. Live glob call
+    let glob_out = exec_tool(
+        &reg,
+        "glob",
+        serde_json::json!({
+            "pattern": "*.rs",
+            "path": temp_dir.path().to_str().unwrap()
+        }),
+    )
+    .unwrap();
+    assert!(glob_out.contains("live_test_file.rs"));
+
+    // 2. Live bash call
+    let bash_out = exec_tool(
+        &reg,
+        "bash",
+        serde_json::json!({
+            "command": "echo 'followup live debloat test'",
+            "description": "test echo"
+        }),
+    )
+    .unwrap();
+    assert!(bash_out.contains("followup live debloat test"));
+
+    // 3. Schema minification check
+    let verbose_mcp = serde_json::json!({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "FastMCPInput",
+        "$comment": "Internal SDK comment",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "query": { "type": "string", "title": "Query", "description": "search query" },
+            "verbose": { "type": "boolean", "description": "" }
+        }
+    });
+
+    let minified = n00n_agent::tools::schema::sanitize_tool_input_schema(verbose_mcp);
+    assert!(minified.get("$schema").is_none());
+    assert!(minified.get("title").is_none());
+    assert!(minified.get("$comment").is_none());
+    assert!(minified.get("additionalProperties").is_none());
+    assert!(minified["properties"]["query"].get("title").is_none());
+    assert!(
+        minified["properties"]["verbose"]
+            .get("description")
+            .is_none()
+    );
+}
