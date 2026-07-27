@@ -96,27 +96,25 @@ scripts/
 | Checksum probe | Compare requests with/without `x-cursor-checksum` |
 | Binary analysis | Extract header setter `f._5` from cursor-agent bundle |
 
-**Exit gate**: Experiment A (cli + default) succeeds from standalone Rust spike.
+**Exit gate**: Experiment A (cli + default) succeeds from standalone Rust client calling `GetUsableModels` (curl-only reproduction **failed** with HTTP 415 — see `adversarial-review.md`). Two-turn `conversation_id` persistence spike passes.
 
-### Phase 1 — Native MVP (`cursor/default` only)
+### Phase 1 — Native MVP (`cursor/default` + streaming)
 
 - `CursorNative` implements `Provider::stream_message`
-- Auth: API key + IDE SQLite
+- Auth: IDE SQLite (`state.vscdb`) + API key + dynamic script auth
 - `GetServerConfig` host resolution
 - `Run` with empty `mcp_tools`, heartbeats, text/thinking deltas
-- Model id map: `auto` → `default`
+- Model id map: `auto` → `default` (`wire.rs`)
 - Inactivity timeout on stream read
-- Fix legacy CLI P1 bugs in parallel (`is_error`, resume boundary)
+- ~~Legacy P1 bugs~~ (done on `feat/cursor-native` bf05b4d1f)
 
-**Exit gate**: SC-001, SC-006 on live tests.
+**Exit gate**: SC-001, SC-006 on live tests; two-turn `conversation_id` without duplicate context.
 
-### Phase 2 — Discovery & Auth completeness
+### Phase 2 — Dynamic model catalog
 
-- `GetUsableModels` with TTL cache (e.g. 1h)
-- Remove `cursor_models.rs` + `gen_cursor_models.py` from default path
-- OAuth/PKCE in n00n login UI
-- `with_auth` for dynamic/custom providers
-- Named models via discovery
+- `GetUsableModels` with TTL cache (replaces `models_data.rs` / `gen_cursor_models.py`)
+- Default model → `cursor/default` (Auto)
+- Optional: `~/.cursor/cli-config.json` token fallback
 
 **Exit gate**: SC-003.
 

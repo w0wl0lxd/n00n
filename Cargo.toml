@@ -194,6 +194,9 @@ isahc = { version = "1.7", default-features = false, features = [
   "static-curl",
   "static-ssl",
 ] }
+rusqlite = { version = "0.37", default-features = false, features = [
+  "bundled",
+] }
 libc = "0.2"
 rustix = { version = "0.38", default-features = false, features = [
   "process",

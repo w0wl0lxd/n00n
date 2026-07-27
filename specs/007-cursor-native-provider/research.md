@@ -186,7 +186,20 @@ n00n must implement heartbeat sender concurrent with response decoder.
 
 ---
 
-## Phase 0 Tasks (before implementation)
+## Unary vs Streaming Content-Type (live-verified 2026-07-27)
+
+| RPC class | Host | Content-Type | Body |
+|-----------|------|--------------|------|
+| Unary (`GetUsableModels`, `GetServerConfig`, …) | `api2.cursor.sh` | `application/json` | JSON object (`{}` or `{"telemEnabled":false}`) |
+| Bidirectional (`AgentService/Run`) | `agentn.*.api5.cursor.sh` | `application/connect+proto` | Connect-framed protobuf stream |
+
+**Correction**: Earlier Phase 0 curl probes used `application/connect+proto` for unary calls and got HTTP 415. That was a **client encoding mistake**, not an auth or endpoint failure. Discovery can use existing `isahc` (HTTP/1.1); Run still needs HTTP/2 + Connect frames.
+
+`GetServerConfig` path: `POST /aiserver.v1.ServerConfigService/GetServerConfig` (not `AiService`).
+
+Response includes `agentUrlConfig.agentnUrl` → `https://agentn.global.api5.cursor.sh`.
+
+---
 
 - [ ] Capture mitmproxy traces: `GetServerConfig`, `GetUsableModels`, `Run` with `default`
 - [ ] Extract minimal protobuf field map from traces + shunt encoder
