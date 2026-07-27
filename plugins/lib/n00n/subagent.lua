@@ -4,6 +4,7 @@
 
 local M = {}
 
+local route_tier = require("n00n.route_tier").route_tier
 local usage = require("n00n.usage")
 local structured_output = require("n00n.structured_output")
 
@@ -41,10 +42,16 @@ function M.launch(ctx, opts)
     return nil, "unknown subagent_type: " .. tostring(subagent_type), nil, nil
   end
 
+  -- Resolve model tier (auto_tier overrides model_tier when no explicit spec)
+  local model_tier = opts.model_tier
+  if not opts.model_spec and opts.auto_tier == true then
+    model_tier = route_tier(opts.prompt)
+  end
+
   -- Resolve model
   local model, model_err = n00n.agent.resolve_model(ctx, {
     spec = opts.model_spec,
-    tier = not opts.model_spec and opts.model_tier or nil,
+    tier = not opts.model_spec and model_tier or nil,
   })
   if model_err then
     return nil, model_err, nil, nil
