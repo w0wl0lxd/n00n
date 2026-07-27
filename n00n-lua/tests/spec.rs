@@ -11,6 +11,7 @@ use n00n_agent::tools::ToolRegistry;
 use n00n_lua::PluginHost;
 use test_case::test_case;
 
+#[test_case("agent_control", include_str!("../../plugins/agent_control/tests/spec.lua") ; "agent_control_plugin_spec")]
 #[test_case("team", include_str!("../../plugins/team/tests/spec.lua") ; "team_plugin_spec")]
 #[test_case("edit", include_str!("../../plugins/edit/tests/spec.lua") ; "edit_plugin_spec")]
 #[test_case("index", include_str!("../../plugins/index/tests/spec.lua") ; "index_plugin_spec")]

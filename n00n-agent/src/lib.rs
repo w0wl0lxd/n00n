@@ -89,5 +89,6 @@ pub struct AgentInput {
     pub fast: bool,
     /// No `Default` on this struct so adding a field forces every call site to update.
     pub workflow: bool,
+    pub control: bool,
     pub prompt: Option<Box<McpPromptRef>>,
 }

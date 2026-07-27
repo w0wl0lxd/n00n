@@ -637,6 +637,7 @@ mod tests {
                     text: "first message".to_string(),
                 }],
                 display_text: None,
+                control: false,
             },
             Message {
                 role: Role::Assistant,
@@ -644,6 +645,7 @@ mod tests {
                     text: "first response".to_string(),
                 }],
                 display_text: None,
+                control: false,
             },
             Message {
                 role: Role::User,
@@ -651,6 +653,7 @@ mod tests {
                     text: "second message".to_string(),
                 }],
                 display_text: None,
+                control: false,
             },
             Message {
                 role: Role::Assistant,
@@ -658,6 +661,7 @@ mod tests {
                     text: "second response".to_string(),
                 }],
                 display_text: None,
+                control: false,
             },
         ];
 
@@ -706,6 +710,7 @@ mod tests {
                 },
             ],
             display_text: None,
+            control: false,
         }];
 
         let wire = build_wire_messages(&messages, 1);

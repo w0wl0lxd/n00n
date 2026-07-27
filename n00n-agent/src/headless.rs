@@ -241,6 +241,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                     thinking: n00n_providers::ThinkingConfig::default(),
                     fast,
                     workflow,
+                    control: false,
                     prompt: None,
                 })
                 .await;
@@ -337,7 +338,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
         params.initial_wd.clone(),
     ));
     if params.yolo {
-        permissions.toggle_yolo();
+        permissions.set_yolo(true);
     }
 
     let answer_rx = Arc::new(Mutex::new(answer_rx));

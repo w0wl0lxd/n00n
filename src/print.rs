@@ -9,6 +9,7 @@
 
 use std::io::{self, Read};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use clap::ValueEnum;
@@ -20,6 +21,7 @@ use n00n_agent::{AgentConfig, AgentEvent, Envelope, ImageSource, PermissionsConf
 use n00n_lua::EventHandle;
 use n00n_providers::model::Model;
 use n00n_providers::{OpenAiOptions, StopReason, TokenUsage};
+use n00n_storage::StateDir;
 use n00n_storage::id::SessionRef;
 use serde::Serialize;
 use serde_json::Value;
@@ -255,6 +257,15 @@ pub fn run(model: &Model, args: PrintArgs<'_>) -> Result<()> {
         workflow,
     });
 
+    let print_status = Arc::new(Mutex::new("working".to_owned()));
+    let storage = StateDir::resolve().wrap_err("state dir")?;
+    let _print_daemon = crate::cmd::session_daemon::register_print_session(
+        storage.path(),
+        &handle.session_id,
+        &model.id,
+        &print_status,
+    );
+
     let HeadlessHandle {
         event_rx,
         tool_names,
@@ -302,6 +313,10 @@ pub fn run(model: &Model, args: PrintArgs<'_>) -> Result<()> {
         })
         .await;
     });
+
+    if let Ok(mut status) = print_status.lock() {
+        "idle".clone_into(&mut status);
+    }
 
     let duration_ms = start.elapsed().as_millis();
     let total_cost_usd = usage.cost(&model.pricing, fast);

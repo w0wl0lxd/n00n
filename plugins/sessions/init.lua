@@ -1,7 +1,8 @@
--- The /sessions picker: one flat list of every session in this directory,
--- live or stored. Live ones get a colored icon, and row order is frozen
--- while the picker is open so rows never jump around under the cursor
--- while background agents keep working.
+-- The /sessions picker: a tree of sessions in this directory. Main sessions
+-- are shown by default; sub-tasks are grouped underneath them and can be
+-- expanded with the Right arrow. Live sessions get a colored icon, and row
+-- order is frozen while the picker is open so rows never jump around under
+-- the cursor while background agents keep working.
 
 local TextInput = require("n00n.text_input")
 local ListPicker = require("n00n.list_picker")
@@ -9,6 +10,7 @@ local ListPicker = require("n00n.list_picker")
 local FILTER_PREFIX = "❯ "
 local RENAME_PREFIX = "Rename: "
 local CONFIRM_HINT = "  Ctrl+D again to delete"
+local CANNOT_DELETE_GROUP_HINT = "Cannot delete a group"
 local DELETE_FOCUSED_HINT = "Cannot delete the current session"
 local RENAME_USAGE = "Usage: /rename <title>"
 local EMPTY_HINT = "  No sessions yet. Press Ctrl+N to start one."
@@ -28,11 +30,16 @@ local AGE_UNITS = {
   { 3600, "h" },
   { 60, "m" },
 }
+local MAX_GROUP_CHILDREN = 20
+local GROUP_PREFIX = "group:"
+local GROUP_KIND = "group"
 local FILTER_KEYS = {
   { "Enter", "open" },
   { "Ctrl+N", "new" },
   { "Ctrl+R", "rename" },
   { "Ctrl+D", "delete" },
+  { "Right", "expand" },
+  { "Left", "collapse" },
 }
 local RENAME_KEYS = {
   { "Enter", "save" },
@@ -42,6 +49,9 @@ local RENAME_KEYS = {
 local board = nil
 
 local function icon_of(s)
+  if s.is_group then
+    return "  ", "dim"
+  end
   if s.status == "needs_input" then
     return "◆ ", "warning"
   end
@@ -57,17 +67,29 @@ local function icon_of(s)
   return "  ", "dim"
 end
 
--- Current session first, then most recently opened.
 local function by_recency(a, b)
   if a.focused ~= b.focused then
     return a.focused
   end
-  return (a.updated_at or 0) > (b.updated_at or 0)
+  local ra, rb = board.rank[a.id], board.rank[b.id]
+  if ra and rb then
+    return ra < rb
+  end
+  if ra then
+    return true
+  end
+  if rb then
+    return false
+  end
+  local a_updated, b_updated = a.updated_at or 0, b.updated_at or 0
+  if a_updated ~= b_updated then
+    return a_updated > b_updated
+  end
+  return (a.id or "") < (b.id or "")
 end
 
--- Rows keep their rank for the picker's lifetime; new ones enter above
--- existing ones so nothing already on screen moves. Within one batch
--- (notably the first full refresh) recency decides.
+-- Assign stable ranks to new nodes so they keep their position while the
+-- picker is open, even if their `updated_at` keeps changing.
 local function assign_ranks(fresh)
   table.sort(fresh, by_recency)
   local base = board.min_rank - #fresh
@@ -77,22 +99,18 @@ local function assign_ranks(fresh)
   board.min_rank = base
 end
 
-local function update_footer()
-  if board.rename then
-    board.win:set_config({ footer = RENAME_KEYS })
-    return
+local function dispw(s)
+  return utf8.len(s) or #s
+end
+
+local function age(updated_at)
+  local secs = math.max(os.time() - (updated_at or 0), 0)
+  for _, u in ipairs(AGE_UNITS) do
+    if secs >= u[1] then
+      return math.floor(secs / u[1]) .. u[2] .. " ago"
+    end
   end
-  local footer = {}
-  if board.counts.needs_input > 0 then
-    footer[#footer + 1] = { "◆ " .. board.counts.needs_input, "needs input" }
-  end
-  if board.counts.working > 0 then
-    footer[#footer + 1] = { "● " .. board.counts.working, "working" }
-  end
-  for _, f in ipairs(FILTER_KEYS) do
-    footer[#footer + 1] = f
-  end
-  board.win:set_config({ footer = footer })
+  return "just now"
 end
 
 local function filter_words()
@@ -108,6 +126,11 @@ local function sel_index()
   return nil
 end
 
+local function selected()
+  local idx = sel_index()
+  return idx and board.items[idx] or nil
+end
+
 local function find_stored(id)
   for i, st in ipairs(board.stored or {}) do
     if st.id == id then
@@ -117,13 +140,130 @@ local function find_stored(id)
   return nil
 end
 
+local function normalize_session(s, expanded_state)
+  s.title = s.title or ""
+  s.display_title = s.display_title or s.title
+  if s.display_title == "" then
+    s.display_title = "New session"
+  end
+  s.kind = s.kind or "main"
+  s.updated_at = s.updated_at or 0
+  s.children = {}
+  s.expanded = expanded_state[s.id] or false
+  s.depth = 0
+end
+
+local function sort_tree(nodes)
+  table.sort(nodes, by_recency)
+  for _, n in ipairs(nodes) do
+    if #n.children > 0 then
+      sort_tree(n.children)
+    end
+  end
+end
+
+local function build_tree(sessions)
+  local by_id = {}
+  for _, s in ipairs(sessions) do
+    by_id[s.id] = s
+  end
+  local roots = {}
+  for _, s in ipairs(sessions) do
+    local p = s.parent_id
+    if p and by_id[p] then
+      table.insert(by_id[p].children, s)
+    else
+      table.insert(roots, s)
+    end
+  end
+  sort_tree(roots)
+  return roots
+end
+
+local function task_count(count)
+  return count .. (count == 1 and " task" or " tasks")
+end
+
+local function group_label(children, start_idx, finish)
+  local count = finish - start_idx + 1
+  local count_text = task_count(count)
+  local newest = children[start_idx].updated_at
+  local oldest = children[start_idx].updated_at
+  for i = start_idx + 1, finish do
+    newest = math.max(newest, children[i].updated_at)
+    oldest = math.min(oldest, children[i].updated_at)
+  end
+  local newest_age = age(newest)
+  local oldest_age = age(oldest)
+  if newest_age == oldest_age then
+    return count_text .. " · " .. newest_age
+  end
+  return count_text .. " · " .. newest_age .. " – " .. oldest_age
+end
+
+local function make_bucket(parent, children, start_idx, finish, all_nodes, rank, expanded_state)
+  local bucket_id = GROUP_PREFIX .. parent.id .. ":" .. start_idx
+  local bucket = {
+    id = bucket_id,
+    title = "",
+    display_title = group_label(children, start_idx, finish),
+    kind = GROUP_KIND,
+    is_group = true,
+    children = {},
+    parent_id = parent.id,
+    updated_at = children[start_idx].updated_at,
+    focused = false,
+    live = false,
+    status = "idle",
+    expanded = expanded_state[bucket_id] or false,
+    depth = 0,
+  }
+  rank[bucket.id] = rank[children[start_idx].id] - 0.5
+  for i = start_idx, finish do
+    local child = children[i]
+    child.group_id = bucket.id
+    table.insert(bucket.children, child)
+  end
+  table.insert(all_nodes, bucket)
+  return bucket
+end
+
+local function group_node(node, all_nodes, rank, expanded_state)
+  if #node.children > MAX_GROUP_CHILDREN then
+    local buckets = {}
+    for i = 1, #node.children, MAX_GROUP_CHILDREN do
+      local finish = math.min(i + MAX_GROUP_CHILDREN - 1, #node.children)
+      table.insert(buckets, make_bucket(node, node.children, i, finish, all_nodes, rank, expanded_state))
+    end
+    node.children = buckets
+  end
+  for _, child in ipairs(node.children) do
+    group_node(child, all_nodes, rank, expanded_state)
+  end
+end
+
+local function flatten_visible(nodes, depth, items)
+  for _, n in ipairs(nodes) do
+    n.depth = depth
+    table.insert(items, n)
+    if n.expanded and #n.children > 0 then
+      flatten_visible(n.children, depth + 1, items)
+    end
+  end
+end
+
 local function apply_filter()
   local prev_pos = sel_index() or 1
   local words = filter_words()
   board.items = {}
-  for _, s in ipairs(board.all) do
-    if ListPicker.matches(s.title, words) then
-      board.items[#board.items + 1] = s
+  if #words == 0 then
+    flatten_visible(board.roots, 0, board.items)
+  else
+    for _, n in ipairs(board.nodes) do
+      n.depth = 0
+      if not n.is_group and (ListPicker.matches(n.display_title, words) or ListPicker.matches(n.title, words)) then
+        table.insert(board.items, n)
+      end
     end
   end
   local idx = sel_index() or math.min(prev_pos, math.max(#board.items, 1))
@@ -138,148 +278,9 @@ local function filter_changed()
   apply_filter()
 end
 
-local function age(updated_at)
-  local secs = math.max(os.time() - (updated_at or 0), 0)
-  for _, u in ipairs(AGE_UNITS) do
-    if secs >= u[1] then
-      return math.floor(secs / u[1]) .. u[2] .. " ago"
-    end
-  end
-  return "just now"
-end
-
-local function dispw(s)
-  return utf8.len(s) or #s
-end
-
-local function render()
-  local lines = {}
-  local inner = board.width - 4
-  local input = board.rename and board.rename.input or board.input
-  local prefix = board.rename and RENAME_PREFIX or FILTER_PREFIX
-  for _, ln in ipairs(input:render(prefix, dispw(prefix), inner).lines) do
-    lines[#lines + 1] = ln
-  end
-  lines[#lines + 1] = {}
-  -- The query and its blank spacer stay pinned while the list scrolls.
-  if #lines ~= board.reserved then
-    board.reserved = #lines
-    board.win:set_config({ reserved_top = board.reserved })
-  end
-  local cursor_line = board.reserved
-  local words = filter_words()
-  for i, s in ipairs(board.items) do
-    local selected = s.id == board.sel_id
-    local icon, icon_style, spinning = icon_of(s)
-    local base = selected and "selected" or "item"
-    local right = s.focused and CURRENT_LABEL or age(s.updated_at)
-    local right_style = selected and "selected" or (s.focused and "accent" or "dim")
-    if selected then
-      icon_style = "selected"
-    end
-    -- Prefix after selection so a working row keeps animating host-side
-    -- on the selection background.
-    if spinning then
-      icon_style = "spinner:" .. icon_style
-    end
-    local line = { { "  ", base }, { icon, icon_style } }
-    for _, sp in ipairs(ListPicker.highlight_spans(s.title, words, base, selected and "match_selected" or "match")) do
-      line[#line + 1] = sp
-    end
-    local used = 2 + dispw(icon) + dispw(s.title)
-    if board.confirm == s.id then
-      line[#line + 1] = { CONFIRM_HINT, selected and "match_selected" or "error" }
-      used = used + dispw(CONFIRM_HINT)
-    end
-    local pad = math.max(inner - used - dispw(right), 1)
-    line[#line + 1] = { string.rep(" ", pad), base }
-    line[#line + 1] = { right, right_style }
-    lines[#lines + 1] = line
-    if selected then
-      cursor_line = #lines
-    end
-  end
-  if board.loading then
-    lines[#lines + 1] = { { LOADING_HINT, "dim" } }
-  elseif #board.items == 0 then
-    lines[#lines + 1] = { { #board.all == 0 and EMPTY_HINT or NO_MATCHES_HINT, "dim" } }
-  end
-  board.buf:set_lines(lines)
-  board.win:set_cursor(cursor_line)
-end
-
--- Rebuilds the list from live runtimes and the stored snapshot, then
--- renders. Live runtimes win over their stored copies; stored-only sessions
--- are idle. Until the background scan lands (`board.stored`) only live
--- sessions are shown. `live()` suspends this coroutine, and the picker may
--- close or another refresh may finish meanwhile, so bail out unless this
--- board is still current.
-local function refresh()
-  local this_board = board
-  local live, live_err = n00n.session.live()
-  if board ~= this_board then
-    return
-  end
-  if live_err then
-    n00n.ui.flash(live_err)
-    render()
-    return
-  end
-  local seen, all = {}, {}
-  for _, s in ipairs(live) do
-    seen[s.id] = true
-    s.live = true
-    all[#all + 1] = s
-  end
-  for _, s in ipairs(board.stored or {}) do
-    if not seen[s.id] then
-      s.status = "idle"
-      s.focused = false
-      all[#all + 1] = s
-    end
-  end
-  board.counts = { needs_input = 0, working = 0 }
-  for _, s in ipairs(all) do
-    if board.counts[s.status] then
-      board.counts[s.status] = board.counts[s.status] + 1
-    end
-  end
-  if board.loading then
-    table.sort(all, by_recency)
-  else
-    local fresh = {}
-    for _, s in ipairs(all) do
-      if not board.rank[s.id] then
-        fresh[#fresh + 1] = s
-      end
-    end
-    if #fresh > 0 then
-      assign_ranks(fresh)
-    end
-    table.sort(all, function(a, b)
-      if a.focused ~= b.focused then
-        return a.focused
-      end
-      return board.rank[a.id] < board.rank[b.id]
-    end)
-  end
-  board.all = all
-  apply_filter()
-  update_footer()
-  render()
-end
-
-local function close()
-  if board then
-    board.win:close()
-    board = nil
-  end
-end
-
-local function selected()
-  local idx = sel_index()
-  return idx and board.items[idx] or nil
-end
+-- Forward-declare before callbacks that invoke it; a later `local render`
+-- would make those callbacks resolve a nil global instead.
+local render
 
 local function set_sel(i)
   board.sel_id = board.items[i] and board.items[i].id or nil
@@ -304,9 +305,219 @@ local function page_size()
   return math.max(board.height - board.reserved - 1, 1)
 end
 
+local function toggle_expand()
+  local s = selected()
+  if not s or #s.children == 0 then
+    return
+  end
+  s.expanded = not s.expanded
+  apply_filter()
+  render()
+end
+
+local function collapse_or_parent()
+  local s = selected()
+  if not s then
+    return
+  end
+  if #s.children > 0 and s.expanded then
+    s.expanded = false
+    apply_filter()
+    render()
+    return
+  end
+  local parent_id = s.group_id or s.parent_id
+  if parent_id then
+    board.sel_id = parent_id
+    apply_filter()
+    render()
+  end
+end
+
+local function update_footer()
+  if board.rename then
+    board.win:set_config({ footer = RENAME_KEYS })
+    return
+  end
+  local footer = {}
+  if board.counts.needs_input > 0 then
+    footer[#footer + 1] = { "◆ " .. board.counts.needs_input, "needs input" }
+  end
+  if board.counts.working > 0 then
+    footer[#footer + 1] = { "● " .. board.counts.working, "working" }
+  end
+  for _, f in ipairs(FILTER_KEYS) do
+    footer[#footer + 1] = f
+  end
+  board.win:set_config({ footer = footer })
+end
+
+render = function()
+  local lines = {}
+  local inner = board.width - 4
+  local input = board.rename and board.rename.input or board.input
+  local prefix = board.rename and RENAME_PREFIX or FILTER_PREFIX
+  for _, ln in ipairs(input:render(prefix, dispw(prefix), inner).lines) do
+    lines[#lines + 1] = ln
+  end
+  lines[#lines + 1] = {}
+  -- The query and its blank spacer stay pinned while the list scrolls.
+  if #lines ~= board.reserved then
+    board.reserved = #lines
+    board.win:set_config({ reserved_top = board.reserved })
+  end
+  local cursor_line = board.reserved
+  local words = filter_words()
+  for i, s in ipairs(board.items) do
+    local selected = s.id == board.sel_id
+    local icon, icon_style, spinning = icon_of(s)
+    local base = selected and "selected" or "item"
+    local right, right_style
+    if s.is_group then
+      local count = #s.children
+      right = task_count(count)
+      right_style = selected and "selected" or "dim"
+    else
+      right = s.focused and CURRENT_LABEL or age(s.updated_at)
+      right_style = selected and "selected" or (s.focused and "accent" or "dim")
+    end
+    if selected then
+      icon_style = "selected"
+    end
+    if spinning then
+      icon_style = "spinner:" .. icon_style
+    end
+    local expand = (#s.children > 0) and (s.expanded and "▾ " or "▸ ") or "  "
+    local indent = string.rep("  ", s.depth or 0)
+    local line = { { indent, base }, { expand, base }, { icon, icon_style } }
+    for _, sp in
+      ipairs(ListPicker.highlight_spans(s.display_title, words, base, selected and "match_selected" or "match"))
+    do
+      line[#line + 1] = sp
+    end
+    local used = (2 * (s.depth or 0)) + dispw(expand) + dispw(icon) + dispw(s.display_title)
+    if board.confirm == s.id then
+      line[#line + 1] = { CONFIRM_HINT, selected and "match_selected" or "error" }
+      used = used + dispw(CONFIRM_HINT)
+    end
+    local pad = math.max(inner - used - dispw(right), 1)
+    line[#line + 1] = { string.rep(" ", pad), base }
+    line[#line + 1] = { right, right_style }
+    lines[#lines + 1] = line
+    if selected then
+      cursor_line = #lines
+    end
+  end
+  if board.loading then
+    lines[#lines + 1] = { { LOADING_HINT, "dim" } }
+  elseif #board.items == 0 then
+    lines[#lines + 1] = { { #board.nodes == 0 and EMPTY_HINT or NO_MATCHES_HINT, "dim" } }
+  end
+  board.buf:set_lines(lines)
+  board.win:set_cursor(cursor_line)
+end
+
+-- Rebuilds the tree from live runtimes and the stored snapshot, then
+-- renders. Live runtimes win over their stored copies for status and focus,
+-- but the stored copy contributes its richer metadata (display_title,
+-- parent_id, kind) for grouping and labelling. Until the background scan
+-- lands (`board.stored`) only live sessions are shown. `live()` suspends
+-- this coroutine, and the picker may close or another refresh may finish
+-- meanwhile, so bail out unless this board is still current.
+local function refresh()
+  local this_board = board
+  local live, live_err = n00n.session.live()
+  if board ~= this_board then
+    return
+  end
+  if live_err then
+    n00n.ui.flash(live_err)
+    render()
+    return
+  end
+
+  local stored_map = {}
+  for _, st in ipairs(board.stored or {}) do
+    stored_map[st.id] = st
+  end
+
+  local expanded_state = {}
+  for _, n in ipairs(board.nodes or {}) do
+    expanded_state[n.id] = n.expanded
+  end
+
+  local seen, all = {}, {}
+  for _, s in ipairs(live) do
+    seen[s.id] = true
+    s.live = true
+    local st = stored_map[s.id]
+    if st then
+      s.display_title = s.display_title or st.display_title
+      s.title = s.title or st.title
+      s.kind = s.kind or st.kind
+      s.parent_id = s.parent_id or st.parent_id
+      s.updated_at = s.updated_at or st.updated_at
+    end
+    normalize_session(s, expanded_state)
+    all[#all + 1] = s
+  end
+  for _, st in ipairs(board.stored or {}) do
+    if not seen[st.id] then
+      st.status = "idle"
+      st.focused = false
+      normalize_session(st, expanded_state)
+      all[#all + 1] = st
+    end
+  end
+
+  board.counts = { needs_input = 0, working = 0 }
+  for _, s in ipairs(all) do
+    if board.counts[s.status] then
+      board.counts[s.status] = board.counts[s.status] + 1
+    end
+  end
+
+  if board.loading then
+    assign_ranks(all)
+  else
+    local fresh = {}
+    for _, s in ipairs(all) do
+      if not board.rank[s.id] then
+        fresh[#fresh + 1] = s
+      end
+    end
+    if #fresh > 0 then
+      assign_ranks(fresh)
+    end
+  end
+  table.sort(all, by_recency)
+
+  board.nodes = all
+  board.roots = build_tree(all)
+  for _, root in ipairs(board.roots) do
+    group_node(root, all, board.rank, expanded_state)
+  end
+  table.sort(all, by_recency)
+
+  apply_filter()
+  update_footer()
+  render()
+end
+
+local function close()
+  if board then
+    board.win:close()
+    board = nil
+  end
+end
+
 local function open_selected()
   local s = selected()
   if not s then
+    return
+  end
+  if s.is_group then
+    toggle_expand()
     return
   end
   if not s.focused then
@@ -331,6 +542,10 @@ end
 local function delete_selected()
   local s = selected()
   if not s then
+    return
+  end
+  if s.is_group then
+    n00n.ui.flash(CANNOT_DELETE_GROUP_HINT)
     return
   end
   if s.focused then
@@ -358,11 +573,11 @@ end
 
 local function start_rename()
   local s = selected()
-  if not s then
+  if not s or s.is_group then
     return
   end
   local input = TextInput.new()
-  input:insert_text(s.title)
+  input:insert_text(s.display_title or s.title)
   board.rename = { id = s.id, input = input }
   board.confirm = nil
   update_footer()
@@ -378,17 +593,29 @@ end
 local function commit_rename()
   local title = board.rename.input:value():match("^%s*(.-)%s*$")
   local id = board.rename.id
+  local current = selected()
+  local stored_title = current and current.kind ~= "main" and (current.kind .. ": " .. title) or title
   stop_rename()
   if title == "" then
     return
   end
-  local _, err = n00n.session.set_title({ id = id, title = title })
+  local _, err = n00n.session.set_title({ id = id, title = stored_title })
   if err then
     n00n.ui.flash(err)
   else
+    for _, n in ipairs(board.nodes) do
+      if n.id == id then
+        n.title = stored_title
+        n.display_title = title
+      end
+    end
     local si = find_stored(id)
     if si then
-      board.stored[si].title = title
+      board.stored[si].title = stored_title
+      board.stored[si].display_title = title
+      if current then
+        board.stored[si].kind = current.kind
+      end
     end
   end
   refresh()
@@ -430,6 +657,10 @@ local function handle_key(key)
     move_sel(-page_size())
   elseif key == "pagedown" then
     move_sel(page_size())
+  elseif key == "right" then
+    toggle_expand()
+  elseif key == "left" then
+    collapse_or_parent()
   elseif key == "enter" then
     open_selected()
   elseif key == "ctrl+n" then
@@ -472,7 +703,8 @@ local function open()
     height = win.height,
     reserved = 2,
     input = TextInput.new(),
-    all = {},
+    nodes = {},
+    roots = {},
     items = {},
     rank = {},
     deleted = {},
@@ -482,9 +714,6 @@ local function open()
     frame = 0,
     loading = true,
   }
-  -- Two-phase load: live sessions are cheap, so they show up and take keys
-  -- right away; the stored scan can be slow, so a background task merges it
-  -- in once it lands.
   refresh()
   local this_board = board
   n00n.async.run(function()

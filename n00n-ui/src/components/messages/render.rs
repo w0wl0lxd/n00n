@@ -73,6 +73,14 @@ impl RenderCursor {
                     .style(theme::current().tool_bg)
                     .padding(Padding::horizontal(1)),
             ),
+            Surface::Control => Some(
+                Block::default()
+                    .borders(borders)
+                    .border_type(BorderType::Rounded)
+                    .border_style(theme::current().control)
+                    .style(theme::current().tool_bg)
+                    .padding(Padding::horizontal(1)),
+            ),
             Surface::Tool => Some(
                 Block::default()
                     .borders(borders)
@@ -160,6 +168,12 @@ fn frame_block(surface: Surface) -> Block<'static> {
             .borders(borders)
             .border_type(BorderType::Rounded)
             .border_style(theme::current().user)
+            .style(theme::current().tool_bg)
+            .padding(Padding::horizontal(1)),
+        Surface::Control => Block::default()
+            .borders(borders)
+            .border_type(BorderType::Rounded)
+            .border_style(theme::current().control)
             .style(theme::current().tool_bg)
             .padding(Padding::horizontal(1)),
         Surface::Tool => Block::default()
