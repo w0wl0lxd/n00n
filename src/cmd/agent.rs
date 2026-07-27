@@ -22,7 +22,7 @@ use n00n_daemon::ControlError;
 use n00n_daemon::backend::WorkerBackend;
 use n00n_daemon::client as daemon_client;
 use n00n_daemon::lock::DaemonRole;
-use n00n_daemon::protocol::{BackendKind, ControlRequest, ControlResponse, MessageOpts};
+use n00n_daemon::protocol::{ControlRequest, ControlResponse, MessageOpts};
 use n00n_daemon::registry::ControlPlane;
 use n00n_daemon::server as daemon_server;
 use n00n_daemon::transport;
@@ -1108,7 +1108,7 @@ pub fn pause_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()>
         &state_dir,
         &ControlRequest::Pause {
             id: id.to_owned(),
-            backend: Some(BackendKind::Worker),
+            backend: None,
         },
     ) {
         return print_control_response(&result?, false);
@@ -1122,7 +1122,7 @@ pub fn resume_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()
         &state_dir,
         &ControlRequest::Resume {
             id: id.to_owned(),
-            backend: Some(BackendKind::Worker),
+            backend: None,
         },
     ) {
         return print_control_response(&result?, false);
