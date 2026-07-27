@@ -418,6 +418,8 @@ pub enum SessionRequest {
     Prompt {
         id: Option<String>,
         text: String,
+        steer: bool,
+        control: bool,
     },
     Cancel {
         id: String,
