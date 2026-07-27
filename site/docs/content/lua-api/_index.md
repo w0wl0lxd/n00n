@@ -5030,6 +5030,74 @@ Run `arbor index` if the project is not yet indexed.
 
 **Returns:** (`nil`) nil on success, or error on failure.
 
+---
+
+### `n00n.arbor.graph_index_available()` {#n00n-arbor-graph_index_available}
+
+```lua
+n00n.arbor.graph_index_available({project})
+```
+
+Returns true when a native `.arbor/graph.json` index is present.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`boolean`) true when graph.json exists and is loadable.
+
+---
+
+### `n00n.arbor.graph_callers()` {#n00n-arbor-graph_callers}
+
+```lua
+n00n.arbor.graph_callers({symbol}, {project})
+```
+
+Show callers via the in-memory graph index (no CLI subprocess).
+
+**Parameters:**
+
+- `{symbol}` (`string`) Symbol name (function, class, etc.).
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`table`) Array of caller objects with `name`, `path`, `kind`, `line` fields.
+
+---
+
+### `n00n.arbor.graph_callees()` {#n00n-arbor-graph_callees}
+
+```lua
+n00n.arbor.graph_callees({symbol}, {project})
+```
+
+Show callees via the in-memory graph index (no CLI subprocess).
+
+**Parameters:**
+
+- `{symbol}` (`string`) Symbol name.
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`table`) Array of callee objects with `name`, `path`, `kind`, `line` fields.
+
+---
+
+### `n00n.arbor.graph_trace_path()` {#n00n-arbor-graph_trace_path}
+
+```lua
+n00n.arbor.graph_trace_path({from_symbol}, {to_symbol}, {project})
+```
+
+Shortest call path between two symbols in the graph index.
+
+**Parameters:**
+
+- `{from_symbol}` (`string`) Start symbol name.
+- `{to_symbol}` (`string`) End symbol name.
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`table`) Path nodes or error when no path exists.
+
 
 ## n00n.codegraph {#n00n-codegraph}
 
