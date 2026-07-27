@@ -121,6 +121,8 @@ impl WorkerBackend {
 
     #[cfg(unix)]
     fn send_command(&self, id: &str, command: &WorkerCommand) -> ControlResult<sonic_rs::Value> {
+        use std::path::Path;
+
         use futures_lite::{AsyncBufReadExt, AsyncWriteExt, io::BufReader};
         use smol::net::unix::UnixStream;
         use std::path::Path;
@@ -267,6 +269,8 @@ impl ControlBackend for WorkerBackend {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
     use std::path::Path;
     use tempfile::TempDir;
