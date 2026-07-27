@@ -27,7 +27,7 @@ use n00n_lua_macro::{lua_class, lua_fn, lua_table};
 use n00n_providers::model::ModelTier;
 use n00n_providers::provider;
 use n00n_providers::{ContentBlock, Model, ModelError, Role, ThinkingConfig, model::TokenUsage};
-use n00n_storage::id::n00nId;
+use n00n_storage::id::N00nId;
 use n00n_storage::sessions::StoredThinking;
 use serde_json::Value as JsonValue;
 use tracing::info;
@@ -615,7 +615,7 @@ async fn session(
         None => agent_ctx.opts.thinking,
     };
 
-    let session_id = n00nId::generate();
+    let session_id = N00nId::generate();
     let child_id = session_id.to_string();
     let parent_tool_use_id = child_id.clone();
     let start = Instant::now();

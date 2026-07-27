@@ -12,7 +12,7 @@ Run a single task:
     harbor run \
       -t terminal-bench/fix-git \
       -m anthropic/claude-sonnet-4-6 \
-      --agent-import-path tbench_n00n_agent:n00nAgent \
+      --agent-import-path tbench_n00n_agent:N00nAgent \
       --mounts-json "$MOUNTS" \
       -n 1 -y
 
@@ -20,7 +20,7 @@ Run the full suite:
     harbor run \
       -d terminal-bench/terminal-bench-2 \
       -m anthropic/claude-sonnet-4-6 \
-      --agent-import-path tbench_n00n_agent:n00nAgent \
+      --agent-import-path tbench_n00n_agent:N00nAgent \
       --mounts-json "$MOUNTS" \
       -n 4 -y
 
@@ -43,10 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from collect import append_csv, compute_cost, lookup_pricing
-from harbor.agents.installed.base import (  # ty: ignore[unresolved-import]
-    BaseInstalledAgent,
-    with_prompt_template,
-)
+from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_template  # ty: ignore[unresolved-import]
 from harbor.environments.base import BaseEnvironment  # ty: ignore[unresolved-import]
 from harbor.models.agent.context import AgentContext  # ty: ignore[unresolved-import]
 
@@ -125,7 +122,7 @@ def parse_stream_json(log_text: str) -> tuple[dict, dict[int, dict], list[dict]]
     return result, turn_usage, tool_calls
 
 
-class n00nAgent(BaseInstalledAgent):
+class N00nAgent(BaseInstalledAgent):
     _last_instruction: str = ""
 
     @staticmethod

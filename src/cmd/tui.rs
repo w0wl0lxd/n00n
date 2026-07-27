@@ -13,7 +13,7 @@ use n00n_config::{Config, load_env_files, load_permissions};
 use n00n_lua::PluginHost;
 use n00n_providers::model::Model;
 use n00n_storage::StateDir;
-use n00n_storage::id::n00nId;
+use n00n_storage::id::N00nId;
 use n00n_ui::{AppSession, RunOutcome};
 
 use crate::cli::{Cli, normalize_tool_name};
@@ -202,7 +202,7 @@ fn resolve_session(
     storage: &StateDir,
 ) -> Result<AppSession> {
     if let Some(raw) = session_id {
-        let id: n00nId = raw
+        let id: N00nId = raw
             .parse()
             .map_err(|e| color_eyre::eyre::eyre!("invalid session id {raw:?}: {e}"))?;
         return AppSession::load(id, storage).map_err(|e| color_eyre::eyre::eyre!("{e}"));

@@ -10,7 +10,7 @@ use n00n_providers::TokenUsage;
 use n00n_providers::model::Model;
 use n00n_providers::provider::{self, Provider};
 use n00n_storage::StateDir;
-use n00n_storage::id::{SessionRef, n00nId};
+use n00n_storage::id::{N00nId, SessionRef};
 use n00n_storage::sessions::Session;
 use serde_json::Value;
 use tracing::{error, warn};
@@ -37,14 +37,14 @@ struct SessionStore {
 }
 
 impl SessionStore {
-    fn open(session_id: n00nId, cwd: &str, model_spec: &str) -> Option<Self> {
+    fn open(session_id: N00nId, cwd: &str, model_spec: &str) -> Option<Self> {
         let dir = StateDir::resolve()
             .map_err(|e| warn!(error = %e, "state dir unavailable; session will not be persisted"))
             .ok()?;
         Some(Self::open_in(dir, session_id, cwd, model_spec))
     }
 
-    fn open_in(dir: StateDir, session_id: n00nId, cwd: &str, model_spec: &str) -> Self {
+    fn open_in(dir: StateDir, session_id: N00nId, cwd: &str, model_spec: &str) -> Self {
         if let Ok(session) = StoredSession::load(session_id, &dir) {
             Self { dir, session }
         } else {
@@ -178,7 +178,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
 
     let (raw_tx, event_rx) = flume::unbounded::<Envelope>();
 
-    let session_id = n00nId::generate();
+    let session_id = N00nId::generate();
     let session_ref = SessionRef::from(session_id);
     let session_ref_clone = session_ref.clone();
     let session_cwd = working_dir.clone();
@@ -326,7 +326,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
     let (session_id, session_ref) = if let Some(w) = params.session_id.clone() {
         (w.id(), w)
     } else {
-        let id = n00nId::generate();
+        let id = N00nId::generate();
         (id, SessionRef::from(id))
     };
 
@@ -494,7 +494,7 @@ mod tests {
     const CWD: &str = "/project";
     const MODEL_SPEC: &str = "anthropic/claude-test";
 
-    fn session_id() -> n00nId {
+    fn session_id() -> N00nId {
         SESSION_ID.parse().unwrap()
     }
 
