@@ -31,7 +31,7 @@ use n00n_storage::StateDir;
 use n00n_storage::id::{N00nId, SessionRef};
 use n00n_storage::sessions::Session;
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -289,7 +289,7 @@ impl StreamSynth {
 
     fn text_delta(&mut self, model: &str, text: &str) -> Vec<Value> {
         let mut events = self.ensure_block(model, BlockKind::Text);
-        events.push(json!({
+        events.push(serde_json::json!({
             "type": "content_block_delta",
             "index": self.block_index,
             "delta": {"type": "text_delta", "text": text}
@@ -299,7 +299,7 @@ impl StreamSynth {
 
     fn thinking_delta(&mut self, model: &str, text: &str) -> Vec<Value> {
         let mut events = self.ensure_block(model, BlockKind::Thinking);
-        events.push(json!({
+        events.push(serde_json::json!({
             "type": "content_block_delta",
             "index": self.block_index,
             "delta": {"type": "thinking_delta", "thinking": text}
@@ -311,12 +311,12 @@ impl StreamSynth {
         let mut events = self.ensure_started(model);
         events.extend(self.close_block());
         self.block_index += 1;
-        events.push(json!({
+        events.push(serde_json::json!({
             "type": "content_block_start",
             "index": self.block_index,
             "content_block": {"type": "tool_use", "id": id, "name": name, "input": {}}
         }));
-        events.push(json!({
+        events.push(serde_json::json!({
             "type": "content_block_delta",
             "index": self.block_index,
             "delta": {"type": "input_json_delta", "partial_json": input_json}
@@ -330,12 +330,12 @@ impl StreamSynth {
             return Vec::new();
         }
         let mut events: Vec<Value> = self.close_block().into_iter().collect();
-        events.push(json!({
+        events.push(serde_json::json!({
             "type": "message_delta",
             "delta": {"stop_reason": null},
             "usage": {"output_tokens": usage.output}
         }));
-        events.push(json!({"type": "message_stop"}));
+        events.push(serde_json::json!({"type": "message_stop"}));
         self.reset();
         events
     }
@@ -345,7 +345,7 @@ impl StreamSynth {
             return Vec::new();
         }
         self.started = true;
-        vec![json!({
+        vec![serde_json::json!({
             "type": "message_start",
             "message": {
                 "id": wire_uuid(),
@@ -368,10 +368,10 @@ impl StreamSynth {
         self.block_index += 1;
         self.current_block = Some(kind);
         let content_block = match kind {
-            BlockKind::Text => json!({"type": "text", "text": ""}),
-            BlockKind::Thinking => json!({"type": "thinking", "thinking": ""}),
+            BlockKind::Text => serde_json::json!({"type": "text", "text": ""}),
+            BlockKind::Thinking => serde_json::json!({"type": "thinking", "thinking": ""}),
         };
-        events.push(json!({
+        events.push(serde_json::json!({
             "type": "content_block_start",
             "index": self.block_index,
             "content_block": content_block
@@ -384,7 +384,7 @@ impl StreamSynth {
     }
 
     fn block_stop(&self) -> Value {
-        json!({
+        serde_json::json!({
             "type": "content_block_stop",
             "index": self.block_index,
         })
@@ -572,7 +572,7 @@ fn emit_init(
 ) -> Result<()> {
     writer.emit_system(
         "init",
-        json!({
+        serde_json::json!({
             "cwd": working_dir,
             "tools": tools,
             "model": startup_model.id,
@@ -866,7 +866,11 @@ fn handle_control_request(
             {
                 eprintln!("note: hooks/agents payloads are ignored");
             }
-            writer.emit_control_response(&cr.request_id, Some(json!({"commands": []})), None)
+            writer.emit_control_response(
+                &cr.request_id,
+                Some(serde_json::json!({"commands": []})),
+                None,
+            )
         }
         "interrupt" => {
             let _ = handle.cancel_tx.try_send(());
@@ -1113,7 +1117,7 @@ impl EventPump {
         self.synth.reset();
         self.writer.emit_system(
             "api_retry",
-            json!({
+            serde_json::json!({
                 "attempt": attempt,
                 "retry_delay_ms": delay_ms,
                 "error": message,
@@ -1425,19 +1429,19 @@ mod tests {
 
     #[test]
     fn content_text_extracts_from_all_shapes() {
-        assert_eq!(content_text(&json!("hi")), Some("hi".into()));
-        let blocks = json!([
+        assert_eq!(content_text(&serde_json::json!("hi")), Some("hi".into()));
+        let blocks = serde_json::json!([
             {"type": "text", "text": "a"},
             {"type": "image", "source": {}},
             {"type": "text", "text": "b"},
         ]);
         assert_eq!(content_text(&blocks), Some("a\nb".into()));
-        assert_eq!(content_text(&json!(42)), None);
+        assert_eq!(content_text(&serde_json::json!(42)), None);
     }
 
     #[test]
     fn content_images_extracts_base64_blocks() {
-        let blocks = json!([
+        let blocks = serde_json::json!([
             {"type": "text", "text": "look at this"},
             {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}},
             {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "BBBB"}},
@@ -1448,8 +1452,8 @@ mod tests {
         assert_eq!(&*images[1].data, "BBBB");
 
         // Non-array content and malformed image blocks yield no images.
-        assert!(content_images(&json!("hi")).is_empty());
-        let bad = json!([{"type": "image", "source": {"data": "x"}}]);
+        assert!(content_images(&serde_json::json!("hi")).is_empty());
+        let bad = serde_json::json!([{"type": "image", "source": {"data": "x"}}]);
         assert!(content_images(&bad).is_empty());
     }
 
@@ -1482,7 +1486,7 @@ mod tests {
         let msg = WireMessage {
             inner: WireInner::System(SystemPayload {
                 subtype: "init",
-                extra: json!({
+                extra: serde_json::json!({
                     "cwd": "/tmp",
                     "tools": ["Read"],
                     "model": "test",
@@ -1505,7 +1509,7 @@ mod tests {
                 response: ControlResponseInner {
                     subtype: "success",
                     request_id: "req_1".into(),
-                    response: Some(json!({"commands": []})),
+                    response: Some(serde_json::json!({"commands": []})),
                     error: None,
                 },
             }),
@@ -1525,7 +1529,7 @@ mod tests {
                 request: ControlRequestInner {
                     subtype: "can_use_tool",
                     tool_name: Some("Read".into()),
-                    input: Some(json!({"path": "/tmp"})),
+                    input: Some(serde_json::json!({"path": "/tmp"})),
                     tool_use_id: Some("tool_123".into()),
                 },
             }),
@@ -1548,22 +1552,26 @@ mod tests {
     #[test]
     fn decode_permission_response_variants() {
         assert!(matches!(
-            decode_permission_response(&json!({"behavior": "allow"})),
+            decode_permission_response(&serde_json::json!({"behavior": "allow"})),
             PermissionAnswer::AllowOnce
         ));
         assert!(matches!(
-            decode_permission_response(&json!({"behavior": "allow", "updatedPermissions": []})),
+            decode_permission_response(
+                &serde_json::json!({"behavior": "allow", "updatedPermissions": []})
+            ),
             PermissionAnswer::AllowSession
         ));
         assert!(matches!(
-            decode_permission_response(&json!({})),
+            decode_permission_response(&serde_json::json!({})),
             PermissionAnswer::Deny
         ));
         assert!(matches!(
-            decode_permission_response(&json!({"behavior": "something_else"})),
+            decode_permission_response(&serde_json::json!({"behavior": "something_else"})),
             PermissionAnswer::Deny
         ));
-        match decode_permission_response(&json!({"behavior": "deny", "message": "not now"})) {
+        match decode_permission_response(
+            &serde_json::json!({"behavior": "deny", "message": "not now"}),
+        ) {
             PermissionAnswer::DenyWithGuidance(msg) => assert_eq!(msg, "not now"),
             other => panic!("expected guidance, got {other:?}"),
         }
@@ -1578,7 +1586,7 @@ mod tests {
 
     #[test]
     fn map_tool_names_in_content_maps_known_and_preserves_rest() {
-        let content = json!([
+        let content = serde_json::json!([
             {"type": "text", "text": "hello"},
             {"type": "tool_use", "name": "read", "id": "1", "input": {}},
             {"type": "tool_use", "name": "unknown_native", "id": "2", "input": {}},

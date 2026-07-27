@@ -407,6 +407,11 @@ mod tests {
 
         assert!(!text.contains("thinking..."), "status bar: {text:?}");
         assert!(text.contains("NORMAL"), "status bar: {text:?}");
+        assert!(
+            text.chars()
+                .any(|ch| ('\u{2800}'..='\u{28ff}').contains(&ch)),
+            "status bar: {text:?}"
+        );
     }
 
     #[test]

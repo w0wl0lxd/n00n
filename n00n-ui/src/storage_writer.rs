@@ -21,7 +21,6 @@ use crate::AppSession;
 
 struct PendingSnapshot {
     revision: u64,
-    retry_attempts: u32,
     session: Box<AppSession>,
 }
 
@@ -31,7 +30,6 @@ type DeleteCallback = Box<dyn FnOnce(Result<(), SessionError>) + Send>;
 type PersistCallback = Box<dyn FnOnce(Result<(), SessionError>) + Send>;
 
 const RETRY_DELAY: Duration = Duration::from_secs(1);
-const MAX_RETRY_ATTEMPTS: u32 = 5;
 
 enum Op {
     Flush,
@@ -63,23 +61,26 @@ impl StorageWriter {
             .spawn(move || {
                 let mut logs: HashMap<N00nId, SessionLog> = HashMap::new();
                 let mut durable_revisions: HashMap<N00nId, u64> = HashMap::new();
+                let mut retry_pending = false;
                 loop {
-                    let op = if lock(&writer_pending).is_empty() {
-                        ops_rx.recv().ok()
-                    } else {
+                    let op = if retry_pending {
                         match ops_rx.recv_timeout(RETRY_DELAY) {
                             Ok(op) => Some(op),
                             Err(flume::RecvTimeoutError::Timeout) => Some(Op::Flush),
                             Err(flume::RecvTimeoutError::Disconnected) => None,
                         }
+                    } else {
+                        ops_rx.recv().ok()
                     };
                     let Some(op) = op else { break };
                     match op {
                         Op::Flush => {
-                            flush(&writer_pending, &mut logs, &mut durable_revisions, &dir);
+                            retry_pending =
+                                flush(&writer_pending, &mut logs, &mut durable_revisions, &dir);
                         }
                         Op::Persist { session, done } => {
-                            flush(&writer_pending, &mut logs, &mut durable_revisions, &dir);
+                            retry_pending =
+                                flush(&writer_pending, &mut logs, &mut durable_revisions, &dir);
                             done(persist_session(
                                 &writer_pending,
                                 &mut logs,
@@ -114,14 +115,7 @@ impl StorageWriter {
             .get(&session.id)
             .is_none_or(|current| current.revision <= revision);
         if replace {
-            pending.insert(
-                session.id,
-                PendingSnapshot {
-                    revision,
-                    retry_attempts: 0,
-                    session,
-                },
-            );
+            pending.insert(session.id, PendingSnapshot { revision, session });
         }
         drop(pending);
         if was_empty {
@@ -175,52 +169,39 @@ fn writer_gone() -> SessionError {
     n00n_storage::StorageError::Io(io::Error::other("storage writer unavailable")).into()
 }
 
-fn retain_failed_snapshot(
-    pending: &mut HashMap<N00nId, PendingSnapshot>,
-    id: N00nId,
-    mut snapshot: PendingSnapshot,
-) {
-    snapshot.retry_attempts += 1;
-    if snapshot.retry_attempts >= MAX_RETRY_ATTEMPTS {
-        warn!(
-            retry_count = snapshot.retry_attempts,
-            %id,
-            revision = snapshot.revision,
-            "storage writer exhausted retry attempts, dropping pending snapshot"
-        );
-    } else {
-        pending.insert(id, snapshot);
-    }
-}
-
 fn flush(
     pending: &Pending,
     logs: &mut HashMap<N00nId, SessionLog>,
     durable_revisions: &mut HashMap<N00nId, u64>,
     dir: &StateDir,
-) {
+) -> bool {
     let mut pending_guard = lock(pending);
     let batch = mem::take(&mut *pending_guard);
     if batch.is_empty() {
-        return;
+        return false;
     }
     let sessions_dir = match dir.ensure_subdir(SESSIONS_DIR) {
         Ok(d) => d,
         Err(e) => {
             warn!(error = %e, "failed to ensure sessions dir");
             for (id, snapshot) in batch {
-                retain_failed_snapshot(&mut pending_guard, id, snapshot);
+                let replace = pending_guard
+                    .get(&id)
+                    .is_none_or(|current| current.revision < snapshot.revision);
+                if replace {
+                    pending_guard.insert(id, snapshot);
+                }
             }
-            return;
+            return true;
         }
     };
-    for (id, snapshot) in batch {
+    for snapshot in batch.into_values() {
         if let Err(error) = write_session(&sessions_dir, logs, durable_revisions, &snapshot.session)
         {
             warn!(error = %error, id = %snapshot.session.id, "session write failed");
-            retain_failed_snapshot(&mut pending_guard, id, snapshot);
         }
     }
+    false
 }
 
 fn persist_session(
@@ -235,7 +216,7 @@ fn persist_session(
         .get(&session.id)
         .is_some_and(|snapshot| snapshot.revision > session.meta.revision)
     {
-        let snapshot = pending_guard.get(&session.id).ok_or_else(|| {
+        let snapshot = pending_guard.remove(&session.id).ok_or_else(|| {
             n00n_storage::StorageError::Io(io::Error::other("pending snapshot disappeared"))
         })?;
         write_session(
@@ -244,7 +225,6 @@ fn persist_session(
             durable_revisions,
             &snapshot.session,
         )?;
-        pending_guard.remove(&session.id);
     }
     drop(pending_guard);
     write_session_if_newer(logs, durable_revisions, dir, session)
@@ -419,125 +399,6 @@ mod tests {
 
         assert!(done_rx.recv_timeout(DRAIN_TIMEOUT).unwrap().is_ok());
         assert_eq!(AppSession::load(id, &dir).unwrap().title, "periodic save");
-        writer.shutdown(DRAIN_TIMEOUT);
-    }
-
-    #[test]
-    fn failed_snapshot_remains_pending_for_retry() {
-        let (_tmp, dir) = state_dir();
-        let session = AppSession::new("test-model", "/tmp/retry");
-        let id = session.id;
-        let revision = session.meta.revision;
-        let sessions_dir = dir.ensure_subdir(SESSIONS_DIR).unwrap();
-        let blocked_log = sessions_dir.join(format!("{id}.jsonl"));
-        std::fs::create_dir(&blocked_log).unwrap();
-
-        let pending: Pending = Arc::default();
-        lock(&pending).insert(
-            id,
-            PendingSnapshot {
-                revision,
-                retry_attempts: 0,
-                session: Box::new(session),
-            },
-        );
-        let mut logs = HashMap::new();
-        let mut durable_revisions = HashMap::new();
-
-        flush(&pending, &mut logs, &mut durable_revisions, &dir);
-        let pending_guard = lock(&pending);
-        let snapshot = &pending_guard[&id];
-        assert_eq!(snapshot.revision, revision);
-        assert_eq!(snapshot.retry_attempts, 1);
-        drop(pending_guard);
-
-        std::fs::remove_dir(&blocked_log).unwrap();
-        flush(&pending, &mut logs, &mut durable_revisions, &dir);
-        assert!(lock(&pending).is_empty());
-        assert!(AppSession::load(id, &dir).is_ok());
-    }
-
-    #[test]
-    fn persist_failure_retains_newer_pending_snapshot() {
-        let (_tmp, dir) = state_dir();
-        let mut older = AppSession::new("test-model", "/tmp/persist-retry");
-        older.meta.revision = 1;
-        let id = older.id;
-        let mut newer = older.clone();
-        newer.meta.revision = 2;
-        let sessions_dir = dir.ensure_subdir(SESSIONS_DIR).unwrap();
-        std::fs::create_dir(sessions_dir.join(format!("{id}.jsonl"))).unwrap();
-        let pending: Pending = Arc::default();
-        lock(&pending).insert(
-            id,
-            PendingSnapshot {
-                revision: newer.meta.revision,
-                retry_attempts: 0,
-                session: Box::new(newer),
-            },
-        );
-
-        let result = persist_session(
-            &pending,
-            &mut HashMap::new(),
-            &mut HashMap::new(),
-            &dir,
-            &older,
-        );
-
-        assert!(result.is_err());
-        assert_eq!(
-            lock(&pending).get(&id).map(|snapshot| snapshot.revision),
-            Some(2)
-        );
-    }
-
-    #[test]
-    fn failed_snapshot_is_dropped_after_retry_limit() {
-        let (_tmp, dir) = state_dir();
-        let session = AppSession::new("test-model", "/tmp/exhausted");
-        let id = session.id;
-        let sessions_dir = dir.ensure_subdir(SESSIONS_DIR).unwrap();
-        std::fs::create_dir(sessions_dir.join(format!("{id}.jsonl"))).unwrap();
-        let pending: Pending = Arc::default();
-        lock(&pending).insert(
-            id,
-            PendingSnapshot {
-                revision: session.meta.revision,
-                retry_attempts: 0,
-                session: Box::new(session),
-            },
-        );
-        let mut logs = HashMap::new();
-        let mut durable_revisions = HashMap::new();
-
-        for _ in 0..MAX_RETRY_ATTEMPTS {
-            flush(&pending, &mut logs, &mut durable_revisions, &dir);
-        }
-
-        assert!(lock(&pending).is_empty());
-    }
-
-    #[test]
-    fn equal_revision_replacement_resets_retry_attempts() {
-        let (_tmp, dir) = state_dir();
-        let writer = StorageWriter::new(dir).unwrap();
-        let session = AppSession::new("test-model", "/tmp/replacement");
-        let id = session.id;
-        let revision = session.meta.revision;
-        lock(&writer.pending).insert(
-            id,
-            PendingSnapshot {
-                revision,
-                retry_attempts: MAX_RETRY_ATTEMPTS - 1,
-                session: Box::new(session.clone()),
-            },
-        );
-
-        writer.send(Box::new(session));
-
-        assert_eq!(lock(&writer.pending)[&id].retry_attempts, 0);
-        lock(&writer.pending).clear();
         writer.shutdown(DRAIN_TIMEOUT);
     }
 

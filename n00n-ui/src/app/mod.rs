@@ -69,12 +69,10 @@ use ratatui::layout::Position;
 use ratatui_image::picker::Picker;
 
 pub(crate) use crate::agent::QueuedMessage;
-
 pub(crate) use mode::{Mode, PlanState, PlanTrigger};
 #[cfg(test)]
 use mouse::EDGE_SCROLL_LINES;
 pub(crate) use queue::{MessageQueue, SubmitOutcome};
-use serde_json::json;
 pub(crate) use session::session_has_content;
 use session_state::SessionState;
 
@@ -190,11 +188,6 @@ struct PendingSubmission {
     display_len_before: usize,
 }
 
-pub(crate) struct PendingPlanSubmit {
-    pub(crate) message: QueuedMessage,
-    pub(crate) plan: Option<(String, String)>,
-}
-
 pub enum Msg {
     Key(KeyEvent),
     Paste(String),
@@ -237,7 +230,6 @@ pub struct App {
     pub(crate) run_id: u64,
     next_submission_id: u64,
     pending_submission: Option<PendingSubmission>,
-    pub(crate) pending_plan_submit: Option<PendingPlanSubmit>,
     submission_clock: Arc<dyn SubmissionClock>,
     pub(super) retry_info: Option<RetryInfo>,
     pub(super) zones: ZoneRegistry,
@@ -352,7 +344,6 @@ impl App {
             run_id: 0,
             next_submission_id: 0,
             pending_submission: None,
-            pending_plan_submit: None,
             submission_clock: Arc::new(SystemSubmissionClock),
             retry_info: None,
             zones: ZoneRegistry::new(),
@@ -1303,7 +1294,10 @@ impl App {
                 DisplayRole::Error,
                 PERSISTENCE_FAILURE_MSG.into(),
             ));
-            self.fire_session_autocmd("TurnError", json!({ "message": PERSISTENCE_FAILURE_MSG }));
+            self.fire_session_autocmd(
+                "TurnError",
+                serde_json::json!({ "message": PERSISTENCE_FAILURE_MSG }),
+            );
         }
     }
     pub(crate) fn preserve_submission_for_shutdown(&mut self, dispatch: SubmissionDispatch) {
@@ -1517,7 +1511,7 @@ impl App {
         if let AgentEvent::ToolStart(ref e) = envelope.event {
             self.fire_session_autocmd(
                 "ToolStart",
-                json!({
+                serde_json::json!({
                     "id": e.id,
                     "tool": e.tool,
                     "summary": e.summary,
@@ -1529,7 +1523,7 @@ impl App {
         if let AgentEvent::ToolDone(ref e) = envelope.event {
             self.fire_session_autocmd(
                 "ToolDone",
-                json!({
+                serde_json::json!({
                     "id": e.id,
                     "tool": e.tool,
                     "is_error": e.is_error,
@@ -1664,7 +1658,7 @@ impl App {
                     self.subagent_answers.clear();
                     self.subagent_prompts.clear();
                     self.status = Status::Idle;
-                    self.fire_session_autocmd("TurnEnd", json!({}));
+                    self.fire_session_autocmd("TurnEnd", serde_json::json!({}));
                     if self.exit_on_done {
                         self.exit_request = ExitRequest::Success;
                     }
@@ -1682,7 +1676,10 @@ impl App {
                     for chat in &mut self.chats {
                         chat.fail_in_progress_with_message(message.as_str());
                     }
-                    self.fire_session_autocmd("TurnError", json!({ "message": message }));
+                    self.fire_session_autocmd(
+                        "TurnError",
+                        serde_json::json!({ "message": message }),
+                    );
                     if self.exit_on_done {
                         self.exit_request = ExitRequest::Error;
                     }
@@ -2136,36 +2133,31 @@ impl App {
 
         self.state.mode = Mode::Build;
 
-        let text = if let Some((content, path_str)) = plan_snapshot.as_ref() {
+        let mut actions = if clear_context {
+            self.reset_session()
+        } else {
+            vec![]
+        };
+
+        let text = if let Some((content, path_str)) = plan_snapshot {
             let text = if parallel {
                 format!("{IMPLEMENT_MSG_PREFIX} at `{path_str}`. {IMPLEMENT_PARALLEL_HINT}")
             } else {
                 format!("{IMPLEMENT_MSG_PREFIX} at `{path_str}`.")
             };
-            if !clear_context {
-                self.main_chat()
-                    .push(DisplayMessage::plan(content.clone(), path_str.clone()));
-            }
+            self.main_chat()
+                .push(DisplayMessage::plan(content, path_str));
             text
         } else {
             format!("{IMPLEMENT_MSG_PREFIX}.")
         };
-
+        self.run_id += 1;
         let msg = QueuedMessage {
             text,
             images: vec![],
         };
-
-        if clear_context {
-            self.pending_plan_submit = Some(PendingPlanSubmit {
-                message: msg,
-                plan: plan_snapshot,
-            });
-            self.reset_session()
-        } else {
-            self.run_id += 1;
-            self.start_from_queue(&msg)
-        }
+        actions.extend(self.start_from_queue(&msg));
+        actions
     }
 }
 

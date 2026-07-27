@@ -220,12 +220,6 @@ n00n.setup({
 | `auto_tier` | boolean | `false` | - | Route each subagent's model tier from its prompt (opt-in, off by default). |
 | `max_concurrent` | integer | `4` | 1 | Concurrent subagents (hard max 8). |
 
-### `plugins.team`
-
-| Field | Type | Default | Min | Description |
-|-------|------|---------|-----|-------------|
-| `timeout_secs` | integer | `1800` | 60 | Maximum seconds a team run may execute before the tool is killed. |
-
 ### `plugins.webfetch`
 
 | Field | Type | Default | Min | Description |

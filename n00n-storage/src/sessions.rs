@@ -63,7 +63,7 @@ pub enum SessionError {
 /// Per-model token breakdown entry. Mirrors the four usage counters tracked by
 /// the active provider; kept storage-local to avoid a circular dependency on
 /// `n00n-providers`.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredTokenUsage {
     #[serde(default)]
     pub input: u32,
@@ -73,8 +73,6 @@ pub struct StoredTokenUsage {
     pub cache_creation: u32,
     #[serde(default)]
     pub cache_read: u32,
-    #[serde(default)]
-    pub savings_tokens: u64,
 }
 
 impl StoredTokenUsage {
@@ -95,7 +93,6 @@ impl std::ops::AddAssign for StoredTokenUsage {
         self.output += rhs.output;
         self.cache_creation += rhs.cache_creation;
         self.cache_read += rhs.cache_read;
-        self.savings_tokens += rhs.savings_tokens;
     }
 }
 
@@ -1798,7 +1795,7 @@ mod tests {
     use crate::StateDir;
     use crate::id::N00nId;
     use serde::Serializer;
-    use serde_json::{Value, json};
+    use serde_json::Value;
     use std::collections::HashMap;
     use std::fmt::Write as _;
     use std::fs::{self, File, OpenOptions};
@@ -1856,7 +1853,7 @@ mod tests {
     }
 
     fn text_message(role: &str, text: &str) -> Value {
-        json!({
+        serde_json::json!({
             "role": role,
             "content": [{"type": "text", "text": text}]
         })
@@ -1950,7 +1947,7 @@ mod tests {
 
     #[test]
     fn legacy_compaction_without_summary_metadata_deserializes() {
-        let entry: TranscriptEntry<Value> = serde_json::from_value(json!({
+        let entry: TranscriptEntry<Value> = serde_json::from_value(serde_json::json!({
             "Compaction": { "entries": [] }
         }))
         .unwrap();
@@ -1976,7 +1973,6 @@ mod tests {
                 output: 20,
                 cache_creation: 5,
                 cache_read: 40,
-                savings_tokens: 0,
             },
         );
         session.meta.usage_by_model.insert(
@@ -1984,15 +1980,12 @@ mod tests {
             super::StoredTokenUsage {
                 input: 30,
                 output: 10,
-                cache_creation: 0,
-                cache_read: 0,
-                savings_tokens: 0,
+                ..Default::default()
             },
         );
         session.save_to(dir).unwrap();
 
         let loaded = TestSession::load_from(session.id, dir).unwrap();
-        assert!(!loaded.meta.usage_by_model.is_empty());
         let sonnet = &loaded.meta.usage_by_model["claude-sonnet-4"];
         assert_eq!(sonnet.input, 100);
         assert_eq!(sonnet.output, 20);
@@ -2014,7 +2007,7 @@ mod tests {
         session.messages.push(user_message("second"));
         session
             .tool_outputs
-            .insert("tool-1".into(), json!({"result": "ok"}));
+            .insert("tool-1".into(), serde_json::json!({"result": "ok"}));
         session
             .subagent_messages
             .insert("sub-1".into(), vec![user_message("sub-prompt")]);
@@ -2200,7 +2193,7 @@ mod tests {
         let path = jsonl_path(dir, session.id);
         let records = format!(
             "{}\n{}\n",
-            json!({
+            serde_json::json!({
                 "t": "header",
                 "v": LOG_FORMAT_VERSION,
                 "id": session.id,
@@ -2208,7 +2201,7 @@ mod tests {
                 "cwd": session.cwd,
                 "created_at": session.created_at,
             }),
-            json!({
+            serde_json::json!({
                 "t": "meta",
                 "title": session.title,
                 "token_usage": {},
@@ -2568,7 +2561,7 @@ mod tests {
         let dir = tmp.path();
         let session: TestSession = Session::new("model", "/project");
         let jsonl = jsonl_path(dir, session.id);
-        let header = json!({
+        let header = serde_json::json!({
             "t": "header",
             "v": 3,
             "id": session.id,

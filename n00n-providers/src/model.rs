@@ -463,7 +463,6 @@ impl From<TokenUsage> for StoredTokenUsage {
             output: u.output,
             cache_creation: u.cache_creation,
             cache_read: u.cache_read,
-            savings_tokens: 0,
         }
     }
 }
@@ -485,18 +484,12 @@ impl TokenUsage {
     }
 
     #[must_use]
-    pub fn savings_tokens(&self) -> u64 {
-        u64::from(self.cache_read)
-    }
-
-    #[must_use]
     pub fn savings_cost(&self, pricing: &ModelPricing, fast: bool) -> f64 {
-        let input_price = match &pricing.fast {
-            Some(f) if fast => f.input,
-            _ => pricing.input,
+        let (input_price, cache_read_price) = match &pricing.fast {
+            Some(f) if fast => (f.input, f.input * ModelPricing::CACHE_READ_MULTIPLIER),
+            _ => (pricing.input, pricing.cache_read),
         };
-        let cache_read_price = input_price * ModelPricing::CACHE_READ_MULTIPLIER;
-        let savings_per_token = input_price - cache_read_price;
+        let savings_per_token = (input_price - cache_read_price).max(0.0);
         f64::from(self.cache_read) * savings_per_token / PER_MILLION
     }
 
@@ -651,28 +644,6 @@ mod tests {
     }
 
     #[test]
-    fn savings_tokens_returns_cache_read() {
-        let usage = TokenUsage {
-            input: 1000,
-            output: 500,
-            cache_creation: 200,
-            cache_read: 300,
-        };
-        assert_eq!(usage.savings_tokens(), 300);
-    }
-
-    #[test]
-    fn savings_tokens_zero_when_no_cache_read() {
-        let usage = TokenUsage {
-            input: 1000,
-            output: 500,
-            cache_creation: 200,
-            cache_read: 0,
-        };
-        assert_eq!(usage.savings_tokens(), 0);
-    }
-
-    #[test]
     fn savings_cost_computes_discount_from_cache_read() {
         let pricing = ModelPricing {
             input: 3.00,
@@ -708,6 +679,24 @@ mod tests {
             cache_read: 0,
         };
         assert!((usage.savings_cost(&pricing, false) - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn savings_cost_never_reports_negative_savings() {
+        let pricing = ModelPricing {
+            input: 1.00,
+            output: 1.00,
+            cache_write: 1.00,
+            cache_read: 2.00,
+            fast: None,
+        };
+        let usage = TokenUsage {
+            input: 0,
+            output: 0,
+            cache_creation: 0,
+            cache_read: 1_000_000,
+        };
+        assert!(usage.savings_cost(&pricing, false).abs() < f64::EPSILON);
     }
 
     #[test]

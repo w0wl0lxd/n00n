@@ -1679,8 +1679,8 @@ mod tests {
         }
     }
 
-    #[test_case::test_case(json!({"timeout": 90}), Some(timeout_annotation(90)) ; "present")]
-    #[test_case::test_case(json!({}),              None                        ; "absent")]
+    #[test_case::test_case(serde_json::json!({"timeout": 90}), Some(timeout_annotation(90)) ; "present")]
+    #[test_case::test_case(serde_json::json!({}),              None                        ; "absent")]
     fn start_annotation_timeout(input: Value, expected: Option<String>) {
         let inv = LuaToolInvocation {
             start_annotation: Some(StartAnnotation::Timeout(Arc::from("timeout"))),
@@ -1704,7 +1704,7 @@ mod tests {
     }
 
     fn make_lua_tool(permission_scope_kind: Option<PermissionScopeKind>) -> LuaTool {
-        let schema = try_from_json(&json!({
+        let schema = try_from_json(&serde_json::json!({
             "type": "object",
             "properties": {
                 "url": { "type": "string" },
@@ -1739,7 +1739,9 @@ mod tests {
     #[test]
     fn permission_scope_extracted_at_parse_time() {
         let tool = make_lua_tool(Some(PermissionScopeKind::Field(Arc::from("url"))));
-        let inv = tool.parse(&json!({"url": "https://example.com"})).unwrap();
+        let inv = tool
+            .parse(&serde_json::json!({"url": "https://example.com"}))
+            .unwrap();
         let scopes = smol::block_on(inv.permission_scopes());
         assert_eq!(
             scopes.unwrap().scopes,
@@ -1750,7 +1752,7 @@ mod tests {
     #[test_case::test_case("format" ; "absent_field")]
     #[test_case::test_case("count" ; "non_string_field")]
     fn permission_scope_field_invalid_forces_prompt(field: &str) {
-        let input = json!({"url": "https://example.com", "count": 42});
+        let input = serde_json::json!({"url": "https://example.com", "count": 42});
         let inv = make_lua_tool(Some(PermissionScopeKind::Field(Arc::from(field))))
             .parse(&input)
             .unwrap();
@@ -1762,7 +1764,7 @@ mod tests {
     #[test]
     fn permission_scope_none_when_unconfigured() {
         let unconfigured = make_lua_tool(None)
-            .parse(&json!({"url": "https://example.com"}))
+            .parse(&serde_json::json!({"url": "https://example.com"}))
             .unwrap();
         assert!(smol::block_on(unconfigured.permission_scopes()).is_none());
     }
@@ -1826,7 +1828,7 @@ mod tests {
             tool: Arc::from("bash"),
             plugin: Arc::from("test"),
             has_header_fn: false,
-            input: json!({"command": "ls"}),
+            input: serde_json::json!({"command": "ls"}),
             tx,
             permission_state: PermissionState::NeedsCompute,
             mutable_path_field: None,
@@ -1844,7 +1846,7 @@ mod tests {
             tool: Arc::from("bash"),
             plugin: Arc::from("test"),
             has_header_fn: false,
-            input: json!({"command": "echo hi"}),
+            input: serde_json::json!({"command": "echo hi"}),
             tx: tx2,
             permission_state: PermissionState::NeedsCompute,
             mutable_path_field: None,
@@ -1868,7 +1870,7 @@ mod tests {
             tool: Arc::from("bash"),
             plugin: Arc::from("test"),
             has_header_fn: false,
-            input: json!({"command": "cargo test"}),
+            input: serde_json::json!({"command": "cargo test"}),
             tx,
             permission_state: PermissionState::NeedsCompute,
             mutable_path_field: None,
@@ -2259,26 +2261,26 @@ mod tests {
 
     #[test]
     fn start_annotation_returns_none_for_non_array_or_missing() {
-        let no_field = invocation(json!({"edits": [1, 2]}));
+        let no_field = invocation(serde_json::json!({"edits": [1, 2]}));
         assert_eq!(no_field.start_annotation(), None);
 
         let not_array = LuaToolInvocation {
             start_annotation: Some(StartAnnotation::Count(Arc::from("edit"))),
-            ..invocation(json!({"edit": "not an array"}))
+            ..invocation(serde_json::json!({"edit": "not an array"}))
         };
         assert_eq!(not_array.start_annotation(), None);
 
         let wrong_key = LuaToolInvocation {
             start_annotation: Some(StartAnnotation::Count(Arc::from("edit"))),
-            ..invocation(json!({"other_field": [1, 2]}))
+            ..invocation(serde_json::json!({"other_field": [1, 2]}))
         };
         assert_eq!(wrong_key.start_annotation(), None);
     }
 
-    #[test_case::test_case("edits", json!({"edits": [1]}),      Some("1 edit")   ; "singular")]
-    #[test_case::test_case("edits", json!({"edits": [1, 2, 3]}), Some("3 edits")  ; "plural")]
-    #[test_case::test_case("item",  json!({"item": [1, 2]}),     Some("2 items")  ; "field_without_trailing_s")]
-    #[test_case::test_case("edits", json!({"edits": []}),        Some("0 edits")  ; "empty_array")]
+    #[test_case::test_case("edits", serde_json::json!({"edits": [1]}),      Some("1 edit")   ; "singular")]
+    #[test_case::test_case("edits", serde_json::json!({"edits": [1, 2, 3]}), Some("3 edits")  ; "plural")]
+    #[test_case::test_case("item",  serde_json::json!({"item": [1, 2]}),     Some("2 items")  ; "field_without_trailing_s")]
+    #[test_case::test_case("edits", serde_json::json!({"edits": []}),        Some("0 edits")  ; "empty_array")]
     fn start_annotation_count(field: &str, input: Value, expected: Option<&str>) {
         let inv = LuaToolInvocation {
             start_annotation: Some(StartAnnotation::Count(Arc::from(field))),
@@ -2291,7 +2293,7 @@ mod tests {
     fn start_without_tool_use_id_is_noop() {
         let inv = LuaToolInvocation {
             has_start_fn: true,
-            ..invocation(json!({"code": "x"}))
+            ..invocation(serde_json::json!({"code": "x"}))
         };
         let ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
         smol::block_on(inv.start(&ctx));

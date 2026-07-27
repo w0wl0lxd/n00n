@@ -17,7 +17,6 @@ use n00n_interpreter::runner::{self, ToolFn};
 use n00n_interpreter::{AsyncResolver, PendingCall};
 use n00n_lua_macro::{lua_fn, lua_table};
 use serde_json::Value;
-use tracing::warn;
 
 use crate::api::util::convert::{json_to_lua, lua_tool_result};
 use crate::plugin_permissions::PluginPermissions;
@@ -42,10 +41,6 @@ fn run_ruff(args: &[&str], code: &str) -> Option<String> {
 }
 
 fn ruff_fix(code: String) -> String {
-    if !ruff_available() {
-        warn!("ruff is not installed; skipping ruff_fix for code_execution");
-        return code;
-    }
     let fixed = run_ruff(
         &[
             "check",
@@ -70,15 +65,6 @@ fn ruff_fix(code: String) -> String {
         &fixed,
     )
     .unwrap_or_else(|| fixed.clone())
-}
-
-fn ruff_available() -> bool {
-    Command::new("ruff")
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_or(false, |s| s.success())
 }
 
 enum BridgeMsg {

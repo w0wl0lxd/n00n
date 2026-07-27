@@ -69,14 +69,6 @@ local MAX_RELAY_BYTES = 12000
 local DEFAULT_MAX_WAVE_RETRIES = 3
 local MAX_WAVE_RETRIES = 5
 
-local opts = n00n.api.register_options({
-  timeout_secs = {
-    default = TEAM_TIMEOUT_SECS,
-    min = 60,
-    desc = "Maximum seconds a team run may execute before the tool is killed.",
-  },
-})
-
 local function add_cost(total, value)
   if total == nil or value == nil then
     return nil
@@ -1105,7 +1097,7 @@ n00n.api.register_tool({
   kind = "execute",
   audiences = { "main", "workflow" },
   schema = schema,
-  timeout = opts.timeout_secs,
+  timeout = TEAM_TIMEOUT_SECS,
   handler = handler,
   header = header,
 })

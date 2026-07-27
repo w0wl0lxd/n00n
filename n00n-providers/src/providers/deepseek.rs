@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use flume::Sender;
 use n00n_storage::id::SessionRef;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 use tracing::warn;
 
 use crate::model::{Model, ModelEntry, ModelFamily, ModelPricing, ModelTier};
@@ -180,7 +180,7 @@ impl Provider for DeepSeek {
             );
 
             if opts.thinking.is_enabled() {
-                body["thinking"] = json!({"type": "enabled"});
+                body["thinking"] = serde_json::json!({"type": "enabled"});
                 opts.thinking
                     .apply_reasoning_effort(&mut body, &dialect::DEEPSEEK, model);
                 if matches!(opts.thinking, ThinkingConfig::Budget(_)) {
@@ -188,7 +188,7 @@ impl Provider for DeepSeek {
                 }
                 pad_reasoning_content(&model.id, &mut body);
             } else {
-                body["thinking"] = json!({"type": "disabled"});
+                body["thinking"] = serde_json::json!({"type": "disabled"});
             }
 
             self.compat

@@ -514,19 +514,27 @@ mod tests {
         assert!(header.contains("fresh"));
         assert!(header.contains("read"));
         assert!(header.contains("write"));
+        assert!(header.contains("saved $"));
 
         let usage = StoredTokenUsage {
             input: 10,
             output: 20,
             cache_read: 30,
             cache_creation: 40,
-            savings_tokens: 0,
         };
-        let row = model_row("gpt", &usage, None, None, 10, Style::new(), Style::new())
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect::<String>();
-        for value in ["10", "20", "30", "40"] {
+        let row = model_row(
+            "gpt",
+            &usage,
+            None,
+            Some(0.123),
+            10,
+            Style::new(),
+            Style::new(),
+        )
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+        for value in ["10", "20", "30", "40", "$0.123"] {
             assert!(row.contains(value));
         }
     }

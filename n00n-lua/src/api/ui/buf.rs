@@ -417,25 +417,17 @@ pub(crate) fn parse_line(arg: &LuaValue) -> LuaResult<SnapshotLine> {
 }
 
 fn parse_span(val: &LuaValue) -> LuaResult<SnapshotSpan> {
-    match val {
-        LuaValue::String(s) => Ok(SnapshotSpan {
-            text: s.to_str().map_err(mlua::Error::external)?.to_owned(),
-            style: SpanStyle::Default,
-        }),
-        LuaValue::Table(t) => {
-            let text_val: LuaValue = t.raw_get(1)?;
-            let text = match &text_val {
-                LuaValue::String(s) => s.to_str().map_err(mlua::Error::external)?.to_owned(),
-                _ => return Err(mlua::Error::runtime("span[1] must be a string")),
-            };
-            let style_val: LuaValue = t.raw_get(2)?;
-            let style = parse_style(&style_val)?;
-            Ok(SnapshotSpan { text, style })
-        }
-        _ => Err(mlua::Error::runtime(
-            "span must be a string or a table {text, style?}",
-        )),
-    }
+    let LuaValue::Table(t) = val else {
+        return Err(mlua::Error::runtime("span must be a table {text, style?}"));
+    };
+    let text_val: LuaValue = t.raw_get(1)?;
+    let text = match &text_val {
+        LuaValue::String(s) => s.to_str().map_err(mlua::Error::external)?.to_owned(),
+        _ => return Err(mlua::Error::runtime("span[1] must be a string")),
+    };
+    let style_val: LuaValue = t.raw_get(2)?;
+    let style = parse_style(&style_val)?;
+    Ok(SnapshotSpan { text, style })
 }
 
 fn parse_style(val: &LuaValue) -> LuaResult<SpanStyle> {
