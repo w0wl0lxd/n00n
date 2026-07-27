@@ -203,14 +203,27 @@ impl System {
     }
 
     pub fn push_dynamic(&mut self, text: impl Into<String>) {
-        self.seal_static_boundary();
+        if !self
+            .blocks
+            .iter()
+            .any(|block| matches!(block.cache, CacheControl::Ephemeral | CacheControl::Dynamic))
+        {
+            self.seal_static_boundary();
+        }
         self.push(SystemBlock::new(text, CacheControl::Dynamic));
     }
 
-    /// Mark the last static block as the end of the cached prefix. This is a
-    /// no-op if the system contains no static blocks.
+    /// Mark the static prefix as cacheable when no dynamic content has been
+    /// added. This is a no-op after a dynamic block because caching a later
+    /// static block would also cache the dynamic prefix.
     pub fn seal(&mut self) {
-        self.seal_static_boundary();
+        if !self
+            .blocks
+            .iter()
+            .any(|block| matches!(block.cache, CacheControl::Ephemeral | CacheControl::Dynamic))
+        {
+            self.seal_static_boundary();
+        }
     }
 
     fn seal_static_boundary(&mut self) {
