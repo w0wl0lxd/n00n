@@ -154,21 +154,18 @@ fn fts_query(raw: &str) -> String {
 
 fn format_nodes(project: &Path, nodes: &[GraphNode]) -> String {
     let mut sections = Vec::new();
-    let mut seen_files = std::collections::BTreeSet::new();
 
     for node in nodes {
-        if !seen_files.insert(node.file_path.clone()) {
-            continue;
-        }
-
         let file_path = resolve_file_path(project, &node.file_path);
         let header = format!("## {}\n", node.file_path);
         let meta = format!(
             "{} ({}, lines {}-{})\n",
             node.qualified_name, node.name, node.start_line, node.end_line
         );
-        let snippet = read_snippet(&file_path, node.start_line, node.end_line)
-            .unwrap_or_else(|err| format!("(source unavailable: {err:#})"));
+        let snippet = match read_snippet(&file_path, node.start_line, node.end_line) {
+            Ok(text) => text,
+            Err(err) => format!("(source unavailable: {err:#})"),
+        };
         sections.push(format!("{header}{meta}\n{snippet}"));
     }
 

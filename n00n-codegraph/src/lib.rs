@@ -65,11 +65,7 @@ impl Client {
         }
 
         if Self::has_database(project) {
-            match db::explore_database(query, project) {
-                Ok(output) => return Ok(output),
-                Err(CodegraphError::Sqlite { .. }) => {}
-                Err(err) => return Err(err),
-            }
+            return db::explore_database(query, project);
         }
 
         Self::explore_cli(query, project, timeout_secs)
