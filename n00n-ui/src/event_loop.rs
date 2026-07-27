@@ -29,12 +29,12 @@ use n00n_providers::provider::{
     Provider, fetch_all_models, from_model_fallback_with_openai_options,
     from_model_with_openai_options,
 };
-use n00n_providers::{Message, Model, OpenAiOptions};
+use n00n_providers::{ContentBlock, Message, Model, OpenAiOptions};
 use n00n_storage::StateDir;
 use n00n_storage::StorageError;
 use n00n_storage::id::{N00nId, N00nIdParseError, SessionRef};
 use n00n_storage::sessions::{SessionError, TranscriptEntry, normalize_title};
-use serde_json::json;
+use serde_json::{Value, json};
 use tracing::warn;
 
 use crate::AppSession;
@@ -123,6 +123,52 @@ impl SessionStatus {
 
 fn parse_session_id(id: &str) -> Result<N00nId, String> {
     id.parse().map_err(|e: N00nIdParseError| e.to_string())
+}
+
+fn paused_team_run(history: &[Message]) -> Result<Option<Value>, String> {
+    let Some((user_index, last_user)) = history
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, message)| matches!(message.role, n00n_providers::Role::User))
+    else {
+        return Ok(None);
+    };
+
+    for block in &last_user.content {
+        let ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            ..
+        } = block
+        else {
+            continue;
+        };
+        let is_team_result = history[..user_index].iter().rev().any(|message| {
+            message
+                .tool_uses()
+                .any(|(id, name, _)| id == tool_use_id && name == "team")
+        });
+        if !is_team_result {
+            continue;
+        }
+
+        if !content.trim_start().starts_with('{') {
+            continue;
+        }
+        let payload: Value = serde_json::from_str(content)
+            .map_err(|error| format!("invalid paused team result: {error}"))?;
+        let paused = payload.get("paused").and_then(Value::as_bool) == Some(true);
+        let has_run_id = payload
+            .get("run_id")
+            .and_then(Value::as_str)
+            .is_some_and(|run_id| !run_id.is_empty());
+        if paused && has_run_id {
+            return Ok(Some(payload));
+        }
+    }
+
+    Ok(None)
 }
 
 struct SessionRuntime {
@@ -850,11 +896,7 @@ impl<'t> EventLoop<'t> {
                             .then(|| message.first_text_content())
                             .flatten()
                     });
-                    let last_user = history
-                        .iter()
-                        .rev()
-                        .find(|message| matches!(message.role, n00n_providers::Role::User))
-                        .and_then(|message| serde_json::to_value(message).ok());
+                    let paused_team = paused_team_run(&history)?;
                     Ok(json!({
                         "id": rt.id(),
                         "title": rt.app.state.session.title,
@@ -862,7 +904,7 @@ impl<'t> EventLoop<'t> {
                         "updated_at": rt.app.state.session.updated_at,
                         "focused": idx == self.focused,
                         "output": output,
-                        "last_user": last_user,
+                        "paused_team": paused_team,
                     }))
                 });
                 let _ = reply_tx.send(reply);
@@ -1502,10 +1544,11 @@ fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        DRAIN_BUDGET, DrainScheduler, draw_then_post_terminal, should_save_periodically,
-        take_painted_submissions,
+        DRAIN_BUDGET, DrainScheduler, draw_then_post_terminal, paused_team_run,
+        should_save_periodically, take_painted_submissions,
     };
     use crate::components::Status;
+    use n00n_providers::{ContentBlock, Message, Role};
     use n00n_storage::id::N00nId;
     use ratatui::{
         Terminal,
@@ -1515,6 +1558,36 @@ mod tests {
         widgets::Paragraph,
     };
     use std::io;
+
+    #[test]
+    fn paused_team_run_requires_matching_team_tool_call() {
+        let tool_result = Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "tool-1".into(),
+                content: r#"{"paused":true,"run_id":"run-1"}"#.into(),
+                is_error: true,
+            }],
+            ..Default::default()
+        };
+        assert!(
+            paused_team_run(std::slice::from_ref(&tool_result))
+                .unwrap()
+                .is_none()
+        );
+
+        let tool_call = Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: "tool-1".into(),
+                name: "team".into(),
+                input: serde_json::json!({}),
+            }],
+            ..Default::default()
+        };
+        let paused = paused_team_run(&[tool_call, tool_result]).unwrap().unwrap();
+        assert_eq!(paused["run_id"], "run-1");
+    }
 
     struct FailingBackend(TestBackend);
 

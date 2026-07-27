@@ -278,6 +278,30 @@ fn session_api_prompt_is_explicitly_non_paint_gated() {
 }
 
 #[test]
+fn session_api_control_prompt_steers_with_control_tag() {
+    let mut app = test_app();
+    let (sender, receiver) = shared_queue::queue();
+    app.queue.set_shared(sender);
+    app.status = Status::Streaming;
+
+    assert!(matches!(
+        app.submit_control_prompt(QueuedMessage {
+            text: "resume".into(),
+            images: Vec::new(),
+            control: true,
+        }),
+        SubmitOutcome::Queued
+    ));
+    let Some(n00n_agent::ExtractedCommand::Interrupt(input, _)) =
+        receiver.poll(n00n_agent::InterruptPoint::ToolComplete)
+    else {
+        panic!("expected steering interrupt");
+    };
+    assert_eq!(input.message, "resume");
+    assert!(input.control);
+}
+
+#[test]
 fn background_persistence_failure_is_terminal_without_composer_restore() {
     let mut app = test_app();
     let SubmitOutcome::Started(actions) = app.submit_background_prompt(QueuedMessage {

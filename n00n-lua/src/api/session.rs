@@ -58,10 +58,10 @@ async fn live(lua: Lua, #[ctx] tx: Option<flume::Sender<UiAction>>) -> LuaResult
 }
 
 /// Returns one live session with its status, latest assistant text output,
-/// and last user message.
+/// and paused team run metadata when the latest tool result is from `team`.
 ///
 /// @param id string Live session id.
-/// @return (table|nil, string|nil) `{id, title, status, updated_at, focused, output?, last_user?}`, or nil and an error.
+/// @return (table|nil, string|nil) `{id, title, status, updated_at, focused, output?, paused_team?}`, or nil and an error.
 #[lua_fn]
 async fn status(
     lua: Lua,
@@ -307,13 +307,15 @@ mod tests {
         assert!(val);
     }
 
-    #[test_case("return session.prompt('hi', { session = 'abc' })", Some("abc"), false ; "explicit_session_id")]
-    #[test_case("return session.prompt('hi')", None, false ; "defaults_to_focused")]
-    #[test_case("return session.prompt('hi', { session = 'abc', steer = true })", Some("abc"), true ; "explicit_session_id_steer")]
+    #[test_case("return session.prompt('hi', { session = 'abc' })", Some("abc"), false, false ; "explicit_session_id")]
+    #[test_case("return session.prompt('hi')", None, false, false ; "defaults_to_focused")]
+    #[test_case("return session.prompt('hi', { session = 'abc', steer = true })", Some("abc"), true, false ; "explicit_session_id_steer")]
+    #[test_case("return session.prompt('hi', { session = 'abc', steer = true, control = true })", Some("abc"), true, true ; "explicit_session_id_control")]
     fn prompt_forwards_text_and_session_id(
         code: &str,
         expected_id: Option<&str>,
         expected_steer: bool,
+        expected_control: bool,
     ) {
         let (tx, rx) = flume::unbounded::<UiAction>();
         let lua = lua_with_session(Some(tx));
@@ -335,7 +337,7 @@ mod tests {
             assert_eq!(id, expected_id);
             assert_eq!(text, "hi");
             assert_eq!(steer, expected_steer);
-            assert!(!control);
+            assert_eq!(control, expected_control);
             reply_tx.send(Ok(json!("queued"))).unwrap();
         });
         let (val, err): (String, Option<String>) =

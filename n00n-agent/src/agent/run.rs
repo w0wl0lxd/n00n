@@ -1143,7 +1143,7 @@ mod tests {
     fn has_interrupt_in_history(history: &[Message]) -> bool {
         history.iter().any(|m| {
             m.content.iter().any(
-                |b| matches!(b, ContentBlock::Text { text } if text.contains("<user-interrupt>")),
+                |b| matches!(b, ContentBlock::Text { text } if text.contains("<user-interrupt>") || text.contains("<control-interrupt>")),
             )
         })
     }
@@ -1289,15 +1289,22 @@ mod tests {
         });
     }
 
-    #[test_case(Some(true),  true,  true  ; "after_tool_use_turn")]
-    #[test_case(Some(false), true,  true  ; "after_text_only_turn")]
-    #[test_case(None,        false, false ; "channel_empty")]
-    fn interrupt_handling(queued: Option<bool>, expect_consumed: bool, expect_injected: bool) {
+    #[test_case(Some(true),  false, true,  true  ; "after_tool_use_turn")]
+    #[test_case(Some(false), false, true,  true  ; "after_text_only_turn")]
+    #[test_case(Some(false), true,  true,  true  ; "control_after_text_only_turn")]
+    #[test_case(None,        false, false, false ; "channel_empty")]
+    fn interrupt_handling(
+        queued: Option<bool>,
+        control: bool,
+        expect_consumed: bool,
+        expect_injected: bool,
+    ) {
         smol::block_on(async {
             let source = if queued.is_some() {
+                let mut input = default_input();
+                input.control = control;
                 Some(MockInterruptSource::new(vec![ExtractedCommand::Interrupt(
-                    default_input(),
-                    0,
+                    input, 0,
                 )]))
             } else {
                 None
@@ -1334,6 +1341,10 @@ mod tests {
             assert_eq!(
                 has_interrupt_in_history(history.as_slice()),
                 expect_injected
+            );
+            assert_eq!(
+                history.as_slice().iter().any(|message| message.control),
+                expect_injected && control
             );
         });
     }

@@ -412,6 +412,7 @@ local function run_autonomous(ctx, goal, input, steps, relay_k, logger, resume_s
           total_usage = total_usage,
           failed_step = i,
           failed_role = step.role,
+          start_index = i,
           wave_index = 0,
           step_index = i,
         })
@@ -505,6 +506,7 @@ local function run_single_pass(ctx, goal, input, steps, relay_k, logger, resume_
           total_usage = total_usage,
           failed_step = i,
           failed_role = step.role,
+          start_index = i,
           wave_index = 0,
           step_index = i,
         })
@@ -560,7 +562,7 @@ local function run_wave(
   local failed_role = nil
 
   for i, entry in ipairs(wave_steps) do
-    if i >= start_step_index then
+    if entry.index >= start_step_index then
       local step = entry.step
       if logger then
         logger.log("step_started", { index = entry.index, role = step.role, tier = step.tier, wave = wave_name })
@@ -684,6 +686,15 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
         wave_steps[i] = { index = e.index, step = step_copy, original_prompt = step_copy.prompt or "" }
       end
 
+      if resume_state and wave_idx == start_wave_index and input.continue and #input.continue > 0 then
+        for _, entry in ipairs(wave_steps) do
+          if entry.index == wave_start_step then
+            entry.original_prompt = entry.original_prompt .. "\n\nHuman guidance:\n" .. input.continue
+            break
+          end
+        end
+      end
+
       local retry_count = 0
       local wave_passed = false
       local wave_cost = 0.0
@@ -785,7 +796,7 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
         end
       end
 
-      if input.checkpoints then
+      if input.checkpoints or pause then
         local ckpt_id = "wave_" .. wave_idx .. "_step_" .. #wave_steps
         local ckpt_state = {
           results = results,
@@ -862,7 +873,7 @@ local function run_team(input, ctx)
     goal = goal .. "\n\nPrior learnings for this goal:\n" .. prior
   end
 
-  local run_id = n00n.workflow.hash(input.goal .. "\0" .. tostring(os.time()))
+  local run_id = input.resume or n00n.workflow.hash(input.goal .. "\0" .. tostring(os.time()))
   local team_dir = memory.base_dir()
   local logger
   if team_dir then
