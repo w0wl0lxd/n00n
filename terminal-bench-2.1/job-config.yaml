@@ -1,0 +1,14 @@
+job_name: tb-2-1-n00n-swe-1-7
+n_concurrent_trials: 1
+n_attempts: 5
+quiet: false
+
+environment:
+  type: daytona
+
+agents:
+  - name: n00n_agent:N00nAgent
+    model_name: swe-1-7
+
+datasets:
+  - name: terminal-bench/terminal-bench-2-1
