@@ -328,7 +328,7 @@ end
 -- for subcommands that may invoke an external diff driver.
 local function sanitize_git_command(command)
   local trimmed = trim(command)
-  if trimmed:lower():sub(1, 4) ~= "git " then
+  if not trimmed:lower():match("^git%s") then
     return command
   end
 
@@ -768,7 +768,7 @@ n00n.api.register_tool({
       cwd = workdir,
       env = {
         GIT_TERMINAL_PROMPT = "0",
-        GIT_PAGER = "cat",
+        GIT_PAGER = "",
         GIT_EXEC_PATH = "",
       },
       on_stdout = function(_, line)
