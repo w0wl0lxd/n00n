@@ -12,8 +12,8 @@ use serde_json::Value;
 use tracing::{debug, error, warn};
 
 use agent_client_protocol_schema::{
-    AgentCapabilities, ClientCapabilities, EmbeddedResourceResource, ImageContent,
-    InitializeRequest, InitializeResponse, Meta,
+    AgentCapabilities, AuthenticateRequest, AuthenticateResponse, ClientCapabilities,
+    EmbeddedResourceResource, ImageContent, InitializeRequest, InitializeResponse, Meta,
 };
 use agent_client_protocol_schema::{
     ContentBlock as AcpContentBlock, Error as AcpError, JsonRpcMessage, NewSessionRequest,
@@ -313,6 +313,26 @@ impl DevinInner {
                     response.protocol_version
                 ),
             });
+        }
+
+        if let Some(key) = api_key
+            && let Some(method) = response
+                .auth_methods
+                .iter()
+                .find(|m| m.id().to_string() == "api-key")
+                .or(response.auth_methods.first())
+        {
+            let mut meta = Meta::new();
+            meta.insert("api_key".to_string(), Value::String(key.to_string()));
+            let auth_req = AuthenticateRequest::new(method.id().clone()).meta(meta);
+            self.send_request::<AuthenticateRequest, AuthenticateResponse>(
+                "authenticate",
+                auth_req,
+            )
+            .await
+            .map_err(|e| AgentError::Config {
+                message: format!("authenticate failed: {e}"),
+            })?;
         }
 
         *self.agent_capabilities.lock().await = Some(response.agent_capabilities);
@@ -2046,5 +2066,20 @@ mod tests {
             headers: Vec::new(),
         };
         assert_eq!(Devin::command_from_auth(&auth), "devin");
+    }
+
+    #[test]
+    fn new_session_request_serializes_camel_case() {
+        let req = NewSessionRequest::new("/tmp");
+        let json = serde_json::to_value(req).expect("serialize");
+        let obj = json.as_object().expect("object");
+        assert!(
+            obj.contains_key("mcpServers"),
+            "expected camelCase mcpServers, got keys: {:?}",
+            obj.keys().collect::<Vec<_>>()
+        );
+        assert!(obj.contains_key("cwd"));
+        assert!(!obj.contains_key("mcp_servers"));
+        assert!(!obj.contains_key("additional_directories"));
     }
 }
