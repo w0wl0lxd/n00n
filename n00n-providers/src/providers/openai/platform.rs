@@ -21,8 +21,9 @@ use tracing::{debug, warn};
 use crate::model::Model;
 use crate::provider::{BoxFuture, Provider};
 use crate::{
-    AgentError, Message, ProviderEvent, ProviderUsage, RequestDeliveryMetadata,
-    RequestDeliveryPhase, RequestOptions, StreamResponse, System, UsageLimit, dialect,
+    AgentError, HistoryReplayReason, Message, ProviderEvent, ProviderUsage,
+    RequestDeliveryMetadata, RequestDeliveryPhase, RequestOptions, StreamResponse, System,
+    UsageLimit, dialect,
 };
 
 use super::auth;
@@ -264,6 +265,18 @@ fn should_fallback_to_http(error: &super::websocket::WebSocketAttemptError) -> b
         && !error.error.is_auth_error()
         && !matches!(&error.error, AgentError::CodingPlanAdmission { .. })
         && error.delivery.phase == RequestDeliveryPhase::NotSent
+}
+
+fn full_history_replay_required(
+    previous_response_id: Option<&str>,
+    message_count: usize,
+    protect_history_replay: bool,
+    allow_history_replay: bool,
+) -> bool {
+    protect_history_replay
+        && previous_response_id.is_none()
+        && message_count > 1
+        && !allow_history_replay
 }
 
 fn not_sent_websocket_error(error: AgentError) -> super::websocket::WebSocketAttemptError {
@@ -1312,6 +1325,23 @@ impl OpenAi {
                 };
             }
         };
+        if full_history_replay_required(
+            previous_response_id.as_deref(),
+            messages.len(),
+            opts.protect_history_replay,
+            opts.allow_history_replay,
+        ) {
+            return CodexAttempt {
+                previous_response_id: None,
+                store,
+                emitted_event: false,
+                definitive_rejection: false,
+                delivery: Some(RequestDeliveryMetadata::new(RequestDeliveryPhase::NotSent)),
+                result: Err(AgentError::HistoryReplayRequired {
+                    reason: HistoryReplayReason::ContinuationUnavailable,
+                }),
+            };
+        }
         let prompt_cache_key = prompt_cache_key(&model.id, system, tools_hash, session_id);
         let body = super::websocket::build_request_body(
             model,
@@ -1324,7 +1354,9 @@ impl OpenAi {
             store,
         );
         let mut full_history_body = None;
-        let full_history_fallback_available = !store && previous_response_id.is_some();
+        let full_history_fallback_available = !store
+            && previous_response_id.is_some()
+            && (!opts.protect_history_replay || opts.allow_history_replay);
         log_responses_request(
             "websocket",
             &body,
@@ -1369,6 +1401,28 @@ impl OpenAi {
             match websocket_result {
                 Ok((response_id, response)) => (response_id, response, true),
                 Err(error) if should_fallback_to_http(&error) => {
+                    if !store
+                        && previous_response_id.is_some()
+                        && opts.protect_history_replay
+                        && !opts.allow_history_replay
+                    {
+                        return self
+                            .finish_codex_attempt(
+                                CodexAttempt {
+                                    previous_response_id,
+                                    store,
+                                    emitted_event: false,
+                                    definitive_rejection: false,
+                                    delivery: Some(error.delivery),
+                                    result: Err(AgentError::HistoryReplayRequired {
+                                        reason: HistoryReplayReason::ContinuationUnavailable,
+                                    }),
+                                },
+                                session_id,
+                                response_chain_lock.as_ref(),
+                            )
+                            .await;
+                    }
                     warn!("OpenAI Responses WebSocket unavailable; falling back to HTTP");
                     let fallback_body = if store {
                         &body
@@ -1943,10 +1997,15 @@ impl Provider for OpenAi {
                     return attempt.result;
                 }
 
+                if opts.protect_history_replay && !opts.allow_history_replay {
+                    return Err(AgentError::HistoryReplayRequired {
+                        reason: HistoryReplayReason::ContinuationNotFound,
+                    });
+                }
                 warn!(
                     chain_reset = true,
                     full_history_fallback = true,
-                    "OpenAI Responses chain was not found; retrying with full history"
+                    "OpenAI Responses chain was not found; replaying approved full history"
                 );
                 return self
                     .run_codex_attempt_with_auth_retry(
@@ -2559,7 +2618,7 @@ mod tests {
 
     #[test]
     #[allow(clippy::too_many_lines)]
-    fn ephemeral_preflight_failure_rebuilds_second_turn_with_full_history() {
+    fn approved_ephemeral_preflight_failure_rebuilds_second_turn_with_full_history() {
         smol::block_on(async {
             let temp_dir = TempDir::new().unwrap();
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2684,7 +2743,11 @@ mod tests {
                     &System::from(""),
                     &tools,
                     &event_tx,
-                    RequestOptions::default(),
+                    RequestOptions {
+                        protect_history_replay: true,
+                        allow_history_replay: true,
+                        ..Default::default()
+                    },
                     Some(&session_id),
                 )
                 .await
@@ -3974,6 +4037,20 @@ mod tests {
             assert!(slot.lock().await.is_none());
             server.await;
         });
+    }
+
+    #[test]
+    fn full_history_replay_requires_explicit_approval() {
+        assert!(full_history_replay_required(None, 2, true, false));
+        assert!(!full_history_replay_required(None, 2, false, false));
+        assert!(!full_history_replay_required(None, 1, true, false));
+        assert!(!full_history_replay_required(None, 2, true, true));
+        assert!(!full_history_replay_required(
+            Some("response"),
+            2,
+            true,
+            false
+        ));
     }
 
     #[test]
