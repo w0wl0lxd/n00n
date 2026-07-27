@@ -240,5 +240,79 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
             returns: "(nil) nil on success, or error on failure.",
             example: "",
         },
+        FnDoc {
+            name: "graph_index_available",
+            args: "{project}",
+            desc: "Returns true when a native `.arbor/graph.json` index is present.",
+            params: &[ParamDoc {
+                name: "{project}",
+                ty: "string",
+                desc: "Path to the project root.",
+            }],
+            returns: "(boolean) true when graph.json exists and is loadable.",
+            example: "",
+        },
+        FnDoc {
+            name: "graph_callers",
+            args: "{symbol}, {project}",
+            desc: "Show callers via the in-memory graph index (no CLI subprocess).",
+            params: &[
+                ParamDoc {
+                    name: "{symbol}",
+                    ty: "string",
+                    desc: "Symbol name (function, class, etc.).",
+                },
+                ParamDoc {
+                    name: "{project}",
+                    ty: "string",
+                    desc: "Path to the project root.",
+                },
+            ],
+            returns: "(table) Array of caller objects with `name`, `path`, `kind`, `line` fields.",
+            example: "",
+        },
+        FnDoc {
+            name: "graph_callees",
+            args: "{symbol}, {project}",
+            desc: "Show callees via the in-memory graph index (no CLI subprocess).",
+            params: &[
+                ParamDoc {
+                    name: "{symbol}",
+                    ty: "string",
+                    desc: "Symbol name.",
+                },
+                ParamDoc {
+                    name: "{project}",
+                    ty: "string",
+                    desc: "Path to the project root.",
+                },
+            ],
+            returns: "(table) Array of callee objects with `name`, `path`, `kind`, `line` fields.",
+            example: "",
+        },
+        FnDoc {
+            name: "graph_trace_path",
+            args: "{from_symbol}, {to_symbol}, {project}",
+            desc: "Shortest call path between two symbols in the graph index.",
+            params: &[
+                ParamDoc {
+                    name: "{from_symbol}",
+                    ty: "string",
+                    desc: "Start symbol name.",
+                },
+                ParamDoc {
+                    name: "{to_symbol}",
+                    ty: "string",
+                    desc: "End symbol name.",
+                },
+                ParamDoc {
+                    name: "{project}",
+                    ty: "string",
+                    desc: "Path to the project root.",
+                },
+            ],
+            returns: "(table) Path nodes or error when no path exists.",
+            example: "",
+        },
     ],
 };

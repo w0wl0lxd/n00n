@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+#[cfg(unix)]
 use rustix::process::{Pid, test_kill_process};
 use serde::{Deserialize, Serialize};
 
@@ -79,6 +80,7 @@ pub fn remove(state_dir: &Path) -> ControlResult<()> {
 
 /// Returns whether `pid` still refers to a live process on this host.
 #[must_use]
+#[cfg(unix)]
 pub fn pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
@@ -93,6 +95,13 @@ pub fn pid_alive(pid: u32) -> bool {
         Ok(()) | Err(rustix::io::Errno::PERM) => true,
         Err(rustix::io::Errno::SRCH | _) => false,
     }
+}
+
+/// Stub for Windows: treat all pids as stale so stale locks are swept.
+#[must_use]
+#[cfg(not(unix))]
+pub fn pid_alive(_pid: u32) -> bool {
+    false
 }
 
 /// Remove a lock file whose owner pid is no longer alive.
