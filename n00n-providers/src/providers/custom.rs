@@ -112,7 +112,7 @@ pub fn create(slug: &str, timeouts: Timeouts) -> Result<Box<dyn Provider>, Agent
         })),
         ProviderKind::Google => Ok(Box::new(super::google::Google::with_auth(auth, timeouts)?)),
         ProviderKind::Devin => Ok(Box::new(super::devin::Devin::with_auth(&auth, timeouts)?)),
-        ProviderKind::Cursor => Ok(Box::new(super::cursor::Cursor::new(timeouts)?)),
+        ProviderKind::Cursor => Ok(Box::new(super::cursor::Cursor::with_auth(&auth, timeouts)?)),
         _ => Err(AgentError::Config {
             message: format!(
                 "unsupported protocol for custom provider '{slug}', only openai/anthropic/google/devin/cursor are supported"
