@@ -1,33 +1,44 @@
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::sync::Arc;
+#[cfg(unix)]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(unix)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(unix)]
 use async_lock::Mutex;
 use color_eyre::Result;
 use color_eyre::eyre::{Context, eyre};
+#[cfg(unix)]
 use flume::Sender;
+#[cfg(unix)]
 use futures_lite::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, split};
 use n00n_agent::headless;
 use n00n_agent::tools::ToolRegistry;
-use n00n_agent::{
-    AgentConfig, AgentEvent, AgentInput, AgentMode as RuntimeAgentMode, Envelope, McpHandle,
-    PermissionsConfig, prompt::ResolvedSlots,
-};
+use n00n_agent::{AgentConfig, McpHandle, PermissionsConfig, prompt::ResolvedSlots};
+#[cfg(unix)]
+use n00n_agent::{AgentEvent, AgentInput, AgentMode as RuntimeAgentMode, Envelope};
 use n00n_config::{load_env_files, load_permissions};
 use n00n_daemon::ControlError;
+#[cfg(unix)]
 use n00n_daemon::backend::WorkerBackend;
 use n00n_daemon::client as daemon_client;
+#[cfg(unix)]
 use n00n_daemon::lock::DaemonRole;
 use n00n_daemon::protocol::{BackendKind, ControlRequest, ControlResponse, MessageOpts};
+#[cfg(unix)]
 use n00n_daemon::registry::ControlPlane;
+#[cfg(unix)]
 use n00n_daemon::server as daemon_server;
 use n00n_daemon::transport;
 use n00n_daemon::{AgentRecord, AgentScriptView, is_terminal_worker_status};
 use n00n_lua::PluginHost;
-use n00n_providers::{Model, OpenAiOptions, ThinkingConfig, Timeouts};
+#[cfg(unix)]
+use n00n_providers::ThinkingConfig;
+use n00n_providers::{Model, OpenAiOptions, Timeouts};
 use n00n_storage::StateDir;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -308,9 +319,11 @@ pub struct AgentRunOptions<'a> {
 }
 
 struct PreparedEnv {
+    #[cfg(unix)]
     storage: StateDir,
     cwd: PathBuf,
     model: Model,
+    #[cfg(unix)]
     model_spec: String,
     agent_config: AgentConfig,
     permissions: PermissionsConfig,
@@ -358,6 +371,7 @@ fn prepare_agent_env(model_arg: Option<&str>, yolo: bool, no_jit: bool) -> Resul
     };
 
     let model = setup::resolve_model(model_arg, &config.provider, &storage)?;
+    #[cfg(unix)]
     let model_spec = model.spec();
     setup::install_panic_log_hook();
 
@@ -371,9 +385,11 @@ fn prepare_agent_env(model_arg: Option<&str>, yolo: bool, no_jit: bool) -> Resul
         .map_or_else(Default::default, |h| h.collect_prompt_slots());
 
     Ok(PreparedEnv {
+        #[cfg(unix)]
         storage,
         cwd,
         model,
+        #[cfg(unix)]
         model_spec,
         agent_config: config.agent,
         permissions: config.permissions,
@@ -384,6 +400,7 @@ fn prepare_agent_env(model_arg: Option<&str>, yolo: bool, no_jit: bool) -> Resul
     })
 }
 
+#[cfg(unix)]
 async fn write_line<W: AsyncWriteExt + Unpin>(writer: &mut W, line: &str) -> Result<()> {
     writer
         .write_all(line.as_bytes())
@@ -514,6 +531,7 @@ enum ServerEvent {
 
 const AGENTS_SUBDIR: &str = "agents";
 const STATE_FILE: &str = "agent.json";
+#[cfg(unix)]
 const SOCKET_FILE: &str = "control.sock";
 
 fn agent_dir(state_dir: &StateDir, agent_id: &str) -> Result<PathBuf> {
@@ -522,6 +540,7 @@ fn agent_dir(state_dir: &StateDir, agent_id: &str) -> Result<PathBuf> {
     Ok(agents_dir.join(agent_id))
 }
 
+#[cfg(unix)]
 fn socket_path(state_dir: &StateDir, agent_id: &str) -> Result<PathBuf> {
     Ok(agent_dir(state_dir, agent_id)?.join(SOCKET_FILE))
 }
@@ -530,6 +549,7 @@ fn state_file_path(state_dir: &StateDir, agent_id: &str) -> Result<PathBuf> {
     Ok(agent_dir(state_dir, agent_id)?.join(STATE_FILE))
 }
 
+#[cfg(unix)]
 fn write_agent_state(state_dir: &StateDir, state: &AgentState) -> Result<()> {
     let path = state_file_path(state_dir, &state.id)?;
     let data = serde_json::to_vec_pretty(state).wrap_err("failed to serialize agent state")?;
@@ -567,6 +587,7 @@ fn list_agent_states(state_dir: &StateDir) -> Result<Vec<AgentState>> {
     Ok(states)
 }
 
+#[cfg(unix)]
 fn now_epoch() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -715,6 +736,7 @@ pub fn server(_opts: &AgentRunOptions<'_>, _agent_id: Option<String>) -> Result<
     Err(eyre!("agent server is not supported on Windows"))
 }
 
+#[cfg(unix)]
 fn wait_for_run_done(event_rx: &flume::Receiver<Envelope>) {
     while let Ok(envelope) = event_rx.recv() {
         if matches!(
