@@ -807,6 +807,7 @@ local function handler(input, ctx)
   }
 
   local progress = make_progress(ctx)
+  ctx:live_buf(progress.buf)
   progress.log("run_id " .. run_id)
   local captured = {}
   local saga = { compensations = {}, error_handlers = {} }
