@@ -154,10 +154,8 @@ class N00nAgent(BaseInstalledAgent):
         )
 
         # Devin needs a credentials file and a minimal config so it never prompts.
-        provider = self._parsed_model_provider or ""
-        is_devin = provider == "devin" or (self.model_name or "").startswith("devin/")
         windsurf_key = self._get_env("WINDSURF_API_KEY")
-        if is_devin and windsurf_key:
+        if self._is_devin() and windsurf_key:
             await self._write_devin_config(environment, windsurf_key)
 
     async def _write_devin_config(
@@ -186,6 +184,10 @@ class N00nAgent(BaseInstalledAgent):
             ),
         )
 
+    def _is_devin(self) -> bool:
+        provider = self._parsed_model_provider or ""
+        return provider == "devin" or (self.model_name or "").startswith("devin/")
+
     async def _upload_text(
         self, environment: BaseEnvironment, content: str, remote_path: str
     ) -> None:
@@ -206,9 +208,8 @@ class N00nAgent(BaseInstalledAgent):
 
         key_upper = key.upper()
         # Check override set for this provider
-        if provider in _PROVIDER_API_KEY_OVERRIDES:
-            if key_upper in _PROVIDER_API_KEY_OVERRIDES[provider]:
-                return True
+        if key_upper in _PROVIDER_API_KEY_OVERRIDES.get(provider, frozenset()):
+            return True
 
         # Check prefix match: PROVIDER_NAME_API_KEY,
         # PROVIDER_NAME_AUTH_TOKEN, PROVIDER_NAME_TOKEN
@@ -224,9 +225,9 @@ class N00nAgent(BaseInstalledAgent):
         self,
         environment: BaseEnvironment,
         env_vars: dict[str, str],
-        remote_path: str = "/opt/n00n/.env",
     ) -> None:
         """Write environment variables to a file on the remote system."""
+        remote_path = "/opt/n00n/.env"
         lines = [f"{key}={shlex.quote(value)}\n" for key, value in env_vars.items()]
         content = "".join(lines)
         await self._upload_text(environment, content, remote_path)
@@ -255,15 +256,13 @@ class N00nAgent(BaseInstalledAgent):
         for key, value in os.environ.items():
             if self._is_provider_api_key(key):
                 secrets[key] = value
-        for key, value in self.extra_env.items():
-            if key.endswith(("_API_KEY", "_AUTH_TOKEN", "_TOKEN")):
-                secrets[key] = value
-            elif key == "PATH":
-                # PATH is handled separately in env dict
-                pass
-            else:
-                # Other extra_env entries are not secrets
-                pass
+        secrets.update(
+            {
+                k: v
+                for k, v in self.extra_env.items()
+                if k.endswith(("_API_KEY", "_AUTH_TOKEN", "_TOKEN"))
+            }
+        )
 
         # Build non-secret env dict with base variables
         env: dict[str, str] = {
@@ -279,8 +278,7 @@ class N00nAgent(BaseInstalledAgent):
             env["PATH"] = f"{env['PATH']}:{extra_path}"
 
         # Set DEVIN_PERMISSION_MODE for devin provider (non-secret)
-        provider = self._parsed_model_provider or ""
-        if provider == "devin" or model.startswith("devin/"):
+        if self._is_devin():
             env["DEVIN_PERMISSION_MODE"] = "dangerous"
 
         # Write secrets to file if any exist
@@ -288,21 +286,13 @@ class N00nAgent(BaseInstalledAgent):
             await self._write_env_file(environment, secrets)
 
         # Build command with source prefix if secrets exist
-        if secrets:
-            command = (
-                "set -a && . /opt/n00n/.env && set +a && "
-                "n00n --print --exit-on-done --yolo --verbose "
-                "--output-format stream-json "
-                f"--model {shlex.quote(model)} -- {escaped} 2>&1 | "
-                f"tee /logs/agent/{AGENT_LOG_FILE}"
-            )
-        else:
-            command = (
-                "n00n --print --exit-on-done --yolo --verbose "
-                "--output-format stream-json "
-                f"--model {shlex.quote(model)} -- {escaped} 2>&1 | "
-                f"tee /logs/agent/{AGENT_LOG_FILE}"
-            )
+        source_prefix = "set -a && . /opt/n00n/.env && set +a && " if secrets else ""
+        command = (
+            f"{source_prefix}n00n --print --exit-on-done --yolo --verbose "
+            f"--output-format stream-json "
+            f"--model {shlex.quote(model)} -- {escaped} 2>&1 | "
+            f"tee /logs/agent/{AGENT_LOG_FILE}"
+        )
 
         await self.exec_as_agent(environment, command=command, env=env)
 
