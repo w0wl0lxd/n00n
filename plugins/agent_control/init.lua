@@ -40,7 +40,7 @@ local schema = {
     action = {
       type = "string",
       enum = { "list", "status", "message", "pause", "resume", "stop", "policy" },
-      description = "Control action.",
+      description = "Action.",
     },
     agent_id = {
       type = "string",
@@ -52,45 +52,45 @@ local schema = {
     },
     policy = {
       type = "object",
-      description = "Policy data for policy action.",
+      description = "Policy data.",
       properties = {
         action = {
           type = "string",
           enum = { "set", "get", "delete", "list" },
-          description = "Policy action.",
+          description = "Action.",
         },
         rule = {
           type = "object",
-          description = "Policy rule for set action.",
+          description = "Rule for set.",
           properties = {
-            id = { type = "string", description = "Unique policy identifier." },
+            id = { type = "string", description = "Unique rule id." },
             scope = {
               type = "object",
-              description = "Policy scope.",
+              description = "Scope filters.",
               properties = {
-                tag = { type = "string", description = "Applies to agents with this tag." },
-                session_type = { type = "string", description = "Applies to sessions of this type." },
-                agent_id = { type = "string", description = "Applies to a specific agent." },
+                tag = { type = "string", description = "Filter by tag." },
+                session_type = { type = "string", description = "Filter by session type." },
+                agent_id = { type = "string", description = "Filter by agent id." },
               },
             },
             restricted_tools = {
               type = "array",
               items = { type = "string" },
-              description = "Tools that agents in scope cannot use.",
+              description = "Denied tools.",
             },
             allowed_tools = {
               type = "array",
               items = { type = "string" },
-              description = "Tools that agents in scope can use (whitelist mode).",
+              description = "Allowed tools (whitelist).",
             },
-            paused = { type = "boolean", description = "Whether agents in scope are paused." },
-            priority = { type = "integer", description = "Policy priority (higher wins on conflict)." },
+            paused = { type = "boolean", description = "Pause agents in scope." },
+            priority = { type = "integer", description = "Priority (higher wins)." },
           },
           required = { "id", "scope", "priority" },
         },
         rule_id = {
           type = "string",
-          description = "Policy rule ID for get/delete action.",
+          description = "Rule id for get/delete.",
         },
       },
     },

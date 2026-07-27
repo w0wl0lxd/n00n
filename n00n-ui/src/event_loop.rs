@@ -916,12 +916,27 @@ impl<'t> EventLoop<'t> {
             SessionRequest::Current => {
                 let _ = reply_tx.send(Ok(json!(self.sessions[self.focused].id())));
             }
-            SessionRequest::New { prompt, focus } => {
-                let session = {
+            SessionRequest::New {
+                prompt,
+                focus,
+                parent_id,
+            } => {
+                let mut session = {
                     let slot = self.ctx.model_slot.load();
                     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
                     AppSession::new(&slot.model.spec(), &cwd.to_string_lossy())
                 };
+                let parent_id = match parent_id {
+                    Some(id) => match parse_session_id(&id) {
+                        Ok(id) => Some(id),
+                        Err(error) => {
+                            let _ = reply_tx.send(Err(error));
+                            return;
+                        }
+                    },
+                    None => None,
+                };
+                session.meta.parent_id = parent_id;
                 let idx = self.push_runtime(self.ctx.spawn_runtime(session));
                 let id = self.sessions[idx].id();
                 if let Some(prompt) = prompt {

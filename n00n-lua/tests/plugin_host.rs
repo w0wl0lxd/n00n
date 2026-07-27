@@ -1808,7 +1808,7 @@ n00n.api.register_tool({{
         exec_warm_tool(&reg, TOOL, &ctx).expect("tool output");
         bodies.push(recv_live_buf(&rx, &id).expect("live explore card"));
     }
-    assert_eq!(bodies[0].read().len(), 6, "five rows plus expand hint");
+    assert_eq!(bodies[0].read().len(), 4, "three rows plus expand hint");
 
     let evicted_id = "explore-0";
     let item = n00n_lua::RestoreItem {
@@ -1835,7 +1835,7 @@ n00n.api.register_tool({{
 
     assert_eq!(
         bodies[0].read().len(),
-        6,
+        4,
         "evicted live card must not receive the click"
     );
     assert_eq!(
@@ -2631,6 +2631,103 @@ fn sessions_plugin_registers_commands() {
         "missing /sessions in {names:?}"
     );
     assert!(names.contains(&"/rename"), "missing /rename in {names:?}");
+}
+
+#[test]
+fn sessions_plugin_declares_render_before_callbacks() {
+    let source = include_str!("../../plugins/sessions/init.lua");
+    let render_decl = source
+        .find("\nlocal render\n")
+        .expect("sessions plugin must forward-declare local render");
+    let set_sel = source
+        .find("local function set_sel")
+        .expect("sessions plugin must define set_sel");
+    assert!(
+        render_decl < set_sel,
+        "local render must precede set_sel so navigation callbacks capture it as an upvalue, not a nil global"
+    );
+}
+
+#[test]
+fn sessions_plugin_rename_persists_kind_prefix_in_stored_title() {
+    let source = include_str!("../../plugins/sessions/init.lua");
+    let commit = source
+        .find("local function commit_rename()")
+        .expect("commit_rename");
+    let body = &source[commit..];
+    let stored_assign = body
+        .find("board.stored[si].title")
+        .expect("commit_rename updates board.stored title");
+    let snippet = &body[stored_assign..stored_assign + 80];
+    assert!(
+        snippet.contains("stored_title"),
+        "in-memory stored title must keep the kind prefix via stored_title, got: {snippet}"
+    );
+}
+
+#[test]
+fn sessions_picker_groups_more_than_twenty_children() {
+    let registry = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&registry)).unwrap();
+    let mut source = include_str!("../../plugins/sessions/init.lua").to_string();
+    source.push_str(
+        r#"
+n00n.api.register_tool({
+  name = "sessions_group_probe",
+  description = "test",
+  schema = { type = "object", properties = {} },
+  audiences = { "main" },
+  handler = function()
+    local parent = { id = "parent", children = {} }
+    local all_nodes = { parent }
+    local rank = { parent = 0 }
+    for i = 1, 21 do
+      local child = { id = "child-" .. i, parent_id = parent.id, updated_at = 100 - i, children = {} }
+      rank[child.id] = i
+      parent.children[i] = child
+      all_nodes[#all_nodes + 1] = child
+    end
+    local expanded_state = { ["group:parent:1"] = true }
+     group_node(parent, all_nodes, rank, expanded_state)
+     local first_child = parent.children[1].children[1]
+     local original_parent = first_child.parent_id
+     local group_id = first_child.group_id
+     group_node(parent, all_nodes, rank, expanded_state)
+     return n00n.json.encode({
+      buckets = #parent.children,
+      first_id = parent.children[1].id,
+      first_expanded = parent.children[1].expanded,
+      first_children = #parent.children[1].children,
+       second_children = #parent.children[2].children,
+       child_parent = original_parent,
+       child_group = group_id,
+       child_parent_after_refresh = parent.children[1].children[1].parent_id,
+       child_group_after_refresh = parent.children[1].children[1].group_id,
+
+    })
+  end,
+})
+"#,
+    );
+    host.load_source("sessions_group_test", &source).unwrap();
+
+    let output = exec_tool(&registry, "sessions_group_probe", serde_json::json!({})).unwrap();
+    let grouped: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(grouped["buckets"], serde_json::json!(2));
+    assert_eq!(grouped["first_id"], serde_json::json!("group:parent:1"));
+    assert_eq!(grouped["first_expanded"], serde_json::json!(true));
+    assert_eq!(grouped["first_children"], serde_json::json!(20));
+    assert_eq!(grouped["second_children"], serde_json::json!(1));
+    assert_eq!(grouped["child_parent"], serde_json::json!("parent"));
+    assert_eq!(grouped["child_group"], serde_json::json!("group:parent:1"));
+    assert_eq!(
+        grouped["child_parent_after_refresh"],
+        serde_json::json!("parent")
+    );
+    assert_eq!(
+        grouped["child_group_after_refresh"],
+        serde_json::json!("group:parent:1")
+    );
 }
 
 #[test]
