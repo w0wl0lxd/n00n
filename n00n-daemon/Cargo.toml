@@ -9,15 +9,13 @@ repository.workspace = true
 [dependencies]
 n00n-storage = { workspace = true }
 serde = { workspace = true }
+# Wire JSON: sonic-rs.
 sonic-rs = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 smol = { workspace = true }
 futures-lite = { workspace = true }
 flume = { workspace = true }
-process_alive = { workspace = true }
-
-[target.'cfg(unix)'.dependencies]
 rustix = { workspace = true }
 
 [dev-dependencies]
