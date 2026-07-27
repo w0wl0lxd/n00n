@@ -11,7 +11,6 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 wait-timeout = { workspace = true }
 
