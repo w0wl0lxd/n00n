@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785140399252,
+  "lastUpdate": 1785141806836,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -6909,6 +6909,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 137178,
             "range": "± 8098",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9f141ead83b045634adfc96ce7949cfa3ef48d5c",
+          "message": "feat: heuristic session titles and grouped sub-task tree (#128)\n\n* feat(storage): derive display_title, kind and parent_id for session summaries\n\n- Scan first message from each session file to power deterministic,\n  heuristic titles without calling an LLM.\n- Add display_title, kind and parent_id to SessionSummary.\n- Group sub-tasks (team/task/workflow) under the most recent preceding\n  main session using creation-time heuristics.\n- Bump scan cache to v3 so existing files are rescanned for the new fields.\n\n* feat(sessions): group sub-tasks under main sessions with expand/collapse\n\n- Render the session picker as a tree: main sessions shown by default and\n  sub-tasks are indented underneath their inferred parent.\n- Use display_title from storage instead of the raw persisted title.\n- Right/Left arrows expand or collapse a main session; Left also jumps to\n  the parent when already collapsed.\n- Preserve expansion state and stable ordering across refreshes.\n\n* fix(sessions): keep filtered session list sorted and remove dead code\n\n- Sort `all` by stable rank/recency before assigning `board.nodes`, so\n  filtered (non-tree) results maintain the same order as the tree roots.\n- Remove the unused `collect_nodes` helper.\n\n* docs(lua): update session.list return shape\n\nDocument the new display_title, kind, parent_id, cwd, and model\nfields returned by n00n.session.list().\n\n* feat(storage): cap first-message extraction and harden session summary fields\n\n- Add byte limits to first-message parsing and cached text to avoid\n  memory and scan-cache bloat on sessions with huge initial prompts.\n- Avoid splitting snippets on periods, which cut abbreviations short.\n- Cap extracted snippets to a small display budget before title truncation.\n- Add serde defaults to new SessionSummary fields for forward compatibility.\n- Fall back to updated_at when created_at is missing on older sessions so\n  sub-task parent ordering stays sensible.\n- Remove the stale scan_cache_v2.json file when writing the v3 cache.\n\n* feat(sessions): sub-group large task lists and improve live title handling\n\n- Auto-bucket any parent with more than 20 direct children into grouped\n  nodes labelled with task count and age range (e.g. \"20 tasks · today\").\n- Preserve expansion state for generated group nodes across refreshes.\n- Parse team/workflow/task prefixes from live session titles so background\n  sessions are grouped correctly before the storage scan lands.\n- Handle group nodes specially: Enter/Right toggles, rename and delete are\n  blocked, and the right column shows child counts.\n- Keep filtered and tree lists sorted by stable recency rank.\n\n* fix(sessions): harden task tree grouping\n\n* fix(sessions): preserve subtask tree relationships\n\n* fix(sessions): close remaining review gaps after main merge\n\nForward-declare render before navigation callbacks so Luau captures it as\nan upvalue, persist kind-prefixed titles in the in-memory stored snapshot\non rename, and rename leftover N00nId uses to n00nId after #145.\n\n* docs: regenerate after main merge\n\n* docs: regenerate after main merge",
+          "timestamp": "2026-07-27T08:15:02Z",
+          "tree_id": "1dacda9ea46f68efd66d061caa446e35bcf39d3a",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/9f141ead83b045634adfc96ce7949cfa3ef48d5c"
+        },
+        "date": 1785141805816,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6812960,
+            "range": "± 90866",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2221884,
+            "range": "± 14410",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2221511,
+            "range": "± 61848",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7974083,
+            "range": "± 51292",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4320307,
+            "range": "± 19095",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4271546,
+            "range": "± 18837",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 588077,
+            "range": "± 2625",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 192371,
+            "range": "± 550",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 192286,
+            "range": "± 391",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1619333,
+            "range": "± 22599",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 1050720,
+            "range": "± 5338",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 589332,
+            "range": "± 2822",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 52724,
+            "range": "± 10231",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 194530,
+            "range": "± 7674",
             "unit": "ns/iter"
           }
         ]
