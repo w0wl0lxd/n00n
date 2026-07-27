@@ -51,6 +51,7 @@ A unified BM25 + optional semantic code-search index managed by `n00n-search`, s
 | `tantivy_index/` | BM25 inverted index over chunk `content`, `path`, `language`, `start_line`, `end_line`. |
 | `vectors.bin` | Optional dense vector cache keyed by chunk id. |
 | `metadata.json` | Index version, embedder fingerprint, last indexed timestamp. |
+| `.lock` | `fs2` file lock to serialize concurrent index builds. |
 
 **Chunk** fields:
 
@@ -81,11 +82,30 @@ A preconfigured local embedding server option.
 | Field | Type | Description |
 |-------|------|-------------|
 | `name` | `String` | Light / Medium / Heavy. |
-| `model` | `String` | HuggingFace model id (e.g., `Snowflake/snowflake-arctic-embed-xs`). |
+| `model` | `String` | HuggingFace model id. |
 | `max_model_len` | `usize` | Max tokens per sequence. |
 | `max_num_seqs` | `usize` | Max concurrent sequences. |
 | `gpu_memory_utilization` | `f32` | GPU memory fraction to reserve. |
 | `podman_command` | `String` | Generated `podman run ...` command. |
+
+Preset table:
+
+| Preset | Model | `max_model_len` | `max_num_seqs` | `gpu_memory_utilization` | Notes |
+|--------|-------|-----------------|----------------|--------------------------|-------|
+| Light | `Snowflake/snowflake-arctic-embed-xs` | 512 | 32 | 0.4 | ~0.5-1 GB VRAM, fastest startup. |
+| Medium | `Snowflake/snowflake-arctic-embed-m-v1.5` | 512 | 64 | 0.6 | ~2-3 GB VRAM, balanced throughput. |
+| Heavy | `Snowflake/snowflake-arctic-embed-l-v1.5` | 512 | 128 | 0.8 | ~4-6 GB VRAM, best retrieval quality. |
+
+### IndexProgress
+
+Progress payload for live UI updates during indexing.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `phase` | `String` | e.g., "walking", "chunking", "indexing", "complete". |
+| `processed` | `usize` | Items completed so far. |
+| `total` | `usize` | Total items expected (may be approximate). |
+| `message` | `String` | Human-readable status line. |
 
 ### ToolResult
 
@@ -105,3 +125,4 @@ Common envelope returned to Lua plugins for rendering.
 - An **Embedder Config** is selected by the user; `None` is the default for `semblem`.
 - A **VllmPreset** is offered to the user when they request semantic search without a configured embedder.
 - Each **ToolResult** is produced by a Lua plugin that queries one of the above indexes through a `n00n.<tool>` API.
+- Long-running indexing emits **IndexProgress** payloads that are rendered as live `Card` updates.
