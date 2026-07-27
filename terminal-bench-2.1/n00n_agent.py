@@ -1,9 +1,12 @@
 """Harbor agent wrapper for running n00n on Terminal-Bench 2.1."""
 
+import asyncio
 import json
 import shlex
 import tempfile
+import time
 from pathlib import Path
+from typing import Any
 
 from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_template
 from harbor.environments.base import BaseEnvironment
@@ -17,6 +20,7 @@ _DEVIN_WRAPPER = """#!/usr/bin/env python3
 import os
 import pty
 import select
+import signal
 import subprocess
 import sys
 import termios
@@ -26,14 +30,51 @@ import tty
 REAL = "/opt/n00n/bin/devin-real"
 
 
+def _info(msg: str) -> None:
+    print(f"[devin-wrapper] {msg}", file=sys.stderr, flush=True)
+
+
 def main() -> int:
-    # n00n already passes the "acp" subcommand; do not duplicate it.
+    _info("starting devin acp wrapper")
+
+    try:
+        master, slave = pty.openpty()
+    except OSError as exc:
+        _info(f"pty.openpty failed: {exc}")
+        return 1
+
+    try:
+        tty.setraw(slave, termios.TCSANOW)
+    except termios.error as exc:
+        _info(f"tty.setraw failed: {exc}")
+
     argv = [REAL, "--permission-mode", "dangerous"] + sys.argv[1:]
-    master, slave = pty.openpty()
-    tty.setraw(master, termios.TCSANOW)
-    p = subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave)
+    try:
+        p = subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave)
+    except OSError as exc:
+        _info(f"failed to spawn {argv}: {exc}")
+        os.close(slave)
+        os.close(master)
+        return 1
+
     os.close(slave)
     stop = threading.Event()
+    proc: list[subprocess.Popen] = [p]
+
+    def cleanup(signum=None, frame=None):
+        _info(f"cleanup triggered (signum={signum})")
+        stop.set()
+        if proc[0].poll() is None:
+            proc[0].terminate()
+            try:
+                proc[0].wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                _info("devin-real did not terminate, killing")
+                proc[0].kill()
+                proc[0].wait()
+
+    signal.signal(signal.SIGTERM, cleanup)
+    signal.signal(signal.SIGINT, cleanup)
 
     def forward_input():
         try:
@@ -46,8 +87,8 @@ def main() -> int:
                 if not data:
                     break
                 os.write(master, data)
-        except OSError:
-            pass
+        except OSError as exc:
+            _info(f"forward_input error: {exc}")
 
     t = threading.Thread(target=forward_input)
     t.start()
@@ -64,14 +105,17 @@ def main() -> int:
                 break
             sys.stdout.buffer.write(data)
             sys.stdout.buffer.flush()
-    except OSError:
-        pass
+    except OSError as exc:
+        _info(f"output loop error: {exc}")
     finally:
-        stop.set()
-        os.close(master)
+        cleanup()
 
-    t.join(timeout=1)
-    return p.wait()
+    t.join(timeout=2)
+    if p.poll() is None:
+        _info("devin-real still running after cleanup")
+        p.kill()
+        p.wait()
+    return p.poll() if p.poll() is not None else 0
 
 
 if __name__ == "__main__":
@@ -123,14 +167,67 @@ class N00nAgent(BaseInstalledAgent):
         return "n00n"
 
     def get_version_command(self) -> str | None:
-        return "export PATH=/opt/n00n/bin:$PATH && n00n --version"
+        # Use the wrapper script at /opt/n00n/n00n, not the raw ELF binary under
+        # /opt/n00n/bin, so the bundled glibc loader and libs are used.
+        return "/opt/n00n/n00n --version"
+
+    _UPLOAD_TIMEOUT_SEC = 120
+    _INSTALL_TIMEOUT_SEC = 180
+    _SETUP_TIMEOUT_SEC = 60
+
+    async def _timed_upload(
+        self,
+        environment: BaseEnvironment,
+        source: Path,
+        target: str,
+        label: str,
+    ) -> None:
+        start = time.monotonic()
+        size = source.stat().st_size if source.exists() else 0
+        try:
+            await asyncio.wait_for(
+                environment.upload_file(source, target),
+                timeout=self._UPLOAD_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError as exc:
+            self.logger.error(f"{label} upload timed out", extra={"size": size})
+            raise RuntimeError(f"{label} upload timed out") from exc
+        elapsed = time.monotonic() - start
+        self.logger.info(
+            f"{label} upload complete",
+            extra={"size": size, "duration_sec": round(elapsed, 3)},
+        )
+
+    async def _timed_exec(
+        self,
+        method,
+        environment: BaseEnvironment,
+        command: str,
+        timeout_sec: int | None,
+        label: str,
+    ) -> Any:
+        start = time.monotonic()
+        try:
+            result = await method(environment, command=command, timeout_sec=timeout_sec)
+        finally:
+            elapsed = time.monotonic() - start
+            self.logger.info(
+                f"{label} exec finished",
+                extra={"duration_sec": round(elapsed, 3)},
+            )
+        return result
 
     async def install(self, environment: BaseEnvironment) -> None:
-        # Upload the bundled n00n binary (glibc-linked with its own loader/libs).
+        install_start = time.monotonic()
+        self.logger.info("n00n install started")
         bundle_local = Path(__file__).with_name("n00n-bundle.tar.gz")
-        await environment.upload_file(bundle_local, "/tmp/n00n-bundle.tar.gz")
+        await self._timed_upload(
+            environment, bundle_local, "/tmp/n00n-bundle.tar.gz", label="n00n bundle"
+        )
 
-        await self.exec_as_root(
+        self.logger.info("extracting n00n bundle")
+        await self._timed_exec(
+            self.exec_as_root,
             environment,
             command=(
                 "mkdir -p /opt/n00n /opt/n00n/.config "
@@ -140,21 +237,42 @@ class N00nAgent(BaseInstalledAgent):
                 "&& ln -sf /opt/n00n/n00n /usr/local/bin/n00n "
                 "&& rm -f /tmp/n00n-bundle.tar.gz"
             ),
+            timeout_sec=self._INSTALL_TIMEOUT_SEC,
+            label="extract bundle",
+        )
+
+        self.logger.info("validating n00n installation")
+        await self._timed_exec(
+            self.exec_as_root,
+            environment,
+            command=(
+                "test -x /opt/n00n/n00n "
+                "&& test -x /opt/n00n/bin/n00n "
+                "&& test -x /opt/n00n/bin/devin-real"
+            ),
+            timeout_sec=self._SETUP_TIMEOUT_SEC,
+            label="validate binaries",
         )
 
         # devin-real block-buffers stdout when run through a pipe; replace the
         # bundled wrapper with one that runs devin-real under a pseudo-tty.
+        self.logger.info("uploading devin pty wrapper")
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as tmp:
             tmp.write(_DEVIN_WRAPPER)
             wrapper_path = Path(tmp.name)
         try:
-            await environment.upload_file(wrapper_path, "/opt/n00n/bin/devin")
+            await self._timed_upload(
+                environment, wrapper_path, "/opt/n00n/bin/devin", label="devin wrapper"
+            )
         finally:
             wrapper_path.unlink(missing_ok=True)
 
-        await self.exec_as_root(
+        await self._timed_exec(
+            self.exec_as_root,
             environment,
             command="chmod +x /opt/n00n/bin/devin",
+            timeout_sec=self._SETUP_TIMEOUT_SEC,
+            label="chmod wrapper",
         )
 
         # The Devin CLI bundled with n00n stores Windsurf credentials in a TOML file.
@@ -162,6 +280,7 @@ class N00nAgent(BaseInstalledAgent):
         # and server endpoints, matching what the Devin CLI expects when running ACP.
         api_key = self._get_env("WINDSURF_API_KEY") or ""
         if api_key:
+            self.logger.info("writing devin credentials")
             config_json = '{"shell":{"setup_complete":true}}'
             credentials_toml = (
                 f"api_key = {json.dumps(api_key)}\n"
@@ -182,11 +301,14 @@ class N00nAgent(BaseInstalledAgent):
                     tmp.write(content)
                     tmp_path = Path(tmp.name)
                 try:
-                    await environment.upload_file(tmp_path, remote)
+                    await self._timed_upload(
+                        environment, tmp_path, remote, label=f"credential {remote}"
+                    )
                 finally:
                     tmp_path.unlink(missing_ok=True)
 
-            await self.exec_as_root(
+            await self._timed_exec(
+                self.exec_as_root,
                 environment,
                 command=(
                     "mkdir -p /opt/n00n/.config/devin "
@@ -196,7 +318,15 @@ class N00nAgent(BaseInstalledAgent):
                     "&& chmod 644 /opt/n00n/.local/share/devin/credentials.toml "
                     "&& chmod 644 /opt/n00n/.config/devin/config.json"
                 ),
+                timeout_sec=self._SETUP_TIMEOUT_SEC,
+                label="setup credentials",
             )
+
+        elapsed = time.monotonic() - install_start
+        self.logger.info(
+            "n00n install complete",
+            extra={"duration_sec": round(elapsed, 3)},
+        )
 
     @with_prompt_template
     async def run(
@@ -216,6 +346,15 @@ class N00nAgent(BaseInstalledAgent):
         escaped = shlex.quote(instruction)
 
         devin_model = model.split("/", 1)[1] if "/" in model else model
+        self.logger.info(
+            "n00n run configured",
+            extra={
+                "model": model,
+                "devin_model": devin_model,
+                "instruction_chars": len(instruction),
+            },
+        )
+
         env: dict[str, str] = {
             "DEVIN_MODEL": devin_model,
             "DEVIN_PERMISSION_MODE": "dangerous",
@@ -223,6 +362,10 @@ class N00nAgent(BaseInstalledAgent):
             "XDG_CONFIG_HOME": "/opt/n00n/.config",
             "XDG_DATA_HOME": "/opt/n00n/.local/share",
             "XDG_CACHE_HOME": "/opt/n00n/.cache",
+            # Enable provider-level tracing in the sandbox log while keeping
+            # devin-real/chisel output at warning level to avoid noise.
+            "RUST_LOG": "warn,n00n=info,n00n_providers=debug",
+            "RUST_BACKTRACE": "1",
         }
         if devin_api_key := self._get_env("DEVIN_API_KEY"):
             env["DEVIN_API_KEY"] = devin_api_key
@@ -235,15 +378,28 @@ class N00nAgent(BaseInstalledAgent):
             f"2>&1 | tee /logs/agent/{AGENT_LOG_FILE}"
         )
 
-        await self.exec_as_agent(environment, command=command, env=env)
+        run_start = time.monotonic()
+        self.logger.info("n00n run started", extra={"model": model})
+        try:
+            await self.exec_as_agent(environment, command=command, env=env)
+        finally:
+            elapsed = time.monotonic() - run_start
+            self.logger.info(
+                "n00n run finished",
+                extra={"model": model, "duration_sec": round(elapsed, 3)},
+            )
 
     def populate_context_post_run(self, context: AgentContext) -> None:
         log_path = self.logs_dir / AGENT_LOG_FILE
         if not log_path.exists():
+            self.logger.warning(
+                "n00n output log not found", extra={"log_path": str(log_path)}
+            )
             return
 
         log_text = log_path.read_text(encoding="utf-8", errors="replace")
         if not log_text.strip():
+            self.logger.warning("n00n output log is empty")
             return
 
         result = _parse_stream_json(log_text)
@@ -264,6 +420,19 @@ class N00nAgent(BaseInstalledAgent):
             "num_turns": result.get("num_turns"),
             "is_error": result.get("is_error", False),
         }
+        self.logger.info(
+            "n00n post-run summary parsed",
+            extra={
+                "session_id": context.metadata["session_id"],
+                "model": context.metadata["model"],
+                "duration_ms": context.metadata["duration_ms"],
+                "num_turns": context.metadata["num_turns"],
+                "is_error": context.metadata["is_error"],
+                "n_input_tokens": context.n_input_tokens,
+                "n_output_tokens": context.n_output_tokens,
+                "cost_usd": context.cost_usd,
+            },
+        )
 
 
 # Harbor's -a import path uses the literal class name; provide a lowercase alias
