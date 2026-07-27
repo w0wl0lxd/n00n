@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 const UUID_BYTES: usize = 16;
 
+#[allow(non_camel_case_types)]
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum n00nIdParseError {
     #[error("empty id")]
@@ -33,6 +34,7 @@ pub enum n00nIdParseError {
 /// and don't sort by time regardless. Nothing in n00n sorts by the string
 /// form today; storage uses the embedded timestamp directly. See issue
 /// #264 for future tree-ordered history work.
+#[allow(non_camel_case_types)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct n00nId([u8; UUID_BYTES]);
 
