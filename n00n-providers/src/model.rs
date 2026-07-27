@@ -32,7 +32,7 @@ pub enum ModelError {
     NoDefault(String, ModelTier),
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
 pub struct ModelPricing {
     pub input: f64,
     pub output: f64,
@@ -85,7 +85,7 @@ impl ModelInfo {
 /// Cache rates are missing on purpose: Anthropic derives them from `input` with
 /// the same multipliers it uses for standard pricing, so storing them would just
 /// invite the two copies to drift apart.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 pub struct FastPricing {
     pub input: f64,
     pub output: f64,
@@ -166,7 +166,7 @@ impl From<n00n_config::providers::Tier> for ModelTier {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct ModelEntry {
     pub prefixes: &'static [&'static str],
     pub tier: ModelTier,
@@ -241,8 +241,8 @@ impl Model {
         let tier = guard.tier_for(&spec, manifest.slug, static_entry.map(|e| e.tier));
         let family = static_entry.map_or(manifest.family, |entry| entry.family);
         let pricing = discovered
-            .and_then(|info| info.pricing.clone())
-            .or_else(|| static_entry.map(|entry| entry.pricing.clone()))
+            .and_then(|info| info.pricing)
+            .or_else(|| static_entry.map(|entry| entry.pricing))
             .unwrap_or_else(ModelPricing::default);
         let max_output_tokens = discovered
             .and_then(|info| info.max_output_tokens)

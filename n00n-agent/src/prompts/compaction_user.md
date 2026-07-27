@@ -1,27 +1,15 @@
-Summarize the conversation above concisely. Focus on:
+Summarize the conversation concisely for continuation. Include:
+- User goal and current progress
+- Files read/edited/created
+- Key constraints
+- Open todo items and next step
 
-- Goal and current progress
-- Files being modified
-- Key user constraints
-- Next steps
-
-Use this template:
+Use this compact template:
 ---
 ## Goal
-[What is the user trying to accomplish?]
-
 ## Progress
-[What was done, what is in progress, what remains]
-
 ## Files
-[Relevant files read/edited/created]
-
 ## Constraints
-[Key user instructions or preferences]
-
-## Todo list
-[All open todo items, if any, so they can be restored with todo_write]
-
+## Todos
 ## Next
-[What to do next]
 ---

@@ -7,6 +7,8 @@ local ActivityPreview = require("n00n.activity_preview")
 local memory = require("mem")
 local retrieve = require("retrieve")
 local roles = require("roles")
+local subagent = require("n00n.subagent")
+local guard = require("n00n.guard")
 local ibn = require("ibn")
 local quorum = require("quorum")
 local swarm = require("swarm")
@@ -62,7 +64,6 @@ local DEFAULT_PLAN_STEPS = 6
 local DEFAULT_SWARM_ROUNDS = 2
 local MAX_SWARM_ROUNDS = 4
 local DEFAULT_TEAM_AGENTS = 16
-local MAX_TEAM_AGENTS = 24
 local MAX_TEAM_CONCURRENT = 4
 local TEAM_TIMEOUT_SECS = 1800
 local MAX_RELAY_BYTES = 12000
@@ -108,7 +109,7 @@ local PLANNER_OUTPUT = {
 }
 
 local description =
-  [[Run an ALMAS team for an SDLC goal. supervised returns a plan; autonomous executes it; swarm runs decentralized rounds. background returns an agent_id for agent_control.]]
+  [[Run ALMAS team for SDLC goal. supervised=plan, autonomous=execute, swarm=decentralized rounds. background returns agent_id.]]
 
 local schema = {
   type = "object",
@@ -117,53 +118,59 @@ local schema = {
   properties = {
     goal = {
       type = "string",
-      description = "High-level SDLC goal.",
+      description = "Goal.",
     },
     mode = {
       type = "string",
       enum = { "supervised", "autonomous", "swarm" },
       default = "supervised",
-      description = '"supervised" (return plan), "autonomous" (run plan), "swarm" (decentralized rounds).',
+      description = "supervised=plan, autonomous=run, swarm=decentralized.",
     },
     max_rounds = {
       type = "integer",
       minimum = 1,
       maximum = MAX_SWARM_ROUNDS,
-      description = "Swarm max rounds (default 2, max 4).",
+      description = "Swarm rounds.",
     },
     max_concurrent = {
       type = "integer",
       minimum = 1,
       maximum = MAX_TEAM_CONCURRENT,
-      description = "Swarm concurrency (default 4, max 4).",
+      description = "Swarm concurrency.",
     },
     max_agents = {
       type = "integer",
       minimum = 1,
-      maximum = MAX_TEAM_AGENTS,
-      description = "Team agent budget (default 16, max 24).",
+      default = DEFAULT_TEAM_AGENTS,
+      description = "Team agent-call budget (default 16, no hard maximum).",
+    },
+    timeout_secs = {
+      type = "integer",
+      minimum = 1,
+      default = TEAM_TIMEOUT_SECS,
+      description = "Wall-clock timeout before the team run is aborted (default 1800s).",
     },
     max_steps = {
       type = "integer",
       minimum = 1,
       maximum = MAX_PLAN_STEPS,
-      description = "Max plan steps (default 6, max 8).",
+      description = "Plan steps.",
     },
     model = {
       type = "string",
-      description = "Exact model for all agents. Overrides model_tier.",
+      description = "Exact model override.",
     },
     model_tier = {
       type = "string",
-      description = "Supervisor tier (weak/medium/strong). Default: strong.",
+      description = "Supervisor tier (weak/medium/strong).",
     },
     thinking = {
       type = { "string", "integer" },
-      description = 'Thinking mode: "off", "adaptive", effort level, or token budget. Default: "adaptive".',
+      description = 'Thinking mode. Default: "adaptive".',
     },
     auto_tier = {
       type = "boolean",
-      description = "Route subagent tier from step prompt. Default: true unless model set.",
+      description = "Auto-route tier from step prompt.",
     },
     use_retrieval = {
       type = "boolean",
@@ -173,31 +180,31 @@ local schema = {
     ibn_gate = {
       type = "boolean",
       default = true,
-      description = "Use information-bottleneck fan-out gate in swarm.",
+      description = "Use information-bottleneck gate in swarm.",
     },
     quorum = {
       type = "boolean",
       default = true,
-      description = "Require validator quorum for autonomous/swarm.",
+      description = "Require validator quorum.",
     },
     background = {
       type = "boolean",
-      description = "Start in background session; return agent_id.",
+      description = "Start in background; return agent_id.",
     },
     compact = {
       type = "boolean",
       default = false,
-      description = "TOON-encode retrieved context (token-saving).",
+      description = "TOON-encode retrieved context.",
     },
     use_summary = {
       type = "boolean",
       default = false,
-      description = "Use the Summary Agent index for retrieval.",
+      description = "Use Summary Agent index for retrieval.",
     },
     human_escalation = {
       type = "boolean",
       default = false,
-      description = "Pause on step failure and return a resumable run_id.",
+      description = "Pause on step failure; return run_id.",
     },
     resume = {
       type = "string",
@@ -205,43 +212,33 @@ local schema = {
     },
     continue = {
       type = "string",
-      description = "Human guidance appended when resuming.",
+      description = "Human guidance when resuming.",
     },
     waves = {
       type = "boolean",
       default = false,
-      description = "Execute plan in waves (plan, implement, validate) with validation gates.",
+      description = "Execute in waves with validation gates.",
     },
     checkpoints = {
       type = "boolean",
       default = false,
-      description = "Persist checkpoints after each wave for resume capability.",
+      description = "Persist checkpoints after each wave.",
     },
     max_wave_retries = {
       type = "integer",
       minimum = 1,
       maximum = MAX_WAVE_RETRIES,
       default = DEFAULT_MAX_WAVE_RETRIES,
-      description = "Max retries when validation gate fails (default 3, max 5).",
+      description = "Validation gate retries.",
     },
   },
 }
 
-local NUDGE = "You have not called structured_output. Call it now with the plan object."
-
-local function new_agent_budget(requested)
-  local limit = math.min(requested or DEFAULT_TEAM_AGENTS, MAX_TEAM_AGENTS)
-  return {
-    limit = limit,
-    used = 0,
-    consume = function(self)
-      if self.used >= self.limit then
-        return nil, "team agent-call budget exhausted (" .. self.limit .. "; hard maximum " .. MAX_TEAM_AGENTS .. ")"
-      end
-      self.used = self.used + 1
-      return true
-    end,
-  }
+local function new_agent_guard(requested, timeout_secs)
+  return guard.new({
+    max_calls = requested or DEFAULT_TEAM_AGENTS,
+    timeout_secs = timeout_secs or TEAM_TIMEOUT_SECS,
+  })
 end
 
 local function plan_prompt(goal)
@@ -254,85 +251,35 @@ local function plan_prompt(goal)
 end
 
 local function run_supervisor(ctx, goal, opts)
-  local budget_ok, budget_err = opts._agent_budget:consume()
-  if not budget_ok then
-    return nil, budget_err
-  end
-  local validator, verr = n00n.json.schema_validator(PLANNER_OUTPUT)
-  if verr then
-    return nil, "planner schema invalid: " .. verr
-  end
-  local model, merr =
-    n00n.agent.resolve_model(ctx, { spec = opts.model, tier = not opts.model and opts.model_tier or nil })
-  if merr then
-    return nil, merr
-  end
-  local system, serr = n00n.agent.system_prompt(ctx, { prompt_id = "general", instructions = true })
-  if serr then
-    return nil, serr
-  end
-  local tools, terr = n00n.agent.tools(ctx, { spec = model.spec, audience = "general_sub", include_mcp = true })
-  if terr then
-    return nil, terr
-  end
-
-  local captured
-  local local_tools = {
-    structured_output = {
-      description = "Output the plan as {steps:[{role, prompt, tier?}]}.",
-      input_schema = PLANNER_OUTPUT,
-      handler = function(value)
-        local e = validator:validate(value)
-        if e then
-          return nil, "invalid plan: " .. table.concat(e, "; ")
-        end
-        captured = value
-        return "Plan recorded."
-      end,
-    },
-  }
-
-  local sess, sess_err = n00n.agent.session(ctx, {
-    model_spec = model.spec,
-    system = system,
-    tools = tools,
-    local_tools = local_tools,
-    audience = "general_sub",
-    name = "team-supervisor",
+  local captured, err, cost, usage_val = subagent.launch(ctx, {
+    description = "team-supervisor",
+    prompt = plan_prompt(goal),
+    output_schema = PLANNER_OUTPUT,
+    model_spec = opts.model,
+    model_tier = opts.model_tier,
     thinking = opts.thinking,
+    preview = opts._preview,
+    activity_label = "supervisor",
+    budget = opts._agent_budget,
+    fail_on_pricing_error = true,
   })
-  if sess_err then
-    return nil, sess_err
+
+  if err then
+    return nil, "supervisor failed: " .. err, cost, usage_val
+  end
+  if type(captured) ~= "table" or not captured.steps then
+    return nil, "supervisor produced no plan", cost, usage_val
   end
 
-  local res, rerr = opts._preview:prompt(sess, plan_prompt(goal), "supervisor")
-  if not rerr and not captured then
-    local nudged
-    nudged, rerr = opts._preview:prompt(sess, NUDGE, "supervisor")
-    if nudged then
-      res = nudged
-    end
-  end
-  sess:close()
-  local usage, cost, metrics_err = roles.metrics(model.spec, res)
-  if metrics_err then
-    return nil, "supervisor usage pricing failed: " .. metrics_err, nil, usage
-  end
-  if rerr then
-    return nil, "supervisor failed: " .. rerr, cost, usage
-  end
-  if not captured then
-    return nil, "supervisor produced no plan", cost, usage
-  end
   local max_steps = math.min(opts.max_steps or DEFAULT_PLAN_STEPS, MAX_PLAN_STEPS)
   local steps = {}
   for i = 1, math.min(#captured.steps, max_steps) do
     steps[i] = captured.steps[i]
   end
   if #steps == 0 then
-    return nil, "supervisor produced an empty plan", cost, usage
+    return nil, "supervisor produced an empty plan", cost, usage_val
   end
-  return steps, nil, cost, usage
+  return steps, nil, cost, usage_val
 end
 
 local function run_step(ctx, step, goal, input, relay_k, prior_results)
@@ -410,8 +357,10 @@ local function run_autonomous(ctx, goal, input, steps, relay_k, logger, resume_s
           results = results,
           total_cost = total_cost,
           total_usage = total_usage,
+          mode = input.mode,
           failed_step = i,
           failed_role = step.role,
+          start_index = i,
           wave_index = 0,
           step_index = i,
         })
@@ -422,6 +371,7 @@ local function run_autonomous(ctx, goal, input, steps, relay_k, logger, resume_s
           {
             paused = true,
             run_id = pause_run_id,
+            mode = input.mode,
             failed_step = i,
             failed_role = step.role,
             error = r.error,
@@ -503,8 +453,10 @@ local function run_single_pass(ctx, goal, input, steps, relay_k, logger, resume_
           results = results,
           total_cost = total_cost,
           total_usage = total_usage,
+          mode = input.mode,
           failed_step = i,
           failed_role = step.role,
+          start_index = i,
           wave_index = 0,
           step_index = i,
         })
@@ -515,6 +467,7 @@ local function run_single_pass(ctx, goal, input, steps, relay_k, logger, resume_
           {
             paused = true,
             run_id = pause_run_id,
+            mode = input.mode,
             failed_step = i,
             failed_role = step.role,
             error = r.error,
@@ -560,7 +513,7 @@ local function run_wave(
   local failed_role = nil
 
   for i, entry in ipairs(wave_steps) do
-    if i >= start_step_index then
+    if entry.index >= start_step_index then
       local step = entry.step
       if logger then
         logger.log("step_started", { index = entry.index, role = step.role, tier = step.tier, wave = wave_name })
@@ -597,6 +550,7 @@ local function run_wave(
             failures = failures,
             step_outputs = step_outputs,
             paused = true,
+            run_id = run_id,
             failed_step = failed_step,
             failed_role = failed_role,
             error = r.error,
@@ -683,6 +637,15 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
         wave_steps[i] = { index = e.index, step = step_copy, original_prompt = step_copy.prompt or "" }
       end
 
+      if resume_state and wave_idx == start_wave_index and input.continue and #input.continue > 0 then
+        for _, entry in ipairs(wave_steps) do
+          if entry.index == wave_start_step then
+            entry.original_prompt = entry.original_prompt .. "\n\nHuman guidance:\n" .. input.continue
+            break
+          end
+        end
+      end
+
       local retry_count = 0
       local wave_passed = false
       local wave_cost = 0.0
@@ -732,7 +695,9 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
           end
           if wave_result.paused then
             pause = {
+              paused = true,
               run_id = run_id,
+              mode = input.mode,
               failed_step = failed_step_index,
               failed_role = failed_role,
               error = wave_result.error,
@@ -784,12 +749,13 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
         end
       end
 
-      if input.checkpoints then
+      if input.checkpoints or pause then
         local ckpt_id = "wave_" .. wave_idx .. "_step_" .. #wave_steps
         local ckpt_state = {
           results = results,
           total_cost = total_cost,
           total_usage = total_usage,
+          mode = input.mode,
           wave_index = wave_passed and wave_idx + 1 or wave_idx,
           step_index = wave_passed and 1 or (failed_step_index or wave_start_step),
           steps = steps,
@@ -844,7 +810,7 @@ local function run_team(input, ctx)
     return n00n.json.encode({ agent_id = id, status = "started", title = title })
   end
 
-  input.mode = input.mode or "supervised"
+  local requested_mode = input.mode
   input.model_tier = input.model_tier or "strong"
   if input.auto_tier == nil then
     input.auto_tier = input.model == nil
@@ -852,7 +818,7 @@ local function run_team(input, ctx)
   if input.thinking == nil then
     input.thinking = "adaptive"
   end
-  input._agent_budget = new_agent_budget(input.max_agents)
+  input._agent_budget = new_agent_guard(input.max_agents, input.timeout_secs)
   local goal = input.goal
 
   local slug = memory.slug(input.goal)
@@ -861,7 +827,7 @@ local function run_team(input, ctx)
     goal = goal .. "\n\nPrior learnings for this goal:\n" .. prior
   end
 
-  local run_id = n00n.workflow.hash(input.goal .. "\0" .. tostring(os.time()))
+  local run_id = input.resume or n00n.workflow.hash(input.goal .. "\0" .. tostring(os.time()))
   local team_dir = memory.base_dir()
   local logger
   if team_dir then
@@ -878,7 +844,7 @@ local function run_team(input, ctx)
         resume_state = ckpt_state
         steps = resume_state.steps
         goal = resume_state.goal
-        input.mode = input.mode or "autonomous"
+        input.mode = requested_mode or resume_state.mode or "autonomous"
       else
         if logger then
           logger.log("checkpoint_load_failed", { run_id = input.resume, error = ckpt_err })
@@ -887,7 +853,7 @@ local function run_team(input, ctx)
         if resume_state then
           steps = resume_state.steps
           goal = resume_state.goal
-          input.mode = input.mode or "autonomous"
+          input.mode = requested_mode or resume_state.mode or "autonomous"
         else
           return { llm_output = "resume run_id not found: " .. input.resume, is_error = true }
         end
@@ -897,12 +863,14 @@ local function run_team(input, ctx)
       if resume_state then
         steps = resume_state.steps
         goal = resume_state.goal
-        input.mode = input.mode or "autonomous"
+        input.mode = requested_mode or resume_state.mode or "autonomous"
       else
         return { llm_output = "resume run_id not found: " .. input.resume, is_error = true }
       end
     end
   end
+
+  input.mode = input.mode or requested_mode or "supervised"
 
   if not steps then
     steps, perr, supervisor_cost, supervisor_usage = run_supervisor(ctx, goal, input)
