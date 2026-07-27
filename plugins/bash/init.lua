@@ -102,6 +102,20 @@ local function broad_bash_command_reason(command, full_command)
     return "find without a max depth bound"
   end
 
+  if cmd == "locate" and not has_output_cap(context) then
+    if has_option(normalized, "-l") or has_option(normalized, "--limit") then
+      return nil
+    end
+    return "locate without output limit"
+  end
+
+  if cmd == "journalctl" and not has_output_cap(context) then
+    if has_option(normalized, "-n") or has_option(normalized, "--lines") then
+      return nil
+    end
+    return "journalctl without tail line bound"
+  end
+
   if (cmd == "rg" or cmd == "grep") and not has_output_cap(context) then
     if has_option(normalized, "-m") or has_option(normalized, "--max-count") then
       return nil
@@ -136,15 +150,20 @@ local function broad_bash_command_reason(command, full_command)
 
   if cmd == "git" then
     local subcommand = normalized:match("^git%s+(%S+)")
-    if
-      subcommand
-      and (subcommand == "log" or subcommand == "reflog" or subcommand == "rev-list")
-      and not has_output_cap(context)
-    then
-      if has_option(normalized, "-n") or has_option(normalized, "--max-count") then
-        return nil
+    if subcommand and not has_output_cap(context) then
+      if subcommand == "log" or subcommand == "reflog" or subcommand == "rev-list" then
+        if has_option(normalized, "-n") or has_option(normalized, "--max-count") then
+          return nil
+        end
+        return subcommand .. " history without a max count"
       end
-      return subcommand .. " history without a max count"
+
+      if subcommand == "grep" then
+        if has_option(normalized, "-m") or has_option(normalized, "--max-count") then
+          return nil
+        end
+        return "git grep without result limit"
+      end
     end
   end
 
@@ -301,25 +320,15 @@ local LEAF_COMMAND_TYPES = {
   command = true,
   redirected_statement = true,
   negated_command = true,
-  subshell = true,
-  compound_statement = true,
-  if_statement = true,
-  while_statement = true,
-  for_statement = true,
-  case_statement = true,
-  function_definition = true,
-  c_style_for_statement = true,
 }
 
 local function collect_commands(node, source)
   local out = {}
   local kind = node:type()
-  if kind == "program" or kind == "list" then
-    for child in node:iter_children() do
-      local nested = collect_commands(child, source)
-      for _, cmd in ipairs(nested) do
-        out[#out + 1] = cmd
-      end
+  if LEAF_COMMAND_TYPES[kind] then
+    local text = n00n.treesitter.get_node_text(node, source):match("^%s*(.-)%s*$")
+    if text ~= "" then
+      out[#out + 1] = text
     end
   elseif kind == "pipeline" then
     for child in node:iter_children() do
@@ -330,13 +339,39 @@ local function collect_commands(node, source)
         end
       end
     end
-  elseif LEAF_COMMAND_TYPES[kind] then
-    local text = n00n.treesitter.get_node_text(node, source):match("^%s*(.-)%s*$")
-    if text ~= "" then
-      out[#out + 1] = text
+  else
+    for child in node:iter_children() do
+      if child:named() then
+        local nested = collect_commands(child, source)
+        for _, cmd in ipairs(nested) do
+          out[#out + 1] = cmd
+        end
+      end
     end
   end
   return out
+end
+
+local function broad_command_reason(command)
+  local parser = n00n.treesitter.get_parser(command, "bash")
+  if not parser then
+    return broad_bash_command_reason(command, command)
+  end
+
+  local root = parser:parse()[1]:root()
+  if root:has_error() or is_complex(root) then
+    return broad_bash_command_reason(command, command)
+  end
+
+  local segments = collect_commands(root, command)
+  for _, segment in ipairs(segments) do
+    local reason = broad_bash_command_reason(segment, command)
+    if reason then
+      return reason
+    end
+  end
+
+  return nil
 end
 
 local description = [[Execute a bash command.
@@ -349,7 +384,7 @@ Commands run in ]] .. cwd .. [[ by default.
 - Do NOT use to communicate text to the user.
 - Chain dependent commands with `&&`. Use batch for independent ones.
 - Provide a short `description` (3-5 words).
-- Broad/unbounded commands (for example, `find` without `-maxdepth`, recursive `ls`, `du` without `--max-depth`/`-d`/`-s`, `tree` without `-L`, or `git log`/`rg` without result limits) require `justification`.
+- Broad/unbounded commands (for example, `find` without `-maxdepth`, `locate`/`journalctl` without line bounds, recursive `ls`, `du` without `--max-depth`/`-d`/`-s`, `tree` without `-L`, or `git log`/`git grep`/`rg` without result limits) require `justification`.
 - Output truncated beyond 2000 lines or 50KB.
 - Interactive commands (sudo, ssh prompts) fail immediately.]]
 
@@ -457,7 +492,7 @@ n00n.api.register_tool({
     end
 
     local command, workdir = parse_cd_hint(input)
-    local reason = broad_bash_command_reason(command, command)
+    local reason = broad_command_reason(command)
     if reason and (not input.justification or trim(input.justification) == "") then
       return { llm_output = BROAD_COMMAND_JUSTIFICATION_REQUIRED .. ": " .. reason, is_error = true }
     end

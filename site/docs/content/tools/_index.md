@@ -22,7 +22,6 @@ Commands run in <cwd> by default.
 | `workdir` | string | no | cwd | Working directory |
 | `timeout` | integer | no | 120 | Timeout in seconds |
 | `description` | string | no |  | Short description (3-5 words) of what the command does |
-| `justification` | string | no |  | Required for broad/unbounded commands (for example `find` without `-maxdepth`, recursive `ls`, `du` without max-depth/summarize, `tree` without `-L`, `git log`/`rg` without result limits). Explain why broad output is needed |
 
 ### `read` *(lua plugin)*
 

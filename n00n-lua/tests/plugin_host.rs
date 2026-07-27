@@ -2973,6 +2973,23 @@ fn bash_handler_blocks_broad_command_without_justification() {
 }
 
 #[test]
+fn bash_handler_blocks_broad_command_later_in_chain_without_justification() {
+    let (reg, _host) = builtins_host();
+
+    let err = exec_tool(
+        &reg,
+        "bash",
+        serde_json::json!({ "command": "echo checking && find . -type f" }),
+    )
+    .unwrap_err();
+
+    assert!(
+        err.contains("justification is required"),
+        "missing guardrail feedback: {err}"
+    );
+}
+
+#[test]
 fn bash_handler_allows_broad_command_with_justification() {
     let (reg, _host) = builtins_host();
 
