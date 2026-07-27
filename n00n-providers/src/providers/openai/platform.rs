@@ -31,20 +31,7 @@ use crate::providers::ResolvedAuth;
 use crate::providers::openai_compat::OpenAiCompatProvider;
 
 include!(concat!(env!("OUT_DIR"), "/provider_configs/openai.rs"));
-
-// Non-codex models OpenAI offers for subscription usage via the Coding Plan.
-// Codex models are matched by their `-codex` substring in
-// `coding_plan_context_window`, so they never need listing here.
-pub(crate) const PLAN_MODELS: &[&str] = &[
-    "gpt-5.6",
-    "gpt-5.6-luna",
-    "gpt-5.6-terra",
-    "gpt-5.6-sol",
-    "gpt-5.5",
-    "gpt-5.4",
-    "gpt-5.4-mini",
-    "gpt-5.2",
-];
+include!(concat!(env!("OUT_DIR"), "/provider_configs/codex.rs"));
 
 pub(crate) const CODING_PLAN_CONTEXT_WINDOW: u32 = 272_000;
 const SESSION_STATE_TTL: Duration = Duration::from_hours(1);
@@ -61,6 +48,7 @@ const USAGE_WINDOW_1WEEK_SECONDS: i64 = 604_800;
 const USAGE_WINDOW_1MONTH_SECONDS: i64 = 2_592_000;
 const USAGE_WINDOW_1YEAR_SECONDS: i64 = 31_536_000;
 const RESPONSE_CHAIN_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(25);
+const PROMPT_CACHE_SHARDS: u8 = 16;
 
 static PROCESS_INSTANCE_NONCE: OnceLock<u64> = OnceLock::new();
 
@@ -76,6 +64,7 @@ type ResponseOperationSlot = Arc<AsyncMutex<()>>;
 #[derive(Debug, Clone, Copy)]
 pub struct OpenAiOptions {
     coding_plan_slots: u8,
+    codex_provider: bool,
 }
 
 impl OpenAiOptions {
@@ -83,7 +72,19 @@ impl OpenAiOptions {
     pub fn with_coding_plan_slots(slots: u64) -> Self {
         Self {
             coding_plan_slots: coding_plan_slot_count(slots),
+            codex_provider: false,
         }
+    }
+
+    #[must_use]
+    pub const fn with_codex(mut self) -> Self {
+        self.codex_provider = true;
+        self
+    }
+
+    #[must_use]
+    pub fn codex() -> Self {
+        Self::with_coding_plan_slots(u64::from(CODING_PLAN_MAX_SLOTS / 2)).with_codex()
     }
 }
 
@@ -302,8 +303,25 @@ fn canonical_session_key(session_id: &SessionRef) -> n00nId {
     session_id.id()
 }
 
-fn canonical_prompt_cache_key(session_id: &SessionRef) -> String {
-    canonical_session_key(session_id).to_string()
+fn prompt_cache_key(
+    model_id: &str,
+    system: &System,
+    tools_hash: &str,
+    session_id: Option<&SessionRef>,
+) -> String {
+    let system_text = system.to_string();
+    let mut digest = Sha256::new();
+    digest.update(model_id.len().to_le_bytes());
+    digest.update(model_id.as_bytes());
+    digest.update(system_text.len().to_le_bytes());
+    digest.update(system_text.as_bytes());
+    digest.update(tools_hash.as_bytes());
+    let prefix_hash = digest.finalize();
+    let shard = session_id.map_or(0, |session_id| {
+        Sha256::digest(canonical_session_key(session_id).to_string().as_bytes())[0]
+            % PROMPT_CACHE_SHARDS
+    });
+    format!("n00n-{prefix_hash:x}-s{shard}")
 }
 
 fn log_responses_request(
@@ -458,27 +476,13 @@ fn record_in_state(
     Ok(())
 }
 
-pub(crate) fn is_codex_model(model_id: &str) -> bool {
-    coding_plan_context_window(model_id).is_some()
-}
-
-// Codex models match by substring so future releases route without a registry
-// edit; the named non-codex plans match exactly to avoid catching near-misses
-// like `gpt-5.6-terra-preview`.
-fn coding_plan_context_window(model_id: &str) -> Option<u32> {
-    if model_id.contains("-codex") || PLAN_MODELS.contains(&model_id) {
-        Some(CODING_PLAN_CONTEXT_WINDOW)
-    } else {
-        None
-    }
-}
-
 pub struct OpenAi {
     compat: OpenAiCompatProvider,
     auth: Arc<Mutex<ResolvedAuth>>,
     auth_refresh: AsyncMutex<()>,
     auth_generation: AtomicU64,
     auth_managed: bool,
+    codex: bool,
     storage: Option<StateDir>,
     response_state_storage: Option<StateDir>,
     websocket_connect_timeout: Duration,
@@ -490,10 +494,6 @@ pub struct OpenAi {
 }
 
 impl OpenAi {
-    pub fn new(timeouts: crate::providers::Timeouts) -> Result<Self, AgentError> {
-        Self::new_with_options(timeouts, OpenAiOptions::default())
-    }
-
     pub fn new_with_options(
         timeouts: crate::providers::Timeouts,
         options: OpenAiOptions,
@@ -502,14 +502,24 @@ impl OpenAi {
         // Authentication refresh is deferred to the first request. Token files
         // are atomically replaced, so startup can safely read the cached copy
         // without waiting behind another process's network refresh.
-        let resolved = auth::resolve_cached(&storage)?;
-        let compat = OpenAiCompatProvider::new(&CONFIG, timeouts)?;
+        let resolved = if options.codex_provider {
+            auth::resolve_coding_plan(&storage)?
+        } else {
+            auth::resolve_api_key(&storage)?
+        };
+        let config = if options.codex_provider {
+            &CODEX_CONFIG
+        } else {
+            &CONFIG
+        };
+        let compat = OpenAiCompatProvider::new(config, timeouts)?;
         Ok(Self {
             compat,
             auth: Arc::new(Mutex::new(resolved)),
             auth_refresh: AsyncMutex::new(()),
             auth_generation: AtomicU64::new(0),
             auth_managed: true,
+            codex: options.codex_provider,
             storage: Some(storage.clone()),
             response_state_storage: Some(storage),
             websocket_connect_timeout: timeouts.connect,
@@ -533,12 +543,18 @@ impl OpenAi {
         timeouts: crate::providers::Timeouts,
         options: OpenAiOptions,
     ) -> Result<Self, AgentError> {
+        let config = if options.codex_provider {
+            &CODEX_CONFIG
+        } else {
+            &CONFIG
+        };
         Ok(Self {
-            compat: OpenAiCompatProvider::new(&CONFIG, timeouts)?,
+            compat: OpenAiCompatProvider::new(config, timeouts)?,
             auth,
             auth_refresh: AsyncMutex::new(()),
             auth_generation: AtomicU64::new(0),
             auth_managed: false,
+            codex: options.codex_provider,
             storage: None,
             response_state_storage: None,
             websocket_connect_timeout: timeouts.connect,
@@ -563,7 +579,7 @@ impl OpenAi {
     }
 
     fn is_oauth(&self) -> bool {
-        self.auth_managed && self.storage.as_ref().is_some_and(auth::is_oauth)
+        self.auth_managed && self.codex && self.storage.as_ref().is_some_and(auth::is_oauth)
     }
 
     async fn lock_response_chain(
@@ -688,7 +704,12 @@ impl OpenAi {
             message: "OpenAI credential storage is unavailable".into(),
         })?;
         let Some(tokens) = n00n_storage::auth::load_tokens(storage, auth::PROVIDER) else {
-            let mut resolved = auth::resolve_cached(storage)?;
+            if self.codex {
+                return Err(AgentError::Config {
+                    message: "OpenAI Codex authentication not available".into(),
+                });
+            }
+            let mut resolved = auth::resolve_api_key(storage)?;
             if resolved.base_url.is_none() {
                 resolved.base_url = Some(CONFIG.base_url.into());
             }
@@ -1321,7 +1342,7 @@ impl OpenAi {
                 }),
             };
         }
-        let prompt_cache_key = session_id.map(canonical_prompt_cache_key);
+        let prompt_cache_key = prompt_cache_key(&model.id, system, tools_hash, session_id);
         let body = super::websocket::build_request_body(
             model,
             incremental_messages,
@@ -1329,7 +1350,7 @@ impl OpenAi {
             tools,
             opts,
             previous_response_id.as_deref(),
-            prompt_cache_key.as_deref(),
+            Some(&prompt_cache_key),
             store,
         );
         let mut full_history_body = None;
@@ -1364,7 +1385,7 @@ impl OpenAi {
                             tools,
                             opts,
                             None,
-                            prompt_cache_key.as_deref(),
+                            Some(&prompt_cache_key),
                             false,
                         )
                     },
@@ -1414,7 +1435,7 @@ impl OpenAi {
                                 tools,
                                 opts,
                                 None,
-                                prompt_cache_key.as_deref(),
+                                Some(&prompt_cache_key),
                                 false,
                             )
                         })
@@ -1947,7 +1968,7 @@ impl Provider for OpenAi {
             let prefixed_system =
                 super::super::with_prefix(self.system_prefix.as_deref(), &system_text, &mut buf);
 
-            if is_codex_model(&model.id) {
+            if self.codex {
                 let codex_system = System::from(prefixed_system);
                 let operation_slot = self.response_operation_slot(session_id);
                 let _operation_guard = match operation_slot.as_ref() {
@@ -2002,13 +2023,19 @@ impl Provider for OpenAi {
                     .result;
             }
 
-            let prompt_cache_key = session_id.map(canonical_prompt_cache_key);
+            let tools_hash = stable_json_hash(tools)?;
+            let prompt_cache_key = prompt_cache_key(
+                &model.id,
+                &System::from(prefixed_system),
+                &tools_hash,
+                session_id,
+            );
             let mut body = self.compat.build_body_with_session(
                 model,
                 messages,
                 system,
                 tools,
-                prompt_cache_key.as_deref(),
+                Some(&prompt_cache_key),
                 self.system_prefix.as_deref(),
             );
             opts.thinking
@@ -2025,11 +2052,10 @@ impl Provider for OpenAi {
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<crate::model::ModelInfo>, AgentError>> {
         Box::pin(async {
-            if self.is_oauth() {
-                let models = super::models()
+            if self.codex {
+                let models = super::codex_models()
                     .iter()
                     .flat_map(|e| e.prefixes.iter())
-                    .filter(|id| is_codex_model(id))
                     .map(|&s| crate::model::ModelInfo::id_only(s.to_string()))
                     .collect();
                 return Ok(models);
@@ -2044,6 +2070,9 @@ impl Provider for OpenAi {
 
     fn fetch_usage(&self) -> BoxFuture<'_, Result<Option<ProviderUsage>, AgentError>> {
         Box::pin(async move {
+            if !self.codex {
+                return Ok(None);
+            }
             let auth = self
                 .coding_plan_auth(false, None, fastrand::u64(..))
                 .await?
@@ -2084,7 +2113,15 @@ impl Provider for OpenAi {
                 return Ok(());
             };
             let _refresh_guard = self.auth_refresh.lock().await;
-            let resolved = smol::unblock(move || auth::resolve_cached(&storage)).await?;
+            let codex = self.codex;
+            let resolved = smol::unblock(move || {
+                if codex {
+                    auth::resolve_coding_plan(&storage)
+                } else {
+                    auth::resolve_api_key(&storage)
+                }
+            })
+            .await?;
             let previous_scope = credential_hash(&self.current_auth());
             let resolved_scope = credential_hash(&resolved);
             *self
@@ -2100,12 +2137,8 @@ impl Provider for OpenAi {
     }
 
     fn adjust_model(&self, model: &mut Model) {
-        let coding_plan_auth =
-            self.current_auth().base_url.as_deref() == Some(auth::CODING_PLAN_BASE_URL);
-        if (coding_plan_auth || self.is_oauth())
-            && let Some(context_window) = coding_plan_context_window(&model.id)
-        {
-            model.context_window = model.context_window.min(context_window);
+        if self.codex {
+            model.context_window = model.context_window.min(CODING_PLAN_CONTEXT_WINDOW);
         }
     }
 }
@@ -2338,47 +2371,57 @@ mod tests {
         assert_eq!(incremental_messages.len(), second.len());
     }
 
-    #[test_case("gpt-5.6")]
     #[test_case("gpt-5.6-luna")]
     #[test_case("gpt-5.6-terra")]
     #[test_case("gpt-5.6-sol")]
     #[test_case("gpt-5.5")]
+    #[test_case("gpt-5.4")]
+    #[test_case("gpt-5.4-nano")]
+    #[test_case("gpt-5.4-mini")]
     #[test_case("gpt-5.3-codex")]
-    fn coding_plan_models_use_websocket(model_id: &str) {
-        assert!(is_codex_model(model_id));
-    }
-
-    #[test_case("gpt-5.6", Some(CODING_PLAN_CONTEXT_WINDOW))]
-    #[test_case("gpt-5.6-luna", Some(CODING_PLAN_CONTEXT_WINDOW))]
-    #[test_case("gpt-5.6-terra", Some(CODING_PLAN_CONTEXT_WINDOW))]
-    #[test_case("gpt-5.6-sol", Some(CODING_PLAN_CONTEXT_WINDOW))]
-    #[test_case("gpt-5.5", Some(CODING_PLAN_CONTEXT_WINDOW))]
-    #[test_case("gpt-5.4", Some(CODING_PLAN_CONTEXT_WINDOW))]
-    #[test_case("gpt-5.2", Some(CODING_PLAN_CONTEXT_WINDOW))]
-    #[test_case("gpt-5.3-codex", Some(CODING_PLAN_CONTEXT_WINDOW))]
-    #[test_case("gpt-5.7-codex", Some(CODING_PLAN_CONTEXT_WINDOW) ; "unlisted codex model still routes")]
-    #[test_case("gpt-5.5-preview", None ; "non_plan_5_5_preview_rejected")]
-    #[test_case("gpt-5.6-terra-preview", None ; "non_plan_5_6_preview_rejected")]
-    #[test_case("gpt-5.6-codex", Some(CODING_PLAN_CONTEXT_WINDOW) ; "codex_model")]
-    #[test_case("gpt-5.4-nano", None ; "non_plan_5_4_nano_rejected")]
-    fn coding_plan_context_window_resolves_plan_models(model_id: &str, expected: Option<u32>) {
-        assert_eq!(coding_plan_context_window(model_id), expected);
+    #[test_case("gpt-5.2-codex")]
+    #[test_case("gpt-5.1-codex")]
+    #[test_case("gpt-5.1-codex-mini")]
+    fn codex_model_catalog_contains_known_plan_model(model_id: &str) {
+        assert!(
+            crate::model::lookup_entry(crate::providers::openai::codex_models(), model_id).is_ok()
+        );
     }
 
     #[test_case("gpt-5.6-luna")]
     #[test_case("gpt-5.6-terra")]
     #[test_case("gpt-5.6-sol")]
-    fn coding_plan_adjustment_caps_authenticated_gpt_5_6_at_272k(model_id: &str) {
+    fn codex_adjustment_caps_full_context_models(model_id: &str) {
         let auth = Arc::new(Mutex::new(ResolvedAuth {
             base_url: Some(auth::CODING_PLAN_BASE_URL.into()),
             headers: Vec::new(),
         }));
-        let provider = OpenAi::with_auth(auth, crate::providers::Timeouts::default()).unwrap();
+        let provider = OpenAi::with_auth_options(
+            auth,
+            crate::providers::Timeouts::default(),
+            OpenAiOptions::codex(),
+        )
+        .unwrap();
         let mut model = Model::from_spec(&format!("openai/{model_id}")).unwrap();
 
         provider.adjust_model(&mut model);
 
         assert_eq!(model.context_window, CODING_PLAN_CONTEXT_WINDOW);
+    }
+
+    #[test]
+    fn openai_adjustment_keeps_full_context() {
+        let auth = Arc::new(Mutex::new(ResolvedAuth {
+            base_url: None,
+            headers: vec![("authorization".into(), "Bearer key".into())],
+        }));
+        let provider = OpenAi::with_auth(auth, crate::providers::Timeouts::default()).unwrap();
+        let mut model = Model::from_spec("openai/gpt-5.6-luna").unwrap();
+        let expected = model.context_window;
+
+        provider.adjust_model(&mut model);
+
+        assert_eq!(model.context_window, expected);
     }
 
     #[test]
@@ -2657,20 +2700,21 @@ mod tests {
                 base_url: Some(format!("http://{address}/v1")),
                 headers: Vec::new(),
             };
-            let mut provider = OpenAi::with_auth(
+            let mut provider = OpenAi::with_auth_options(
                 Arc::new(Mutex::new(auth)),
                 crate::providers::Timeouts {
                     connect: Duration::from_secs(2),
                     stream: Duration::from_secs(2),
                     low_speed: Duration::from_secs(2),
                 },
+                OpenAiOptions::codex(),
             )
             .unwrap();
             let storage = StateDir::from_path(temp_dir.path().to_path_buf());
             provider.storage = Some(storage.clone());
             provider.response_state_storage = Some(storage);
             let session_id = SessionRef::generate();
-            let model = Model::from_spec("openai/gpt-5.3-codex").unwrap();
+            let model = Model::from_spec("codex/gpt-5.3-codex").unwrap();
             let tools = serde_json::json!([]);
             let (event_tx, _event_rx) = flume::unbounded();
             let first_messages = vec![Message::user("hello".into())];
@@ -3070,6 +3114,27 @@ mod tests {
     }
 
     #[test]
+    fn prompt_cache_key_groups_matching_stable_prefixes() {
+        let tools_hash = stable_json_hash(&serde_json::json!([{"type": "function"}])).unwrap();
+        let system = System::from("stable instructions");
+        let key = prompt_cache_key("gpt-5.6", &system, &tools_hash, None);
+
+        assert_eq!(key, prompt_cache_key("gpt-5.6", &system, &tools_hash, None));
+        assert_ne!(
+            key,
+            prompt_cache_key("gpt-5.6", &System::from("changed"), &tools_hash, None)
+        );
+        assert_ne!(
+            key,
+            prompt_cache_key("gpt-5.6-sol", &system, &tools_hash, None)
+        );
+        assert_ne!(
+            key,
+            prompt_cache_key("gpt-5.6", &system, "changed-tools", None)
+        );
+    }
+
+    #[test]
     fn response_state_uses_canonical_session_identity() {
         let temp_dir = TempDir::new().unwrap();
         let provider = provider_with_response_storage(temp_dir.path());
@@ -3077,10 +3142,14 @@ mod tests {
         let canonical = SessionRef::from_id(legacy.id());
 
         assert_ne!(legacy.as_str(), canonical.as_str());
-        assert_eq!(canonical_prompt_cache_key(&legacy), canonical.as_str());
-        assert_ne!(
-            canonical_prompt_cache_key(&legacy),
-            canonical_prompt_cache_key(&SessionRef::generate())
+        assert_eq!(
+            prompt_cache_key("gpt-5.6", &System::from("system"), "tools", Some(&legacy)),
+            prompt_cache_key(
+                "gpt-5.6",
+                &System::from("system"),
+                "tools",
+                Some(&canonical)
+            )
         );
 
         let legacy_connection = provider.response_connection_slot(Some(&legacy)).unwrap();
@@ -3853,16 +3922,17 @@ mod tests {
                 base_url: Some(format!("http://{address}/v1")),
                 headers: Vec::new(),
             };
-            let provider = OpenAi::with_auth(
+            let provider = OpenAi::with_auth_options(
                 Arc::new(Mutex::new(auth)),
                 crate::providers::Timeouts {
                     connect: Duration::from_secs(2),
                     stream: Duration::from_secs(2),
                     low_speed: Duration::from_secs(2),
                 },
+                OpenAiOptions::codex(),
             )
             .unwrap();
-            let model = Model::from_spec("openai/gpt-5.3-codex").unwrap();
+            let model = Model::from_spec("codex/gpt-5.3-codex").unwrap();
             let messages = [Message::user("hello".into())];
             let tools = serde_json::json!([]);
             let (first_tx, _) = flume::unbounded();
