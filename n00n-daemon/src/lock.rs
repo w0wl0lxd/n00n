@@ -2,7 +2,6 @@
 
 use std::path::{Path, PathBuf};
 
-use rustix::process::{Pid, test_kill_process};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ControlError, ControlResult};
@@ -83,15 +82,44 @@ pub fn pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
-    let Ok(raw) = i32::try_from(pid) else {
-        return false;
-    };
-    let Some(pid) = Pid::from_raw(raw) else {
-        return false;
-    };
-    match test_kill_process(pid) {
-        Ok(()) | Err(rustix::io::Errno::PERM) => true,
-        Err(rustix::io::Errno::SRCH | _) => false,
+    #[cfg(unix)]
+    {
+        use rustix::process::{Pid, test_kill_process};
+
+        let Ok(raw) = i32::try_from(pid) else {
+            return false;
+        };
+        let Some(pid) = Pid::from_raw(raw) else {
+            return false;
+        };
+        match test_kill_process(pid) {
+            Ok(()) | Err(rustix::io::Errno::PERM) => true,
+            Err(rustix::io::Errno::SRCH | _) => false,
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        use std::process::Command;
+
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+        let output = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+        match output {
+            Ok(out) => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                stdout.contains(&pid.to_string())
+            }
+            Err(_) => false,
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+        false
     }
 }
 

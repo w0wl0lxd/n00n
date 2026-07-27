@@ -9,9 +9,8 @@ repository.workspace = true
 [dependencies]
 n00n-storage = { workspace = true }
 serde = { workspace = true }
-# Wire JSON: sonic-rs. serde_json only for SessionReply / toon boundaries.
+# Wire JSON: sonic-rs.
 sonic-rs = { workspace = true }
-serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 smol = { workspace = true }
