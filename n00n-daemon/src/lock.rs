@@ -178,6 +178,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
     #[test]
     fn tui_blocks_worker_while_alive() {
         let lock = sample_lock(DaemonRole::Tui);
