@@ -2642,8 +2642,7 @@ n00n.session.list()
 Lists sessions stored for the current project. Answered from a
 background scan, so a slow disk never blocks the UI.
 
-**Returns:** (`table|nil`, `string|nil`) Array of `{id, title, display_title, kind,
-parent_id, updated_at, cwd, model}`, or nil and an error.
+**Returns:** (`table|nil`, `string|nil`) Array of `{id, title, updated_at}`, or nil and an error.
 
 **Example:**
 
@@ -2763,8 +2762,8 @@ Starts a new session in the current project.
 
 - `{opts?}` (`table?`) Optional fields: prompt (string) first user message
 
-  to submit right away; focus (boolean) switch the UI to the new session;
-  parent_id (string?) session that spawned this session.
+  to submit right away; focus (boolean) switch the UI to the new session.
+
 
 **Returns:** (`string|nil`, `string|nil`) New session id, or nil and an error.
 
