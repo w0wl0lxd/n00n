@@ -45,8 +45,7 @@ pub(crate) const PLAN_MODELS: &[&str] = &[
     "gpt-5.2",
 ];
 
-const CODEX_PLAN_CONTEXT_WINDOW: u32 = 272_000;
-const GPT_5_6_PLAN_CONTEXT_WINDOW: u32 = 272_000;
+pub(crate) const CODING_PLAN_CONTEXT_WINDOW: u32 = 272_000;
 const SESSION_STATE_TTL: Duration = Duration::from_hours(1);
 const FIVE_MINUTES_MILLIS: u64 = 5 * 60 * 1_000;
 const THIRTY_MINUTES_MILLIS: u64 = 30 * 60 * 1_000;
@@ -454,17 +453,11 @@ pub(crate) fn is_codex_model(model_id: &str) -> bool {
 // edit; the named non-codex plans match exactly to avoid catching near-misses
 // like `gpt-5.6-terra-preview`.
 fn coding_plan_context_window(model_id: &str) -> Option<u32> {
-    if model_id.contains("-codex") {
-        return Some(CODEX_PLAN_CONTEXT_WINDOW);
-    }
-    if !PLAN_MODELS.contains(&model_id) {
-        return None;
-    }
-    Some(if model_id.starts_with("gpt-5.6") {
-        GPT_5_6_PLAN_CONTEXT_WINDOW
+    if model_id.contains("-codex") || PLAN_MODELS.contains(&model_id) {
+        Some(CODING_PLAN_CONTEXT_WINDOW)
     } else {
-        CODEX_PLAN_CONTEXT_WINDOW
-    })
+        None
+    }
 }
 
 pub struct OpenAi {
@@ -2292,18 +2285,18 @@ mod tests {
         assert!(is_codex_model(model_id));
     }
 
-    #[test_case("gpt-5.6", Some(272_000))]
-    #[test_case("gpt-5.6-luna", Some(272_000))]
-    #[test_case("gpt-5.6-terra", Some(272_000))]
-    #[test_case("gpt-5.6-sol", Some(272_000))]
-    #[test_case("gpt-5.5", Some(272_000))]
-    #[test_case("gpt-5.4", Some(272_000))]
-    #[test_case("gpt-5.2", Some(272_000))]
-    #[test_case("gpt-5.3-codex", Some(272_000))]
-    #[test_case("gpt-5.7-codex", Some(272_000) ; "unlisted codex model still routes")]
+    #[test_case("gpt-5.6", Some(CODING_PLAN_CONTEXT_WINDOW))]
+    #[test_case("gpt-5.6-luna", Some(CODING_PLAN_CONTEXT_WINDOW))]
+    #[test_case("gpt-5.6-terra", Some(CODING_PLAN_CONTEXT_WINDOW))]
+    #[test_case("gpt-5.6-sol", Some(CODING_PLAN_CONTEXT_WINDOW))]
+    #[test_case("gpt-5.5", Some(CODING_PLAN_CONTEXT_WINDOW))]
+    #[test_case("gpt-5.4", Some(CODING_PLAN_CONTEXT_WINDOW))]
+    #[test_case("gpt-5.2", Some(CODING_PLAN_CONTEXT_WINDOW))]
+    #[test_case("gpt-5.3-codex", Some(CODING_PLAN_CONTEXT_WINDOW))]
+    #[test_case("gpt-5.7-codex", Some(CODING_PLAN_CONTEXT_WINDOW) ; "unlisted codex model still routes")]
     #[test_case("gpt-5.5-preview", None ; "non_plan_5_5_preview_rejected")]
     #[test_case("gpt-5.6-terra-preview", None ; "non_plan_5_6_preview_rejected")]
-    #[test_case("gpt-5.6-codex", Some(272_000) ; "codex_model")]
+    #[test_case("gpt-5.6-codex", Some(CODING_PLAN_CONTEXT_WINDOW) ; "codex_model")]
     #[test_case("gpt-5.4-nano", None ; "non_plan_5_4_nano_rejected")]
     fn coding_plan_context_window_resolves_plan_models(model_id: &str, expected: Option<u32>) {
         assert_eq!(coding_plan_context_window(model_id), expected);
@@ -2322,7 +2315,7 @@ mod tests {
 
         provider.adjust_model(&mut model);
 
-        assert_eq!(model.context_window, 272_000);
+        assert_eq!(model.context_window, CODING_PLAN_CONTEXT_WINDOW);
     }
 
     #[test]
