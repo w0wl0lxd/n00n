@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785178773705,
+  "lastUpdate": 1785181789946,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -8205,6 +8205,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 194312,
             "range": "± 10248",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "be84c36be59c1270d925640e1cb3c8a0a8059b6e",
+          "message": "feat(lua): complete remaining treesitter API stubs (#181)\n\n* feat(lua): complete remaining treesitter API stubs (get_node, language.add, query.get)\n\n* fix(lua): review feedback for treesitter API stubs\n\n* chore: add changelog fragment for treesitter API stubs\n\n* fix(lua/treesitter): address review feedback for get_node\n\n- Accept `bufnr` as an optional source, and resolve it from the task\n  buffer store when `source` is omitted.\n- Default `named` to `true` and use\n  `named_descendant_for_point_range`, falling back to the anonymous\n  variant only when `named = false`.\n- Distinguish absent/nil keys from conversion failures; propagate\n  type errors instead of treating them as missing options.\n- Update tests and regenerated Lua API docs.",
+          "timestamp": "2026-07-27T19:35:25Z",
+          "tree_id": "304ace9a7bdf9a96b1d19ec792eaeb99ca9a2505",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/be84c36be59c1270d925640e1cb3c8a0a8059b6e"
+        },
+        "date": 1785181788844,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6705148,
+            "range": "± 152384",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2220955,
+            "range": "± 3374",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2219850,
+            "range": "± 69231",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7973917,
+            "range": "± 52597",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4281381,
+            "range": "± 10602",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4279292,
+            "range": "± 10808",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 583498,
+            "range": "± 2012",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191853,
+            "range": "± 384",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 187225,
+            "range": "± 262",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1035834,
+            "range": "± 17392",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 589067,
+            "range": "± 1849",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 589096,
+            "range": "± 3086",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 48756,
+            "range": "± 2078",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 151303,
+            "range": "± 14002",
             "unit": "ns/iter"
           }
         ]
