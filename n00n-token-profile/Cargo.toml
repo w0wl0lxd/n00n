@@ -1,0 +1,24 @@
+[package]
+name = "n00n-token-profile"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Offline cold-start token profiling and CI regression gates for n00n"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+n00n-agent = { workspace = true }
+n00n-lua = { workspace = true }
+n00n-providers = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+test-case = { workspace = true }
