@@ -91,10 +91,7 @@
               fi
               done
             '';
-            buildInputs = with pkgs; [
-              openssl
-              stdenv.cc.cc.lib
-            ];
+            buildInputs = with pkgs; [ openssl stdenv.cc.cc.lib ];
             doCheck = false;
 
             postInstall = ''
