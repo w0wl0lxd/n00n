@@ -13,10 +13,13 @@ use flume::Sender;
 use futures_lite::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, split};
 use n00n_agent::headless;
 use n00n_agent::tools::ToolRegistry;
-use n00n_agent::{AgentEvent, AgentInput, AgentMode as RuntimeAgentMode, Envelope};
+use n00n_agent::{
+    AgentConfig, AgentEvent, AgentInput, AgentMode as RuntimeAgentMode, Envelope, McpHandle,
+    PermissionsConfig, prompt::ResolvedSlots,
+};
 use n00n_config::{load_env_files, load_permissions};
 use n00n_lua::PluginHost;
-use n00n_providers::ThinkingConfig;
+use n00n_providers::{Model, OpenAiOptions, ThinkingConfig, Timeouts};
 use n00n_storage::StateDir;
 use serde::{Deserialize, Serialize};
 use smol::net::unix::{UnixListener, UnixStream};
@@ -50,28 +53,20 @@ fn validate_agent_id(id: &str) -> Result<()> {
     Ok(())
 }
 
-async fn write_line<W: AsyncWriteExt + Unpin>(writer: &mut W, line: &str) -> Result<()> {
-    writer
-        .write_all(line.as_bytes())
-        .await
-        .wrap_err("failed to write line")?;
-    writer
-        .write_all(b"\n")
-        .await
-        .wrap_err("failed to write newline")?;
-    writer.flush().await.wrap_err("failed to flush writer")?;
-    Ok(())
+struct PreparedEnv {
+    storage: StateDir,
+    cwd: PathBuf,
+    model: Model,
+    model_spec: String,
+    agent_config: AgentConfig,
+    permissions: PermissionsConfig,
+    timeouts: Timeouts,
+    openai_options: OpenAiOptions,
+    mcp_handle: Option<McpHandle>,
+    prompt_slots: ResolvedSlots,
 }
 
-pub fn run(
-    prompt: &str,
-    model_arg: Option<&str>,
-    mode: CliAgentMode,
-    _goal: Option<&str>,
-    json: bool,
-    yolo: bool,
-    no_jit: bool,
-) -> Result<()> {
+fn prepare_agent_env(model_arg: Option<&str>, yolo: bool, no_jit: bool) -> Result<PreparedEnv> {
     let storage = StateDir::resolve().context("resolve data directory")?;
     n00n_providers::model_registry::load_from_storage(&storage);
 
@@ -102,13 +97,14 @@ pub fn run(
         .load_builtins(&config.plugins)
         .context("load builtin plugins")?;
 
-    let timeouts = n00n_providers::Timeouts {
+    let timeouts = Timeouts {
         connect: config.provider.connect_timeout,
         low_speed: config.provider.low_speed_timeout,
         stream: config.provider.stream_timeout,
     };
 
     let model = setup::resolve_model(model_arg, &config.provider, &storage)?;
+    let model_spec = model.spec();
     setup::install_panic_log_hook();
 
     let (mcp_handle, _mcp_config_errors) = smol::block_on(n00n_agent::mcp::start(
@@ -120,18 +116,56 @@ pub fn run(
         .event_handle()
         .map_or_else(Default::default, |h| h.collect_prompt_slots());
 
-    let headless_params = headless::HeadlessParams {
+    Ok(PreparedEnv {
+        storage,
+        cwd,
         model,
-        config: config.agent,
-        permissions_config: config.permissions,
+        model_spec,
+        agent_config: config.agent,
+        permissions: config.permissions,
         timeouts,
-        openai_options: n00n_providers::OpenAiOptions::from(&config.provider),
+        openai_options: OpenAiOptions::from(&config.provider),
+        mcp_handle,
+        prompt_slots,
+    })
+}
+
+async fn write_line<W: AsyncWriteExt + Unpin>(writer: &mut W, line: &str) -> Result<()> {
+    writer
+        .write_all(line.as_bytes())
+        .await
+        .wrap_err("failed to write line")?;
+    writer
+        .write_all(b"\n")
+        .await
+        .wrap_err("failed to write newline")?;
+    writer.flush().await.wrap_err("failed to flush writer")?;
+    Ok(())
+}
+
+pub fn run(
+    prompt: &str,
+    model_arg: Option<&str>,
+    mode: CliAgentMode,
+    _goal: Option<&str>,
+    json: bool,
+    yolo: bool,
+    no_jit: bool,
+) -> Result<()> {
+    let env = prepare_agent_env(model_arg, yolo, no_jit)?;
+
+    let headless_params = headless::HeadlessParams {
+        model: env.model,
+        config: env.agent_config,
+        permissions_config: env.permissions,
+        timeouts: env.timeouts,
+        openai_options: env.openai_options,
         prompt: prompt.to_string(),
         images: Vec::new(),
-        prompt_slots,
+        prompt_slots: env.prompt_slots,
         excluded_tools: Vec::new(),
-        mcp_handle,
-        initial_wd: cwd,
+        mcp_handle: env.mcp_handle,
+        initial_wd: env.cwd,
         fast: false,
         workflow: workflow_from_mode(mode),
     };
@@ -289,65 +323,20 @@ pub fn server(
     yolo: bool,
     no_jit: bool,
 ) -> Result<()> {
-    let storage = StateDir::resolve().context("resolve data directory")?;
-    n00n_providers::model_registry::load_from_storage(&storage);
-
-    let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
-    load_env_files(&cwd);
-
-    let mut plugin_host = PluginHost::with_jit(Arc::clone(ToolRegistry::global_arc()), !no_jit)
-        .context("initialize lua plugin host")?;
-
-    let raw_config = plugin_host
-        .load_init_files(&cwd)
-        .context("load init.lua files")?;
-
-    let mut config = raw_config
-        .unwrap_or_else(Default::default)
-        .into_config(false)
-        .context("invalid config")?;
-    config.permissions = load_permissions(&cwd);
-
-    setup::init_logging(&config.storage);
-
-    if yolo || config.always_yolo {
-        config.permissions.yolo = true;
-    }
-    config.validate()?;
-
-    plugin_host
-        .load_builtins(&config.plugins)
-        .context("load builtin plugins")?;
-
-    let timeouts = n00n_providers::Timeouts {
-        connect: config.provider.connect_timeout,
-        low_speed: config.provider.low_speed_timeout,
-        stream: config.provider.stream_timeout,
-    };
-
-    let model = setup::resolve_model(model_arg, &config.provider, &storage)?;
-    let model_spec = model.spec();
-    setup::install_panic_log_hook();
-
-    let (mcp_handle, _mcp_config_errors) = smol::block_on(n00n_agent::mcp::start(
-        &cwd,
-        config.agent.mcp_tool_desc_max_chars,
-    ));
-
-    let prompt_slots = plugin_host
-        .event_handle()
-        .map_or_else(Default::default, |h| h.collect_prompt_slots());
+    let env = prepare_agent_env(model_arg, yolo, no_jit)?;
+    let storage = env.storage.clone();
+    let model_spec = env.model_spec;
 
     let interactive_params = headless::InteractiveParams {
-        model,
-        config: config.agent,
-        permissions_config: config.permissions,
-        timeouts,
-        openai_options: n00n_providers::OpenAiOptions::from(&config.provider),
-        prompt_slots: Arc::new(prompt_slots),
+        model: env.model,
+        config: env.agent_config,
+        permissions_config: env.permissions,
+        timeouts: env.timeouts,
+        openai_options: env.openai_options,
+        prompt_slots: Arc::new(env.prompt_slots),
         excluded_tools: Vec::new(),
-        mcp_handle,
-        initial_wd: cwd,
+        mcp_handle: env.mcp_handle,
+        initial_wd: env.cwd,
         session_id: None,
         initial_history: Vec::new(),
         yolo,
