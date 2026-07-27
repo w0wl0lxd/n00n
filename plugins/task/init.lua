@@ -139,7 +139,7 @@ local function make_preview(ctx, description)
 
     local elapsed = math.floor(progress.elapsed_ms / 1000)
     local elapsed_str = n00n.ui.humantime(elapsed)
-    local header = { { description .. " · " .. elapsed_str, "bold" } }
+    local header = { { { description .. " · " .. elapsed_str, "bold" } } }
     if progress.current_tool then
       header[#header + 1] = { { "▸ " .. progress.current_tool, "bold" } }
     elseif not progress.done then
