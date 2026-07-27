@@ -454,7 +454,7 @@ impl DevinInner {
             SessionConfigValueId::new(desired),
         );
         if let Err(e) = self
-            .send_request::<SetSessionConfigOptionRequest, Value>("session/setConfigOption", req)
+            .send_request::<SetSessionConfigOptionRequest, Value>("session/set_config_option", req)
             .await
         {
             debug!(error = %e, "failed to set devin model option");
@@ -485,26 +485,31 @@ impl DevinInner {
         };
 
         if obj.contains_key("result") || obj.contains_key("error") {
-            if let Ok(response) =
-                serde_json::from_value::<AcpResponse<Value>>(Value::Object(obj.clone()))
-            {
-                let id = match &response {
-                    AcpResponse::Result { id, .. } | AcpResponse::Error { id, .. } => id.clone(),
-                };
+            match serde_json::from_value::<AcpResponse<Value>>(Value::Object(obj.clone())) {
+                Ok(response) => {
+                    let id = match &response {
+                        AcpResponse::Result { id, .. } | AcpResponse::Error { id, .. } => {
+                            id.clone()
+                        }
+                    };
 
-                let result = match response {
-                    AcpResponse::Result { result, .. } => Ok(result),
-                    AcpResponse::Error { error, .. } => Err(AgentError::Api {
-                        status: 500,
-                        message: error.message,
-                    }),
-                };
+                    let result = match response {
+                        AcpResponse::Result { result, .. } => Ok(result),
+                        AcpResponse::Error { error, .. } => Err(AgentError::Api {
+                            status: 500,
+                            message: error.message,
+                        }),
+                    };
 
-                let mut pending = pending.lock().await;
-                if let Some(tx) = pending.remove(&id)
-                    && let Err(e) = tx.send(result)
-                {
-                    debug!(error = %e, "response receiver dropped");
+                    let mut pending = pending.lock().await;
+                    if let Some(tx) = pending.remove(&id)
+                        && tx.send_async(result).await.is_err()
+                    {
+                        debug!("response receiver dropped");
+                    }
+                }
+                Err(e) => {
+                    warn!(error = %e, line = %line, "failed to parse ACP response");
                 }
             }
         } else if obj.contains_key("method") {
@@ -545,7 +550,7 @@ impl DevinInner {
         stdin: &Arc<AsyncMutex<async_process::ChildStdin>>,
     ) -> Result<(), AgentError> {
         let response: AcpResponse<Value> = match request.method.as_ref() {
-            "requestPermission" => {
+            "session/request_permission" => {
                 let permission = match request.params.as_ref() {
                     Some(p) => {
                         match serde_json::from_value::<RequestPermissionRequest>(p.clone()) {
@@ -1686,12 +1691,17 @@ impl Provider for Devin {
                 *inner.event_tx.lock().await = Some(event_tx.clone());
             }
 
-            let response: Value = inner
+            let response = inner
                 .send_request::<PromptRequest, Value>("session/prompt", req)
-                .await
-                .map_err(|e| AgentError::Config {
-                    message: format!("session/prompt failed: {e}"),
-                })?;
+                .await;
+
+            {
+                *inner.event_tx.lock().await = None;
+            }
+
+            let response: Value = response.map_err(|e| AgentError::Config {
+                message: format!("session/prompt failed: {e}"),
+            })?;
 
             let (stop_reason, response_usage) = parse_prompt_response(&response);
             let usage = if let Some(u) = response_usage {
@@ -1702,7 +1712,6 @@ impl Provider for Devin {
 
             let final_text = inner.text.lock().await.clone();
             let thinking = inner.thinking.lock().await.clone();
-            *inner.event_tx.lock().await = None;
 
             let mut content_blocks = Vec::new();
             if !thinking.is_empty() {
@@ -2014,5 +2023,17 @@ mod tests {
             headers: Vec::new(),
         };
         assert_eq!(Devin::command_from_auth(&auth), "devin");
+    }
+
+    #[test]
+    fn parse_acp_error_response() {
+        let line = r#"{"jsonrpc":"2.0","id":3,"error":{"code":-32013,"message":"rate limit","data":{"retryable":true}}}"#;
+        let value: serde_json::Value = serde_json::from_str(line).unwrap();
+        let message: JsonRpcMessage<serde_json::Value> = serde_json::from_value(value).unwrap();
+        let obj = message.inner().as_object().unwrap().clone();
+        let parsed = serde_json::from_value::<AcpResponse<serde_json::Value>>(
+            serde_json::Value::Object(obj),
+        );
+        assert!(parsed.is_ok(), "{parsed:?}");
     }
 }
