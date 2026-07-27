@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use async_process::Command;
 use flume::Sender;
@@ -17,7 +18,7 @@ use crate::{
     StreamResponse, System, ThinkingConfig,
 };
 
-use super::Timeouts;
+use super::{ResolvedAuth, Timeouts};
 
 const DEFAULT_COMMAND: &str = "cursor-agent";
 const COMMAND_ENV: &str = "CURSOR_AGENT_PATH";
@@ -72,20 +73,49 @@ pub(crate) struct Cursor {
 }
 
 impl Cursor {
-    pub(crate) fn new(timeouts: Timeouts) -> Result<Self, AgentError> {
-        let command = match std::env::var(COMMAND_ENV) {
+    fn api_key_from_auth(auth: &ResolvedAuth) -> Option<String> {
+        auth.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+            .and_then(|(_, v)| v.strip_prefix("Bearer "))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string)
+    }
+
+    fn is_safe_command_name(s: &str) -> bool {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' || c == '/')
+    }
+
+    fn command_from_auth(auth: &ResolvedAuth) -> PathBuf {
+        let candidate = auth
+            .base_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+
+        if let Some(path) = candidate
+            && Self::is_safe_command_name(path)
+        {
+            return PathBuf::from(path);
+        }
+        if let Some(path) = candidate {
+            warn!(command = %path, "ignoring unsafe cursor command override");
+        }
+
+        match std::env::var(COMMAND_ENV) {
             Ok(v) if !v.is_empty() => PathBuf::from(v),
             _ => PathBuf::from(DEFAULT_COMMAND),
-        };
+        }
+    }
 
-        let api_key = match super::KeyPool::resolve("cursor", API_KEY_ENV) {
-            Ok(pool) => Some(pool.current().to_string()),
-            Err(e) => {
-                debug!(error = %e, "no Cursor API key configured; cursor-agent will use stored credentials");
-                None
-            }
-        };
-
+    fn with_api_key(
+        api_key: Option<String>,
+        command: PathBuf,
+        timeouts: Timeouts,
+    ) -> Result<Self, AgentError> {
         let trust = env_flag(TRUST_ENV, false);
         let yolo = env_flag(YOLO_ENV, false);
         if !trust || !yolo {
@@ -105,6 +135,42 @@ impl Cursor {
             api_key,
             sessions: Mutex::new(HashMap::new()),
         })
+    }
+
+    pub(crate) fn new(timeouts: Timeouts) -> Result<Self, AgentError> {
+        let api_key = match super::KeyPool::resolve("cursor", API_KEY_ENV) {
+            Ok(pool) => Some(pool.current().to_string()),
+            Err(e) => {
+                debug!(error = %e, "no Cursor API key configured; cursor-agent will use stored credentials");
+                None
+            }
+        };
+
+        Self::with_api_key(
+            api_key,
+            Self::command_from_auth(&ResolvedAuth {
+                base_url: None,
+                headers: Vec::new(),
+            }),
+            timeouts,
+        )
+    }
+
+    #[allow(clippy::unnecessary_wraps)]
+    pub(crate) fn with_auth(
+        auth: &Arc<Mutex<ResolvedAuth>>,
+        timeouts: Timeouts,
+    ) -> Result<Self, AgentError> {
+        let resolved = match auth.lock() {
+            Ok(guard) => guard,
+            Err(e) => e.into_inner(),
+        };
+
+        Self::with_api_key(
+            Self::api_key_from_auth(&resolved),
+            Self::command_from_auth(&resolved),
+            timeouts,
+        )
     }
 
     async fn do_stream(
@@ -135,24 +201,22 @@ impl Cursor {
         let stderr_buffer = Arc::new(Mutex::new(String::new()));
         let stderr_task = smol::spawn(collect_stderr(stderr, Arc::clone(&stderr_buffer)));
 
-        let parse = parse_stream(BufReader::new(stdout).lines(), event_tx);
+        let parse = parse_stream(
+            BufReader::new(stdout).lines(),
+            event_tx,
+            self.timeouts.stream,
+        );
 
-        let result = futures_lite::future::or(async { Some(parse.await) }, async {
-            smol::Timer::after(self.timeouts.stream).await;
-            None
-        })
-        .await;
-
-        let Some(result) = result else {
-            if let Err(e) = child.kill() {
-                warn!(error = %e, "failed to kill cursor-agent after timeout");
+        let result = match parse.await {
+            Err(e @ AgentError::Timeout { .. }) => {
+                if let Err(kill_err) = child.kill() {
+                    warn!(error = %kill_err, "failed to kill cursor-agent after timeout");
+                }
+                let () = stderr_task.await;
+                return Err(e);
             }
-            let () = stderr_task.await;
-            return Err(AgentError::Timeout {
-                secs: self.timeouts.stream.as_secs(),
-            });
+            other => other?,
         };
-        let result = result?;
 
         let status = child.status().await?;
         let () = stderr_task.await;
@@ -165,15 +229,28 @@ impl Cursor {
             return Err(map_stderr_error(&stderr_text));
         }
 
+        if result.is_error {
+            let stderr_text = stderr_buffer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            let message = if !result.text.is_empty() {
+                result.text.clone()
+            } else if let Some(result_text) = result.result.clone() {
+                result_text
+            } else if !stderr_text.is_empty() {
+                stderr_text
+            } else {
+                "cursor-agent reported an error during the turn".into()
+            };
+            return Err(map_stderr_error(&message));
+        }
+
         let text = if result.text.is_empty() {
             result.result.map_or(String::new(), |t| t)
         } else {
             result.text
         };
-
-        if result.is_error {
-            warn!("cursor-agent reported an error during the turn");
-        }
 
         if text.is_empty() && result.cursor_session_id.is_none() {
             let stderr_text = stderr_buffer
@@ -192,7 +269,8 @@ impl Cursor {
                 sid.as_str().to_string(),
                 CursorSession {
                     cursor_session_id: result.cursor_session_id,
-                    last_message_count: messages.len(),
+                    // Include the assistant reply finish_turn will append before the next user turn.
+                    last_message_count: messages.len().saturating_add(1),
                 },
             );
         }
@@ -436,6 +514,7 @@ struct CursorResult {
 async fn parse_stream(
     mut lines: futures_lite::io::Lines<BufReader<async_process::ChildStdout>>,
     event_tx: &Sender<ProviderEvent>,
+    stream_timeout: Duration,
 ) -> Result<CursorResult, AgentError> {
     let mut text = String::new();
     let mut text_last = String::new();
@@ -444,9 +523,12 @@ async fn parse_stream(
     let mut cursor_session_id = None;
     let mut result = None;
     let mut is_error = false;
+    let mut deadline = Instant::now() + stream_timeout;
 
-    while let Some(line) = lines.next().await {
-        let line = line?;
+    loop {
+        let Some(line) = next_stdout_line(&mut lines, &mut deadline, stream_timeout).await? else {
+            break;
+        };
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -487,7 +569,7 @@ async fn parse_stream(
                 is_error = value
                     .get("is_error")
                     .and_then(serde_json::Value::as_bool)
-                    .map_or(false, |v| v);
+                    .is_some_and(|v| v);
                 if let Some(id) = value.get("session_id").and_then(serde_json::Value::as_str) {
                     cursor_session_id = Some(id.to_string());
                 }
@@ -503,6 +585,34 @@ async fn parse_stream(
         result,
         is_error,
     })
+}
+
+async fn next_stdout_line(
+    lines: &mut futures_lite::io::Lines<BufReader<async_process::ChildStdout>>,
+    deadline: &mut Instant,
+    stream_timeout: Duration,
+) -> Result<Option<String>, AgentError> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let result = futures_lite::future::or(
+        async {
+            match lines.next().await {
+                Some(Ok(line)) => Ok(Some(line)),
+                Some(Err(e)) => Err(AgentError::from(e)),
+                None => Ok(None),
+            }
+        },
+        async {
+            smol::Timer::after(remaining).await;
+            Err(AgentError::Timeout {
+                secs: stream_timeout.as_secs(),
+            })
+        },
+    )
+    .await;
+    if let Ok(Some(_)) = &result {
+        *deadline = Instant::now() + stream_timeout;
+    }
+    result
 }
 
 async fn handle_assistant_event(
@@ -910,19 +1020,30 @@ mod tests {
                 key,
                 CursorSession {
                     cursor_session_id: Some("c1".into()),
-                    last_message_count: 1,
+                    // Turn 1 had [user]; assistant appended by finish_turn → boundary 2.
+                    last_message_count: 2,
                 },
             );
         }
-        let messages = vec![user_message("first"), user_message("second")];
+        let messages = vec![
+            user_message("first"),
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "assistant reply".into(),
+                }],
+                ..Default::default()
+            },
+            user_message("second"),
+        ];
         let prompt = cursor
             .build_prompt(&messages, &system, Some(&session_ref))
             .unwrap();
         assert!(!prompt.contains("System:"));
         assert!(!prompt.contains("first"));
+        assert!(!prompt.contains("assistant reply"));
         assert!(prompt.contains("second"));
     }
-
     #[test]
     fn extract_text_content_joins_blocks() {
         let value = serde_json::json!({
