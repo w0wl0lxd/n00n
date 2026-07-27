@@ -243,6 +243,7 @@ fn handle_prompt(srv: &mut Server, raw: &Value, id: &RequestId) -> Result<(), Ac
         thinking: n00n_providers::ThinkingConfig::default(),
         fast: false,
         workflow: false,
+        control: false,
         prompt: None,
     };
 
@@ -523,6 +524,7 @@ mod tests {
                     text: "done".into(),
                 }],
                 display_text: None,
+                control: false,
             },
         ];
         let mut session: Session<Message, TokenUsage, n00n_agent::ToolOutput> =

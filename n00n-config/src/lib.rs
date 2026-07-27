@@ -17,14 +17,14 @@ const PERMISSIONS_FILE: &str = "permissions.toml";
 
 pub mod providers;
 
-pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 50 * 1024;
-pub const DEFAULT_MAX_OUTPUT_LINES: usize = 2000;
+pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 16 * 1024;
+pub const DEFAULT_MAX_OUTPUT_LINES: usize = 500;
 pub const DEFAULT_FLASH_DURATION_MS: u64 = 1500;
 pub const DEFAULT_TYPEWRITER_MS_PER_CHAR: u64 = 4;
 pub const DEFAULT_MOUSE_SCROLL_LINES: u32 = 3;
 pub const DEFAULT_MAX_INPUT_LINES: u32 = 20;
 pub const MIN_MAX_INPUT_LINES: u32 = 1;
-pub const DEFAULT_MCP_TOOL_DESC_MAX_CHARS: usize = 300;
+pub const DEFAULT_MCP_TOOL_DESC_MAX_CHARS: usize = 200;
 
 pub const DEFAULT_MAX_CONTINUATION_TURNS: u32 = 3;
 pub const DEFAULT_COMPACTION_BUFFER: CompactionBuffer = CompactionBuffer::Percent(20);
@@ -939,17 +939,17 @@ pub struct ToolOutputLines {
 
 impl ToolOutputLines {
     pub const DEFAULT: Self = Self {
-        bash: 5,
-        code_execution: 5,
-        task: 5,
-        workflow: 8,
-        index: 3,
-        grep: 3,
-        explore: 5,
-        read: 3,
-        write: 7,
-        web: 3,
-        other: 3,
+        bash: 4,
+        code_execution: 4,
+        task: 4,
+        workflow: 5,
+        index: 2,
+        grep: 2,
+        explore: 3,
+        read: 2,
+        write: 5,
+        web: 2,
+        other: 2,
     };
 
     pub const FIELD_DEFAULTS: &[(&'static str, usize)] = &[
