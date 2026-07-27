@@ -873,14 +873,14 @@ impl<'t> EventLoop<'t> {
                 let idx = self.push_runtime(self.ctx.spawn_runtime(session));
                 let id = self.sessions[idx].id();
                 if let Some(prompt) = prompt {
-                    let _ = self.submit_text(idx, prompt);
+                    let _ = self.submit_text(idx, prompt, false);
                 }
                 if focus {
                     self.set_focus(idx);
                 }
                 let _ = reply_tx.send(Ok(json!(id)));
             }
-            SessionRequest::Prompt { id, text } => {
+            SessionRequest::Prompt { id, text, steer } => {
                 let idx = match id {
                     None => Ok(self.focused),
                     Some(id) => parse_session_id(&id).and_then(|id| {
@@ -888,7 +888,7 @@ impl<'t> EventLoop<'t> {
                             .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))
                     }),
                 };
-                let _ = reply_tx.send(idx.and_then(|idx| self.submit_text(idx, text)));
+                let _ = reply_tx.send(idx.and_then(|idx| self.submit_text(idx, text, steer)));
             }
             SessionRequest::Cancel { id } => {
                 let reply = parse_session_id(&id).and_then(|id| {
@@ -932,12 +932,17 @@ impl<'t> EventLoop<'t> {
         }
     }
 
-    fn submit_text(&mut self, idx: usize, text: String) -> SessionReply {
+    fn submit_text(&mut self, idx: usize, text: String, steer: bool) -> SessionReply {
         let msg = QueuedMessage {
             text,
             images: Vec::new(),
         };
-        match self.sessions[idx].app.submit_background_prompt(msg) {
+        let outcome = if steer {
+            self.sessions[idx].app.submit_control_prompt(msg)
+        } else {
+            self.sessions[idx].app.submit_background_prompt(msg)
+        };
+        match outcome {
             SubmitOutcome::Started(actions) => {
                 self.dispatch(idx, actions);
                 Ok(json!("started"))

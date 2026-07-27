@@ -4755,7 +4755,7 @@ fn team_launcher_collects_goal_and_submits_configured_prompt() {
     let n00n_lua::UiAction::Session { req, reply_tx } = action else {
         panic!("expected Team session prompt");
     };
-    let n00n_lua::SessionRequest::Prompt { id, text } = req else {
+    let n00n_lua::SessionRequest::Prompt { id, text, .. } = req else {
         panic!("expected a prompt request");
     };
     assert!(id.is_none());

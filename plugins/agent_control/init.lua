@@ -369,7 +369,7 @@ local function handler(input)
       end
     end
 
-    local state, err = n00n.session.prompt(input.message, { session = input.agent_id })
+    local state, err = n00n.session.prompt(input.message, { session = input.agent_id, steer = true })
     if not state then
       return { llm_output = err, is_error = true }
     end

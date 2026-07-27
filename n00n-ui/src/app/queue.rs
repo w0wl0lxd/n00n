@@ -234,6 +234,24 @@ impl App {
         }
     }
 
+    /// Control/steering path: interrupt an in-progress turn when possible,
+    /// otherwise start a new turn. Used by `agent_control` message/resume.
+    pub(crate) fn submit_control_prompt(&mut self, msg: QueuedMessage) -> SubmitOutcome {
+        if msg.text.trim().is_empty() && msg.images.is_empty() {
+            return SubmitOutcome::Rejected(EMPTY_PROMPT_ERR);
+        }
+        if self.status == Status::Streaming {
+            if self.queue_with_delivery(msg, Delivery::Steering) {
+                SubmitOutcome::Queued
+            } else {
+                SubmitOutcome::Rejected(NO_QUEUE_ERR)
+            }
+        } else {
+            self.run_id += 1;
+            SubmitOutcome::Started(self.start_background_submission(&msg))
+        }
+    }
+
     /// Keyboard path: nobody is around to receive an `Err`, so
     /// rejections flash on screen instead.
     /// Session API prompts do not have a user-visible optimistic bubble, so
