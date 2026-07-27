@@ -288,15 +288,9 @@ fn not_sent_websocket_error(error: AgentError) -> super::websocket::WebSocketAtt
 }
 
 fn suppress_retry_after_send(error: AgentError) -> AgentError {
-    match error {
-        error @ AgentError::RequestSent { .. } => error,
-        error => AgentError::RequestSent {
-            message: error.to_string(),
-            metadata: Some(RequestDeliveryMetadata::new(
-                RequestDeliveryPhase::SentAwaitingAcceptance,
-            )),
-        },
-    }
+    error.suppress_retry_after_send(Some(RequestDeliveryMetadata::new(
+        RequestDeliveryPhase::SentAwaitingAcceptance,
+    )))
 }
 
 fn canonical_session_key(session_id: &SessionRef) -> n00nId {
@@ -4231,28 +4225,23 @@ mod tests {
         assert!(!should_fallback_to_http(&after_send));
     }
 
-    #[test_case(400)]
-    #[test_case(401)]
-    #[test_case(429)]
-    #[test_case(500)]
-    fn provider_status_after_http_send_becomes_non_retryable(status: u16) {
+    #[test_case(400, false, false)]
+    #[test_case(401, false, true)]
+    #[test_case(429, true, false)]
+    #[test_case(500, true, false)]
+    fn provider_status_after_http_send_is_not_request_sent(
+        status: u16,
+        retryable: bool,
+        auth_error: bool,
+    ) {
         let error = suppress_retry_after_send(AgentError::Api {
             status,
             message: "provider rejected an already-written request".into(),
         });
 
-        assert!(matches!(
-            error,
-            AgentError::RequestSent {
-                metadata: Some(RequestDeliveryMetadata {
-                    phase: RequestDeliveryPhase::SentAwaitingAcceptance,
-                    ..
-                }),
-                ..
-            }
-        ));
-        assert!(!error.is_retryable());
-        assert!(!error.is_auth_error());
+        assert!(!matches!(error, AgentError::RequestSent { .. }));
+        assert_eq!(error.is_retryable(), retryable);
+        assert_eq!(error.is_auth_error(), auth_error);
     }
 
     #[test]

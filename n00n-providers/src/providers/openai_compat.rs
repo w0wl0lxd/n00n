@@ -19,6 +19,7 @@ use crate::{
 const STREAM_DONE: &str = "[DONE]";
 const GPT_5_6_BREAKPOINT_PREFIX: &str = "gpt-5.6-";
 const GPT_CODEX_MARKER: &str = "-codex";
+const TOOL_RESULT_ERROR_PREFIX: &str = "[ERROR] ";
 
 fn model_supports_breakpoint(model: &crate::model::Model) -> bool {
     model.family == crate::model::ModelFamily::Gpt
@@ -27,14 +28,7 @@ fn model_supports_breakpoint(model: &crate::model::Model) -> bool {
 }
 
 fn suppress_retry_after_response(error: AgentError) -> AgentError {
-    if error.is_retryable() {
-        AgentError::RequestSent {
-            message: error.to_string(),
-            metadata: None,
-        }
-    } else {
-        error
-    }
+    error.suppress_retry_after_send(None)
 }
 
 fn value_hash(value: &Value) -> u64 {
@@ -423,12 +417,18 @@ pub fn convert_messages(
                         ContentBlock::ToolResult {
                             tool_use_id,
                             content,
-                            ..
+                            is_error,
                         } => {
+                            let output =
+                                if *is_error && !content.starts_with(TOOL_RESULT_ERROR_PREFIX) {
+                                    format!("{TOOL_RESULT_ERROR_PREFIX}{content}")
+                                } else {
+                                    content.clone()
+                                };
                             tool_results.push(json!({
                                 "role": "tool",
                                 "tool_call_id": tool_use_id,
-                                "content": content,
+                                "content": output,
                             }));
                         }
                         ContentBlock::ToolUse { .. }
@@ -1199,6 +1199,23 @@ data: [DONE]\n";
         assert_eq!(result[1]["tool_call_id"], "t1");
         assert_eq!(result[2]["role"], "user");
         assert_eq!(result[2]["content"][0]["type"], "image_url");
+    }
+
+    #[test]
+    fn convert_messages_prefixes_error_tool_result() {
+        let msgs = vec![Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "sub-agent error: API 500".into(),
+                is_error: true,
+            }],
+            ..Default::default()
+        }];
+        let result = convert_messages(&msgs, None, false);
+        let output = result[0]["content"].as_str().unwrap();
+        assert!(output.starts_with(TOOL_RESULT_ERROR_PREFIX));
+        assert!(output.contains("sub-agent error: API 500"));
     }
 
     #[test]

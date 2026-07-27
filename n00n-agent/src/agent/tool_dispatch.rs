@@ -224,6 +224,8 @@ fn is_authorized_plan_target(plan_path: &Path, target: &Path) -> bool {
     plan == target
 }
 
+const SUBAGENT_TOOLS: &[&str] = &["task", "workflow"];
+
 pub(super) struct RecentCalls(VecDeque<(String, u64)>);
 
 impl RecentCalls {
@@ -760,6 +762,17 @@ pub(super) async fn process_tool_calls(
         message: Box::new(tool_msg.clone()),
     })?;
     history.push(tool_msg);
+
+    if let Some(failed) = all_results
+        .iter()
+        .find(|r| r.is_error && SUBAGENT_TOOLS.contains(&r.tool.as_ref()))
+    {
+        return Err(AgentError::Tool {
+            tool: failed.tool.to_string(),
+            message: failed.output.as_text(),
+        });
+    }
+
     Ok(all_results)
 }
 
@@ -1593,6 +1606,46 @@ mod tests {
             .await;
             assert!(done.is_error);
             assert_eq!(done.output.as_text(), ERROR_MSG);
+        });
+    }
+
+    #[test]
+    fn failed_subagent_tool_aborts_process_tool_calls() {
+        smol::block_on(async {
+            use n00n_providers::{ContentBlock, Message, Role, StreamResponse, TokenUsage};
+
+            const ERROR_MSG: &str = "sub-agent error: API 500";
+            let (tx, _rx) = flume::unbounded::<crate::Envelope>();
+            let event_tx = crate::EventSender::new(tx, 0);
+            let ctx = local_ctx("task", |_| Err(ERROR_MSG.to_string()));
+            let mut history = crate::History::new(Vec::new());
+            let response = StreamResponse {
+                message: Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::ToolUse {
+                        id: "tu1".into(),
+                        name: "task".into(),
+                        input: serde_json::json!({}),
+                    }],
+                    ..Default::default()
+                },
+                usage: TokenUsage::default(),
+                stop_reason: None,
+            };
+
+            let err = process_tool_calls(
+                response,
+                &mut RecentCalls::new(),
+                None,
+                &mut history,
+                &event_tx,
+                &ctx,
+            )
+            .await
+            .expect_err("failed subagent must abort the turn");
+
+            assert!(matches!(err, AgentError::Tool { ref tool, .. } if tool == "task"));
+            assert!(err.to_string().contains(ERROR_MSG));
         });
     }
 }
