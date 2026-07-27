@@ -1,4 +1,7 @@
-job_name: tb-2-1-n00n-swe-1-7
+# Reference config for Terminal-Bench 2.1 with n00n agent.
+# run-full.sh and the other convenience scripts pass these values via CLI flags,
+# so this file is mainly for users who prefer `harbor run --config` directly.
+job_name: tb-2-1-n00n
 n_concurrent_trials: 1
 n_attempts: 5
 quiet: false

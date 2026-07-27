@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import shlex
 import tempfile
 import time
@@ -14,8 +15,17 @@ from harbor.models.agent.context import AgentContext
 
 AGENT_LOG_FILE = "n00n.txt"
 
+_PROVIDER_API_KEY_OVERRIDES: dict[str, frozenset[str]] = {
+    "devin": frozenset({"DEVIN_API_KEY", "WINDSURF_API_KEY"}),
+    "copilot": frozenset({"GH_COPILOT_TOKEN", "GH_TOKEN"}),
+    "google": frozenset({"GEMINI_API_KEY", "GOOGLE_API_KEY"}),
+    "zai": frozenset({"ZHIPU_API_KEY"}),
+}
+
 # devin-real block-buffers stdout when run through a pipe; run it under a
 # pseudo-tty so ACP traffic is line-buffered and n00n sees responses promptly.
+# Do not persist raw ACP traffic inside the wrapper — prompts and tool results
+# are untrusted and may contain secrets (AGENTS.md trust boundary).
 _DEVIN_WRAPPER = """#!/usr/bin/env python3
 import os
 import pty
@@ -48,6 +58,7 @@ def main() -> int:
     except termios.error as exc:
         _info(f"tty.setraw failed: {exc}")
 
+    # n00n already passes the "acp" subcommand; do not duplicate it.
     argv = [REAL, "--permission-mode", "dangerous"] + sys.argv[1:]
     try:
         p = subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave)
@@ -167,9 +178,9 @@ class N00nAgent(BaseInstalledAgent):
         return "n00n"
 
     def get_version_command(self) -> str | None:
-        # Use the wrapper script at /opt/n00n/n00n, not the raw ELF binary under
-        # /opt/n00n/bin, so the bundled glibc loader and libs are used.
-        return "/opt/n00n/n00n --version"
+        # Prefer the wrapper script found on PATH (either /opt/n00n/n00n or a
+        # /mnt/n00n copy in /usr/local/bin).
+        return "n00n --version"
 
     _UPLOAD_TIMEOUT_SEC = 120
     _INSTALL_TIMEOUT_SEC = 180
@@ -217,115 +228,240 @@ class N00nAgent(BaseInstalledAgent):
             )
         return result
 
+    async def _upload_text(
+        self, environment: BaseEnvironment, content: str, remote_path: str
+    ) -> None:
+        """Upload a small text blob to a remote path."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".tmp", delete=False) as tmp:
+            tmp.write(content)
+            tmp_path = Path(tmp.name)
+        try:
+            await environment.upload_file(tmp_path, remote_path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    def _is_devin(self) -> bool:
+        provider = self._parsed_model_provider or ""
+        return provider == "devin" or (self.model_name or "").startswith("devin/")
+
+    def _is_provider_api_key(self, key: str) -> bool:
+        """Check if an environment variable key is a provider API key
+        for the current model."""
+        provider = (self._parsed_model_provider or "").lower()
+        if not provider:
+            return False
+
+        key_upper = key.upper()
+        if key_upper in _PROVIDER_API_KEY_OVERRIDES.get(provider, frozenset()):
+            return True
+
+        prefix = provider.replace("-", "_").upper() + "_"
+        if key_upper.startswith(prefix) and key_upper.endswith(
+            ("_API_KEY", "_AUTH_TOKEN", "_TOKEN")
+        ):
+            return True
+
+        return False
+
     async def install(self, environment: BaseEnvironment) -> None:
         install_start = time.monotonic()
         self.logger.info("n00n install started")
-        bundle_local = Path(__file__).with_name("n00n-bundle.tar.gz")
-        await self._timed_upload(
-            environment, bundle_local, "/tmp/n00n-bundle.tar.gz", label="n00n bundle"
-        )
 
-        self.logger.info("extracting n00n bundle")
-        await self._timed_exec(
+        # Probe for an already-installed n00n binary on PATH.
+        probe = await self._timed_exec(
             self.exec_as_root,
             environment,
-            command=(
-                "mkdir -p /opt/n00n /opt/n00n/.config "
-                "/opt/n00n/.local/share /opt/n00n/.cache "
-                "&& tar -xzf /tmp/n00n-bundle.tar.gz -C /opt/n00n --strip-components=1 "
-                "&& chmod -R a+rX /opt/n00n "
-                "&& ln -sf /opt/n00n/n00n /usr/local/bin/n00n "
-                "&& rm -f /tmp/n00n-bundle.tar.gz"
-            ),
-            timeout_sec=self._INSTALL_TIMEOUT_SEC,
-            label="extract bundle",
-        )
-
-        self.logger.info("validating n00n installation")
-        await self._timed_exec(
-            self.exec_as_root,
-            environment,
-            command=(
-                "test -x /opt/n00n/n00n "
-                "&& test -x /opt/n00n/bin/n00n "
-                "&& test -x /opt/n00n/bin/devin-real"
-            ),
+            command="command -v n00n >/dev/null 2>&1 && n00n --version",
             timeout_sec=self._SETUP_TIMEOUT_SEC,
-            label="validate binaries",
+            label="probe installed n00n",
         )
 
-        # devin-real block-buffers stdout when run through a pipe; replace the
-        # bundled wrapper with one that runs devin-real under a pseudo-tty.
-        self.logger.info("uploading devin pty wrapper")
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as tmp:
-            tmp.write(_DEVIN_WRAPPER)
-            wrapper_path = Path(tmp.name)
-        try:
-            await self._timed_upload(
-                environment, wrapper_path, "/opt/n00n/bin/devin", label="devin wrapper"
+        if probe.return_code != 0:
+            # No n00n in PATH: try a mounted binary first.
+            mount_check = await self._timed_exec(
+                self.exec_as_root,
+                environment,
+                command="test -f /mnt/n00n",
+                timeout_sec=self._SETUP_TIMEOUT_SEC,
+                label="probe mounted n00n",
             )
-        finally:
-            wrapper_path.unlink(missing_ok=True)
+            if mount_check.return_code == 0:
+                await self._timed_exec(
+                    self.exec_as_root,
+                    environment,
+                    command=(
+                        "cp /mnt/n00n /usr/local/bin/n00n && "
+                        "chmod +x /usr/local/bin/n00n"
+                    ),
+                    timeout_sec=self._INSTALL_TIMEOUT_SEC,
+                    label="copy mounted n00n",
+                )
 
-        await self._timed_exec(
-            self.exec_as_root,
-            environment,
-            command="chmod +x /opt/n00n/bin/devin",
-            timeout_sec=self._SETUP_TIMEOUT_SEC,
-            label="chmod wrapper",
-        )
-
-        # The Devin CLI bundled with n00n stores Windsurf credentials in a TOML file.
-        # Write that credential file so the isolated XDG dirs contain a valid API key
-        # and server endpoints, matching what the Devin CLI expects when running ACP.
-        api_key = self._get_env("WINDSURF_API_KEY") or ""
-        if api_key:
-            self.logger.info("writing devin credentials")
-            config_json = '{"shell":{"setup_complete":true}}'
-            credentials_toml = (
-                f"api_key = {json.dumps(api_key)}\n"
-                f"windsurf_api_key = {json.dumps(api_key)}\n"
-                'api_server_url = "https://server.codeium.com"\n'
-                'devin_webapp_host = "app.devin.ai"\n'
-                'devin_api_url = "https://api.devin.ai"\n'
-            )
-
-            files = {
-                "/opt/n00n/.config/devin/config.json": config_json,
-                "/opt/n00n/.local/share/devin/credentials.toml": credentials_toml,
-            }
-            for remote, content in files.items():
-                with tempfile.NamedTemporaryFile(
-                    mode="w", suffix=Path(remote).suffix, delete=False
-                ) as tmp:
-                    tmp.write(content)
-                    tmp_path = Path(tmp.name)
-                try:
-                    await self._timed_upload(
-                        environment, tmp_path, remote, label=f"credential {remote}"
+                auth_check = await self._timed_exec(
+                    self.exec_as_root,
+                    environment,
+                    command="test -d /mnt/n00n-auth",
+                    timeout_sec=self._SETUP_TIMEOUT_SEC,
+                    label="probe mounted auth",
+                )
+                if auth_check.return_code == 0:
+                    await self._timed_exec(
+                        self.exec_as_root,
+                        environment,
+                        command=(
+                            "if [ -d /mnt/n00n-auth ] && [ -n "
+                            '"$(ls -A /mnt/n00n-auth 2>/dev/null)" ]; then '
+                            "mkdir -p /root/.n00n/auth && "
+                            "cp -r /mnt/n00n-auth/. /root/.n00n/auth/; "
+                            "fi"
+                        ),
+                        timeout_sec=self._INSTALL_TIMEOUT_SEC,
+                        label="copy mounted auth",
                     )
-                finally:
-                    tmp_path.unlink(missing_ok=True)
 
+                providers_check = await self._timed_exec(
+                    self.exec_as_root,
+                    environment,
+                    command="test -d /mnt/n00n-providers",
+                    timeout_sec=self._SETUP_TIMEOUT_SEC,
+                    label="probe mounted providers",
+                )
+                if providers_check.return_code == 0:
+                    await self._timed_exec(
+                        self.exec_as_root,
+                        environment,
+                        command=(
+                            "if [ -d /mnt/n00n-providers ] && [ -n "
+                            '"$(ls -A /mnt/n00n-providers 2>/dev/null)" ]; then '
+                            "mkdir -p /root/.n00n/providers && "
+                            "cp -r /mnt/n00n-providers/. /root/.n00n/providers/ && "
+                            "chmod -R +x /root/.n00n/providers; "
+                            "fi"
+                        ),
+                        timeout_sec=self._INSTALL_TIMEOUT_SEC,
+                        label="copy mounted providers",
+                    )
+            else:
+                # Fall back to the bundled tarball (e.g. Daytona/cloud envs).
+                bundle_local = Path(__file__).with_name("n00n-bundle.tar.gz")
+                if not bundle_local.exists():
+                    raise FileNotFoundError(
+                        f"n00n bundle not found at {bundle_local}. "
+                        "Provide a mounted binary at /mnt/n00n, "
+                        "or place n00n-bundle.tar.gz next to this script."
+                    )
+                await self._timed_upload(
+                    environment, bundle_local, "/tmp/n00n-bundle.tar.gz", label="n00n bundle"
+                )
+                await self._timed_exec(
+                    self.exec_as_root,
+                    environment,
+                    command=(
+                        "mkdir -p /opt/n00n /opt/n00n/.config "
+                        "/opt/n00n/.local/share /opt/n00n/.cache "
+                        "&& tar -xzf /tmp/n00n-bundle.tar.gz -C /opt/n00n "
+                        "--strip-components=1 "
+                        "&& chmod -R a+rX /opt/n00n "
+                        # The bundled n00n wrapper computes DIR from $0, so a
+                        # symlink in /usr/local/bin resolves to the wrong path.
+                        "&& sed -i 's|^DIR=.*|DIR=/opt/n00n|' /opt/n00n/n00n "
+                        "&& ln -sf /opt/n00n/n00n /usr/local/bin/n00n "
+                        "&& rm -f /tmp/n00n-bundle.tar.gz"
+                    ),
+                    timeout_sec=self._INSTALL_TIMEOUT_SEC,
+                    label="extract bundle",
+                )
+
+        # Ensure isolated XDG state exists and is writable for any user.
+        await self._timed_exec(
+            self.exec_as_root,
+            environment,
+            command=(
+                "mkdir -p /opt/n00n/.config /opt/n00n/.local/share "
+                "/opt/n00n/.cache "
+                "&& chmod -R a+rwX,+t /opt/n00n/.config /opt/n00n/.local "
+                "/opt/n00n/.cache"
+            ),
+            timeout_sec=self._SETUP_TIMEOUT_SEC,
+            label="prepare XDG dirs",
+        )
+
+        # Only replace the bundled /opt/n00n/bin/devin when the matching
+        # devin-real binary was unpacked beside it. System /mnt installs do not
+        # provide that path, and uploading a wrapper that points at a missing
+        # REAL executable would break Devin jobs that prefer /opt/n00n/bin.
+        real_check = await self._timed_exec(
+            self.exec_as_root,
+            environment,
+            command="test -x /opt/n00n/bin/devin-real",
+            timeout_sec=self._SETUP_TIMEOUT_SEC,
+            label="probe devin-real",
+        )
+        if real_check.return_code == 0:
+            self.logger.info("uploading devin pty wrapper")
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as tmp:
+                tmp.write(_DEVIN_WRAPPER)
+                wrapper_path = Path(tmp.name)
+            try:
+                await self._timed_upload(
+                    environment, wrapper_path, "/opt/n00n/bin/devin", label="devin wrapper"
+                )
+            finally:
+                wrapper_path.unlink(missing_ok=True)
             await self._timed_exec(
                 self.exec_as_root,
                 environment,
-                command=(
-                    "mkdir -p /opt/n00n/.config/devin "
-                    "/opt/n00n/.local/share/devin "
-                    "&& chmod -R a+rwx /opt/n00n/.config "
-                    "/opt/n00n/.local /opt/n00n/.cache "
-                    "&& chmod 644 /opt/n00n/.local/share/devin/credentials.toml "
-                    "&& chmod 644 /opt/n00n/.config/devin/config.json"
-                ),
+                command="chmod +x /opt/n00n/bin/devin",
                 timeout_sec=self._SETUP_TIMEOUT_SEC,
-                label="setup credentials",
+                label="chmod wrapper",
             )
+
+        # Devin needs a credentials file and a minimal config so it never prompts.
+        windsurf_key = self._get_env("WINDSURF_API_KEY")
+        if self._is_devin() and windsurf_key:
+            await self._write_devin_config(environment, windsurf_key)
 
         elapsed = time.monotonic() - install_start
         self.logger.info(
             "n00n install complete",
             extra={"duration_sec": round(elapsed, 3)},
+        )
+
+    async def _write_devin_config(
+        self, environment: BaseEnvironment, windsurf_api_key: str
+    ) -> None:
+        config_dir = "/opt/n00n/.config/devin"
+        data_dir = "/opt/n00n/.local/share/devin"
+        await self._timed_exec(
+            self.exec_as_root,
+            environment,
+            command=f"mkdir -p {config_dir} {data_dir}",
+            timeout_sec=self._SETUP_TIMEOUT_SEC,
+            label="prepare devin config dirs",
+        )
+
+        config_json = '{"shell":{"setup_complete":true}}'
+        credentials_toml = (
+            f"api_key = {json.dumps(windsurf_api_key)}\n"
+            f"windsurf_api_key = {json.dumps(windsurf_api_key)}\n"
+            'api_server_url = "https://server.codeium.com"\n'
+            'devin_webapp_host = "app.devin.ai"\n'
+            'devin_api_url = "https://api.devin.ai"\n'
+        )
+
+        await self._upload_text(environment, config_json, f"{config_dir}/config.json")
+        await self._upload_text(environment, credentials_toml, f"{data_dir}/credentials.toml")
+
+        await self._timed_exec(
+            self.exec_as_root,
+            environment,
+            command=(
+                f"chmod -R a+rwX,+t {config_dir} {data_dir} "
+                f"&& chmod 644 {data_dir}/credentials.toml "
+                f"&& chmod 644 {config_dir}/config.json"
+            ),
+            timeout_sec=self._SETUP_TIMEOUT_SEC,
+            label="set devin config permissions",
         )
 
     @with_prompt_template
@@ -355,24 +491,48 @@ class N00nAgent(BaseInstalledAgent):
             },
         )
 
+        # Build secrets dict: provider-specific keys from os.environ
+        # + explicit extra_env keys.
+        secrets: dict[str, str] = {}
+        for key, value in os.environ.items():
+            if self._is_provider_api_key(key):
+                secrets[key] = value
+        secrets.update(
+            {
+                k: v
+                for k, v in self.extra_env.items()
+                if k.endswith(("_API_KEY", "_AUTH_TOKEN", "_TOKEN"))
+            }
+        )
+
+        # Base environment for the n00n process.  PATH is ordered so the
+        # bundled /opt/n00n wrapper is preferred when present, falling back to
+        # /usr/local/bin (e.g. a /mnt/n00n install).
         env: dict[str, str] = {
-            "DEVIN_MODEL": devin_model,
-            "DEVIN_PERMISSION_MODE": "dangerous",
-            "WINDSURF_API_KEY": self._get_env("WINDSURF_API_KEY") or "",
+            "PATH": "/opt/n00n:/opt/n00n/bin:/usr/local/bin:/usr/bin:/bin",
             "XDG_CONFIG_HOME": "/opt/n00n/.config",
             "XDG_DATA_HOME": "/opt/n00n/.local/share",
             "XDG_CACHE_HOME": "/opt/n00n/.cache",
-            # Enable provider-level tracing in the sandbox log while keeping
-            # devin-real/chisel output at warning level to avoid noise.
-            "RUST_LOG": "warn,n00n=info,n00n_providers=debug",
+            # Keep provider logs at warning level so raw ACP traffic is not
+            # persisted to the sandbox log via tee.
+            "RUST_LOG": "warn,n00n=info",
             "RUST_BACKTRACE": "1",
         }
-        if devin_api_key := self._get_env("DEVIN_API_KEY"):
-            env["DEVIN_API_KEY"] = devin_api_key
+
+        extra_path = self.extra_env.get("PATH", "")
+        if extra_path:
+            env["PATH"] = f"{env['PATH']}:{extra_path}"
+
+        if self._is_devin():
+            env["DEVIN_PERMISSION_MODE"] = "dangerous"
+            if devin_model:
+                env["DEVIN_MODEL"] = devin_model
+
+        # Merge provider API keys and tokens into the process environment.
+        env.update(secrets)
 
         command = (
-            f'export PATH="/opt/n00n/bin:$PATH"; '
-            f"/opt/n00n/n00n --print --yolo --verbose "
+            f"n00n --print --yolo --verbose "
             f"--output-format stream-json "
             f"--model {shlex.quote(model)} -- {escaped} "
             f"2>&1 | tee /logs/agent/{AGENT_LOG_FILE}"

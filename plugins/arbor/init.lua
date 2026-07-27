@@ -81,22 +81,17 @@ n00n.api.register_tool({
   name = "arbor",
   kind = "read",
   description = [[
-Graph-based code analysis using Arbor. Returns structured, compact
-caller/callee/project maps; prefer it over broad grep or unfiltered reads
-for relationship and impact questions.
+Graph-based code analysis using Arbor. Returns compact caller/callee/project maps; prefer over broad grep for relationship/impact questions.
 
 Commands:
-- callers <symbol>: Who calls this function/class? Returns name, kind, file, and line.
-- callees <symbol>: What does this function/class call?
-- map: Ranked project skeleton with entry points, centrality scores, and symbol coverage.
-- diff: Blast radius of unpushed git changes — shows direct/indirect callers, entry points affected.
-- query <text>: Free-text search of the code graph.
-- status: Index status (node count, edge count, file count).
+- callers <symbol>: who calls it.
+- callees <symbol>: what it calls.
+- map: ranked project skeleton.
+- diff: blast radius of unpushed git changes.
+- query <text>: free-text search.
+- status: index status.
 
-Use this to understand call relationships, find affected code, and get a
-structured overview of a codebase. Complements codegraph — Arbor shows the
-full set of callers/callees, while codegraph traces the call path between
-two symbols.]],
+Complements codegraph — Arbor shows the full caller/callee set, while codegraph traces call paths between two symbols.]],
   schema = {
     type = "object",
     properties = {
@@ -127,6 +122,13 @@ two symbols.]],
         llm_output = "Arbor CLI not found. Install it with: cargo install arbor-graph-cli: " .. tostring(err),
         is_error = true,
       }
+    end
+    local project = input.project or "."
+    if input.command ~= "status" then
+      local indexed, index_err = pcall(n00n_arbor.ensure_indexed, project)
+      if not indexed then
+        return { llm_output = "error: Arbor index unavailable: " .. tostring(index_err), is_error = true }
+      end
     end
     local card, live_err = ExploreResult.live(ctx)
     if not card then

@@ -2642,7 +2642,8 @@ n00n.session.list()
 Lists sessions stored for the current project. Answered from a
 background scan, so a slow disk never blocks the UI.
 
-**Returns:** (`table|nil`, `string|nil`) Array of `{id, title, updated_at}`, or nil and an error.
+**Returns:** (`table|nil`, `string|nil`) Array of `{id, title, display_title, kind,
+parent_id, updated_at, cwd, model}`, or nil and an error.
 
 **Example:**
 
@@ -2677,13 +2678,14 @@ local live, err = n00n.session.live()
 n00n.session.status({id})
 ```
 
-Returns one live session with its status and latest assistant text output.
+Returns one live session with its status, latest assistant text output,
+and paused team run metadata when the latest tool result is from `team`.
 
 **Parameters:**
 
 - `{id}` (`string`) Live session id.
 
-**Returns:** (`table|nil`, `string|nil`) `{id, title, status, updated_at, focused, output?}`, or nil and an error.
+**Returns:** (`table|nil`, `string|nil`) `{id, title, status, updated_at, focused, output?, paused_team?}` where `paused_team` is `{paused, run_id, mode?, ...}` when a paused team run is present, or nil and an error.
 
 ---
 
@@ -2762,8 +2764,9 @@ Starts a new session in the current project.
 
 - `{opts?}` (`table?`) Optional fields: prompt (string) first user message
 
-  to submit right away; focus (boolean) switch the UI to the new session.
+  to submit right away; focus (boolean) switch the UI to the new session;
 
+  - `parent_id` (`string?`) session that spawned this session.
 
 **Returns:** (`string|nil`, `string|nil`) New session id, or nil and an error.
 
@@ -2791,7 +2794,13 @@ the prompt is queued and picked up when the agent reaches it.
 - `{text}` (`string`) The prompt to send. Must not be blank.
 - `{opts?}` (`table?`) Optional fields: session (string) id of a live
 
-  session; defaults to the focused one.
+  session (defaults to the focused one); steer (boolean) request
+
+
+  delivery as a steering interrupt when the session is busy; control
+
+
+  (boolean) mark the message as an agent-to-agent control message.
 
 
 **Returns:** (`string|nil`, `string|nil`) "started" or "queued", or nil and an error.
@@ -2799,7 +2808,7 @@ the prompt is queued and picked up when the agent reaches it.
 **Example:**
 
 ```lua
-local state, err = n00n.session.prompt("run the tests", { session = id })
+local state, err = n00n.session.prompt("run the tests", { session = id, steer = true, control = true })
 ```
 
 ---
@@ -5221,6 +5230,24 @@ M.EMPTY_OLD_STRING = "old_string must not be empty"
 function M.replace(content, old_string, new_string, replace_all)
 ```
 
+### `require("n00n.guard")`
+
+```lua
+-- Runaway guard for subagent budgets.
+--
+-- Combines a user-configurable call limit with heuristic runaway detection:
+-- repeated identical prompts, consecutive subagent errors, and wall-clock timeouts.
+--
+-- Use as a drop-in replacement for a simple { consume = ... } budget table:
+--   guard.consume() is still called before a call.
+--   guard.observe(prompt, err) is called after a call if available.
+--
+-- For richer control, subagent.launch also supports guard:check(prompt) before a
+-- call and guard:record(prompt, err) after a call, which lets the guard see the
+-- prompt and the result.
+function M.new(opts)
+```
+
 ### `require("n00n.list_picker")`
 
 ```lua
@@ -5248,9 +5275,9 @@ function M.snapshot(ctx)
 -- Shared per-tool output limit options, so the tools that support them
 -- cannot drift apart.
 
-local DEFAULT_MAX_OUTPUT_LINES = 2000
-local DEFAULT_MAX_OUTPUT_BYTES = 50 * 1024
-local DEFAULT_MAX_LINE_BYTES = 500
+local DEFAULT_MAX_OUTPUT_LINES = 500
+local DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024
+local DEFAULT_MAX_LINE_BYTES = 400
 
 local M = {}
 
@@ -5326,6 +5353,76 @@ local function shorten_path(path)
 end
 
 return shorten_path
+```
+
+### `require("n00n.structured_output")`
+
+```lua
+-- Structured output helper module for subagent validation.
+-- Provides constants, schema validation, and local tool creation for
+-- structured output patterns used across task, workflow, and subagent plugins.
+
+-- Constants
+M.STRUCTURED_OUTPUT_NAME = "structured_output"
+M.STRUCTURED_OUTPUT_DESCRIPTION = "Report your final result. Call it exactly once when your task is complete."
+M.STRUCTURED_OUTPUT_ACK = "Output recorded."
+M.STRUCTURED_OUTPUT_SUFFIX = "\n\nWhen finished, call the structured_output tool with your final result."
+M.MAX_STRUCTURED_RETRIES = 1
+M.MAX_SCHEMA_ERRORS = 3
+M.MAX_SCHEMA_BYTES = 32 * 1024
+M.MAX_SCHEMA_DEPTH = 16
+M.SCHEMA_ROOT_ERROR = "output_schema must have type object"
+M.SCHEMA_COMPILE_ERROR = "invalid output_schema"
+M.SCHEMA_SIZE_ERROR = "output_schema exceeds 32768-byte limit"
+M.SCHEMA_DEPTH_ERROR = "output_schema exceeds maximum depth of 16"
+M.STRUCTURED_MISSING_ERROR = "subagent finished without calling structured_output"
+M.STRUCTURED_INVALID_ERROR = "subagent result does not match output_schema"
+M.INVALID_INPUT_PREFIX = "Input does not match the required schema. Fix the errors and call structured_output again:\n"
+
+-- Check if a schema value is within the maximum depth limit
+function M.schema_within_depth(value, depth)
+
+-- Limit error messages to a reasonable number
+function M.bounded_errors(errors)
+
+-- Compile a schema validator with early validation checks
+-- Returns (validator | nil, err)
+function M.compile_validator(schema)
+
+-- Create a local tool spec for structured output
+-- Returns a table with description, input_schema, and handler
+function M.make_local_tool(schema, on_submit)
+```
+
+### `require("n00n.subagent")`
+
+```lua
+-- Subagent launch helper module.
+-- Provides a unified interface for launching subagents with model resolution,
+-- system prompts, tool setup, and optional structured output validation.
+
+-- Launch a subagent with the given options.
+-- Returns (result | nil, err, cost, usage, model_spec)
+--
+-- Options:
+--   description (required): Short description for the subagent
+--   prompt (required): The prompt to send to the subagent
+--   subagent_type: "research" or "general" (default: "general")
+--   model_spec: Exact model spec (optional)
+--   model_tier: Capped tier: "weak", "medium", or "strong"
+--   auto_tier: Pick model_tier from prompt automatically (optional)
+--   thinking: Thinking mode configuration
+--   system: Override the default system prompt (optional)
+--   output_schema: JSON Schema for structured output validation
+--   audience: Tool audience (default: computed from subagent_type)
+--   include_mcp: Include MCP tools (default: true)
+--   local_tools: Additional local tools to register
+--   preview: ActivityPreview object wrapping sess:prompt (optional)
+--   activity_label: Label used with preview (default: description)
+--   budget: Budget object with :consume() method (optional)
+--   fail_on_pricing_error: Return an error if usage pricing fails (default: false)
+--   ctx: Agent context (required)
+function M.launch(ctx, opts)
 ```
 
 ### `require("n00n.telemetry")`

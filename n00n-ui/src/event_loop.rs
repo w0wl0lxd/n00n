@@ -29,12 +29,12 @@ use n00n_providers::provider::{
     Provider, fetch_all_models, from_model_fallback_with_openai_options,
     from_model_with_openai_options,
 };
-use n00n_providers::{Message, Model, OpenAiOptions};
+use n00n_providers::{ContentBlock, Message, Model, OpenAiOptions};
 use n00n_storage::StateDir;
 use n00n_storage::StorageError;
-use n00n_storage::id::{N00nId, N00nIdParseError, SessionRef};
+use n00n_storage::id::{SessionRef, n00nId, n00nIdParseError};
 use n00n_storage::sessions::{SessionError, TranscriptEntry, normalize_title};
-use serde_json::json;
+use serde_json::{Value, json};
 use tracing::warn;
 
 use crate::AppSession;
@@ -60,8 +60,10 @@ const PERIODIC_SAVE_INTERVAL: Duration = Duration::from_secs(1);
 /// Max events handled per frame so a flood cannot starve rendering.
 const DRAIN_BUDGET: usize = 256;
 const AGENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
+const STORAGE_WRITER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const DELETE_FOCUSED_ERR: &str = "cannot delete the focused session";
 const NOT_LIVE_ERR: &str = "session not live";
+const TEAM_TOOL_NAME: &str = "team";
 
 /// Tabs carry their in-memory sessions so `/reload` reopens them without a
 /// disk round-trip; `session_has_content` tells which ones were saved.
@@ -120,8 +122,56 @@ impl SessionStatus {
     }
 }
 
-fn parse_session_id(id: &str) -> Result<N00nId, String> {
-    id.parse().map_err(|e: N00nIdParseError| e.to_string())
+fn parse_session_id(id: &str) -> Result<n00nId, String> {
+    id.parse().map_err(|e: n00nIdParseError| e.to_string())
+}
+
+fn paused_team_run(history: &[Message]) -> Option<Value> {
+    let (user_index, last_user) = history
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, message)| matches!(message.role, n00n_providers::Role::User))?;
+
+    for block in &last_user.content {
+        let ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            ..
+        } = block
+        else {
+            continue;
+        };
+        let is_team_result = history[..user_index].iter().rev().any(|message| {
+            message
+                .tool_uses()
+                .any(|(id, name, _)| id == tool_use_id && name == TEAM_TOOL_NAME)
+        });
+        if !is_team_result {
+            continue;
+        }
+
+        if !content.trim_start().starts_with('{') {
+            continue;
+        }
+        let payload: Value = match serde_json::from_str(content) {
+            Ok(payload) => payload,
+            Err(error) => {
+                warn!(%tool_use_id, %error, "invalid paused team result; ignoring");
+                continue;
+            }
+        };
+        let paused = payload.get("paused").and_then(Value::as_bool) == Some(true);
+        let has_run_id = payload
+            .get("run_id")
+            .and_then(Value::as_str)
+            .is_some_and(|run_id| !run_id.is_empty());
+        if paused && has_run_id {
+            return Some(payload);
+        }
+    }
+
+    None
 }
 
 struct SessionRuntime {
@@ -133,7 +183,7 @@ struct SessionRuntime {
 }
 
 impl SessionRuntime {
-    fn id(&self) -> N00nId {
+    fn id(&self) -> n00nId {
         self.app.state.session.id
     }
 }
@@ -224,7 +274,7 @@ pub(crate) struct EventLoop<'t> {
     ui_action_rx: Option<flume::Receiver<UiAction>>,
     submission_persist_tx: flume::Sender<SubmissionPersistence>,
     submission_persist_rx: flume::Receiver<SubmissionPersistence>,
-    post_draw_submissions: Vec<(N00nId, SubmissionDispatch)>,
+    post_draw_submissions: Vec<(n00nId, SubmissionDispatch)>,
     last_save: Instant,
     _model_fetch_task: smol::Task<()>,
     /// Set when UI state changed and a fresh frame must be painted. Draws are
@@ -236,7 +286,7 @@ pub(crate) struct EventLoop<'t> {
 /// One item from any of the event loop's sources; `None` from `next_wake`
 /// means the wait timed out (animation/idle tick).
 struct SubmissionPersistence {
-    session_id: N00nId,
+    session_id: n00nId,
     dispatch: SubmissionDispatch,
     result: Result<(), SessionError>,
 }
@@ -504,6 +554,7 @@ impl<'t> EventLoop<'t> {
             let sub = Submission {
                 text: prompt,
                 images: Vec::new(),
+                control: false,
             };
             let actions = self.focused_app().handle_submit(sub);
             self.dispatch(self.focused, actions);
@@ -653,11 +704,11 @@ impl<'t> EventLoop<'t> {
         if self.last_save.elapsed() < PERIODIC_SAVE_INTERVAL {
             return;
         }
-        let app = &mut self.sessions[self.focused].app;
-        if app.status != Status::Streaming {
-            return;
+        for rt in &mut self.sessions {
+            if should_save_periodically(&rt.app.status) {
+                rt.app.save_session();
+            }
         }
-        app.save_session();
         self.last_save = Instant::now();
     }
 
@@ -832,6 +883,7 @@ impl<'t> EventLoop<'t> {
                             "status": SessionStatus::of(&rt.app).as_str(),
                             "updated_at": rt.app.state.session.updated_at,
                             "focused": i == self.focused,
+                            "cwd": rt.app.state.session.cwd,
                         })
                     })
                     .collect();
@@ -849,6 +901,7 @@ impl<'t> EventLoop<'t> {
                             .then(|| message.first_text_content())
                             .flatten()
                     });
+                    let paused_team = paused_team_run(&history);
                     Ok(json!({
                         "id": rt.id(),
                         "title": rt.app.state.session.title,
@@ -856,6 +909,8 @@ impl<'t> EventLoop<'t> {
                         "updated_at": rt.app.state.session.updated_at,
                         "focused": idx == self.focused,
                         "output": output,
+                        "paused_team": paused_team,
+                        "cwd": rt.app.state.session.cwd,
                     }))
                 });
                 let _ = reply_tx.send(reply);
@@ -863,23 +918,43 @@ impl<'t> EventLoop<'t> {
             SessionRequest::Current => {
                 let _ = reply_tx.send(Ok(json!(self.sessions[self.focused].id())));
             }
-            SessionRequest::New { prompt, focus } => {
-                let session = {
+            SessionRequest::New {
+                prompt,
+                focus,
+                parent_id,
+            } => {
+                let mut session = {
                     let slot = self.ctx.model_slot.load();
                     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
                     AppSession::new(&slot.model.spec(), &cwd.to_string_lossy())
                 };
+                let parent_id = match parent_id {
+                    Some(id) => match parse_session_id(&id) {
+                        Ok(id) => Some(id),
+                        Err(error) => {
+                            let _ = reply_tx.send(Err(error));
+                            return;
+                        }
+                    },
+                    None => None,
+                };
+                session.meta.parent_id = parent_id;
                 let idx = self.push_runtime(self.ctx.spawn_runtime(session));
                 let id = self.sessions[idx].id();
                 if let Some(prompt) = prompt {
-                    let _ = self.submit_text(idx, prompt);
+                    let _ = self.submit_text(idx, prompt, false, false);
                 }
                 if focus {
                     self.set_focus(idx);
                 }
                 let _ = reply_tx.send(Ok(json!(id)));
             }
-            SessionRequest::Prompt { id, text } => {
+            SessionRequest::Prompt {
+                id,
+                text,
+                steer,
+                control,
+            } => {
                 let idx = match id {
                     None => Ok(self.focused),
                     Some(id) => parse_session_id(&id).and_then(|id| {
@@ -887,7 +962,8 @@ impl<'t> EventLoop<'t> {
                             .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))
                     }),
                 };
-                let _ = reply_tx.send(idx.and_then(|idx| self.submit_text(idx, text)));
+                let _ =
+                    reply_tx.send(idx.and_then(|idx| self.submit_text(idx, text, steer, control)));
             }
             SessionRequest::Cancel { id } => {
                 let reply = parse_session_id(&id).and_then(|id| {
@@ -931,12 +1007,24 @@ impl<'t> EventLoop<'t> {
         }
     }
 
-    fn submit_text(&mut self, idx: usize, text: String) -> SessionReply {
+    fn submit_text(
+        &mut self,
+        idx: usize,
+        text: String,
+        steer: bool,
+        control: bool,
+    ) -> SessionReply {
         let msg = QueuedMessage {
             text,
             images: Vec::new(),
+            control,
         };
-        match self.sessions[idx].app.submit_background_prompt(msg) {
+        let outcome = if steer {
+            self.sessions[idx].app.submit_control_prompt(msg)
+        } else {
+            self.sessions[idx].app.submit_background_prompt(msg)
+        };
+        match outcome {
             SubmitOutcome::Started(actions) => {
                 self.dispatch(idx, actions);
                 Ok(json!("started"))
@@ -946,7 +1034,7 @@ impl<'t> EventLoop<'t> {
         }
     }
 
-    fn position(&self, id: N00nId) -> Option<usize> {
+    fn position(&self, id: n00nId) -> Option<usize> {
         self.sessions.iter().position(|rt| rt.id() == id)
     }
 
@@ -978,7 +1066,7 @@ impl<'t> EventLoop<'t> {
     /// Focus a live session, or bring a stored one up: in place when the
     /// focused session is a blank idle one (nothing worth keeping), otherwise
     /// as a new runtime so the session you came from stays live.
-    fn focus_session(&mut self, id: N00nId) -> Result<(), String> {
+    fn focus_session(&mut self, id: n00nId) -> Result<(), String> {
         if let Some(i) = self.position(id) {
             self.set_focus(i);
             return Ok(());
@@ -1195,6 +1283,17 @@ impl<'t> EventLoop<'t> {
             }
             Action::NewSession => {
                 self.respawn_agent(idx, Vec::new(), Vec::new());
+                if let Some(pending) = self.sessions[idx].app.pending_plan_submit.take() {
+                    let actions = {
+                        let app = &mut self.sessions[idx].app;
+                        if let Some((content, path)) = pending.plan {
+                            app.main_chat().push(DisplayMessage::plan(content, path));
+                        }
+                        app.run_id += 1;
+                        app.start_from_queue(&pending.message)
+                    };
+                    self.dispatch(idx, actions);
+                }
             }
             Action::LoadSession(loaded) => {
                 let loaded = *loaded;
@@ -1404,7 +1503,7 @@ impl<'t> EventLoop<'t> {
             smol::block_on(h.shutdown());
         }
         match Arc::try_unwrap(self.ctx.storage_writer) {
-            Ok(writer) => writer.shutdown(AGENT_SHUTDOWN_TIMEOUT),
+            Ok(writer) => writer.shutdown(STORAGE_WRITER_SHUTDOWN_TIMEOUT),
             Err(_) => {
                 warn!("storage writer has outstanding references, skipping graceful shutdown");
             }
@@ -1434,9 +1533,9 @@ where
 }
 
 fn take_painted_submissions<T>(
-    pending: &mut Vec<(N00nId, T)>,
-    painted_session: N00nId,
-) -> Vec<(N00nId, T)> {
+    pending: &mut Vec<(n00nId, T)>,
+    painted_session: n00nId,
+) -> Vec<(n00nId, T)> {
     let submissions = std::mem::take(pending);
     let mut ready = Vec::new();
     for (session_id, submission) in submissions {
@@ -1447,6 +1546,10 @@ fn take_painted_submissions<T>(
         }
     }
     ready
+}
+
+fn should_save_periodically(status: &Status) -> bool {
+    matches!(status, Status::Streaming)
 }
 
 fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
@@ -1461,8 +1564,13 @@ fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{DRAIN_BUDGET, DrainScheduler, draw_then_post_terminal, take_painted_submissions};
-    use n00n_storage::id::N00nId;
+    use super::{
+        DRAIN_BUDGET, DrainScheduler, TEAM_TOOL_NAME, draw_then_post_terminal, paused_team_run,
+        should_save_periodically, take_painted_submissions,
+    };
+    use crate::components::Status;
+    use n00n_providers::{ContentBlock, Message, Role};
+    use n00n_storage::id::n00nId;
     use ratatui::{
         Terminal,
         backend::{Backend, ClearType, TestBackend, WindowSize},
@@ -1471,6 +1579,55 @@ mod tests {
         widgets::Paragraph,
     };
     use std::io;
+
+    #[test]
+    fn paused_team_run_requires_matching_team_tool_call() {
+        let tool_result = Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "tool-1".into(),
+                content: r#"{"paused":true,"run_id":"run-1"}"#.into(),
+                is_error: true,
+            }],
+            ..Default::default()
+        };
+        assert!(paused_team_run(std::slice::from_ref(&tool_result)).is_none());
+
+        let tool_call = Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: "tool-1".into(),
+                name: TEAM_TOOL_NAME.into(),
+                input: serde_json::json!({}),
+            }],
+            ..Default::default()
+        };
+        let paused = paused_team_run(&[tool_call, tool_result]).expect("paused team payload");
+        assert_eq!(paused["run_id"], "run-1");
+    }
+
+    #[test]
+    fn paused_team_run_ignores_malformed_team_json() {
+        let tool_call = Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: "tool-1".into(),
+                name: TEAM_TOOL_NAME.into(),
+                input: serde_json::json!({}),
+            }],
+            ..Default::default()
+        };
+        let tool_result = Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "tool-1".into(),
+                content: r#"{"paused":true,"run_id":"#.into(),
+                is_error: true,
+            }],
+            ..Default::default()
+        };
+        assert!(paused_team_run(&[tool_call, tool_result]).is_none());
+    }
 
     struct FailingBackend(TestBackend);
 
@@ -1540,9 +1697,16 @@ mod tests {
     }
 
     #[test]
+    fn periodic_save_skips_unchanged_idle_sessions() {
+        assert!(!should_save_periodically(&Status::Idle));
+        assert!(!should_save_periodically(&Status::error("failed".into())));
+        assert!(should_save_periodically(&Status::Streaming));
+    }
+
+    #[test]
     fn painted_submission_waits_for_its_session_after_focus_switch() {
-        let first = N00nId::generate();
-        let second = N00nId::generate();
+        let first = n00nId::generate();
+        let second = n00nId::generate();
         let mut pending = vec![(first, "first"), (second, "second")];
 
         let released = take_painted_submissions(&mut pending, second);

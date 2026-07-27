@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-n00n ships with 28 built-in tools. This is the full reference.
+n00n ships with 30 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -18,9 +18,10 @@ Commands run in <cwd> by default.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `command` | string | yes |  | The bash command to execute |
 | `workdir` | string | no | cwd | Working directory |
-| `timeout` | integer | no | 120 | Timeout in seconds |
+| `timeout` | integer | no | 120 | Timeout seconds |
+| `command` | string | yes |  | Bash command to execute |
+| `justification` | string | no |  | Required when command is broad/unbounded. Explain scope and bound assumptions. |
 | `description` | string | no |  | Short description (3-5 words) of what the command does |
 
 ### `read` *(lua plugin)*
@@ -35,7 +36,7 @@ Read a file or directory. Returns contents with line numbers (1-indexed).
 
 ### `write` *(lua plugin)*
 
-Write content to a file, replacing existing content. Creates parent directories. Always read first. Never create files unless necessary. Never proactively create docs (*.md, README) unless requested.
+Write content to a file. Prefer edit or edit_lines for existing files.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -44,7 +45,7 @@ Write content to a file, replacing existing content. Creates parent directories.
 
 ### `edit` *(lua plugin)*
 
-Replace an exact string match in a file. old_string must appear exactly once unless replace_all is true. Read file first. When copying from read output, exclude line number prefix (e.g. `42: `). Prefer over write for targeted changes. Use replace_all for renaming.
+Replace exact string match in a file. `old_string` must match uniquely unless `replace_all` is true. Read file first.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -55,16 +56,16 @@ Replace an exact string match in a file. old_string must appear exactly once unl
 
 ### `multiedit` *(lua plugin)*
 
-Make multiple find-and-replace edits to a single file atomically. Prefer over edit for multiple changes. Read file first. old_string must match exactly, including whitespace. Each edit must match exactly once unless replace_all. Edits applied in sequence. If any edit fails, none are written. Ensure earlier edits don't affect later edits.
+Apply multiple non-adjacent string edits to a single file atomically. Applied in sequence; all roll back if one fails.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `edits` | array | yes |  |
 | `path` | string | yes |  |
 
-### `edit_lines` *(lua plugin, opt-in)*
+### `edit_lines` *(lua plugin)*
 
-Edit lines by number. Replaces lines from `start` to `end` (inclusive) with `new_string`. Use empty `new_string` to delete. Do not use with batch.
+Replace lines from `start` to `end` (inclusive) with `new_string`. Use empty `new_string` to delete.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -73,9 +74,9 @@ Edit lines by number. Replaces lines from `start` to `end` (inclusive) with `new
 | `new_string` | string | yes |  |
 | `end` | integer | yes |  |
 
-### `insert_lines` *(lua plugin, opt-in)*
+### `insert_lines` *(lua plugin)*
 
-Insert lines before a given line number. Lines at `line` and below shift down. Existing lines preserved. Do not use with batch.
+Insert lines before `line` number. Existing lines shift down.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -85,7 +86,7 @@ Insert lines before a given line number. Lines at `line` and below shift down. E
 
 ### `glob` *(lua plugin)*
 
-Find files by glob pattern. Respects .gitignore. Returns absolute paths sorted by modification time (newest first). Prefer speculative parallel searches over sequential glob+grep.
+Find files by glob pattern. Respects .gitignore. Returns matching paths sorted by mtime.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -129,18 +130,16 @@ View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read`
 
 ### `codegraph` *(lua plugin)*
 
-Query a pre-indexed semantic codegraph for cross-file structural analysis. Returns verbatim source code grouped by file, plus a dependency impact "blast radius" summary with caller counts and test coverage info. Typically uses fewer tokens than broad grep + read for the same cross-file question.
+Query a semantic codegraph for cross-file structural analysis. Missing or stale project indexes are initialized or refreshed automatically. Returns verbatim source grouped by file plus a blast-radius summary. Typically cheaper than broad grep + read for cross-file questions.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `projectPath` | string | no | Absolute path to the project (defaults to current workspace) |
-| `query` | string | yes | Natural language question or symbol/file names to explore (e.g. 'AuthService login', 'GraphTraverser BFS impact') |
+| `projectPath` | string | no | Project path (defaults to workspace). |
+| `query` | string | yes | Question or symbol/file names to explore. |
 
 ### `arbor` *(lua plugin)*
 
-Graph-based code analysis using Arbor. Returns structured, compact
-caller/callee/project maps; prefer it over broad grep or unfiltered reads
-for relationship and impact questions.
+Graph-based code analysis using Arbor. Returns compact caller/callee/project maps; prefer over broad grep for relationship/impact questions.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -161,12 +160,12 @@ Execute multiple independent tool calls concurrently. ALWAYS use batch for multi
 
 ### `code_execution` *(lua plugin)*
 
-Execute Python code in a sandboxed interpreter with tools as callable functions. Use for chained/dependent tool calls and filtering/processing results. Faster than sequential tool calls. Tools are async: `result = await read(path='file.txt')`. Use `asyncio.gather()` for concurrency. Available libs: re, asyncio, sys, os, json. Fresh sandbox each run. 30s script timeout (`timeout` param); time awaiting tool calls doesn't count.
+Execute Python in sandboxed interpreter with tools as callable functions. Use for chained/dependent tool calls and filtering/processing. Faster than sequential tool calls. Tools are async: `result = await read(path='file.txt')`. Use `asyncio.gather()` for concurrency. Available libs: re, asyncio, sys, os, json. Fresh sandbox each run. 30s script timeout (`timeout` param); tool-call wait excluded. Output truncated beyond 500 lines or 16KB.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `timeout` | integer | no | 30 | Script execution timeout in seconds |
-| `code` | string | yes |  | Python code to execute. Tools are async functions that return strings (not objects). You MUST await every call: `result = await read(path='/file')`. Use `await asyncio.gather(...)` for concurrency. |
+| `timeout` | integer | no | 30 | Script timeout seconds |
+| `code` | string | yes |  | Python code. Tools are async functions returning strings. MUST await every call: `result = await read(path='/file')`. Use `await asyncio.gather(...)` for concurrency. |
 
 ### `question` *(lua plugin)*
 
@@ -178,86 +177,102 @@ Ask the user questions during execution. Supports single/multi-select, custom an
 
 ## Agent & Knowledge
 
-### `agent_control` *(lua plugin)*
+### `agent_list` *(lua plugin)*
 
-Control background agents started by task, team, or workflow.
+List live background agents (task/team/workflow sessions).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `message` | string | no | Steering instructions. |
-| `policy` | object | no | Policy data for policy action. |
-| `action` | string | yes | Control action. |
-| `agent_id` | string | no | Background agent id. |
+
+### `agent_status` *(lua plugin)*
+
+Show status for one live background agent.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `agent_id` | string | yes | Live agent/session id. |
+
+### `agent_control` *(lua plugin)*
+
+Mutate a background agent: message, stop, resume, or manage policy. Prefer agent_list/agent_status for reads. Pause is unsupported on TUI sessions.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `message` | string | no | Steering text for message/resume. |
+| `policy` | object | no | Policy payload when action=policy. |
+| `action` | string | yes | Mutating control action. |
+| `agent_id` | string | no | Target agent id. |
 
 ### `blackboard` *(lua plugin)*
 
-Shared coordination substrate for multi-agent sessions. Post observations, claim tasks atomically, and query coordination state.
+Shared coordination for multi-agent sessions. Post observations, claim tasks atomically, query state.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `post` | object | no | Post data for write action. |
-| `only_active` | boolean | no | For list_claims: if true (default), return only active claims. If false, return all claims. |
-| `action` | string | yes | Blackboard action. |
-| `query` | object | no | Query parameters for query action. |
-| `status` | string | no | Status for update_task action. |
-| `post_id` | string | no | Post ID for read action. |
-| `task_id` | string | no | Task ID for claim/release/update actions. |
-| `claim` | object | no | Claim data for claim_task action. |
+| `post` | object | no | Post data. |
+| `only_active` | boolean | no | Active claims only. |
+| `action` | string | yes | Action. |
+| `query` | object | no | Query filters. |
+| `status` | string | no | Status. |
+| `post_id` | string | no | Post id. |
+| `task_id` | string | no | Task id. |
+| `claim` | object | no | Claim data. |
 
 ### `team` *(lua plugin)*
 
-Run an ALMAS team for an SDLC goal. supervised returns a plan; autonomous executes it; swarm runs decentralized rounds. background returns an agent_id for agent_control.
+Run ALMAS team for SDLC goal. supervised=plan, autonomous=execute, swarm=decentralized rounds. background returns agent_id.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `human_escalation` | boolean | no |  | Pause on step failure and return a resumable run_id. |
+| `human_escalation` | boolean | no |  | Pause on step failure; return run_id. |
 | `resume` | string | no |  | Paused run_id to resume. |
-| `ibn_gate` | boolean | no |  | Use information-bottleneck fan-out gate in swarm. |
-| `goal` | string | yes |  | High-level SDLC goal. |
-| `use_summary` | boolean | no |  | Use the Summary Agent index for retrieval. |
-| `mode` | string | no |  | "supervised" (return plan), "autonomous" (run plan), "swarm" (decentralized rounds). |
-| `waves` | boolean | no |  | Execute plan in waves (plan, implement, validate) with validation gates. |
-| `max_agents` | integer | no | 16, max 24 | Team agent budget. |
-| `max_wave_retries` | integer | no | 3, max 5 | Max retries when validation gate fails. |
-| `compact` | boolean | no |  | TOON-encode retrieved context (token-saving). |
-| `model_tier` | string | no |  | Supervisor tier (weak/medium/strong). Default: strong. |
-| `checkpoints` | boolean | no |  | Persist checkpoints after each wave for resume capability. |
-| `max_steps` | integer | no | 6, max 8 | Max plan steps. |
-| `max_concurrent` | integer | no | 4, max 4 | Swarm concurrency. |
-| `quorum` | boolean | no |  | Require validator quorum for autonomous/swarm. |
-| `max_rounds` | integer | no | 2, max 4 | Swarm max rounds. |
+| `ibn_gate` | boolean | no |  | Use information-bottleneck gate in swarm. |
+| `goal` | string | yes |  | Goal. |
+| `timeout_secs` | integer | no | 1800s | Wall-clock timeout before the team run is aborted. |
+| `mode` | string | no |  | supervised=plan, autonomous=run, swarm=decentralized. |
+| `waves` | boolean | no |  | Execute in waves with validation gates. |
+| `max_wave_retries` | integer | no |  | Validation gate retries. |
+| `max_agents` | integer | no | 16, no hard maximum | Team agent-call budget. |
+| `checkpoints` | boolean | no |  | Persist checkpoints after each wave. |
+| `compact` | boolean | no |  | TOON-encode retrieved context. |
+| `model_tier` | string | no |  | Supervisor tier (weak/medium/strong). |
+| `continue` | string | no |  | Human guidance when resuming. |
+| `max_steps` | integer | no |  | Plan steps. |
+| `max_concurrent` | integer | no |  | Swarm concurrency. |
+| `quorum` | boolean | no |  | Require validator quorum. |
+| `max_rounds` | integer | no |  | Swarm rounds. |
 | `use_retrieval` | boolean | no |  | Ground steps with repo retrieval. |
-| `model` | string | no |  | Exact model for all agents. Overrides model_tier. |
-| `continue` | string | no |  | Human guidance appended when resuming. |
-| `thinking` | string/integer | no |  | Thinking mode: "off", "adaptive", effort level, or token budget. Default: "adaptive". |
-| `background` | boolean | no |  | Start in background session; return agent_id. |
-| `auto_tier` | boolean | no |  | Route subagent tier from step prompt. Default: true unless model set. |
+| `model` | string | no |  | Exact model override. |
+| `use_summary` | boolean | no |  | Use Summary Agent index for retrieval. |
+| `thinking` | string/integer | no |  | Thinking mode. Default: "adaptive". |
+| `background` | boolean | no |  | Start in background; return agent_id. |
+| `auto_tier` | boolean | no |  | Auto-route tier from step prompt. |
 
 ### `task` *(lua plugin)*
 
-Launch one isolated agent; combine independent calls with batch. research (default) is read-only; general can edit. Each call starts fresh, so include context and ask for concise file:line results. Summarize returned results. auto_tier is opt-in. background returns agent_id.
+Launch isolated agent; combine independent calls with batch. research (default) = read-only; general = can edit. Each call starts fresh; include context and ask for concise file:line results. Summarize returned results. auto_tier opt-in. background returns agent_id.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `description` | string | yes | Short (3-5 words) task description |
-| `model_tier` | string | no | Capped tier: "weak", "medium", or "strong" |
-| `auto_tier` | boolean | no | Pick model_tier from prompt automatically (opt-in). Overrides model_tier when set. |
-| `background` | boolean | no | Start in background session; return agent_id immediately. |
-| `model` | string | no | Exact model spec (optional). Overrides model_tier. |
-| `output_schema` | object | no | JSON Schema (object) subagent result must match. Result returned as validated JSON string. |
-| `prompt` | string | yes | Detailed task prompt for the agent |
-| `thinking` | string/integer | no | Thinking mode: "off", "adaptive", effort level, or token budget. Omit to inherit user setting. |
-| `subagent_type` | string | no | "research" (read-only, default) or "general" (can edit) |
+| `description` | string | yes | Task summary (3-5 words). |
+| `model_tier` | string | no | Tier: weak/medium/strong. |
+| `auto_tier` | boolean | no | Auto-route tier from prompt. |
+| `background` | boolean | no | Start in background; return agent_id immediately. |
+| `model` | string | no | Exact model override. |
+| `output_schema` | object | no | Output JSON schema. Result returned as validated JSON string. |
+| `prompt` | string | yes | Task prompt. |
+| `thinking` | string/integer | no | Thinking mode. Omit to inherit. |
+| `subagent_type` | string | no | research (default) or general. |
 
 ### `workflow` *(lua plugin)*
 
-Run a bounded, sandboxed Lua workflow for multi-stage agent orchestration.
+Run sandboxed Lua workflow for multi-stage agent orchestration.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `inputs` | object | no | Free-form object exposed to script as global `inputs`. |
-| `script` | string | yes | Lua workflow script. First statement: meta({...}). Orchestrate with agent/parallel/pipeline/phase/log. Must return final answer as string. |
-| `resume` | string | no | Prior run_id. Replays journaled agent() results; only spends tokens on new calls. |
+| `inputs` | object | no | Free-form object exposed as global `inputs`. |
+| `script` | string | yes | Lua script. Start with meta({...}). Use agent/parallel/pipeline/phase/log. Return final string. |
+| `resume` | string | no | Paused run_id. Replays journaled agent() calls. |
 
 ### `todo_write` *(lua plugin)*
 

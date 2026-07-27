@@ -135,6 +135,135 @@ impl Role {
     }
 }
 
+/// Whether a system block ends a reusable prompt prefix that should be cached
+/// by the provider.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum CacheControl {
+    /// Static content that is not itself a cache boundary. It is included in the
+    /// cached prefix when a later `Ephemeral` block marks the boundary.
+    #[default]
+    None,
+    /// Mark the end of the cacheable prefix at this block.
+    Ephemeral,
+    /// Dynamic content that may change during the session and should never be
+    /// treated as a cache boundary.
+    Dynamic,
+}
+
+/// A single section of a system prompt with an optional cache boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemBlock {
+    pub text: String,
+    pub cache: CacheControl,
+}
+
+impl SystemBlock {
+    #[must_use]
+    pub fn new(text: impl Into<String>, cache: CacheControl) -> Self {
+        Self {
+            text: text.into(),
+            cache,
+        }
+    }
+}
+
+/// A provider-agnostic system prompt split into cacheable blocks.
+///
+/// Static session context (identity, conventions, AGENTS.md/CLAUDE.md) is placed
+/// first and marked as the cached prefix; dynamic content (environment, model,
+/// plan) follows after the cache boundary so a change to it does not invalidate
+/// the cached static prefix.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct System {
+    blocks: Vec<SystemBlock>,
+}
+
+impl System {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.blocks.is_empty()
+    }
+
+    #[must_use]
+    pub fn blocks(&self) -> &[SystemBlock] {
+        &self.blocks
+    }
+
+    pub fn push(&mut self, block: SystemBlock) {
+        self.blocks.push(block);
+    }
+
+    pub fn push_static(&mut self, text: impl Into<String>) {
+        self.push(SystemBlock::new(text, CacheControl::None));
+    }
+
+    pub fn push_dynamic(&mut self, text: impl Into<String>) {
+        if !self
+            .blocks
+            .iter()
+            .any(|block| matches!(block.cache, CacheControl::Ephemeral | CacheControl::Dynamic))
+        {
+            self.seal_static_boundary();
+        }
+        self.push(SystemBlock::new(text, CacheControl::Dynamic));
+    }
+
+    /// Mark the static prefix as cacheable when no dynamic content has been
+    /// added. This is a no-op after a dynamic block because caching a later
+    /// static block would also cache the dynamic prefix.
+    pub fn seal(&mut self) {
+        if !self
+            .blocks
+            .iter()
+            .any(|block| matches!(block.cache, CacheControl::Ephemeral | CacheControl::Dynamic))
+        {
+            self.seal_static_boundary();
+        }
+    }
+
+    fn seal_static_boundary(&mut self) {
+        if let Some(last_static) = self
+            .blocks
+            .iter_mut()
+            .rev()
+            .find(|b| b.cache == CacheControl::None)
+        {
+            last_static.cache = CacheControl::Ephemeral;
+        }
+    }
+}
+
+impl std::fmt::Display for System {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for block in &self.blocks {
+            write!(f, "{}", block.text)?;
+        }
+        Ok(())
+    }
+}
+
+impl From<&str> for System {
+    fn from(text: &str) -> Self {
+        let mut system = Self::new();
+        if !text.is_empty() {
+            system.push_static(text);
+            system.seal();
+        }
+        system
+    }
+}
+
+impl From<String> for System {
+    fn from(text: String) -> Self {
+        Self::from(text.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
@@ -171,6 +300,8 @@ pub struct Message {
     pub content: Vec<ContentBlock>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_text: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub control: bool,
 }
 
 impl Message {
@@ -189,6 +320,17 @@ impl Message {
             role: Role::User,
             content: vec![ContentBlock::Text { text: ai_text }],
             display_text: Some(display),
+            control: false,
+        }
+    }
+
+    #[must_use]
+    pub fn control_display(ai_text: String, display: String) -> Self {
+        Self {
+            role: Role::User,
+            content: vec![ContentBlock::Text { text: ai_text }],
+            display_text: Some(display),
+            control: true,
         }
     }
 
@@ -214,6 +356,7 @@ impl Message {
             role: Role::User,
             content: vec![ContentBlock::Text { text }],
             display_text: Some(String::new()),
+            control: false,
         }
     }
 
@@ -597,6 +740,8 @@ pub struct RequestOptions {
     /// `cache_control`. Default is 2. Higher values increase cache write cost but
     /// may improve cache hit rates in long conversations.
     pub message_cache_breakpoints: usize,
+    pub protect_history_replay: bool,
+    pub allow_history_replay: bool,
 }
 
 impl Default for RequestOptions {
@@ -605,6 +750,8 @@ impl Default for RequestOptions {
             thinking: Default::default(),
             fast: false,
             message_cache_breakpoints: 2,
+            protect_history_replay: false,
+            allow_history_replay: false,
         }
     }
 }
@@ -623,6 +770,8 @@ impl RequestOptions {
             },
             fast: self.fast && model.supports_fast(),
             message_cache_breakpoints: self.message_cache_breakpoints,
+            protect_history_replay: self.protect_history_replay,
+            allow_history_replay: self.allow_history_replay,
         }
     }
 }
@@ -682,6 +831,25 @@ mod tests {
     #[test_case("unknown", StopReason::EndTurn    ; "unknown_defaults_to_end_turn")]
     fn stop_reason_from_openai(input: &str, expected: StopReason) {
         assert_eq!(StopReason::from_openai(input), expected);
+    }
+
+    #[test]
+    fn message_control_flag_is_backward_compatible() {
+        let legacy: Message = serde_json::from_value(serde_json::json!({
+            "role": "user",
+            "content": [{ "type": "text", "text": "hello" }]
+        }))
+        .unwrap();
+        assert!(!legacy.control);
+        assert!(
+            serde_json::to_value(&legacy)
+                .unwrap()
+                .get("control")
+                .is_none()
+        );
+
+        let control = Message::control_display("wrapped".into(), "display".into());
+        assert_eq!(serde_json::to_value(control).unwrap()["control"], true);
     }
 
     #[test]
@@ -937,6 +1105,8 @@ mod tests {
             thinking,
             fast: false,
             message_cache_breakpoints: 2,
+            protect_history_replay: false,
+            allow_history_replay: false,
         };
         assert_eq!(opts.clamped(&model).thinking, expected);
     }
@@ -948,6 +1118,8 @@ mod tests {
             thinking: ThinkingConfig::Off,
             fast: true,
             message_cache_breakpoints: 2,
+            protect_history_replay: false,
+            allow_history_replay: false,
         };
         assert!(!opts.clamped(&model).fast);
     }

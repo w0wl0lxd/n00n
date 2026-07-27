@@ -78,12 +78,10 @@ impl MessageQueue {
         let Some(shared) = self.shared.clone() else {
             return;
         };
-        if shared.contains_submission(dispatch.submission_id) {
-            return;
-        }
+        // Atomic check-and-push: hold the lock across both operations to prevent race
         let image_count = dispatch.input.images.len();
         let text = dispatch.input.message.clone();
-        shared.push_front(QueueItem::Message {
+        shared.push_front_if_missing(QueueItem::Message {
             text,
             image_count,
             input: dispatch.input,
@@ -126,6 +124,7 @@ impl MessageQueue {
             QueuedMessage {
                 text,
                 images: input.images,
+                control: input.control,
             },
             delivery,
         ))
@@ -193,7 +192,7 @@ impl MessageQueue {
         )
     }
 
-    pub(crate) fn queued_inputs(&self) -> Vec<n00n_agent::AgentInput> {
+    pub(crate) fn queued_inputs(&self) -> Vec<(n00n_agent::AgentInput, Delivery)> {
         self.shared.as_ref().map_or(
             vec![],
             super::super::agent::shared_queue::QueueSender::queued_inputs,
@@ -233,6 +232,24 @@ impl App {
         } else {
             self.run_id += 1;
             SubmitOutcome::Started(self.start_from_queue(&msg))
+        }
+    }
+
+    /// Control/steering path: interrupt an in-progress turn when possible,
+    /// otherwise start a new turn. Used by `agent_control` message/resume.
+    pub(crate) fn submit_control_prompt(&mut self, msg: QueuedMessage) -> SubmitOutcome {
+        if msg.text.trim().is_empty() && msg.images.is_empty() {
+            return SubmitOutcome::Rejected(EMPTY_PROMPT_ERR);
+        }
+        if self.status == Status::Streaming {
+            if self.queue_with_delivery(msg, Delivery::Steering) {
+                SubmitOutcome::Queued
+            } else {
+                SubmitOutcome::Rejected(NO_QUEUE_ERR)
+            }
+        } else {
+            self.run_id += 1;
+            SubmitOutcome::Started(self.start_background_submission(&msg))
         }
     }
 
@@ -283,8 +300,9 @@ impl App {
         &mut self,
         msg: QueuedMessage,
         input: n00n_agent::AgentInput,
+        delivery: Delivery,
     ) -> bool {
-        self.queue_input(msg, input, Delivery::TurnEnd)
+        self.queue_input(msg, input, delivery)
     }
 
     fn queue_input(
@@ -364,14 +382,20 @@ impl App {
         text: &str,
         image_count: usize,
         images: Vec<ImageSource>,
+        control: bool,
     ) {
         let _ = image_count;
-        self.main_chat().show_user_message_with_images(text, images);
+        if control {
+            self.main_chat()
+                .show_control_message_with_images(text, images);
+        } else {
+            self.main_chat().show_user_message_with_images(text, images);
+        }
     }
 
     /// Immediate path: kick off the agent and draw the bubble in the same
     /// frame, so the user sees their message land where it will stay.
-    pub(super) fn start_from_queue(&mut self, msg: &QueuedMessage) -> Vec<Action> {
+    pub(crate) fn start_from_queue(&mut self, msg: &QueuedMessage) -> Vec<Action> {
         self.start_submission(msg, self.build_agent_input(msg), true)
     }
 
@@ -456,6 +480,7 @@ mod tests {
                 thinking: ThinkingConfig::default(),
                 fast: false,
                 workflow: false,
+                control: false,
                 prompt: None,
             },
             run_id: 0,
@@ -502,5 +527,34 @@ mod tests {
         assert_eq!(queue.panel_len(), 1);
         assert_eq!(queue.panel_entries()[0].text, "/compact");
         assert_eq!(queue.focus(), Some(0));
+    }
+
+    #[test]
+    fn take_focused_for_edit_preserves_control_flag() {
+        let (shared, _receiver) = shared_queue::queue();
+        let mut message = displayed_message("control nudge");
+        if let QueueItem::Message {
+            input,
+            delivery,
+            displayed,
+            ..
+        } = &mut message
+        {
+            input.control = true;
+            *delivery = Delivery::Steering;
+            *displayed = false;
+        }
+        shared.push(message);
+
+        let mut queue = MessageQueue::default();
+        queue.set_shared(shared);
+        queue.set_focus();
+
+        let (_, msg, delivery) = queue
+            .take_focused_for_edit()
+            .expect("focused control message");
+        assert!(msg.control);
+        assert_eq!(delivery, Delivery::Steering);
+        assert_eq!(queue.editing(), Some(Delivery::Steering));
     }
 }

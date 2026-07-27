@@ -12,6 +12,14 @@ runs.csv
 /.cargo_target/
 /.kilo/
 /result
+/n00n-bundle
+/n00n-bundle.tar.gz
+/terminal-bench-2.1/n00n-bundle.tar.gz
+/target-musl
+/build*.log
+/zig-musl-cc
+/zig-musl-c++
+/zig-musl-ld
 
 # Python tooling venv (created by `mise run py-setup`)
 .venv/
@@ -29,3 +37,11 @@ runs.csv
 # hk local overrides
 hk.local.pkl
 .config/hk.local.pkl
+
+# Generated code-intelligence indexes
+/.arbor/
+/.codegraph/
+/.n00n/search/
+
+# Throwaway validation spikes
+/spikes/

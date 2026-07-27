@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# Runs the full Terminal-Bench 2.1 benchmark with swe-1-7 (SWE-1.7 Max).
+# Runs the full Terminal-Bench 2.1 benchmark.
 # Set HARBOR_TIMEOUT (seconds) to guard against indefinite hangs; 0 disables.
 HARBOR_TIMEOUT="${HARBOR_TIMEOUT:-0}"
 

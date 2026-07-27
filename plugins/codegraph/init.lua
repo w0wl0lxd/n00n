@@ -4,6 +4,7 @@ local output_limits = require("n00n.output_limits")
 
 local cwd = n00n.uv.cwd() or "."
 local CG_TIMEOUT_SECS = 30
+local INDEX_TIMEOUT_SECS = 120
 local cg_available
 
 local function shell_quote(s)
@@ -25,9 +26,59 @@ local function check_codegraph()
   return cg_available
 end
 
-local function check_index(project_path)
+local function run(command, timeout_secs)
+  local id = n00n.fn.jobstart(command)
+  local result = n00n.fn.jobwait(id, timeout_secs * 1000)
+  if not result then
+    n00n.fn.jobstop(id)
+    return nil, "timed out after " .. timeout_secs .. "s"
+  end
+  if result.exit_code ~= 0 then
+    local message = (result.stderr or ""):gsub("^%s*(.-)%s*$", "%1")
+    if message == "" then
+      message = (result.stdout or ""):gsub("^%s*(.-)%s*$", "%1")
+    end
+    return nil, message ~= "" and message or ("exit code " .. result.exit_code)
+  end
+  return result
+end
+
+local function ensure_index(project_path)
+  local quoted = shell_quote(project_path)
   local meta = n00n.fs.metadata(project_path .. "/.codegraph")
-  return meta and meta.is_dir
+  if not (meta and meta.is_dir) then
+    local _, err = run("codegraph init " .. quoted, INDEX_TIMEOUT_SECS)
+    if err then
+      return nil, "initialization failed: " .. err
+    end
+    return true
+  end
+
+  local status_result, status_err = run("codegraph status --json " .. quoted, CG_TIMEOUT_SECS)
+  if status_err then
+    return nil, "status failed: " .. status_err
+  end
+  local status, decode_err = n00n.json.decode(status_result.stdout or "")
+  if decode_err then
+    return nil, "invalid status response: " .. tostring(decode_err)
+  end
+  if not status.initialized then
+    local _, err = run("codegraph init " .. quoted, INDEX_TIMEOUT_SECS)
+    return not err, err and ("initialization failed: " .. err) or nil
+  end
+
+  local index = status.index or {}
+  if status.worktreeMismatch or index.reindexRecommended or index.state ~= "complete" then
+    local _, err = run("codegraph index " .. quoted, INDEX_TIMEOUT_SECS)
+    return not err, err and ("reindex failed: " .. err) or nil
+  end
+
+  local pending = status.pendingChanges or {}
+  if (pending.added or 0) > 0 or (pending.modified or 0) > 0 or (pending.removed or 0) > 0 then
+    local _, err = run("codegraph sync " .. quoted, INDEX_TIMEOUT_SECS)
+    return not err, err and ("sync failed: " .. err) or nil
+  end
+  return true
 end
 
 n00n.api.register_prompt_hint({
@@ -40,17 +91,11 @@ local opts = n00n.api.register_options(output_limits.extend({}))
 n00n.api.register_tool({
   name = "codegraph",
   kind = "read",
-  description = [[Query a pre-indexed semantic codegraph for cross-file structural analysis. Returns verbatim source code grouped by file, plus a dependency impact "blast radius" summary with caller counts and test coverage info. Typically uses fewer tokens than broad grep + read for the same cross-file question.
+  description = [[Query a semantic codegraph for cross-file structural analysis. Missing or stale project indexes are initialized or refreshed automatically. Returns verbatim source grouped by file plus a blast-radius summary. Typically cheaper than broad grep + read for cross-file questions.
 
-Best for:
-- Understanding how a system works end-to-end ("how does X work")
-- Finding call paths ("what calls Y", "call path from A to B")
-- Checking blast radius before editing ("what depends on Z")
-- Cross-file symbol resolution
+Best for: system understanding, call paths, blast radius, cross-file symbol resolution.
 
-Prefer **index** for single-file structure, then **read** for specific sections. codegraph excels at multi-file exploration and impact analysis.
-
-Requires the codegraph CLI and a .codegraph/ index in the project root.]],
+Prefer **index** for single-file structure, then **read** for sections. Requires codegraph CLI.]],
 
   schema = {
     type = "object",
@@ -58,9 +103,9 @@ Requires the codegraph CLI and a .codegraph/ index in the project root.]],
     properties = {
       query = {
         type = "string",
-        description = "Natural language question or symbol/file names to explore (e.g. 'AuthService login', 'GraphTraverser BFS impact')",
+        description = "Question or symbol/file names to explore.",
       },
-      projectPath = { type = "string", description = "Absolute path to the project (defaults to current workspace)" },
+      projectPath = { type = "string", description = "Project path (defaults to workspace)." },
     },
   },
 
@@ -86,13 +131,9 @@ Requires the codegraph CLI and a .codegraph/ index in the project root.]],
 
     local project_path = input.projectPath or cwd
 
-    if not check_index(project_path) then
-      return {
-        llm_output = "error: no .codegraph/ index found in "
-          .. project_path
-          .. ". Run `codegraph init` first to index the project.",
-        is_error = true,
-      }
+    local indexed, index_err = ensure_index(project_path)
+    if not indexed then
+      return { llm_output = "error: codegraph index unavailable: " .. tostring(index_err), is_error = true }
     end
 
     local max_lines, max_bytes = output_limits.resolve(opts, ctx)

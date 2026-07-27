@@ -30,7 +30,7 @@ use agent_client_protocol_schema::{ToolCall, ToolCallUpdate};
 
 use crate::model::{ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider};
-use crate::types::Role;
+use crate::types::{Role, System};
 use crate::{
     AgentError, Effort, Message, ProviderEvent, RequestOptions, StopReason, StreamResponse,
     ThinkingConfig, TokenUsage,
@@ -1112,7 +1112,7 @@ fn fallback_models() -> Vec<crate::model::ModelInfo> {
             name: None,
             context_window: Some(e.context_window),
             max_output_tokens: Some(e.max_output_tokens),
-            pricing: Some(e.pricing.clone()),
+            pricing: Some(e.pricing),
             supports_thinking: None,
             supports_vision: Some(e.vision),
             tier: Some(e.tier),
@@ -1427,7 +1427,7 @@ fn parse_pricing(value: &serde_json::Value) -> Option<crate::model::ModelPricing
 
 fn infer_pricing(model_id: &str) -> Option<ModelPricing> {
     if let Some(meta) = DEVIN_PRIVATE_MODELS.iter().find(|m| m.id == model_id) {
-        return meta.pricing.clone();
+        return meta.pricing;
     }
 
     // For non-private Devin models, only apply family fallbacks we can do accurately.
@@ -1693,7 +1693,7 @@ impl Provider for Devin {
         &'a self,
         model: &'a crate::model::Model,
         messages: &'a [Message],
-        _system: &'a str,
+        _system: &'a System,
         _tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
@@ -1776,6 +1776,7 @@ impl Provider for Devin {
                 role: Role::Assistant,
                 content: content_blocks,
                 display_text: None,
+                control: false,
             };
 
             Ok(StreamResponse {

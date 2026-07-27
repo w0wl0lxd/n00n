@@ -20,10 +20,15 @@ const INFINITE_LOOP_MSG: &str = "split: separator matched an empty string (infin
 /// n00n.split("x*y*z", "*", { plain = true }) -- { "x", "y", "z" }
 /// n00n.split("\nhello\nworld\n", "\n", { trimempty = true }) -- { "hello", "world" }
 #[lua_fn]
-fn split(lua: &Lua, s: mlua::String, sep: mlua::String, opts: Option<Value>) -> LuaResult<Table> {
+fn split(
+    lua: &Lua,
+    s: mlua::LuaString,
+    sep: mlua::LuaString,
+    opts: Option<Value>,
+) -> LuaResult<Table> {
     let (plain, trimempty) = parse_opts(opts)?;
     let bytes = s.as_bytes();
-    let mut parts: Vec<mlua::String> = Vec::new();
+    let mut parts: Vec<mlua::LuaString> = Vec::new();
 
     if sep.as_bytes().is_empty() {
         for i in 0..bytes.len() {

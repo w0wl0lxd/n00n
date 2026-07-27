@@ -18,6 +18,7 @@ local RTK_UNSUPPORTED_FLAGS = {
   " -fprintf ",
 }
 local SEPARATOR = "──────"
+local BROAD_COMMAND_JUSTIFICATION_REQUIRED = "error: justification is required for unbounded command execution"
 
 local rtk_available
 
@@ -45,6 +46,165 @@ local function parse_cd_hint(input)
     end
   end
   return input.command, nil
+end
+
+local function trim(s)
+  return s:match("^%s*(.-)%s*$")
+end
+
+local function has_option(command, option)
+  if command == option then
+    return true
+  end
+
+  if command:sub(1, #option + 1) == option .. " " then
+    return true
+  end
+
+  if command:sub(1, #option + 1) == option .. "=" then
+    return true
+  end
+
+  local padded = " " .. command .. " "
+  if padded:find(" " .. option .. " ", 1, true) then
+    return true
+  end
+
+  if padded:find(" " .. option .. "=", 1, true) then
+    return true
+  end
+
+  return false
+end
+
+local function has_output_cap(command)
+  local normalized = trim(command):lower()
+  if normalized == "" then
+    return false
+  end
+
+  for _, executable in ipairs({ "head", "tail" }) do
+    if normalized:find("|%s*" .. executable .. "%s") or normalized:find("|%s*" .. executable .. "$") then
+      return true
+    end
+  end
+  return false
+end
+
+local function shell_word_end(command)
+  local quote
+  local index = 1
+  while index <= #command do
+    local char = command:sub(index, index)
+    if quote then
+      if char == quote then
+        quote = nil
+      elseif char == "\\" and quote == '"' then
+        index = index + 1
+      end
+    elseif char == "'" or char == '"' then
+      quote = char
+    elseif char == "\\" then
+      index = index + 1
+    elseif char:match("%s") then
+      return index - 1
+    end
+    index = index + 1
+  end
+  return #command
+end
+
+local function strip_leading_assignments(command)
+  local remaining = trim(command)
+  while remaining ~= "" do
+    local word_end = shell_word_end(remaining)
+    local word = remaining:sub(1, word_end)
+    if not word:match("^[_%a][_%w]*=") then
+      return remaining
+    end
+    remaining = trim(remaining:sub(word_end + 1))
+  end
+  return remaining
+end
+
+local function broad_bash_command_reason(command)
+  local executable_command = strip_leading_assignments(command)
+  local normalized = executable_command:lower()
+  if normalized == "" then
+    return nil
+  end
+
+  local context = normalized
+
+  local cmd = normalized:match("^(%S+)")
+  if not cmd then
+    return nil
+  end
+
+  if cmd == "find" and not has_option(normalized, "-maxdepth") and not has_option(normalized, "--maxdepth") then
+    return "find without a max depth bound"
+  end
+
+  if cmd == "locate" and not has_output_cap(context) then
+    if has_option(normalized, "-l") or has_option(normalized, "--limit") then
+      return nil
+    end
+    return "locate without output limit"
+  end
+
+  if cmd == "journalctl" and not has_output_cap(context) then
+    if has_option(normalized, "-n") or has_option(normalized, "--lines") then
+      return nil
+    end
+    return "journalctl without tail line bound"
+  end
+
+  if (cmd == "rg" or cmd == "grep") and not has_output_cap(context) then
+    return "search with unbounded result size"
+  end
+
+  if
+    cmd == "ls"
+    and (has_option(normalized, "--recursive") or has_option(executable_command, "-R"))
+    and not has_output_cap(context)
+  then
+    return "recursive ls without output cap"
+  end
+
+  if cmd == "du" and not has_output_cap(context) then
+    if
+      not has_option(normalized, "-d")
+      and not has_option(normalized, "--max-depth")
+      and not has_option(normalized, "-s")
+      and not has_option(normalized, "--summarize")
+    then
+      return "du without depth/summarize bound"
+    end
+  end
+
+  if cmd == "tree" and not has_output_cap(context) then
+    if not has_option(executable_command, "-L") and not has_option(normalized, "--max-depth") then
+      return "tree without depth bound"
+    end
+  end
+
+  if cmd == "git" then
+    local subcommand = normalized:match("^git%s+(%S+)")
+    if subcommand and not has_output_cap(context) then
+      if subcommand == "log" or subcommand == "reflog" or subcommand == "rev-list" then
+        if has_option(normalized, "-n") or has_option(normalized, "--max-count") then
+          return nil
+        end
+        return subcommand .. " history without a max count"
+      end
+
+      if subcommand == "grep" then
+        return "git grep without result limit"
+      end
+    end
+  end
+
+  return nil
 end
 
 local function normalize_sep(s)
@@ -89,6 +249,17 @@ local function build_header_lines(command)
   return header
 end
 
+local RTK_GIT_FALLBACK = {
+  remote = true,
+  config = true,
+  tag = true,
+  blame = true,
+  shortlog = true,
+  ["show-ref"] = true,
+  ["for-each-ref"] = true,
+  ["rev-parse"] = true,
+}
+
 local function rtk_find_unsupported(cmd)
   if not cmd:match("^rtk find ") then
     return false
@@ -99,6 +270,143 @@ local function rtk_find_unsupported(cmd)
     end
   end
   return false
+end
+
+local function normalize_command(command)
+  -- rtk rewrite recognizes `head -N` and `head --lines=N` but not `head -n N`.
+  local n, rest = command:match("^head%s+%-n%s+(%d+)(.*)$")
+  if n then
+    return "head -" .. n .. rest
+  end
+  n, rest = command:match("^head%s+%-n(%d+)(.*)$")
+  if n then
+    return "head -" .. n .. rest
+  end
+  return command
+end
+
+local GIT_SANITIZE_SUBCOMMANDS = {
+  diff = true,
+  show = true,
+  log = true,
+}
+
+-- Global git options that consume the following word as their value.
+-- Long options can also use `=value`, which is handled inline.
+local GIT_ARG_OPTIONS = {
+  ["-C"] = true,
+  ["-c"] = true,
+  ["--work-tree"] = true,
+  ["--git-dir"] = true,
+  ["--namespace"] = true,
+  ["--super-prefix"] = true,
+  ["--exec-path"] = true,
+  ["--config-env"] = true,
+  ["--blob"] = true,
+}
+
+local function split_shell_words(command)
+  local words = {}
+  local index = 1
+  while index <= #command do
+    while index <= #command and command:sub(index, index):match("%s") do
+      index = index + 1
+    end
+    if index > #command then
+      break
+    end
+    local tail = command:sub(index)
+    local word_end = shell_word_end(tail)
+    words[#words + 1] = tail:sub(1, word_end)
+    index = index + word_end
+  end
+  return words
+end
+
+-- Harden git commands against repo-config injection of external diff/pagers.
+-- Inserts `--no-optional-locks` (prevents write locks) and `--no-ext-diff`
+-- for subcommands that may invoke an external diff driver.
+local function sanitize_git_command(command)
+  local trimmed = trim(command)
+  if not trimmed:lower():match("^git%s") then
+    return command
+  end
+
+  local words = split_shell_words(trimmed)
+  if #words < 2 or words[1]:lower() ~= "git" then
+    return command
+  end
+
+  -- Strip any -c core.fsmonitor=... override and force it to false. A repo or
+  -- parent config with core.fsmonitor set to a command can execute code during
+  -- git status/diff/log; this disables it without trusting the environment.
+  local i = 2
+  while i <= #words do
+    if words[i] == "-c" and words[i + 1] then
+      local value = words[i + 1]:lower()
+      if value:sub(1, #"core.fsmonitor") == "core.fsmonitor" then
+        table.remove(words, i)
+        table.remove(words, i)
+      else
+        i = i + 2
+      end
+    else
+      i = i + 1
+    end
+  end
+  table.insert(words, 2, "-c")
+  table.insert(words, 3, "core.fsmonitor=false")
+
+  local has_optional_locks = false
+  local subcommand_index = nil
+  local skip_next = false
+  for i = 2, #words do
+    if skip_next then
+      skip_next = false
+    elseif words[i] == "--no-optional-locks" and not subcommand_index then
+      has_optional_locks = true
+    elseif words[i]:sub(1, 1) == "-" and not subcommand_index then
+      -- If this option takes a separate argument, the next word is its value.
+      if not words[i]:find("=", 1, true) and GIT_ARG_OPTIONS[words[i]] then
+        skip_next = true
+      end
+    elseif not subcommand_index then
+      subcommand_index = i
+      break
+    end
+  end
+
+  if not has_optional_locks then
+    table.insert(words, 2, "--no-optional-locks")
+    if subcommand_index then
+      subcommand_index = subcommand_index + 1
+    end
+  end
+
+  if subcommand_index then
+    local subcommand = words[subcommand_index]:lower()
+    if GIT_SANITIZE_SUBCOMMANDS[subcommand] then
+      local has_no_ext_diff = false
+      local i = subcommand_index + 1
+      while i <= #words do
+        if words[i] == "--no-ext-diff" then
+          has_no_ext_diff = true
+          i = i + 1
+        elseif words[i] == "--ext-diff" then
+          -- Remove an explicit --ext-diff so the later --no-ext-diff cannot be
+          -- overridden by it.
+          table.remove(words, i)
+        else
+          i = i + 1
+        end
+      end
+      if not has_no_ext_diff then
+        table.insert(words, subcommand_index + 1, "--no-ext-diff")
+      end
+    end
+  end
+
+  return table.concat(words, " ")
 end
 
 local function rtk_rewrite(command, ctx)
@@ -122,12 +430,14 @@ local function rtk_rewrite(command, ctx)
     return nil
   end
 
-  local cmd = command:match("^%s*(.-)%s*$")
-  if cmd:match("^cargo ") and cmd:find(" -- ", 1, true) then
-    return nil
+  local cmd = normalize_command(command:match("^%s*(.-)%s*$"))
+
+  -- rtk rewrite does not know about `cargo nextest run`, but `rtk cargo nextest` exists.
+  if cmd:match("^cargo%s+nextest$") or cmd:match("^cargo%s+nextest%s+run") then
+    return "rtk " .. cmd
   end
 
-  local id = n00n.fn.jobstart("rtk rewrite " .. shell_quote(command))
+  local id = n00n.fn.jobstart("rtk rewrite " .. shell_quote(cmd))
   local result = n00n.fn.jobwait(id, RTK_REWRITE_TIMEOUT_MS)
   if not result then
     n00n.fn.jobstop(id)
@@ -135,11 +445,18 @@ local function rtk_rewrite(command, ctx)
   end
 
   if result.exit_code ~= 0 and result.exit_code ~= 3 then
+    -- rtk's rewrite has no equivalent for this command. For a small set of
+    -- read-only `git` subcommands we can still route through `rtk git`, which
+    -- falls back to generic git filtering for unsupported subcommands.
+    local git_sub = cmd:match("^git%s+(%S+)")
+    if git_sub and RTK_GIT_FALLBACK[git_sub] then
+      return "rtk " .. cmd
+    end
     return nil
   end
 
   local rewritten = (result.stdout or ""):match("^%s*(.-)%s*$")
-  if rewritten == "" or rewritten == command:match("^%s*(.-)%s*$") then
+  if rewritten == "" or rewritten == cmd then
     return nil
   end
   if rtk_find_unsupported(rewritten) then
@@ -155,7 +472,7 @@ local function append_line(output, line)
   output[#output + 1] = line
 end
 
-local DEFAULT_MAX_LINE_BYTES = 500
+local DEFAULT_MAX_LINE_BYTES = 400
 
 local function create_bash_view(command, ctx)
   local tol = ctx:tool_output_lines()
@@ -197,25 +514,15 @@ local LEAF_COMMAND_TYPES = {
   command = true,
   redirected_statement = true,
   negated_command = true,
-  subshell = true,
-  compound_statement = true,
-  if_statement = true,
-  while_statement = true,
-  for_statement = true,
-  case_statement = true,
-  function_definition = true,
-  c_style_for_statement = true,
 }
 
 local function collect_commands(node, source)
   local out = {}
   local kind = node:type()
-  if kind == "program" or kind == "list" then
-    for child in node:iter_children() do
-      local nested = collect_commands(child, source)
-      for _, cmd in ipairs(nested) do
-        out[#out + 1] = cmd
-      end
+  if LEAF_COMMAND_TYPES[kind] then
+    local text = n00n.treesitter.get_node_text(node, source):match("^%s*(.-)%s*$")
+    if text ~= "" then
+      out[#out + 1] = text
     end
   elseif kind == "pipeline" then
     for child in node:iter_children() do
@@ -226,31 +533,84 @@ local function collect_commands(node, source)
         end
       end
     end
-  elseif LEAF_COMMAND_TYPES[kind] then
-    local text = n00n.treesitter.get_node_text(node, source):match("^%s*(.-)%s*$")
-    if text ~= "" then
-      out[#out + 1] = text
+  else
+    for child in node:iter_children() do
+      if child:named() then
+        local nested = collect_commands(child, source)
+        for _, cmd in ipairs(nested) do
+          out[#out + 1] = cmd
+        end
+      end
     end
   end
   return out
 end
 
+local function collect_guard_commands(node, source)
+  if node:type() == "pipeline" then
+    local commands = {}
+    for child in node:iter_children() do
+      if child:named() then
+        commands[#commands + 1] = trim(n00n.treesitter.get_node_text(child, source))
+      end
+    end
+
+    local guarded = {}
+    for index = 1, #commands do
+      guarded[#guarded + 1] = table.concat(commands, " | ", index)
+    end
+    return guarded
+  end
+
+  if LEAF_COMMAND_TYPES[node:type()] then
+    return { trim(n00n.treesitter.get_node_text(node, source)) }
+  end
+
+  local guarded = {}
+  for child in node:iter_children() do
+    if child:named() then
+      local nested = collect_guard_commands(child, source)
+      for _, command in ipairs(nested) do
+        guarded[#guarded + 1] = command
+      end
+    end
+  end
+  return guarded
+end
+
+local function broad_command_reason(command)
+  local parser = n00n.treesitter.get_parser(command, "bash")
+  if not parser then
+    return broad_bash_command_reason(command)
+  end
+
+  local root = parser:parse()[1]:root()
+  if root:has_error() or is_complex(root) then
+    return broad_bash_command_reason(command)
+  end
+
+  local segments = collect_guard_commands(root, command)
+  for _, segment in ipairs(segments) do
+    local reason = broad_bash_command_reason(segment)
+    if reason then
+      return reason
+    end
+  end
+
+  return nil
+end
+
 local description = [[Execute a bash command.
 Commands run in ]] .. cwd .. [[ by default.
 
-- **DO NOT** use for file ops! Only git, builds, tests, and system commands.
-- When `rtk` is installed, commands are auto-rewritten through `rtk` for 60-90% token savings (e.g. `git status` -> `rtk git status`, `rg` -> `rtk rg`, `jq`/`yq` -> `rtk jq`/`rtk yq`).
-- Use `bash` for `git`, `cargo`, `rg`, `grep`, `jq`, `yq`, `gh`, `find`, `ls`, `cat`, `head`, `tail`, and similar system commands.
-- Use `workdir` param instead of `cd <dir> && <cmd>` patterns.
-- Do NOT use to communicate text to the user.
-- Chain dependent commands with `&&`. Use batch for independent ones.
-- Provide a short `description` (3-5 words).
-- Output truncated beyond 2000 lines or 50KB.
-- Interactive commands (sudo, ssh prompts) fail immediately.]]
-
+- Reserve for git, builds, tests, and system CLI operations. Do NOT use for file edits/writes.
+- Auto-rewrites via rtk when installed (git, cargo, rg, grep, gh, find, ls, cat, head, tail).
+- Use `workdir` instead of `cd`. Chain dependent commands with `&&`.
+- Unbounded/broad commands (e.g. find without -maxdepth, rg without limits) require `justification`.
+- Interactive commands fail immediately. Truncated beyond 500 lines or 16KB.]]
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Reserve `bash` for system commands (git, cargo, rg, grep, jq, yq, gh, find, ls, cat, head, tail, builds, tests). `bash` auto-rewrites supported commands through `rtk` when installed for 60-90% token savings. Do NOT use `bash` for destructive file operations (writes, moves, deletes, broad destructive operations). Read-only inspection (cat, head, tail) is allowed.",
+  content = "- Reserve `bash` for system CLI (git, cargo, rg, grep, gh, find, ls, builds, tests). Auto-rewrites via `rtk` when installed. Do NOT use `bash` for file modifications.",
 })
 
 local opts = n00n.api.register_options(output_limits.extend({
@@ -268,10 +628,14 @@ n00n.api.register_tool({
   schema = {
     type = "object",
     properties = {
-      command = { type = "string", description = "The bash command to execute", required = true },
-      timeout = { type = "integer", description = "Timeout in seconds (default 120)" },
+      command = { type = "string", description = "Bash command to execute", required = true },
+      timeout = { type = "integer", description = "Timeout seconds (default 120)" },
       workdir = { type = "string", description = "Working directory (default: cwd)" },
       description = { type = "string", description = "Short description (3-5 words) of what the command does" },
+      justification = {
+        type = "string",
+        description = "Required when command is broad/unbounded. Explain scope and bound assumptions.",
+      },
     },
   },
   permission_scopes = function(input)
@@ -293,6 +657,9 @@ n00n.api.register_tool({
     local segments = collect_commands(root, command)
     if #segments == 0 then
       segments = { command }
+    end
+    if broad_command_reason(command) then
+      return { scopes = segments, force_prompt = true }
     end
     return { scopes = segments, force_prompt = false }
   end,
@@ -343,10 +710,17 @@ n00n.api.register_tool({
     end
 
     local command, workdir = parse_cd_hint(input)
+    local reason = broad_command_reason(command)
+    if reason and (not input.justification or trim(input.justification) == "") then
+      return { llm_output = BROAD_COMMAND_JUSTIFICATION_REQUIRED .. ": " .. reason, is_error = true }
+    end
     local timeout_secs = input.timeout or opts.timeout_secs
+
     local max_lines, max_bytes = output_limits.resolve(opts, ctx)
 
     ctx:set_deadline(timeout_secs)
+
+    command = sanitize_git_command(command)
 
     local rewritten = rtk_rewrite(command, ctx)
     if rewritten then
@@ -354,6 +728,7 @@ n00n.api.register_tool({
     end
 
     local buf, view = create_bash_view(command, ctx)
+    ctx:live_buf(buf)
 
     local output_parts = {}
     local has_output = false
@@ -391,7 +766,11 @@ n00n.api.register_tool({
 
     n00n.fn.jobstart(command, {
       cwd = workdir,
-      env = { GIT_TERMINAL_PROMPT = "0" },
+      env = {
+        GIT_TERMINAL_PROMPT = "0",
+        GIT_PAGER = "",
+        GIT_EXEC_PATH = "",
+      },
       on_stdout = function(_, line)
         if not has_output then
           has_output = true

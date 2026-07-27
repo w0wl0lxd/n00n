@@ -35,7 +35,7 @@ fn builtin_env_key(b: &BuiltInProvider) -> Option<&'static str> {
 
 pub fn auth_login(provider: Option<&str>, storage: &StateDir) -> Result<()> {
     match provider {
-        Some("openai") => openai_auth::login(storage)?,
+        Some("openai" | "codex") => openai_auth::login(storage)?,
         Some("copilot") => copilot_auth::login(storage)?,
         Some(slug) => {
             let slug = slugify(slug);
@@ -443,7 +443,7 @@ fn prompt_api_key(url: Option<&str>, display_name: &str, optional: bool) -> Resu
 pub fn auth_logout(provider: &str, storage: &StateDir) -> Result<()> {
     let slug = slugify(provider);
     match provider {
-        "openai" => openai_auth::logout(storage)?,
+        "openai" | "codex" => openai_auth::logout(storage)?,
         "copilot" => copilot_auth::logout(storage)?,
         _ => {
             let mut config = ProvidersConfig::load();
@@ -471,6 +471,18 @@ pub fn auth_status(storage: &StateDir) {
     for b in &builtins {
         let def = config.get(b.slug);
         let display = resolve_display_name(b.slug, def);
+
+        if b.slug == "codex" {
+            if openai_auth::is_oauth(storage) {
+                println!("  \x1b[32m✓\x1b[0m {:<14} {} (OAuth)", b.slug, display);
+            } else {
+                println!(
+                    "  \x1b[31m✗\x1b[0m {:<14} {} (run: n00n auth login {})",
+                    b.slug, display, b.slug
+                );
+            }
+            continue;
+        }
 
         if let Some(creds) = load_provider_credentials(storage, b.slug) {
             let plan_info = def
@@ -724,8 +736,8 @@ pub fn prompt(variant: &crate::cli::PromptVariant, flags: PromptFlags) -> Result
             let model = Model::from_spec(model_spec).context("invalid default model")?;
             build_system_prompt(&vars, &mode, &instructions, &slots, &model)
         }
-        PromptVariant::Research => assemble(PromptId::Research, &slots, &instructions),
-        PromptVariant::General => assemble(PromptId::General, &slots, &instructions),
+        PromptVariant::Research => assemble(PromptId::Research, &slots, &instructions).into(),
+        PromptVariant::General => assemble(PromptId::General, &slots, &instructions).into(),
     };
 
     print!("{output}");

@@ -1,7 +1,7 @@
 use crate::model::{ModelEntry, ModelFamily, ModelTier};
 use crate::providers::{
-    anthropic, copilot, custom, deepseek, devin, dynamic, google, llama_cpp, mistral, ollama,
-    openai, openrouter, synthetic, tensorx, zai,
+    anthropic, copilot, cursor, custom, deepseek, devin, dynamic, google, llama_cpp, mistral,
+    ollama, openai, openrouter, synthetic, tensorx, zai,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -36,6 +36,17 @@ const OPENAI: ProviderManifest = ProviderManifest {
     fallback_max_output: Some(100_000),
     fallback_context_window: 200_000,
     models: openai::models(),
+};
+
+const CODEX: ProviderManifest = ProviderManifest {
+    slug: "codex",
+    display_name: "Codex",
+    family: ModelFamily::Gpt,
+    supports_thinking: true,
+    accepts_arbitrary_models: false,
+    fallback_max_output: Some(128_000),
+    fallback_context_window: openai::CODING_PLAN_CONTEXT_WINDOW,
+    models: openai::codex_models(),
 };
 
 const GOOGLE: ProviderManifest = ProviderManifest {
@@ -170,9 +181,20 @@ const DEVIN: ProviderManifest = ProviderManifest {
     models: devin::models(),
 };
 
+const CURSOR: ProviderManifest = ProviderManifest {
+    slug: "cursor",
+    display_name: "Cursor",
+    family: ModelFamily::Generic,
+    supports_thinking: true,
+    accepts_arbitrary_models: true,
+    fallback_max_output: Some(128_000),
+    fallback_context_window: 1_000_000,
+    models: cursor::models(),
+};
+
 const BUILTINS: &[ProviderManifest] = &[
-    ANTHROPIC, OPENAI, GOOGLE, COPILOT, OLLAMA, LLAMA_CPP, MISTRAL, ZAI, DEEPSEEK, OPENROUTER,
-    SYNTHETIC, TENSORX, OPENCODE, DEVIN,
+    ANTHROPIC, OPENAI, CODEX, GOOGLE, COPILOT, OLLAMA, LLAMA_CPP, MISTRAL, ZAI, DEEPSEEK,
+    OPENROUTER, SYNTHETIC, TENSORX, OPENCODE, DEVIN, CURSOR,
 ];
 
 pub struct ManifestRegistry;
