@@ -734,12 +734,12 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
                     tracing::warn!(path = %p.display(), "glob: skipping non-UTF-8 path");
                     continue;
                 };
-                result.push(s.to_owned());
                 if let Some(lim) = limit
                     && result.len() >= lim
                 {
                     break;
                 }
+                result.push(s.to_owned());
             }
             result
         };

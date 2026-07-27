@@ -144,7 +144,9 @@ pub fn grep_search(params: &GrepParams) -> Result<(PathBuf, Vec<GrepFileEntry>),
                         .unwrap_or_else(|_| &path)
                         .to_string_lossy()
                         .into_owned();
-                    let _ = tx.send(GrepFileEntry { path: rel, groups });
+                    if tx.send(GrepFileEntry { path: rel, groups }).is_err() {
+                        return WalkState::Quit;
+                    }
                 }
                 WalkState::Continue
             })
