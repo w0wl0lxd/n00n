@@ -23,7 +23,6 @@ extend-ignore-re = [
   'splash_animaton = false',
   'HaaA',
   'TruLayer',
-  '\.args\(\["/FI".*"/FO".*\]\)',
 ]
 
 [default.extend-identifiers]

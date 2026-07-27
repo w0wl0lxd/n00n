@@ -1009,34 +1009,46 @@ pub fn message_client(
                     return Err(eyre!("agent stream closed without a Done event"));
                 }
 
-                if json {
-                    print!("{line}");
-                    continue;
-                }
-
-                let event = serde_json::from_str::<ServerEvent>(&line)
-                    .wrap_err_with(|| format!("malformed server event: {line}"))?;
-                match event {
-                    ServerEvent::TextDelta { text } => {
-                        print!("{text}");
+                if let Ok(event) = serde_json::from_str::<ServerEvent>(&line) {
+                    if json {
+                        print!("{line}");
                     }
-                    ServerEvent::Done {
-                        error: Some(message),
-                        ..
-                    } => {
-                        eprintln!("\nError: {message}");
-                        return Err(eyre!(message));
+                    match event {
+                        ServerEvent::TextDelta { text } => {
+                            if !json {
+                                print!("{text}");
+                            }
+                        }
+                        ServerEvent::Done {
+                            error: Some(message),
+                            ..
+                        } => {
+                            eprintln!("\nError: {message}");
+                            return Err(eyre!(message));
+                        }
+                        ServerEvent::Done { .. } => {
+                            done_seen = true;
+                            if !json {
+                                println!();
+                            }
+                            break;
+                        }
+                        ServerEvent::Error { message } => {
+                            eprintln!("Error: {message}");
+                            return Err(eyre!(message));
+                        }
+                        ServerEvent::ToolOutput { .. } => {}
                     }
-                    ServerEvent::Done { .. } => {
-                        done_seen = true;
-                        println!();
-                        break;
-                    }
-                    ServerEvent::Error { message } => {
-                        eprintln!("Error: {message}");
-                        return Err(eyre!(message));
-                    }
-                    ServerEvent::ToolOutput { .. } => {}
+                } else if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line)
+                    && value.get("ok").and_then(serde_json::Value::as_bool) == Some(false)
+                {
+                    let message = match value.get("error").and_then(serde_json::Value::as_str) {
+                        Some(message) => message.to_string(),
+                        None => "control request rejected".to_string(),
+                    };
+                    return Err(eyre!("{message}"));
+                } else {
+                    return Err(eyre!("malformed server event: {line}"));
                 }
             }
 
@@ -1100,10 +1112,16 @@ pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> 
             let response: serde_json::Value =
                 serde_json::from_str(&line).wrap_err("failed to parse response")?;
 
-            if response.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
-                println!("Agent {id} stopped");
-            } else {
-                return Err(eyre!("Failed to stop agent {id}"));
+            match response.get("ok").and_then(serde_json::Value::as_bool) {
+                Some(true) => println!("Agent {id} stopped"),
+                Some(false) => {
+                    let message = match response.get("error").and_then(serde_json::Value::as_str) {
+                        Some(message) => message.to_string(),
+                        None => "control request rejected".to_string(),
+                    };
+                    return Err(eyre!("Failed to stop agent {id}: {message}"));
+                }
+                None => return Err(eyre!("control response missing ok field")),
             }
 
             Ok(())
@@ -1366,10 +1384,16 @@ fn control_command_client(
             let response: serde_json::Value =
                 serde_json::from_str(&line).wrap_err("failed to parse response")?;
 
-            if response.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
-                println!("Agent {id} {success_label}");
-            } else {
-                return Err(eyre!("Failed to update agent {id}"));
+            match response.get("ok").and_then(serde_json::Value::as_bool) {
+                Some(true) => println!("Agent {id} {success_label}"),
+                Some(false) => {
+                    let message = match response.get("error").and_then(serde_json::Value::as_str) {
+                        Some(message) => message.to_string(),
+                        None => "control request rejected".to_string(),
+                    };
+                    return Err(eyre!("Failed to {success_label} agent {id}: {message}"));
+                }
+                None => return Err(eyre!("control response missing ok field")),
             }
 
             Ok(())
