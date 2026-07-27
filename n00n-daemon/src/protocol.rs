@@ -33,6 +33,8 @@ pub struct AgentRecord {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,6 +180,7 @@ mod tests {
                 title: Some("t".into()),
                 model: None,
                 output: None,
+                cwd: None,
             }]),
             agent: None,
             version: None,

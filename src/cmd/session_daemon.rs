@@ -39,6 +39,7 @@ pub fn register_acp_session(
             title: None,
             model: Some(model.clone()),
             output: None,
+            cwd: None,
         },
         {
             let status = Arc::clone(&status);
@@ -83,6 +84,7 @@ pub fn register_print_session(
             title: Some(PRINT_TITLE.into()),
             model: Some(model_owned.clone()),
             output: None,
+            cwd: None,
         },
         {
             let status = Arc::clone(status);
@@ -189,6 +191,7 @@ fn list_one(
         title: title.map(str::to_owned),
         model: Some(model.to_owned()),
         output: None,
+        cwd: None,
     }])
 }
 
@@ -213,6 +216,7 @@ fn status_one(
         title: title.map(str::to_owned),
         model: Some(model.to_owned()),
         output: None,
+        cwd: None,
     })
 }
 

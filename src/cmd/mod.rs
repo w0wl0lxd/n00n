@@ -97,18 +97,20 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     agent::run(&run_opts, json)?;
                 }
             }
-            AgentCommand::List { state_dir } => {
-                agent::list_client(
-                    matches!(cli.output_format, crate::print::OutputFormat::Json),
-                    state_dir,
-                )?;
+            AgentCommand::List {
+                state_dir,
+                json,
+                all,
+                cwd,
+            } => {
+                agent::list_client(json, all, cwd, state_dir)?;
             }
-            AgentCommand::Status { id, state_dir } => {
-                agent::status_client(
-                    &id,
-                    matches!(cli.output_format, crate::print::OutputFormat::Json),
-                    state_dir,
-                )?;
+            AgentCommand::Status {
+                id,
+                state_dir,
+                json,
+            } => {
+                agent::status_client(&id, json, state_dir)?;
             }
             AgentCommand::Message {
                 id,

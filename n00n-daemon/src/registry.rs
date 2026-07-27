@@ -215,6 +215,7 @@ mod tests {
             title: Some("main".into()),
             model: None,
             output: None,
+            cwd: None,
         }]));
         let agents_list = Arc::clone(&agents);
         let agents_status = Arc::clone(&agents);

@@ -15,10 +15,20 @@ When the TUI is up, it owns `daemon.sock` (Unix) or advertises a loopback TCP po
 
 ```bash
 n00n agent list
+n00n agent list --json
+n00n agent list --all
+n00n agent list --cwd /path/to/project
 n00n agent status <id>
+n00n agent status <id> --json
 ```
 
 `list` prints tab-separated rows: id, backend (`tui` or `worker`), status, and title. Live TUI sessions show `backend=tui`. Background runs show `backend=worker`.
+
+`--json` emits a stable JSON array (list) or object (status) for scripting, similar to `claude agents --json`. Each row includes a normalized `state` field (`working`, `needs_input`, `idle`, `running`, `stopped`, `done`, `failed`, …) alongside the raw `status` string.
+
+By default, stopped/completed background workers are hidden from `list`. Pass `--all` to include them (Claude `--json --all` parity).
+
+`--cwd` filters to agents whose working directory matches the given path (TUI sessions and workers that recorded a cwd at start).
 
 Use `--state-dir` to point at a non-default state directory (useful for tests and isolated installs):
 
@@ -66,7 +76,9 @@ This binds the control plane with the worker backend only. The TUI replaces this
 
 ## JSON output
 
-Several commands accept `--json` on `run` for structured output. Control verbs (`list`, `status`, `message`, etc.) speak the daemon NDJSON protocol internally; pipe through `n00n agent list` in scripts and parse the tab-separated table, or call the daemon from your own tooling using the same request shapes as the CLI.
+Use `--json` on `list` and `status` for machine-readable output suitable for status bars, notifications, and orchestration scripts. The shape is intentionally stable and separate from the internal daemon NDJSON wire protocol.
+
+`run --json` still uses the global `--output-format json` flag for one-shot foreground runs.
 
 ## See also
 
