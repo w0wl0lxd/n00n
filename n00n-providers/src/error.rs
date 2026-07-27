@@ -145,7 +145,7 @@ impl AgentError {
             .is_some_and(RequestDeliveryMetadata::emitted_or_accepted);
         let sent = metadata
             .as_ref()
-            .map_or(true, |m| m.phase != RequestDeliveryPhase::NotSent);
+            .is_some_and(|m| m.phase != RequestDeliveryPhase::NotSent);
 
         match self {
             Self::Io(_) | Self::Http(_) | Self::Timeout { .. } if sent => Self::RequestSent {

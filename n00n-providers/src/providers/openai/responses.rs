@@ -1744,9 +1744,10 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             "Responses API stream ended without a terminal event",
         )
         .into();
+        let metadata = RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance);
 
         assert!(matches!(
-            error.suppress_retry_after_send(None),
+            error.suppress_retry_after_send(Some(metadata)),
             AgentError::RequestSent { .. }
         ));
     }
