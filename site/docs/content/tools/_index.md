@@ -87,6 +87,9 @@ Insert lines before `line` number. Existing lines shift down.
 ### `explore` *(lua plugin)*
 
 Unified codebase exploration router. Picks the best backend for the question:
+- **file** intent (or a file path): compact single-file skeleton via `index`
+- **relations** intent: caller/callee maps, trace paths, blast radius via `arbor`
+- **cross_file** intent (default for NL questions): structural cross-file analysis via `codegraph`
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

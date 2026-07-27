@@ -2,10 +2,16 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use crate::graph_json::{GraphIndex, SymbolQuery, SymbolRef};
-use crate::{ArborError, Relation};
+use crate::{ArborError, Client, Relation, index_health};
 
 fn line_number(line_start: usize) -> Option<u64> {
-    u64::try_from(line_start).ok()
+    // usize -> u64 cannot overflow on 64-bit targets; on other targets we
+    // intentionally drop lines that do not fit rather than panic.
+    #[allow(clippy::manual_ok_err)]
+    match u64::try_from(line_start) {
+        Ok(n) => Some(n),
+        Err(_) => None,
+    }
 }
 
 fn symbol_to_relation(symbol: &SymbolRef) -> Relation {
@@ -30,7 +36,7 @@ fn dedupe_relations(relations: Vec<Relation>) -> Vec<Relation> {
 }
 
 pub fn graph_callers(symbol: &str, project: &Path) -> Result<Vec<Relation>, ArborError> {
-    let index = crate::Client::load_graph_index(project)?;
+    let index = Client::load_graph_index(project)?;
     let query = SymbolQuery {
         name: symbol.to_string(),
         ..SymbolQuery::default()
@@ -43,7 +49,7 @@ pub fn graph_callers(symbol: &str, project: &Path) -> Result<Vec<Relation>, Arbo
 }
 
 pub fn graph_callees(symbol: &str, project: &Path) -> Result<Vec<Relation>, ArborError> {
-    let index = crate::Client::load_graph_index(project)?;
+    let index = Client::load_graph_index(project)?;
     let query = SymbolQuery {
         name: symbol.to_string(),
         ..SymbolQuery::default()
@@ -56,7 +62,7 @@ pub fn graph_callees(symbol: &str, project: &Path) -> Result<Vec<Relation>, Arbo
 }
 
 pub fn graph_trace_path(from: &str, to: &str, project: &Path) -> Result<Vec<Relation>, ArborError> {
-    let index = crate::Client::load_graph_index(project)?;
+    let index = Client::load_graph_index(project)?;
     let from_query = SymbolQuery {
         name: from.to_string(),
         ..SymbolQuery::default()
@@ -94,7 +100,7 @@ fn graph_relations_for_matches(
 }
 
 pub fn graph_index_available(project: &Path) -> bool {
-    crate::index_health::graph_index_available(project)
+    index_health::graph_index_available(project)
 }
 
 #[cfg(test)]

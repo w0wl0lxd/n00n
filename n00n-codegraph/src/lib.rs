@@ -2,19 +2,22 @@
 #![allow(clippy::new_without_default)]
 #![allow(clippy::must_use_candidate)]
 
+use std::io::{Error, Read};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::thread;
 use std::time::Duration;
 
 use wait_timeout::ChildExt;
 
+const CODEGRAPH_BINARY: &str = "codegraph";
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 
 pub struct Client;
 
 impl Client {
     pub fn check_binary() -> Result<(), CodegraphError> {
-        let output = Command::new("codegraph")
+        let output = Command::new(CODEGRAPH_BINARY)
             .arg("--version")
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -60,7 +63,7 @@ impl Client {
             None => DEFAULT_TIMEOUT_SECS,
         };
         let timeout = Duration::from_secs(timeout_secs);
-        let mut child = Command::new("codegraph")
+        let mut child = Command::new(CODEGRAPH_BINARY)
             .arg("explore")
             .arg("--")
             .arg(query)
@@ -70,33 +73,70 @@ impl Client {
             .spawn()
             .map_err(|source| CodegraphError::Exec { source })?;
 
+        let mut stdout = child.stdout.take().ok_or_else(|| CodegraphError::Cli {
+            message: String::from("failed to capture codegraph stdout"),
+        })?;
+        let mut stderr = child.stderr.take().ok_or_else(|| CodegraphError::Cli {
+            message: String::from("failed to capture codegraph stderr"),
+        })?;
+
+        let stdout_handle = thread::spawn(move || {
+            let mut buf = Vec::new();
+            stdout.read_to_end(&mut buf).map(|_| buf)
+        });
+        let stderr_handle = thread::spawn(move || {
+            let mut buf = Vec::new();
+            stderr.read_to_end(&mut buf).map(|_| buf)
+        });
+
         let status = child
             .wait_timeout(timeout)
             .map_err(|source| CodegraphError::Exec { source })?;
 
         let Some(status) = status else {
-            let _ = child.kill();
-            let _ = child.wait();
+            if let Err(source) = child.kill() {
+                let _ = child.wait();
+                let _ = stdout_handle.join();
+                let _ = stderr_handle.join();
+                return Err(CodegraphError::Exec { source });
+            }
+            if let Err(source) = child.wait() {
+                let _ = stdout_handle.join();
+                let _ = stderr_handle.join();
+                return Err(CodegraphError::Exec { source });
+            }
+            let _ = stdout_handle.join();
+            let _ = stderr_handle.join();
             return Err(CodegraphError::Cli {
                 message: format!("codegraph explore timed out after {}s", timeout.as_secs()),
             });
         };
 
-        let output = child
-            .wait_with_output()
+        let stdout_bytes = stdout_handle
+            .join()
+            .map_err(|_| CodegraphError::Cli {
+                message: String::from("codegraph stdout reader panicked"),
+            })?
+            .map_err(|source| CodegraphError::Exec { source })?;
+        let stderr_bytes = stderr_handle
+            .join()
+            .map_err(|_| CodegraphError::Cli {
+                message: String::from("codegraph stderr reader panicked"),
+            })?
             .map_err(|source| CodegraphError::Exec { source })?;
 
+        let stdout = String::from_utf8_lossy(&stdout_bytes);
+        let stderr = String::from_utf8_lossy(&stderr_bytes);
+
         if status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout)
-                .trim_end()
-                .to_string())
+            Ok(stdout.trim_end().to_string())
         } else {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let stderr = stderr.trim();
+            let stdout = stdout.trim();
             let message = if !stderr.is_empty() {
-                stderr
+                stderr.to_string()
             } else if !stdout.is_empty() {
-                stdout
+                stdout.to_string()
             } else {
                 format!("exit code {status}")
             };
@@ -108,7 +148,7 @@ impl Client {
 #[derive(Debug, thiserror::Error)]
 pub enum CodegraphError {
     #[error("I/O error executing codegraph: {source}")]
-    Exec { source: std::io::Error },
+    Exec { source: Error },
 
     #[error("codegraph CLI error: {message}")]
     Cli { message: String },

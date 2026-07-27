@@ -28,7 +28,7 @@ local function dispatch(input, ctx, use_cache)
     return cached, route_label(backend, intent), true
   end
 
-  local result, err = n00n.agent.call_tool(ctx, backend, backend_input)
+  local output, err = n00n.agent.call_tool(ctx, backend, backend_input)
   if err then
     return {
       llm_output = "error: explore dispatch to " .. backend .. " failed: " .. tostring(err),
@@ -38,7 +38,9 @@ local function dispatch(input, ctx, use_cache)
       false
   end
 
-  if use_cache and result and not result.is_error then
+  local result = { llm_output = output or "" }
+
+  if use_cache and not result.is_error then
     session_cache[cache_key] = result
   end
 
@@ -49,7 +51,6 @@ n00n.api.register_tool({
   name = "explore",
   kind = "read",
   description = [[Unified codebase exploration router. Picks the best backend for the question:
-
 - **file** intent (or a file path): compact single-file skeleton via `index`
 - **relations** intent: caller/callee maps, trace paths, blast radius via `arbor`
 - **cross_file** intent (default for NL questions): structural cross-file analysis via `codegraph`
@@ -86,7 +87,7 @@ Use `command`, `symbol`, `from_symbol`, and `to_symbol` for precise arbor routin
       from_symbol = { type = "string" },
       to_symbol = { type = "string" },
       token_budget = { type = "integer", default = 1024 },
-      use_cache = { type = "boolean", default = true },
+      use_cache = { type = "boolean", default = false },
     },
   },
 
@@ -112,7 +113,7 @@ Use `command`, `symbol`, `from_symbol`, and `to_symbol` for precise arbor routin
       }
     end
 
-    local use_cache = input.use_cache ~= false
+    local use_cache = input.use_cache == true
     local result, route, cached = dispatch(input, ctx, use_cache)
     if result.is_error then
       card:update(result.llm_output)

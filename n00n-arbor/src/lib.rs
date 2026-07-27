@@ -235,7 +235,7 @@ impl Client {
         }
 
         let status = String::from_utf8_lossy(&output.stdout);
-        if status.contains("No index") || status.contains("not indexed") {
+        if index_health::status_needs_index(&status) {
             let output = Command::new("arbor")
                 .arg("index")
                 .arg(project.as_os_str())
@@ -286,6 +286,9 @@ impl Client {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ArborError {
+    #[error("I/O error: {source}")]
+    Io { source: std::io::Error },
+
     #[error("I/O error executing arbor: {source}")]
     Exec { source: std::io::Error },
 

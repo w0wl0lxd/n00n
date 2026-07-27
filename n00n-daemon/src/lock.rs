@@ -97,11 +97,27 @@ pub fn pid_alive(pid: u32) -> bool {
     }
 }
 
-/// Stub for Windows: treat all pids as stale so stale locks are swept.
+/// Returns whether `pid` still refers to a live process on this host.
 #[must_use]
 #[cfg(not(unix))]
-pub fn pid_alive(_pid: u32) -> bool {
-    false
+pub fn pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+
+    let output = std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let text = String::from_utf8_lossy(&output.stdout);
+            text.contains(&format!("\"{pid}\""))
+        }
+        // Cannot verify liveness without tasklist; assume alive to avoid
+        // deleting locks owned by live Windows processes.
+        _ => true,
+    }
 }
 
 /// Remove a lock file whose owner pid is no longer alive.

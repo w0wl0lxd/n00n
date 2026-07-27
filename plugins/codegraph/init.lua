@@ -77,9 +77,9 @@ Requires the codegraph CLI and a .codegraph/ index in the project root.]],
       return { llm_output = "error: failed to publish codegraph results: " .. tostring(live_err), is_error = true }
     end
 
-    local ok, output = pcall(n00n_codegraph.explore, input.query, project_path, CG_TIMEOUT_SECS)
-    if not ok then
-      return { llm_output = "error: codegraph explore failed: " .. tostring(output), is_error = true }
+    local output, err = n00n_codegraph.explore(input.query, project_path, CG_TIMEOUT_SECS)
+    if err then
+      return { llm_output = "error: codegraph explore failed: " .. tostring(err), is_error = true }
     end
 
     output = (output or ""):gsub("\n+$", "")

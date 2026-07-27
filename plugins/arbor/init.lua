@@ -95,6 +95,12 @@ local function dispatch(input)
   end
 
   if command == "map" then
+    if not n00n_arbor.graph_index_available(project) then
+      return {
+        llm_output = "error: Arbor index not found in " .. project .. ". Run `arbor index` first.",
+        is_error = true,
+      }
+    end
     local token_budget = input.token_budget or 1024
     local entries = n00n_arbor.map(project, token_budget)
     local lines = {}
@@ -109,6 +115,12 @@ local function dispatch(input)
   end
 
   if command == "diff" then
+    if not n00n_arbor.graph_index_available(project) then
+      return {
+        llm_output = "error: Arbor index not found in " .. project .. ". Run `arbor index` first.",
+        is_error = true,
+      }
+    end
     local impact = n00n_arbor.diff(project)
     local lines = {
       "Blast Radius Impact",
