@@ -695,6 +695,8 @@ fn apply_responses_reasoning(
 ) {
     if let Some(effort) = thinking.effort_str(dialect, model) {
         body["reasoning"] = json!({"effort": effort});
+    } else {
+        body["reasoning"] = json!({"summary": "auto"});
     }
 }
 
@@ -871,6 +873,26 @@ mod tests {
         );
         assert_eq!(body, json!({"reasoning": {"effort": "medium"}}));
         assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn responses_reasoning_adaptive_with_native_adaptive_clears_stale_effort() {
+        let model = Model::from_spec("copilot/gpt-5.4").unwrap();
+        let info = CopilotModelInfo {
+            reasoning_efforts: vec![Effort::Low, Effort::Medium, Effort::High],
+            reasoning_off: true,
+            adaptive_thinking: true,
+        };
+        let dialect = effort_dialect(&info);
+        assert!(
+            dialect.adaptive.is_none(),
+            "native adaptive means dialect.adaptive is None"
+        );
+
+        let mut body = json!({"reasoning": {"effort": "medium", "summary": "auto"}});
+        apply_responses_reasoning(&mut body, ThinkingConfig::Adaptive, &model, &dialect);
+        assert_eq!(body, json!({"reasoning": {"summary": "auto"}}));
+        assert!(body["reasoning"].get("effort").is_none());
     }
 
     #[test]
