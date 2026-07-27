@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785115767816,
+  "lastUpdate": 1785117290383,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -5397,6 +5397,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 113572,
             "range": "± 19012",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f60391c17d62521272870def331ff3a1f3344d73",
+          "message": "feat: add bash broad-command justification guardrails (#107)\n\n* fix(devin): model names/pricing and thinking hang\n\nAdd display names and pricing for Devin ACP private models, and fix hang\nwhen models emit only reasoning without final text.\n\n- Add name field to ModelInfo and populate from Devin's session options\n- Add heuristics for MODEL_PRIVATE_* context window, output tokens, pricing\n- Update model picker to display discovered names instead of raw IDs\n- Capture thinking deltas in Devin provider and build proper content blocks\n- Remove invalid reasoning_content from OpenAI compat message conversion\n- Add nudge logic when assistant produces only reasoning without text\n- Add system prompt instruction to always end with user-facing answer\n\n* feat(bash): require justification for unbounded commands\n\n* chore(bash): remove unused justification constant\n\n* feat(bash): expand unbounded command guard heuristics\n\n* fix(bash): guard chained broad commands\n\n* docs: regenerate tool and provider references\n\n* fix(bash): close token guardrail bypasses\n\n* docs(changelog): add bash guardrail fragment",
+          "timestamp": "2026-07-27T01:39:47Z",
+          "tree_id": "896cf91b9c52ecaf2d09f3b51129ef088488f925",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/f60391c17d62521272870def331ff3a1f3344d73"
+        },
+        "date": 1785117288980,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 7117679,
+            "range": "± 47360",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2270669,
+            "range": "± 50518",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2248006,
+            "range": "± 75123",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8014133,
+            "range": "± 178438",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4317436,
+            "range": "± 10966",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4317912,
+            "range": "± 15668",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 582491,
+            "range": "± 2589",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191643,
+            "range": "± 310",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191347,
+            "range": "± 270",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1039918,
+            "range": "± 5017",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 588937,
+            "range": "± 3220",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 588525,
+            "range": "± 3807",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 69677,
+            "range": "± 6899",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 184132,
+            "range": "± 11782",
             "unit": "ns/iter"
           }
         ]
