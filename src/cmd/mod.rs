@@ -1,4 +1,5 @@
 mod acp;
+pub mod agent;
 mod subcmd;
 mod tui;
 
@@ -7,7 +8,7 @@ use color_eyre::eyre::Context;
 
 use n00n_storage::StateDir;
 
-use crate::cli::{AuthAction, Cli, Command, McpAction};
+use crate::cli::{AgentCommand, AuthAction, Cli, Command, McpAction};
 use crate::update;
 
 pub fn dispatch(cli: Cli) -> Result<()> {
@@ -60,6 +61,46 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 },
             )?;
         }
+        Some(Command::Agent { action }) => match action {
+            AgentCommand::Run {
+                prompt,
+                model,
+                mode,
+                goal: _,
+                json,
+            } => {
+                agent::run(
+                    &prompt,
+                    model.as_deref(),
+                    mode,
+                    None,
+                    json,
+                    cli.permission_flags.yolo,
+                    cli.plugin_flags.no_jit,
+                )?;
+            }
+            AgentCommand::List => {
+                eprintln!("Agent list command is not yet implemented (Phase 3)");
+            }
+            AgentCommand::Status { id: _ } => {
+                eprintln!("Agent status command is not yet implemented (Phase 3)");
+            }
+            AgentCommand::Message { id: _, text: _ } => {
+                eprintln!("Agent message command is not yet implemented (Phase 3)");
+            }
+            AgentCommand::Pause { id: _ } => {
+                eprintln!("Agent pause command is not yet implemented (Phase 3)");
+            }
+            AgentCommand::Resume { id: _ } => {
+                eprintln!("Agent resume command is not yet implemented (Phase 3)");
+            }
+            AgentCommand::Stop { id: _ } => {
+                eprintln!("Agent stop command is not yet implemented (Phase 3)");
+            }
+            AgentCommand::Policy { action: _ } => {
+                eprintln!("Agent policy command is not yet implemented (Phase 3)");
+            }
+        },
         None => {
             tui::run(cli)?;
         }

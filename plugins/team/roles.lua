@@ -1,6 +1,9 @@
 -- SDLC role catalogue and execution (team roles + PR-I reviewer/tester).
 -- Each role has a system framing and a default cost-aware tier. Steps run as
 -- their own subagent session so we get accurate token/cost telemetry (PR-B).
+-- NOTE: This module uses custom patterns (hardcoded audience, custom system prompts,
+-- budget handling, preview support) that differ from the standard n00n.subagent.launch
+-- pattern. Migration to n00n.subagent.launch deferred due to these custom requirements.
 local M = {}
 
 local route_tier = require("n00n.route_tier").route_tier

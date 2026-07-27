@@ -19,39 +19,7 @@
 
 local ToolView = require("n00n.tool_view")
 local telemetry = require("n00n.telemetry")
-
-local STRUCTURED_OUTPUT_NAME = "structured_output"
-local STRUCTURED_OUTPUT_DESCRIPTION = "Report your final result. Call it exactly once when your task is complete."
-local STRUCTURED_OUTPUT_ACK = "Output recorded."
-local STRUCTURED_OUTPUT_SUFFIX = "\n\nWhen finished, call the structured_output tool with your final result."
-local MAX_STRUCTURED_RETRIES = 1
-local MAX_SCHEMA_ERRORS = 3
-local MAX_SCHEMA_BYTES = 32 * 1024
-local MAX_SCHEMA_DEPTH = 16
-local SCHEMA_ROOT_ERROR = "output_schema must have type object"
-local SCHEMA_COMPILE_ERROR = "invalid output_schema"
-local SCHEMA_SIZE_ERROR = "output_schema exceeds 32768-byte limit"
-local SCHEMA_DEPTH_ERROR = "output_schema exceeds maximum depth of 16"
-local STRUCTURED_MISSING_ERROR = "subagent finished without calling structured_output"
-local STRUCTURED_INVALID_ERROR = "subagent result does not match output_schema"
-local NUDGE_MISSING =
-  "You did not call the structured_output tool. Call it now with your final result matching its input schema."
-local INVALID_INPUT_PREFIX =
-  "Input does not match the required schema. Fix the errors and call structured_output again:\n"
-local function schema_within_depth(value, depth)
-  if type(value) ~= "table" then
-    return true
-  end
-  if depth > MAX_SCHEMA_DEPTH then
-    return false
-  end
-  for _, child in pairs(value) do
-    if not schema_within_depth(child, depth + 1) then
-      return false
-    end
-  end
-  return true
-end
+local structured_output = require("n00n.structured_output")
 
 local SCRIPT_ERROR_PREFIX = "workflow script error: "
 local NO_META_ERROR = "workflow script must call meta({ name = ... }) before doing any work"
@@ -134,14 +102,6 @@ local max_concurrent_agents = math.min(opts.max_concurrent_agents, HARD_MAX_CONC
 local max_concurrent_workflows = math.min(opts.max_concurrent_workflows, HARD_MAX_CONCURRENT_WORKFLOWS)
 local workflow_semaphore = n00n.async.semaphore(max_concurrent_workflows)
 local aggregate_agent_semaphore = n00n.async.semaphore(HARD_MAX_AGGREGATE_AGENTS)
-
-local function bounded_errors(errors)
-  local out = {}
-  for i = 1, math.min(#errors, MAX_SCHEMA_ERRORS) do
-    out[i] = errors[i]
-  end
-  return table.concat(out, "\n")
-end
 
 local function freeze_fns(src, names)
   local bare = {}
@@ -446,23 +406,10 @@ local function make_agent(ctx, progress, journal, logger)
 
       local validator
       if aopts.output_schema then
-        if type(aopts.output_schema) ~= "table" or aopts.output_schema.type ~= "object" then
-          error(SCHEMA_ROOT_ERROR, 0)
-        end
-        local encoded_schema, encode_err = n00n.json.encode(aopts.output_schema)
-        if encode_err then
-          error(SCHEMA_COMPILE_ERROR .. ": " .. encode_err, 0)
-        end
-        if #encoded_schema > MAX_SCHEMA_BYTES then
-          error(SCHEMA_SIZE_ERROR, 0)
-        end
-        if not schema_within_depth(aopts.output_schema, 1) then
-          error(SCHEMA_DEPTH_ERROR, 0)
-        end
         local compile_err
-        validator, compile_err = n00n.json.schema_validator(aopts.output_schema)
+        validator, compile_err = structured_output.compile_validator(aopts.output_schema)
         if compile_err then
-          error(SCHEMA_COMPILE_ERROR .. ": " .. compile_err, 0)
+          error(compile_err, 0)
         end
       end
 
@@ -491,17 +438,17 @@ local function make_agent(ctx, progress, journal, logger)
       local local_tools
       if validator then
         local_tools = {
-          [STRUCTURED_OUTPUT_NAME] = {
-            description = STRUCTURED_OUTPUT_DESCRIPTION,
+          [structured_output.STRUCTURED_OUTPUT_NAME] = {
+            description = structured_output.STRUCTURED_OUTPUT_DESCRIPTION,
             input_schema = aopts.output_schema,
             handler = function(value)
               local errs = validator:validate(value)
               if errs then
-                last_errors = bounded_errors(errs)
-                return nil, INVALID_INPUT_PREFIX .. last_errors
+                last_errors = structured_output.bounded_errors(errs)
+                return nil, structured_output.INVALID_INPUT_PREFIX .. last_errors
               end
               captured = value
-              return STRUCTURED_OUTPUT_ACK
+              return structured_output.STRUCTURED_OUTPUT_ACK
             end,
           },
         }
@@ -526,13 +473,13 @@ local function make_agent(ctx, progress, journal, logger)
 
       local message = aopts.prompt
       if validator then
-        message = message .. STRUCTURED_OUTPUT_SUFFIX
+        message = message .. structured_output.STRUCTURED_OUTPUT_SUFFIX
       end
       local prompt_result, prompt_err = sess:prompt(message)
       local retries = 0
-      while not prompt_err and validator and not captured and retries < MAX_STRUCTURED_RETRIES do
+      while not prompt_err and validator and not captured and retries < structured_output.MAX_STRUCTURED_RETRIES do
         retries = retries + 1
-        prompt_result, prompt_err = sess:prompt(NUDGE_MISSING)
+        prompt_result, prompt_err = sess:prompt(structured_output.NUDGE_MISSING)
       end
       sess:close()
       aggregate_permit:release()
@@ -546,7 +493,8 @@ local function make_agent(ctx, progress, journal, logger)
         error("sub-agent error: " .. prompt_err, 0)
       end
       if validator and not captured then
-        local msg = last_errors and (STRUCTURED_INVALID_ERROR .. ":\n" .. last_errors) or STRUCTURED_MISSING_ERROR
+        local msg = last_errors and (structured_output.STRUCTURED_INVALID_ERROR .. ":\n" .. last_errors)
+          or structured_output.STRUCTURED_MISSING_ERROR
         error(msg, 0)
       end
       local out = prompt_result.text

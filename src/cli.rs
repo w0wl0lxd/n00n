@@ -6,6 +6,7 @@ use color_eyre::eyre::bail;
 
 use n00n_agent::tools::{all_builtin_tool_names, is_builtin_tool};
 
+use crate::cmd::agent::AgentMode;
 use crate::print::OutputFormat;
 
 #[derive(Clone, ValueEnum, Default)]
@@ -273,6 +274,62 @@ pub enum Command {
         #[arg(long, requires = "tools")]
         names: bool,
     },
+    /// Run agent commands
+    Agent {
+        #[command(subcommand)]
+        action: AgentCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AgentCommand {
+    /// Run a one-shot agent prompt
+    Run {
+        /// Prompt to send to the agent
+        #[arg(short, long)]
+        prompt: String,
+        /// Model spec (provider/model-id)
+        #[arg(short, long)]
+        model: Option<String>,
+        /// Agent mode
+        #[arg(long, value_enum, default_value_t = AgentMode::General)]
+        mode: AgentMode,
+        /// Goal for team mode
+        #[arg(long)]
+        goal: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// List background agents (stub for Phase 3)
+    List,
+    /// Show agent status (stub for Phase 3)
+    Status { id: String },
+    /// Send message to agent (stub for Phase 3)
+    Message { id: String, text: String },
+    /// Pause agent (stub for Phase 3)
+    Pause { id: String },
+    /// Resume agent (stub for Phase 3)
+    Resume { id: String },
+    /// Stop agent (stub for Phase 3)
+    Stop { id: String },
+    /// Agent policy management (stub for Phase 3)
+    Policy {
+        #[command(subcommand)]
+        action: PolicyAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PolicyAction {
+    /// Set policy rule (stub)
+    Set,
+    /// Get policy rule (stub)
+    Get,
+    /// Delete policy rule (stub)
+    Delete,
+    /// List policy rules (stub)
+    List,
 }
 
 #[derive(Subcommand)]
