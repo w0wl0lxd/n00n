@@ -8,7 +8,7 @@ use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -600,6 +600,7 @@ impl SessionLog {
         };
         let appended_frames = if rewrite { 0 } else { log_appends };
         let log = Self::cursor_from(dir, &session, file, appended_frames)?;
+        update_cwd_index(dir, &session.cwd, session.id)?;
         Ok((session, log))
     }
 
@@ -768,6 +769,7 @@ impl SessionLog {
 
         let file = write_session_file(dir, session)?;
         *self = Self::cursor_from(dir, session, file, 0)?;
+        update_cwd_index(dir, &session.cwd, session.id)?;
 
         Ok(())
     }
@@ -1404,15 +1406,13 @@ struct ZstHeader {
 }
 
 #[derive(Deserialize)]
-#[serde(tag = "t", rename_all = "snake_case")]
-enum ScanRecord {
-    Meta {
-        title: String,
-        updated_at: u64,
-    },
-    #[serde(other)]
-    Other,
+#[serde(rename_all = "snake_case")]
+struct MetaScan {
+    title: String,
+    updated_at: u64,
 }
+
+const META_RECORD_PREFIX: &str = r#"{"t":"meta""#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ScannedHeader {
@@ -1501,44 +1501,142 @@ fn scan_headers(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, StorageErr
     Ok(summaries)
 }
 
-fn scan_zst_header(path: &Path) -> Option<ScannedHeader> {
-    let mut header = None;
-    let mut meta_title = String::new();
-    let mut updated_at = 0u64;
-    if let Err(error) = visit_zstd_lines(path, |line| {
-        if line.is_empty() {
-            return Ok(());
-        }
-        if header.is_none() {
-            let parsed: ZstHeader = serde_json::from_str(line).map_err(StorageError::from)?;
-            if parsed.v != LOG_FORMAT_VERSION {
-                return Err(SessionError::VersionMismatch {
-                    found: parsed.v,
-                    expected: LOG_FORMAT_VERSION,
-                });
+const ZSTD_MAGIC: &[u8] = &[0x28, 0xb5, 0x2f, 0xfd];
+const LAST_FRAME_SEARCH_CHUNK: usize = 1024 * 1024;
+const MAX_LAST_FRAME_SEARCH_BYTES: u64 = 64 * 1024 * 1024;
+
+fn try_decode_header_at(path: &Path, offset: u64) -> Option<ZstHeader> {
+    let file = File::open(path).ok()?;
+    let mut file = file;
+    file.seek(SeekFrom::Start(offset)).ok()?;
+    let decoder = Decoder::new(file).ok()?;
+    let mut reader = BufReader::new(decoder);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => return None,
+            Ok(_) => {}
+            Err(error) => {
+                warn!(path = %path.display(), error = %error, "failed to read zstd header");
+                return None;
             }
-            header = Some(parsed);
-            return Ok(());
         }
-        if let Ok(ScanRecord::Meta {
-            title,
-            updated_at: record_updated_at,
-        }) = serde_json::from_str(line)
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            continue;
+        }
+        let parsed: ZstHeader = serde_json::from_str(trimmed).ok()?;
+        return Some(parsed);
+    }
+}
+
+fn try_decode_last_meta_at(path: &Path, offset: u64) -> Option<(String, u64)> {
+    let file = File::open(path).ok()?;
+    let mut file = file;
+    file.seek(SeekFrom::Start(offset)).ok()?;
+    let decoder = Decoder::new(file).ok()?;
+    let mut reader = BufReader::new(decoder);
+    let mut line = String::new();
+    let mut title = String::new();
+    let mut updated_at = 0u64;
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(_) => return None,
+        }
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with(META_RECORD_PREFIX)
+            && let Ok(MetaScan {
+                title: t,
+                updated_at: u,
+            }) = serde_json::from_str(trimmed)
         {
-            meta_title = title;
-            updated_at = record_updated_at;
+            title = t;
+            updated_at = u;
         }
-        Ok(())
-    }) {
-        warn!(
-            path = %path.display(),
-            error = %error,
-            "failed to scan session header"
-        );
+    }
+    if updated_at == 0 && title.is_empty() {
+        return None;
+    }
+    Some((title, updated_at))
+}
+
+fn find_last_frame_meta(path: &Path) -> Option<(String, u64)> {
+    let file_len = fs::metadata(path).ok()?.len();
+    if file_len < ZSTD_MAGIC.len() as u64 {
+        return None;
+    }
+    let mut file = File::open(path).ok()?;
+    let mut end = file_len;
+    let mut start = file_len.saturating_sub(LAST_FRAME_SEARCH_CHUNK as u64);
+    let mut searched = 0u64;
+    let mut buf = Vec::new();
+    loop {
+        file.seek(SeekFrom::Start(start)).ok()?;
+        let chunk_len = usize::try_from(end - start).ok()?;
+        searched += end - start;
+        buf.resize(chunk_len, 0);
+        file.read_exact(&mut buf).ok()?;
+
+        let mut positions: Vec<usize> = buf
+            .windows(ZSTD_MAGIC.len())
+            .enumerate()
+            .filter(|(_, w)| *w == ZSTD_MAGIC)
+            .map(|(i, _)| i)
+            .collect();
+        positions.sort_unstable();
+
+        for &pos in positions.iter().rev() {
+            let offset = start + pos as u64;
+            if let Some(meta) = try_decode_last_meta_at(path, offset) {
+                return Some(meta);
+            }
+        }
+
+        if searched >= MAX_LAST_FRAME_SEARCH_BYTES {
+            return try_decode_last_meta_at(path, 0);
+        }
+
+        if start == 0 {
+            break;
+        }
+        end = start + (ZSTD_MAGIC.len() as u64 - 1);
+        start = end.saturating_sub(LAST_FRAME_SEARCH_CHUNK as u64);
+    }
+    None
+}
+
+fn scan_zst_header(path: &Path) -> Option<ScannedHeader> {
+    let header = try_decode_header_at(path, 0)?;
+    if header.v != LOG_FORMAT_VERSION {
         return None;
     }
 
-    let header = header?;
+    let (meta_title, updated_at) = find_last_frame_meta(path).unwrap_or_else(|| {
+        let mut title = String::new();
+        let mut updated_at = 0u64;
+        let _ = visit_zstd_lines(path, |line| {
+            if !line.is_empty()
+                && line.starts_with(META_RECORD_PREFIX)
+                && let Ok(MetaScan {
+                    title: t,
+                    updated_at: u,
+                }) = serde_json::from_str(line)
+            {
+                title = t;
+                updated_at = u;
+            }
+            Ok(())
+        });
+        (title, updated_at)
+    });
+
     Some(ScannedHeader {
         id: header.id,
         cwd: header.cwd,
@@ -1718,26 +1816,16 @@ where
     /// # Errors
     /// Returns `SessionError` if the scan or load fails.
     pub fn latest_in(cwd: &str, dir: &Path) -> Result<Option<Self>, SessionError> {
-        let cached = load_cwd_index(dir)
-            .remove(cwd)
-            .and_then(|s| match s.parse::<N00nId>() {
-                Ok(id) => Some(id),
-                Err(e) => {
-                    warn!(error = %e, cwd, "indexed session id unparseable; rescanning");
-                    None
-                }
-            });
-        if let Some(id) = cached {
-            match Self::load_from(id, dir) {
-                Ok(s) => return Ok(Some(s)),
-                Err(e) => warn!(error = %e, cwd, "indexed session missing on disk; rescanning"),
-            }
-        }
-
-        scan_headers(cwd, dir)?
+        let latest = scan_headers(cwd, dir)?
             .into_iter()
-            .max_by_key(|s| s.updated_at)
-            .map_or(Ok(None), |s| Self::load_from(s.id, dir).map(Some))
+            .max_by_key(|s| s.updated_at);
+        match latest {
+            Some(summary) => {
+                update_cwd_index(dir, cwd, summary.id)?;
+                Self::load_from(summary.id, dir).map(Some)
+            }
+            None => Ok(None),
+        }
     }
 
     pub fn update_title_if_default(&mut self) {
@@ -3151,5 +3239,73 @@ mod tests {
         let list = TestSession::list_in("/project", dir).unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].title, "big-meta");
+    }
+
+    #[test]
+    fn latest_fallback_rewrites_cwd_index() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        let mut older: TestSession = Session::new("m", "/project");
+        older.title = "older".into();
+        save_with_time(&mut older, dir, 1000);
+
+        let mut newer: TestSession = Session::new("m", "/project");
+        newer.title = "newer".into();
+        save_with_time(&mut newer, dir, 2000);
+
+        fs::remove_file(dir.join(CWD_INDEX_FILE)).unwrap();
+
+        let latest = TestSession::latest_in("/project", dir).unwrap().unwrap();
+        assert_eq!(latest.id, newer.id);
+
+        let index = load_cwd_index(dir);
+        assert_eq!(index.get("/project"), Some(&newer.id.to_string()));
+    }
+
+    #[test]
+    fn session_log_open_updates_missing_cwd_index() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let session: TestSession = Session::new("m", "/project");
+        SessionLog::create(dir, &session).unwrap();
+
+        fs::remove_file(dir.join(CWD_INDEX_FILE)).unwrap();
+
+        let _ = SessionLog::open::<Value, Value, Value>(dir, session.id).unwrap();
+
+        let index = load_cwd_index(dir);
+        assert_eq!(index.get("/project"), Some(&session.id.to_string()));
+    }
+
+    #[test]
+    fn session_log_compact_updates_cwd_index() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let session: TestSession = Session::new("m", "/project");
+        let mut log = SessionLog::create(dir, &session).unwrap();
+
+        fs::remove_file(dir.join(CWD_INDEX_FILE)).unwrap();
+
+        log.compact(dir, &session).unwrap();
+
+        let index = load_cwd_index(dir);
+        assert_eq!(index.get("/project"), Some(&session.id.to_string()));
+    }
+
+    #[test]
+    fn scan_header_skips_huge_non_meta_records() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.title = "huge-output".into();
+        session
+            .tool_outputs
+            .insert("tool-1".into(), Value::String("x".repeat(1_000_000)));
+        SessionLog::create(dir, &session).unwrap();
+
+        let list = TestSession::list_in("/project", dir).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].title, "huge-output");
     }
 }

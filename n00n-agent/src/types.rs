@@ -454,6 +454,10 @@ impl ToolOutput {
                     .and_then(|t| t.strip_suffix(']'))
                     .map_or_else(|| text.clone(), std::string::ToString::to_string),
             ),
+            Self::TodoList(items) => {
+                let n = items.len();
+                Some(format!("{n} todo{}", if n == 1 { "" } else { "s" }))
+            }
             _ => None,
         }
     }

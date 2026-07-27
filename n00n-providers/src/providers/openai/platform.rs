@@ -13,6 +13,7 @@ use n00n_storage::sessions::{
     delete_openai_response_chain, load_openai_response_chain, openai_response_chain_parent_exists,
     save_openai_response_chain, try_lock_openai_response_chain,
 };
+use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
@@ -20,8 +21,8 @@ use tracing::{debug, warn};
 use crate::model::Model;
 use crate::provider::{BoxFuture, Provider};
 use crate::{
-    AgentError, Message, ProviderEvent, RequestDeliveryMetadata, RequestDeliveryPhase,
-    RequestOptions, StreamResponse, dialect,
+    AgentError, Message, ProviderEvent, ProviderUsage, RequestDeliveryMetadata,
+    RequestDeliveryPhase, RequestOptions, StreamResponse, System, UsageLimit, dialect,
 };
 
 use super::auth;
@@ -44,14 +45,20 @@ pub(crate) const PLAN_MODELS: &[&str] = &[
     "gpt-5.2",
 ];
 
-const CODEX_PLAN_CONTEXT_WINDOW: u32 = 272_000;
-const GPT_5_6_PLAN_CONTEXT_WINDOW: u32 = 272_000;
+pub(crate) const CODING_PLAN_CONTEXT_WINDOW: u32 = 272_000;
 const SESSION_STATE_TTL: Duration = Duration::from_hours(1);
 const FIVE_MINUTES_MILLIS: u64 = 5 * 60 * 1_000;
 const THIRTY_MINUTES_MILLIS: u64 = 30 * 60 * 1_000;
 const CODING_PLAN_DEFAULT_RETRY_DELAY: Duration = Duration::from_millis(250);
 const CODING_PLAN_MAX_SLOTS: u8 = 8;
 const RESPONSE_CHAIN_LOCK_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
+const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
+const USAGE_WINDOW_TOLERANCE: f64 = 0.05;
+const USAGE_WINDOW_5HOURS_SECONDS: i64 = 18_000;
+const USAGE_WINDOW_1DAY_SECONDS: i64 = 86_400;
+const USAGE_WINDOW_1WEEK_SECONDS: i64 = 604_800;
+const USAGE_WINDOW_1MONTH_SECONDS: i64 = 2_592_000;
+const USAGE_WINDOW_1YEAR_SECONDS: i64 = 31_536_000;
 const RESPONSE_CHAIN_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 
 static PROCESS_INSTANCE_NONCE: OnceLock<u64> = OnceLock::new();
@@ -446,17 +453,11 @@ pub(crate) fn is_codex_model(model_id: &str) -> bool {
 // edit; the named non-codex plans match exactly to avoid catching near-misses
 // like `gpt-5.6-terra-preview`.
 fn coding_plan_context_window(model_id: &str) -> Option<u32> {
-    if model_id.contains("-codex") {
-        return Some(CODEX_PLAN_CONTEXT_WINDOW);
-    }
-    if !PLAN_MODELS.contains(&model_id) {
-        return None;
-    }
-    Some(if model_id.starts_with("gpt-5.6") {
-        GPT_5_6_PLAN_CONTEXT_WINDOW
+    if model_id.contains("-codex") || PLAN_MODELS.contains(&model_id) {
+        Some(CODING_PLAN_CONTEXT_WINDOW)
     } else {
-        CODEX_PLAN_CONTEXT_WINDOW
-    })
+        None
+    }
 }
 
 pub struct OpenAi {
@@ -1204,7 +1205,7 @@ impl OpenAi {
         &self,
         model: &Model,
         messages: &[Message],
-        system: &str,
+        system: &System,
         tools: &Value,
         tools_hash: &str,
         event_tx: &Sender<ProviderEvent>,
@@ -1511,7 +1512,7 @@ impl OpenAi {
         &self,
         model: &Model,
         messages: &[Message],
-        system: &str,
+        system: &System,
         tools: &Value,
         tools_hash: &str,
         event_tx: &Sender<ProviderEvent>,
@@ -1709,23 +1710,191 @@ impl OpenAi {
     }
 }
 
+#[derive(Deserialize)]
+struct RateLimitStatusResponse {
+    #[serde(default)]
+    plan_type: Option<String>,
+    #[serde(default)]
+    rate_limit: Option<RateLimitStatusDetails>,
+    #[serde(default)]
+    credits: Option<CreditStatusDetails>,
+    #[serde(default, rename = "additional_rate_limits")]
+    additional_rate_limits: Option<Vec<AdditionalRateLimitDetails>>,
+}
+
+#[derive(Deserialize)]
+struct RateLimitStatusDetails {
+    #[serde(default)]
+    primary_window: Option<RateLimitWindowSnapshot>,
+    #[serde(default)]
+    secondary_window: Option<RateLimitWindowSnapshot>,
+}
+
+#[derive(Deserialize)]
+struct RateLimitWindowSnapshot {
+    used_percent: i32,
+    #[serde(default)]
+    limit_window_seconds: Option<i64>,
+    #[serde(default)]
+    reset_at: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct AdditionalRateLimitDetails {
+    limit_name: String,
+    #[serde(default)]
+    rate_limit: Option<RateLimitStatusDetails>,
+}
+
+#[derive(Deserialize)]
+struct CreditStatusDetails {
+    has_credits: bool,
+    unlimited: bool,
+    #[serde(default)]
+    balance: Option<String>,
+}
+
+impl RateLimitWindowSnapshot {
+    fn to_limit(&self, is_secondary: bool, prefix: &str) -> UsageLimit {
+        let duration = rate_limit_window_label(self.limit_window_seconds)
+            .unwrap_or_else(|| if is_secondary { "weekly" } else { "5h" });
+        let duration = capitalize_first(duration);
+        let label = if prefix.is_empty() {
+            format!("{duration} limit")
+        } else {
+            format!("{prefix} {duration} limit")
+        };
+        UsageLimit {
+            label,
+            percentage: Some(percentage(self.used_percent)),
+            reset_at: self
+                .reset_at
+                .and_then(|s| u64::try_from(s).ok().map(|s| s.saturating_mul(1_000))),
+            detail: None,
+        }
+    }
+}
+
+impl From<RateLimitStatusResponse> for ProviderUsage {
+    fn from(resp: RateLimitStatusResponse) -> Self {
+        let mut limits = Vec::new();
+        if let Some(rate_limit) = &resp.rate_limit {
+            add_rate_limit_windows(&mut limits, rate_limit, "");
+        }
+        for additional in resp.additional_rate_limits.into_iter().flatten() {
+            let prefix = rate_limit_prefix(&additional.limit_name);
+            if let Some(rate_limit) = &additional.rate_limit {
+                add_rate_limit_windows(&mut limits, rate_limit, &prefix);
+            }
+        }
+        limits.extend(credits_limit(resp.credits));
+        Self {
+            plan: resp.plan_type,
+            limits,
+        }
+    }
+}
+
+fn add_rate_limit_windows(
+    limits: &mut Vec<UsageLimit>,
+    rate_limit: &RateLimitStatusDetails,
+    prefix: &str,
+) {
+    if let Some(window) = &rate_limit.primary_window {
+        limits.push(window.to_limit(false, prefix));
+    }
+    if let Some(window) = &rate_limit.secondary_window {
+        limits.push(window.to_limit(true, prefix));
+    }
+}
+
+fn rate_limit_window_label(seconds: Option<i64>) -> Option<&'static str> {
+    let seconds = seconds?;
+    if is_approximate_window(seconds, USAGE_WINDOW_5HOURS_SECONDS) {
+        Some("5h")
+    } else if is_approximate_window(seconds, USAGE_WINDOW_1DAY_SECONDS) {
+        Some("daily")
+    } else if is_approximate_window(seconds, USAGE_WINDOW_1WEEK_SECONDS) {
+        Some("weekly")
+    } else if is_approximate_window(seconds, USAGE_WINDOW_1MONTH_SECONDS) {
+        Some("monthly")
+    } else if is_approximate_window(seconds, USAGE_WINDOW_1YEAR_SECONDS) {
+        Some("annual")
+    } else {
+        None
+    }
+}
+
+fn is_approximate_window(value: i64, expected: i64) -> bool {
+    let Ok(value) = i32::try_from(value) else {
+        return false;
+    };
+    let Ok(expected) = i32::try_from(expected) else {
+        return false;
+    };
+    let value = f64::from(value);
+    let expected = f64::from(expected);
+    (value - expected).abs() <= expected * USAGE_WINDOW_TOLERANCE
+}
+
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().to_string() + &chars.as_str().to_lowercase(),
+        None => String::new(),
+    }
+}
+
+fn rate_limit_prefix(limit_name: &str) -> String {
+    limit_name
+        .split('_')
+        .map(capitalize_first)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn credits_limit(credits: Option<CreditStatusDetails>) -> Option<UsageLimit> {
+    let credits = credits?;
+    if !credits.has_credits {
+        return None;
+    }
+    let detail = if credits.unlimited {
+        Some("Unlimited credits".into())
+    } else {
+        credits.balance.map(|b| format!("${b} remaining"))
+    };
+    Some(UsageLimit {
+        label: "Credits".into(),
+        percentage: None,
+        reset_at: None,
+        detail,
+    })
+}
+
+fn percentage(used_percent: i32) -> u32 {
+    used_percent.clamp(0, 100).cast_unsigned()
+}
+
 impl Provider for OpenAi {
     #[allow(clippy::large_futures)]
     fn stream_message<'a>(
         &'a self,
         model: &'a Model,
         messages: &'a [Message],
-        system: &'a str,
+        system: &'a System,
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
         session_id: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
+            let system_text = system.to_string();
             let mut buf = String::new();
-            let system = super::super::with_prefix(self.system_prefix.as_deref(), system, &mut buf);
+            let prefixed_system =
+                super::super::with_prefix(self.system_prefix.as_deref(), &system_text, &mut buf);
 
             if is_codex_model(&model.id) {
+                let codex_system = System::from(prefixed_system);
                 let operation_slot = self.response_operation_slot(session_id);
                 let _operation_guard = match operation_slot.as_ref() {
                     Some(operation) => Some(operation.lock().await),
@@ -1737,7 +1906,7 @@ impl Provider for OpenAi {
                     .run_codex_attempt_with_auth_retry(
                         model,
                         messages,
-                        system,
+                        &codex_system,
                         tools,
                         &tools_hash,
                         event_tx,
@@ -1762,7 +1931,7 @@ impl Provider for OpenAi {
                     .run_codex_attempt_with_auth_retry(
                         model,
                         messages,
-                        system,
+                        &codex_system,
                         tools,
                         &tools_hash,
                         event_tx,
@@ -1781,6 +1950,7 @@ impl Provider for OpenAi {
                 system,
                 tools,
                 prompt_cache_key.as_deref(),
+                self.system_prefix.as_deref(),
             );
             opts.thinking
                 .apply_reasoning_effort(&mut body, &dialect::STANDARD, model);
@@ -1810,6 +1980,21 @@ impl Provider for OpenAi {
                 self.compat.do_list_models(&auth).await
             })
             .await
+        })
+    }
+
+    fn fetch_usage(&self) -> BoxFuture<'_, Result<Option<ProviderUsage>, AgentError>> {
+        Box::pin(async move {
+            let auth = self
+                .coding_plan_auth(false, None, fastrand::u64(..))
+                .await?
+                .resolved;
+            if auth.base_url.as_deref() != Some(auth::CODING_PLAN_BASE_URL) {
+                return Ok(None);
+            }
+            let body = self.compat.get_text(&auth, USAGE_URL).await?;
+            let parsed: RateLimitStatusResponse = serde_json::from_str(&body)?;
+            Ok(Some(parsed.into()))
         })
     }
 
@@ -2104,18 +2289,18 @@ mod tests {
         assert!(is_codex_model(model_id));
     }
 
-    #[test_case("gpt-5.6", Some(272_000))]
-    #[test_case("gpt-5.6-luna", Some(272_000))]
-    #[test_case("gpt-5.6-terra", Some(272_000))]
-    #[test_case("gpt-5.6-sol", Some(272_000))]
-    #[test_case("gpt-5.5", Some(272_000))]
-    #[test_case("gpt-5.4", Some(272_000))]
-    #[test_case("gpt-5.2", Some(272_000))]
-    #[test_case("gpt-5.3-codex", Some(272_000))]
-    #[test_case("gpt-5.7-codex", Some(272_000) ; "unlisted codex model still routes")]
+    #[test_case("gpt-5.6", Some(CODING_PLAN_CONTEXT_WINDOW))]
+    #[test_case("gpt-5.6-luna", Some(CODING_PLAN_CONTEXT_WINDOW))]
+    #[test_case("gpt-5.6-terra", Some(CODING_PLAN_CONTEXT_WINDOW))]
+    #[test_case("gpt-5.6-sol", Some(CODING_PLAN_CONTEXT_WINDOW))]
+    #[test_case("gpt-5.5", Some(CODING_PLAN_CONTEXT_WINDOW))]
+    #[test_case("gpt-5.4", Some(CODING_PLAN_CONTEXT_WINDOW))]
+    #[test_case("gpt-5.2", Some(CODING_PLAN_CONTEXT_WINDOW))]
+    #[test_case("gpt-5.3-codex", Some(CODING_PLAN_CONTEXT_WINDOW))]
+    #[test_case("gpt-5.7-codex", Some(CODING_PLAN_CONTEXT_WINDOW) ; "unlisted codex model still routes")]
     #[test_case("gpt-5.5-preview", None ; "non_plan_5_5_preview_rejected")]
     #[test_case("gpt-5.6-terra-preview", None ; "non_plan_5_6_preview_rejected")]
-    #[test_case("gpt-5.6-codex", Some(272_000) ; "codex_model")]
+    #[test_case("gpt-5.6-codex", Some(CODING_PLAN_CONTEXT_WINDOW) ; "codex_model")]
     #[test_case("gpt-5.4-nano", None ; "non_plan_5_4_nano_rejected")]
     fn coding_plan_context_window_resolves_plan_models(model_id: &str, expected: Option<u32>) {
         assert_eq!(coding_plan_context_window(model_id), expected);
@@ -2134,7 +2319,7 @@ mod tests {
 
         provider.adjust_model(&mut model);
 
-        assert_eq!(model.context_window, 272_000);
+        assert_eq!(model.context_window, CODING_PLAN_CONTEXT_WINDOW);
     }
 
     #[test]
@@ -2435,7 +2620,7 @@ mod tests {
                 .stream_message(
                     &model,
                     &first_messages,
-                    "",
+                    &System::from(""),
                     &tools,
                     &event_tx,
                     RequestOptions::default(),
@@ -2452,7 +2637,7 @@ mod tests {
                 .stream_message(
                     &model,
                     &second_messages,
-                    "",
+                    &System::from(""),
                     &tools,
                     &event_tx,
                     RequestOptions::default(),
@@ -3071,11 +3256,12 @@ mod tests {
             let tools = serde_json::json!([]);
             let (event_tx, _) = flume::unbounded();
 
+            let system = System::from("");
             let attempt = provider
                 .run_codex_attempt(
                     &model,
                     &[Message::user("hello".into())],
-                    "",
+                    &system,
                     &tools,
                     TOOLS_HASH,
                     &event_tx,
@@ -3620,11 +3806,12 @@ mod tests {
             let (second_tx, _) = flume::unbounded();
             let first_session = SessionRef::generate();
             let second_session = SessionRef::generate();
+            let system = System::from("");
 
             let first = provider.stream_message(
                 &model,
                 &messages,
-                "",
+                &system,
                 &tools,
                 &first_tx,
                 RequestOptions::default(),
@@ -3633,7 +3820,7 @@ mod tests {
             let second = provider.stream_message(
                 &model,
                 &messages,
-                "",
+                &system,
                 &tools,
                 &second_tx,
                 RequestOptions::default(),
@@ -3919,5 +4106,63 @@ mod tests {
         ));
         assert!(!error.is_retryable());
         assert!(!error.is_auth_error());
+    }
+
+    #[test]
+    fn parse_rate_limit_status_response() {
+        let body = r#"{
+            "plan_type": "pro",
+            "rate_limit": {
+                "allowed": true,
+                "limit_reached": false,
+                "primary_window": {"used_percent": 6, "limit_window_seconds": 18000, "reset_at": 1738300000},
+                "secondary_window": {"used_percent": 24, "limit_window_seconds": 604800, "reset_at": 1738900000}
+            },
+            "additional_rate_limits": [
+                {
+                    "limit_name": "code_review",
+                    "metered_feature": "code_review",
+                    "rate_limit": {
+                        "allowed": true,
+                        "limit_reached": false,
+                        "secondary_window": {"used_percent": 91, "limit_window_seconds": 604800, "reset_at": 1738900000}
+                    }
+                }
+            ],
+            "credits": {"has_credits": true, "unlimited": false, "balance": "5.39"}
+        }"#;
+        let parsed: RateLimitStatusResponse = serde_json::from_str(body).unwrap();
+        let usage: ProviderUsage = parsed.into();
+        assert_eq!(usage.plan.as_deref(), Some("pro"));
+        assert_eq!(usage.limits.len(), 4);
+        assert_eq!(usage.limits[0].label, "5h limit");
+        assert_eq!(usage.limits[0].percentage, Some(6));
+        assert_eq!(usage.limits[0].reset_at, Some(1_738_300_000_000));
+        assert_eq!(usage.limits[1].label, "Weekly limit");
+        assert_eq!(usage.limits[1].percentage, Some(24));
+        assert_eq!(usage.limits[2].label, "Code Review Weekly limit");
+        assert_eq!(usage.limits[2].percentage, Some(91));
+        assert_eq!(usage.limits[3].label, "Credits");
+        assert_eq!(usage.limits[3].percentage, None);
+        assert_eq!(usage.limits[3].detail.as_deref(), Some("$5.39 remaining"));
+    }
+
+    #[test]
+    fn parse_rate_limit_status_unknown_plan_type() {
+        let body = r#"{"plan_type": "prolite"}"#;
+        let parsed: RateLimitStatusResponse = serde_json::from_str(body).unwrap();
+        let usage: ProviderUsage = parsed.into();
+        assert_eq!(usage.plan.as_deref(), Some("prolite"));
+        assert!(usage.limits.is_empty());
+    }
+
+    #[test_case(Some(18_000), Some("5h"))]
+    #[test_case(Some(86_400), Some("daily"))]
+    #[test_case(Some(604_800), Some("weekly"))]
+    #[test_case(Some(2_592_000), Some("monthly"))]
+    #[test_case(Some(31_536_000), Some("annual"))]
+    #[test_case(Some(120), None)]
+    fn rate_limit_window_label_maps(seconds: Option<i64>, expected: Option<&str>) {
+        assert_eq!(super::rate_limit_window_label(seconds), expected);
     }
 }

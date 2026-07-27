@@ -60,6 +60,7 @@ const PERIODIC_SAVE_INTERVAL: Duration = Duration::from_secs(1);
 /// Max events handled per frame so a flood cannot starve rendering.
 const DRAIN_BUDGET: usize = 256;
 const AGENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
+const STORAGE_WRITER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const DELETE_FOCUSED_ERR: &str = "cannot delete the focused session";
 const NOT_LIVE_ERR: &str = "session not live";
 
@@ -653,11 +654,11 @@ impl<'t> EventLoop<'t> {
         if self.last_save.elapsed() < PERIODIC_SAVE_INTERVAL {
             return;
         }
-        let app = &mut self.sessions[self.focused].app;
-        if app.status != Status::Streaming {
-            return;
+        for rt in &mut self.sessions {
+            if should_save_periodically(&rt.app.status) {
+                rt.app.save_session();
+            }
         }
-        app.save_session();
         self.last_save = Instant::now();
     }
 
@@ -1195,6 +1196,17 @@ impl<'t> EventLoop<'t> {
             }
             Action::NewSession => {
                 self.respawn_agent(idx, Vec::new(), Vec::new());
+                if let Some(pending) = self.sessions[idx].app.pending_plan_submit.take() {
+                    let actions = {
+                        let app = &mut self.sessions[idx].app;
+                        if let Some((content, path)) = pending.plan {
+                            app.main_chat().push(DisplayMessage::plan(content, path));
+                        }
+                        app.run_id += 1;
+                        app.start_from_queue(&pending.message)
+                    };
+                    self.dispatch(idx, actions);
+                }
             }
             Action::LoadSession(loaded) => {
                 let loaded = *loaded;
@@ -1404,7 +1416,7 @@ impl<'t> EventLoop<'t> {
             smol::block_on(h.shutdown());
         }
         match Arc::try_unwrap(self.ctx.storage_writer) {
-            Ok(writer) => writer.shutdown(AGENT_SHUTDOWN_TIMEOUT),
+            Ok(writer) => writer.shutdown(STORAGE_WRITER_SHUTDOWN_TIMEOUT),
             Err(_) => {
                 warn!("storage writer has outstanding references, skipping graceful shutdown");
             }
@@ -1449,6 +1461,10 @@ fn take_painted_submissions<T>(
     ready
 }
 
+fn should_save_periodically(status: &Status) -> bool {
+    matches!(status, Status::Streaming)
+}
+
 fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
     let lines = crate::cast::u32_to_isize(lines);
     let n = i32::try_from(lines).unwrap_or_else(|_| i32::MAX);
@@ -1461,7 +1477,11 @@ fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{DRAIN_BUDGET, DrainScheduler, draw_then_post_terminal, take_painted_submissions};
+    use super::{
+        DRAIN_BUDGET, DrainScheduler, draw_then_post_terminal, should_save_periodically,
+        take_painted_submissions,
+    };
+    use crate::components::Status;
     use n00n_storage::id::N00nId;
     use ratatui::{
         Terminal,
@@ -1537,6 +1557,13 @@ mod tests {
     enum Source {
         Input(usize),
         Agent(usize),
+    }
+
+    #[test]
+    fn periodic_save_skips_unchanged_idle_sessions() {
+        assert!(!should_save_periodically(&Status::Idle));
+        assert!(!should_save_periodically(&Status::error("failed".into())));
+        assert!(should_save_periodically(&Status::Streaming));
     }
 
     #[test]
