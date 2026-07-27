@@ -47,7 +47,6 @@ const SECTIONS: &[(&str, &[&str])] = &[
             "workflow",
             "todo_write",
             "memory",
-            "sessions",
             "skill",
             "tool_search",
             "load_namespace",
