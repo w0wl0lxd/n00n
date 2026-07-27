@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785182974222,
+  "lastUpdate": 1785190881492,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -8421,6 +8421,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 103721,
             "range": "± 15705",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "effc2885b95872a6c8d12da4902b7533af365b3c",
+          "message": "fix(ui): lazy clipboard init to prevent Wayland startup hang",
+          "timestamp": "2026-07-27T22:07:11Z",
+          "tree_id": "4739772b9c6f904dae4b8df81fe3b95e0b5b94c4",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/effc2885b95872a6c8d12da4902b7533af365b3c"
+        },
+        "date": 1785190880966,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6481806,
+            "range": "± 170017",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2442795,
+            "range": "± 6390",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2443849,
+            "range": "± 31481",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7687393,
+            "range": "± 21353",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3890031,
+            "range": "± 13264",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3872294,
+            "range": "± 17252",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 554028,
+            "range": "± 11300",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 167820,
+            "range": "± 287",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 167957,
+            "range": "± 1691",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1047403,
+            "range": "± 3919",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 646436,
+            "range": "± 10073",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 647732,
+            "range": "± 12756",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 73489,
+            "range": "± 4090",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 178968,
+            "range": "± 12812",
             "unit": "ns/iter"
           }
         ]
