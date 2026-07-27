@@ -121,7 +121,7 @@ impl AgentError {
     }
 
     /// Converts transport-level failures that may have occurred after the
-    /// provider accepted the request into [`RequestSent`], which is not
+    /// provider accepted the request into [`AgentError::RequestSent`], which is not
     /// retryable. Leaves explicit API/server errors unchanged so the caller
     /// can apply its own retry/backoff policy when no output has been emitted.
     #[must_use]
