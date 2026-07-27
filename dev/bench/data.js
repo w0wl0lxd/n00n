@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785145333682,
+  "lastUpdate": 1785145596934,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -7665,6 +7665,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 180615,
             "range": "± 14198",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4a97b30b0741b99383770975442496abf5b89a87",
+          "message": "feat(daemon): n00n-daemon control plane and scoped agent tools (#149)\n\n* fix(agent-control): route message/resume as steering interrupts, not queued prompts\n\n* fix(agent-control): distinguish control messages and resume paused team runs\n\n- Add `control` flag to `Message`, `AgentInput`, and `QueuedMessage`\n  so agent-control messages are tagged independently of user prompts.\n- Propagate the flag through `AgentEvent::QueueItemConsumed` and the\n  UI display pipeline, adding `DisplayRole::Control` with its own theme\n  style so control messages render distinctly from user messages.\n- Wire `n00n.session.prompt` `control` option and update `agent_control`\n  `message`/`resume` to use both `steer` and `control`.\n- Surface `last_user` from `SessionRequest::Status` so `agent_control`\n  resume can retrieve the paused `team` `run_id` from the target session\n  history and build a continuation prompt.\n- Include `run_id` in `team` `run_waves` pause payload for consistency.\n\nTests: cargo nextest run --workspace (3873 passed), cargo clippy --all --tests -- -D warnings.\n\n* fix(agent-control): harden paused team resume\n\n* feat(agent): add structured output helper and agent CLI command\n\nPhase 2 implementation:\n\n- Create plugins/lib/n00n/structured_output.lua with constants and helper functions for schema validation\n- Create plugins/lib/n00n/subagent.lua with unified subagent launch API\n- Migrate plugins/task/init.lua to use n00n.structured_output helper\n- Migrate plugins/workflow/init.lua to use n00n.structured_output helper\n- Add n00n agent run CLI command with stubs for future daemon commands\n- Add tests for structured_output helper in plugins/lib/tests/spec.lua\n- Keep team/roles.lua unchanged due to custom patterns (hardcoded audience, budget handling, preview support)\n\nAll tests pass. Lua syntax validated with luac.\n\n* fix(agent-orchestration): repair route_tier and structured_output helpers\n\n* feat(agent): add background agent server and management CLI\n\nImplement `n00n agent run --background` Unix-socket server plus\n`message`, `stop`, and `list` client commands. Background agents keep\nstate in `state_dir/agents/<id>/agent.json` and a `control.sock`.\n\nServer streams `TextDelta`/`ToolOutput`/`Done` events as NDJSON, and\nsupports an initial `--prompt` before entering the command loop. The\n`--mode` flag selects the same workflow/team/etc modes used by the\none-shot runner.\n\n- Add `AgentMode` CLI enum (General, Research, Task, Team, Workflow)\n- Add `async-lock` for per-agent message serialization\n- Add unit tests for CLI parsing, state serde, and state listing\n\nPhase 3 stubs (status, pause, resume, policy) remain unimplemented.\n\n* feat(agent): implement status, pause, and resume commands\n\nAdd `ClientCommand::Pause` and `Resume` to the background agent\nprotocol. The server stores a shared `paused` flag and rejects new\nmessages while paused, updating `agent.json` status accordingly.\n\nImplement `n00n agent status`, `pause`, and `resume` client commands.\n`status` reads the persisted agent state; `pause`/`resume` send a\ncontrol command over the Unix socket. The `policy` subcommand remains\na stub.\n\n* fix(agent): avoid duplicate text when message run ends with error\n\nThe text-mode client was streaming TextDelta chunks and then printing\nthe full Done.text again when the run ended with an error. Only print\nthe error in that case; the streamed text is already on the terminal.\n\n* refactor(team): migrate roles and supervisor to n00n.subagent\n\nExtend `plugins/lib/n00n/subagent.lua` with options the team plugin needs:\n- `system` override for role-specific prompts\n- `preview` and `activity_label` for ActivityPreview integration\n- `budget` with `:consume()` for agent-call budgets\n- `fail_on_pricing_error` to keep the existing team semantics\n- return the resolved `model_spec` as a fifth value\n\nMigrate `plugins/team/roles.lua` to launch subagents through the shared\nhelper, preserving its `{ok, text, cost, model, usage, error}` return\nshape and all existing tests.\n\nSimplify `plugins/team/init.lua` `run_supervisor` by delegating the\nstructured-output plan generation to `n00n.subagent.launch` with\n`output_schema = PLANNER_OUTPUT`.\n\n* fix(agent): log cleanup warnings in stop handler\n\nSurface failed socket/directory removals in the background agent stop\nhandler instead of silently ignoring them. The process still exits, but\nthe warning gives operators a signal that stale state may remain.\n\n* fix(agent): validate agent ids and lock down socket permissions\n\nPrevent path traversal from user-supplied agent ids by validating them\nbefore any filesystem operation, and reject ids that contain path\nseparators, control characters, or other unsafe content. Limit ids to\n64 ASCII alphanumeric/hyphen/underscore characters.\n\nSet the agent state directory to 0o700 and the Unix control socket to\n0o600 so only the owning user can read or connect to background agent\nstate.\n\n* refactor(agent): share one-shot and background agent setup\n\nExtract `prepare_agent_env` and `PreparedEnv` to remove the duplicated\nplugin/model/MCP initialization between `run` and `server`. Both paths now\nbuild their `HeadlessParams`/`InteractiveParams` from the same prepared\nenvironment, making the two entry points easier to keep in sync.\n\n* docs(changelog): add fragments for agent CLI and team refactor\n\nRecord the user-facing additions, refactor, and security hardening from\nPR #134 in changelog.d.\n\n* fix(agent): await task completion before stop exits\n\nThe background agent Stop command now waits for the agent task to finish\nafter sending the cancel signal, instead of exiting immediately. This\nprevents dropping active tool calls and unfinished MCP sessions and\nensures state is persisted before cleanup.\n\n* refactor(cli): remove unused goal arg and stub policy commands\n\nThe `goal` flag on `n00n agent run` was parsed but never used, and the\n`policy` subcommands were stubs. Remove both until they are wired to\nactual behavior.\n\n* fix(task,workflow): pass thinking config to subagent sessions\n\nThread the `thinking` option through `n00n.agent.session` in both the\ntask and workflow plugins, and include it in the workflow journal key so\ncached results honor the thinking setting.\n\n* fix(n00n-agent): make yolo enable rather than toggle in spawn_interactive\n\n`headless::spawn_interactive` was calling `permissions.toggle_yolo()` when\n`params.yolo` was true, which flipped an already-true yolo state back to\nfalse. This broke `--yolo` in background agent mode (and TUI/ACP when\nalways_yolo was set). Add `PermissionManager::set_yolo` and use it to\nreliably enable yolo when requested, leaving the config-derived default\notherwise.\n\n* feat(agent): add --goal and mode-aware team/workflow/task prompts\n\nRe-add --goal to n00n agent run and wire it into mode-specific prompts.\nTeam mode now emits a team tool call with goal, mode, max_agents,\nwaves, and auto-tier flags. Workflow mode emits a workflow tool call\nwith the prompt as the script and goal merged into inputs. Task mode\nemits a task tool call with description/prompt. General/Research\nmodes prepend the goal to the prompt.\n\nAlso introduce AgentRunOptions to keep run/server signatures tidy and\navoid excessive boolean parameters.\n\n* feat(agent): configurable agent-call limits and runaway guard\n\nRemove the hard-coded 24/32 agent-call ceilings in team and workflow.\n- team `max_agents` is now configurable with no hard maximum and an\n  optional `timeout_secs`.\n- workflow `max_agents_per_run` is configurable with no hard maximum.\n- Add `plugins/lib/n00n/guard.lua` to enforce call budgets, wall-clock\n  timeouts, repeated-prompt loops, and consecutive subagent errors.\n- Wire the guard through `n00n.subagent.launch`, `team`, and `workflow`.\n\n* fix(guard): reserve call budget atomically in check and guard consecutive errors\n\n- Move the used counter increment from record() into check() so the\n  budget is reserved before any async yield; this prevents concurrent\n  subagent calls from overshooting max_calls.\n- Check consecutive_errors in check() and use > in record() so the\n  guard blocks the next call after the threshold instead of wasting\n  a token on the failing call.\n- Add lib spec coverage for budget, repeated-prompt, consecutive-error,\n  and legacy consume() behavior.\n\n* docs: regenerate after main merge\n\n* docs: regenerate lua-api from branch sources\n\n* feat(daemon): add n00n-daemon control plane and scoped agent tools\n\nIntroduce an on-device registry/proxy over TUI session APIs and PR#134\nworker socks, with sonic-rs NDJSON wire encoding, a thin `n00n agent`\nCLI, and split agent_list/agent_status/agent_control tools that render\nhuman cards and tooned structured output instead of raw JSON dumps.\n\n* feat(daemon): register live TUI sessions on daemon.sock\n\nWire PluginHost ui_action_tx into an in-process daemon listener so CLI\nagent list unions TUI sessions while the UI is up. Document stacked\nfollow-ups for worker absorb (#134) and steer/control (#129).\n\n* docs(daemon): mark #129/#134 absorb status in followups plan\n\n* feat(daemon): add lockfile transport, peercred auth, and headless registration\n\nAdvertise daemon listeners via daemon.lock, route clients through UDS or\nWindows loopback TCP, reject mismatched UDS peers on Linux, and register\nprint/ACP sessions for remote list/status/control.\n\n* test(daemon): add smoke gate, integration tests, and --state-dir\n\nAutomate manual verification with scripts/smoke-daemon.sh, cover worker\npause roundtrip and TUI+worker UDS list, fall back to disk when daemon\nsock is absent, and add --state-dir to agent control verbs.\n\n* feat(daemon): complete sprint 2 polish for agent control\n\nAdd stale daemon.lock recovery, TUI paused-team resume via daemon,\nagent_control Lua spec tests with shared helpers, Windows TCP smoke\ntest, and user docs for the n00n agent CLI.\n\n* fix(daemon): route pause/resume via backend resolution\n\nLet the control plane try TUI before worker so pause returns typed\nunsupported for live sessions and resume can reach paused-team paths.\nDrain worker message streams until done when proxying through daemon.\n\n* fix(token-profile): update cold_start baseline for new tool\n\n* feat(agent): scripting parity for agent list/status (#151)\n\n* feat(agent): add scripting parity for agent list and status\n\nClose competitor gaps vs claude agents --json: dedicated --json output\nwith normalized state, --all for terminal workers, --cwd filtering,\nand cwd plumbed through TUI/worker agent records.\n\n* fix(daemon): route pause/resume via backend resolution\n\nLet the control plane try TUI before worker so pause returns typed\nunsupported for live sessions and resume can reach paused-team paths.\nDrain worker message streams until done when proxying through daemon.\n\n* feat(agent): add scripting parity for agent list and status\n\nClose competitor gaps vs claude agents --json: dedicated --json output\nwith normalized state, --all for terminal workers, --cwd filtering,\nand cwd plumbed through TUI/worker agent records.\n\n* feat(openai): split Codex plan into its own provider (#136)\n\n* feat(openai): split Codex plan into its own provider\n\nCodex (ChatGPT Coding Plan) OAuth and the full OpenAI API key flow were\nboth exposed under the `openai` provider, causing identical model IDs to\nappear with different context windows and auth requirements. Introduce a\ndedicated `codex` provider so:\n\n- Codex plan models (`codex/gpt-5.6-luna`, `codex/gpt-5.3-codex`, etc.)\n  resolve to the 272K plan context and OAuth auth.\n- Full OpenAI API models (`openai/gpt-5.5`, `openai/gpt-5.6-luna`, etc.)\n  keep their larger context and API-key auth.\n- Auth commands (`n00n auth login/logout codex`) and the status table\n  treat Codex separately while sharing OAuth state with OpenAI.\n\n* chore(changelog): add fragment for Codex provider split\n\n* fix(agent): import BackendKind in tests and sync CI artifacts\n\nAdd changelog fragment, token-profile baseline for 27 tools, and fix\nmissing BackendKind import in agent command unit tests.",
+          "timestamp": "2026-07-27T09:20:45Z",
+          "tree_id": "7bfc3b8884c3790315ccf294e98a34c82b8f68f7",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/4a97b30b0741b99383770975442496abf5b89a87"
+        },
+        "date": 1785145596291,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6655093,
+            "range": "± 135366",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2226576,
+            "range": "± 12862",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2218199,
+            "range": "± 54321",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8109995,
+            "range": "± 185142",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4359669,
+            "range": "± 21040",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4316129,
+            "range": "± 11896",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 585352,
+            "range": "± 935",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191674,
+            "range": "± 389",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191653,
+            "range": "± 245",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1045131,
+            "range": "± 9559",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 583826,
+            "range": "± 2903",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 584756,
+            "range": "± 4602",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 69103,
+            "range": "± 6268",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 182703,
+            "range": "± 12013",
             "unit": "ns/iter"
           }
         ]
