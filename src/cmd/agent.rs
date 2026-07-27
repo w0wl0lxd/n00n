@@ -1,7 +1,6 @@
 use std::env;
 use std::fs;
 use std::path::PathBuf;
-#[cfg(unix)]
 use std::sync::Arc;
 #[cfg(unix)]
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -133,25 +132,33 @@ fn print_control_response(resp: &ControlResponse, json: bool) -> Result<()> {
 /// Foreground worker-only control plane (no TUI backend). Prefer TUI-owned
 /// `daemon.sock` when the UI is running.
 pub fn daemon_serve(state_dir: Option<PathBuf>) -> Result<()> {
-    let storage = match state_dir {
-        Some(p) => StateDir::from_path(p),
-        None => StateDir::resolve().wrap_err("state dir")?,
-    };
-    let worker = Arc::new(WorkerBackend::new(storage.path()));
-    let plane = Arc::new(ControlPlane::new(None, Some(worker)));
-    let (_tx, rx) = flume::bounded::<()>(1);
-    println!(
-        "listening on {}",
-        storage.path().join("daemon.sock").display()
-    );
-    smol::block_on(daemon_server::serve(
-        storage.path(),
-        plane,
-        rx,
-        DaemonRole::Worker,
-    ))
-    .map_err(|e| eyre!(e))?;
-    Ok(())
+    #[cfg(unix)]
+    {
+        let storage = match state_dir {
+            Some(p) => StateDir::from_path(p),
+            None => StateDir::resolve().wrap_err("state dir")?,
+        };
+        let worker = Arc::new(WorkerBackend::new(storage.path()));
+        let plane = Arc::new(ControlPlane::new(None, Some(worker)));
+        let (_tx, rx) = flume::bounded::<()>(1);
+        println!(
+            "listening on {}",
+            storage.path().join("daemon.sock").display()
+        );
+        smol::block_on(daemon_server::serve(
+            storage.path(),
+            plane,
+            rx,
+            DaemonRole::Worker,
+        ))
+        .map_err(|e| eyre!(e))?;
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        let _ = state_dir;
+        Err(eyre!("agent daemon serve is not supported on Windows"))
+    }
 }
 
 fn workflow_from_mode(mode: CliAgentMode) -> bool {
