@@ -23,3 +23,5 @@ cargo run -p n00n-token-profile --example write_baseline   # intentional growth 
 ```
 
 Update `baselines/cold_start.json` in the same PR when a hard surface grows on purpose.
+
+# CI retrigger 2026-07-27T08:07:39Z
