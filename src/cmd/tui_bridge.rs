@@ -32,7 +32,7 @@ pub struct DaemonHandle {
 
 impl DaemonHandle {
     /// Signal the listener to stop and join the serve thread.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn shutdown(mut self) {
         let _ = self.cancel.send(());
         if let Some(handle) = self.join.take()
@@ -274,10 +274,14 @@ fn required_str(value: &Value, key: &str, err: &str) -> ControlResult<String> {
 mod tests {
     use super::*;
     use n00n_daemon::backend::ControlBackend;
+    #[cfg(unix)]
+    use n00n_daemon::paths::daemon_socket_in;
+    #[cfg(unix)]
     use n00n_daemon::protocol::ControlRequest;
     use n00n_lua::SessionReply;
     use serde_json::json;
     use std::time::Duration;
+    #[cfg(unix)]
     use tempfile::TempDir;
 
     fn respond_live(rx: flume::Receiver<UiAction>, body: Value) {
@@ -447,7 +451,6 @@ mod tests {
     #[test]
     fn spawn_serves_tui_list_over_uds() -> Result<(), String> {
         use n00n_daemon::client;
-        use n00n_daemon::paths::daemon_socket_in;
         use n00n_daemon::protocol::{ControlResponse, PROTOCOL_VERSION};
 
         let tmp = TempDir::new().map_err(|e| e.to_string())?;
