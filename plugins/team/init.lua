@@ -117,7 +117,7 @@ local schema = {
   properties = {
     goal = {
       type = "string",
-      description = "SDLC goal.",
+      description = "Goal.",
     },
     mode = {
       type = "string",
@@ -129,41 +129,41 @@ local schema = {
       type = "integer",
       minimum = 1,
       maximum = MAX_SWARM_ROUNDS,
-      description = "Swarm rounds (default 2, max 4).",
+      description = "Swarm rounds.",
     },
     max_concurrent = {
       type = "integer",
       minimum = 1,
       maximum = MAX_TEAM_CONCURRENT,
-      description = "Swarm concurrency (default 4, max 4).",
+      description = "Swarm concurrency.",
     },
     max_agents = {
       type = "integer",
       minimum = 1,
       maximum = MAX_TEAM_AGENTS,
-      description = "Agent budget (default 16, max 24).",
+      description = "Agent budget.",
     },
     max_steps = {
       type = "integer",
       minimum = 1,
       maximum = MAX_PLAN_STEPS,
-      description = "Plan steps (default 6, max 8).",
+      description = "Plan steps.",
     },
     model = {
       type = "string",
-      description = "Exact model for all agents. Overrides model_tier.",
+      description = "Exact model override.",
     },
     model_tier = {
       type = "string",
-      description = "Supervisor tier (weak/medium/strong). Default: strong.",
+      description = "Supervisor tier (weak/medium/strong).",
     },
     thinking = {
       type = { "string", "integer" },
-      description = 'Thinking: "off", "adaptive", effort, or token budget. Default: "adaptive".',
+      description = 'Thinking mode. Default: "adaptive".',
     },
     auto_tier = {
       type = "boolean",
-      description = "Route subagent tier from step prompt. Default: true unless model set.",
+      description = "Auto-route tier from step prompt.",
     },
     use_retrieval = {
       type = "boolean",
@@ -173,12 +173,12 @@ local schema = {
     ibn_gate = {
       type = "boolean",
       default = true,
-      description = "Use information-bottleneck fan-out gate in swarm.",
+      description = "Use information-bottleneck gate in swarm.",
     },
     quorum = {
       type = "boolean",
       default = true,
-      description = "Require validator quorum for autonomous/swarm.",
+      description = "Require validator quorum.",
     },
     background = {
       type = "boolean",
@@ -187,7 +187,7 @@ local schema = {
     compact = {
       type = "boolean",
       default = false,
-      description = "TOON-encode retrieved context (token-saving).",
+      description = "TOON-encode retrieved context.",
     },
     use_summary = {
       type = "boolean",
@@ -197,7 +197,7 @@ local schema = {
     human_escalation = {
       type = "boolean",
       default = false,
-      description = "Pause on step failure; return resumable run_id.",
+      description = "Pause on step failure; return run_id.",
     },
     resume = {
       type = "string",
@@ -210,19 +210,19 @@ local schema = {
     waves = {
       type = "boolean",
       default = false,
-      description = "Execute in waves (plan, implement, validate) with validation gates.",
+      description = "Execute in waves with validation gates.",
     },
     checkpoints = {
       type = "boolean",
       default = false,
-      description = "Persist checkpoints after each wave for resume.",
+      description = "Persist checkpoints after each wave.",
     },
     max_wave_retries = {
       type = "integer",
       minimum = 1,
       maximum = MAX_WAVE_RETRIES,
       default = DEFAULT_MAX_WAVE_RETRIES,
-      description = "Validation gate retries (default 3, max 5).",
+      description = "Validation gate retries.",
     },
   },
 }

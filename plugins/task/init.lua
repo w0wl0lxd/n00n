@@ -60,38 +60,38 @@ local schema = {
   properties = {
     description = {
       type = "string",
-      description = "Short (3-5 words) task description",
+      description = "Task summary (3-5 words).",
     },
     prompt = {
       type = "string",
-      description = "Detailed task prompt for agent",
+      description = "Task prompt.",
     },
     subagent_type = {
       type = "string",
-      description = "research (read-only, default) or general (can edit)",
+      description = "research (default) or general.",
     },
     model = {
       type = "string",
-      description = "Exact model spec (optional). Overrides model_tier.",
+      description = "Exact model override.",
     },
     model_tier = {
       type = "string",
-      description = "Capped tier: weak, medium, or strong",
+      description = "Tier: weak/medium/strong.",
     },
     thinking = {
       type = { "string", "integer" },
-      description = "Thinking: off, adaptive, effort, or token budget. Omit to inherit user setting.",
+      description = "Thinking mode. Omit to inherit.",
     },
     auto_tier = {
       type = "boolean",
-      description = "Pick model_tier from prompt automatically (opt-in). Overrides model_tier when set.",
+      description = "Auto-route tier from prompt.",
     },
     background = {
       type = "boolean",
       description = "Start in background; return agent_id immediately.",
     },
     output_schema = {
-      description = "JSON Schema (object) subagent result must match. Result returned as validated JSON string.",
+      description = "Output JSON schema. Result returned as validated JSON string.",
     },
   },
 }
