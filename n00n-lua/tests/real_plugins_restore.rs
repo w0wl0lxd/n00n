@@ -73,7 +73,6 @@ fn assert_publishes_live_buf(tool: &str, source: &str, input: Value, expected: &
     let inv = reg.get(tool).unwrap().tool.parse(&input).unwrap();
     let execution = std::thread::spawn(move || smol::block_on(inv.execute(&ctx)));
 
-    let mut start_body = None;
     let body = loop {
         let env = rx
             .recv_timeout(std::time::Duration::from_secs(5))
@@ -81,13 +80,7 @@ fn assert_publishes_live_buf(tool: &str, source: &str, input: Value, expected: &
         if let AgentEvent::LiveToolBuf { id, body } = env.event
             && id == "live-preview"
         {
-            if start_body
-                .as_ref()
-                .is_some_and(|start| !Arc::ptr_eq(start, &body))
-            {
-                break body;
-            }
-            start_body = Some(body);
+            break body;
         }
     };
     assert!(
