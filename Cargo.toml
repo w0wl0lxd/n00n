@@ -193,6 +193,7 @@ isahc = { version = "1.7", default-features = false, features = [
   "text-decoding",
   "static-curl",
   "static-ssl",
+  "http2",
 ] }
 rusqlite = { version = "0.37", default-features = false, features = [
   "bundled",

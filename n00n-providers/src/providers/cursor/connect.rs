@@ -56,7 +56,11 @@ impl FrameBuffer {
 
 #[must_use]
 pub(crate) fn encode_frame(flags: u8, payload: &[u8]) -> Vec<u8> {
-    let len = u32::try_from(payload.len()).expect("connect frame payload length fits u32");
+    let capped = payload.len().min(MAX_CONNECT_FRAME_LEN);
+    // MAX_CONNECT_FRAME_LEN is 16 MiB, so this always fits in u32.
+    #[allow(clippy::cast_possible_truncation)]
+    let len = capped as u32;
+    let payload = &payload[..capped];
     let mut frame = Vec::with_capacity(5 + payload.len());
     frame.push(flags);
     frame.extend_from_slice(&len.to_be_bytes());
@@ -104,13 +108,8 @@ mod tests {
     #[test_case(16 * 1024 * 1024 + 1, "exceeds maximum")]
     fn oversized_length_rejected(over: u32, _note: &str) {
         let mut buf = FrameBuffer::default();
-        let header = [
-            0,
-            (over >> 24) as u8,
-            (over >> 16) as u8,
-            (over >> 8) as u8,
-            over as u8,
-        ];
+        let mut header = [0u8; 5];
+        header[1..].copy_from_slice(&over.to_be_bytes());
         buf.push(&header);
         match buf.next_frame().expect("result") {
             Err(e) => assert!(e.contains("exceeds maximum")),
