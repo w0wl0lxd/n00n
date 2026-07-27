@@ -71,6 +71,16 @@ pub fn user_style() -> RoleStyle {
     }
 }
 
+pub fn control_style() -> RoleStyle {
+    RoleStyle {
+        prefix: "Ctrl  ",
+        text_style: theme::current().assistant,
+        prefix_style: theme::current().control,
+        use_markdown: true,
+        max_line_bytes: None,
+    }
+}
+
 pub fn thinking_style() -> RoleStyle {
     RoleStyle {
         prefix: "Think ",
