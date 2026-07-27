@@ -3339,7 +3339,11 @@ dependencies = [
  "n00n-lua-macro",
  "n00n-markdown",
  "n00n-providers",
+<<<<<<< HEAD
  "n00n-semble",
+=======
+ "n00n-search",
+>>>>>>> 070514ca2 (feat(search): add native extraction core)
  "n00n-storage",
  "pin-project-lite",
  "regex",
@@ -3460,6 +3464,7 @@ dependencies = [
 
 [[package]]
 name = "n00n-search"
+<<<<<<< HEAD
 version = "0.5.0"
 dependencies = [
  "fs2",
@@ -3478,6 +3483,18 @@ dependencies = [
  "n00n-search",
  "tempfile",
  "thiserror 2.0.19",
+=======
+version = "0.4.2"
+dependencies = [
+ "futures-lite",
+ "htmd",
+ "isahc",
+ "serde",
+ "smol",
+ "test-case",
+ "thiserror 2.0.19",
+ "url",
+>>>>>>> 070514ca2 (feat(search): add native extraction core)
 ]
 
 [[package]]
