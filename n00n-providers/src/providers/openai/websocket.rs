@@ -20,7 +20,7 @@ use crate::model::Model;
 use crate::providers::ResolvedAuth;
 use crate::{
     AgentError, Message, ProviderEvent, RequestDeliveryMetadata, RequestDeliveryPhase,
-    RequestOptions, StreamResponse, dialect,
+    RequestOptions, StreamResponse, System, dialect,
 };
 
 const DEFAULT_RESPONSES_WS_URL: &str = "wss://api.openai.com/v1/responses";
@@ -122,7 +122,7 @@ fn ensure_rustls_crypto_provider() {
 pub(crate) fn build_request_body(
     model: &Model,
     messages: &[Message],
-    system: &str,
+    system: &System,
     tools: &Value,
     opts: RequestOptions,
     previous_response_id: Option<&str>,
@@ -884,7 +884,16 @@ mod tests {
             thinking: crate::ThinkingConfig::Effort(crate::Effort::High),
             ..Default::default()
         };
-        let body = build_request_body(&model, &[], "system", &json!([]), opts, None, None, true);
+        let body = build_request_body(
+            &model,
+            &[],
+            &System::from("system"),
+            &json!([]),
+            opts,
+            None,
+            None,
+            true,
+        );
         let event = build_create_event(&body);
         assert_eq!(
             event["reasoning"],

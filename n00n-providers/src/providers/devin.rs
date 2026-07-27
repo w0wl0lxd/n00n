@@ -30,7 +30,7 @@ use agent_client_protocol_schema::{ToolCall, ToolCallUpdate};
 
 use crate::model::{ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider};
-use crate::types::Role;
+use crate::types::{Role, System};
 use crate::{
     AgentError, Effort, Message, ProviderEvent, RequestOptions, StopReason, StreamResponse,
     ThinkingConfig, TokenUsage,
@@ -1641,7 +1641,7 @@ impl Provider for Devin {
         &'a self,
         model: &'a crate::model::Model,
         messages: &'a [Message],
-        _system: &'a str,
+        _system: &'a System,
         _tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
