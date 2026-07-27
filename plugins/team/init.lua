@@ -8,6 +8,7 @@ local memory = require("mem")
 local retrieve = require("retrieve")
 local roles = require("roles")
 local subagent = require("n00n.subagent")
+local guard = require("n00n.guard")
 local ibn = require("ibn")
 local quorum = require("quorum")
 local swarm = require("swarm")
@@ -63,7 +64,6 @@ local DEFAULT_PLAN_STEPS = 6
 local DEFAULT_SWARM_ROUNDS = 2
 local MAX_SWARM_ROUNDS = 4
 local DEFAULT_TEAM_AGENTS = 16
-local MAX_TEAM_AGENTS = 24
 local MAX_TEAM_CONCURRENT = 4
 local TEAM_TIMEOUT_SECS = 1800
 local MAX_RELAY_BYTES = 12000
@@ -141,8 +141,14 @@ local schema = {
     max_agents = {
       type = "integer",
       minimum = 1,
-      maximum = MAX_TEAM_AGENTS,
-      description = "Team agent budget (default 16, max 24).",
+      default = DEFAULT_TEAM_AGENTS,
+      description = "Team agent-call budget (default 16, no hard maximum).",
+    },
+    timeout_secs = {
+      type = "integer",
+      minimum = 1,
+      default = TEAM_TIMEOUT_SECS,
+      description = "Wall-clock timeout before the team run is aborted (default 1800s).",
     },
     max_steps = {
       type = "integer",
@@ -228,19 +234,11 @@ local schema = {
   },
 }
 
-local function new_agent_budget(requested)
-  local limit = math.min(requested or DEFAULT_TEAM_AGENTS, MAX_TEAM_AGENTS)
-  return {
-    limit = limit,
-    used = 0,
-    consume = function(self)
-      if self.used >= self.limit then
-        return nil, "team agent-call budget exhausted (" .. self.limit .. "; hard maximum " .. MAX_TEAM_AGENTS .. ")"
-      end
-      self.used = self.used + 1
-      return true
-    end,
-  }
+local function new_agent_guard(requested, timeout_secs)
+  return guard.new({
+    max_calls = requested or DEFAULT_TEAM_AGENTS,
+    timeout_secs = timeout_secs or TEAM_TIMEOUT_SECS,
+  })
 end
 
 local function plan_prompt(goal)
@@ -801,7 +799,7 @@ local function run_team(input, ctx)
   if input.thinking == nil then
     input.thinking = "adaptive"
   end
-  input._agent_budget = new_agent_budget(input.max_agents)
+  input._agent_budget = new_agent_guard(input.max_agents, input.timeout_secs)
   local goal = input.goal
 
   local slug = memory.slug(input.goal)

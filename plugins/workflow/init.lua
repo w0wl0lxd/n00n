@@ -20,6 +20,7 @@
 local ToolView = require("n00n.tool_view")
 local telemetry = require("n00n.telemetry")
 local structured_output = require("n00n.structured_output")
+local guard = require("n00n.guard")
 
 local SCRIPT_ERROR_PREFIX = "workflow script error: "
 local NO_META_ERROR = "workflow script must call meta({ name = ... }) before doing any work"
@@ -37,7 +38,8 @@ local JOURNAL_DIRNAME = "workflows"
 local JOURNAL_FILENAME = "journal.jsonl"
 local META_FILENAME = "meta.json"
 local DEFAULT_AGENTS_PER_RUN = 24
-local HARD_MAX_AGENTS_PER_RUN = 32
+local DEFAULT_CONCURRENT_AGENTS = 4
+local DEFAULT_CONCURRENT_WORKFLOWS = 2
 local HARD_MAX_CONCURRENT_AGENTS = 8
 local HARD_MAX_CONCURRENT_WORKFLOWS = 4
 local HARD_MAX_AGGREGATE_AGENTS = 12
@@ -49,7 +51,7 @@ local description = [[Run a bounded, sandboxed Lua workflow for multi-stage agen
 
 Start with meta({ name = ..., description = ..., phases = {...} }). Globals: agent({ prompt, subagent_type?, model_tier?, label?, output_schema? }) returns isolated agent result (research=read-only, general=default; tiers weak/medium/strong; output_schema returns validated JSON). parallel(fns, { concurrency? }) runs branches in order; any failure fails the call. pipeline(items, stages, { concurrency? }) runs each item through all stages. phase(name, fn), log(...), and inputs.
 
-No n00n, os, io, require, print, or load. Scripts must be deterministic for resume replay, must return the final string, and are limited to 24 agent calls by default (32 hard maximum). Use task for one agent.]]
+No n00n, os, io, require, print, or load. Scripts must be deterministic for resume replay, must return the final string, and are capped by max_agents_per_run (default 24, no hard maximum) with a runaway guard for repeated prompts and consecutive errors. Use task for one agent.]]
 
 local schema = {
   type = "object",
@@ -86,10 +88,18 @@ local opts = n00n.api.register_options({
   max_agents_per_run = {
     default = DEFAULT_AGENTS_PER_RUN,
     min = 1,
-    desc = "Agent-call budget per workflow (hard max 32).",
+    desc = "Agent-call budget per workflow (default 24, no hard maximum).",
   },
-  max_concurrent_agents = { default = 4, min = 1, desc = "Concurrency per parallel()/pipeline() (hard max 8)." },
-  max_concurrent_workflows = { default = 2, min = 1, desc = "Concurrent workflows (hard max 4)." },
+  max_concurrent_agents = {
+    default = DEFAULT_CONCURRENT_AGENTS,
+    min = 1,
+    desc = "Concurrency per parallel()/pipeline() (default 4, hard max 8).",
+  },
+  max_concurrent_workflows = {
+    default = DEFAULT_CONCURRENT_WORKFLOWS,
+    min = 1,
+    desc = "Concurrent workflows (default 2, hard max 4).",
+  },
   timeout_secs = {
     default = DEFAULT_TIMEOUT_SECS,
     min = 1,
@@ -97,7 +107,7 @@ local opts = n00n.api.register_options({
   },
 })
 
-local max_agents_per_run = math.min(opts.max_agents_per_run, HARD_MAX_AGENTS_PER_RUN)
+local max_agents_per_run = opts.max_agents_per_run or DEFAULT_AGENTS_PER_RUN
 local max_concurrent_agents = math.min(opts.max_concurrent_agents, HARD_MAX_CONCURRENT_AGENTS)
 local max_concurrent_workflows = math.min(opts.max_concurrent_workflows, HARD_MAX_CONCURRENT_WORKFLOWS)
 local workflow_semaphore = n00n.async.semaphore(max_concurrent_workflows)
@@ -346,7 +356,7 @@ local function pipeline(items, stages, popts)
   return parallel(fns, popts)
 end
 
-local function make_agent(ctx, progress, journal, logger)
+local function make_agent(ctx, progress, journal, logger, run_guard)
   return function(aopts)
     aopts = aopts or {}
     if type(aopts.prompt) ~= "string" then
@@ -397,12 +407,12 @@ local function make_agent(ctx, progress, journal, logger)
           progress.agent_cached(label)
           return hit
         end
-        journal.agent_count = journal.agent_count + 1
-        if journal.agent_count > max_agents_per_run then
-          gate:release()
-          error("workflow exceeded agent-call budget (" .. max_agents_per_run .. ", hard max 32)", 0)
-        end
         gate:release()
+      end
+
+      local guard_ok, guard_err = run_guard:check(aopts.prompt)
+      if not guard_ok then
+        error(guard_err, 0)
       end
 
       local validator
@@ -483,6 +493,13 @@ local function make_agent(ctx, progress, journal, logger)
         retries = retries + 1
         prompt_result, prompt_err = sess:prompt(structured_output.NUDGE_MISSING)
       end
+
+      local record_ok, record_err = run_guard:record(aopts.prompt, prompt_err)
+      if not record_ok then
+        sess:close()
+        error(record_err, 0)
+      end
+
       sess:close()
       aggregate_permit:release()
       aggregate_permit = nil
@@ -627,10 +644,10 @@ local function make_progress(ctx)
   }
 end
 
-local function build_env(ctx, progress, inputs, journal, captured, saga, logger)
+local function build_env(ctx, progress, inputs, journal, captured, saga, logger, run_guard)
   local env = {
     inputs = inputs,
-    agent = make_agent(ctx, progress, journal, logger),
+    agent = make_agent(ctx, progress, journal, logger, run_guard),
     parallel = parallel,
     pipeline = pipeline,
     tostring = tostring,
@@ -753,7 +770,6 @@ local function handler(input, ctx)
     lock = n00n.async.semaphore(1),
     in_flight = {},
     meta_ready = false,
-    agent_count = 0,
   }
 
   local progress = make_progress(ctx)
@@ -814,11 +830,13 @@ local function handler(input, ctx)
   -- Bound pure-Lua runaway loops (while true) via the VM watchdog deadline.
   ctx:set_deadline(opts.timeout_secs)
 
+  local run_guard = guard.new({ max_calls = max_agents_per_run, timeout_secs = opts.timeout_secs })
+
   n00n.async.run(function()
     local permit
     local ok, result = pcall(function()
       permit = workflow_semaphore:acquire()
-      local env = build_env(ctx, progress, input.inputs or {}, journal, captured, saga, logger)
+      local env = build_env(ctx, progress, input.inputs or {}, journal, captured, saga, logger, run_guard)
       local run_fn, load_err = n00n.workflow.compile(input.script, env)
       if not run_fn then
         error(tostring(load_err), 0)

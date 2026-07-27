@@ -43,12 +43,36 @@ function M.launch(ctx, opts)
     return nil, "ctx is required", nil, nil, nil
   end
 
-  -- Budget check
-  if opts.budget then
-    local budget_ok, budget_err = opts.budget:consume()
-    if not budget_ok then
-      return nil, budget_err or "budget exhausted", nil, nil, nil
+  local function guard_check(prompt)
+    if not opts.budget then
+      return true
     end
+    if opts.budget.check then
+      return opts.budget:check(prompt)
+    end
+    if opts.budget.consume then
+      return opts.budget:consume()
+    end
+    return true
+  end
+
+  local function guard_record(prompt, err)
+    if not opts.budget then
+      return true
+    end
+    if opts.budget.record then
+      return opts.budget:record(prompt, err)
+    end
+    if opts.budget.observe then
+      return opts.budget:observe(prompt, err)
+    end
+    return true
+  end
+
+  -- Runaway-guard check before any expensive setup work (model resolution, etc.)
+  local guard_ok, guard_err = guard_check(opts.prompt)
+  if not guard_ok then
+    return nil, guard_err, nil, nil, nil
   end
 
   local subagent_type = opts.subagent_type or "general"
@@ -159,6 +183,13 @@ function M.launch(ctx, opts)
     result, err = preview:prompt(sess, message, label)
   else
     result, err = sess:prompt(message)
+  end
+
+  -- Record result for runaway heuristics
+  local record_ok, record_err = guard_record(opts.prompt, err)
+  if not record_ok then
+    sess:close()
+    return nil, record_err, nil, usage.normalize(result), model_spec
   end
   local retries = 0
   while not err and validator and not captured and retries < structured_output.MAX_STRUCTURED_RETRIES do
