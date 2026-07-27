@@ -21,6 +21,8 @@ _PROVIDER_API_KEY_OVERRIDES: dict[str, frozenset[str]] = {
 
 # devin-real block-buffers stdout when run through a pipe; run it under a
 # pseudo-tty so ACP traffic is line-buffered and n00n sees responses promptly.
+# Do not persist raw ACP traffic — prompts and tool results are untrusted and
+# may contain secrets (AGENTS.md trust boundary).
 _DEVIN_WRAPPER = """#!/usr/bin/env python3
 import os
 import pty
@@ -32,13 +34,11 @@ import threading
 import tty
 
 REAL = "/opt/n00n/bin/devin-real"
-LOG = "/tmp/devin-acp.log"
 
 
 def main() -> int:
     # n00n already passes the "acp" subcommand; do not duplicate it.
     argv = [REAL, "--permission-mode", "dangerous"] + sys.argv[1:]
-    log = open(LOG, "wb")
     master, slave = pty.openpty()
     tty.setraw(master, termios.TCSANOW)
     p = subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave)
@@ -51,8 +51,6 @@ def main() -> int:
                 data = os.read(fd, 4096)
                 if not data:
                     break
-                log.write(b"IN>> " + data)
-                log.flush()
                 os.write(master, data)
         except OSError:
             pass
@@ -70,18 +68,13 @@ def main() -> int:
             data = os.read(master, 4096)
             if not data:
                 break
-            log.write(b"OUT<< " + data)
-            log.flush()
             sys.stdout.buffer.write(data)
             sys.stdout.buffer.flush()
     except OSError:
         pass
 
     t.join()
-    rc = p.wait()
-    log.write(f"EXIT rc={rc}\\n".encode())
-    log.close()
-    return rc
+    return p.wait()
 
 
 if __name__ == "__main__":
@@ -214,13 +207,20 @@ class n00nAgent(BaseInstalledAgent):
                     ),
                 )
 
-        # devin-real block-buffers stdout when run through a pipe; replace the
-        # bundled wrapper with one that runs devin-real under a pseudo-tty.
-        await self._upload_text(environment, _DEVIN_WRAPPER, "/opt/n00n/bin/devin")
-        await self.exec_as_root(
-            environment,
-            command="chmod +x /opt/n00n/bin/devin",
+        # Only replace the bundled /opt/n00n/bin/devin when the matching
+        # devin-real binary was unpacked beside it. System /mnt installs do not
+        # provide that path, and uploading a wrapper that points at a missing
+        # REAL executable would break Devin jobs that prefer /opt/n00n/bin.
+        real_check = await environment.exec(
+            command="test -x /opt/n00n/bin/devin-real",
+            user="root",
         )
+        if real_check.return_code == 0:
+            await self._upload_text(environment, _DEVIN_WRAPPER, "/opt/n00n/bin/devin")
+            await self.exec_as_root(
+                environment,
+                command="chmod +x /opt/n00n/bin/devin",
+            )
 
         # Ensure isolated XDG state exists and is writable for any user.
         await self.exec_as_root(
