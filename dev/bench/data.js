@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785142160275,
+  "lastUpdate": 1785142756600,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -7233,6 +7233,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 154493,
             "range": "± 5215",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "57f8c4fd12cea7a18854c32e5d2b912b27ed9083",
+          "message": "Merge pull request #146 from w0wl0lxd/feat/token-profiling-and-reduction\n\nfeat(token-profile): offline cold-start CI regression gate",
+          "timestamp": "2026-07-27T08:43:45Z",
+          "tree_id": "ef2acd60cdabba11d71f3c37006d93b057eb7e3b",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/57f8c4fd12cea7a18854c32e5d2b912b27ed9083"
+        },
+        "date": 1785142755133,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 7634530,
+            "range": "± 149523",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1544195,
+            "range": "± 31732",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1553146,
+            "range": "± 28955",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8733090,
+            "range": "± 246342",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3061882,
+            "range": "± 59221",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3042401,
+            "range": "± 45864",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 780425,
+            "range": "± 19385",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 92342,
+            "range": "± 3157",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 92481,
+            "range": "± 3012",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1143358,
+            "range": "± 20898",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 486508,
+            "range": "± 9082",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 481611,
+            "range": "± 8541",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 58803,
+            "range": "± 1219",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 102746,
+            "range": "± 10070",
             "unit": "ns/iter"
           }
         ]
