@@ -2,6 +2,7 @@
 //! path, no parallel lists that can drift.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
@@ -274,9 +275,67 @@ impl RegisteredTool {
     }
 }
 
+#[derive(Clone)]
+pub struct ToolsSnapshot {
+    tools: Vec<RegisteredTool>,
+    by_name: HashMap<String, usize>,
+}
+
+impl ToolsSnapshot {
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            tools: Vec::new(),
+            by_name: HashMap::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn from_tools(tools: Vec<RegisteredTool>) -> Self {
+        let mut by_name = HashMap::new();
+        for (i, tool) in tools.iter().enumerate() {
+            by_name.insert(tool.name().to_owned(), i);
+        }
+        Self { tools, by_name }
+    }
+
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<RegisteredTool> {
+        self.by_name.get(name).map(|&idx| self.tools[idx].clone())
+    }
+
+    #[must_use]
+    pub fn has(&self, name: &str) -> bool {
+        self.by_name.contains_key(name)
+    }
+
+    pub fn iter(&self) -> std::slice::Iter<'_, RegisteredTool> {
+        self.tools.iter()
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.tools.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.tools.is_empty()
+    }
+}
+
+impl<'a> IntoIterator for &'a ToolsSnapshot {
+    type Item = &'a RegisteredTool;
+    type IntoIter = std::slice::Iter<'a, RegisteredTool>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.tools.iter()
+    }
+}
+
 /// Lock-free reads via `ArcSwap`, writes swap in a new snapshot atomically.
 pub struct ToolRegistry {
-    tools: ArcSwap<Vec<RegisteredTool>>,
+    tools: ArcSwap<ToolsSnapshot>,
 }
 
 impl Default for ToolRegistry {
@@ -295,7 +354,7 @@ impl ToolRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            tools: ArcSwap::from_pointee(Vec::new()),
+            tools: ArcSwap::from_pointee(ToolsSnapshot::empty()),
         }
     }
 
@@ -314,11 +373,11 @@ impl ToolRegistry {
     }
 
     pub fn get(&self, name: &str) -> Option<RegisteredTool> {
-        self.tools.load().iter().find(|t| t.name() == name).cloned()
+        self.tools.load().get(name)
     }
 
     pub fn has(&self, name: &str) -> bool {
-        self.tools.load().iter().any(|t| t.name() == name)
+        self.tools.load().has(name)
     }
 
     /// Register a tool with the registry.
@@ -332,19 +391,18 @@ impl ToolRegistry {
         let mut conflict = None;
         self.tools.rcu(|current| {
             conflict = None;
-            if let Some(existing) = current.iter().find(|t| t.name() == name) {
+            if let Some(existing) = current.get(&name) {
                 conflict = Some(existing.source.as_log_field().into_owned());
-                return Vec::clone(current);
+                return Arc::clone(current);
             }
-            let mut next = Vec::with_capacity(current.len() + 1);
-            next.extend(current.iter().cloned());
-            next.push(RegisteredTool {
+            let mut next_tools = current.tools.clone();
+            next_tools.push(RegisteredTool {
                 tool: Arc::clone(tool),
                 source: source.clone(),
                 defer_loading,
                 namespace: namespace.clone(),
             });
-            next
+            Arc::new(ToolsSnapshot::from_tools(next_tools))
         });
         if let Some(existing) = conflict {
             return Err(RegistryError::NameConflict { name, existing });
@@ -365,24 +423,34 @@ impl ToolRegistry {
         let mut conflict = None;
         self.tools.rcu(|current| {
             conflict = None;
-            let mut next = Vec::clone(current);
+            let mut next_tools = current.tools.clone();
+            let mut new_sources: HashMap<String, ToolSource> =
+                HashMap::with_capacity(entries.len());
             for (tool, source) in &entries {
-                let name = tool.name();
-                if let Some(existing) = next.iter().find(|t| t.name() == name) {
+                let name = tool.name().to_owned();
+                if let Some(existing_source) = new_sources.get(&name) {
                     conflict = Some(RegistryError::NameConflict {
-                        name: name.to_owned(),
+                        name,
+                        existing: existing_source.as_log_field().into_owned(),
+                    });
+                    return Arc::clone(current);
+                }
+                if let Some(existing) = current.get(&name) {
+                    conflict = Some(RegistryError::NameConflict {
+                        name,
                         existing: existing.source.as_log_field().into_owned(),
                     });
-                    return Vec::clone(current);
+                    return Arc::clone(current);
                 }
-                next.push(RegisteredTool {
+                new_sources.insert(name, source.clone());
+                next_tools.push(RegisteredTool {
                     tool: Arc::clone(tool),
                     source: source.clone(),
                     defer_loading: tool.defer_loading(),
                     namespace: tool.namespace().map(Arc::from).clone(),
                 });
             }
-            next
+            Arc::new(ToolsSnapshot::from_tools(next_tools))
         });
         if let Some(e) = conflict {
             return Err(e);
@@ -392,13 +460,14 @@ impl ToolRegistry {
 
     pub fn clear_mcp_server(&self, server: &str) {
         self.tools.rcu(|current| {
-            current
+            let filtered: Vec<_> = current
                 .iter()
                 .filter(
                     |t| !matches!(&t.source, ToolSource::Mcp { server: s } if s.as_ref() == server),
                 )
                 .cloned()
-                .collect::<Vec<_>>()
+                .collect();
+            Arc::new(ToolsSnapshot::from_tools(filtered))
         });
     }
 
@@ -414,30 +483,40 @@ impl ToolRegistry {
         let mut conflict = None;
         self.tools.rcu(|current| {
             conflict = None;
-            let mut next: Vec<RegisteredTool> = current
+            let mut next_tools: Vec<RegisteredTool> = current
                 .iter()
                 .filter(
                     |t| !matches!(&t.source, ToolSource::Lua { plugin: p } if p.as_ref() == plugin),
                 )
                 .cloned()
                 .collect();
+            let mut new_sources: HashMap<String, ToolSource> =
+                HashMap::with_capacity(new_entries.len());
             for (tool, source) in new_entries {
-                let name = tool.name();
-                if let Some(existing) = next.iter().find(|t| t.name() == name) {
+                let name = tool.name().to_owned();
+                if let Some(existing_source) = new_sources.get(&name) {
                     conflict = Some(RegistryError::NameConflict {
-                        name: name.to_owned(),
+                        name,
+                        existing: existing_source.as_log_field().into_owned(),
+                    });
+                    return Arc::clone(current);
+                }
+                if let Some(existing) = next_tools.iter().find(|t| t.name() == name) {
+                    conflict = Some(RegistryError::NameConflict {
+                        name,
                         existing: existing.source.as_log_field().into_owned(),
                     });
-                    return Vec::clone(current);
+                    return Arc::clone(current);
                 }
-                next.push(RegisteredTool {
+                new_sources.insert(name, source.clone());
+                next_tools.push(RegisteredTool {
                     tool: Arc::clone(tool),
                     source: source.clone(),
                     defer_loading: tool.defer_loading(),
                     namespace: tool.namespace().map(Arc::from).clone(),
                 });
             }
-            next
+            Arc::new(ToolsSnapshot::from_tools(next_tools))
         });
         if let Some(e) = conflict {
             return Err(e);
@@ -447,23 +526,25 @@ impl ToolRegistry {
 
     pub fn clear_lua(&self) {
         self.tools.rcu(|current| {
-            current
+            let filtered: Vec<_> = current
                 .iter()
                 .filter(|t| !matches!(t.source, ToolSource::Lua { .. }))
                 .cloned()
-                .collect::<Vec<_>>()
+                .collect();
+            Arc::new(ToolsSnapshot::from_tools(filtered))
         });
     }
 
     pub fn clear_plugin(&self, plugin: &str) {
         self.tools.rcu(|current| {
-            current
+            let filtered: Vec<_> = current
                 .iter()
                 .filter(
                     |t| !matches!(&t.source, ToolSource::Lua { plugin: p } if p.as_ref() == plugin),
                 )
                 .cloned()
-                .collect::<Vec<_>>()
+                .collect();
+            Arc::new(ToolsSnapshot::from_tools(filtered))
         });
     }
 
@@ -622,12 +703,12 @@ impl ToolRegistry {
     /// `Arc::ptr_eq` against a previously returned `Arc` detects the change.
     /// Holding the old `Arc` keeps its allocation alive, so its address can't
     /// be recycled by a future registration (ABA-safe).
-    pub fn snapshot_arc(&self) -> Arc<Vec<RegisteredTool>> {
+    pub fn snapshot_arc(&self) -> Arc<ToolsSnapshot> {
         self.tools.load_full()
     }
 }
 
-pub struct RegistrySnapshot(Arc<Vec<RegisteredTool>>);
+pub struct RegistrySnapshot(Arc<ToolsSnapshot>);
 
 impl<'a> IntoIterator for &'a RegistrySnapshot {
     type Item = &'a RegisteredTool;
