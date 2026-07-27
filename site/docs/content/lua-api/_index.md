@@ -5250,9 +5250,9 @@ function M.snapshot(ctx)
 -- Shared per-tool output limit options, so the tools that support them
 -- cannot drift apart.
 
-local DEFAULT_MAX_OUTPUT_LINES = 2000
-local DEFAULT_MAX_OUTPUT_BYTES = 50 * 1024
-local DEFAULT_MAX_LINE_BYTES = 500
+local DEFAULT_MAX_OUTPUT_LINES = 500
+local DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024
+local DEFAULT_MAX_LINE_BYTES = 400
 
 local M = {}
 
