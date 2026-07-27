@@ -235,13 +235,22 @@ fn flush(
             return true;
         }
     };
+    let mut failed = false;
     for snapshot in batch.into_values() {
         if let Err(error) = write_session(&sessions_dir, logs, durable_revisions, &snapshot.session)
         {
             warn!(error = %error, id = %snapshot.session.id, "session write failed");
+            let id = snapshot.session.id;
+            let replace = pending_guard
+                .get(&id)
+                .is_none_or(|current| current.revision < snapshot.revision);
+            if replace {
+                pending_guard.insert(id, snapshot);
+            }
+            failed = true;
         }
     }
-    false
+    failed
 }
 
 fn persist_session(
@@ -351,6 +360,7 @@ fn open_or_create_log(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use tempfile::TempDir;
 
     const DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
@@ -378,6 +388,27 @@ mod tests {
 
         assert!(AppSession::load(a_id, &dir).is_ok());
         assert_eq!(AppSession::load(b_id, &dir).unwrap().title, "renamed");
+    }
+
+    #[test]
+    fn failed_flush_keeps_snapshot_for_retry() {
+        let (tmp, dir) = state_dir();
+        let pending: Pending = Arc::default();
+        let session = AppSession::new("test-model", "/tmp/retry");
+        let id = session.id;
+        fs::create_dir_all(tmp.path().join(SESSIONS_DIR).join(format!("{id}.jsonl"))).unwrap();
+        lock(&pending).insert(
+            id,
+            PendingSnapshot {
+                revision: session.meta.revision,
+                session: Box::new(session),
+            },
+        );
+        let mut logs = HashMap::new();
+        let mut durable_revisions = HashMap::new();
+
+        assert!(flush(&pending, &mut logs, &mut durable_revisions, &dir));
+        assert!(lock(&pending).contains_key(&id));
     }
 
     #[test]
