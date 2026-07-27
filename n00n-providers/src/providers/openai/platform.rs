@@ -134,7 +134,7 @@ impl CodexAttempt {
         store: bool,
         error: super::websocket::WebSocketAttemptError,
     ) -> Self {
-        let emitted_event = error.emitted_event;
+        let emitted_event = error.delivery.emitted_event;
         let definitive_rejection = error.definitive_rejection();
         let delivery = Some(error.delivery.clone());
         let provider_error = error.into_agent_error();
@@ -261,7 +261,7 @@ fn response_state_scope_hash(auth: &ResolvedAuth) -> String {
 
 fn should_fallback_to_http(error: &super::websocket::WebSocketAttemptError) -> bool {
     error.transport_failure
-        && !error.emitted_event
+        && !error.delivery.emitted_event
         && !error.error.is_auth_error()
         && !matches!(&error.error, AgentError::CodingPlanAdmission { .. })
         && error.delivery.phase == RequestDeliveryPhase::NotSent
@@ -3272,6 +3272,7 @@ mod tests {
         let attempt = |phase, response_id: Option<&str>, emitted_event, transport_failure| {
             let mut delivery = RequestDeliveryMetadata::new(phase);
             delivery.response_id = response_id.map(ToOwned::to_owned);
+            delivery.emitted_event = emitted_event;
             CodexAttempt::from_websocket_error(
                 None,
                 false,
@@ -3280,7 +3281,6 @@ mod tests {
                         status: 401,
                         message: "expired token".into(),
                     },
-                    emitted_event,
                     transport_failure,
                     delivery,
                 },
@@ -4167,17 +4167,19 @@ mod tests {
     fn http_fallback_requires_transport_failure_before_output() {
         let transport = super::super::websocket::WebSocketAttemptError {
             error: std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "closed").into(),
-            emitted_event: false,
             transport_failure: true,
             delivery: crate::RequestDeliveryMetadata::new(crate::RequestDeliveryPhase::NotSent),
         };
         assert!(should_fallback_to_http(&transport));
 
         let after_output = super::super::websocket::WebSocketAttemptError {
-            emitted_event: true,
-            delivery: crate::RequestDeliveryMetadata::new(
-                crate::RequestDeliveryPhase::SentAwaitingAcceptance,
-            ),
+            delivery: {
+                let mut d = crate::RequestDeliveryMetadata::new(
+                    crate::RequestDeliveryPhase::SentAwaitingAcceptance,
+                );
+                d.emitted_event = true;
+                d
+            },
             ..transport
         };
         assert!(!should_fallback_to_http(&after_output));
@@ -4187,7 +4189,6 @@ mod tests {
                 status: 401,
                 message: "expired".into(),
             },
-            emitted_event: false,
             transport_failure: true,
             delivery: crate::RequestDeliveryMetadata::new(crate::RequestDeliveryPhase::NotSent),
         };
@@ -4195,7 +4196,6 @@ mod tests {
 
         let admission = super::super::websocket::WebSocketAttemptError {
             error: AgentError::CodingPlanAdmission { retry_after: None },
-            emitted_event: false,
             transport_failure: true,
             delivery: crate::RequestDeliveryMetadata::new(crate::RequestDeliveryPhase::NotSent),
         };
@@ -4206,7 +4206,6 @@ mod tests {
                 status: 500,
                 message: "server".into(),
             },
-            emitted_event: false,
             transport_failure: false,
             delivery: crate::RequestDeliveryMetadata::new(
                 crate::RequestDeliveryPhase::SentAwaitingAcceptance,
@@ -4216,7 +4215,6 @@ mod tests {
 
         let after_send = super::super::websocket::WebSocketAttemptError {
             error: std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "closed").into(),
-            emitted_event: false,
             transport_failure: true,
             delivery: crate::RequestDeliveryMetadata::new(
                 crate::RequestDeliveryPhase::SentAwaitingAcceptance,
