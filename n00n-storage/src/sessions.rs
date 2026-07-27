@@ -146,7 +146,7 @@ pub struct StoredQueuedMessage {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_id: Option<N00nId>,
+    pub parent_id: Option<n00nId>,
     #[serde(default)]
     pub mode: Option<StoredMode>,
     #[serde(default)]
@@ -248,7 +248,7 @@ pub struct SessionSummary {
     #[serde(default)]
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_id: Option<N00nId>,
+    pub parent_id: Option<n00nId>,
     pub updated_at: u64,
     #[serde(default)]
     pub cwd: String,
@@ -610,7 +610,7 @@ enum LogRecord<M, U, T> {
         title: Option<String>,
         created_at: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        parent_id: Option<N00nId>,
+        parent_id: Option<n00nId>,
     },
     #[serde(rename = "msg")]
     Msg { d: M },
@@ -1543,7 +1543,7 @@ struct ZstHeader {
     #[serde(default)]
     created_at: u64,
     #[serde(default)]
-    parent_id: Option<N00nId>,
+    parent_id: Option<n00nId>,
 }
 
 #[derive(Deserialize)]
@@ -1566,7 +1566,7 @@ struct ScannedHeader {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     first_message: Option<String>,
     #[serde(default)]
-    parent_id: Option<N00nId>,
+    parent_id: Option<n00nId>,
 }
 
 /// Cached scan result for one session file, keyed by file name and validated
@@ -1666,7 +1666,7 @@ where
 
     let mut order: Vec<usize> = (0..with_created.len()).collect();
     order.sort_unstable_by_key(|i| (with_created[*i].0, *with_created[*i].1.id.as_bytes()));
-    let mut last_main: Option<N00nId> = None;
+    let mut last_main: Option<n00nId> = None;
     for i in order {
         let summary = &mut with_created[i].1;
         if summary.kind == "main" {
@@ -3321,7 +3321,7 @@ mod tests {
             "00000000-0000-7000-8000-000000000003",
             "00000000-0000-7000-8000-000000000004",
         ]
-        .map(|id| id.parse::<N00nId>().unwrap());
+        .map(|id| id.parse::<n00nId>().unwrap());
         let titles = ["main one", "task: child one", "main two", "team: child two"];
 
         for (id, title) in ids.into_iter().zip(titles) {

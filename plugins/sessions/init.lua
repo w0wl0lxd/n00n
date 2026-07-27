@@ -30,11 +30,6 @@ local AGE_UNITS = {
   { 3600, "h" },
   { 60, "m" },
 }
-local SUBTASK_PREFIXES = {
-  { "team:", "team" },
-  { "workflow:", "workflow" },
-  { "task:", "task" },
-}
 local MAX_GROUP_CHILDREN = 20
 local GROUP_PREFIX = "group:"
 local GROUP_KIND = "group"
@@ -283,6 +278,10 @@ local function filter_changed()
   apply_filter()
 end
 
+-- Forward-declare before callbacks that invoke it; a later `local render`
+-- would make those callbacks resolve a nil global instead.
+local render
+
 local function set_sel(i)
   board.sel_id = board.items[i] and board.items[i].id or nil
   board.confirm = nil
@@ -352,8 +351,6 @@ local function update_footer()
   end
   board.win:set_config({ footer = footer })
 end
-
-local render
 
 render = function()
   local lines = {}
@@ -614,8 +611,11 @@ local function commit_rename()
     end
     local si = find_stored(id)
     if si then
-      board.stored[si].title = title
+      board.stored[si].title = stored_title
       board.stored[si].display_title = title
+      if current then
+        board.stored[si].kind = current.kind
+      end
     end
   end
   refresh()

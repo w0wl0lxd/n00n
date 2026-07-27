@@ -2633,6 +2633,38 @@ fn sessions_plugin_registers_commands() {
 }
 
 #[test]
+fn sessions_plugin_declares_render_before_callbacks() {
+    let source = include_str!("../../plugins/sessions/init.lua");
+    let render_decl = source
+        .find("\nlocal render\n")
+        .expect("sessions plugin must forward-declare local render");
+    let set_sel = source
+        .find("local function set_sel")
+        .expect("sessions plugin must define set_sel");
+    assert!(
+        render_decl < set_sel,
+        "local render must precede set_sel so navigation callbacks capture it as an upvalue, not a nil global"
+    );
+}
+
+#[test]
+fn sessions_plugin_rename_persists_kind_prefix_in_stored_title() {
+    let source = include_str!("../../plugins/sessions/init.lua");
+    let commit = source
+        .find("local function commit_rename()")
+        .expect("commit_rename");
+    let body = &source[commit..];
+    let stored_assign = body
+        .find("board.stored[si].title")
+        .expect("commit_rename updates board.stored title");
+    let snippet = &body[stored_assign..stored_assign + 80];
+    assert!(
+        snippet.contains("stored_title"),
+        "in-memory stored title must keep the kind prefix via stored_title, got: {snippet}"
+    );
+}
+
+#[test]
 fn sessions_picker_groups_more_than_twenty_children() {
     let registry = fresh_registry();
     let host = PluginHost::new(Arc::clone(&registry)).unwrap();
