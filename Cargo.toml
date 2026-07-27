@@ -33,10 +33,12 @@ n00n-config = { workspace = true }
 n00n-providers = { workspace = true }
 n00n-storage = { workspace = true }
 n00n-lua = { workspace = true }
+n00n-daemon = { workspace = true }
 clap = { workspace = true }
 color-eyre = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sonic-rs = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 smol = { workspace = true }
@@ -48,6 +50,7 @@ libc = { workspace = true }
 uuid = { workspace = true }
 flume = { workspace = true }
 open = { workspace = true }
+async-lock = { workspace = true }
 
 [dev-dependencies]
 test-case = { workspace = true }
@@ -61,6 +64,7 @@ members = [
   "n00n-agent",
   "n00n-arbor",
   "n00n-config",
+  "n00n-daemon",
   "n00n-docgen",
   "n00n-highlight",
   "n00n-interpreter",
@@ -97,9 +101,11 @@ n00n-lua-macro = { path = "n00n-lua-macro" }
 n00n-highlight = { path = "n00n-highlight" }
 n00n-arbor = { path = "n00n-arbor" }
 n00n-markdown = { path = "n00n-markdown" }
+n00n-daemon = { path = "n00n-daemon" }
 n00n-token-profile = { path = "n00n-token-profile" }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
+sonic-rs = "0.5.8"
 toon-format = "0.5"
 tiktoken-rs = "0.9"
 bs58 = "0.5"
@@ -188,7 +194,10 @@ isahc = { version = "1.7", default-features = false, features = [
   "static-ssl",
 ] }
 libc = "0.2"
-rustix = { version = "0.38", default-features = false, features = ["process"] }
+rustix = { version = "0.38", default-features = false, features = [
+  "process",
+  "net",
+] }
 nucleo = "0.5"
 nucleo-matcher = "0.3"
 open = "5"

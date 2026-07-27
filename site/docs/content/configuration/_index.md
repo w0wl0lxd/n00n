@@ -240,9 +240,9 @@ n00n.setup({
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
-| `max_agents_per_run` | integer | `24` | 1 | Agent-call budget per workflow (hard max 32). |
-| `max_concurrent_agents` | integer | `4` | 1 | Concurrency per parallel()/pipeline() (hard max 8). |
-| `max_concurrent_workflows` | integer | `2` | 1 | Concurrent workflows (hard max 4). |
+| `max_agents_per_run` | integer | `24` | 1 | Agent-call budget per workflow (default 24, no hard maximum). |
+| `max_concurrent_agents` | integer | `4` | 1 | Concurrency per parallel()/pipeline() (default 4, hard max 8). |
+| `max_concurrent_workflows` | integer | `2` | 1 | Concurrent workflows (default 2, hard max 4). |
 | `timeout_secs` | integer | `600` | 1 | Hard deadline for one workflow run (cancels pure-Lua runaway loops via the VM watchdog). |
 
 ## Validation

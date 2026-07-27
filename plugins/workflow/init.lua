@@ -19,39 +19,8 @@
 
 local ToolView = require("n00n.tool_view")
 local telemetry = require("n00n.telemetry")
-
-local STRUCTURED_OUTPUT_NAME = "structured_output"
-local STRUCTURED_OUTPUT_DESCRIPTION = "Report your final result. Call it exactly once when your task is complete."
-local STRUCTURED_OUTPUT_ACK = "Output recorded."
-local STRUCTURED_OUTPUT_SUFFIX = "\n\nWhen finished, call the structured_output tool with your final result."
-local MAX_STRUCTURED_RETRIES = 1
-local MAX_SCHEMA_ERRORS = 3
-local MAX_SCHEMA_BYTES = 32 * 1024
-local MAX_SCHEMA_DEPTH = 16
-local SCHEMA_ROOT_ERROR = "output_schema must have type object"
-local SCHEMA_COMPILE_ERROR = "invalid output_schema"
-local SCHEMA_SIZE_ERROR = "output_schema exceeds 32768-byte limit"
-local SCHEMA_DEPTH_ERROR = "output_schema exceeds maximum depth of 16"
-local STRUCTURED_MISSING_ERROR = "subagent finished without calling structured_output"
-local STRUCTURED_INVALID_ERROR = "subagent result does not match output_schema"
-local NUDGE_MISSING =
-  "You did not call the structured_output tool. Call it now with your final result matching its input schema."
-local INVALID_INPUT_PREFIX =
-  "Input does not match the required schema. Fix the errors and call structured_output again:\n"
-local function schema_within_depth(value, depth)
-  if type(value) ~= "table" then
-    return true
-  end
-  if depth > MAX_SCHEMA_DEPTH then
-    return false
-  end
-  for _, child in pairs(value) do
-    if not schema_within_depth(child, depth + 1) then
-      return false
-    end
-  end
-  return true
-end
+local structured_output = require("n00n.structured_output")
+local guard = require("n00n.guard")
 
 local SCRIPT_ERROR_PREFIX = "workflow script error: "
 local NO_META_ERROR = "workflow script must call meta({ name = ... }) before doing any work"
@@ -69,7 +38,8 @@ local JOURNAL_DIRNAME = "workflows"
 local JOURNAL_FILENAME = "journal.jsonl"
 local META_FILENAME = "meta.json"
 local DEFAULT_AGENTS_PER_RUN = 24
-local HARD_MAX_AGENTS_PER_RUN = 32
+local DEFAULT_CONCURRENT_AGENTS = 4
+local DEFAULT_CONCURRENT_WORKFLOWS = 2
 local HARD_MAX_CONCURRENT_AGENTS = 8
 local HARD_MAX_CONCURRENT_WORKFLOWS = 4
 local HARD_MAX_AGGREGATE_AGENTS = 12
@@ -81,7 +51,7 @@ local description = [[Run sandboxed Lua workflow for multi-stage agent orchestra
 
 Start with meta({ name, description, phases }). Globals: agent({ prompt, subagent_type?, model_tier?, label?, output_schema? }) returns agent result; parallel(fns, { concurrency? }) runs branches; pipeline(items, stages, { concurrency? }) runs stages per item; phase(name, fn), log(...), inputs.
 
-No n00n, os, io, require, print, or load. Scripts must be deterministic and return a final string. 24 agent calls by default (32 hard max). Use task for a single agent.]]
+No n00n, os, io, require, print, or load. Scripts must be deterministic for resume replay, must return the final string, and are capped by max_agents_per_run (default 24, no hard maximum) with a runaway guard for repeated prompts and consecutive errors. Use task for one agent.]]
 
 local schema = {
   type = "object",
@@ -106,10 +76,18 @@ local opts = n00n.api.register_options({
   max_agents_per_run = {
     default = DEFAULT_AGENTS_PER_RUN,
     min = 1,
-    desc = "Agent-call budget per workflow (hard max 32).",
+    desc = "Agent-call budget per workflow (default 24, no hard maximum).",
   },
-  max_concurrent_agents = { default = 4, min = 1, desc = "Concurrency per parallel()/pipeline() (hard max 8)." },
-  max_concurrent_workflows = { default = 2, min = 1, desc = "Concurrent workflows (hard max 4)." },
+  max_concurrent_agents = {
+    default = DEFAULT_CONCURRENT_AGENTS,
+    min = 1,
+    desc = "Concurrency per parallel()/pipeline() (default 4, hard max 8).",
+  },
+  max_concurrent_workflows = {
+    default = DEFAULT_CONCURRENT_WORKFLOWS,
+    min = 1,
+    desc = "Concurrent workflows (default 2, hard max 4).",
+  },
   timeout_secs = {
     default = DEFAULT_TIMEOUT_SECS,
     min = 1,
@@ -117,19 +95,11 @@ local opts = n00n.api.register_options({
   },
 })
 
-local max_agents_per_run = math.min(opts.max_agents_per_run, HARD_MAX_AGENTS_PER_RUN)
+local max_agents_per_run = opts.max_agents_per_run or DEFAULT_AGENTS_PER_RUN
 local max_concurrent_agents = math.min(opts.max_concurrent_agents, HARD_MAX_CONCURRENT_AGENTS)
 local max_concurrent_workflows = math.min(opts.max_concurrent_workflows, HARD_MAX_CONCURRENT_WORKFLOWS)
 local workflow_semaphore = n00n.async.semaphore(max_concurrent_workflows)
 local aggregate_agent_semaphore = n00n.async.semaphore(HARD_MAX_AGGREGATE_AGENTS)
-
-local function bounded_errors(errors)
-  local out = {}
-  for i = 1, math.min(#errors, MAX_SCHEMA_ERRORS) do
-    out[i] = errors[i]
-  end
-  return table.concat(out, "\n")
-end
 
 local function freeze_fns(src, names)
   local bare = {}
@@ -243,6 +213,7 @@ local function journal_key(aopts)
     model_tier = aopts.model_tier,
     label = aopts.label,
     output_schema = aopts.output_schema,
+    thinking = aopts.thinking,
   }))
 end
 
@@ -373,7 +344,7 @@ local function pipeline(items, stages, popts)
   return parallel(fns, popts)
 end
 
-local function make_agent(ctx, progress, journal, logger)
+local function make_agent(ctx, progress, journal, logger, run_guard)
   return function(aopts)
     aopts = aopts or {}
     if type(aopts.prompt) ~= "string" then
@@ -424,33 +395,20 @@ local function make_agent(ctx, progress, journal, logger)
           progress.agent_cached(label)
           return hit
         end
-        journal.agent_count = journal.agent_count + 1
-        if journal.agent_count > max_agents_per_run then
-          gate:release()
-          error("workflow exceeded agent-call budget (" .. max_agents_per_run .. ", hard max 32)", 0)
-        end
         gate:release()
+      end
+
+      local guard_ok, guard_err = run_guard:check(aopts.prompt)
+      if not guard_ok then
+        error(guard_err, 0)
       end
 
       local validator
       if aopts.output_schema then
-        if type(aopts.output_schema) ~= "table" or aopts.output_schema.type ~= "object" then
-          error(SCHEMA_ROOT_ERROR, 0)
-        end
-        local encoded_schema, encode_err = n00n.json.encode(aopts.output_schema)
-        if encode_err then
-          error(SCHEMA_COMPILE_ERROR .. ": " .. encode_err, 0)
-        end
-        if #encoded_schema > MAX_SCHEMA_BYTES then
-          error(SCHEMA_SIZE_ERROR, 0)
-        end
-        if not schema_within_depth(aopts.output_schema, 1) then
-          error(SCHEMA_DEPTH_ERROR, 0)
-        end
         local compile_err
-        validator, compile_err = n00n.json.schema_validator(aopts.output_schema)
+        validator, compile_err = structured_output.compile_validator(aopts.output_schema)
         if compile_err then
-          error(SCHEMA_COMPILE_ERROR .. ": " .. compile_err, 0)
+          error(compile_err, 0)
         end
       end
 
@@ -479,17 +437,17 @@ local function make_agent(ctx, progress, journal, logger)
       local local_tools
       if validator then
         local_tools = {
-          [STRUCTURED_OUTPUT_NAME] = {
-            description = STRUCTURED_OUTPUT_DESCRIPTION,
+          [structured_output.STRUCTURED_OUTPUT_NAME] = {
+            description = structured_output.STRUCTURED_OUTPUT_DESCRIPTION,
             input_schema = aopts.output_schema,
             handler = function(value)
               local errs = validator:validate(value)
               if errs then
-                last_errors = bounded_errors(errs)
-                return nil, INVALID_INPUT_PREFIX .. last_errors
+                last_errors = structured_output.bounded_errors(errs)
+                return nil, structured_output.INVALID_INPUT_PREFIX .. last_errors
               end
               captured = value
-              return STRUCTURED_OUTPUT_ACK
+              return structured_output.STRUCTURED_OUTPUT_ACK
             end,
           },
         }
@@ -507,6 +465,7 @@ local function make_agent(ctx, progress, journal, logger)
         local_tools = local_tools,
         audience = audience,
         name = label,
+        thinking = aopts.thinking,
       })
       if sess_err then
         error(sess_err, 0)
@@ -514,14 +473,21 @@ local function make_agent(ctx, progress, journal, logger)
 
       local message = aopts.prompt
       if validator then
-        message = message .. STRUCTURED_OUTPUT_SUFFIX
+        message = message .. structured_output.STRUCTURED_OUTPUT_SUFFIX
       end
       local prompt_result, prompt_err = sess:prompt(message)
       local retries = 0
-      while not prompt_err and validator and not captured and retries < MAX_STRUCTURED_RETRIES do
+      while not prompt_err and validator and not captured and retries < structured_output.MAX_STRUCTURED_RETRIES do
         retries = retries + 1
-        prompt_result, prompt_err = sess:prompt(NUDGE_MISSING)
+        prompt_result, prompt_err = sess:prompt(structured_output.NUDGE_MISSING)
       end
+
+      local record_ok, record_err = run_guard:record(aopts.prompt, prompt_err)
+      if not record_ok then
+        sess:close()
+        error(record_err, 0)
+      end
+
       sess:close()
       aggregate_permit:release()
       aggregate_permit = nil
@@ -534,7 +500,8 @@ local function make_agent(ctx, progress, journal, logger)
         error("sub-agent error: " .. prompt_err, 0)
       end
       if validator and not captured then
-        local msg = last_errors and (STRUCTURED_INVALID_ERROR .. ":\n" .. last_errors) or STRUCTURED_MISSING_ERROR
+        local msg = last_errors and (structured_output.STRUCTURED_INVALID_ERROR .. ":\n" .. last_errors)
+          or structured_output.STRUCTURED_MISSING_ERROR
         error(msg, 0)
       end
       local out = prompt_result.text
@@ -664,10 +631,10 @@ local function make_progress(ctx)
   }
 end
 
-local function build_env(ctx, progress, inputs, journal, captured, saga, logger)
+local function build_env(ctx, progress, inputs, journal, captured, saga, logger, run_guard)
   local env = {
     inputs = inputs,
-    agent = make_agent(ctx, progress, journal, logger),
+    agent = make_agent(ctx, progress, journal, logger, run_guard),
     parallel = parallel,
     pipeline = pipeline,
     tostring = tostring,
@@ -790,7 +757,6 @@ local function handler(input, ctx)
     lock = n00n.async.semaphore(1),
     in_flight = {},
     meta_ready = false,
-    agent_count = 0,
   }
 
   local progress = make_progress(ctx)
@@ -852,11 +818,13 @@ local function handler(input, ctx)
   -- Bound pure-Lua runaway loops (while true) via the VM watchdog deadline.
   ctx:set_deadline(opts.timeout_secs)
 
+  local run_guard = guard.new({ max_calls = max_agents_per_run, timeout_secs = opts.timeout_secs })
+
   n00n.async.run(function()
     local permit
     local ok, result = pcall(function()
       permit = workflow_semaphore:acquire()
-      local env = build_env(ctx, progress, input.inputs or {}, journal, captured, saga, logger)
+      local env = build_env(ctx, progress, input.inputs or {}, journal, captured, saga, logger, run_guard)
       local run_fn, load_err = n00n.workflow.compile(input.script, env)
       if not run_fn then
         error(tostring(load_err), 0)
