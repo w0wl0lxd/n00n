@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 use event_listener::Event;
 
 use include_dir::Dir;
-use mlua::{Compiler, Function, Lua, RegistryKey, Value as LuaValue, VmState};
+use mlua::chunk::Compiler;
+use mlua::{Function, Lua, RegistryKey, Value as LuaValue, VmState};
 use n00n_agent::cancel::CancelToken;
 use n00n_agent::prompt::{PromptId, ResolvedSlots, Slot, SlotEntry};
 use n00n_agent::tools::tool_search::{LoadNamespace, ToolSearch};
