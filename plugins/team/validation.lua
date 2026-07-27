@@ -41,8 +41,16 @@ function M.validate_wave(ctx, wave_result, goal, input)
     .. "Evaluate whether the wave output satisfies the acceptance criteria. "
     .. "Respond with exactly 'PASS' if the output is acceptable, or 'FAIL' followed by a brief explanation if not."
 
+  local model, model_err = n00n.agent.resolve_model(
+    ctx,
+    { spec = input.model, tier = not input.model and (input.model_tier or "strong") or nil }
+  )
+  if model_err then
+    return nil, "validation model resolution error: " .. model_err
+  end
+
   local sess, sess_err = n00n.agent.session(ctx, {
-    model_spec = input.model or "strong",
+    model_spec = model.spec,
     system = "You are a code review validator. Respond with PASS or FAIL.",
     tools = {},
     audience = "general_sub",
