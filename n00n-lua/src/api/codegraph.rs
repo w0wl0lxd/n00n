@@ -75,6 +75,18 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
             example: "",
         },
         FnDoc {
+            name: "has_database",
+            args: "{project}",
+            desc: "Returns true when `.codegraph/codegraph.db` exists in the project root.",
+            params: &[ParamDoc {
+                name: "{project}",
+                ty: "string",
+                desc: "Path to the project root.",
+            }],
+            returns: "(boolean) true when the native SQLite index is present.",
+            example: "",
+        },
+        FnDoc {
             name: "explore",
             args: "{query}, {project}, {timeout_secs?}",
             desc: "Run an explore query using the native SQLite index when available, otherwise `codegraph explore`.",
