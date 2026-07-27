@@ -22,6 +22,7 @@ use n00n_lua::PluginHost;
 use n00n_providers::{Model, OpenAiOptions, ThinkingConfig, Timeouts};
 use n00n_storage::StateDir;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use smol::net::unix::{UnixListener, UnixStream};
 
 use crate::cli::AgentMode as CliAgentMode;
@@ -51,6 +52,144 @@ fn validate_agent_id(id: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn build_message(
+    mode: CliAgentMode,
+    prompt: &str,
+    goal: Option<&str>,
+    team_mode: Option<&str>,
+    max_agents: Option<usize>,
+    waves: bool,
+    workflow_inputs: Option<&str>,
+    task_description: Option<&str>,
+) -> Result<String> {
+    match mode {
+        CliAgentMode::Team => build_team_message(prompt, goal, team_mode, max_agents, waves),
+        CliAgentMode::Workflow => build_workflow_message(prompt, goal, workflow_inputs),
+        CliAgentMode::Task => build_task_message(prompt, goal, task_description),
+        _ => Ok(build_generic_message(prompt, goal)),
+    }
+}
+
+fn build_team_message(
+    prompt: &str,
+    goal: Option<&str>,
+    team_mode: Option<&str>,
+    max_agents: Option<usize>,
+    waves: bool,
+) -> Result<String> {
+    let mode = team_mode.map_or_else(|| "autonomous", |m| m);
+    if !matches!(mode, "supervised" | "autonomous" | "swarm") {
+        return Err(color_eyre::eyre::eyre!(
+            "team mode must be 'supervised', 'autonomous', or 'swarm'"
+        ));
+    }
+
+    let mut goal_text = goal.map_or_else(|| prompt.to_string(), ToString::to_string);
+    if let Some(g) = goal
+        && !prompt.is_empty()
+        && prompt != g
+    {
+        goal_text.push_str("\n\nAdditional context:\n");
+        goal_text.push_str(prompt);
+    }
+
+    let mut input = serde_json::Map::new();
+    input.insert("goal".to_string(), json!(goal_text));
+    input.insert("mode".to_string(), json!(mode));
+    input.insert("auto_tier".to_string(), json!(true));
+    input.insert("compact".to_string(), json!(true));
+    input.insert("use_retrieval".to_string(), json!(true));
+    if let Some(n) = max_agents {
+        input.insert("max_agents".to_string(), json!(n));
+    }
+    if waves {
+        input.insert("waves".to_string(), json!(true));
+    }
+
+    let payload = serde_json::Value::Object(input);
+    Ok(format!(
+        "Use the team tool now. Do not only describe this request.\n\n{}",
+        serde_json::to_string(&payload)?
+    ))
+}
+
+fn build_workflow_message(
+    prompt: &str,
+    goal: Option<&str>,
+    workflow_inputs: Option<&str>,
+) -> Result<String> {
+    let mut inputs: serde_json::Map<String, serde_json::Value> = if let Some(s) = workflow_inputs {
+        serde_json::from_str(s).context("invalid --workflow-inputs JSON: expected an object")?
+    } else {
+        serde_json::Map::new()
+    };
+    if let Some(g) = goal {
+        inputs.insert("goal".to_string(), json!(g));
+    }
+
+    let mut input = serde_json::Map::new();
+    input.insert("script".to_string(), json!(prompt));
+    if !inputs.is_empty() {
+        input.insert("inputs".to_string(), serde_json::Value::Object(inputs));
+    }
+
+    let payload = serde_json::Value::Object(input);
+    Ok(format!(
+        "Use the workflow tool now. Do not only describe this request.\n\n{}",
+        serde_json::to_string(&payload)?
+    ))
+}
+
+fn build_task_message(
+    prompt: &str,
+    goal: Option<&str>,
+    task_description: Option<&str>,
+) -> Result<String> {
+    let description = task_description.or(goal).map_or_else(
+        || {
+            prompt
+                .split_whitespace()
+                .take(5)
+                .collect::<Vec<_>>()
+                .join(" ")
+        },
+        ToString::to_string,
+    );
+
+    let mut input = serde_json::Map::new();
+    input.insert("description".to_string(), json!(description));
+    input.insert("prompt".to_string(), json!(prompt));
+    input.insert("auto_tier".to_string(), json!(true));
+
+    let payload = serde_json::Value::Object(input);
+    Ok(format!(
+        "Use the task tool now. Do not only describe this request.\n\n{}",
+        serde_json::to_string(&payload)?
+    ))
+}
+
+fn build_generic_message(prompt: &str, goal: Option<&str>) -> String {
+    if let Some(g) = goal {
+        format!("Goal: {g}\n\n{prompt}")
+    } else {
+        prompt.to_string()
+    }
+}
+
+pub struct AgentRunOptions<'a> {
+    pub prompt: &'a str,
+    pub model: Option<&'a str>,
+    pub mode: CliAgentMode,
+    pub goal: Option<&'a str>,
+    pub team_mode: Option<&'a str>,
+    pub max_agents: Option<usize>,
+    pub waves: bool,
+    pub workflow_inputs: Option<&'a str>,
+    pub task_description: Option<&'a str>,
+    pub yolo: bool,
+    pub no_jit: bool,
 }
 
 struct PreparedEnv {
@@ -143,15 +282,18 @@ async fn write_line<W: AsyncWriteExt + Unpin>(writer: &mut W, line: &str) -> Res
     Ok(())
 }
 
-pub fn run(
-    prompt: &str,
-    model_arg: Option<&str>,
-    mode: CliAgentMode,
-    json: bool,
-    yolo: bool,
-    no_jit: bool,
-) -> Result<()> {
-    let env = prepare_agent_env(model_arg, yolo, no_jit)?;
+pub fn run(opts: &AgentRunOptions<'_>, json: bool) -> Result<()> {
+    let env = prepare_agent_env(opts.model, opts.yolo, opts.no_jit)?;
+    let message = build_message(
+        opts.mode,
+        opts.prompt,
+        opts.goal,
+        opts.team_mode,
+        opts.max_agents,
+        opts.waves,
+        opts.workflow_inputs,
+        opts.task_description,
+    )?;
 
     let headless_params = headless::HeadlessParams {
         model: env.model,
@@ -159,14 +301,14 @@ pub fn run(
         permissions_config: env.permissions,
         timeouts: env.timeouts,
         openai_options: env.openai_options,
-        prompt: prompt.to_string(),
+        prompt: message,
         images: Vec::new(),
         prompt_slots: env.prompt_slots,
         excluded_tools: Vec::new(),
         mcp_handle: env.mcp_handle,
         initial_wd: env.cwd,
         fast: false,
-        workflow: workflow_from_mode(mode),
+        workflow: workflow_from_mode(opts.mode),
     };
 
     let handle = headless::spawn(headless_params);
@@ -314,15 +456,18 @@ fn now_epoch() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-pub fn server(
-    prompt: &str,
-    model_arg: Option<&str>,
-    mode: CliAgentMode,
-    agent_id: Option<String>,
-    yolo: bool,
-    no_jit: bool,
-) -> Result<()> {
-    let env = prepare_agent_env(model_arg, yolo, no_jit)?;
+pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()> {
+    let env = prepare_agent_env(opts.model, opts.yolo, opts.no_jit)?;
+    let message = build_message(
+        opts.mode,
+        opts.prompt,
+        opts.goal,
+        opts.team_mode,
+        opts.max_agents,
+        opts.waves,
+        opts.workflow_inputs,
+        opts.task_description,
+    )?;
     let storage = env.storage.clone();
     let model_spec = env.model_spec;
 
@@ -338,10 +483,10 @@ pub fn server(
         initial_wd: env.cwd,
         session_id: None,
         initial_history: Vec::new(),
-        yolo,
+        yolo: opts.yolo,
         system_prompt_override: None,
         append_system_prompt: None,
-        workflow: workflow_from_mode(mode),
+        workflow: workflow_from_mode(opts.mode),
     };
 
     let handle = headless::spawn_interactive(interactive_params);
@@ -362,7 +507,7 @@ pub fn server(
         socket_path: socket_path_value.to_string_lossy().into_owned(),
         pid: std::process::id(),
         status: "running".to_string(),
-        prompt: prompt.to_string(),
+        prompt: opts.prompt.to_string(),
         model: model_spec,
         created_at: now_epoch(),
         updated_at: now_epoch(),
@@ -377,19 +522,19 @@ pub fn server(
     let message_lock = Arc::new(Mutex::new(()));
     let paused = Arc::new(AtomicBool::new(false));
 
-    if !prompt.is_empty() {
+    if !opts.prompt.is_empty() {
         let _lock = smol::block_on(message_lock.lock());
         state.status = "working".to_string();
         write_agent_state(&storage, &state)?;
 
         let _ = handle.input_tx.send(AgentInput {
-            message: prompt.to_string(),
+            message,
             mode: RuntimeAgentMode::Build,
             images: Vec::new(),
             preamble: Vec::new(),
             thinking: ThinkingConfig::default(),
             fast: false,
-            workflow: workflow_from_mode(mode),
+            workflow: workflow_from_mode(opts.mode),
             prompt: None,
         });
 
@@ -413,7 +558,7 @@ pub fn server(
             let paused = Arc::clone(&paused);
             let storage_clone = storage.clone();
             let agent_id_clone = agent_id.clone();
-            let mode_clone = mode;
+            let mode_clone = opts.mode;
             let task = Arc::clone(&task);
 
             smol::spawn(async move {
@@ -995,5 +1140,64 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let state_dir = StateDir::from_path(tmp.path().to_path_buf());
         assert!(agent_dir(&state_dir, "../escape").is_err());
+    }
+
+    #[test]
+    fn build_team_message_uses_goal_and_appends_prompt_context() {
+        let msg = build_team_message(
+            "use rust",
+            Some("ship feature"),
+            Some("autonomous"),
+            Some(8),
+            true,
+        )
+        .unwrap();
+        assert!(msg.starts_with("Use the team tool now."));
+        assert!(msg.contains("ship feature"));
+        assert!(msg.contains("use rust"));
+        assert!(msg.contains("\"mode\":\"autonomous\""));
+        assert!(msg.contains("\"max_agents\":8"));
+        assert!(msg.contains("\"waves\":true"));
+    }
+
+    #[test]
+    fn build_team_message_defaults_prompt_to_goal() {
+        let msg = build_team_message("ship feature", None, None, None, false).unwrap();
+        assert!(msg.contains("\"goal\":\"ship feature\""));
+        assert!(msg.contains("\"mode\":\"autonomous\""));
+    }
+
+    #[test]
+    fn build_team_message_rejects_invalid_mode() {
+        assert!(build_team_message("g", None, Some("fast"), None, false).is_err());
+    }
+
+    #[test]
+    fn build_workflow_message_includes_script_inputs_and_goal() {
+        let msg = build_workflow_message(
+            "return agent({prompt = inputs.goal})",
+            Some("find bugs"),
+            Some(r#"{"foo":"bar"}"#),
+        )
+        .unwrap();
+        assert!(msg.starts_with("Use the workflow tool now."));
+        assert!(msg.contains("find bugs"));
+        assert!(msg.contains("bar"));
+        assert!(msg.contains("return agent({prompt = inputs.goal})"));
+    }
+
+    #[test]
+    fn build_task_message_uses_description_and_prompt() {
+        let msg =
+            build_task_message("refactor this module", Some("cleanup"), Some("refactor")).unwrap();
+        assert!(msg.starts_with("Use the task tool now."));
+        assert!(msg.contains("\"description\":\"refactor\""));
+        assert!(msg.contains("\"prompt\":\"refactor this module\""));
+    }
+
+    #[test]
+    fn build_generic_message_prepends_goal() {
+        let msg = build_generic_message("do it", Some("win"));
+        assert_eq!(msg, "Goal: win\n\ndo it");
     }
 }

@@ -66,28 +66,33 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 prompt,
                 model,
                 mode,
+                goal,
+                team_mode,
+                max_agents,
+                waves,
+                workflow_inputs,
+                task_description,
                 json,
                 background,
                 id,
             } => {
+                let run_opts = agent::AgentRunOptions {
+                    prompt: &prompt,
+                    model: model.as_deref(),
+                    mode,
+                    goal: goal.as_deref(),
+                    team_mode: team_mode.as_deref(),
+                    max_agents,
+                    waves,
+                    workflow_inputs: workflow_inputs.as_deref(),
+                    task_description: task_description.as_deref(),
+                    yolo: cli.permission_flags.yolo,
+                    no_jit: cli.plugin_flags.no_jit,
+                };
                 if background {
-                    agent::server(
-                        &prompt,
-                        model.as_deref(),
-                        mode,
-                        id,
-                        cli.permission_flags.yolo,
-                        cli.plugin_flags.no_jit,
-                    )?;
+                    agent::server(&run_opts, id)?;
                 } else {
-                    agent::run(
-                        &prompt,
-                        model.as_deref(),
-                        mode,
-                        json,
-                        cli.permission_flags.yolo,
-                        cli.plugin_flags.no_jit,
-                    )?;
+                    agent::run(&run_opts, json)?;
                 }
             }
             AgentCommand::List => {

@@ -294,7 +294,7 @@ pub enum Command {
 pub enum AgentCommand {
     /// Run a one-shot agent prompt
     Run {
-        /// Prompt to send to the agent
+        /// Prompt to send to the agent; for workflow mode this is the Lua script
         #[arg(short, long)]
         prompt: String,
         /// Model spec (provider/model-id)
@@ -303,6 +303,24 @@ pub enum AgentCommand {
         /// Agent mode
         #[arg(long, value_enum, default_value_t = AgentMode::General)]
         mode: AgentMode,
+        /// High-level goal for team/workflow/task mode; prepended in general/research mode
+        #[arg(long)]
+        goal: Option<String>,
+        /// Team execution mode (supervised, autonomous, swarm); only used with --mode team
+        #[arg(long)]
+        team_mode: Option<String>,
+        /// Maximum agent calls for team mode
+        #[arg(long)]
+        max_agents: Option<usize>,
+        /// Run team in wave-based checkpoints
+        #[arg(long)]
+        waves: bool,
+        /// JSON object passed as workflow inputs; only used with --mode workflow
+        #[arg(long)]
+        workflow_inputs: Option<String>,
+        /// Task description; defaults to --goal in task mode
+        #[arg(long)]
+        task_description: Option<String>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -431,6 +449,95 @@ mod tests {
                     ..
                 }
             }) if id == "my-agent"
+        ));
+    }
+
+    #[test]
+    fn agent_run_parse_goal_and_team_mode() {
+        let cli = Cli::parse_from([
+            "n00n",
+            "agent",
+            "run",
+            "--prompt",
+            "test",
+            "--goal",
+            "ship feature",
+            "--mode",
+            "team",
+            "--team-mode",
+            "autonomous",
+            "--max-agents",
+            "8",
+            "--waves",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Agent {
+                action: AgentCommand::Run {
+                    goal: Some(g),
+                    team_mode: Some(t),
+                    max_agents: Some(8),
+                    waves: true,
+                    mode: AgentMode::Team,
+                    ..
+                }
+            }) if g == "ship feature" && t == "autonomous"
+        ));
+    }
+
+    #[test]
+    fn agent_run_parse_workflow_inputs() {
+        let cli = Cli::parse_from([
+            "n00n",
+            "agent",
+            "run",
+            "--prompt",
+            "return agent({prompt = inputs.goal})",
+            "--mode",
+            "workflow",
+            "--goal",
+            "find bugs",
+            "--workflow-inputs",
+            r#"{"foo":"bar"}"#,
+        ]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Agent {
+                action: AgentCommand::Run {
+                    goal: Some(g),
+                    workflow_inputs: Some(w),
+                    mode: AgentMode::Workflow,
+                    ..
+                }
+            }) if g == "find bugs" && w == r#"{"foo":"bar"}"#
+        ));
+    }
+
+    #[test]
+    fn agent_run_parse_task_description() {
+        let cli = Cli::parse_from([
+            "n00n",
+            "agent",
+            "run",
+            "--prompt",
+            "refactor this module",
+            "--mode",
+            "task",
+            "--goal",
+            "cleanup",
+            "--task-description",
+            "refactor",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Agent {
+                action: AgentCommand::Run {
+                    goal: Some(g),
+                    task_description: Some(d),
+                    mode: AgentMode::Task,
+                    ..
+                }
+            }) if g == "cleanup" && d == "refactor"
         ));
     }
 
