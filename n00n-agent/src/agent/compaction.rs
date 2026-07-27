@@ -239,7 +239,7 @@ fn strip_thinking(messages: &mut [Message]) {
 }
 
 const TOOL_RESULT_PLACEHOLDER: &str = "[tool result]";
-const KEEP_LAST_TOOL_RESULTS: usize = 2;
+const KEEP_LAST_TOOL_RESULTS: usize = 3;
 
 fn strip_old_tool_results(messages: &mut [Message]) {
     let total: usize = messages

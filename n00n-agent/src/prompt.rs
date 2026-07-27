@@ -234,7 +234,7 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
-    const NATIVE_EFFICIENT_LINE: &str = "Most efficient tools: arbor (optional, requires Arbor CLI), batch, code_execution, codegraph (optional, requires .codegraph/ index), index, task";
+    const NATIVE_EFFICIENT_LINE: &str = "Most efficient tools: arbor (optional), batch, code_execution, codegraph (optional), index, task";
 
     fn slots(prompt: PromptId, entries: &[(Slot, &str)]) -> ResolvedSlots {
         let mut slots = ResolvedSlots::default();

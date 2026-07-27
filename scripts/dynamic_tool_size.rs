@@ -1,3 +1,5 @@
+#![allow(clippy::print_literal, clippy::uninlined_format_args)]
+
 use std::sync::Arc;
 
 use n00n_agent::prompt::{
@@ -53,20 +55,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if *audience == ToolAudience::MAIN && !workflow {
             for def in defs.as_array().into_iter().flatten() {
-                let name = def["name"].as_str().unwrap_or("?").to_owned();
+                let name = def["name"].as_str().unwrap_or_else(|| "?").to_owned();
                 let tool_tokens = count_json_for_model(&model.id, def);
                 main_per_tool.push((name, tool_tokens));
             }
         }
     }
 
-    main_per_tool.sort_by(|a, b| b.1.cmp(&a.1));
+    main_per_tool.sort_by_key(|b| std::cmp::Reverse(b.1));
     println!();
     println!("Top tools by token cost (main audience):");
-    println!("{:<22} {}", "Tool", "Tokens (est)");
+    println!("{:<22} Tokens (est)", "Tool");
     println!("{}", "-".repeat(34));
     for (name, tokens) in main_per_tool.iter().take(15) {
-        println!("{:<22} {}", name, tokens);
+        println!("{name:<22} {tokens}");
     }
 
     let ctx = DescriptionContext {
@@ -100,7 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (label, text) in &prompts {
         let bytes = text.len();
         let tokens = count_tokens_for_model(&model.id, text);
-        println!("{:<22} {:<15} {:<15}", label, bytes, tokens);
+        println!("{label:<22} {bytes:<15} {tokens:<15}");
     }
 
     Ok(())
