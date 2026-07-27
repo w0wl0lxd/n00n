@@ -215,6 +215,7 @@ local function journal_key(aopts)
     model_tier = aopts.model_tier,
     label = aopts.label,
     output_schema = aopts.output_schema,
+    thinking = aopts.thinking,
   }))
 end
 
@@ -466,6 +467,7 @@ local function make_agent(ctx, progress, journal, logger)
         local_tools = local_tools,
         audience = audience,
         name = label,
+        thinking = aopts.thinking,
       })
       if sess_err then
         error(sess_err, 0)

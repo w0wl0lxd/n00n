@@ -249,6 +249,7 @@ local function handler(input, ctx)
         local_tools = local_tools,
         audience = audience,
         name = input.description,
+        thinking = input.thinking,
       })
       if sess_err then
         return { llm_output = sess_err, is_error = true }
