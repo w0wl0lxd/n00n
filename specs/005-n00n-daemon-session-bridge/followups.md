@@ -14,28 +14,26 @@ Out of #149 once the above lands: declare draft ready for review on the control-
 
 ## Stacked PR-B — Absorb / land worker runtime (PR #134)
 
-**Base:** merge or rebase onto #149 after #149 lands (or stack `feat/agent-cli-simplify` onto #149).
+**Status:** Absorbed into #149 (same branch). `n00n agent run --background` owns per-agent `control.sock`; list/status/message/pause/resume/stop prefer `daemon.sock` when present, else talk to worker socks / `agent.json` directly.
 
 | Item | Notes |
 |------|-------|
-| Land PR #134 background agent server (`agents/<id>/control.sock`, `agent.json`) | #149 `WorkerBackend` already proxies this layout; empty dir is OK today. |
-| Align CLI: keep thin `n00n agent {list,status,…}` as daemon client; fold #134 `run --background` under same umbrella | Avoid two competing CLIs. Prefer daemon sock when present. |
-| Verb×backend: worker pause/resume/stop/message via existing `ClientCommand` | Already stubbed in proxy; wire real sock protocol from #134. |
-| Identity: path-safe worker ids vs TUI `N00nId` strings | Keep `backend` discriminant; never coerce one into the other. |
+| Land PR #134 background agent server (`agents/<id>/control.sock`, `agent.json`) | Done on #149 |
+| Align CLI: keep thin control verbs as daemon-first client; `run --background` under same `n00n agent` | Done |
+| Verb×backend: worker pause/resume/stop/message via existing `ClientCommand` | Done; `WorkerBackend` proxies the same layout |
+| Identity: path-safe worker ids vs TUI `N00nId` strings | Keep `backend` discriminant |
 
 **Do not** pretend a multiplexed worker plane exists before #134’s per-agent socks land.
 
 ## Stacked PR-C — Steer / control wire (PR #129)
 
-**Base:** #149 + preferably after #129’s agent/UI control-role work, or stack #129 first then adapt.
+**Status:** Absorbed into #149. `SessionRequest::Prompt { steer, control }`, control DisplayRole, team resume via `paused_team`, plugin message/resume send `steer=true, control=true`, TUI bridge forwards `MessageOpts`.
 
 | Item | Notes |
 |------|-------|
-| Extend `SessionRequest::Prompt` with `steer` / `control` (default false) | Spec Phase 1a leftover; #129 already teaches agent/UI about control messages. |
-| Daemon `MessageOpts` → TUI `Prompt` flags | CLI `agent message` already sets `steer=true, control=true` in opts; TUI bridge currently drops them. |
-| Plugin `agent_control` message path | Prefer daemon/session bridge once flags exist; keep in-process `n00n.session.prompt` for TUI-only. |
-
-Orthogonal to sock topology; do not block #149 on it.
+| Extend `SessionRequest::Prompt` with `steer` / `control` (default false) | Done |
+| Daemon `MessageOpts` → TUI `Prompt` flags | Done |
+| Plugin `agent_control` message path | Done (scoped tools + cards retained) |
 
 ## Later / optional (not blocking merge)
 

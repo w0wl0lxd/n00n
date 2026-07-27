@@ -9,7 +9,7 @@ use color_eyre::eyre::Context;
 
 use n00n_storage::StateDir;
 
-use crate::cli::{AuthAction, Cli, Command, McpAction};
+use crate::cli::{AgentCommand, AuthAction, Cli, Command, McpAction};
 use crate::update;
 
 pub fn dispatch(cli: Cli) -> Result<()> {
@@ -23,9 +23,6 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 AuthAction::Logout { provider } => subcmd::auth_logout(&provider, &storage)?,
                 AuthAction::Status => subcmd::auth_status(&storage),
             }
-        }
-        Some(Command::Agent { action }) => {
-            agent::run(agent::AgentArgs { action })?;
         }
         Some(Command::Index { path }) => {
             subcmd::index(&path, cli.plugin_flags.no_plugins, cli.plugin_flags.no_jit)?;
@@ -65,6 +62,72 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 },
             )?;
         }
+        Some(Command::Agent { action }) => match action {
+            AgentCommand::Run {
+                prompt,
+                model,
+                mode,
+                goal,
+                team_mode,
+                max_agents,
+                waves,
+                workflow_inputs,
+                task_description,
+                json,
+                background,
+                id,
+            } => {
+                let run_opts = agent::AgentRunOptions {
+                    prompt: &prompt,
+                    model: model.as_deref(),
+                    mode,
+                    goal: goal.as_deref(),
+                    team_mode: team_mode.as_deref(),
+                    max_agents,
+                    waves,
+                    workflow_inputs: workflow_inputs.as_deref(),
+                    task_description: task_description.as_deref(),
+                    yolo: cli.permission_flags.yolo,
+                    no_jit: cli.plugin_flags.no_jit,
+                };
+                if background {
+                    agent::server(&run_opts, id)?;
+                } else {
+                    agent::run(&run_opts, json)?;
+                }
+            }
+            AgentCommand::List => {
+                agent::list_client(matches!(
+                    cli.output_format,
+                    crate::print::OutputFormat::Json
+                ))?;
+            }
+            AgentCommand::Status { id } => {
+                agent::status_client(
+                    &id,
+                    matches!(cli.output_format, crate::print::OutputFormat::Json),
+                )?;
+            }
+            AgentCommand::Message { id, text } => {
+                agent::message_client(
+                    &id,
+                    &text,
+                    matches!(cli.output_format, crate::print::OutputFormat::Json),
+                )?;
+            }
+            AgentCommand::Pause { id } => {
+                agent::pause_client(&id)?;
+            }
+            AgentCommand::Resume { id } => {
+                agent::resume_client(&id)?;
+            }
+            AgentCommand::Stop { id } => {
+                agent::stop_client(&id)?;
+            }
+            AgentCommand::Daemon { state_dir } => {
+                agent::daemon_serve(state_dir)?;
+            }
+        },
         None => {
             tui::run(cli)?;
         }

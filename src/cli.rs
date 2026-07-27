@@ -16,6 +16,16 @@ pub enum PromptVariant {
     General,
 }
 
+#[derive(Clone, Copy, ValueEnum, Default, Debug, PartialEq, Eq)]
+pub enum AgentMode {
+    #[default]
+    General,
+    Research,
+    Task,
+    Team,
+    Workflow,
+}
+
 #[derive(Clone, ValueEnum, Default)]
 pub enum InputFormat {
     #[default]
@@ -229,11 +239,6 @@ pub enum Command {
         #[command(subcommand)]
         action: AuthAction,
     },
-    /// Manage live/background agents via the on-device control plane
-    Agent {
-        #[command(subcommand)]
-        action: crate::cmd::agent::AgentAction,
-    },
     /// List all available models
     Models,
     /// Run the index tool on a file to see how it looks like
@@ -277,6 +282,72 @@ pub enum Command {
         /// With --tools: show only tool names, one per line
         #[arg(long, requires = "tools")]
         names: bool,
+    },
+    /// Run agent commands (foreground/background workers + control plane)
+    Agent {
+        #[command(subcommand)]
+        action: AgentCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AgentCommand {
+    /// Run a one-shot agent prompt
+    Run {
+        /// Prompt to send to the agent; for workflow mode this is the Lua script
+        #[arg(short, long)]
+        prompt: String,
+        /// Model spec (provider/model-id)
+        #[arg(short, long)]
+        model: Option<String>,
+        /// Agent mode
+        #[arg(long, value_enum, default_value_t = AgentMode::General)]
+        mode: AgentMode,
+        /// High-level goal for team/workflow/task mode; prepended in general/research mode
+        #[arg(long)]
+        goal: Option<String>,
+        /// Team execution mode (supervised, autonomous, swarm); only used with --mode team
+        #[arg(long)]
+        team_mode: Option<String>,
+        /// Maximum agent calls for team mode
+        #[arg(long)]
+        max_agents: Option<usize>,
+        /// Run team in wave-based checkpoints
+        #[arg(long)]
+        waves: bool,
+        /// JSON object passed as workflow inputs; only used with --mode workflow
+        #[arg(long)]
+        workflow_inputs: Option<String>,
+        /// Task description; defaults to --goal in task mode
+        #[arg(long)]
+        task_description: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Run in background mode
+        #[arg(long)]
+        background: bool,
+        /// Agent ID (for background mode)
+        #[arg(long)]
+        id: Option<String>,
+    },
+    /// List background agents
+    List,
+    /// Show agent status
+    Status { id: String },
+    /// Send message to agent
+    Message { id: String, text: String },
+    /// Pause agent
+    Pause { id: String },
+    /// Resume agent
+    Resume { id: String },
+    /// Stop agent
+    Stop { id: String },
+    /// Start a foreground control-plane listener (worker backend only)
+    Daemon {
+        /// Override state directory
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
     },
 }
 
@@ -355,5 +426,160 @@ mod tests {
     #[test]
     fn normalize_tool_name_multi_edit_rejects_snake_variant() {
         assert!(normalize_tool_name("MultiEdit").is_err());
+    }
+
+    #[test]
+    fn agent_run_parse_background_flag() {
+        let cli = Cli::parse_from(["n00n", "agent", "run", "--prompt", "test", "--background"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Agent {
+                action: AgentCommand::Run {
+                    background: true,
+                    ..
+                }
+            })
+        ));
+    }
+
+    #[test]
+    fn agent_run_parse_id_flag() {
+        let cli = Cli::parse_from([
+            "n00n", "agent", "run", "--prompt", "test", "--id", "my-agent",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Agent {
+                action: AgentCommand::Run {
+                    id: Some(id),
+                    ..
+                }
+            }) if id == "my-agent"
+        ));
+    }
+
+    #[test]
+    fn agent_run_parse_goal_and_team_mode() {
+        let cli = Cli::parse_from([
+            "n00n",
+            "agent",
+            "run",
+            "--prompt",
+            "test",
+            "--goal",
+            "ship feature",
+            "--mode",
+            "team",
+            "--team-mode",
+            "autonomous",
+            "--max-agents",
+            "8",
+            "--waves",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Agent {
+                action: AgentCommand::Run {
+                    goal: Some(g),
+                    team_mode: Some(t),
+                    max_agents: Some(8),
+                    waves: true,
+                    mode: AgentMode::Team,
+                    ..
+                }
+            }) if g == "ship feature" && t == "autonomous"
+        ));
+    }
+
+    #[test]
+    fn agent_run_parse_workflow_inputs() {
+        let cli = Cli::parse_from([
+            "n00n",
+            "agent",
+            "run",
+            "--prompt",
+            "return agent({prompt = inputs.goal})",
+            "--mode",
+            "workflow",
+            "--goal",
+            "find bugs",
+            "--workflow-inputs",
+            r#"{"foo":"bar"}"#,
+        ]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Agent {
+                action: AgentCommand::Run {
+                    goal: Some(g),
+                    workflow_inputs: Some(w),
+                    mode: AgentMode::Workflow,
+                    ..
+                }
+            }) if g == "find bugs" && w == r#"{"foo":"bar"}"#
+        ));
+    }
+
+    #[test]
+    fn agent_run_parse_task_description() {
+        let cli = Cli::parse_from([
+            "n00n",
+            "agent",
+            "run",
+            "--prompt",
+            "refactor this module",
+            "--mode",
+            "task",
+            "--goal",
+            "cleanup",
+            "--task-description",
+            "refactor",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Agent {
+                action: AgentCommand::Run {
+                    goal: Some(g),
+                    task_description: Some(d),
+                    mode: AgentMode::Task,
+                    ..
+                }
+            }) if g == "cleanup" && d == "refactor"
+        ));
+    }
+
+    #[test]
+    fn agent_message_parse() {
+        let cli = Cli::parse_from(["n00n", "agent", "message", "agent-id", "hello"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Agent {
+                action: AgentCommand::Message {
+                    id,
+                    text,
+                }
+            }) if id == "agent-id" && text == "hello"
+        ));
+    }
+
+    #[test]
+    fn agent_stop_parse() {
+        let cli = Cli::parse_from(["n00n", "agent", "stop", "agent-id"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Agent {
+                action: AgentCommand::Stop { id }
+            }) if id == "agent-id"
+        ));
+    }
+
+    #[test]
+    fn agent_list_parse() {
+        let cli = Cli::parse_from(["n00n", "agent", "list"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Agent {
+                action: AgentCommand::List
+            })
+        ));
     }
 }

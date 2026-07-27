@@ -1,54 +1,48 @@
-//! Thin CLI client for the on-device agent control plane (`n00n-daemon`).
-
+use std::env;
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use clap::{Args, Subcommand};
-use color_eyre::eyre::{Result, WrapErr, eyre};
+use async_lock::Mutex;
+use color_eyre::Result;
+use color_eyre::eyre::{Context, eyre};
+use flume::Sender;
+use futures_lite::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, split};
+use n00n_agent::headless;
+use n00n_agent::tools::ToolRegistry;
+use n00n_agent::{
+    AgentConfig, AgentEvent, AgentInput, AgentMode as RuntimeAgentMode, Envelope, McpHandle,
+    PermissionsConfig, prompt::ResolvedSlots,
+};
+use n00n_config::{load_env_files, load_permissions};
 use n00n_daemon::backend::WorkerBackend;
-use n00n_daemon::client;
+use n00n_daemon::client as daemon_client;
 use n00n_daemon::paths::{daemon_socket_in, daemon_socket_path};
 use n00n_daemon::protocol::{BackendKind, ControlRequest, ControlResponse, MessageOpts};
 use n00n_daemon::registry::ControlPlane;
-use n00n_daemon::server;
+use n00n_daemon::server as daemon_server;
+use n00n_lua::PluginHost;
+use n00n_providers::{Model, OpenAiOptions, ThinkingConfig, Timeouts};
 use n00n_storage::StateDir;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use smol::net::unix::{UnixListener, UnixStream};
 
-#[derive(Subcommand, Debug)]
-pub enum AgentAction {
-    /// Start a foreground control-plane listener (worker backend only)
-    Daemon {
-        /// Override state directory
-        #[arg(long)]
-        state_dir: Option<PathBuf>,
-    },
-    /// List agents (daemon sock if present, else worker fixtures on disk)
-    List {
-        #[arg(long)]
-        json: bool,
-    },
-    /// Show one agent
-    Status {
-        id: String,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Send a steering message
-    Message { id: String, text: String },
-    /// Pause a worker agent (unsupported on TUI)
-    Pause { id: String },
-    /// Resume a worker agent
-    Resume { id: String },
-    /// Stop / cancel an agent
-    Stop { id: String },
+use crate::cli::AgentMode as CliAgentMode;
+use crate::setup;
+
+fn try_daemon(req: &ControlRequest) -> Option<Result<ControlResponse>> {
+    let sock = daemon_socket_path().ok()?;
+    if !sock.exists() {
+        return None;
+    }
+    Some(daemon_client::call_blocking(&sock, req).map_err(|e| eyre!("daemon call failed: {e}")))
 }
 
-#[derive(Args, Debug)]
-pub struct AgentArgs {
-    #[command(subcommand)]
-    pub action: AgentAction,
-}
-
-fn print_response(resp: &ControlResponse, json: bool) -> Result<()> {
+fn print_control_response(resp: &ControlResponse, json: bool) -> Result<()> {
     if json {
         let line = resp.to_line().map_err(|e| eyre!(e))?;
         println!("{line}");
@@ -103,87 +97,1244 @@ fn print_response(resp: &ControlResponse, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn local_plane(state_dir: &StateDir) -> Arc<ControlPlane> {
-    let worker = Arc::new(WorkerBackend::new(state_dir.path()));
-    Arc::new(ControlPlane::new(None, Some(worker)))
+/// Foreground worker-only control plane (no TUI backend). Prefer TUI-owned
+/// `daemon.sock` when the UI is running.
+pub fn daemon_serve(state_dir: Option<PathBuf>) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let storage = match state_dir {
+            Some(p) => StateDir::from_path(p),
+            None => StateDir::resolve().wrap_err("state dir")?,
+        };
+        let sock = daemon_socket_in(storage.path());
+        let worker = Arc::new(WorkerBackend::new(storage.path()));
+        let plane = Arc::new(ControlPlane::new(None, Some(worker)));
+        let (_tx, rx) = flume::bounded::<()>(1);
+        println!("listening on {}", sock.display());
+        smol::block_on(daemon_server::serve(&sock, plane, rx)).map_err(|e| eyre!(e))?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = state_dir;
+        Err(eyre!("agent daemon requires unix"))
+    }
 }
 
-fn call_or_local(req: ControlRequest) -> Result<ControlResponse> {
-    if let Ok(sock) = daemon_socket_path()
-        && sock.exists()
+fn workflow_from_mode(mode: CliAgentMode) -> bool {
+    matches!(mode, CliAgentMode::Team | CliAgentMode::Workflow)
+}
+
+const MAX_AGENT_ID_LEN: usize = 64;
+
+fn validate_agent_id(id: &str) -> Result<()> {
+    if id.is_empty() {
+        return Err(color_eyre::eyre::eyre!("agent id cannot be empty"));
+    }
+    if id.len() > MAX_AGENT_ID_LEN {
+        return Err(color_eyre::eyre::eyre!(
+            "agent id must be {MAX_AGENT_ID_LEN} characters or fewer"
+        ));
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
-        match client::call_blocking(&sock, &req) {
-            Ok(r) => return Ok(r),
-            Err(e) => {
-                tracing::warn!(error = %e, "daemon call failed; falling back to local worker plane");
+        return Err(color_eyre::eyre::eyre!(
+            "agent id must contain only ASCII letters, digits, hyphens, and underscores"
+        ));
+    }
+    Ok(())
+}
+
+fn build_message(
+    mode: CliAgentMode,
+    prompt: &str,
+    goal: Option<&str>,
+    team_mode: Option<&str>,
+    max_agents: Option<usize>,
+    waves: bool,
+    workflow_inputs: Option<&str>,
+    task_description: Option<&str>,
+) -> Result<String> {
+    match mode {
+        CliAgentMode::Team => build_team_message(prompt, goal, team_mode, max_agents, waves),
+        CliAgentMode::Workflow => build_workflow_message(prompt, goal, workflow_inputs),
+        CliAgentMode::Task => build_task_message(prompt, goal, task_description),
+        _ => Ok(build_generic_message(prompt, goal)),
+    }
+}
+
+fn build_team_message(
+    prompt: &str,
+    goal: Option<&str>,
+    team_mode: Option<&str>,
+    max_agents: Option<usize>,
+    waves: bool,
+) -> Result<String> {
+    let mode = team_mode.map_or_else(|| "autonomous", |m| m);
+    if !matches!(mode, "supervised" | "autonomous" | "swarm") {
+        return Err(color_eyre::eyre::eyre!(
+            "team mode must be 'supervised', 'autonomous', or 'swarm'"
+        ));
+    }
+
+    let mut goal_text = goal.map_or_else(|| prompt.to_string(), ToString::to_string);
+    if let Some(g) = goal
+        && !prompt.is_empty()
+        && prompt != g
+    {
+        goal_text.push_str("\n\nAdditional context:\n");
+        goal_text.push_str(prompt);
+    }
+
+    let mut input = serde_json::Map::new();
+    input.insert("goal".to_string(), json!(goal_text));
+    input.insert("mode".to_string(), json!(mode));
+    input.insert("auto_tier".to_string(), json!(true));
+    input.insert("compact".to_string(), json!(true));
+    input.insert("use_retrieval".to_string(), json!(true));
+    if let Some(n) = max_agents {
+        input.insert("max_agents".to_string(), json!(n));
+    }
+    if waves {
+        input.insert("waves".to_string(), json!(true));
+    }
+
+    let payload = serde_json::Value::Object(input);
+    Ok(format!(
+        "Use the team tool now. Do not only describe this request.\n\n{}",
+        serde_json::to_string(&payload)?
+    ))
+}
+
+fn build_workflow_message(
+    prompt: &str,
+    goal: Option<&str>,
+    workflow_inputs: Option<&str>,
+) -> Result<String> {
+    let mut inputs: serde_json::Map<String, serde_json::Value> = if let Some(s) = workflow_inputs {
+        serde_json::from_str(s).context("invalid --workflow-inputs JSON: expected an object")?
+    } else {
+        serde_json::Map::new()
+    };
+    if let Some(g) = goal {
+        inputs.insert("goal".to_string(), json!(g));
+    }
+
+    let mut input = serde_json::Map::new();
+    input.insert("script".to_string(), json!(prompt));
+    if !inputs.is_empty() {
+        input.insert("inputs".to_string(), serde_json::Value::Object(inputs));
+    }
+
+    let payload = serde_json::Value::Object(input);
+    Ok(format!(
+        "Use the workflow tool now. Do not only describe this request.\n\n{}",
+        serde_json::to_string(&payload)?
+    ))
+}
+
+fn build_task_message(
+    prompt: &str,
+    goal: Option<&str>,
+    task_description: Option<&str>,
+) -> Result<String> {
+    let description = task_description.or(goal).map_or_else(
+        || {
+            prompt
+                .split_whitespace()
+                .take(5)
+                .collect::<Vec<_>>()
+                .join(" ")
+        },
+        ToString::to_string,
+    );
+
+    let mut input = serde_json::Map::new();
+    input.insert("description".to_string(), json!(description));
+    input.insert("prompt".to_string(), json!(prompt));
+    input.insert("auto_tier".to_string(), json!(true));
+
+    let payload = serde_json::Value::Object(input);
+    Ok(format!(
+        "Use the task tool now. Do not only describe this request.\n\n{}",
+        serde_json::to_string(&payload)?
+    ))
+}
+
+fn build_generic_message(prompt: &str, goal: Option<&str>) -> String {
+    if let Some(g) = goal {
+        format!("Goal: {g}\n\n{prompt}")
+    } else {
+        prompt.to_string()
+    }
+}
+
+pub struct AgentRunOptions<'a> {
+    pub prompt: &'a str,
+    pub model: Option<&'a str>,
+    pub mode: CliAgentMode,
+    pub goal: Option<&'a str>,
+    pub team_mode: Option<&'a str>,
+    pub max_agents: Option<usize>,
+    pub waves: bool,
+    pub workflow_inputs: Option<&'a str>,
+    pub task_description: Option<&'a str>,
+    pub yolo: bool,
+    pub no_jit: bool,
+}
+
+struct PreparedEnv {
+    storage: StateDir,
+    cwd: PathBuf,
+    model: Model,
+    model_spec: String,
+    agent_config: AgentConfig,
+    permissions: PermissionsConfig,
+    timeouts: Timeouts,
+    openai_options: OpenAiOptions,
+    mcp_handle: Option<McpHandle>,
+    prompt_slots: ResolvedSlots,
+}
+
+fn prepare_agent_env(model_arg: Option<&str>, yolo: bool, no_jit: bool) -> Result<PreparedEnv> {
+    let storage = StateDir::resolve().context("resolve data directory")?;
+    n00n_providers::model_registry::load_from_storage(&storage);
+
+    let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
+    load_env_files(&cwd);
+
+    let mut plugin_host = PluginHost::with_jit(Arc::clone(ToolRegistry::global_arc()), !no_jit)
+        .context("initialize lua plugin host")?;
+
+    let raw_config = plugin_host
+        .load_init_files(&cwd)
+        .context("load init.lua files")?;
+
+    let mut config = raw_config
+        .unwrap_or_else(Default::default)
+        .into_config(false)
+        .context("invalid config")?;
+    config.permissions = load_permissions(&cwd);
+
+    setup::init_logging(&config.storage);
+
+    if yolo || config.always_yolo {
+        config.permissions.yolo = true;
+    }
+    config.validate()?;
+
+    plugin_host
+        .load_builtins(&config.plugins)
+        .context("load builtin plugins")?;
+
+    let timeouts = Timeouts {
+        connect: config.provider.connect_timeout,
+        low_speed: config.provider.low_speed_timeout,
+        stream: config.provider.stream_timeout,
+    };
+
+    let model = setup::resolve_model(model_arg, &config.provider, &storage)?;
+    let model_spec = model.spec();
+    setup::install_panic_log_hook();
+
+    let (mcp_handle, _mcp_config_errors) = smol::block_on(n00n_agent::mcp::start(
+        &cwd,
+        config.agent.mcp_tool_desc_max_chars,
+    ));
+
+    let prompt_slots = plugin_host
+        .event_handle()
+        .map_or_else(Default::default, |h| h.collect_prompt_slots());
+
+    Ok(PreparedEnv {
+        storage,
+        cwd,
+        model,
+        model_spec,
+        agent_config: config.agent,
+        permissions: config.permissions,
+        timeouts,
+        openai_options: OpenAiOptions::from(&config.provider),
+        mcp_handle,
+        prompt_slots,
+    })
+}
+
+async fn write_line<W: AsyncWriteExt + Unpin>(writer: &mut W, line: &str) -> Result<()> {
+    writer
+        .write_all(line.as_bytes())
+        .await
+        .wrap_err("failed to write line")?;
+    writer
+        .write_all(b"\n")
+        .await
+        .wrap_err("failed to write newline")?;
+    writer.flush().await.wrap_err("failed to flush writer")?;
+    Ok(())
+}
+
+pub fn run(opts: &AgentRunOptions<'_>, json: bool) -> Result<()> {
+    let env = prepare_agent_env(opts.model, opts.yolo, opts.no_jit)?;
+    let message = build_message(
+        opts.mode,
+        opts.prompt,
+        opts.goal,
+        opts.team_mode,
+        opts.max_agents,
+        opts.waves,
+        opts.workflow_inputs,
+        opts.task_description,
+    )?;
+
+    let headless_params = headless::HeadlessParams {
+        model: env.model,
+        config: env.agent_config,
+        permissions_config: env.permissions,
+        timeouts: env.timeouts,
+        openai_options: env.openai_options,
+        prompt: message,
+        images: Vec::new(),
+        prompt_slots: env.prompt_slots,
+        excluded_tools: Vec::new(),
+        mcp_handle: env.mcp_handle,
+        initial_wd: env.cwd,
+        fast: false,
+        workflow: workflow_from_mode(opts.mode),
+    };
+
+    let handle = headless::spawn(headless_params);
+
+    // Collect events and final result
+    let mut final_output = String::new();
+    let mut final_usage = None;
+    let mut stop_reason = String::from("completed");
+
+    while let Ok(event) = handle.event_rx.recv() {
+        match event.event {
+            n00n_agent::AgentEvent::TextDelta { text } => {
+                final_output.push_str(&text);
+            }
+            n00n_agent::AgentEvent::Done { usage, .. } => {
+                final_usage = Some(usage);
+            }
+            n00n_agent::AgentEvent::Error { message } => {
+                stop_reason = format!("error: {message}");
+                eprintln!("Error: {message}");
+            }
+            _ => {}
+        }
+    }
+
+    smol::block_on(handle.task);
+
+    if json {
+        let output = serde_json::json!({
+            "session_id": handle.session_id,
+            "output": final_output,
+            "usage": final_usage,
+            "stop_reason": stop_reason,
+        });
+        let json_output = serde_json::to_string_pretty(&output)?;
+        println!("{json_output}");
+    } else {
+        println!("{final_output}");
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct AgentState {
+    id: String,
+    session_id: String,
+    socket_path: String,
+    pid: u32,
+    status: String,
+    prompt: String,
+    model: String,
+    created_at: u64,
+    updated_at: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "cmd", rename_all = "snake_case")]
+enum ClientCommand {
+    Message { text: String },
+    Pause,
+    Resume,
+    Stop,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ServerEvent {
+    TextDelta {
+        text: String,
+    },
+    ToolOutput {
+        id: String,
+        content: String,
+    },
+    Error {
+        message: String,
+    },
+    Done {
+        text: String,
+        usage: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+}
+
+const AGENTS_SUBDIR: &str = "agents";
+const STATE_FILE: &str = "agent.json";
+const SOCKET_FILE: &str = "control.sock";
+
+fn agent_dir(state_dir: &StateDir, agent_id: &str) -> Result<PathBuf> {
+    validate_agent_id(agent_id)?;
+    let agents_dir = state_dir.ensure_subdir(AGENTS_SUBDIR)?;
+    Ok(agents_dir.join(agent_id))
+}
+
+fn socket_path(state_dir: &StateDir, agent_id: &str) -> Result<PathBuf> {
+    Ok(agent_dir(state_dir, agent_id)?.join(SOCKET_FILE))
+}
+
+fn state_file_path(state_dir: &StateDir, agent_id: &str) -> Result<PathBuf> {
+    Ok(agent_dir(state_dir, agent_id)?.join(STATE_FILE))
+}
+
+fn write_agent_state(state_dir: &StateDir, state: &AgentState) -> Result<()> {
+    let path = state_file_path(state_dir, &state.id)?;
+    let data = serde_json::to_vec_pretty(state).wrap_err("failed to serialize agent state")?;
+    n00n_storage::atomic_write(&path, &data).wrap_err("failed to write agent state")?;
+    Ok(())
+}
+
+fn read_agent_state(state_dir: &StateDir, agent_id: &str) -> Result<AgentState> {
+    let path = state_file_path(state_dir, agent_id)?;
+    let data = fs::read_to_string(&path).wrap_err("failed to read agent state")?;
+    let state: AgentState = serde_json::from_str(&data).wrap_err("failed to parse agent state")?;
+    Ok(state)
+}
+
+fn list_agent_states(state_dir: &StateDir) -> Result<Vec<AgentState>> {
+    let agents_dir = state_dir.ensure_subdir(AGENTS_SUBDIR)?;
+    let mut states = Vec::new();
+
+    for entry in fs::read_dir(&agents_dir).wrap_err("failed to read agents directory")? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            let state_path = path.join(STATE_FILE);
+            if state_path.exists() {
+                let data =
+                    fs::read_to_string(&state_path).wrap_err("failed to read agent state")?;
+                let state: AgentState =
+                    serde_json::from_str(&data).wrap_err("failed to parse agent state")?;
+                states.push(state);
             }
         }
     }
-    let storage = StateDir::resolve().wrap_err("state dir")?;
-    local_plane(&storage).handle(req).map_err(|e| eyre!(e))
+
+    states.sort_by_key(|a| std::cmp::Reverse(a.updated_at));
+    Ok(states)
 }
 
-/// # Errors
-/// Returns CLI-level failures.
-pub fn run(args: AgentArgs) -> Result<()> {
-    match args.action {
-        AgentAction::Daemon { state_dir } => {
-            #[cfg(unix)]
-            {
-                let storage = match state_dir {
-                    Some(p) => StateDir::from_path(p),
-                    None => StateDir::resolve().wrap_err("state dir")?,
-                };
-                let sock = daemon_socket_in(storage.path());
-                let plane = local_plane(&storage);
-                let (_tx, rx) = flume::bounded::<()>(1);
-                println!("listening on {}", sock.display());
-                smol::block_on(server::serve(&sock, plane, rx)).map_err(|e| eyre!(e))?;
-                Ok(())
+fn now_epoch() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()> {
+    let env = prepare_agent_env(opts.model, opts.yolo, opts.no_jit)?;
+    let message = build_message(
+        opts.mode,
+        opts.prompt,
+        opts.goal,
+        opts.team_mode,
+        opts.max_agents,
+        opts.waves,
+        opts.workflow_inputs,
+        opts.task_description,
+    )?;
+    let storage = env.storage.clone();
+    let model_spec = env.model_spec;
+
+    let interactive_params = headless::InteractiveParams {
+        model: env.model,
+        config: env.agent_config,
+        permissions_config: env.permissions,
+        timeouts: env.timeouts,
+        openai_options: env.openai_options,
+        prompt_slots: Arc::new(env.prompt_slots),
+        excluded_tools: Vec::new(),
+        mcp_handle: env.mcp_handle,
+        initial_wd: env.cwd,
+        session_id: None,
+        initial_history: Vec::new(),
+        yolo: opts.yolo,
+        system_prompt_override: None,
+        append_system_prompt: None,
+        workflow: workflow_from_mode(opts.mode),
+    };
+
+    let handle = headless::spawn_interactive(interactive_params);
+
+    let agent_id =
+        agent_id.unwrap_or_else(|| handle.session_id.to_string().chars().take(12).collect());
+
+    let agent_dir_path = agent_dir(&storage, &agent_id)?;
+    fs::create_dir_all(&agent_dir_path).wrap_err("failed to create agent directory")?;
+    fs::set_permissions(&agent_dir_path, fs::Permissions::from_mode(0o700))
+        .wrap_err("failed to set agent directory permissions")?;
+
+    let socket_path_value = socket_path(&storage, &agent_id)?;
+
+    let mut state = AgentState {
+        id: agent_id.clone(),
+        session_id: handle.session_id.to_string(),
+        socket_path: socket_path_value.to_string_lossy().into_owned(),
+        pid: std::process::id(),
+        status: "running".to_string(),
+        prompt: opts.prompt.to_string(),
+        model: model_spec,
+        created_at: now_epoch(),
+        updated_at: now_epoch(),
+    };
+
+    write_agent_state(&storage, &state)?;
+
+    let listener = UnixListener::bind(&socket_path_value).wrap_err("failed to bind socket")?;
+    fs::set_permissions(&socket_path_value, fs::Permissions::from_mode(0o600))
+        .wrap_err("failed to set socket permissions")?;
+
+    let message_lock = Arc::new(Mutex::new(()));
+    let paused = Arc::new(AtomicBool::new(false));
+
+    if !opts.prompt.is_empty() {
+        let _lock = smol::block_on(message_lock.lock());
+        state.status = "working".to_string();
+        write_agent_state(&storage, &state)?;
+
+        let _ = handle.input_tx.send(AgentInput {
+            message,
+            mode: RuntimeAgentMode::Build,
+            images: Vec::new(),
+            preamble: Vec::new(),
+            thinking: ThinkingConfig::default(),
+            fast: false,
+            workflow: workflow_from_mode(opts.mode),
+            prompt: None,
+            control: false,
+        });
+
+        // Wait for the initial run to complete.
+        wait_for_run_done(&handle.event_rx);
+
+        state.status = "running".to_string();
+        state.updated_at = now_epoch();
+        write_agent_state(&storage, &state)?;
+    }
+
+    let task = Arc::new(Mutex::new(Some(handle.task)));
+
+    smol::block_on(async {
+        while let Ok(stream) = listener.accept().await {
+            let stream = stream.0;
+            let input_tx = handle.input_tx.clone();
+            let event_rx = handle.event_rx.clone();
+            let cancel_tx = handle.cancel_tx.clone();
+            let message_lock = Arc::clone(&message_lock);
+            let paused = Arc::clone(&paused);
+            let storage_clone = storage.clone();
+            let agent_id_clone = agent_id.clone();
+            let mode_clone = opts.mode;
+            let task = Arc::clone(&task);
+
+            smol::spawn(async move {
+                if let Err(e) = handle_connection(
+                    stream,
+                    input_tx,
+                    event_rx,
+                    cancel_tx,
+                    message_lock,
+                    paused,
+                    &storage_clone,
+                    &agent_id_clone,
+                    mode_clone,
+                    task,
+                )
+                .await
+                {
+                    eprintln!("Connection error: {e}");
+                }
+            })
+            .detach();
+        }
+    });
+
+    Ok(())
+}
+
+fn wait_for_run_done(event_rx: &flume::Receiver<Envelope>) {
+    while let Ok(envelope) = event_rx.recv() {
+        if matches!(
+            envelope.event,
+            AgentEvent::Done { .. } | AgentEvent::Error { .. }
+        ) {
+            break;
+        }
+    }
+}
+
+async fn handle_connection(
+    stream: UnixStream,
+    input_tx: Sender<AgentInput>,
+    event_rx: flume::Receiver<Envelope>,
+    cancel_tx: Sender<()>,
+    message_lock: Arc<Mutex<()>>,
+    paused: Arc<AtomicBool>,
+    storage: &StateDir,
+    agent_id: &str,
+    mode: CliAgentMode,
+    task: Arc<Mutex<Option<smol::Task<()>>>>,
+) -> Result<()> {
+    let (reader, mut writer) = split(stream);
+    let mut reader = BufReader::new(reader);
+
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .await
+        .wrap_err("failed to read command")?;
+    if line.is_empty() {
+        return Ok(());
+    }
+
+    let cmd: ClientCommand = serde_json::from_str(&line).wrap_err("failed to parse command")?;
+
+    match cmd {
+        ClientCommand::Message { text } => {
+            let _lock = message_lock.lock().await;
+
+            if paused.load(Ordering::Relaxed) {
+                let response = serde_json::json!({"ok": false, "error": "agent is paused"});
+                let response_json = serde_json::to_string(&response)?;
+                write_line(&mut writer, &response_json)
+                    .await
+                    .wrap_err("failed to write response")?;
+                return Ok(());
             }
-            #[cfg(not(unix))]
-            {
-                let _ = state_dir;
-                Err(eyre!("agent daemon requires unix"))
-            }
-        }
-        AgentAction::List { json } => {
-            let resp = call_or_local(ControlRequest::List)?;
-            print_response(&resp, json)
-        }
-        AgentAction::Status { id, json } => {
-            let resp = call_or_local(ControlRequest::Status { id, backend: None })?;
-            print_response(&resp, json)
-        }
-        AgentAction::Message { id, text } => {
-            let resp = call_or_local(ControlRequest::Message {
-                id,
-                text,
-                backend: None,
-                opts: MessageOpts {
-                    steer: true,
+
+            let mut state = read_agent_state(storage, agent_id)?;
+            state.status = "working".to_string();
+            state.updated_at = now_epoch();
+            write_agent_state(storage, &state)?;
+
+            while event_rx.try_recv().is_ok() {}
+
+            input_tx
+                .send(AgentInput {
+                    message: text.clone(),
+                    mode: RuntimeAgentMode::Build,
+                    images: Vec::new(),
+                    preamble: Vec::new(),
+                    thinking: ThinkingConfig::default(),
+                    fast: false,
+                    workflow: workflow_from_mode(mode),
+                    prompt: None,
                     control: true,
-                },
-            })?;
-            print_response(&resp, false)
+                })
+                .wrap_err("failed to send input")?;
+
+            let mut current_run_id: Option<u64> = None;
+            let mut accumulated_text = String::new();
+            let mut final_usage: Option<serde_json::Value> = None;
+            let mut error_message: Option<String> = None;
+
+            while let Ok(envelope) = event_rx.recv_async().await {
+                if current_run_id.is_none() {
+                    current_run_id = Some(envelope.run_id);
+                }
+
+                if current_run_id != Some(envelope.run_id) {
+                    continue;
+                }
+
+                match envelope.event {
+                    AgentEvent::TextDelta { text } => {
+                        accumulated_text.push_str(&text);
+                        let event = ServerEvent::TextDelta { text };
+                        let json =
+                            serde_json::to_string(&event).wrap_err("failed to serialize event")?;
+                        write_line(&mut writer, &json)
+                            .await
+                            .wrap_err("failed to write event")?;
+                    }
+                    AgentEvent::ToolOutput { id, content } => {
+                        let event = ServerEvent::ToolOutput { id, content };
+                        let json =
+                            serde_json::to_string(&event).wrap_err("failed to serialize event")?;
+                        write_line(&mut writer, &json)
+                            .await
+                            .wrap_err("failed to write event")?;
+                    }
+                    AgentEvent::Error { message } => {
+                        error_message = Some(message.clone());
+                        let event = ServerEvent::Error { message };
+                        let json =
+                            serde_json::to_string(&event).wrap_err("failed to serialize event")?;
+                        write_line(&mut writer, &json)
+                            .await
+                            .wrap_err("failed to write event")?;
+                    }
+                    AgentEvent::Done { usage, .. } => {
+                        final_usage = Some(
+                            serde_json::to_value(usage).unwrap_or_else(|_| serde_json::Value::Null),
+                        );
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+
+            let event = ServerEvent::Done {
+                text: accumulated_text,
+                usage: final_usage.unwrap_or_else(|| serde_json::Value::Null),
+                error: error_message,
+            };
+            let json = serde_json::to_string(&event).wrap_err("failed to serialize event")?;
+            write_line(&mut writer, &json)
+                .await
+                .wrap_err("failed to write event")?;
+
+            let mut state = read_agent_state(storage, agent_id)?;
+            state.status = "running".to_string();
+            state.updated_at = now_epoch();
+            write_agent_state(storage, &state)?;
         }
-        AgentAction::Pause { id } => {
-            let resp = call_or_local(ControlRequest::Pause {
-                id,
-                backend: Some(BackendKind::Worker),
-            })?;
-            print_response(&resp, false)
+        ClientCommand::Pause => {
+            paused.store(true, Ordering::Relaxed);
+
+            let mut state = read_agent_state(storage, agent_id)?;
+            state.status = "paused".to_string();
+            state.updated_at = now_epoch();
+            write_agent_state(storage, &state)?;
+
+            let response = serde_json::json!({ "ok": true });
+            let response_json = serde_json::to_string(&response)?;
+            write_line(&mut writer, &response_json)
+                .await
+                .wrap_err("failed to write response")?;
         }
-        AgentAction::Resume { id } => {
-            let resp = call_or_local(ControlRequest::Resume {
-                id,
-                backend: Some(BackendKind::Worker),
-            })?;
-            print_response(&resp, false)
+        ClientCommand::Resume => {
+            paused.store(false, Ordering::Relaxed);
+
+            let mut state = read_agent_state(storage, agent_id)?;
+            state.status = "running".to_string();
+            state.updated_at = now_epoch();
+            write_agent_state(storage, &state)?;
+
+            let response = serde_json::json!({ "ok": true });
+            let response_json = serde_json::to_string(&response)?;
+            write_line(&mut writer, &response_json)
+                .await
+                .wrap_err("failed to write response")?;
         }
-        AgentAction::Stop { id } => {
-            let resp = call_or_local(ControlRequest::Stop { id, backend: None })?;
-            print_response(&resp, false)
+        ClientCommand::Stop => {
+            let mut state = read_agent_state(storage, agent_id)?;
+            state.status = "stopping".to_string();
+            write_agent_state(storage, &state)?;
+
+            let _ = cancel_tx.send(());
+
+            if let Some(t) = task.lock().await.take() {
+                t.await;
+            }
+
+            let response = serde_json::json!({ "ok": true });
+            let response_json = serde_json::to_string(&response)?;
+            write_line(&mut writer, &response_json)
+                .await
+                .wrap_err("failed to write response")?;
+
+            let agent_dir_path = agent_dir(storage, agent_id)?;
+            if let Err(e) = fs::remove_file(&state.socket_path) {
+                tracing::warn!(error = %e, path = %state.socket_path, "failed to remove agent socket");
+            }
+            if let Err(e) = fs::remove_dir_all(&agent_dir_path) {
+                tracing::warn!(error = %e, path = %agent_dir_path.display(), "failed to remove agent state directory");
+            }
+
+            std::process::exit(0);
         }
+    }
+
+    Ok(())
+}
+
+pub fn message_client(id: &str, text: &str, json: bool) -> Result<()> {
+    if let Some(result) = try_daemon(&ControlRequest::Message {
+        id: id.to_owned(),
+        text: text.to_owned(),
+        backend: None,
+        opts: MessageOpts {
+            steer: true,
+            control: true,
+        },
+    }) {
+        return print_control_response(&result?, json);
+    }
+
+    let storage = StateDir::resolve().wrap_err("failed to resolve state directory")?;
+    let state = read_agent_state(&storage, id).wrap_err("failed to read agent state")?;
+
+    let stream = smol::block_on(UnixStream::connect(&state.socket_path))
+        .wrap_err("failed to connect to agent socket")?;
+
+    let cmd = ClientCommand::Message {
+        text: text.to_string(),
+    };
+    let cmd_json = serde_json::to_string(&cmd).wrap_err("failed to serialize command")?;
+
+    smol::block_on(async {
+        let (reader, mut writer) = split(stream);
+        let mut reader = BufReader::new(reader);
+
+        write_line(&mut writer, &cmd_json)
+            .await
+            .wrap_err("failed to send command")?;
+
+        let mut line = String::new();
+
+        while let Ok(n) = reader.read_line(&mut line).await {
+            if n == 0 {
+                break;
+            }
+
+            if json {
+                print!("{line}");
+            } else if let Ok(event) = serde_json::from_str::<ServerEvent>(&line) {
+                match event {
+                    ServerEvent::TextDelta { text } => {
+                        print!("{text}");
+                    }
+                    ServerEvent::Done {
+                        error: Some(message),
+                        ..
+                    } => {
+                        eprintln!("\nError: {message}");
+                        return Err(color_eyre::eyre::eyre!(message));
+                    }
+                    ServerEvent::Done { .. } => {
+                        println!();
+                    }
+                    ServerEvent::Error { message } => {
+                        eprintln!("Error: {message}");
+                        return Err(color_eyre::eyre::eyre!(message));
+                    }
+                    ServerEvent::ToolOutput { .. } => {}
+                }
+            }
+            line.clear();
+        }
+
+        Ok(())
+    })
+}
+
+pub fn stop_client(id: &str) -> Result<()> {
+    if let Some(result) = try_daemon(&ControlRequest::Stop {
+        id: id.to_owned(),
+        backend: None,
+    }) {
+        return print_control_response(&result?, false);
+    }
+
+    let storage = StateDir::resolve().wrap_err("failed to resolve state directory")?;
+
+    let Ok(state) = read_agent_state(&storage, id) else {
+        let agent_dir_path = agent_dir(&storage, id)?;
+        let _ = fs::remove_dir_all(&agent_dir_path);
+        eprintln!("Agent {id} not found, cleaned up directory");
+        return Ok(());
+    };
+
+    let stream = smol::block_on(UnixStream::connect(&state.socket_path))
+        .wrap_err("failed to connect to agent socket")?;
+
+    let cmd = ClientCommand::Stop;
+    let cmd_json = serde_json::to_string(&cmd).wrap_err("failed to serialize command")?;
+
+    smol::block_on(async {
+        let (reader, mut writer) = split(stream);
+        let mut reader = BufReader::new(reader);
+
+        write_line(&mut writer, &cmd_json)
+            .await
+            .wrap_err("failed to send command")?;
+
+        let mut line = String::new();
+        let _ = reader
+            .read_line(&mut line)
+            .await
+            .wrap_err("failed to read response")?;
+
+        let response: serde_json::Value =
+            serde_json::from_str(&line).wrap_err("failed to parse response")?;
+
+        match response.get("ok").and_then(serde_json::Value::as_bool) {
+            Some(true) => println!("Agent {id} stopped"),
+            _ => eprintln!("Failed to stop agent {id}"),
+        }
+
+        Ok(())
+    })
+}
+
+pub fn list_client(json: bool) -> Result<()> {
+    if let Some(result) = try_daemon(&ControlRequest::List) {
+        return print_control_response(&result?, json);
+    }
+
+    let storage = StateDir::resolve().wrap_err("failed to resolve state directory")?;
+    let states = list_agent_states(&storage)?;
+
+    if json {
+        let output =
+            serde_json::to_string_pretty(&states).wrap_err("failed to serialize agent list")?;
+        println!("{output}");
+    } else {
+        if states.is_empty() {
+            println!("No background agents running");
+            return Ok(());
+        }
+
+        println!("Background agents:");
+        for state in &states {
+            let prompt_preview = if state.prompt.len() > 50 {
+                format!("{}...", &state.prompt[..50])
+            } else {
+                state.prompt.clone()
+            };
+            println!(
+                "  {} - {} - {} - {} - {}",
+                state.id, state.status, state.model, prompt_preview, state.updated_at
+            );
+        }
+    }
+
+    Ok(())
+}
+
+pub fn status_client(id: &str, json: bool) -> Result<()> {
+    if let Some(result) = try_daemon(&ControlRequest::Status {
+        id: id.to_owned(),
+        backend: None,
+    }) {
+        return print_control_response(&result?, json);
+    }
+
+    let storage = StateDir::resolve().wrap_err("failed to resolve state directory")?;
+    let state = read_agent_state(&storage, id).wrap_err("failed to read agent state")?;
+
+    if json {
+        let output =
+            serde_json::to_string_pretty(&state).wrap_err("failed to serialize agent status")?;
+        println!("{output}");
+    } else {
+        println!("Agent: {}", state.id);
+        println!("  session:  {}", state.session_id);
+        println!("  status:   {}", state.status);
+        println!("  model:    {}", state.model);
+        println!("  prompt:   {}", state.prompt);
+        println!("  socket:   {}", state.socket_path);
+        println!("  pid:      {}", state.pid);
+        println!("  created:  {}", state.created_at);
+        println!("  updated:  {}", state.updated_at);
+    }
+
+    Ok(())
+}
+
+pub fn pause_client(id: &str) -> Result<()> {
+    if let Some(result) = try_daemon(&ControlRequest::Pause {
+        id: id.to_owned(),
+        backend: Some(BackendKind::Worker),
+    }) {
+        return print_control_response(&result?, false);
+    }
+    control_command_client(id, &ClientCommand::Pause, "paused")
+}
+
+pub fn resume_client(id: &str) -> Result<()> {
+    if let Some(result) = try_daemon(&ControlRequest::Resume {
+        id: id.to_owned(),
+        backend: Some(BackendKind::Worker),
+    }) {
+        return print_control_response(&result?, false);
+    }
+    control_command_client(id, &ClientCommand::Resume, "resumed")
+}
+
+fn control_command_client(id: &str, command: &ClientCommand, success_label: &str) -> Result<()> {
+    let storage = StateDir::resolve().wrap_err("failed to resolve state directory")?;
+    let state = read_agent_state(&storage, id).wrap_err("failed to read agent state")?;
+    let stream = smol::block_on(UnixStream::connect(&state.socket_path))
+        .wrap_err("failed to connect to agent socket")?;
+
+    let cmd_json = serde_json::to_string(&command).wrap_err("failed to serialize command")?;
+
+    smol::block_on(async {
+        let (reader, mut writer) = split(stream);
+        let mut reader = BufReader::new(reader);
+
+        write_line(&mut writer, &cmd_json)
+            .await
+            .wrap_err("failed to send command")?;
+
+        let mut line = String::new();
+        let _ = reader
+            .read_line(&mut line)
+            .await
+            .wrap_err("failed to read response")?;
+
+        let response: serde_json::Value =
+            serde_json::from_str(&line).wrap_err("failed to parse response")?;
+
+        match response.get("ok").and_then(serde_json::Value::as_bool) {
+            Some(true) => println!("Agent {id} {success_label}"),
+            _ => eprintln!("Failed to update agent {id}"),
+        }
+
+        Ok(())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn agent_state_serialization_roundtrip() {
+        let state = AgentState {
+            id: "test-agent".to_string(),
+            session_id: "session-123".to_string(),
+            socket_path: "/tmp/test.sock".to_string(),
+            pid: 12345,
+            status: "running".to_string(),
+            prompt: "test prompt".to_string(),
+            model: "anthropic/claude-3-opus".to_string(),
+            created_at: 1_234_567_890,
+            updated_at: 1_234_567_900,
+        };
+
+        let json = serde_json::to_string(&state).unwrap();
+        let decoded: AgentState = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(decoded.id, state.id);
+        assert_eq!(decoded.session_id, state.session_id);
+        assert_eq!(decoded.socket_path, state.socket_path);
+        assert_eq!(decoded.pid, state.pid);
+        assert_eq!(decoded.status, state.status);
+        assert_eq!(decoded.prompt, state.prompt);
+        assert_eq!(decoded.model, state.model);
+        assert_eq!(decoded.created_at, state.created_at);
+        assert_eq!(decoded.updated_at, state.updated_at);
+    }
+
+    #[test]
+    fn client_command_message_serialization() {
+        let cmd = ClientCommand::Message {
+            text: "hello".to_string(),
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        let decoded: ClientCommand = serde_json::from_str(&json).unwrap();
+
+        assert!(matches!(
+            decoded,
+            ClientCommand::Message { text } if text == "hello"
+        ));
+    }
+
+    #[test]
+    fn client_command_stop_serialization() {
+        let cmd = ClientCommand::Stop;
+        let json = serde_json::to_string(&cmd).unwrap();
+        let decoded: ClientCommand = serde_json::from_str(&json).unwrap();
+
+        assert!(matches!(decoded, ClientCommand::Stop));
+    }
+
+    #[test]
+    fn server_event_text_delta_serialization() {
+        let event = ServerEvent::TextDelta {
+            text: "hello".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let decoded: ServerEvent = serde_json::from_str(&json).unwrap();
+
+        assert!(matches!(
+            decoded,
+            ServerEvent::TextDelta { text } if text == "hello"
+        ));
+    }
+
+    #[test]
+    fn server_event_done_serialization() {
+        let event = ServerEvent::Done {
+            text: "result".to_string(),
+            usage: serde_json::json!({ "total_tokens": 100 }),
+            error: None,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let decoded: ServerEvent = serde_json::from_str(&json).unwrap();
+
+        assert!(matches!(
+            decoded,
+            ServerEvent::Done { text, .. } if text == "result"
+        ));
+    }
+
+    #[test]
+    fn list_agent_states_empty_directory() {
+        let tmp = TempDir::new().unwrap();
+        let state_dir = StateDir::from_path(tmp.path().to_path_buf());
+        let _agents_dir = state_dir.ensure_subdir(AGENTS_SUBDIR).unwrap();
+
+        let states = list_agent_states(&state_dir).unwrap();
+        assert!(states.is_empty());
+    }
+
+    #[test]
+    fn list_agent_states_with_entries() {
+        let tmp = TempDir::new().unwrap();
+        let state_dir = StateDir::from_path(tmp.path().to_path_buf());
+        let agents_root = state_dir.ensure_subdir(AGENTS_SUBDIR).unwrap();
+
+        let agent1_path = agents_root.join("agent1");
+        fs::create_dir_all(&agent1_path).unwrap();
+        let first_state = AgentState {
+            id: "agent1".to_string(),
+            session_id: "session1".to_string(),
+            socket_path: "/tmp/agent1.sock".to_string(),
+            pid: 1,
+            status: "running".to_string(),
+            prompt: "prompt1".to_string(),
+            model: "model1".to_string(),
+            created_at: 100,
+            updated_at: 200,
+        };
+        let data1 = serde_json::to_vec_pretty(&first_state).unwrap();
+        n00n_storage::atomic_write(&agent1_path.join(STATE_FILE), &data1).unwrap();
+
+        let agent2_path = agents_root.join("agent2");
+        fs::create_dir_all(&agent2_path).unwrap();
+        let second_state = AgentState {
+            id: "agent2".to_string(),
+            session_id: "session2".to_string(),
+            socket_path: "/tmp/agent2.sock".to_string(),
+            pid: 2,
+            status: "running".to_string(),
+            prompt: "prompt2".to_string(),
+            model: "model2".to_string(),
+            created_at: 50,
+            updated_at: 300,
+        };
+        let data2 = serde_json::to_vec_pretty(&second_state).unwrap();
+        n00n_storage::atomic_write(&agent2_path.join(STATE_FILE), &data2).unwrap();
+
+        let all = list_agent_states(&state_dir).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].id, "agent2");
+        assert_eq!(all[1].id, "agent1");
+    }
+
+    #[test]
+    fn validate_agent_id_accepts_safe_ids() {
+        assert!(validate_agent_id("my-agent_1").is_ok());
+        assert!(validate_agent_id("a").is_ok());
+        assert!(validate_agent_id(&"x".repeat(64)).is_ok());
+    }
+
+    #[test]
+    fn validate_agent_id_rejects_unsafe_ids() {
+        assert!(validate_agent_id("").is_err());
+        assert!(validate_agent_id("a/b").is_err());
+        assert!(validate_agent_id("..").is_err());
+        assert!(validate_agent_id("../../../etc/passwd").is_err());
+        assert!(validate_agent_id("a b").is_err());
+        assert!(validate_agent_id(&"x".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn agent_dir_rejects_path_traversal_id() {
+        let tmp = TempDir::new().unwrap();
+        let state_dir = StateDir::from_path(tmp.path().to_path_buf());
+        assert!(agent_dir(&state_dir, "../escape").is_err());
+    }
+
+    #[test]
+    fn build_team_message_uses_goal_and_appends_prompt_context() {
+        let msg = build_team_message(
+            "use rust",
+            Some("ship feature"),
+            Some("autonomous"),
+            Some(8),
+            true,
+        )
+        .unwrap();
+        assert!(msg.starts_with("Use the team tool now."));
+        assert!(msg.contains("ship feature"));
+        assert!(msg.contains("use rust"));
+        assert!(msg.contains("\"mode\":\"autonomous\""));
+        assert!(msg.contains("\"max_agents\":8"));
+        assert!(msg.contains("\"waves\":true"));
+    }
+
+    #[test]
+    fn build_team_message_defaults_prompt_to_goal() {
+        let msg = build_team_message("ship feature", None, None, None, false).unwrap();
+        assert!(msg.contains("\"goal\":\"ship feature\""));
+        assert!(msg.contains("\"mode\":\"autonomous\""));
+    }
+
+    #[test]
+    fn build_team_message_rejects_invalid_mode() {
+        assert!(build_team_message("g", None, Some("fast"), None, false).is_err());
+    }
+
+    #[test]
+    fn build_workflow_message_includes_script_inputs_and_goal() {
+        let msg = build_workflow_message(
+            "return agent({prompt = inputs.goal})",
+            Some("find bugs"),
+            Some(r#"{"foo":"bar"}"#),
+        )
+        .unwrap();
+        assert!(msg.starts_with("Use the workflow tool now."));
+        assert!(msg.contains("find bugs"));
+        assert!(msg.contains("bar"));
+        assert!(msg.contains("return agent({prompt = inputs.goal})"));
+    }
+
+    #[test]
+    fn build_task_message_uses_description_and_prompt() {
+        let msg =
+            build_task_message("refactor this module", Some("cleanup"), Some("refactor")).unwrap();
+        assert!(msg.starts_with("Use the task tool now."));
+        assert!(msg.contains("\"description\":\"refactor\""));
+        assert!(msg.contains("\"prompt\":\"refactor this module\""));
+    }
+
+    #[test]
+    fn build_generic_message_prepends_goal() {
+        let msg = build_generic_message("do it", Some("win"));
+        assert_eq!(msg, "Goal: win\n\ndo it");
     }
 }

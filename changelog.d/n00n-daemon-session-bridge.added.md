@@ -1,1 +1,1 @@
-Agent control plane: `n00n-daemon` crate, scoped `agent_list`/`agent_status`/`agent_control` tools, `n00n agent` CLI, and TUI `daemon.sock` registration so live sessions appear in CLI list.
+Agent control plane: `n00n-daemon`, scoped agent tools, TUI daemon.sock registration, #129 control/steer, and #134 background worker socks under unified `n00n agent` CLI.
