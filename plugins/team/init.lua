@@ -7,6 +7,7 @@ local ActivityPreview = require("n00n.activity_preview")
 local memory = require("mem")
 local retrieve = require("retrieve")
 local roles = require("roles")
+local subagent = require("n00n.subagent")
 local ibn = require("ibn")
 local quorum = require("quorum")
 local swarm = require("swarm")
@@ -227,8 +228,6 @@ local schema = {
   },
 }
 
-local NUDGE = "You have not called structured_output. Call it now with the plan object."
-
 local function new_agent_budget(requested)
   local limit = math.min(requested or DEFAULT_TEAM_AGENTS, MAX_TEAM_AGENTS)
   return {
@@ -254,85 +253,35 @@ local function plan_prompt(goal)
 end
 
 local function run_supervisor(ctx, goal, opts)
-  local budget_ok, budget_err = opts._agent_budget:consume()
-  if not budget_ok then
-    return nil, budget_err
-  end
-  local validator, verr = n00n.json.schema_validator(PLANNER_OUTPUT)
-  if verr then
-    return nil, "planner schema invalid: " .. verr
-  end
-  local model, merr =
-    n00n.agent.resolve_model(ctx, { spec = opts.model, tier = not opts.model and opts.model_tier or nil })
-  if merr then
-    return nil, merr
-  end
-  local system, serr = n00n.agent.system_prompt(ctx, { prompt_id = "general", instructions = true })
-  if serr then
-    return nil, serr
-  end
-  local tools, terr = n00n.agent.tools(ctx, { spec = model.spec, audience = "general_sub", include_mcp = true })
-  if terr then
-    return nil, terr
-  end
-
-  local captured
-  local local_tools = {
-    structured_output = {
-      description = "Output the plan as {steps:[{role, prompt, tier?}]}.",
-      input_schema = PLANNER_OUTPUT,
-      handler = function(value)
-        local e = validator:validate(value)
-        if e then
-          return nil, "invalid plan: " .. table.concat(e, "; ")
-        end
-        captured = value
-        return "Plan recorded."
-      end,
-    },
-  }
-
-  local sess, sess_err = n00n.agent.session(ctx, {
-    model_spec = model.spec,
-    system = system,
-    tools = tools,
-    local_tools = local_tools,
-    audience = "general_sub",
-    name = "team-supervisor",
+  local captured, err, cost, usage_val = subagent.launch(ctx, {
+    description = "team-supervisor",
+    prompt = plan_prompt(goal),
+    output_schema = PLANNER_OUTPUT,
+    model_spec = opts.model,
+    model_tier = opts.model_tier,
     thinking = opts.thinking,
+    preview = opts._preview,
+    activity_label = "supervisor",
+    budget = opts._agent_budget,
+    fail_on_pricing_error = true,
   })
-  if sess_err then
-    return nil, sess_err
+
+  if err then
+    return nil, "supervisor failed: " .. err, cost, usage_val
+  end
+  if type(captured) ~= "table" or not captured.steps then
+    return nil, "supervisor produced no plan", cost, usage_val
   end
 
-  local res, rerr = opts._preview:prompt(sess, plan_prompt(goal), "supervisor")
-  if not rerr and not captured then
-    local nudged
-    nudged, rerr = opts._preview:prompt(sess, NUDGE, "supervisor")
-    if nudged then
-      res = nudged
-    end
-  end
-  sess:close()
-  local usage, cost, metrics_err = roles.metrics(model.spec, res)
-  if metrics_err then
-    return nil, "supervisor usage pricing failed: " .. metrics_err, nil, usage
-  end
-  if rerr then
-    return nil, "supervisor failed: " .. rerr, cost, usage
-  end
-  if not captured then
-    return nil, "supervisor produced no plan", cost, usage
-  end
   local max_steps = math.min(opts.max_steps or DEFAULT_PLAN_STEPS, MAX_PLAN_STEPS)
   local steps = {}
   for i = 1, math.min(#captured.steps, max_steps) do
     steps[i] = captured.steps[i]
   end
   if #steps == 0 then
-    return nil, "supervisor produced an empty plan", cost, usage
+    return nil, "supervisor produced an empty plan", cost, usage_val
   end
-  return steps, nil, cost, usage
+  return steps, nil, cost, usage_val
 end
 
 local function run_step(ctx, step, goal, input, relay_k, prior_results)

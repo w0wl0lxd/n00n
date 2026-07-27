@@ -9,7 +9,7 @@ local usage = require("n00n.usage")
 local structured_output = require("n00n.structured_output")
 
 -- Launch a subagent with the given options.
--- Returns (result | nil, err, cost, usage)
+-- Returns (result | nil, err, cost, usage, model_spec)
 --
 -- Options:
 --   description (required): Short description for the subagent
@@ -19,27 +19,41 @@ local structured_output = require("n00n.structured_output")
 --   model_tier: Capped tier: "weak", "medium", or "strong"
 --   auto_tier: Pick model_tier from prompt automatically (optional)
 --   thinking: Thinking mode configuration
+--   system: Override the default system prompt (optional)
 --   output_schema: JSON Schema for structured output validation
 --   audience: Tool audience (default: computed from subagent_type)
+--   include_mcp: Include MCP tools (default: true)
 --   local_tools: Additional local tools to register
+--   preview: ActivityPreview object wrapping sess:prompt (optional)
+--   activity_label: Label used with preview (default: description)
+--   budget: Budget object with :consume() method (optional)
+--   fail_on_pricing_error: Return an error if usage pricing fails (default: false)
 --   ctx: Agent context (required)
 function M.launch(ctx, opts)
   if not opts then
-    return nil, "opts is required", nil, nil
+    return nil, "opts is required", nil, nil, nil
   end
   if not opts.description then
-    return nil, "opts.description is required", nil, nil
+    return nil, "opts.description is required", nil, nil, nil
   end
   if not opts.prompt then
-    return nil, "opts.prompt is required", nil, nil
+    return nil, "opts.prompt is required", nil, nil, nil
   end
   if not ctx then
-    return nil, "ctx is required", nil, nil
+    return nil, "ctx is required", nil, nil, nil
+  end
+
+  -- Budget check
+  if opts.budget then
+    local budget_ok, budget_err = opts.budget:consume()
+    if not budget_ok then
+      return nil, budget_err or "budget exhausted", nil, nil, nil
+    end
   end
 
   local subagent_type = opts.subagent_type or "general"
   if subagent_type ~= "research" and subagent_type ~= "general" then
-    return nil, "unknown subagent_type: " .. tostring(subagent_type), nil, nil
+    return nil, "unknown subagent_type: " .. tostring(subagent_type), nil, nil, nil
   end
 
   -- Resolve model tier (auto_tier overrides model_tier when no explicit spec)
@@ -54,29 +68,37 @@ function M.launch(ctx, opts)
     tier = not opts.model_spec and model_tier or nil,
   })
   if model_err then
-    return nil, model_err, nil, nil
+    return nil, model_err, nil, nil, nil
   end
+  local model_spec = model.spec
 
   -- Compute audience and prompt_id
   local audience = opts.audience or (subagent_type == "research" and "research_sub" or "general_sub")
   local prompt_id = subagent_type == "research" and "research" or "general"
 
   -- Build system prompt
-  local system, system_err = n00n.agent.system_prompt(ctx, {
-    prompt_id = prompt_id,
-    instructions = true,
-  })
-  if system_err then
-    return nil, system_err, nil, nil
+  local system
+  if opts.system then
+    system = opts.system
+  else
+    local system_err
+    system, system_err = n00n.agent.system_prompt(ctx, {
+      prompt_id = prompt_id,
+      instructions = true,
+    })
+    if system_err then
+      return nil, system_err, nil, nil, model_spec
+    end
   end
 
   -- Get tool definitions
   local tool_defs, tools_err = n00n.agent.tools(ctx, {
     audience = audience,
-    spec = model.spec,
+    spec = model_spec,
+    include_mcp = opts.include_mcp,
   })
   if tools_err then
-    return nil, tools_err, nil, nil
+    return nil, tools_err, nil, nil, model_spec
   end
 
   -- Set up local tools
@@ -90,7 +112,7 @@ function M.launch(ctx, opts)
     local compile_err
     validator, compile_err = structured_output.compile_validator(opts.output_schema)
     if compile_err then
-      return nil, compile_err, nil, nil
+      return nil, compile_err, nil, nil, model_spec
     end
 
     local_tools[structured_output.STRUCTURED_OUTPUT_NAME] = {
@@ -110,7 +132,7 @@ function M.launch(ctx, opts)
 
   -- Create session
   local sess, sess_err = n00n.agent.session(ctx, {
-    model_spec = model.spec,
+    model_spec = model_spec,
     system = system,
     tools = tool_defs,
     local_tools = local_tools,
@@ -119,7 +141,7 @@ function M.launch(ctx, opts)
     thinking = opts.thinking,
   })
   if sess_err then
-    return nil, sess_err, nil, nil
+    return nil, sess_err, nil, nil, model_spec
   end
 
   -- Build message with structured output suffix if needed
@@ -128,34 +150,52 @@ function M.launch(ctx, opts)
     message = message .. structured_output.STRUCTURED_OUTPUT_SUFFIX
   end
 
+  local preview = opts.preview
+  local label = opts.activity_label or opts.description
+
   -- Run the prompt with retry logic for structured output
-  local result, err = sess:prompt(message)
+  local result, err
+  if preview then
+    result, err = preview:prompt(sess, message, label)
+  else
+    result, err = sess:prompt(message)
+  end
   local retries = 0
   while not err and validator and not captured and retries < structured_output.MAX_STRUCTURED_RETRIES do
     retries = retries + 1
-    result, err = sess:prompt(structured_output.NUDGE_MISSING)
+    if preview then
+      result, err = preview:prompt(sess, structured_output.NUDGE_MISSING, label)
+    else
+      result, err = sess:prompt(structured_output.NUDGE_MISSING)
+    end
   end
 
   sess:close()
 
+  -- Normalize usage from raw result for error paths
+  local measured_usage, _ = usage.normalize(result)
+
   if err then
-    return nil, "sub-agent error: " .. err, nil, result
+    return nil, "sub-agent error: " .. err, nil, measured_usage, model_spec
   end
 
   if validator and not captured then
     local msg = (last_errors and (structured_output.STRUCTURED_INVALID_ERROR .. ":\n" .. last_errors))
       or structured_output.STRUCTURED_MISSING_ERROR
-    return nil, msg, nil, result
+    return nil, msg, nil, measured_usage, model_spec
   end
 
   -- Calculate cost and usage
-  local measured_usage, cost, metrics_err = usage.price(model.spec, result)
+  local priced_usage, cost, metrics_err = usage.price(model_spec, result)
   if metrics_err then
+    if opts.fail_on_pricing_error then
+      return nil, "pricing failed: " .. metrics_err, nil, priced_usage, model_spec
+    end
     -- Return result even if pricing fails
-    return captured or result.text, nil, nil, measured_usage
+    return captured or result.text, nil, nil, priced_usage, model_spec
   end
 
-  return captured or result.text, nil, cost, measured_usage
+  return captured or result.text, nil, cost, priced_usage, model_spec
 end
 
 return M
