@@ -155,7 +155,7 @@ local function append_line(output, line)
   output[#output + 1] = line
 end
 
-local DEFAULT_MAX_LINE_BYTES = 500
+local DEFAULT_MAX_LINE_BYTES = 400
 
 local function create_bash_view(command, ctx)
   local tol = ctx:tool_output_lines()
@@ -245,7 +245,7 @@ Commands run in ]] .. cwd .. [[ by default.
 - Do NOT use to communicate text to the user.
 - Chain dependent commands with `&&`. Use batch for independent ones.
 - Provide a short `description` (3-5 words).
-- Output truncated beyond 2000 lines or 50KB.
+- Output truncated beyond 500 lines or 16KB.
 - Interactive commands (sudo, ssh prompts) fail immediately.]]
 
 n00n.api.register_prompt_hint({

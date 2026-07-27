@@ -31,10 +31,10 @@ pub const DEFAULT_TONE: &str = r"- Be concise. Your output is displayed on a CLI
 - NEVER create files unless absolutely necessary. ALWAYS prefer editing existing files.";
 
 const NATIVE_EFFICIENT_TOOLS: &[&str] = &[
-    "arbor (optional, requires Arbor CLI)",
+    "arbor (optional)",
     "batch",
     "code_execution",
-    "codegraph (optional, requires .codegraph/ index)",
+    "codegraph (optional)",
     "index",
     "task",
 ];

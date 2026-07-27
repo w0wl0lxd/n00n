@@ -1,1 +1,1 @@
-Summarize the conversation concisely for continuation. Cover: what was done, what's in progress, which files are affected, what's next, key user constraints, and important technical decisions. Output only the summary.
+Summarize the conversation for continuation. Cover: goal, progress, affected files, key constraints, technical decisions, and next steps. Output only the summary.

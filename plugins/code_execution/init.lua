@@ -7,8 +7,8 @@ local truncate = require("n00n.truncate")
 local ToolView = require("n00n.tool_view")
 local output_limits = require("n00n.output_limits")
 
-local DEFAULT_MAX_OUTPUT_LINES = 2000
-local DEFAULT_MAX_OUTPUT_BYTES = 50 * 1024
+local DEFAULT_MAX_OUTPUT_LINES = 500
+local DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024
 local MAX_SCRIPT_LINES = 2000
 local NO_OUTPUT = "(no output)"
 local SEPARATOR = "──────"
