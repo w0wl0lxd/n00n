@@ -224,6 +224,14 @@ fn is_authorized_plan_target(plan_path: &Path, target: &Path) -> bool {
     plan == target
 }
 
+#[derive(Clone)]
+struct PendingToolCall {
+    position: usize,
+    id: String,
+    name: String,
+    input: Value,
+}
+
 fn skill_policy_denied(name: &str, ctx: &ToolContext) -> Option<String> {
     let policy = ctx.active_skill_policy.as_ref()?;
     let decision = policy.evaluate(name);
@@ -232,6 +240,11 @@ fn skill_policy_denied(name: &str, ctx: &ToolContext) -> Option<String> {
     } else {
         decision.reason
     }
+}
+
+fn is_skill_tool_call(name: &str) -> bool {
+    name.strip_prefix("functions.").map_or(name, |value| value)
+        == crate::skill_policy::SKILL_TOOL_NAME
 }
 
 pub(super) struct RecentCalls(VecDeque<(String, u64)>);
@@ -694,18 +707,22 @@ pub(super) async fn process_tool_calls(
     event_tx: &crate::EventSender,
     ctx: &ToolContext,
 ) -> Result<Vec<ToolDoneEvent>, AgentError> {
-    let tool_uses: Vec<(String, String, Value)> = response
+    let tool_uses: Vec<(usize, String, String, Value)> = response
         .message
         .tool_uses()
-        .map(|(id, name, input)| (id.to_owned(), name.to_owned(), input.clone()))
+        .enumerate()
+        .map(|(position, (id, name, input))| {
+            (position, id.to_owned(), name.to_owned(), input.clone())
+        })
         .collect();
 
     history.push(response.message);
 
-    let mut immediate_errors: Vec<ToolDoneEvent> = Vec::new();
-    let mut runnable: Vec<(String, String, Value)> = Vec::new();
+    let mut immediate_errors: Vec<(usize, ToolDoneEvent)> = Vec::new();
+    let mut skill_calls: Vec<PendingToolCall> = Vec::new();
+    let mut non_skill_calls: Vec<PendingToolCall> = Vec::new();
 
-    for (id, name, input) in tool_uses {
+    for (position, id, name, input) in tool_uses {
         debug!(
             tool = %name,
             id = %id,
@@ -714,24 +731,68 @@ pub(super) async fn process_tool_calls(
         );
         if recent_calls.is_doom_loop(&name, &input) {
             warn!(tool = %name, "doom loop detected, skipping execution");
-            immediate_errors.push(ToolDoneEvent::error(id.clone(), DOOM_LOOP_MESSAGE));
+            immediate_errors.push((
+                position,
+                ToolDoneEvent::error(id.clone(), DOOM_LOOP_MESSAGE),
+            ));
         } else {
-            runnable.push((id, name.clone(), input.clone()));
+            let call = PendingToolCall {
+                position,
+                id,
+                name: name.clone(),
+                input: input.clone(),
+            };
+            if is_skill_tool_call(&name) {
+                skill_calls.push(call);
+            } else {
+                non_skill_calls.push(call);
+            }
         }
         recent_calls.record(name, &input);
     }
 
-    for err in &immediate_errors {
+    for (_, err) in &immediate_errors {
         event_tx.try_send(AgentEvent::ToolDone(Box::new(err.clone())));
     }
 
-    let mut set = TaskSet::new();
-    let mut spawned_ids: Vec<String> = Vec::new();
-    for (id, name, input) in runnable {
-        spawned_ids.push(id.clone());
+    let mut runnable_results: Vec<(usize, ToolDoneEvent)> = Vec::new();
+    let mut active_skill_policy = ctx.active_skill_policy.clone();
+    let mcp_owned = mcp.cloned();
+    for call in skill_calls {
         let event_tx_clone = ctx.event_tx.clone();
         let tool_ctx = ToolContext {
-            tool_use_id: Some(id.clone()),
+            tool_use_id: Some(call.id.clone()),
+            active_skill_policy: active_skill_policy.clone(),
+            ..ctx.clone()
+        };
+        let done = run(
+            &tool_ctx.registry,
+            mcp_owned.as_ref(),
+            call.id,
+            &call.name,
+            &call.input,
+            &tool_ctx,
+            Emit::Notify,
+        )
+        .await;
+        crate::skill_policy::ActiveSkillPolicy::apply_from_skill_tool_result(
+            &mut active_skill_policy,
+            &done.tool,
+            done.is_error,
+            done.output.state(),
+        );
+        event_tx_clone.try_send(AgentEvent::ToolDone(Box::new(done.clone())));
+        runnable_results.push((call.position, done));
+    }
+
+    let mut set = TaskSet::new();
+    let mut spawned_meta: Vec<(usize, String)> = Vec::new();
+    for call in non_skill_calls {
+        spawned_meta.push((call.position, call.id.clone()));
+        let event_tx_clone = ctx.event_tx.clone();
+        let tool_ctx = ToolContext {
+            tool_use_id: Some(call.id.clone()),
+            active_skill_policy: active_skill_policy.clone(),
             ..ctx.clone()
         };
         let mcp_owned = mcp.cloned();
@@ -739,9 +800,9 @@ pub(super) async fn process_tool_calls(
             let done = run(
                 &tool_ctx.registry,
                 mcp_owned.as_ref(),
-                id,
-                &name,
-                &input,
+                call.id,
+                &call.name,
+                &call.input,
                 &tool_ctx,
                 Emit::Notify,
             )
@@ -751,22 +812,29 @@ pub(super) async fn process_tool_calls(
         });
     }
 
-    let results: Vec<ToolDoneEvent> = set
+    let parallel_results: Vec<(usize, ToolDoneEvent)> = set
         .join_all()
         .await
         .into_iter()
-        .zip(spawned_ids)
-        .map(|(r, id)| match r {
-            Ok(out) => out,
+        .zip(spawned_meta)
+        .map(|(r, (position, id))| match r {
+            Ok(out) => (position, out),
             Err(e) => {
                 error!(error = %e, "tool task panicked");
-                ToolDoneEvent::error(id, format!("internal error: tool panicked: {e}"))
+                (
+                    position,
+                    ToolDoneEvent::error(id, format!("internal error: tool panicked: {e}")),
+                )
             }
         })
         .collect();
 
-    let mut all_results = results;
-    all_results.extend(immediate_errors);
+    let mut all_with_pos: Vec<(usize, ToolDoneEvent)> = runnable_results;
+    all_with_pos.extend(parallel_results);
+    all_with_pos.extend(immediate_errors);
+    all_with_pos.sort_by_key(|(position, _)| *position);
+    let all_results: Vec<ToolDoneEvent> =
+        all_with_pos.into_iter().map(|(_, result)| result).collect();
 
     let tool_msg = crate::types::tool_results(all_results.clone());
     event_tx.send(AgentEvent::ToolResultsSubmitted {
@@ -794,10 +862,12 @@ async fn dispatch_mcp(
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
     use std::path::PathBuf;
     use std::sync::Arc;
 
     use n00n_config::{Effect, PermissionRule, PermissionsConfig, ToolKey};
+    use n00n_providers::{ContentBlock, Message, StopReason, StreamResponse, TokenUsage};
     use tempfile::TempDir;
     use test_case::test_case;
 
@@ -838,6 +908,25 @@ mod tests {
         map.insert(name.to_owned(), Arc::new(f) as LocalToolFn);
         ctx.local_tools = Arc::new(map);
         ctx
+    }
+
+    fn response_with_tool_uses(calls: &[(&str, &str, Value)]) -> StreamResponse {
+        StreamResponse {
+            message: Message {
+                role: n00n_providers::Role::Assistant,
+                content: calls
+                    .iter()
+                    .map(|(id, name, input)| ContentBlock::ToolUse {
+                        id: (*id).to_owned(),
+                        name: (*name).to_owned(),
+                        input: input.clone(),
+                    })
+                    .collect(),
+                ..Default::default()
+            },
+            usage: TokenUsage::default(),
+            stop_reason: Some(StopReason::ToolUse),
+        }
     }
 
     #[test]
@@ -1662,6 +1751,144 @@ mod tests {
             .await;
             assert!(!done.is_error);
             assert_eq!(done.output.as_text(), "loaded");
+        });
+    }
+
+    #[test]
+    fn process_tool_calls_applies_skill_policy_within_same_batch() {
+        struct SkillInvocation;
+        impl ToolInvocation for SkillInvocation {
+            fn start_header(&self) -> HeaderFuture {
+                HeaderFuture::Ready(HeaderResult::plain("skill".into()))
+            }
+            fn execute(self: Box<Self>, _ctx: &ToolContext) -> ExecFuture<'_> {
+                Box::pin(async {
+                    ToolExecResult::from(Ok::<_, String>(ToolOutput::Plain(crate::TextOutput {
+                        text: "loaded".into(),
+                        instructions: None,
+                        state: Some(serde_json::json!({
+                            "active_skill": {
+                                "name": "safe",
+                                "allowed_tools": ["read"]
+                            }
+                        })),
+                        telemetry: None,
+                    })))
+                })
+            }
+        }
+
+        struct SkillTool;
+        impl Tool for SkillTool {
+            fn name(&self) -> &str {
+                "skill"
+            }
+            fn description(&self, _ctx: &DescriptionContext) -> Cow<'_, str> {
+                "skill".into()
+            }
+            fn schema(&self) -> Value {
+                serde_json::json!({"type":"object"})
+            }
+            fn parse(&self, _input: &Value) -> Result<Box<dyn ToolInvocation>, ParseError> {
+                Ok(Box::new(SkillInvocation))
+            }
+        }
+
+        struct BashInvocation;
+        impl ToolInvocation for BashInvocation {
+            fn start_header(&self) -> HeaderFuture {
+                HeaderFuture::Ready(HeaderResult::plain("bash".into()))
+            }
+            fn execute(self: Box<Self>, _ctx: &ToolContext) -> ExecFuture<'_> {
+                Box::pin(async {
+                    ToolExecResult::from(Ok::<_, String>(ToolOutput::Plain("ran".into())))
+                })
+            }
+        }
+
+        struct BashTool;
+        impl Tool for BashTool {
+            fn name(&self) -> &str {
+                "bash"
+            }
+            fn description(&self, _ctx: &DescriptionContext) -> Cow<'_, str> {
+                "bash".into()
+            }
+            fn schema(&self) -> Value {
+                serde_json::json!({"type":"object"})
+            }
+            fn parse(&self, _input: &Value) -> Result<Box<dyn ToolInvocation>, ParseError> {
+                Ok(Box::new(BashInvocation))
+            }
+        }
+
+        smol::block_on(async {
+            let registry = ToolRegistry::new();
+            let source = ToolSource::Lua {
+                plugin: "test".into(),
+            };
+            let skill: Arc<dyn Tool> = Arc::new(SkillTool);
+            let bash: Arc<dyn Tool> = Arc::new(BashTool);
+            registry.register(&skill, &source).expect("register skill");
+            registry.register(&bash, &source).expect("register bash");
+
+            let mut ctx = crate::tools::test_support::stub_ctx(&AgentMode::Build);
+            ctx.registry = Arc::new(registry);
+            let (tx, _rx) = flume::unbounded::<crate::Envelope>();
+            let event_tx = crate::EventSender::new(tx, 0);
+            let mut history = crate::agent::History::new(Vec::new());
+            let mut recent_calls = RecentCalls::new();
+            let response = response_with_tool_uses(&[
+                ("t-bash", "bash", serde_json::json!({})),
+                ("t-skill", "skill", serde_json::json!({})),
+            ]);
+            let results = process_tool_calls(
+                response,
+                &mut recent_calls,
+                None,
+                &mut history,
+                &event_tx,
+                &ctx,
+            )
+            .await
+            .expect("process batch");
+
+            let bash_result = results
+                .iter()
+                .find(|done| done.id == "t-bash")
+                .expect("bash result");
+            assert!(bash_result.is_error, "bash must be blocked by skill policy");
+            assert!(
+                bash_result
+                    .output
+                    .as_text()
+                    .contains(crate::skill_policy::SKILL_POLICY_DENIED_PREFIX)
+            );
+        });
+    }
+
+    #[test]
+    fn process_tool_calls_without_skill_keeps_parallel_tools_allowed() {
+        smol::block_on(async {
+            let mut ctx = local_ctx("read", |_| Ok("ok".into()));
+            let (tx, _rx) = flume::unbounded::<crate::Envelope>();
+            let event_tx = crate::EventSender::new(tx, 0);
+            let mut history = crate::agent::History::new(Vec::new());
+            let mut recent_calls = RecentCalls::new();
+            let response = response_with_tool_uses(&[("t-read", "read", serde_json::json!({}))]);
+            let results = process_tool_calls(
+                response,
+                &mut recent_calls,
+                None,
+                &mut history,
+                &event_tx,
+                &ctx,
+            )
+            .await
+            .expect("process batch");
+            assert_eq!(results.len(), 1);
+            assert!(!results[0].is_error);
+            assert_eq!(results[0].output.as_text(), "ok");
         });
     }
 }

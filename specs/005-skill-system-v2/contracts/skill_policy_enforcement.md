@@ -20,4 +20,9 @@
 
 **Clear**: `ToolDoneEvent` where `tool == "skill"`, `!is_error`, `state.active_skill` absent or null.
 
-**Scope**: Applies from the turn after the skill tool completes (subsequent `tool_dispatch::run` calls in later turns and later parallel batch items if policy was set in a prior turn).
+**Batch semantics**:
+
+- If a tool batch contains one or more `skill` calls, dispatch runs those `skill` calls first (sequentially, in provider order), updates policy after each successful `skill` result, then dispatches all other tools.
+- Non-`skill` calls in that same batch are therefore evaluated against the final active policy produced by the `skill` phase, regardless of original call ordering in the provider message.
+
+**Scope**: Applies in the same batch after `skill` phase completion and to all later turns.
