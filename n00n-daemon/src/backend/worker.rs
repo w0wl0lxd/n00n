@@ -271,4 +271,72 @@ mod tests {
             other => Err(format!("expected InvalidId, got {other:?}")),
         }
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn pause_roundtrips_over_control_sock() -> Result<(), String> {
+        use futures_lite::{AsyncBufReadExt, AsyncWriteExt, io::BufReader};
+        use smol::net::unix::UnixListener;
+        use std::time::Duration;
+
+        let tmp = TempDir::new().map_err(|e| e.to_string())?;
+        let sock_path = tmp.path().join("control.sock");
+        let sock_serve = sock_path.clone();
+        let server = std::thread::spawn(move || {
+            smol::block_on(async {
+                let listener = UnixListener::bind(&sock_serve).map_err(|e| e.to_string())?;
+                let (stream, _) = listener.accept().await.map_err(|e| e.to_string())?;
+                let (reader, mut writer) = futures_lite::io::split(stream);
+                let mut reader = BufReader::new(reader);
+                let mut line = String::new();
+                reader
+                    .read_line(&mut line)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if !line.contains("\"cmd\":\"pause\"") {
+                    return Err(format!("unexpected command line: {line}"));
+                }
+                writer
+                    .write_all(b"{\"ok\":true}\n")
+                    .await
+                    .map_err(|e| e.to_string())?;
+                writer.flush().await.map_err(|e| e.to_string())?;
+                Ok::<(), String>(())
+            })
+        });
+
+        std::thread::sleep(Duration::from_millis(20));
+        write_fixture_with_socket(tmp.path(), "worker-1", "running", &sock_path)?;
+
+        let backend = WorkerBackend::new(tmp.path());
+        backend.pause("worker-1").map_err(|e| e.to_string())?;
+
+        match server.join() {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err("mock worker server panicked".into()),
+        }
+    }
+
+    fn write_fixture_with_socket(
+        dir: &Path,
+        id: &str,
+        status: &str,
+        socket_path: &Path,
+    ) -> Result<(), String> {
+        let agent_dir = dir.join(AGENTS_SUBDIR).join(id);
+        fs::create_dir_all(&agent_dir).map_err(|e| e.to_string())?;
+        let state = WorkerStateFile {
+            id: id.to_owned(),
+            session_id: "sess".into(),
+            socket_path: socket_path.to_string_lossy().into_owned(),
+            status: status.to_owned(),
+            model: "test/model".into(),
+            prompt: "hello world".into(),
+            updated_at: 1,
+        };
+        let encoded = sonic_rs::to_string_pretty(&state).map_err(|e| e.to_string())?;
+        fs::write(agent_dir.join(STATE_FILE), encoded).map_err(|e| e.to_string())?;
+        Ok(())
+    }
 }

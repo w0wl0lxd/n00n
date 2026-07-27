@@ -332,17 +332,42 @@ pub enum AgentCommand {
         id: Option<String>,
     },
     /// List background agents
-    List,
+    List {
+        /// Override state directory
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
+    },
     /// Show agent status
-    Status { id: String },
+    Status {
+        id: String,
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
+    },
     /// Send message to agent
-    Message { id: String, text: String },
+    Message {
+        id: String,
+        text: String,
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
+    },
     /// Pause agent
-    Pause { id: String },
+    Pause {
+        id: String,
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
+    },
     /// Resume agent
-    Resume { id: String },
+    Resume {
+        id: String,
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
+    },
     /// Stop agent
-    Stop { id: String },
+    Stop {
+        id: String,
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
+    },
     /// Start a foreground control-plane listener (worker backend only)
     Daemon {
         /// Override state directory
@@ -556,6 +581,7 @@ mod tests {
                 action: AgentCommand::Message {
                     id,
                     text,
+                    state_dir: None,
                 }
             }) if id == "agent-id" && text == "hello"
         ));
@@ -567,7 +593,7 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::Agent {
-                action: AgentCommand::Stop { id }
+                action: AgentCommand::Stop { id, state_dir: None }
             }) if id == "agent-id"
         ));
     }
@@ -578,7 +604,7 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::Agent {
-                action: AgentCommand::List
+                action: AgentCommand::List { state_dir: None }
             })
         ));
     }

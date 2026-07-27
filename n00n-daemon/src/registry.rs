@@ -349,4 +349,128 @@ mod tests {
             Err(_) => Err("server thread panicked".into()),
         }
     }
+
+    fn write_worker_fixture(
+        dir: &std::path::Path,
+        id: &str,
+        socket_path: &std::path::Path,
+    ) -> Result<(), String> {
+        use std::fs;
+
+        const AGENTS_SUBDIR: &str = "agents";
+        const STATE_FILE: &str = "agent.json";
+        let agent_dir = dir.join(AGENTS_SUBDIR).join(id);
+        fs::create_dir_all(&agent_dir).map_err(|e| e.to_string())?;
+        let state = sonic_rs::json!({
+            "id": id,
+            "session_id": "sess-1",
+            "socket_path": socket_path.to_string_lossy(),
+            "status": "running",
+            "model": "test/model",
+            "prompt": "smoke",
+            "updated_at": 1,
+        });
+        let encoded = sonic_rs::to_string_pretty(&state).map_err(|e| e.to_string())?;
+        fs::write(agent_dir.join(STATE_FILE), encoded).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn uds_lists_worker_fixture_and_pause_tui_is_unsupported() -> Result<(), String> {
+        use crate::client;
+        use crate::server;
+        use std::time::Duration;
+
+        let tmp = TempDir::new().map_err(|e| e.to_string())?;
+        write_worker_fixture(tmp.path(), "worker-1", &tmp.path().join("unused.sock"))?;
+
+        let worker = Arc::new(WorkerBackend::new(tmp.path()));
+        let plane = Arc::new(ControlPlane::new(Some(mem_tui()), Some(worker)));
+        let (cancel_tx, cancel_rx) = flume::bounded(1);
+        let dir_serve = tmp.path().to_path_buf();
+        let plane_serve = Arc::clone(&plane);
+        let handle = std::thread::spawn(move || {
+            smol::block_on(server::serve(
+                &dir_serve,
+                plane_serve,
+                cancel_rx,
+                crate::lock::DaemonRole::Worker,
+            ))
+        });
+
+        let mut connected = false;
+        for _ in 0..50 {
+            std::thread::sleep(Duration::from_millis(20));
+            match client::call_blocking(tmp.path(), &ControlRequest::Health) {
+                Ok(ControlResponse::Ok {
+                    version: Some(v), ..
+                }) if v == PROTOCOL_VERSION => {
+                    connected = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        if !connected {
+            let _ = cancel_tx.send(());
+            let _ = handle.join();
+            return Err("failed to connect to daemon".into());
+        }
+
+        let list =
+            client::call_blocking(tmp.path(), &ControlRequest::List).map_err(|e| e.to_string())?;
+        match list {
+            ControlResponse::Ok {
+                agents: Some(agents),
+                ..
+            } => {
+                assert_eq!(agents.len(), 2);
+                assert!(
+                    agents
+                        .iter()
+                        .any(|a| a.id == "tui-1" && a.backend == BackendKind::Tui),
+                    "missing tui row: {agents:?}"
+                );
+                assert!(
+                    agents
+                        .iter()
+                        .any(|a| a.id == "worker-1" && a.backend == BackendKind::Worker),
+                    "missing worker row: {agents:?}"
+                );
+            }
+            other => {
+                let _ = cancel_tx.send(());
+                let _ = handle.join();
+                return Err(format!("bad list: {other:?}"));
+            }
+        }
+
+        let pause_tui = client::call_blocking(
+            tmp.path(),
+            &ControlRequest::Pause {
+                id: "tui-1".into(),
+                backend: Some(BackendKind::Tui),
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        match pause_tui {
+            ControlResponse::Err {
+                code: Some(ref code),
+                ..
+            } if code == "unsupported" => {}
+            other => {
+                let _ = cancel_tx.send(());
+                let _ = handle.join();
+                return Err(format!("expected pause unsupported on tui, got {other:?}"));
+            }
+        }
+
+        let _ = cancel_tx.send(());
+        match handle.join() {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(_) => Err("server thread panicked".into()),
+        }
+    }
 }

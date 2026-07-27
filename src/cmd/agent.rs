@@ -18,6 +18,7 @@ use n00n_agent::{
     PermissionsConfig, prompt::ResolvedSlots,
 };
 use n00n_config::{load_env_files, load_permissions};
+use n00n_daemon::ControlError;
 use n00n_daemon::backend::WorkerBackend;
 use n00n_daemon::client as daemon_client;
 use n00n_daemon::lock::DaemonRole;
@@ -40,20 +41,28 @@ fn try_daemon(
     req: &ControlRequest,
 ) -> Option<Result<ControlResponse>> {
     match transport::resolve_client(state_dir) {
-        Ok(_) => Some(
-            daemon_client::call_blocking(state_dir, req)
-                .map_err(|e| eyre!("daemon call failed: {e}")),
-        ),
-        Err(n00n_daemon::ControlError::Unavailable(_)) => None,
+        Ok(_) => match daemon_client::call_blocking(state_dir, req) {
+            Ok(resp) => Some(Ok(resp)),
+            Err(ControlError::Io(_)) => None,
+            Err(e) => Some(Err(eyre!("daemon call failed: {e}"))),
+        },
+        Err(ControlError::Unavailable(_)) => None,
         Err(e) => Some(Err(eyre!("daemon endpoint: {e}"))),
     }
 }
 
-fn daemon_state_dir() -> Result<std::path::PathBuf> {
-    Ok(StateDir::resolve()
-        .wrap_err("state dir")?
-        .path()
-        .to_path_buf())
+fn agent_state_dir(override_dir: Option<PathBuf>) -> Result<std::path::PathBuf> {
+    match override_dir {
+        Some(p) => Ok(p),
+        None => Ok(StateDir::resolve()
+            .wrap_err("state dir")?
+            .path()
+            .to_path_buf()),
+    }
+}
+
+fn agent_storage(dir: &std::path::Path) -> StateDir {
+    StateDir::from_path(dir.to_path_buf())
 }
 
 fn print_control_response(resp: &ControlResponse, json: bool) -> Result<()> {
@@ -891,8 +900,13 @@ async fn handle_connection(
     Ok(())
 }
 
-pub fn message_client(id: &str, text: &str, json: bool) -> Result<()> {
-    let state_dir = daemon_state_dir()?;
+pub fn message_client(
+    id: &str,
+    text: &str,
+    json: bool,
+    state_dir_override: Option<PathBuf>,
+) -> Result<()> {
+    let state_dir = agent_state_dir(state_dir_override)?;
     if let Some(result) = try_daemon(
         &state_dir,
         &ControlRequest::Message {
@@ -908,7 +922,7 @@ pub fn message_client(id: &str, text: &str, json: bool) -> Result<()> {
         return print_control_response(&result?, json);
     }
 
-    let storage = StateDir::resolve().wrap_err("failed to resolve state directory")?;
+    let storage = agent_storage(&state_dir);
     let state = read_agent_state(&storage, id).wrap_err("failed to read agent state")?;
 
     let stream = smol::block_on(UnixStream::connect(&state.socket_path))
@@ -965,8 +979,8 @@ pub fn message_client(id: &str, text: &str, json: bool) -> Result<()> {
     })
 }
 
-pub fn stop_client(id: &str) -> Result<()> {
-    let state_dir = daemon_state_dir()?;
+pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> {
+    let state_dir = agent_state_dir(state_dir_override)?;
     if let Some(result) = try_daemon(
         &state_dir,
         &ControlRequest::Stop {
@@ -977,7 +991,7 @@ pub fn stop_client(id: &str) -> Result<()> {
         return print_control_response(&result?, false);
     }
 
-    let storage = StateDir::resolve().wrap_err("failed to resolve state directory")?;
+    let storage = agent_storage(&state_dir);
 
     let Ok(state) = read_agent_state(&storage, id) else {
         let agent_dir_path = agent_dir(&storage, id)?;
@@ -1018,13 +1032,13 @@ pub fn stop_client(id: &str) -> Result<()> {
     })
 }
 
-pub fn list_client(json: bool) -> Result<()> {
-    let state_dir = daemon_state_dir()?;
+pub fn list_client(json: bool, state_dir_override: Option<PathBuf>) -> Result<()> {
+    let state_dir = agent_state_dir(state_dir_override)?;
     if let Some(result) = try_daemon(&state_dir, &ControlRequest::List) {
         return print_control_response(&result?, json);
     }
 
-    let storage = StateDir::resolve().wrap_err("failed to resolve state directory")?;
+    let storage = agent_storage(&state_dir);
     let states = list_agent_states(&storage)?;
 
     if json {
@@ -1054,8 +1068,8 @@ pub fn list_client(json: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn status_client(id: &str, json: bool) -> Result<()> {
-    let state_dir = daemon_state_dir()?;
+pub fn status_client(id: &str, json: bool, state_dir_override: Option<PathBuf>) -> Result<()> {
+    let state_dir = agent_state_dir(state_dir_override)?;
     if let Some(result) = try_daemon(
         &state_dir,
         &ControlRequest::Status {
@@ -1066,7 +1080,7 @@ pub fn status_client(id: &str, json: bool) -> Result<()> {
         return print_control_response(&result?, json);
     }
 
-    let storage = StateDir::resolve().wrap_err("failed to resolve state directory")?;
+    let storage = agent_storage(&state_dir);
     let state = read_agent_state(&storage, id).wrap_err("failed to read agent state")?;
 
     if json {
@@ -1088,8 +1102,8 @@ pub fn status_client(id: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn pause_client(id: &str) -> Result<()> {
-    let state_dir = daemon_state_dir()?;
+pub fn pause_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> {
+    let state_dir = agent_state_dir(state_dir_override)?;
     if let Some(result) = try_daemon(
         &state_dir,
         &ControlRequest::Pause {
@@ -1099,11 +1113,11 @@ pub fn pause_client(id: &str) -> Result<()> {
     ) {
         return print_control_response(&result?, false);
     }
-    control_command_client(id, &ClientCommand::Pause, "paused")
+    control_command_client(&state_dir, id, &ClientCommand::Pause, "paused")
 }
 
-pub fn resume_client(id: &str) -> Result<()> {
-    let state_dir = daemon_state_dir()?;
+pub fn resume_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> {
+    let state_dir = agent_state_dir(state_dir_override)?;
     if let Some(result) = try_daemon(
         &state_dir,
         &ControlRequest::Resume {
@@ -1113,11 +1127,16 @@ pub fn resume_client(id: &str) -> Result<()> {
     ) {
         return print_control_response(&result?, false);
     }
-    control_command_client(id, &ClientCommand::Resume, "resumed")
+    control_command_client(&state_dir, id, &ClientCommand::Resume, "resumed")
 }
 
-fn control_command_client(id: &str, command: &ClientCommand, success_label: &str) -> Result<()> {
-    let storage = StateDir::resolve().wrap_err("failed to resolve state directory")?;
+fn control_command_client(
+    state_dir: &std::path::Path,
+    id: &str,
+    command: &ClientCommand,
+    success_label: &str,
+) -> Result<()> {
+    let storage = agent_storage(state_dir);
     let state = read_agent_state(&storage, id).wrap_err("failed to read agent state")?;
     let stream = smol::block_on(UnixStream::connect(&state.socket_path))
         .wrap_err("failed to connect to agent socket")?;

@@ -97,33 +97,39 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     agent::run(&run_opts, json)?;
                 }
             }
-            AgentCommand::List => {
-                agent::list_client(matches!(
-                    cli.output_format,
-                    crate::print::OutputFormat::Json
-                ))?;
+            AgentCommand::List { state_dir } => {
+                agent::list_client(
+                    matches!(cli.output_format, crate::print::OutputFormat::Json),
+                    state_dir,
+                )?;
             }
-            AgentCommand::Status { id } => {
+            AgentCommand::Status { id, state_dir } => {
                 agent::status_client(
                     &id,
                     matches!(cli.output_format, crate::print::OutputFormat::Json),
+                    state_dir,
                 )?;
             }
-            AgentCommand::Message { id, text } => {
+            AgentCommand::Message {
+                id,
+                text,
+                state_dir,
+            } => {
                 agent::message_client(
                     &id,
                     &text,
                     matches!(cli.output_format, crate::print::OutputFormat::Json),
+                    state_dir,
                 )?;
             }
-            AgentCommand::Pause { id } => {
-                agent::pause_client(&id)?;
+            AgentCommand::Pause { id, state_dir } => {
+                agent::pause_client(&id, state_dir)?;
             }
-            AgentCommand::Resume { id } => {
-                agent::resume_client(&id)?;
+            AgentCommand::Resume { id, state_dir } => {
+                agent::resume_client(&id, state_dir)?;
             }
-            AgentCommand::Stop { id } => {
-                agent::stop_client(&id)?;
+            AgentCommand::Stop { id, state_dir } => {
+                agent::stop_client(&id, state_dir)?;
             }
             AgentCommand::Daemon { state_dir } => {
                 agent::daemon_serve(state_dir)?;

@@ -10,7 +10,7 @@ Parent: PR #149 (`feat/n00n-daemon-session-bridge`).
 | Tear down listener on UI exit / `/reload` | Spec lifecycle: TUI owns sock while up; stale sock replaced on bind. |
 | Scoped tools + tooned cards (already landed) | Phase 2 UX; independent of worker runtime. |
 
-Out of #149 once the above lands: declare draft ready for review on the control-plane surface.
+Out of #149 once the above lands: **ready for review** — run `./scripts/smoke-daemon.sh` before merge.
 
 ## Stacked PR-B — Absorb / land worker runtime (PR #134)
 
@@ -54,8 +54,19 @@ Out of #149 once the above lands: declare draft ready for review on the control-
 
 ## Verification gates (any PR in this stack)
 
-- `cargo test -p n00n-daemon`
+**Automated (run `./scripts/smoke-daemon.sh`):**
+
+- `cargo test -p n00n-daemon` — includes UDS round-trip, worker fixture list, worker pause mock-socket, TUI pause unsupported
+- `cargo test -p n00n --bins -- tui_bridge` — TUI `backend=tui` list over `daemon.sock`
+- `cargo test -p n00n --bins -- agent::`
 - `cargo clippy -p n00n-daemon -p n00n --tests -- -D warnings`
-- Manual: TUI up → second terminal `n00n agent list` shows `backend=tui` row
-- Manual: `n00n agent pause <tui-id>` → typed unsupported (not cancel)
-- Manual: `n00n agent run --background` then list/pause/message/stop
+
+**Manual (optional; superseded by tests above):**
+
+- TUI up → second terminal `n00n agent list` shows `backend=tui` row
+- `n00n agent pause <tui-id>` → typed unsupported (not cancel)
+- `n00n agent run --background` then list/pause/message/stop (requires provider credentials)
+
+## Next sprint
+
+See `sprint-2.md` — plugin spec tests, `--state-dir` on control verbs, docs, TUI resume polish, Windows CI.
