@@ -24,27 +24,27 @@ import threading
 import tty
 
 REAL = "/opt/n00n/bin/devin-real"
-LOG = "/tmp/devin-acp.log"
 
 
 def main() -> int:
     # n00n already passes the "acp" subcommand; do not duplicate it.
     argv = [REAL, "--permission-mode", "dangerous"] + sys.argv[1:]
-    log = open(LOG, "wb")
     master, slave = pty.openpty()
     tty.setraw(master, termios.TCSANOW)
     p = subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave)
     os.close(slave)
+    stop = threading.Event()
 
     def forward_input():
         try:
             fd = sys.stdin.buffer.fileno()
-            while True:
+            while not stop.is_set():
+                ready, _, _ = select.select([fd], [], [], 0.1)
+                if not ready:
+                    continue
                 data = os.read(fd, 4096)
                 if not data:
                     break
-                log.write(b"IN>> " + data)
-                log.flush()
                 os.write(master, data)
         except OSError:
             pass
@@ -62,18 +62,16 @@ def main() -> int:
             data = os.read(master, 4096)
             if not data:
                 break
-            log.write(b"OUT<< " + data)
-            log.flush()
             sys.stdout.buffer.write(data)
             sys.stdout.buffer.flush()
     except OSError:
         pass
+    finally:
+        stop.set()
+        os.close(master)
 
-    t.join()
-    rc = p.wait()
-    log.write(f"EXIT rc={rc}\\n".encode())
-    log.close()
-    return rc
+    t.join(timeout=1)
+    return p.wait()
 
 
 if __name__ == "__main__":

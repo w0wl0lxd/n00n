@@ -13,7 +13,7 @@ use tracing::{debug, error, warn};
 
 use agent_client_protocol_schema::{
     AgentCapabilities, ClientCapabilities, EmbeddedResourceResource, ImageContent,
-    InitializeRequest, InitializeResponse,
+    InitializeRequest, InitializeResponse, Meta,
 };
 use agent_client_protocol_schema::{
     ContentBlock as AcpContentBlock, Error as AcpError, JsonRpcMessage, NewSessionRequest,
@@ -285,13 +285,19 @@ impl DevinInner {
             agent_capabilities,
         };
 
-        inner.initialize().await?;
+        inner.initialize(api_key).await?;
         Ok(inner)
     }
 
-    async fn initialize(&self) -> Result<(), AgentError> {
-        let req = InitializeRequest::new(ProtocolVersion::V1)
+    async fn initialize(&self, api_key: Option<&str>) -> Result<(), AgentError> {
+        let mut req = InitializeRequest::new(ProtocolVersion::V1)
             .client_capabilities(ClientCapabilities::default());
+
+        if let Some(key) = api_key {
+            let mut meta = Meta::new();
+            meta.insert("api_key".to_string(), Value::String(key.to_string()));
+            req = req.meta(meta);
+        }
 
         let response: InitializeResponse =
             self.send_request("initialize", req)
