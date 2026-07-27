@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-n00n ships with 30 built-in tools. This is the full reference.
+n00n ships with 31 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -84,6 +84,44 @@ Insert lines before `line` number. Existing lines shift down.
 | `line` | integer | yes |  |
 | `new_string` | string | yes |  |
 
+### `edit_lines` *(lua plugin)*
+
+Replace lines from `start` to `end` (inclusive) with `new_string`. Use empty `new_string` to delete.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `start` | integer | yes |  |
+| `path` | string | yes |  |
+| `new_string` | string | yes |  |
+| `end` | integer | yes |  |
+
+### `insert_lines` *(lua plugin)*
+
+Insert lines before `line` number. Existing lines shift down.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes |  |
+| `line` | integer | yes |  |
+| `new_string` | string | yes |  |
+
+### `explore` *(lua plugin)*
+
+Unified codebase exploration router. Picks the best backend for the question:
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `token_budget` | integer | no |  |
+| `path` | string | no | File path for skeleton queries. A file extension selects the index backend in auto mode. |
+| `from_symbol` | string | no |  |
+| `symbol` | string | no |  |
+| `use_cache` | boolean | no |  |
+| `intent` | string | no |  |
+| `to_symbol` | string | no |  |
+| `query` | string | yes | Question, symbol, or file path to explore. |
+| `command` | string | no |  |
+| `project` | string | no | Project root for arbor/codegraph queries (defaults to cwd). |
+
 ### `glob` *(lua plugin)*
 
 Find files by glob pattern. Respects .gitignore. Returns matching paths sorted by mtime.
@@ -130,23 +168,27 @@ View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read`
 
 ### `codegraph` *(lua plugin)*
 
-Query a semantic codegraph for cross-file structural analysis. Missing or stale project indexes are initialized or refreshed automatically. Returns verbatim source grouped by file plus a blast-radius summary. Typically cheaper than broad grep + read for cross-file questions.
+Query a pre-indexed semantic codegraph for cross-file structural analysis. Returns verbatim source code grouped by file, plus a dependency impact "blast radius" summary with caller counts and test coverage info. Typically uses fewer tokens than broad grep + read for the same cross-file question.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `projectPath` | string | no | Project path (defaults to workspace). |
-| `query` | string | yes | Question or symbol/file names to explore. |
+| `projectPath` | string | no | Absolute path to the project (defaults to current workspace) |
+| `query` | string | yes | Natural language question or symbol/file names to explore (e.g. 'AuthService login', 'GraphTraverser BFS impact') |
 
 ### `arbor` *(lua plugin)*
 
-Graph-based code analysis using Arbor. Returns compact caller/callee/project maps; prefer over broad grep for relationship/impact questions.
+Graph-based code analysis using Arbor. Returns structured, compact
+caller/callee/project maps; prefer it over broad grep or unfiltered reads
+for relationship and impact questions.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `command` | string | yes |  |
 | `token_budget` | integer | no |  |
-| `project` | string | no |  |
+| `from_symbol` | string | no |  |
 | `symbol` | string | no |  |
+| `command` | string | yes |  |
+| `project` | string | no |  |
+| `to_symbol` | string | no |  |
 
 ## Execution & Control
 
