@@ -161,8 +161,19 @@ impl QueueSender {
         let _ = self.notify_tx.try_send(());
     }
 
-    pub(crate) fn push_front(&self, entry: QueueItem) {
-        lock(&self.items).push_front(entry);
+    pub(crate) fn push_front_if_missing(&self, entry: QueueItem) {
+        let mut items = lock(&self.items);
+        let submission_id = match &entry {
+            QueueItem::Message { submission_id, .. } => *submission_id,
+            QueueItem::Compact { .. } => return,
+        };
+        if items.iter().any(|item| {
+            matches!(item, QueueItem::Message { submission_id: id, .. } if *id == submission_id)
+        }) {
+            return;
+        }
+        items.push_front(entry);
+        drop(items);
         let _ = self.notify_tx.try_send(());
     }
 
@@ -213,6 +224,14 @@ impl QueueSender {
         lock(&self.items).clear();
     }
 
+    pub(crate) fn drain_all(&self) -> Vec<QueueItem> {
+        let mut items = lock(&self.items);
+        let drained = std::mem::take(&mut *items);
+        drop(items);
+        let _ = self.notify_tx.try_send(());
+        drained.into()
+    }
+
     pub(crate) fn remove_submission(&self, submission_id: u64) {
         let mut items = lock(&self.items);
         let before = items.len();
@@ -232,12 +251,6 @@ impl QueueSender {
         }
     }
 
-    pub(crate) fn contains_submission(&self, submission_id: u64) -> bool {
-        lock(&self.items).iter().any(|item| {
-            matches!(item, QueueItem::Message { submission_id: id, .. } if *id == submission_id)
-        })
-    }
-
     pub(crate) fn mark_submission_ready(&self, submission_id: u64, input: AgentInput) -> bool {
         let mut items = lock(&self.items);
         let Some(QueueItem::Message {
@@ -249,6 +262,7 @@ impl QueueSender {
         }) else {
             return false;
         };
+        // Update input and ready flag atomically while holding the lock
         *queued_input = input;
         ready.store(true, Ordering::Release);
         drop(items);

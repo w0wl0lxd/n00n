@@ -30,6 +30,7 @@ type DeleteCallback = Box<dyn FnOnce(Result<(), SessionError>) + Send>;
 type PersistCallback = Box<dyn FnOnce(Result<(), SessionError>) + Send>;
 
 const RETRY_DELAY: Duration = Duration::from_secs(1);
+const MAX_RETRY_ATTEMPTS: u32 = 5;
 
 enum Op {
     Flush,
@@ -61,9 +62,9 @@ impl StorageWriter {
             .spawn(move || {
                 let mut logs: HashMap<N00nId, SessionLog> = HashMap::new();
                 let mut durable_revisions: HashMap<N00nId, u64> = HashMap::new();
-                let mut retry_pending = false;
+                let mut retry_count: u32 = 0;
                 loop {
-                    let op = if retry_pending {
+                    let op = if retry_count > 0 {
                         match ops_rx.recv_timeout(RETRY_DELAY) {
                             Ok(op) => Some(op),
                             Err(flume::RecvTimeoutError::Timeout) => Some(Op::Flush),
@@ -75,19 +76,53 @@ impl StorageWriter {
                     let Some(op) = op else { break };
                     match op {
                         Op::Flush => {
-                            retry_pending =
-                                flush(&writer_pending, &mut logs, &mut durable_revisions, &dir);
+                            let failed = flush(&writer_pending, &mut logs, &mut durable_revisions, &dir);
+                            if failed {
+                                retry_count += 1;
+                                if retry_count >= MAX_RETRY_ATTEMPTS {
+                                    warn!(
+                                        retry_count,
+                                        "storage writer exhausted retry attempts, dropping pending snapshots"
+                                    );
+                                    lock(&writer_pending).clear();
+                                    retry_count = 0;
+                                }
+                            } else {
+                                retry_count = 0;
+                            }
                         }
                         Op::Persist { session, done } => {
-                            retry_pending =
-                                flush(&writer_pending, &mut logs, &mut durable_revisions, &dir);
-                            done(persist_session(
-                                &writer_pending,
-                                &mut logs,
-                                &mut durable_revisions,
-                                &dir,
-                                &session,
-                            ));
+                            let failed = flush(&writer_pending, &mut logs, &mut durable_revisions, &dir);
+                            if failed {
+                                retry_count += 1;
+                                if retry_count >= MAX_RETRY_ATTEMPTS {
+                                    warn!(
+                                        retry_count,
+                                        id = %session.id,
+                                        "storage writer exhausted retry attempts, dropping snapshot"
+                                    );
+                                    lock(&writer_pending).remove(&session.id);
+                                    retry_count = 0;
+                                    done(Err(retry_exhausted()));
+                                } else {
+                                    done(persist_session(
+                                        &writer_pending,
+                                        &mut logs,
+                                        &mut durable_revisions,
+                                        &dir,
+                                        &session,
+                                    ));
+                                }
+                            } else {
+                                retry_count = 0;
+                                done(persist_session(
+                                    &writer_pending,
+                                    &mut logs,
+                                    &mut durable_revisions,
+                                    &dir,
+                                    &session,
+                                ));
+                            }
                         }
                         Op::Delete { id, done } => {
                             lock(&writer_pending).remove(&id);
@@ -169,6 +204,11 @@ fn writer_gone() -> SessionError {
     n00n_storage::StorageError::Io(io::Error::other("storage writer unavailable")).into()
 }
 
+fn retry_exhausted() -> SessionError {
+    n00n_storage::StorageError::Io(io::Error::other("storage writer exhausted retry attempts"))
+        .into()
+}
+
 fn flush(
     pending: &Pending,
     logs: &mut HashMap<N00nId, SessionLog>,
@@ -195,13 +235,22 @@ fn flush(
             return true;
         }
     };
+    let mut failed = false;
     for snapshot in batch.into_values() {
         if let Err(error) = write_session(&sessions_dir, logs, durable_revisions, &snapshot.session)
         {
             warn!(error = %error, id = %snapshot.session.id, "session write failed");
+            let id = snapshot.session.id;
+            let replace = pending_guard
+                .get(&id)
+                .is_none_or(|current| current.revision < snapshot.revision);
+            if replace {
+                pending_guard.insert(id, snapshot);
+            }
+            failed = true;
         }
     }
-    false
+    failed
 }
 
 fn persist_session(
@@ -311,6 +360,7 @@ fn open_or_create_log(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use tempfile::TempDir;
 
     const DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
@@ -338,6 +388,27 @@ mod tests {
 
         assert!(AppSession::load(a_id, &dir).is_ok());
         assert_eq!(AppSession::load(b_id, &dir).unwrap().title, "renamed");
+    }
+
+    #[test]
+    fn failed_flush_keeps_snapshot_for_retry() {
+        let (tmp, dir) = state_dir();
+        let pending: Pending = Arc::default();
+        let session = AppSession::new("test-model", "/tmp/retry");
+        let id = session.id;
+        fs::create_dir_all(tmp.path().join(SESSIONS_DIR).join(format!("{id}.jsonl"))).unwrap();
+        lock(&pending).insert(
+            id,
+            PendingSnapshot {
+                revision: session.meta.revision,
+                session: Box::new(session),
+            },
+        );
+        let mut logs = HashMap::new();
+        let mut durable_revisions = HashMap::new();
+
+        assert!(flush(&pending, &mut logs, &mut durable_revisions, &dir));
+        assert!(lock(&pending).contains_key(&id));
     }
 
     #[test]
