@@ -1,5 +1,3 @@
-#![cfg_attr(windows, allow(dead_code, unused_imports, unused_variables))]
-
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -598,7 +596,7 @@ pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()
     #[cfg(not(unix))]
     {
         let _ = (opts, agent_id);
-        Err(eyre!("background agent server requires unix"))
+        return Err(eyre!("background agent server requires unix"));
     }
 
     #[cfg(unix)]
@@ -965,7 +963,7 @@ pub fn message_client(
 
     #[cfg(not(unix))]
     {
-        Err(eyre!("direct agent socket control requires unix"))
+        return Err(eyre!("direct agent socket control requires unix"));
     }
 
     #[cfg(unix)]
@@ -995,7 +993,9 @@ pub fn message_client(
 
                 if json {
                     print!("{line}");
-                } else if let Ok(event) = serde_json::from_str::<ServerEvent>(&line) {
+                }
+
+                if let Ok(event) = serde_json::from_str::<ServerEvent>(&line) {
                     match event {
                         ServerEvent::TextDelta { text } => {
                             print!("{text}");
@@ -1016,6 +1016,14 @@ pub fn message_client(
                         }
                         ServerEvent::ToolOutput { .. } => {}
                     }
+                } else if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line)
+                    && value.get("ok").and_then(serde_json::Value::as_bool) == Some(false)
+                {
+                    let message = match value.get("error").and_then(serde_json::Value::as_str) {
+                        Some(message) => message.to_string(),
+                        None => "control request rejected".to_string(),
+                    };
+                    return Err(eyre!("{message}"));
                 }
                 line.clear();
             }
@@ -1048,7 +1056,7 @@ pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> 
 
     #[cfg(not(unix))]
     {
-        Err(eyre!("direct agent socket control requires unix"))
+        return Err(eyre!("direct agent socket control requires unix"));
     }
 
     #[cfg(unix)]
@@ -1078,7 +1086,14 @@ pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> 
 
             match response.get("ok").and_then(serde_json::Value::as_bool) {
                 Some(true) => println!("Agent {id} stopped"),
-                _ => eprintln!("Failed to stop agent {id}"),
+                Some(false) => {
+                    let message = match response.get("error").and_then(serde_json::Value::as_str) {
+                        Some(message) => message.to_string(),
+                        None => "control request rejected".to_string(),
+                    };
+                    return Err(eyre!("Failed to stop agent {id}: {message}"));
+                }
+                None => return Err(eyre!("control response missing ok field")),
             }
 
             Ok(())
@@ -1314,7 +1329,7 @@ fn control_command_client(
 
     #[cfg(not(unix))]
     {
-        Err(eyre!("direct agent socket control requires unix"))
+        return Err(eyre!("direct agent socket control requires unix"));
     }
 
     #[cfg(unix)]
@@ -1343,7 +1358,14 @@ fn control_command_client(
 
             match response.get("ok").and_then(serde_json::Value::as_bool) {
                 Some(true) => println!("Agent {id} {success_label}"),
-                _ => eprintln!("Failed to update agent {id}"),
+                Some(false) => {
+                    let message = match response.get("error").and_then(serde_json::Value::as_str) {
+                        Some(message) => message.to_string(),
+                        None => "control request rejected".to_string(),
+                    };
+                    return Err(eyre!("Failed to {success_label} agent {id}: {message}"));
+                }
+                None => return Err(eyre!("control response missing ok field")),
             }
 
             Ok(())
