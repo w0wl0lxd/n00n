@@ -84,27 +84,6 @@ Insert lines before `line` number. Existing lines shift down.
 | `line` | integer | yes |  |
 | `new_string` | string | yes |  |
 
-### `edit_lines` *(lua plugin)*
-
-Replace lines from `start` to `end` (inclusive) with `new_string`. Use empty `new_string` to delete.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `start` | integer | yes |  |
-| `path` | string | yes |  |
-| `new_string` | string | yes |  |
-| `end` | integer | yes |  |
-
-### `insert_lines` *(lua plugin)*
-
-Insert lines before `line` number. Existing lines shift down.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `path` | string | yes |  |
-| `line` | integer | yes |  |
-| `new_string` | string | yes |  |
-
 ### `explore` *(lua plugin)*
 
 Unified codebase exploration router. Picks the best backend for the question:
