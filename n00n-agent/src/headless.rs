@@ -241,6 +241,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                     thinking: n00n_providers::ThinkingConfig::default(),
                     fast,
                     workflow,
+                    control: false,
                     prompt: None,
                 })
                 .await;

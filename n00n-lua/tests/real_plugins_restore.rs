@@ -220,7 +220,7 @@ fn restore(
     "/tmp/project";
     "arbor"
 )]
-fn explore_restore_uses_shared_five_line_clickable_card(
+fn explore_restore_uses_shared_three_line_clickable_card(
     tool: &str,
     input: Value,
     header_text: &str,
@@ -244,12 +244,12 @@ fn explore_restore_uses_shared_five_line_clickable_card(
         collapsed.header
     );
     assert!(
-        collapsed.body.contains("result 5"),
+        collapsed.body.contains("result 3"),
         "body: {}",
         collapsed.body
     );
     assert!(
-        !collapsed.body.contains("result 6"),
+        !collapsed.body.contains("result 4"),
         "body: {}",
         collapsed.body
     );

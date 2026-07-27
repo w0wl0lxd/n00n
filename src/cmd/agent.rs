@@ -535,6 +535,7 @@ pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()
             thinking: ThinkingConfig::default(),
             fast: false,
             workflow: workflow_from_mode(opts.mode),
+            control: false,
             prompt: None,
         });
 
@@ -652,6 +653,7 @@ async fn handle_connection(
                     thinking: ThinkingConfig::default(),
                     fast: false,
                     workflow: workflow_from_mode(mode),
+                    control: false,
                     prompt: None,
                 })
                 .wrap_err("failed to send input")?;
