@@ -7,8 +7,8 @@ local truncate = require("n00n.truncate")
 local ToolView = require("n00n.tool_view")
 local output_limits = require("n00n.output_limits")
 
-local DEFAULT_MAX_OUTPUT_LINES = 2000
-local DEFAULT_MAX_OUTPUT_BYTES = 50 * 1024
+local DEFAULT_MAX_OUTPUT_LINES = 500
+local DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024
 local MAX_SCRIPT_LINES = 2000
 local NO_OUTPUT = "(no output)"
 local SEPARATOR = "──────"
@@ -86,7 +86,7 @@ local function build_body(ctx, code)
 end
 
 local description =
-  [[Execute Python code in a sandboxed interpreter with tools as callable functions. Use for chained/dependent tool calls and filtering/processing results. Faster than sequential tool calls. Tools are async: `result = await read(path='file.txt')`. Use `asyncio.gather()` for concurrency. Available libs: re, asyncio, sys, os, json. Fresh sandbox each run. 30s script timeout (`timeout` param); time awaiting tool calls doesn't count.]]
+  [[Execute Python in sandboxed interpreter with tools as callable functions. Use for chained/dependent tool calls and filtering/processing. Faster than sequential tool calls. Tools are async: `result = await read(path='file.txt')`. Use `asyncio.gather()` for concurrency. Available libs: re, asyncio, sys, os, json. Fresh sandbox each run. 30s script timeout (`timeout` param); tool-call wait excluded. Output truncated beyond 500 lines or 16KB.]]
 
 local schema = {
   type = "object",
@@ -95,11 +95,11 @@ local schema = {
   properties = {
     code = {
       type = "string",
-      description = "Python code to execute. Tools are async functions that return strings (not objects). You MUST await every call: `result = await read(path='/file')`. Use `await asyncio.gather(...)` for concurrency.",
+      description = "Python code. Tools are async functions returning strings. MUST await every call: `result = await read(path='/file')`. Use `await asyncio.gather(...)` for concurrency.",
     },
     timeout = {
       type = "integer",
-      description = "Script execution timeout in seconds (default 30)",
+      description = "Script timeout seconds (default 30)",
     },
   },
 }

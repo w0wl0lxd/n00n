@@ -14,6 +14,7 @@ use crate::AgentError;
 
 pub(crate) mod anthropic;
 pub(crate) mod copilot;
+pub(crate) mod cursor;
 pub mod custom;
 pub(crate) mod deepseek;
 pub(crate) mod devin;

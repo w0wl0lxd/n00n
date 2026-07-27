@@ -287,6 +287,7 @@ mod tests {
             role: MsgRole::Assistant,
             content,
             display_text: None,
+            control: false,
         }
     }
 
@@ -323,6 +324,7 @@ mod tests {
                     is_error: false,
                 }],
                 display_text: None,
+                control: false,
             },
             assistant(vec![MsgBlock::Text {
                 text: "done".into(),
@@ -375,6 +377,7 @@ mod tests {
                 is_error: true,
             }],
             display_text: None,
+            control: false,
         };
         let json = updates_json(&[msg]);
         assert_eq!(json[0]["sessionUpdate"], "tool_call_update");

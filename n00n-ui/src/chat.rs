@@ -38,6 +38,7 @@ pub enum ChatEventResult {
         text: String,
         image_count: usize,
         images: Vec<ImageSource>,
+        control: bool,
     },
     Error(String),
     PermissionRequest {
@@ -153,11 +154,13 @@ impl Chat {
                 text,
                 image_count,
                 images,
+                control,
             } => {
                 return ChatEventResult::QueueItemConsumed {
                     text,
                     image_count,
                     images,
+                    control,
                 };
             }
             AgentEvent::Retry { .. } => unreachable!("handled before handle_event"),
@@ -446,6 +449,28 @@ impl Chat {
         self.enable_auto_scroll();
     }
 
+    pub fn push_control_message_with_images(
+        &mut self,
+        text: impl Into<String>,
+        images: Vec<ImageSource>,
+    ) {
+        self.messages_panel.push(DisplayMessage::with_images(
+            DisplayRole::Control,
+            text.into(),
+            images,
+        ));
+    }
+
+    pub fn show_control_message_with_images(
+        &mut self,
+        text: impl Into<String>,
+        images: Vec<ImageSource>,
+    ) {
+        self.flush();
+        self.push_control_message_with_images(text, images);
+        self.enable_auto_scroll();
+    }
+
     pub fn shell_tool_start(&mut self, event: ToolStartEvent) {
         self.messages_panel.tool_start(event);
     }
@@ -663,8 +688,13 @@ pub fn history_to_display<S: std::hash::BuildHasher>(
                 let text = msg
                     .user_text()
                     .map_or_else(String::new, std::borrow::ToOwned::to_owned);
+                let role = if msg.control {
+                    DisplayRole::Control
+                } else {
+                    DisplayRole::User
+                };
                 if !text.is_empty() || !images.is_empty() {
-                    display.push(DisplayMessage::with_images(DisplayRole::User, text, images));
+                    display.push(DisplayMessage::with_images(role, text, images));
                 }
             }
             Role::Assistant => {

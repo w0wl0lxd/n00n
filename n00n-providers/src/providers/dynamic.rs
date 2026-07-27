@@ -23,6 +23,7 @@ use crate::{
 use super::ResolvedAuth;
 use super::anthropic::Anthropic;
 use super::copilot::Copilot;
+use super::cursor::Cursor;
 use super::deepseek::DeepSeek;
 use super::devin::Devin;
 use super::google::Google;
@@ -87,7 +88,7 @@ impl ScriptModel {
             supports_tool_examples_override: self.supports_tool_examples,
             supports_thinking_override: self.supports_thinking,
             supports_vision_override: self.supports_vision,
-            pricing: self.pricing.clone().unwrap_or_else(Default::default),
+            pricing: self.pricing.unwrap_or_else(Default::default),
             max_output_tokens: Some(self.max_output_tokens),
             context_window: self.context_window,
         }
@@ -418,6 +419,10 @@ pub fn create(slug: &str, timeouts: super::Timeouts) -> Result<Box<dyn Provider>
             OpenAi::with_auth(Arc::clone(&auth), timeouts)?
                 .with_system_prefix(meta.system_prefix.clone()),
         ),
+        ProviderKind::Codex => Box::new(
+            OpenAi::with_auth_options(Arc::clone(&auth), timeouts, crate::OpenAiOptions::codex())?
+                .with_system_prefix(meta.system_prefix.clone()),
+        ),
         ProviderKind::Google => Box::new(Google::with_auth(Arc::clone(&auth), timeouts)?),
         ProviderKind::Copilot => Box::new(
             Copilot::with_auth(Arc::clone(&auth), timeouts)?
@@ -460,6 +465,7 @@ pub fn create(slug: &str, timeouts: super::Timeouts) -> Result<Box<dyn Provider>
                 .with_system_prefix(meta.system_prefix.clone()),
         ),
         ProviderKind::Devin => Box::new(Devin::with_auth(&auth, timeouts)?),
+        ProviderKind::Cursor => Box::new(Cursor::new(timeouts)?),
     };
 
     Ok(Box::new(DynamicProvider {
@@ -583,7 +589,7 @@ impl Provider for DynamicProvider {
                     name: None,
                     context_window: Some(m.context_window),
                     max_output_tokens: Some(m.max_output_tokens),
-                    pricing: m.pricing.clone(),
+                    pricing: m.pricing,
                     supports_thinking: None,
                     supports_vision: m.supports_vision,
                     tier: None,

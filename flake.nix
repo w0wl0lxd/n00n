@@ -50,6 +50,8 @@
             stdenv.cc.cc.lib
             zlib
           ];
+          runtimeLibraryPath = lib.makeLibraryPath runtimeLibs;
+          loaderLibraryPathVar = if pkgs.stdenv.isDarwin then "DYLD_LIBRARY_PATH" else "LD_LIBRARY_PATH";
           n00n = rustPlatform.buildRustPackage {
             pname = packageName;
             inherit version;
@@ -103,12 +105,12 @@
             postFixup =
               lib.optionalString pkgs.stdenv.isLinux ''
                 old_rpath="$(patchelf --print-rpath "$out/bin/${packageName}")"
-                new_rpath="${lib.makeLibraryPath runtimeLibs}''${old_rpath:+:$old_rpath}"
+                new_rpath="${runtimeLibraryPath}''${old_rpath:+:$old_rpath}"
                 patchelf --set-rpath "$new_rpath" "$out/bin/${packageName}"
               ''
               + lib.optionalString (!pkgs.stdenv.isLinux) ''
-                wrapProgram $out/bin/n00n \
-                  --prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath runtimeLibs}"
+                wrapProgram "$out/bin/${packageName}" \
+                  --prefix ${loaderLibraryPathVar} : "${runtimeLibraryPath}"
               '';
           };
         in

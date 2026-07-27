@@ -38,7 +38,8 @@ async fn roundtrip(
 /// Lists sessions stored for the current project. Answered from a
 /// background scan, so a slow disk never blocks the UI.
 ///
-/// @return (table|nil, string|nil) Array of `{id, title, updated_at}`, or nil and an error.
+/// @return (table|nil, string|nil) Array of `{id, title, display_title, kind,
+/// parent_id, updated_at, cwd, model}`, or nil and an error.
 /// @example
 /// local stored, err = n00n.session.list()
 #[lua_fn]
@@ -57,10 +58,11 @@ async fn live(lua: Lua, #[ctx] tx: Option<flume::Sender<UiAction>>) -> LuaResult
     roundtrip(lua, tx, SessionRequest::Live).await
 }
 
-/// Returns one live session with its status and latest assistant text output.
+/// Returns one live session with its status, latest assistant text output,
+/// and paused team run metadata when the latest tool result is from `team`.
 ///
 /// @param id string Live session id.
-/// @return (table|nil, string|nil) `{id, title, status, updated_at, focused, output?}`, or nil and an error.
+/// @return (table|nil, string|nil) `{id, title, status, updated_at, focused, output?, paused_team?}` where `paused_team` is `{paused, run_id, mode?, ...}` when a paused team run is present, or nil and an error.
 #[lua_fn]
 async fn status(
     lua: Lua,
@@ -114,7 +116,8 @@ async fn delete(
 /// Starts a new session in the current project.
 ///
 /// @param opts table? Optional fields: prompt (string) first user message
-///   to submit right away; focus (boolean) switch the UI to the new session.
+///   to submit right away; focus (boolean) switch the UI to the new session;
+///   parent_id (string?) session that spawned this session.
 /// @return (string|nil, string|nil) New session id, or nil and an error.
 /// @example
 /// local id, err = n00n.session.new({ prompt = "fix the tests", focus = true })
@@ -124,14 +127,24 @@ async fn new(
     #[ctx] tx: Option<flume::Sender<UiAction>>,
     opts: Option<Table>,
 ) -> LuaResult<Pair> {
-    let (prompt, focus) = match opts {
+    let (prompt, focus, parent_id) = match opts {
         Some(opts) => (
             opts.get("prompt")?,
             opts.get("focus").unwrap_or_else(|_| false),
+            opts.get("parent_id")?,
         ),
-        None => (None, false),
+        None => (None, false, None),
     };
-    roundtrip(lua, tx, SessionRequest::New { prompt, focus }).await
+    roundtrip(
+        lua,
+        tx,
+        SessionRequest::New {
+            prompt,
+            focus,
+            parent_id,
+        },
+    )
+    .await
 }
 
 /// Sends {text} as a regular user prompt to a live session. The text is
@@ -141,10 +154,12 @@ async fn new(
 ///
 /// @param text string The prompt to send. Must not be blank.
 /// @param opts table? Optional fields: session (string) id of a live
-///   session; defaults to the focused one.
+///   session (defaults to the focused one); steer (boolean) request
+///   delivery as a steering interrupt when the session is busy; control
+///   (boolean) mark the message as an agent-to-agent control message.
 /// @return (string|nil, string|nil) "started" or "queued", or nil and an error.
 /// @example
-/// local state, err = n00n.session.prompt("run the tests", { session = id })
+/// local state, err = n00n.session.prompt("run the tests", { session = id, steer = true, control = true })
 #[lua_fn]
 async fn prompt(
     lua: Lua,
@@ -152,11 +167,25 @@ async fn prompt(
     text: String,
     opts: Option<Table>,
 ) -> LuaResult<Pair> {
-    let id = match opts {
-        Some(opts) => opts.get("session")?,
-        None => None,
+    let (id, steer, control) = match opts {
+        Some(opts) => (
+            opts.get("session")?,
+            opts.get("steer")?,
+            opts.get("control")?,
+        ),
+        None => (None, false, false),
     };
-    roundtrip(lua, tx, SessionRequest::Prompt { id, text }).await
+    roundtrip(
+        lua,
+        tx,
+        SessionRequest::Prompt {
+            id,
+            text,
+            steer,
+            control,
+        },
+    )
+    .await
 }
 
 /// Cancels the current turn in a live session without deleting the session.
@@ -290,15 +319,28 @@ mod tests {
         assert!(val);
     }
 
-    #[test_case("return session.prompt('hi', { session = 'abc' })", Some("abc") ; "explicit_session_id")]
-    #[test_case("return session.prompt('hi')", None ; "defaults_to_focused")]
-    fn prompt_forwards_text_and_session_id(code: &str, expected_id: Option<&str>) {
+    #[test_case("return session.prompt('hi', { session = 'abc' })", Some("abc"), false, false ; "explicit_session_id")]
+    #[test_case("return session.prompt('hi')", None, false, false ; "defaults_to_focused")]
+    #[test_case("return session.prompt('hi', { session = 'abc', steer = true })", Some("abc"), true, false ; "explicit_session_id_steer")]
+    #[test_case("return session.prompt('hi', { session = 'abc', steer = true, control = true })", Some("abc"), true, true ; "explicit_session_id_control")]
+    fn prompt_forwards_text_and_session_id(
+        code: &str,
+        expected_id: Option<&str>,
+        expected_steer: bool,
+        expected_control: bool,
+    ) {
         let (tx, rx) = flume::unbounded::<UiAction>();
         let lua = lua_with_session(Some(tx));
         let expected_id = expected_id.map(str::to_owned);
         let checker = std::thread::spawn(move || {
             let Ok(UiAction::Session {
-                req: SessionRequest::Prompt { id, text },
+                req:
+                    SessionRequest::Prompt {
+                        id,
+                        text,
+                        steer,
+                        control,
+                    },
                 reply_tx,
             }) = rx.recv()
             else {
@@ -306,6 +348,8 @@ mod tests {
             };
             assert_eq!(id, expected_id);
             assert_eq!(text, "hi");
+            assert_eq!(steer, expected_steer);
+            assert_eq!(control, expected_control);
             reply_tx.send(Ok(json!("queued"))).unwrap();
         });
         let (val, err): (String, Option<String>) =
