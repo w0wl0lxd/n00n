@@ -20,7 +20,7 @@ use crate::model::Model;
 use crate::providers::ResolvedAuth;
 use crate::{
     AgentError, Message, ProviderEvent, RequestDeliveryMetadata, RequestDeliveryPhase,
-    RequestOptions, StreamResponse, System, dialect,
+    RequestOptions, StreamResponse, System,
 };
 
 const DEFAULT_RESPONSES_WS_URL: &str = "wss://api.openai.com/v1/responses";
@@ -129,7 +129,7 @@ pub(crate) fn build_request_body(
     prompt_cache_key: Option<&str>,
     store: bool,
 ) -> Value {
-    let mut body = build_body(
+    build_body(
         model,
         messages,
         system,
@@ -137,11 +137,8 @@ pub(crate) fn build_request_body(
         previous_response_id,
         prompt_cache_key,
         store,
-    );
-    if let Some(effort) = opts.thinking.effort_str(&dialect::STANDARD, model) {
-        body["reasoning"]["effort"] = json!(effort);
-    }
-    body
+        opts.thinking,
+    )
 }
 
 fn build_create_event(body: &Value) -> Value {
