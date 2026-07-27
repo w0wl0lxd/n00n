@@ -12,17 +12,25 @@ The goal is to replace external CLI/MCP dependencies for `arbor`, `codegraph`, a
 ### Arbor
 
 - **Current state**: `plugins/arbor/init.lua` + `n00n-lua/src/api/arbor.rs` + `n00n-arbor` crate. The Rust `Client` shells out to the `arbor` binary for every command and parses JSON.
-- **Index format**: `.arbor/` contains `graph.bin` (Sled/graph store) and `graph.json` (serialized `ArborGraph`).
-- **Native option**: `arbor-core` 2.1.0 and `arbor-graph` 2.1.0 are published under MIT on crates.io. `arbor-graph` exposes `GraphStore::open(path)` and `GraphStore::load_graph()` to read the existing `.arbor/` store, plus `ArborGraph` query methods and `GraphBuilder` for incremental builds.
-- **Decision**: Adopt `arbor-core` 2.1.0 + `arbor-graph` 2.1.0 and rewrite `n00n-arbor` to load/build the graph in-process.
+- **Index format**: `.arbor/` contains `cache/` (Sled/graph store) and `blobs/`. The actual graph data is in `.arbor/cache/`.
+- **Native option**: `arbor-core` 2.5.0 and `arbor-graph` 2.5.0 are published under MIT on crates.io. `arbor-graph` exposes `GraphStore::open(path)` and `GraphStore::load_graph()` to read the existing `.arbor/cache/` store, plus `ArborGraph` query methods and `GraphBuilder` for incremental builds.
+- **Decision**: Adopt `arbor-core` 2.5.0 + `arbor-graph` 2.5.0 and rewrite `n00n-arbor` to load/build the graph in-process.
 - **Rationale**: Official, stable API that mirrors the CLI's own data model; `GraphStore` supports incremental updates and can read the CLI-produced cache.
 - **Alternatives rejected**:
   - Parse `graph.json` only: too large and stale.
   - Keep shelling out: defeats the native goal.
 
 **Compatibility notes**:
-- `arbor-graph` 2.1.0 depends on `tiktoken-rs ^0.5` while n00n already depends on `tiktoken-rs 0.9`. Cargo will build both versions; `deny.toml` sets `multiple-versions = "warn"`, so this produces a warning rather than a hard failure. A Phase 0 spike will confirm `cargo deny check` still passes.
-- `arbor-core` 2.1.0 depends on `tree-sitter ^0.22`; n00n uses `tree-sitter 0.26`. Again, Cargo can resolve both; `cargo deny` will warn.
+- `arbor-graph` 2.5.0 depends on `tiktoken-rs ^0.5` while n00n already depends on `tiktoken-rs 0.9`. Cargo will build both versions; `deny.toml` sets `multiple-versions = "warn"`, so this produces a warning rather than a hard failure. Phase 0 spike confirmed `cargo deny check` passes with warnings.
+- `arbor-core` 2.5.0 depends on `tree-sitter ^0.22`; n00n uses `tree-sitter 0.26`. These cannot coexist in the same workspace due to `links = "tree-sitter"` conflicts. The spike was created as an independent workspace to avoid this conflict. For n00n integration, `n00n-arbor` must be isolated as a separate workspace or use a workspace inheritance strategy that avoids the conflict.
+- **GraphStore path semantics**: `GraphStore::open()` expects the path to the `.arbor/cache/` directory, not `.arbor/`. Opening `.arbor/` succeeds but returns an empty graph (0 nodes, 0 edges). Opening `.arbor/cache/` correctly loads the graph (10482 nodes, 6089 edges in the spike test).
+- **Node count discrepancy**: The spike loaded 10482 nodes from `.arbor/cache/`, while `arbor status` reported 13659 nodes. This is because the CLI re-indexed during the spike run (see stderr: "Indexed 370 files, 0 cache hits (13659 nodes)"). The cached graph was from an earlier index run. This is expected behavior and not a compatibility issue.
+- **cargo deny results**: Phase 0 spike ran `cargo deny check` on the independent workspace. Results:
+  - **Advisories**: 3 unmaintained crates (bincode 1.3.3, fxhash 0.2.1, instant 0.1.13) - all transitive dependencies of arbor-graph's sled dependency. No safe upgrade available per advisories.
+  - **Licenses**: Spike crate lacked license field (expected for throwaway). Arbor dependencies are MIT/Apache-2.0.
+  - **Duplicates**: syn 2.0.119 and 3.0.3 coexist (expected for serde derive vs tracing).
+  - **Bans/Sources**: Passed.
+  - **Verdict**: The unmaintained advisories are in arbor-graph's dependency tree (sled) and have no safe upgrades. This is a supply-chain risk inherited from arbor-graph 2.5.0.
 
 ### CodeGraph
 

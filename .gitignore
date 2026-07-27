@@ -27,3 +27,11 @@ runs.csv
 # hk local overrides
 hk.local.pkl
 .config/hk.local.pkl
+
+# Generated code-intelligence indexes
+/.arbor/
+/.codegraph/
+/.n00n/search/
+
+# Throwaway validation spikes
+/spikes/

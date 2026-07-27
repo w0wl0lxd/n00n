@@ -17,7 +17,7 @@ This feature ports the `arbor`, `codegraph`, and `semblem` code-intelligence too
 **Language/Version**: Rust 2024 edition (workspace `rust-version = 1.97`).
 
 **Primary Dependencies**:
-- `arbor-core` 2.1.0 + `arbor-graph` 2.1.0 (Arbor parsing and graph queries).
+- `arbor-core` 2.5.0 + `arbor-graph` 2.5.0 (Arbor parsing and graph queries).
 - `rusqlite` 0.40+ (bundled, `modern_sqlite` for WAL/FTS5) for CodeGraph index access.
 - `tantivy` 0.26+ (BM25 full-text search) inside `n00n-search`.
 - `ignore` + workspace `tree-sitter-*` grammars for file walking and chunking in `n00n-search`.
@@ -56,7 +56,7 @@ This feature ports the `arbor`, `codegraph`, and `semblem` code-intelligence too
 |------|--------|-------|
 | No new `unsafe` without review | Pass | The chosen crates do not require new `unsafe` blocks in n00n wrapper code. |
 | `cargo clippy --all --tests -- -D warnings` | TBD | Must pass before PR. |
-| `cargo deny check` | TBD | Must pass; dependency licenses are MIT/Apache-2.0. `arbor-graph`/`arbor-core` pull `tiktoken-rs ^0.5` and `tree-sitter ^0.22`, which duplicate n00n's `0.9`/`0.26` versions; `deny.toml` warns on duplicates, so this is acceptable but must be verified. |
+| `cargo deny check` | TBD | Must pass; dependency licenses are MIT/Apache-2.0. `arbor-graph`/`arbor-core` pull `tiktoken-rs ^0.5` and `tree-sitter ^0.22`, which duplicate n00n's `0.9`/`0.26` versions; `deny.toml` warns on duplicates, so this is acceptable but must be verified. Phase 0 spike confirmed 3 unmaintained transitive deps (bincode, fxhash, instant) in arbor-graph's sled tree with no safe upgrades. |
 | No silent `.ok()` / default fallbacks | Pass | Errors from upstream crates will be mapped to typed `thiserror` variants. |
 | TDD / failing test first | Pass | Each phase starts with a failing test or fixture assertion. |
 | DRY/SRP | Pass | Each crate has one responsibility: parsing/indexing, query API, or Lua binding. |
@@ -211,7 +211,7 @@ All three tools auto-index on first call and report progress through a moving st
 
 ### Phase 0: Validation Spikes
 
-1. **Arbor index compatibility**: Create a throwaway crate, add `arbor-core` 2.1.0 + `arbor-graph` 2.1.0, and call `GraphStore::open(".arbor/")` + `load_graph()` on the n00n repo. Verify it loads without `cache version mismatch`.
+1. **Arbor index compatibility**: Create a throwaway crate, add `arbor-core` 2.5.0 + `arbor-graph` 2.5.0, and call `GraphStore::open(".arbor/cache/")` + `load_graph()` on the n00n repo. Verify it loads without `cache version mismatch`. Note: must be an independent workspace due to tree-sitter version conflict.
 2. **CodeGraph SQLite access**: Add `rusqlite` 0.40 with `bundled` + `modern_sqlite`, open `.codegraph/codegraph.db`, and run representative FTS5 and edge queries.
 3. **Search BM25**: Add `tantivy` to a throwaway crate, index the n00n repo, and confirm sub-second BM25 queries.
 4. **Dependency audit**: Add `arbor-core`/`arbor-graph`/`tantivy`/`rusqlite` to a throwaway `Cargo.toml` and run `cargo deny check`. Verify duplicate `tiktoken-rs`/`tree-sitter` warnings are only warnings.
@@ -236,7 +236,7 @@ All three tools auto-index on first call and report progress through a moving st
 
 ### Phase 3: Arbor Native
 
-1. Rewrite `n00n-arbor` to use `arbor-graph` 2.1.0 + `arbor-core` 2.1.0.
+1. Rewrite `n00n-arbor` to use `arbor-graph` 2.5.0 + `arbor-core` 2.5.0. Note: must be isolated as a separate workspace or use workspace inheritance to avoid tree-sitter 0.22 vs 0.26 conflict.
 2. Update `n00n-lua/src/api/arbor.rs` and `plugins/arbor/init.lua`.
 3. Add progress reporting and file-locking during indexing.
 4. Add fixture tests for `callers`, `callees`, `map`, `diff`, `query`, `status`.
