@@ -17,7 +17,7 @@ use std::time::UNIX_EPOCH;
 
 use tracing::warn;
 
-use crate::id::{N00nId, N00nIdParseError};
+use crate::id::{n00nId, n00nIdParseError};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use zstd::stream::{Decoder, Encoder};
@@ -49,12 +49,12 @@ pub enum SessionError {
     #[error("incompatible session version {found} (expected {expected})")]
     VersionMismatch { found: u32, expected: u32 },
     #[error("session ID mismatch: log owns {log_id}, got {given_id}")]
-    IdMismatch { log_id: N00nId, given_id: N00nId },
+    IdMismatch { log_id: n00nId, given_id: n00nId },
     #[error("session log {path} has header id {raw_id:?} that is not a valid id: {source}")]
     CorruptHeaderId {
         path: String,
         raw_id: String,
-        source: N00nIdParseError,
+        source: n00nIdParseError,
     },
     #[error("cursor ahead of session (log has {saved}, session has {actual}); compact required")]
     CursorAhead { saved: usize, actual: usize },
@@ -132,6 +132,8 @@ pub struct StoredQueuedMessage {
     pub fast: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub workflow: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub control: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<StoredMcpPrompt>,
 }
@@ -210,7 +212,7 @@ pub enum TranscriptEntry<M> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session<M, U, T> {
     pub version: u32,
-    pub id: N00nId,
+    pub id: n00nId,
     pub title: String,
     pub cwd: String,
     pub model: String,
@@ -232,7 +234,7 @@ pub struct Session<M, U, T> {
 
 #[derive(Serialize, Deserialize)]
 pub struct SessionSummary {
-    pub id: N00nId,
+    pub id: n00nId,
     pub title: String,
     pub updated_at: u64,
     #[serde(default)]
@@ -470,7 +472,7 @@ enum LogRecord<M, U, T> {
     #[serde(rename = "header")]
     Header {
         v: u32,
-        id: N00nId,
+        id: n00nId,
         #[serde(default)]
         model: String,
         cwd: String,
@@ -503,7 +505,7 @@ enum LogRecord<M, U, T> {
 // -- SessionLog: append-only persistence --
 
 pub struct SessionLog {
-    session_id: N00nId,
+    session_id: n00nId,
     dir: PathBuf,
     file: File,
     saved_messages: MessageCursor,
@@ -569,7 +571,7 @@ impl SessionLog {
     /// or if the session ID does not match.
     pub fn open<M, U, T>(
         dir: &Path,
-        session_id: N00nId,
+        session_id: n00nId,
     ) -> Result<(Session<M, U, T>, Self), SessionError>
     where
         M: Serialize + DeserializeOwned + Clone + Default,
@@ -605,7 +607,7 @@ impl SessionLog {
     }
 
     #[must_use]
-    pub fn session_id(&self) -> N00nId {
+    pub fn session_id(&self) -> n00nId {
         self.session_id
     }
 
@@ -973,7 +975,7 @@ enum RawTag {
 }
 
 struct SessionBuilder<M, U, T> {
-    id: Option<N00nId>,
+    id: Option<n00nId>,
     model: String,
     cwd: String,
     created_at: u64,
@@ -1036,7 +1038,7 @@ where
             Err(error) => {
                 if !got_header
                     && let Ok(RawTag::Header { id: raw_id }) = serde_json::from_str::<RawTag>(line)
-                    && let Err(source) = raw_id.parse::<N00nId>()
+                    && let Err(source) = raw_id.parse::<n00nId>()
                 {
                     return Err(SessionError::CorruptHeaderId {
                         path: path.display().to_string(),
@@ -1189,7 +1191,7 @@ fn load_cwd_index(dir: &Path) -> HashMap<String, String> {
         .unwrap_or_else(HashMap::new)
 }
 
-fn update_cwd_index(dir: &Path, cwd: &str, session_id: N00nId) -> Result<(), StorageError> {
+fn update_cwd_index(dir: &Path, cwd: &str, session_id: n00nId) -> Result<(), StorageError> {
     let mut index = load_cwd_index(dir);
     let id_str = session_id.to_string();
     if index.get(cwd).is_some_and(|v| *v == id_str) {
@@ -1199,15 +1201,15 @@ fn update_cwd_index(dir: &Path, cwd: &str, session_id: N00nId) -> Result<(), Sto
     atomic_write(&dir.join(CWD_INDEX_FILE), &serde_json::to_vec(&index)?)
 }
 
-fn jsonl_path(dir: &Path, id: N00nId) -> PathBuf {
+fn jsonl_path(dir: &Path, id: n00nId) -> PathBuf {
     dir.join(format!("{id}.jsonl"))
 }
 
-fn openai_response_chain_path(dir: &Path, id: N00nId) -> PathBuf {
+fn openai_response_chain_path(dir: &Path, id: n00nId) -> PathBuf {
     dir.join(format!("{id}.{OPENAI_RESPONSE_CHAIN_SUFFIX}"))
 }
 
-fn openai_response_chain_lock_path(dir: &Path, id: N00nId) -> PathBuf {
+fn openai_response_chain_lock_path(dir: &Path, id: n00nId) -> PathBuf {
     dir.join(format!("{id}.{OPENAI_RESPONSE_CHAIN_LOCK_SUFFIX}"))
 }
 
@@ -1217,7 +1219,7 @@ fn openai_response_chain_lock_path(dir: &Path, id: N00nId) -> PathBuf {
 /// Returns an error when the sessions directory or lock file cannot be opened or locked.
 pub fn lock_openai_response_chain(
     state_dir: &StateDir,
-    session_id: N00nId,
+    session_id: n00nId,
 ) -> Result<OpenAiResponseChainLock, StorageError> {
     let sessions_dir = state_dir.ensure_subdir(SESSIONS_DIR)?;
     lock_openai_response_chain_in(&sessions_dir, session_id)
@@ -1225,7 +1227,7 @@ pub fn lock_openai_response_chain(
 
 fn lock_openai_response_chain_in(
     sessions_dir: &Path,
-    session_id: N00nId,
+    session_id: n00nId,
 ) -> Result<OpenAiResponseChainLock, StorageError> {
     let file = open_openai_response_chain_lock(sessions_dir, session_id)?;
     file.lock()?;
@@ -1241,7 +1243,7 @@ fn lock_openai_response_chain_in(
 /// Returns an error when the sessions directory or lock file cannot be opened or locked.
 pub fn try_lock_openai_response_chain(
     state_dir: &StateDir,
-    session_id: N00nId,
+    session_id: n00nId,
 ) -> Result<Option<OpenAiResponseChainLock>, StorageError> {
     let sessions_dir = state_dir.ensure_subdir(SESSIONS_DIR)?;
     let file = open_openai_response_chain_lock(&sessions_dir, session_id)?;
@@ -1254,7 +1256,7 @@ pub fn try_lock_openai_response_chain(
 
 fn open_openai_response_chain_lock(
     sessions_dir: &Path,
-    session_id: N00nId,
+    session_id: n00nId,
 ) -> Result<File, StorageError> {
     let mut options = OpenOptions::new();
     options.create(true).truncate(false).read(true).write(true);
@@ -1282,7 +1284,7 @@ fn open_openai_response_chain_lock(
 /// Returns an error when the sessions directory cannot be opened.
 pub fn openai_response_chain_parent_exists(
     state_dir: &StateDir,
-    session_id: N00nId,
+    session_id: n00nId,
 ) -> Result<bool, StorageError> {
     let sessions_dir = state_dir.ensure_subdir(SESSIONS_DIR)?;
     Ok(locate_session_file(&sessions_dir, session_id).is_some())
@@ -1297,7 +1299,7 @@ pub fn openai_response_chain_parent_exists(
 /// or an expired state file cannot be removed.
 pub fn load_openai_response_chain(
     state_dir: &StateDir,
-    session_id: N00nId,
+    session_id: n00nId,
     lock: &OpenAiResponseChainLock,
 ) -> Result<Option<StoredOpenAiResponseChain>, StorageError> {
     load_openai_response_chain_at(state_dir, session_id, now_epoch(), lock)
@@ -1305,7 +1307,7 @@ pub fn load_openai_response_chain(
 
 fn load_openai_response_chain_at(
     state_dir: &StateDir,
-    session_id: N00nId,
+    session_id: n00nId,
     now: u64,
     lock: &OpenAiResponseChainLock,
 ) -> Result<Option<StoredOpenAiResponseChain>, StorageError> {
@@ -1331,7 +1333,7 @@ fn load_openai_response_chain_at(
 /// Returns an error when the sessions directory cannot be created or the state cannot be written.
 pub fn save_openai_response_chain(
     state_dir: &StateDir,
-    session_id: N00nId,
+    session_id: n00nId,
     chain: &StoredOpenAiResponseChain,
     lock: &OpenAiResponseChainLock,
 ) -> Result<(), StorageError> {
@@ -1356,7 +1358,7 @@ pub fn save_openai_response_chain(
 /// Returns an error when the sessions directory cannot be opened or the file cannot be removed.
 pub fn delete_openai_response_chain(
     state_dir: &StateDir,
-    session_id: N00nId,
+    session_id: n00nId,
     lock: &OpenAiResponseChainLock,
 ) -> Result<(), StorageError> {
     let _ = lock;
@@ -1381,7 +1383,7 @@ fn try_remove(path: &Path) -> Result<bool, StorageError> {
     }
 }
 
-fn remove_from_cwd_index(dir: &Path, session_id: N00nId) -> Result<(), StorageError> {
+fn remove_from_cwd_index(dir: &Path, session_id: n00nId) -> Result<(), StorageError> {
     let mut index = load_cwd_index(dir);
     let before = index.len();
     let session_id = session_id.to_string();
@@ -1397,7 +1399,7 @@ fn remove_from_cwd_index(dir: &Path, session_id: N00nId) -> Result<(), StorageEr
 #[derive(Deserialize)]
 struct ZstHeader {
     v: u32,
-    id: N00nId,
+    id: n00nId,
     #[serde(default)]
     model: String,
     cwd: String,
@@ -1416,7 +1418,7 @@ const META_RECORD_PREFIX: &str = r#"{"t":"meta""#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ScannedHeader {
-    id: N00nId,
+    id: n00nId,
     cwd: String,
     title: String,
     updated_at: u64,
@@ -1668,7 +1670,7 @@ fn is_session_file(path: &Path) -> bool {
         && path
             .file_stem()
             .and_then(|stem| stem.to_str())
-            .and_then(|stem| stem.parse::<N00nId>().ok())
+            .and_then(|stem| stem.parse::<n00nId>().ok())
             .is_some_and(|id| {
                 let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
                 match parent {
@@ -1678,7 +1680,7 @@ fn is_session_file(path: &Path) -> bool {
             })
 }
 
-fn locate_session_file(dir: &Path, id: N00nId) -> Option<PathBuf> {
+fn locate_session_file(dir: &Path, id: n00nId) -> Option<PathBuf> {
     let path = jsonl_path(dir, id);
     (path.exists() && file_is_zst(&path)).then_some(path)
 }
@@ -1705,7 +1707,7 @@ where
         let now = now_epoch();
         Self {
             version: SESSION_VERSION,
-            id: N00nId::generate(),
+            id: n00nId::generate(),
             title: DEFAULT_TITLE.into(),
             cwd: cwd.into(),
             model: model.into(),
@@ -1769,7 +1771,7 @@ where
 
     /// # Errors
     /// Returns `SessionError` if the sessions directory cannot be created or the session cannot be loaded.
-    pub fn load(id: N00nId, dir: &StateDir) -> Result<Self, SessionError> {
+    pub fn load(id: n00nId, dir: &StateDir) -> Result<Self, SessionError> {
         let sessions_dir = dir.ensure_subdir(SESSIONS_DIR)?;
         Self::load_from(id, &sessions_dir)
     }
@@ -1777,7 +1779,7 @@ where
     /// # Errors
     /// Returns `SessionError` if the session file cannot be found, read, or parsed,
     /// or if the session ID does not match.
-    pub fn load_from(id: N00nId, dir: &Path) -> Result<Self, SessionError> {
+    pub fn load_from(id: n00nId, dir: &Path) -> Result<Self, SessionError> {
         let Some(path) = locate_session_file(dir, id) else {
             return Err(StorageError::NotFound(id.to_string()).into());
         };
@@ -1836,14 +1838,14 @@ where
 
     /// # Errors
     /// Returns `SessionError` if the sessions directory cannot be created or the delete fails.
-    pub fn delete(id: N00nId, dir: &StateDir) -> Result<(), SessionError> {
+    pub fn delete(id: n00nId, dir: &StateDir) -> Result<(), SessionError> {
         let sessions_dir = dir.ensure_subdir(SESSIONS_DIR)?;
         Self::delete_from(id, &sessions_dir)
     }
 
     /// # Errors
     /// Returns `SessionError` if the session file cannot be found or removed.
-    pub fn delete_from(id: N00nId, dir: &Path) -> Result<(), SessionError> {
+    pub fn delete_from(id: n00nId, dir: &Path) -> Result<(), SessionError> {
         let _lock = lock_openai_response_chain_in(dir, id)?;
         let Some(path) = locate_session_file(dir, id) else {
             return Err(StorageError::NotFound(id.to_string()).into());
@@ -1881,7 +1883,7 @@ mod tests {
         TitleSource, TranscriptEntry,
     };
     use crate::StateDir;
-    use crate::id::N00nId;
+    use crate::id::n00nId;
     use serde::Serializer;
     use serde_json::Value;
     use std::collections::HashMap;
@@ -2635,7 +2637,7 @@ mod tests {
     #[test]
     fn load_nonexistent_returns_not_found() {
         let tmp = TempDir::new().unwrap();
-        let id = N00nId::generate();
+        let id = n00nId::generate();
         let err = TestSession::load_from(id, tmp.path()).unwrap_err();
         assert!(matches!(
             err,
@@ -2694,7 +2696,7 @@ mod tests {
                 .map(std::path::PathBuf::from)
                 .unwrap();
             let state_dir = StateDir::from_path(dir);
-            let session_id = SESSION_ID.parse::<N00nId>().unwrap();
+            let session_id = SESSION_ID.parse::<n00nId>().unwrap();
             let _lock = lock_openai_response_chain(&state_dir, session_id).unwrap();
             fs::write(ready, b"ready").unwrap();
             std::thread::sleep(std::time::Duration::from_millis(500));
@@ -2720,7 +2722,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(ready.exists());
-        let session_id = SESSION_ID.parse::<N00nId>().unwrap();
+        let session_id = SESSION_ID.parse::<n00nId>().unwrap();
         assert!(
             try_lock_openai_response_chain(&state_dir, session_id)
                 .unwrap()
@@ -2774,7 +2776,7 @@ mod tests {
     fn deleting_openai_response_chain_is_idempotent() {
         let tmp = TempDir::new().unwrap();
         let state_dir = StateDir::from_path(tmp.path().to_path_buf());
-        let session_id = N00nId::generate();
+        let session_id = n00nId::generate();
 
         let lock = lock_openai_response_chain(&state_dir, session_id).unwrap();
         delete_openai_response_chain(&state_dir, session_id, &lock).unwrap();
@@ -2785,7 +2787,7 @@ mod tests {
     fn response_chain_write_cannot_recreate_a_deleted_session_sidecar() {
         let tmp = TempDir::new().unwrap();
         let state_dir = StateDir::from_path(tmp.path().to_path_buf());
-        let session_id = N00nId::generate();
+        let session_id = n00nId::generate();
         let chain = StoredOpenAiResponseChain {
             response_id: "resp_1".into(),
             message_count: 1,
@@ -2804,7 +2806,7 @@ mod tests {
     fn response_chain_lock_serializes_same_session_across_file_handles() {
         let tmp = TempDir::new().unwrap();
         let state_dir = StateDir::from_path(tmp.path().to_path_buf());
-        let session_id = N00nId::generate();
+        let session_id = n00nId::generate();
         let first = lock_openai_response_chain(&state_dir, session_id).unwrap();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
@@ -3049,7 +3051,7 @@ mod tests {
     #[test]
     fn delete_nonexistent_returns_not_found() {
         let tmp = TempDir::new().unwrap();
-        let id = N00nId::generate();
+        let id = n00nId::generate();
         let err = TestSession::delete_from(id, tmp.path()).unwrap_err();
         assert!(matches!(
             err,
@@ -3127,6 +3129,7 @@ mod tests {
         assert!(stored.thinking.is_none());
         assert!(!stored.fast);
         assert!(!stored.workflow);
+        assert!(!stored.control);
         assert!(stored.prompt.is_none());
     }
 

@@ -8,7 +8,7 @@ use crate::components::rewind_picker::RewindEntry;
 use crate::components::{Action, LoadedSession};
 use n00n_agent::{AgentInput, AgentMode, McpPromptRef};
 use n00n_providers::{Model, TokenUsage};
-use n00n_storage::id::N00nId;
+use n00n_storage::id::n00nId;
 use n00n_storage::sessions::{
     StoredImageMediaType, StoredImageSource, StoredMcpPrompt, StoredMode, StoredQueuedMessage,
     StoredSubagent, StoredThinking,
@@ -84,6 +84,7 @@ fn stored_message(input: AgentInput) -> StoredQueuedMessage {
         thinking: Some(input.thinking.into()),
         fast: input.fast,
         workflow: input.workflow,
+        control: input.control,
         prompt: input.prompt.map(|prompt| StoredMcpPrompt {
             qualified_name: prompt.qualified_name,
             arguments: prompt.arguments,
@@ -95,7 +96,7 @@ fn restored_submission(app: &App, message: StoredQueuedMessage) -> (QueuedMessag
     let queued = QueuedMessage {
         text: message.text,
         images: message.images.into_iter().map(restored_image).collect(),
-        control: false,
+        control: message.control,
     };
     let mut input = app.build_agent_input(&queued);
     if let Some(mode) = message.mode {
@@ -377,7 +378,7 @@ impl App {
         self.loaded_session_snapshot()
     }
 
-    pub(crate) fn load_session(&mut self, session_id: N00nId) -> Vec<Action> {
+    pub(crate) fn load_session(&mut self, session_id: n00nId) -> Vec<Action> {
         let mut session = match AppSession::load(session_id, &self.storage) {
             Ok(s) => s,
             Err(e) => {

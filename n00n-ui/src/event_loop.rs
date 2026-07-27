@@ -32,7 +32,7 @@ use n00n_providers::provider::{
 use n00n_providers::{ContentBlock, Message, Model, OpenAiOptions};
 use n00n_storage::StateDir;
 use n00n_storage::StorageError;
-use n00n_storage::id::{N00nId, N00nIdParseError, SessionRef};
+use n00n_storage::id::{SessionRef, n00nId, n00nIdParseError};
 use n00n_storage::sessions::{SessionError, TranscriptEntry, normalize_title};
 use serde_json::{Value, json};
 use tracing::warn;
@@ -121,8 +121,8 @@ impl SessionStatus {
     }
 }
 
-fn parse_session_id(id: &str) -> Result<N00nId, String> {
-    id.parse().map_err(|e: N00nIdParseError| e.to_string())
+fn parse_session_id(id: &str) -> Result<n00nId, String> {
+    id.parse().map_err(|e: n00nIdParseError| e.to_string())
 }
 
 fn paused_team_run(history: &[Message]) -> Result<Option<Value>, String> {
@@ -180,7 +180,7 @@ struct SessionRuntime {
 }
 
 impl SessionRuntime {
-    fn id(&self) -> N00nId {
+    fn id(&self) -> n00nId {
         self.app.state.session.id
     }
 }
@@ -271,7 +271,7 @@ pub(crate) struct EventLoop<'t> {
     ui_action_rx: Option<flume::Receiver<UiAction>>,
     submission_persist_tx: flume::Sender<SubmissionPersistence>,
     submission_persist_rx: flume::Receiver<SubmissionPersistence>,
-    post_draw_submissions: Vec<(N00nId, SubmissionDispatch)>,
+    post_draw_submissions: Vec<(n00nId, SubmissionDispatch)>,
     last_save: Instant,
     _model_fetch_task: smol::Task<()>,
     /// Set when UI state changed and a fresh frame must be painted. Draws are
@@ -283,7 +283,7 @@ pub(crate) struct EventLoop<'t> {
 /// One item from any of the event loop's sources; `None` from `next_wake`
 /// means the wait timed out (animation/idle tick).
 struct SubmissionPersistence {
-    session_id: N00nId,
+    session_id: n00nId,
     dispatch: SubmissionDispatch,
     result: Result<(), SessionError>,
 }
@@ -1013,7 +1013,7 @@ impl<'t> EventLoop<'t> {
         }
     }
 
-    fn position(&self, id: N00nId) -> Option<usize> {
+    fn position(&self, id: n00nId) -> Option<usize> {
         self.sessions.iter().position(|rt| rt.id() == id)
     }
 
@@ -1045,7 +1045,7 @@ impl<'t> EventLoop<'t> {
     /// Focus a live session, or bring a stored one up: in place when the
     /// focused session is a blank idle one (nothing worth keeping), otherwise
     /// as a new runtime so the session you came from stays live.
-    fn focus_session(&mut self, id: N00nId) -> Result<(), String> {
+    fn focus_session(&mut self, id: n00nId) -> Result<(), String> {
         if let Some(i) = self.position(id) {
             self.set_focus(i);
             return Ok(());
@@ -1512,9 +1512,9 @@ where
 }
 
 fn take_painted_submissions<T>(
-    pending: &mut Vec<(N00nId, T)>,
-    painted_session: N00nId,
-) -> Vec<(N00nId, T)> {
+    pending: &mut Vec<(n00nId, T)>,
+    painted_session: n00nId,
+) -> Vec<(n00nId, T)> {
     let submissions = std::mem::take(pending);
     let mut ready = Vec::new();
     for (session_id, submission) in submissions {
@@ -1549,7 +1549,7 @@ mod tests {
     };
     use crate::components::Status;
     use n00n_providers::{ContentBlock, Message, Role};
-    use n00n_storage::id::N00nId;
+    use n00n_storage::id::n00nId;
     use ratatui::{
         Terminal,
         backend::{Backend, ClearType, TestBackend, WindowSize},
@@ -1665,8 +1665,8 @@ mod tests {
 
     #[test]
     fn painted_submission_waits_for_its_session_after_focus_switch() {
-        let first = N00nId::generate();
-        let second = N00nId::generate();
+        let first = n00nId::generate();
+        let second = n00nId::generate();
         let mut pending = vec![(first, "first"), (second, "second")];
 
         let released = take_painted_submissions(&mut pending, second);

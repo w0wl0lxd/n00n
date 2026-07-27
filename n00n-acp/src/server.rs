@@ -19,7 +19,7 @@ use n00n_agent::{AgentInput, AgentMode, Envelope, ImageMediaType, ImageSource};
 use n00n_providers::Message;
 use n00n_providers::model::Model;
 use n00n_providers::provider::available_model_specs;
-use n00n_storage::id::{N00nId, SessionRef};
+use n00n_storage::id::{SessionRef, n00nId};
 use serde::Serialize;
 use serde_json::Value;
 use smol::io::AsyncBufReadExt;
@@ -210,7 +210,7 @@ fn install_session(srv: &mut Server, handle: InteractiveHandle, current_model: S
     });
 }
 
-fn load_history(session_id: N00nId) -> Result<Vec<Message>, AcpError> {
+fn load_history(session_id: n00nId) -> Result<Vec<Message>, AcpError> {
     let storage = n00n_storage::StateDir::resolve()
         .map_err(|e| AcpError::internal_error().data(json_str(&e)))?;
     load_history_from(&storage, session_id)
@@ -218,7 +218,7 @@ fn load_history(session_id: N00nId) -> Result<Vec<Message>, AcpError> {
 
 fn load_history_from(
     storage: &n00n_storage::StateDir,
-    session_id: N00nId,
+    session_id: n00nId,
 ) -> Result<Vec<Message>, AcpError> {
     let session: n00n_storage::sessions::Session<
         Message,
@@ -532,7 +532,7 @@ mod tests {
         session.messages = messages.clone();
         session.save(&dir).unwrap();
 
-        let id: N00nId = session.id;
+        let id: n00nId = session.id;
         let history = load_history_from(&dir, id).unwrap();
         assert_eq!(
             serde_json::to_value(&history).unwrap(),
@@ -544,7 +544,7 @@ mod tests {
     fn load_missing_session_is_resource_not_found() {
         let tmp = TempDir::new().unwrap();
         let dir = StateDir::from_path(tmp.path().to_path_buf());
-        let err = load_history_from(&dir, N00nId::generate()).unwrap_err();
+        let err = load_history_from(&dir, n00nId::generate()).unwrap_err();
         assert_eq!(err.code, AcpError::resource_not_found(None).code);
     }
 }

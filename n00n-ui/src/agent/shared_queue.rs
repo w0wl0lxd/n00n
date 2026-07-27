@@ -346,7 +346,10 @@ impl InterruptSource for QueueReceiver {
             match item {
                 QueueItem::Message { delivery, .. } => match delivery {
                     Delivery::TurnEnd => None,
-                    Delivery::Steering => (point == InterruptPoint::ToolComplete).then_some(index),
+                    Delivery::Steering => {
+                        matches!(point, InterruptPoint::ToolComplete | InterruptPoint::Safe)
+                            .then_some(index)
+                    }
                     Delivery::Immediate => Some(index),
                 },
                 QueueItem::Compact { .. } => (point == InterruptPoint::Safe).then_some(index),
@@ -423,6 +426,7 @@ mod tests {
         tx.push(queued("normal", Delivery::TurnEnd));
         tx.push(queued("steer one", Delivery::Steering));
         tx.push(queued("steer two", Delivery::Steering));
+        tx.push(queued("steer three", Delivery::Steering));
 
         let ExtractedCommand::Interrupt(first, _) = rx.poll(InterruptPoint::ToolComplete).unwrap()
         else {
@@ -432,13 +436,27 @@ mod tests {
         else {
             panic!("expected steering interrupt");
         };
-        assert!(rx.poll(InterruptPoint::Safe).is_none());
+        let ExtractedCommand::Interrupt(turn_end_fallback, _) =
+            rx.poll(InterruptPoint::Safe).unwrap()
+        else {
+            panic!("expected steering interrupt at turn end");
+        };
         let QueueItem::Message { input: normal, .. } = rx.pop().unwrap() else {
             panic!("expected normal queue item");
         };
         assert_eq!(
-            (first.message, second.message, normal.message),
-            ("steer one".into(), "steer two".into(), "normal".into())
+            (
+                first.message,
+                second.message,
+                turn_end_fallback.message,
+                normal.message,
+            ),
+            (
+                "steer one".into(),
+                "steer two".into(),
+                "steer three".into(),
+                "normal".into(),
+            )
         );
     }
 

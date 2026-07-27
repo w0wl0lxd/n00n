@@ -2488,7 +2488,7 @@ fn loaded_metadata_consumption_survives_crash_restore() {
 }
 
 #[test]
-fn draw_failure_pending_submission_restores_fifo_and_images_after_restart() {
+fn draw_failure_pending_submission_restores_fifo_images_and_control_after_restart() {
     let (_tmp, dir, writer, mut app) = tempdir_app();
     let (shared, receiver) = shared_queue::queue();
     app.queue.set_shared(shared);
@@ -2505,10 +2505,10 @@ fn draw_failure_pending_submission_restores_fifo_and_images_after_restart() {
     );
 
     assert!(matches!(
-        app.submit_prompt(QueuedMessage {
-            text: "second in fifo".into(),
+        app.submit_control_prompt(QueuedMessage {
+            text: "second control in fifo".into(),
             images: Vec::new(),
-            control: false,
+            control: true,
         }),
         SubmitOutcome::Queued
     ));
@@ -2536,10 +2536,11 @@ fn draw_failure_pending_submission_restores_fifo_and_images_after_restart() {
     assert_eq!(text, "first with image");
     assert_eq!(input.images.len(), 1);
     assert_eq!(&*input.images[0].data, "dGVzdA==");
-    let Some(shared_queue::QueueItem::Message { text, .. }) = receiver.pop() else {
+    let Some(shared_queue::QueueItem::Message { text, input, .. }) = receiver.pop() else {
         panic!("second queued message must be restored");
     };
-    assert_eq!(text, "second in fifo");
+    assert_eq!(text, "second control in fifo");
+    assert!(input.control);
     assert!(receiver.pop().is_none());
 
     drop(restarted);

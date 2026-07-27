@@ -276,7 +276,7 @@ local function find_agent(id)
 end
 
 local function build_resume_prompt(run_info, guidance)
-  local arguments = { goal = "resume", resume = run_info.run_id }
+  local arguments = { goal = "resume", resume = run_info.run_id, mode = run_info.mode or "autonomous" }
   if guidance and guidance ~= "" then
     arguments.continue = guidance
   end

@@ -4777,6 +4777,56 @@ fn team_launcher_collects_goal_and_submits_configured_prompt() {
     reply_tx.send(Ok(serde_json::json!("started"))).unwrap();
 }
 
+#[test]
+fn agent_control_resume_preserves_paused_team_mode() {
+    let (reg, host) = builtins_host();
+    let rx = host.ui_action_rx().unwrap();
+    let worker = std::thread::spawn(move || {
+        exec_tool(
+            &reg,
+            "agent_control",
+            serde_json::json!({
+                "action": "resume",
+                "agent_id": "agent-1",
+                "message": "continue carefully"
+            }),
+        )
+    });
+
+    let n00n_lua::UiAction::Session { req, reply_tx } = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("agent_control did not request session status")
+    else {
+        panic!("expected session status request");
+    };
+    assert!(matches!(req, n00n_lua::SessionRequest::Status { .. }));
+    reply_tx
+        .send(Ok(serde_json::json!({
+            "id": "agent-1",
+            "session_type": "background",
+            "tags": [],
+            "paused_team": {
+                "paused": true,
+                "run_id": "run-1",
+                "mode": "swarm"
+            }
+        })))
+        .unwrap();
+
+    let n00n_lua::UiAction::Session { req, reply_tx } = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("agent_control did not submit resume prompt")
+    else {
+        panic!("expected session prompt request");
+    };
+    let n00n_lua::SessionRequest::Prompt { text, .. } = req else {
+        panic!("expected session prompt request");
+    };
+    assert!(text.contains(r#""mode":"swarm""#), "resume prompt: {text}");
+    reply_tx.send(Ok(serde_json::json!("queued"))).unwrap();
+    assert!(worker.join().unwrap().is_ok());
+}
+
 /// The sessions picker parks its command handler in a `win:recv` loop while a
 /// `n00n.async.run` task fetches the stored-session list. Queued async tasks
 /// must run while the spawning handler is still parked, not wait for the next

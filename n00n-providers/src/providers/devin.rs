@@ -177,6 +177,10 @@ impl DevinInner {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
+        // The Devin CLI may be a system binary; do not inherit a bundled glibc
+        // search path that n00n's wrapper sets for the n00n binary itself.
+        cmd.env_remove("LD_LIBRARY_PATH");
+
         if let Some(key) = api_key {
             cmd.env("DEVIN_API_KEY", key);
         }
@@ -357,6 +361,9 @@ impl DevinInner {
                 .map_err(|e| AgentError::Config {
                     message: format!("failed to write newline: {e}"),
                 })?;
+            stdin.flush().await.map_err(|e| AgentError::Config {
+                message: format!("failed to flush stdin: {e}"),
+            })?;
         }
 
         let result = rx.recv_async().await.map_err(|e| AgentError::Config {
@@ -454,7 +461,7 @@ impl DevinInner {
             SessionConfigValueId::new(desired),
         );
         if let Err(e) = self
-            .send_request::<SetSessionConfigOptionRequest, Value>("session/setConfigOption", req)
+            .send_request::<SetSessionConfigOptionRequest, Value>("session/set_config_option", req)
             .await
         {
             debug!(error = %e, "failed to set devin model option");
@@ -608,6 +615,9 @@ impl DevinInner {
             .map_err(|e| AgentError::Config {
                 message: format!("failed to write newline: {e}"),
             })?;
+        stdin.flush().await.map_err(|e| AgentError::Config {
+            message: format!("failed to flush response: {e}"),
+        })?;
 
         Ok(())
     }
