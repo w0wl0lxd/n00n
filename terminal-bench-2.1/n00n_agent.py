@@ -12,6 +12,13 @@ from harbor.models.agent.context import AgentContext
 
 AGENT_LOG_FILE = "n00n.txt"
 
+_PROVIDER_API_KEY_OVERRIDES: dict[str, frozenset[str]] = {
+    "devin": frozenset({"DEVIN_API_KEY", "WINDSURF_API_KEY"}),
+    "copilot": frozenset({"GH_COPILOT_TOKEN", "GH_TOKEN"}),
+    "google": frozenset({"GEMINI_API_KEY", "GOOGLE_API_KEY"}),
+    "zai": frozenset({"ZHIPU_API_KEY"}),
+}
+
 
 def _parse_stream_json(log_text: str) -> dict:
     """Parse n00n --verbose --output-format stream-json output.
@@ -141,7 +148,7 @@ class N00nAgent(BaseInstalledAgent):
             command=(
                 "mkdir -p /opt/n00n/.config /opt/n00n/.local/share "
                 "/opt/n00n/.cache "
-                "&& chmod -R a+rwx /opt/n00n/.config /opt/n00n/.local "
+                "&& chmod -R a+rwX,+t /opt/n00n/.config /opt/n00n/.local "
                 "/opt/n00n/.cache"
             ),
         )
@@ -190,6 +197,44 @@ class N00nAgent(BaseInstalledAgent):
         finally:
             tmp_path.unlink(missing_ok=True)
 
+    def _is_provider_api_key(self, key: str) -> bool:
+        """Check if an environment variable key is a provider API key
+        for the current model."""
+        provider = (self._parsed_model_provider or "").lower()
+        if not provider:
+            return False
+
+        key_upper = key.upper()
+        # Check override set for this provider
+        if provider in _PROVIDER_API_KEY_OVERRIDES:
+            if key_upper in _PROVIDER_API_KEY_OVERRIDES[provider]:
+                return True
+
+        # Check prefix match: PROVIDER_NAME_API_KEY,
+        # PROVIDER_NAME_AUTH_TOKEN, PROVIDER_NAME_TOKEN
+        prefix = provider.replace("-", "_").upper() + "_"
+        if key_upper.startswith(prefix) and key_upper.endswith(
+            ("_API_KEY", "_AUTH_TOKEN", "_TOKEN")
+        ):
+            return True
+
+        return False
+
+    async def _write_env_file(
+        self,
+        environment: BaseEnvironment,
+        env_vars: dict[str, str],
+        remote_path: str = "/opt/n00n/.env",
+    ) -> None:
+        """Write environment variables to a file on the remote system."""
+        lines = [f"{key}={shlex.quote(value)}\n" for key, value in env_vars.items()]
+        content = "".join(lines)
+        await self._upload_text(environment, content, remote_path)
+        await self.exec_as_root(
+            environment,
+            command=f"chmod 644 {remote_path}",
+        )
+
     @with_prompt_template
     async def run(
         self,
@@ -204,7 +249,23 @@ class N00nAgent(BaseInstalledAgent):
         self._last_instruction = instruction
         escaped = shlex.quote(instruction)
 
-        # Forward provider API keys from the host .env / --ae flags.
+        # Build secrets dict: provider-specific keys from os.environ
+        # + explicit extra_env keys
+        secrets: dict[str, str] = {}
+        for key, value in os.environ.items():
+            if self._is_provider_api_key(key):
+                secrets[key] = value
+        for key, value in self.extra_env.items():
+            if key.endswith(("_API_KEY", "_AUTH_TOKEN", "_TOKEN")):
+                secrets[key] = value
+            elif key == "PATH":
+                # PATH is handled separately in env dict
+                pass
+            else:
+                # Other extra_env entries are not secrets
+                pass
+
+        # Build non-secret env dict with base variables
         env: dict[str, str] = {
             "XDG_CONFIG_HOME": "/opt/n00n/.config",
             "XDG_DATA_HOME": "/opt/n00n/.local/share",
@@ -212,28 +273,36 @@ class N00nAgent(BaseInstalledAgent):
             "PATH": "/opt/n00n/bin:/usr/local/bin:/usr/bin:/bin",
         }
 
-        for key, value in os.environ.items():
-            if key.endswith("_API_KEY") or key.endswith("_AUTH_TOKEN"):
-                env[key] = value
-        for key, value in self.extra_env.items():
-            if key.endswith("_API_KEY") or key.endswith("_AUTH_TOKEN"):
-                env[key] = value
-
+        # Append extra PATH if provided
         extra_path = self.extra_env.get("PATH", "")
         if extra_path:
             env["PATH"] = f"{env['PATH']}:{extra_path}"
 
+        # Set DEVIN_PERMISSION_MODE for devin provider (non-secret)
         provider = self._parsed_model_provider or ""
         if provider == "devin" or model.startswith("devin/"):
             env["DEVIN_PERMISSION_MODE"] = "dangerous"
-            if windsurf_key := self._get_env("WINDSURF_API_KEY"):
-                env["WINDSURF_API_KEY"] = windsurf_key
 
-        command = (
-            f"n00n --print --exit-on-done --yolo --verbose --output-format stream-json "
-            f"--model {shlex.quote(model)} -- {escaped} 2>&1 | "
-            f"tee /logs/agent/{AGENT_LOG_FILE}"
-        )
+        # Write secrets to file if any exist
+        if secrets:
+            await self._write_env_file(environment, secrets)
+
+        # Build command with source prefix if secrets exist
+        if secrets:
+            command = (
+                "set -a && . /opt/n00n/.env && set +a && "
+                "n00n --print --exit-on-done --yolo --verbose "
+                "--output-format stream-json "
+                f"--model {shlex.quote(model)} -- {escaped} 2>&1 | "
+                f"tee /logs/agent/{AGENT_LOG_FILE}"
+            )
+        else:
+            command = (
+                "n00n --print --exit-on-done --yolo --verbose "
+                "--output-format stream-json "
+                f"--model {shlex.quote(model)} -- {escaped} 2>&1 | "
+                f"tee /logs/agent/{AGENT_LOG_FILE}"
+            )
 
         await self.exec_as_agent(environment, command=command, env=env)
 
