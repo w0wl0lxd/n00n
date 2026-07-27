@@ -767,7 +767,8 @@ pub(crate) fn build_coding_plan_resolved(tokens: &OAuthTokens) -> ResolvedAuth {
     }
 }
 
-pub(crate) fn is_oauth(dir: &StateDir) -> bool {
+#[must_use]
+pub fn is_oauth(dir: &StateDir) -> bool {
     load_tokens(dir, PROVIDER).is_some()
 }
 
@@ -804,6 +805,41 @@ pub fn resolve_cached(dir: &StateDir) -> Result<ResolvedAuth, AgentError> {
     Err(AgentError::Config {
         message: "not authenticated, run `n00n auth login openai` or set OPENAI_API_KEY".into(),
     })
+}
+
+pub(crate) fn resolve_api_key(dir: &StateDir) -> Result<ResolvedAuth, AgentError> {
+    if let Ok(key) = env::var("OPENAI_API_KEY") {
+        debug!("using OpenAI API key authentication");
+        return Ok(ResolvedAuth {
+            base_url: None,
+            headers: vec![("authorization".into(), format!("Bearer {key}"))],
+        });
+    }
+
+    if let Some(creds) = load_provider_credentials(dir, PROVIDER) {
+        debug!("using OpenAI saved API key");
+        return Ok(ResolvedAuth {
+            base_url: None,
+            headers: vec![("authorization".into(), format!("Bearer {}", creds.api_key))],
+        });
+    }
+
+    Err(AgentError::Config {
+        message: "not authenticated, set OPENAI_API_KEY or run `n00n auth login openai`".into(),
+    })
+}
+
+pub(crate) fn resolve_coding_plan(dir: &StateDir) -> Result<ResolvedAuth, AgentError> {
+    let tokens = load_tokens(dir, PROVIDER).ok_or_else(|| AgentError::Config {
+        message: "not authenticated, run `n00n auth login codex`".into(),
+    })?;
+
+    debug!(
+        expired = tokens.is_expired(),
+        "using cached Codex OAuth authentication"
+    );
+
+    Ok(build_coding_plan_resolved(&tokens))
 }
 
 /// Authenticate with `OpenAI` via OAuth device flow.
