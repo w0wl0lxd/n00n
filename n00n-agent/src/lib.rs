@@ -22,6 +22,7 @@ pub mod command;
 pub mod diff;
 pub mod permissions;
 pub mod prompt;
+pub mod skill_policy;
 pub mod template;
 pub mod tokenize;
 pub mod tools;
