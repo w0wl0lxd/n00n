@@ -5230,6 +5230,24 @@ M.EMPTY_OLD_STRING = "old_string must not be empty"
 function M.replace(content, old_string, new_string, replace_all)
 ```
 
+### `require("n00n.guard")`
+
+```lua
+-- Runaway guard for subagent budgets.
+--
+-- Combines a user-configurable call limit with heuristic runaway detection:
+-- repeated identical prompts, consecutive subagent errors, and wall-clock timeouts.
+--
+-- Use as a drop-in replacement for a simple { consume = ... } budget table:
+--   guard.consume() is still called before a call.
+--   guard.observe(prompt, err) is called after a call if available.
+--
+-- For richer control, subagent.launch also supports guard:check(prompt) before a
+-- call and guard:record(prompt, err) after a call, which lets the guard see the
+-- prompt and the result.
+function M.new(opts)
+```
+
 ### `require("n00n.list_picker")`
 
 ```lua
@@ -5335,6 +5353,76 @@ local function shorten_path(path)
 end
 
 return shorten_path
+```
+
+### `require("n00n.structured_output")`
+
+```lua
+-- Structured output helper module for subagent validation.
+-- Provides constants, schema validation, and local tool creation for
+-- structured output patterns used across task, workflow, and subagent plugins.
+
+-- Constants
+M.STRUCTURED_OUTPUT_NAME = "structured_output"
+M.STRUCTURED_OUTPUT_DESCRIPTION = "Report your final result. Call it exactly once when your task is complete."
+M.STRUCTURED_OUTPUT_ACK = "Output recorded."
+M.STRUCTURED_OUTPUT_SUFFIX = "\n\nWhen finished, call the structured_output tool with your final result."
+M.MAX_STRUCTURED_RETRIES = 1
+M.MAX_SCHEMA_ERRORS = 3
+M.MAX_SCHEMA_BYTES = 32 * 1024
+M.MAX_SCHEMA_DEPTH = 16
+M.SCHEMA_ROOT_ERROR = "output_schema must have type object"
+M.SCHEMA_COMPILE_ERROR = "invalid output_schema"
+M.SCHEMA_SIZE_ERROR = "output_schema exceeds 32768-byte limit"
+M.SCHEMA_DEPTH_ERROR = "output_schema exceeds maximum depth of 16"
+M.STRUCTURED_MISSING_ERROR = "subagent finished without calling structured_output"
+M.STRUCTURED_INVALID_ERROR = "subagent result does not match output_schema"
+M.INVALID_INPUT_PREFIX = "Input does not match the required schema. Fix the errors and call structured_output again:\n"
+
+-- Check if a schema value is within the maximum depth limit
+function M.schema_within_depth(value, depth)
+
+-- Limit error messages to a reasonable number
+function M.bounded_errors(errors)
+
+-- Compile a schema validator with early validation checks
+-- Returns (validator | nil, err)
+function M.compile_validator(schema)
+
+-- Create a local tool spec for structured output
+-- Returns a table with description, input_schema, and handler
+function M.make_local_tool(schema, on_submit)
+```
+
+### `require("n00n.subagent")`
+
+```lua
+-- Subagent launch helper module.
+-- Provides a unified interface for launching subagents with model resolution,
+-- system prompts, tool setup, and optional structured output validation.
+
+-- Launch a subagent with the given options.
+-- Returns (result | nil, err, cost, usage, model_spec)
+--
+-- Options:
+--   description (required): Short description for the subagent
+--   prompt (required): The prompt to send to the subagent
+--   subagent_type: "research" or "general" (default: "general")
+--   model_spec: Exact model spec (optional)
+--   model_tier: Capped tier: "weak", "medium", or "strong"
+--   auto_tier: Pick model_tier from prompt automatically (optional)
+--   thinking: Thinking mode configuration
+--   system: Override the default system prompt (optional)
+--   output_schema: JSON Schema for structured output validation
+--   audience: Tool audience (default: computed from subagent_type)
+--   include_mcp: Include MCP tools (default: true)
+--   local_tools: Additional local tools to register
+--   preview: ActivityPreview object wrapping sess:prompt (optional)
+--   activity_label: Label used with preview (default: description)
+--   budget: Budget object with :consume() method (optional)
+--   fail_on_pricing_error: Return an error if usage pricing fails (default: false)
+--   ctx: Agent context (required)
+function M.launch(ctx, opts)
 ```
 
 ### `require("n00n.telemetry")`

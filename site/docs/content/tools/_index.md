@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-n00n ships with 28 built-in tools. This is the full reference.
+n00n ships with 30 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -177,16 +177,31 @@ Ask the user questions during execution. Supports single/multi-select, custom an
 
 ## Agent & Knowledge
 
-### `agent_control` *(lua plugin)*
+### `agent_list` *(lua plugin)*
 
-Control background agents started by task, team, or workflow.
+List live background agents (task/team/workflow sessions).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `message` | string | no | Steering instructions. |
-| `policy` | object | no | Policy data. |
-| `action` | string | yes | Action. |
-| `agent_id` | string | no | Background agent id. |
+
+### `agent_status` *(lua plugin)*
+
+Show status for one live background agent.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `agent_id` | string | yes | Live agent/session id. |
+
+### `agent_control` *(lua plugin)*
+
+Mutate a background agent: message, stop, resume, or manage policy. Prefer agent_list/agent_status for reads. Pause is unsupported on TUI sessions.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `message` | string | no | Steering text for message/resume. |
+| `policy` | object | no | Policy payload when action=policy. |
+| `action` | string | yes | Mutating control action. |
+| `agent_id` | string | no | Target agent id. |
 
 ### `blackboard` *(lua plugin)*
 
@@ -207,30 +222,31 @@ Shared coordination for multi-agent sessions. Post observations, claim tasks ato
 
 Run ALMAS team for SDLC goal. supervised=plan, autonomous=execute, swarm=decentralized rounds. background returns agent_id.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `human_escalation` | boolean | no | Pause on step failure; return run_id. |
-| `resume` | string | no | Paused run_id to resume. |
-| `ibn_gate` | boolean | no | Use information-bottleneck gate in swarm. |
-| `goal` | string | yes | Goal. |
-| `use_summary` | boolean | no | Use Summary Agent index for retrieval. |
-| `mode` | string | no | supervised=plan, autonomous=run, swarm=decentralized. |
-| `waves` | boolean | no | Execute in waves with validation gates. |
-| `max_agents` | integer | no | Agent budget. |
-| `max_wave_retries` | integer | no | Validation gate retries. |
-| `compact` | boolean | no | TOON-encode retrieved context. |
-| `model_tier` | string | no | Supervisor tier (weak/medium/strong). |
-| `checkpoints` | boolean | no | Persist checkpoints after each wave. |
-| `max_steps` | integer | no | Plan steps. |
-| `max_concurrent` | integer | no | Swarm concurrency. |
-| `quorum` | boolean | no | Require validator quorum. |
-| `max_rounds` | integer | no | Swarm rounds. |
-| `use_retrieval` | boolean | no | Ground steps with repo retrieval. |
-| `model` | string | no | Exact model override. |
-| `continue` | string | no | Human guidance when resuming. |
-| `thinking` | string/integer | no | Thinking mode. Default: "adaptive". |
-| `background` | boolean | no | Start in background; return agent_id. |
-| `auto_tier` | boolean | no | Auto-route tier from step prompt. |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `human_escalation` | boolean | no |  | Pause on step failure; return run_id. |
+| `resume` | string | no |  | Paused run_id to resume. |
+| `ibn_gate` | boolean | no |  | Use information-bottleneck gate in swarm. |
+| `goal` | string | yes |  | Goal. |
+| `timeout_secs` | integer | no | 1800s | Wall-clock timeout before the team run is aborted. |
+| `mode` | string | no |  | supervised=plan, autonomous=run, swarm=decentralized. |
+| `waves` | boolean | no |  | Execute in waves with validation gates. |
+| `max_wave_retries` | integer | no |  | Validation gate retries. |
+| `max_agents` | integer | no | 16, no hard maximum | Team agent-call budget. |
+| `checkpoints` | boolean | no |  | Persist checkpoints after each wave. |
+| `compact` | boolean | no |  | TOON-encode retrieved context. |
+| `model_tier` | string | no |  | Supervisor tier (weak/medium/strong). |
+| `continue` | string | no |  | Human guidance when resuming. |
+| `max_steps` | integer | no |  | Plan steps. |
+| `max_concurrent` | integer | no |  | Swarm concurrency. |
+| `quorum` | boolean | no |  | Require validator quorum. |
+| `max_rounds` | integer | no |  | Swarm rounds. |
+| `use_retrieval` | boolean | no |  | Ground steps with repo retrieval. |
+| `model` | string | no |  | Exact model override. |
+| `use_summary` | boolean | no |  | Use Summary Agent index for retrieval. |
+| `thinking` | string/integer | no |  | Thinking mode. Default: "adaptive". |
+| `background` | boolean | no |  | Start in background; return agent_id. |
+| `auto_tier` | boolean | no |  | Auto-route tier from step prompt. |
 
 ### `task` *(lua plugin)*
 

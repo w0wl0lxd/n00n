@@ -2159,6 +2159,8 @@ pub(crate) struct LuaThread {
     pub keymap_reader: KeymapReader,
     pub hint_reader: crate::api::util::command::HintReader,
     pub ui_action_rx: flume::Receiver<UiAction>,
+    /// Clone of the sender held by the Lua runtime; used by the TUI daemon bridge.
+    pub ui_action_tx: flume::Sender<UiAction>,
 }
 
 /// Lua lives on its own OS thread (no Send needed). `smol::block_on`
@@ -2176,6 +2178,7 @@ pub fn spawn(
     let shutdown_thread = Arc::clone(&shutdown);
     let (init_tx, init_rx) = flume::bounded::<Result<(), PluginError>>(1);
     let (ui_action_tx, ui_action_rx) = flume::unbounded::<UiAction>();
+    let ui_action_tx_host = ui_action_tx.clone();
     let (command_writer, command_reader) = LuaCommandWriter::new();
     let (keymap_writer, keymap_reader) = KeymapWriter::new();
     let (hint_writer, hint_reader) = HintWriter::new();
@@ -2523,6 +2526,7 @@ pub fn spawn(
         keymap_reader,
         hint_reader,
         ui_action_rx,
+        ui_action_tx: ui_action_tx_host,
     })
 }
 

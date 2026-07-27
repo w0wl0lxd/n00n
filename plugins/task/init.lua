@@ -7,48 +7,16 @@
 
 local ToolView = require("n00n.tool_view")
 local output_limits = require("n00n.output_limits")
+local route_tier = require("n00n.route_tier").route_tier
+local structured_output = require("n00n.structured_output")
 
-local STRUCTURED_OUTPUT_NAME = "structured_output"
-local STRUCTURED_OUTPUT_DESCRIPTION = "Report your final result. Call it exactly once when your task is complete."
-local STRUCTURED_OUTPUT_ACK = "Output recorded."
-local STRUCTURED_OUTPUT_PROMPT_SUFFIX = "\n\nWhen finished, call the structured_output tool with your final result."
 local DONE_NAME = "done"
 local DONE_DESCRIPTION = "Call when the task is complete with your final answer."
 local DONE_PROMPT_SUFFIX = "\n\nWhen finished, call the done tool with your final answer."
-local MAX_STRUCTURED_RETRIES = 2
-local MAX_SCHEMA_ERRORS = 3
-local MAX_SCHEMA_BYTES = 32 * 1024
-local MAX_SCHEMA_DEPTH = 16
-local MAX_STRUCTURED_RETRIES = 1
-local SCHEMA_ROOT_ERROR = "output_schema must have type object"
-local SCHEMA_SIZE_ERROR = "output_schema exceeds 32768-byte limit"
-local SCHEMA_DEPTH_ERROR = "output_schema exceeds maximum depth of 16"
-local SCHEMA_COMPILE_ERROR = "invalid output_schema"
-local STRUCTURED_MISSING_ERROR = "subagent finished without calling structured_output"
-local STRUCTURED_INVALID_ERROR = "subagent result does not match output_schema"
-local INVALID_INPUT_PREFIX =
-  "Input does not match the required schema. Fix the errors and call structured_output again:\n"
-local NUDGE_MISSING =
-  "You did not call the structured_output tool. Call it now with your final result matching its input schema."
 local BODY_INDENT_COLS = 4
 local MIN_MD_WIDTH = 20
 local DEFAULT_OUTPUT_LINES = 5
 local DEFAULT_MAX_LINE_BYTES = 500
-
-local function schema_within_depth(value, depth)
-  if type(value) ~= "table" then
-    return true
-  end
-  if depth > MAX_SCHEMA_DEPTH then
-    return false
-  end
-  for _, child in pairs(value) do
-    if not schema_within_depth(child, depth + 1) then
-      return false
-    end
-  end
-  return true
-end
 
 local description =
   [[Launch isolated agent; combine independent calls with batch. research (default) = read-only; general = can edit. Each call starts fresh; include context and ask for concise file:line results. Summarize returned results. auto_tier opt-in. background returns agent_id.]]
@@ -103,14 +71,6 @@ local opts = n00n.api.register_options({
 
 -- Process-wide cap on concurrent subagents.
 local semaphore = n00n.async.semaphore(math.min(opts.max_concurrent, 8))
-
-local function bounded_errors(errors)
-  local out = {}
-  for i = 1, math.min(#errors, MAX_SCHEMA_ERRORS) do
-    out[i] = errors[i]
-  end
-  return table.concat(out, "\n")
-end
 
 local function make_preview(ctx, description)
   local tol = ctx:tool_output_lines()
@@ -181,23 +141,10 @@ local function handler(input, ctx)
   -- Compile early: a bad schema costs zero tokens.
   local validator
   if input.output_schema then
-    if type(input.output_schema) ~= "table" or input.output_schema.type ~= "object" then
-      return { llm_output = SCHEMA_ROOT_ERROR, is_error = true }
-    end
-    local schema_json, encode_err = n00n.json.encode(input.output_schema)
-    if encode_err then
-      return { llm_output = SCHEMA_COMPILE_ERROR .. ": " .. encode_err, is_error = true }
-    end
-    if #schema_json > MAX_SCHEMA_BYTES then
-      return { llm_output = SCHEMA_SIZE_ERROR, is_error = true }
-    end
-    if not schema_within_depth(input.output_schema, 1) then
-      return { llm_output = SCHEMA_DEPTH_ERROR, is_error = true }
-    end
     local compile_err
-    validator, compile_err = n00n.json.schema_validator(input.output_schema)
+    validator, compile_err = structured_output.compile_validator(input.output_schema)
     if compile_err then
-      return { llm_output = SCHEMA_COMPILE_ERROR .. ": " .. compile_err, is_error = true }
+      return { llm_output = compile_err, is_error = true }
     end
   end
 
@@ -236,17 +183,17 @@ local function handler(input, ctx)
   local local_tools
   if validator then
     local_tools = {
-      [STRUCTURED_OUTPUT_NAME] = {
-        description = STRUCTURED_OUTPUT_DESCRIPTION,
+      [structured_output.STRUCTURED_OUTPUT_NAME] = {
+        description = structured_output.STRUCTURED_OUTPUT_DESCRIPTION,
         input_schema = input.output_schema,
         handler = function(value)
           local errs = validator:validate(value)
           if errs then
-            last_errors = bounded_errors(errs)
-            return nil, INVALID_INPUT_PREFIX .. last_errors
+            last_errors = structured_output.bounded_errors(errs)
+            return nil, structured_output.INVALID_INPUT_PREFIX .. last_errors
           end
           captured = value
-          return STRUCTURED_OUTPUT_ACK
+          return structured_output.STRUCTURED_OUTPUT_ACK
         end,
       },
     }
@@ -296,6 +243,7 @@ local function handler(input, ctx)
         local_tools = local_tools,
         audience = audience,
         name = input.description,
+        thinking = input.thinking,
       })
       if sess_err then
         return { llm_output = sess_err, is_error = true }
@@ -311,16 +259,16 @@ local function handler(input, ctx)
       local function do_prompt()
         local message = input.prompt
         if validator then
-          message = message .. STRUCTURED_OUTPUT_PROMPT_SUFFIX
+          message = message .. structured_output.STRUCTURED_OUTPUT_SUFFIX
         else
           message = message .. DONE_PROMPT_SUFFIX
         end
         local result, err = sess:prompt(message)
         attach_cost(result)
         local retries = 0
-        while not err and validator and not captured and retries < MAX_STRUCTURED_RETRIES do
+        while not err and validator and not captured and retries < structured_output.MAX_STRUCTURED_RETRIES do
           retries = retries + 1
-          result, err = sess:prompt(NUDGE_MISSING)
+          result, err = sess:prompt(structured_output.NUDGE_MISSING)
           attach_cost(result)
         end
         if err then
@@ -332,7 +280,8 @@ local function handler(input, ctx)
           }
         end
         if validator and not captured then
-          local msg = last_errors and (STRUCTURED_INVALID_ERROR .. ":\n" .. last_errors) or STRUCTURED_MISSING_ERROR
+          local msg = last_errors and (structured_output.STRUCTURED_INVALID_ERROR .. ":\n" .. last_errors)
+            or structured_output.STRUCTURED_MISSING_ERROR
           return { llm_output = msg, is_error = true, usage = result, cost = result and result.cost }
         end
         if captured then

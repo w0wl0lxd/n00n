@@ -403,6 +403,7 @@ pub enum WinCommand {
     Close,
 }
 
+#[derive(Debug)]
 pub enum SessionRequest {
     List,
     Live,

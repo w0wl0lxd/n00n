@@ -1,0 +1,27 @@
+[package]
+name = "n00n-daemon"
+version.workspace = true
+edition.workspace = true
+description = "On-device agent control plane: registry, UDS NDJSON protocol, worker sock proxy"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+n00n-storage = { workspace = true }
+serde = { workspace = true }
+# Wire JSON: sonic-rs. serde_json only for SessionReply / toon boundaries.
+sonic-rs = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+smol = { workspace = true }
+futures-lite = { workspace = true }
+flume = { workspace = true }
+rustix = { workspace = true }
+
+[dev-dependencies]
+test-case = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
