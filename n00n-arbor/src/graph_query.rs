@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::graph_json::SymbolRef;
+use crate::graph_json::{GraphIndex, SymbolQuery, SymbolRef};
 use crate::{ArborError, Relation};
 
 fn line_number(line_start: usize) -> Option<u64> {
@@ -31,60 +31,66 @@ fn dedupe_relations(relations: Vec<Relation>) -> Vec<Relation> {
 
 pub fn graph_callers(symbol: &str, project: &Path) -> Result<Vec<Relation>, ArborError> {
     let index = crate::Client::load_graph_index(project)?;
-    let mut relations = Vec::new();
-    for matched in index.find_symbol(symbol) {
-        for caller in index.find_callers(matched.index) {
-            relations.push(symbol_to_relation(&caller));
-        }
-    }
-    Ok(dedupe_relations(relations))
+    let query = SymbolQuery {
+        name: symbol.to_string(),
+        ..SymbolQuery::default()
+    };
+    Ok(graph_relations_for_matches(
+        &index,
+        &query,
+        NeighborDirection::Callers,
+    ))
 }
 
 pub fn graph_callees(symbol: &str, project: &Path) -> Result<Vec<Relation>, ArborError> {
     let index = crate::Client::load_graph_index(project)?;
-    let mut relations = Vec::new();
-    for matched in index.find_symbol(symbol) {
-        for callee in index.find_callees(matched.index) {
-            relations.push(symbol_to_relation(&callee));
-        }
-    }
-    Ok(dedupe_relations(relations))
+    let query = SymbolQuery {
+        name: symbol.to_string(),
+        ..SymbolQuery::default()
+    };
+    Ok(graph_relations_for_matches(
+        &index,
+        &query,
+        NeighborDirection::Callees,
+    ))
 }
 
 pub fn graph_trace_path(from: &str, to: &str, project: &Path) -> Result<Vec<Relation>, ArborError> {
     let index = crate::Client::load_graph_index(project)?;
-    let from_matches = index.find_symbol(from);
-    let to_matches = index.find_symbol(to);
-    if from_matches.is_empty() {
-        return Err(ArborError::Cli {
-            message: format!("symbol not found in graph index: {from}"),
-        });
-    }
-    if to_matches.is_empty() {
-        return Err(ArborError::Cli {
-            message: format!("symbol not found in graph index: {to}"),
-        });
-    }
+    let from_query = SymbolQuery {
+        name: from.to_string(),
+        ..SymbolQuery::default()
+    };
+    let to_query = SymbolQuery {
+        name: to.to_string(),
+        ..SymbolQuery::default()
+    };
+    let path = index.trace_path_symbols(&from_query, &to_query)?;
+    Ok(path.iter().map(symbol_to_relation).collect())
+}
 
-    let mut best: Option<Vec<SymbolRef>> = None;
-    for from_symbol in &from_matches {
-        for to_symbol in &to_matches {
-            if let Some(path) = index.trace_path(from_symbol.index, to_symbol.index) {
-                let replace = match &best {
-                    None => true,
-                    Some(existing) => path.len() < existing.len(),
-                };
-                if replace {
-                    best = Some(path);
-                }
-            }
+#[derive(Copy, Clone)]
+enum NeighborDirection {
+    Callers,
+    Callees,
+}
+
+fn graph_relations_for_matches(
+    index: &GraphIndex,
+    query: &SymbolQuery,
+    direction: NeighborDirection,
+) -> Vec<Relation> {
+    let mut relations = Vec::new();
+    for matched in index.resolve_symbol(query) {
+        let neighbors = match direction {
+            NeighborDirection::Callers => index.find_callers(matched.index),
+            NeighborDirection::Callees => index.find_callees(matched.index),
+        };
+        for neighbor in neighbors {
+            relations.push(symbol_to_relation(&neighbor));
         }
     }
-
-    let path = best.ok_or_else(|| ArborError::Cli {
-        message: format!("no call path found from {from} to {to}"),
-    })?;
-    Ok(path.iter().map(symbol_to_relation).collect())
+    dedupe_relations(relations)
 }
 
 pub fn graph_index_available(project: &Path) -> bool {

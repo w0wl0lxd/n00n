@@ -1,9 +1,11 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize)]
+const CALLS_EDGE_KIND: &str = "calls";
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GraphNode {
     pub id: String,
     pub name: String,
@@ -12,6 +14,12 @@ pub struct GraphNode {
     pub file: String,
     pub line_start: usize,
     pub line_end: usize,
+    #[serde(default)]
+    pub signature: Option<String>,
+    #[serde(default)]
+    pub visibility: Option<String>,
+    #[serde(default)]
+    pub docstring: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -85,11 +93,25 @@ pub struct SymbolRef {
     pub node: GraphNode,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SymbolQuery {
+    pub name: String,
+    pub qualified_name: Option<String>,
+    pub file: Option<String>,
+    pub kind: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct EdgeLink {
+    target: usize,
+    kind: String,
+}
+
 #[derive(Debug)]
 pub struct GraphIndex {
     nodes: Vec<GraphNode>,
-    outgoing: HashMap<usize, Vec<usize>>,
-    incoming: HashMap<usize, Vec<usize>>,
+    outgoing: HashMap<usize, Vec<EdgeLink>>,
+    incoming: HashMap<usize, Vec<EdgeLink>>,
     file_index: HashMap<String, Vec<usize>>,
     id_index: HashMap<String, usize>,
     name_index: HashMap<String, Vec<usize>>,
@@ -100,8 +122,8 @@ impl GraphIndex {
         let raw: RawArborGraph =
             serde_json::from_str(content).map_err(|source| crate::ArborError::Parse { source })?;
         validate_graph_data(&raw.graph)?;
-        let mut outgoing: HashMap<usize, Vec<usize>> = HashMap::new();
-        let mut incoming: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut outgoing: HashMap<usize, Vec<EdgeLink>> = HashMap::new();
+        let mut incoming: HashMap<usize, Vec<EdgeLink>> = HashMap::new();
 
         for edge in raw.graph.edges {
             if edge.source >= raw.graph.nodes.len() || edge.target >= raw.graph.nodes.len() {
@@ -112,8 +134,14 @@ impl GraphIndex {
                     ),
                 });
             }
-            outgoing.entry(edge.source).or_default().push(edge.target);
-            incoming.entry(edge.target).or_default().push(edge.source);
+            outgoing.entry(edge.source).or_default().push(EdgeLink {
+                target: edge.target,
+                kind: edge.kind.clone(),
+            });
+            incoming.entry(edge.target).or_default().push(EdgeLink {
+                target: edge.source,
+                kind: edge.kind,
+            });
         }
 
         Ok(Self {
@@ -171,18 +199,64 @@ impl GraphIndex {
         })
     }
 
-    pub fn find_callers(&self, index: usize) -> Vec<SymbolRef> {
-        match self.incoming.get(&index) {
-            Some(indices) => self.symbols_from_indices(indices),
-            None => Vec::new(),
+    pub fn resolve_symbol(&self, query: &SymbolQuery) -> Vec<SymbolRef> {
+        let mut candidates = self.find_symbol(&query.name);
+        if let Some(qualified_name) = &query.qualified_name {
+            candidates.retain(|symbol| symbol.node.qualified_name == *qualified_name);
         }
+        if let Some(file) = &query.file {
+            candidates.retain(|symbol| symbol.node.file.contains(file.as_str()));
+        }
+        if let Some(kind) = &query.kind {
+            candidates.retain(|symbol| symbol.node.kind == *kind);
+        }
+        candidates
+    }
+
+    pub fn find_callers(&self, index: usize) -> Vec<SymbolRef> {
+        self.find_neighbors(&self.incoming, index, Some(CALLS_EDGE_KIND))
     }
 
     pub fn find_callees(&self, index: usize) -> Vec<SymbolRef> {
-        match self.outgoing.get(&index) {
-            Some(indices) => self.symbols_from_indices(indices),
-            None => Vec::new(),
+        self.find_neighbors(&self.outgoing, index, Some(CALLS_EDGE_KIND))
+    }
+
+    pub fn trace_path_symbols(
+        &self,
+        from: &SymbolQuery,
+        to: &SymbolQuery,
+    ) -> Result<Vec<SymbolRef>, crate::ArborError> {
+        let from_matches = self.resolve_symbol(from);
+        let to_matches = self.resolve_symbol(to);
+        if from_matches.is_empty() {
+            return Err(crate::ArborError::Cli {
+                message: format!("symbol not found in graph index: {}", from.name),
+            });
         }
+        if to_matches.is_empty() {
+            return Err(crate::ArborError::Cli {
+                message: format!("symbol not found in graph index: {}", to.name),
+            });
+        }
+
+        let mut best: Option<Vec<SymbolRef>> = None;
+        for from_symbol in &from_matches {
+            for to_symbol in &to_matches {
+                if let Some(path) = self.trace_path(from_symbol.index, to_symbol.index) {
+                    let replace = match &best {
+                        None => true,
+                        Some(existing) => path.len() < existing.len(),
+                    };
+                    if replace {
+                        best = Some(path);
+                    }
+                }
+            }
+        }
+
+        best.ok_or_else(|| crate::ArborError::Cli {
+            message: format!("no call path found from {} to {}", from.name, to.name),
+        })
     }
 
     pub fn trace_path(&self, from: usize, to: usize) -> Option<Vec<SymbolRef>> {
@@ -204,7 +278,7 @@ impl GraphIndex {
 
         while let Some(current) = queue.pop_front() {
             let neighbors = match self.outgoing.get(&current) {
-                Some(existing) => existing.clone(),
+                Some(links) => Self::neighbor_indices(links, Some(CALLS_EDGE_KIND)),
                 None => Vec::new(),
             };
             for neighbor in neighbors {
@@ -236,6 +310,33 @@ impl GraphIndex {
         }
         path.reverse();
         Some(path)
+    }
+
+    fn find_neighbors(
+        &self,
+        links: &HashMap<usize, Vec<EdgeLink>>,
+        index: usize,
+        edge_kind: Option<&str>,
+    ) -> Vec<SymbolRef> {
+        let indices = match links.get(&index) {
+            Some(existing) => Self::neighbor_indices(existing, edge_kind),
+            None => Vec::new(),
+        };
+        self.symbols_from_indices(&indices)
+    }
+
+    fn neighbor_indices(links: &[EdgeLink], edge_kind: Option<&str>) -> Vec<usize> {
+        links
+            .iter()
+            .filter_map(|link| {
+                if let Some(kind) = edge_kind
+                    && link.kind != kind
+                {
+                    return None;
+                }
+                Some(link.target)
+            })
+            .collect()
     }
 
     fn symbols_from_indices(&self, indices: &[usize]) -> Vec<SymbolRef> {
@@ -337,6 +438,84 @@ mod tests {
         let path = graph.trace_path(0, 2).expect("path should exist");
         let names: Vec<_> = path.into_iter().map(|symbol| symbol.node.name).collect();
         assert_eq!(names, vec!["main", "helper", "lib_fn"]);
+    }
+
+    #[test]
+    fn resolve_symbol_filters_by_qualified_name() {
+        let json = r#"{
+          "file_index": { "src/a.rs": [0, 1] },
+          "id_index": { "a": 0, "b": 1 },
+          "name_index": { "run": [0, 1] },
+          "graph": {
+            "nodes": [
+              {
+                "id": "a",
+                "name": "run",
+                "qualified_name": "crate::a::run",
+                "kind": "function",
+                "file": "src/a.rs",
+                "line_start": 1,
+                "line_end": 2
+              },
+              {
+                "id": "b",
+                "name": "run",
+                "qualified_name": "crate::b::run",
+                "kind": "function",
+                "file": "src/a.rs",
+                "line_start": 3,
+                "line_end": 4
+              }
+            ],
+            "edges": []
+          }
+        }"#;
+        let graph = GraphIndex::from_json_str(json).expect("graph should parse");
+        let query = super::SymbolQuery {
+            name: String::from("run"),
+            qualified_name: Some(String::from("crate::b::run")),
+            file: None,
+            kind: None,
+        };
+        let matches = graph.resolve_symbol(&query);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].node.qualified_name, "crate::b::run");
+    }
+
+    #[test]
+    fn callers_ignore_non_call_edges() {
+        let json = r#"{
+          "file_index": { "src/a.rs": [0, 1] },
+          "id_index": { "a": 0, "b": 1 },
+          "name_index": { "a": [0], "b": [1] },
+          "graph": {
+            "nodes": [
+              {
+                "id": "a",
+                "name": "a",
+                "qualified_name": "crate::a",
+                "kind": "function",
+                "file": "src/a.rs",
+                "line_start": 1,
+                "line_end": 2
+              },
+              {
+                "id": "b",
+                "name": "b",
+                "qualified_name": "crate::b",
+                "kind": "function",
+                "file": "src/a.rs",
+                "line_start": 3,
+                "line_end": 4
+              }
+            ],
+            "edges": [
+              [0, 1, { "kind": "imports" }]
+            ]
+          }
+        }"#;
+        let graph = GraphIndex::from_json_str(json).expect("graph should parse");
+        assert!(graph.find_callers(1).is_empty());
     }
 
     #[test]
