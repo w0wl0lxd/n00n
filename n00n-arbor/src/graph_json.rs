@@ -21,6 +21,11 @@ pub struct GraphEdge {
     pub kind: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct EdgeMeta {
+    kind: String,
+}
+
 impl<'de> Deserialize<'de> for GraphEdge {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -47,10 +52,6 @@ impl<'de> Deserialize<'de> for GraphEdge {
         let target = usize::try_from(target_u64)
             .map_err(|_| serde::de::Error::custom("edge target does not fit usize"))?;
 
-        #[derive(Deserialize)]
-        struct EdgeMeta {
-            kind: String,
-        }
         let meta: EdgeMeta =
             serde_json::from_value(arr[2].clone()).map_err(serde::de::Error::custom)?;
 
@@ -129,37 +130,33 @@ impl GraphIndex {
     }
 
     pub fn find_symbol(&self, name: &str) -> Vec<SymbolRef> {
-        self.name_index
-            .get(name)
-            .map(|indices| {
-                indices
-                    .iter()
-                    .filter_map(|idx| {
-                        self.nodes
-                            .get(*idx)
-                            .cloned()
-                            .map(|node| SymbolRef { index: *idx, node })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+        match self.name_index.get(name) {
+            Some(indices) => indices
+                .iter()
+                .filter_map(|idx| {
+                    self.nodes
+                        .get(*idx)
+                        .cloned()
+                        .map(|node| SymbolRef { index: *idx, node })
+                })
+                .collect(),
+            None => Vec::new(),
+        }
     }
 
     pub fn find_in_file(&self, file: &str) -> Vec<SymbolRef> {
-        self.file_index
-            .get(file)
-            .map(|indices| {
-                indices
-                    .iter()
-                    .filter_map(|idx| {
-                        self.nodes
-                            .get(*idx)
-                            .cloned()
-                            .map(|node| SymbolRef { index: *idx, node })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+        match self.file_index.get(file) {
+            Some(indices) => indices
+                .iter()
+                .filter_map(|idx| {
+                    self.nodes
+                        .get(*idx)
+                        .cloned()
+                        .map(|node| SymbolRef { index: *idx, node })
+                })
+                .collect(),
+            None => Vec::new(),
+        }
     }
 
     pub fn find_by_id(&self, id: &str) -> Option<SymbolRef> {
@@ -172,17 +169,17 @@ impl GraphIndex {
     }
 
     pub fn find_callers(&self, index: usize) -> Vec<SymbolRef> {
-        self.incoming
-            .get(&index)
-            .map(|indices| self.symbols_from_indices(indices))
-            .unwrap_or_default()
+        match self.incoming.get(&index) {
+            Some(indices) => self.symbols_from_indices(indices),
+            None => Vec::new(),
+        }
     }
 
     pub fn find_callees(&self, index: usize) -> Vec<SymbolRef> {
-        self.outgoing
-            .get(&index)
-            .map(|indices| self.symbols_from_indices(indices))
-            .unwrap_or_default()
+        match self.outgoing.get(&index) {
+            Some(indices) => self.symbols_from_indices(indices),
+            None => Vec::new(),
+        }
     }
 
     pub fn trace_path(&self, from: usize, to: usize) -> Option<Vec<SymbolRef>> {
@@ -203,7 +200,10 @@ impl GraphIndex {
         visited.insert(from, None);
 
         while let Some(current) = queue.pop_front() {
-            let neighbors = self.outgoing.get(&current).cloned().unwrap_or_default();
+            let neighbors = match self.outgoing.get(&current) {
+                Some(existing) => existing.clone(),
+                None => Vec::new(),
+            };
             for neighbor in neighbors {
                 if visited.contains_key(&neighbor) {
                     continue;
@@ -304,12 +304,12 @@ mod tests {
     #[test]
     fn find_callers_and_callees_use_edges() {
         let graph = GraphIndex::from_json_str(SAMPLE_GRAPH).expect("sample graph should parse");
-        let callers = graph.find_callers(1);
-        let callees = graph.find_callees(1);
-        assert_eq!(callers.len(), 1);
-        assert_eq!(callers[0].node.name, "main");
-        assert_eq!(callees.len(), 1);
-        assert_eq!(callees[0].node.name, "lib_fn");
+        let incoming_neighbors = graph.find_callers(1);
+        let outgoing_targets = graph.find_callees(1);
+        assert_eq!(incoming_neighbors.len(), 1);
+        assert_eq!(incoming_neighbors[0].node.name, "main");
+        assert_eq!(outgoing_targets.len(), 1);
+        assert_eq!(outgoing_targets[0].node.name, "lib_fn");
     }
 
     #[test]
