@@ -368,6 +368,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn write_fixture_with_socket(
         dir: &Path,
         id: &str,
