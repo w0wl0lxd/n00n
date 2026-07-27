@@ -1,10 +1,9 @@
 //! PR #134-compatible worker backend: `state_dir/agents/<id>/agent.json` + `control.sock`.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use sonic_rs::JsonValueTrait;
 
 use crate::backend::ControlBackend;
 use crate::error::{ControlError, ControlResult};
@@ -121,6 +120,7 @@ impl WorkerBackend {
     fn send_command(&self, id: &str, command: &WorkerCommand) -> ControlResult<sonic_rs::Value> {
         use futures_lite::{AsyncBufReadExt, AsyncWriteExt, io::BufReader};
         use smol::net::unix::UnixStream;
+        use std::path::Path;
 
         let state = self.read_state(id)?;
         if state.socket_path.is_empty() {
@@ -162,6 +162,7 @@ impl WorkerBackend {
         reader: &mut futures_lite::io::BufReader<impl futures_lite::AsyncRead + Unpin>,
     ) -> ControlResult<()> {
         use futures_lite::AsyncBufReadExt;
+        use sonic_rs::JsonValueTrait;
 
         let mut line = String::new();
         loop {
@@ -265,6 +266,7 @@ impl ControlBackend for WorkerBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use tempfile::TempDir;
 
     fn write_fixture(dir: &Path, id: &str, status: &str) -> Result<(), String> {

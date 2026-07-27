@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{ControlError, ControlResult};
 use crate::lock::{self, DaemonLock, DaemonRole, TransportKind};
+#[cfg(unix)]
 use crate::paths::daemon_socket_in;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
