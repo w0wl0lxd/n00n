@@ -147,7 +147,6 @@ pub fn run(
     prompt: &str,
     model_arg: Option<&str>,
     mode: CliAgentMode,
-    _goal: Option<&str>,
     json: bool,
     yolo: bool,
     no_jit: bool,
@@ -402,6 +401,8 @@ pub fn server(
         write_agent_state(&storage, &state)?;
     }
 
+    let task = Arc::new(Mutex::new(Some(handle.task)));
+
     smol::block_on(async {
         while let Ok(stream) = listener.accept().await {
             let stream = stream.0;
@@ -413,6 +414,7 @@ pub fn server(
             let storage_clone = storage.clone();
             let agent_id_clone = agent_id.clone();
             let mode_clone = mode;
+            let task = Arc::clone(&task);
 
             smol::spawn(async move {
                 if let Err(e) = handle_connection(
@@ -425,6 +427,7 @@ pub fn server(
                     &storage_clone,
                     &agent_id_clone,
                     mode_clone,
+                    task,
                 )
                 .await
                 {
@@ -459,6 +462,7 @@ async fn handle_connection(
     storage: &StateDir,
     agent_id: &str,
     mode: CliAgentMode,
+    task: Arc<Mutex<Option<smol::Task<()>>>>,
 ) -> Result<()> {
     let (reader, mut writer) = split(stream);
     let mut reader = BufReader::new(reader);
@@ -607,6 +611,10 @@ async fn handle_connection(
             write_agent_state(storage, &state)?;
 
             let _ = cancel_tx.send(());
+
+            if let Some(t) = task.lock().await.take() {
+                t.await;
+            }
 
             let response = serde_json::json!({ "ok": true });
             let response_json = serde_json::to_string(&response)?;
