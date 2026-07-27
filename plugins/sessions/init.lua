@@ -10,6 +10,7 @@ local ListPicker = require("n00n.list_picker")
 local FILTER_PREFIX = "❯ "
 local RENAME_PREFIX = "Rename: "
 local CONFIRM_HINT = "  Ctrl+D again to delete"
+local CANNOT_DELETE_GROUP_HINT = "Cannot delete a group"
 local DELETE_FOCUSED_HINT = "Cannot delete the current session"
 local RENAME_USAGE = "Usage: /rename <title>"
 local EMPTY_HINT = "  No sessions yet. Press Ctrl+N to start one."
@@ -29,6 +30,14 @@ local AGE_UNITS = {
   { 3600, "h" },
   { 60, "m" },
 }
+local SUBTASK_PREFIXES = {
+  { "team:", "team" },
+  { "workflow:", "workflow" },
+  { "task:", "task" },
+}
+local MAX_GROUP_CHILDREN = 20
+local GROUP_PREFIX = "group:"
+local GROUP_KIND = "group"
 local FILTER_KEYS = {
   { "Enter", "open" },
   { "Ctrl+N", "new" },
@@ -45,6 +54,9 @@ local RENAME_KEYS = {
 local board = nil
 
 local function icon_of(s)
+  if s.is_group then
+    return "  ", "dim"
+  end
   if s.status == "needs_input" then
     return "◆ ", "warning"
   end
@@ -167,6 +179,59 @@ local function build_tree(sessions)
   end
   sort_tree(roots)
   return roots
+end
+
+local function group_label(children, start_idx, finish)
+  local count = finish - start_idx + 1
+  local count_text = count .. (count == 1 and " task" or " tasks")
+  local newest = children[start_idx].updated_at
+  local oldest = children[finish].updated_at
+  local newest_age = age(newest)
+  local oldest_age = age(oldest)
+  if newest_age == oldest_age then
+    return count_text .. " · " .. newest_age
+  end
+  return count_text .. " · " .. newest_age .. " – " .. oldest_age
+end
+
+local function make_bucket(parent, children, start_idx, finish, all_nodes, rank, expanded_state)
+  local bucket = {
+    id = GROUP_PREFIX .. parent.id .. ":" .. start_idx,
+    title = "",
+    display_title = group_label(children, start_idx, finish),
+    kind = GROUP_KIND,
+    is_group = true,
+    children = {},
+    parent_id = parent.id,
+    updated_at = children[start_idx].updated_at,
+    focused = false,
+    live = false,
+    status = "idle",
+    expanded = expanded_state[bucket.id] or false,
+    depth = 0,
+  }
+  rank[bucket.id] = rank[children[start_idx].id] - 0.5
+  for i = start_idx, finish do
+    local child = children[i]
+    child.parent_id = bucket.id
+    table.insert(bucket.children, child)
+  end
+  table.insert(all_nodes, bucket)
+  return bucket
+end
+
+local function group_node(node, all_nodes, rank, expanded_state)
+  if #node.children > MAX_GROUP_CHILDREN then
+    local buckets = {}
+    for i = 1, #node.children, MAX_GROUP_CHILDREN do
+      local finish = math.min(i + MAX_GROUP_CHILDREN - 1, #node.children)
+      table.insert(buckets, make_bucket(node, node.children, i, finish, all_nodes, rank, expanded_state))
+    end
+    node.children = buckets
+  end
+  for _, child in ipairs(node.children) do
+    group_node(child, all_nodes, rank, expanded_state)
+  end
 end
 
 local function flatten_visible(nodes, depth, items)
@@ -294,8 +359,15 @@ local function render()
     local selected = s.id == board.sel_id
     local icon, icon_style, spinning = icon_of(s)
     local base = selected and "selected" or "item"
-    local right = s.focused and CURRENT_LABEL or age(s.updated_at)
-    local right_style = selected and "selected" or (s.focused and "accent" or "dim")
+    local right, right_style
+    if s.is_group then
+      local count = #s.children
+      right = count .. (count == 1 and " task" or " tasks")
+      right_style = selected and "selected" or "dim"
+    else
+      right = s.focused and CURRENT_LABEL or age(s.updated_at)
+      right_style = selected and "selected" or (s.focused and "accent" or "dim")
+    end
     if selected then
       icon_style = "selected"
     end
@@ -330,6 +402,21 @@ local function render()
   end
   board.buf:set_lines(lines)
   board.win:set_cursor(cursor_line)
+end
+
+local function classify_live_prefix(s)
+  local lower = s.display_title:lower()
+  for _, pair in ipairs(SUBTASK_PREFIXES) do
+    local prefix = pair[1]
+    if lower:sub(1, #prefix) == prefix then
+      local rest = s.display_title:sub(#prefix + 1):match("^%s*(.-)%s*$")
+      s.kind = pair[2]
+      if rest ~= "" then
+        s.display_title = rest
+      end
+      return
+    end
+  end
 end
 
 -- Rebuilds the tree from live runtimes and the stored snapshot, then
@@ -374,6 +461,9 @@ local function refresh()
       s.updated_at = s.updated_at or st.updated_at
     end
     normalize_session(s, expanded_state)
+    if s.kind == "main" then
+      classify_live_prefix(s)
+    end
     all[#all + 1] = s
   end
   for _, st in ipairs(board.stored or {}) do
@@ -409,6 +499,11 @@ local function refresh()
 
   board.nodes = all
   board.roots = build_tree(all)
+  for _, root in ipairs(board.roots) do
+    group_node(root, all, board.rank, expanded_state)
+  end
+  table.sort(all, by_recency)
+
   apply_filter()
   update_footer()
   render()
@@ -424,6 +519,10 @@ end
 local function open_selected()
   local s = selected()
   if not s then
+    return
+  end
+  if s.is_group then
+    toggle_expand()
     return
   end
   if not s.focused then
@@ -448,6 +547,10 @@ end
 local function delete_selected()
   local s = selected()
   if not s then
+    return
+  end
+  if s.is_group then
+    n00n.ui.flash(CANNOT_DELETE_GROUP_HINT)
     return
   end
   if s.focused then
@@ -475,7 +578,7 @@ end
 
 local function start_rename()
   local s = selected()
-  if not s then
+  if not s or s.is_group then
     return
   end
   local input = TextInput.new()
