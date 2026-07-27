@@ -465,7 +465,7 @@ pub fn create(slug: &str, timeouts: super::Timeouts) -> Result<Box<dyn Provider>
                 .with_system_prefix(meta.system_prefix.clone()),
         ),
         ProviderKind::Devin => Box::new(Devin::with_auth(&auth, timeouts)?),
-        ProviderKind::Cursor => Box::new(Cursor::new(timeouts)),
+        ProviderKind::Cursor => Box::new(Cursor::new(timeouts)?),
     };
 
     Ok(Box::new(DynamicProvider {

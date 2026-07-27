@@ -269,7 +269,7 @@ impl ProviderKind {
             Self::TensorX => Ok(Box::new(TensorX::new(timeouts)?)),
             Self::Opencode => Ok(Box::new(Opencode::new(timeouts)?)),
             Self::Devin => Ok(Box::new(Devin::new(timeouts))),
-            Self::Cursor => Ok(Box::new(Cursor::new(timeouts))),
+            Self::Cursor => Ok(Box::new(Cursor::new(timeouts)?)),
         }
     }
 }

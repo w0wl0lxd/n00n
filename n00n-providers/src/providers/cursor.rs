@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use async_process::Command;
 use flume::Sender;
@@ -12,7 +11,7 @@ use serde_json::Value;
 use tracing::{debug, warn};
 
 use crate::model::{Model, ModelEntry, ModelInfo, ModelTier, TokenUsage, lookup_entry};
-use crate::provider::{BoxFuture, Provider};
+use crate::provider::{BoxFuture, Provider, ProviderKind};
 use crate::{
     AgentError, ContentBlock, Effort, Message, ProviderEvent, RequestOptions, Role, StopReason,
     StreamResponse, System, ThinkingConfig,
@@ -35,6 +34,7 @@ const STDOUT_MISSING: &str = "cursor-agent stdout not available";
 const STDERR_MISSING: &str = "cursor-agent stderr not available";
 const NO_MESSAGES: &str = "no messages to send to cursor-agent";
 const SPAWN_FAILED: &str = "failed to spawn cursor-agent";
+const TRUST_YOLO_REQUIRED: &str = "Cursor provider requires CURSOR_AGENT_TRUST=true and CURSOR_AGENT_YOLO=true to run non-interactively";
 
 inventory::submit!(n00n_config::providers::BuiltInProvider {
     slug: "cursor",
@@ -55,7 +55,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
 }
 
 struct CursorSession {
-    cursor_session_id: String,
+    cursor_session_id: Option<String>,
     last_message_count: usize,
 }
 
@@ -72,7 +72,7 @@ pub(crate) struct Cursor {
 }
 
 impl Cursor {
-    pub(crate) fn new(timeouts: Timeouts) -> Self {
+    pub(crate) fn new(timeouts: Timeouts) -> Result<Self, AgentError> {
         let command = match std::env::var(COMMAND_ENV) {
             Ok(v) if !v.is_empty() => PathBuf::from(v),
             _ => PathBuf::from(DEFAULT_COMMAND),
@@ -86,17 +86,25 @@ impl Cursor {
             }
         };
 
-        Self {
+        let trust = env_flag(TRUST_ENV, false);
+        let yolo = env_flag(YOLO_ENV, false);
+        if !trust || !yolo {
+            return Err(AgentError::Config {
+                message: TRUST_YOLO_REQUIRED.into(),
+            });
+        }
+
+        Ok(Self {
             command,
             timeouts,
             mode: env_optional(MODE_ENV),
             workspace: env_optional(WORKSPACE_ENV).map(PathBuf::from),
-            trust: env_flag(TRUST_ENV, true),
-            yolo: env_flag(YOLO_ENV, true),
+            trust,
+            yolo,
             approve_mcps: env_flag(APPROVE_MCPS_ENV, false),
             api_key,
             sessions: Mutex::new(HashMap::new()),
-        }
+        })
     }
 
     async fn do_stream(
@@ -127,11 +135,7 @@ impl Cursor {
         let stderr_buffer = Arc::new(Mutex::new(String::new()));
         let stderr_task = smol::spawn(collect_stderr(stderr, Arc::clone(&stderr_buffer)));
 
-        let parse = parse_stream(
-            BufReader::new(stdout).lines(),
-            event_tx,
-            self.timeouts.stream,
-        );
+        let parse = parse_stream(BufReader::new(stdout).lines(), event_tx);
 
         let result = futures_lite::future::or(async { Some(parse.await) }, async {
             smol::Timer::after(self.timeouts.stream).await;
@@ -187,7 +191,7 @@ impl Cursor {
             sessions.insert(
                 sid.as_str().to_string(),
                 CursorSession {
-                    cursor_session_id: result.cursor_session_id.map_or(String::new(), |id| id),
+                    cursor_session_id: result.cursor_session_id,
                     last_message_count: messages.len(),
                 },
             );
@@ -252,8 +256,8 @@ impl Cursor {
                 info.pricing = Some(entry.pricing);
                 info.tier = Some(entry.tier);
             } else {
-                info.context_window = Some(128_000);
-                info.max_output_tokens = Some(32_768);
+                info.context_window = Some(ProviderKind::Cursor.fallback_context_window());
+                info.max_output_tokens = ProviderKind::Cursor.fallback_max_output();
                 info.tier = Some(ModelTier::Strong);
             }
             models.push(info);
@@ -369,7 +373,9 @@ impl Cursor {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         sessions
             .get(&session_key)
-            .map(|s| s.cursor_session_id.clone())
+            .and_then(|s| s.cursor_session_id.as_ref())
+            .filter(|id| !id.is_empty())
+            .cloned()
     }
 }
 
@@ -430,7 +436,6 @@ struct CursorResult {
 async fn parse_stream(
     mut lines: futures_lite::io::Lines<BufReader<async_process::ChildStdout>>,
     event_tx: &Sender<ProviderEvent>,
-    _stream_timeout: Duration,
 ) -> Result<CursorResult, AgentError> {
     let mut text = String::new();
     let mut text_last = String::new();
@@ -838,6 +843,14 @@ mod tests {
     }
 
     #[test]
+    fn tier_defaults_resolve() {
+        for tier in [ModelTier::Weak, ModelTier::Medium, ModelTier::Strong] {
+            let model = Model::from_tier("cursor", tier).unwrap();
+            assert_eq!(model.tier, tier, "cursor/{tier:?} default should resolve");
+        }
+    }
+
+    #[test]
     fn models_list_is_not_empty() {
         assert!(!MODELS.is_empty());
         assert!(lookup_entry(MODELS, "composer-2.5").is_ok());
@@ -896,7 +909,7 @@ mod tests {
             sessions.insert(
                 key,
                 CursorSession {
-                    cursor_session_id: "c1".into(),
+                    cursor_session_id: Some("c1".into()),
                     last_message_count: 1,
                 },
             );

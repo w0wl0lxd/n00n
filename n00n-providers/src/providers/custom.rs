@@ -52,8 +52,8 @@ fn resolve_custom_auth(slug: &str) -> Result<ResolvedAuth, AgentError> {
 
     let base_url = resolve_base_url(slug, Some(def));
 
-    // Devin uses its own CLI credentials when no API key is provided
-    if protocol == Protocol::Devin {
+    // Devin and Cursor use their own CLI credentials when no API key is provided
+    if protocol == Protocol::Devin || protocol == Protocol::Cursor {
         let resolved_env = resolve_api_key_env(slug, Some(def));
         let env_var = def
             .api_key_env
@@ -69,7 +69,7 @@ fn resolve_custom_auth(slug: &str) -> Result<ResolvedAuth, AgentError> {
                 tracing::debug!(
                     slug,
                     error = %e,
-                    "no devin API key configured; devin acp will use its own credentials"
+                    "no API key configured; provider CLI will use its own credentials"
                 );
                 Ok(ResolvedAuth {
                     base_url,
@@ -112,9 +112,10 @@ pub fn create(slug: &str, timeouts: Timeouts) -> Result<Box<dyn Provider>, Agent
         })),
         ProviderKind::Google => Ok(Box::new(super::google::Google::with_auth(auth, timeouts)?)),
         ProviderKind::Devin => Ok(Box::new(super::devin::Devin::with_auth(&auth, timeouts)?)),
+        ProviderKind::Cursor => Ok(Box::new(super::cursor::Cursor::new(timeouts)?)),
         _ => Err(AgentError::Config {
             message: format!(
-                "unsupported protocol for custom provider '{slug}', only openai/anthropic/google/devin are supported"
+                "unsupported protocol for custom provider '{slug}', only openai/anthropic/google/devin/cursor are supported"
             ),
         }),
     }
