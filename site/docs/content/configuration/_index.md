@@ -173,8 +173,8 @@ n00n.setup({
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
-| `edit_lines` | boolean | `false` | - | Provide the opt-in `edit_lines` tool. |
-| `insert_lines` | boolean | `false` | - | Provide the opt-in `insert_lines` tool. |
+| `edit_lines` | boolean | `true` | - | Provide the line-based `edit_lines` tool. |
+| `insert_lines` | boolean | `true` | - | Provide the line-based `insert_lines` tool. |
 | `multiedit` | boolean | `true` | - | Provide the `multiedit` tool. |
 
 ### `plugins.glob`

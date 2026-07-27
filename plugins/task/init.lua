@@ -51,7 +51,7 @@ local function schema_within_depth(value, depth)
 end
 
 local description =
-  [[Launch one isolated agent; combine independent calls with batch. research (default) is read-only; general can edit. Each call starts fresh, so include context and ask for concise file:line results. Summarize returned results. auto_tier is opt-in. background returns agent_id.]]
+  [[Launch isolated agent; combine independent calls with batch. research (default) = read-only; general = can edit. Each call starts fresh; include context and ask for concise file:line results. Summarize returned results. auto_tier opt-in. background returns agent_id.]]
 
 local schema = {
   type = "object",
@@ -60,47 +60,39 @@ local schema = {
   properties = {
     description = {
       type = "string",
-      description = "Short (3-5 words) task description",
+      description = "Task summary (3-5 words).",
     },
     prompt = {
       type = "string",
-      description = "Detailed task prompt for the agent",
+      description = "Task prompt.",
     },
     subagent_type = {
       type = "string",
-      description = '"research" (read-only, default) or "general" (can edit)',
+      description = "research (default) or general.",
     },
     model = {
       type = "string",
-      description = "Exact model spec (optional). Overrides model_tier.",
+      description = "Exact model override.",
     },
     model_tier = {
       type = "string",
-      description = 'Capped tier: "weak", "medium", or "strong"',
+      description = "Tier: weak/medium/strong.",
     },
     thinking = {
       type = { "string", "integer" },
-      description = 'Thinking mode: "off", "adaptive", effort level, or token budget. Omit to inherit user setting.',
+      description = "Thinking mode. Omit to inherit.",
     },
     auto_tier = {
       type = "boolean",
-      description = "Pick model_tier from prompt automatically (opt-in). Overrides model_tier when set.",
+      description = "Auto-route tier from prompt.",
     },
     background = {
       type = "boolean",
-      description = "Start in background session; return agent_id immediately.",
+      description = "Start in background; return agent_id immediately.",
     },
     output_schema = {
-      description = "JSON Schema (object) subagent result must match. Result returned as validated JSON string.",
+      description = "Output JSON schema. Result returned as validated JSON string.",
     },
-  },
-}
-
-local examples = {
-  {
-    description = "Find auth middleware",
-    prompt = "Search the codebase for authentication middleware. Return file paths and a summary of how auth is implemented.",
-    model_tier = "weak",
   },
 }
 
@@ -414,7 +406,6 @@ n00n.api.register_tool({
   description = description,
   kind = "execute",
   audiences = { "main", "workflow" },
-  examples = examples,
   schema = schema,
   handler = handler,
   header = header,

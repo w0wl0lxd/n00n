@@ -348,7 +348,7 @@ local function append_line(output, line)
   output[#output + 1] = line
 end
 
-local DEFAULT_MAX_LINE_BYTES = 500
+local DEFAULT_MAX_LINE_BYTES = 400
 
 local function create_bash_view(command, ctx)
   local tol = ctx:tool_output_lines()
@@ -483,8 +483,7 @@ Commands run in ]] .. cwd .. [[ by default.
 - Auto-rewrites via rtk when installed (git, cargo, rg, grep, gh, find, ls, cat, head, tail).
 - Use `workdir` instead of `cd`. Chain dependent commands with `&&`.
 - Unbounded/broad commands (e.g. find without -maxdepth, rg without limits) require `justification`.
-- Interactive commands fail immediately. Truncated beyond 2000 lines.]]
-
+- Interactive commands fail immediately. Truncated beyond 500 lines or 16KB.]]
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
   content = "- Reserve `bash` for system CLI (git, cargo, rg, grep, gh, find, ls, builds, tests). Auto-rewrites via `rtk` when installed. Do NOT use `bash` for file modifications.",
@@ -505,8 +504,8 @@ n00n.api.register_tool({
   schema = {
     type = "object",
     properties = {
-      command = { type = "string", description = "The bash command to execute", required = true },
-      timeout = { type = "integer", description = "Timeout in seconds (default 120)" },
+      command = { type = "string", description = "Bash command to execute", required = true },
+      timeout = { type = "integer", description = "Timeout seconds (default 120)" },
       workdir = { type = "string", description = "Working directory (default: cwd)" },
       description = { type = "string", description = "Short description (3-5 words) of what the command does" },
       justification = {
