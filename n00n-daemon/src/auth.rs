@@ -1,12 +1,15 @@
 //! Peer credential checks for Unix domain sockets.
 
-use crate::error::{ControlError, ControlResult};
+#[cfg(all(unix, target_os = "linux"))]
+use crate::error::ControlError;
+#[cfg(unix)]
+use crate::error::ControlResult;
 
 /// Reject UDS connections whose peer uid differs from ours (Linux only).
 ///
 /// # Errors
 /// Returns [`ControlError::Forbidden`] when the peer uid does not match.
-#[cfg(target_os = "linux")]
+#[cfg(all(unix, target_os = "linux"))]
 pub fn check_unix_peer_uid(stream: &smol::net::unix::UnixStream) -> ControlResult<()> {
     use std::os::unix::io::AsFd;
 
@@ -22,7 +25,11 @@ pub fn check_unix_peer_uid(stream: &smol::net::unix::UnixStream) -> ControlResul
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+/// Stub for non-Linux Unix: no uid check available.
+///
+/// # Errors
+/// Never returns an error on non-Linux Unix platforms.
+#[cfg(all(unix, not(target_os = "linux")))]
 pub fn check_unix_peer_uid(_stream: &smol::net::unix::UnixStream) -> ControlResult<()> {
     Ok(())
 }
