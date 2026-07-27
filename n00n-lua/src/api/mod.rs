@@ -9,6 +9,7 @@ pub(crate) mod arbor;
 pub(crate) mod r#async;
 pub(crate) mod autocmd;
 pub(crate) mod base64;
+pub(crate) mod codegraph;
 pub(crate) mod env;
 pub(crate) mod r#fn;
 pub(crate) mod fs;
@@ -83,6 +84,7 @@ pub(crate) fn create_n00n_global(
     n00n.set("agent", agent::create_agent_table(lua)?)?;
     n00n.set("workflow", workflow::create_workflow_table(lua)?)?;
     n00n.set("arbor", arbor::create_arbor_table(lua)?)?;
+    n00n.set("codegraph", codegraph::create_codegraph_table(lua)?)?;
     n00n.set(
         "keymap",
         keymap::create_keymap_table(lua, Arc::clone(&plugin))?,
