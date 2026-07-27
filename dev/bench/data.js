@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785117290383,
+  "lastUpdate": 1785117422539,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -5505,6 +5505,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 184132,
             "range": "± 11782",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "36056645d149ba701be0d5cdf04e8aba93061fc0",
+          "message": "fix(storage): make session header scanning fast and cwd index robust (#124)\n\n* fix(nix): embed runtime library paths\n\n* fix(storage): make session header scanning fast and cwd index robust\n\n`scan_zst_header` no longer decompresses every zstd frame from start to\nfinish. It decodes only the first frame for the header, then searches\nbackwards from EOF to find the last zstd frame and decodes just that\nframe for the final `Meta` record. A 2.2 GB session that previously\ntook >60 s to scan now scans in ~40 ms.\n\n`Session::latest_in` now always derives the latest session from\n`scan_headers` instead of trusting a potentially-stale `cwd_latest.json`\nentry. The cwd index is still rewritten so other consumers stay in sync.\n\n`SessionLog::open` and `SessionLog::compact` now also update the cwd\nindex, and `scan_zst_header` only parses `Meta` records, skipping large\n`Msg`/`Out` lines.\n\nNew tests cover index updates after open, compact, and latest fallback,\nas well as skipping huge non-meta records during scan.\n\n* perf(storage): speed up session startup scanning",
+          "timestamp": "2026-07-27T01:39:54Z",
+          "tree_id": "dc62c4acc385d34f916f88a42cb0b382e0a2c46b",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/36056645d149ba701be0d5cdf04e8aba93061fc0"
+        },
+        "date": 1785117420883,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6844549,
+            "range": "± 203170",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2220026,
+            "range": "± 6538",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2224452,
+            "range": "± 71503",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8337400,
+            "range": "± 83297",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4271225,
+            "range": "± 14775",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4301592,
+            "range": "± 9761",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 585721,
+            "range": "± 2833",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 192057,
+            "range": "± 305",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191902,
+            "range": "± 435",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1044781,
+            "range": "± 14203",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 588081,
+            "range": "± 2424",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 587716,
+            "range": "± 1169",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 73724,
+            "range": "± 5425",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 174370,
+            "range": "± 16675",
             "unit": "ns/iter"
           }
         ]
