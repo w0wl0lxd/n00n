@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use include_dir::{Dir, include_dir};
 use mlua::{Lua, MultiValue, Value as LuaValue};
 use n00n_lua_macro::{lua_class, lua_fn, lua_table};
 use regex::Regex;
@@ -11,6 +12,8 @@ use crate::docs::{FnDoc, ParamDoc};
 use crate::language::Language;
 
 use super::node::LuaNode;
+
+static QUERIES: Dir = include_dir!("$CARGO_MANIFEST_DIR/src/queries");
 
 #[allow(non_upper_case_globals)]
 const iter_captures__doc: FnDoc = FnDoc {
@@ -137,15 +140,37 @@ fn parse(_lua: &Lua, lang: String, query: String) -> mlua::Result<LuaQuery> {
     Ok(LuaQuery { inner: Arc::new(q) })
 }
 
-/// Looks up a named built-in query for {lang} (not yet implemented, always returns nil).
+/// Looks up a named built-in query for {lang}.
+/// Returns a compiled query object from bundled query files.
 ///
 /// @param lang string Language name.
 /// @param name string Query name, e.g. `"highlights"`.
-/// @return (Query|nil) Query object, or nil if not found.
+/// @return (Query|nil, string?) Query object, or nil and an error message.
+/// @example
+/// local q, err = n00n.treesitter.query.get("lua", "highlights")
+/// if q then print(#q.captures) end
 #[lua_fn]
-fn get(_lua: &Lua, lang: String, name: String) -> mlua::Result<Option<LuaQuery>> {
-    let _ = (lang, name);
-    Ok(None)
+fn get(_lua: &Lua, lang: String, name: String) -> mlua::Result<(Option<LuaQuery>, Option<String>)> {
+    let query_path = format!("{lang}/{name}.scm");
+    let Some(query_file) = QUERIES.get_file(&query_path) else {
+        return Ok((None, Some(format!("query not found: {query_path}"))));
+    };
+
+    let Some(query_str) = query_file.contents_utf8() else {
+        return Ok((None, Some("query file is not valid UTF-8".to_owned())));
+    };
+
+    let Some(language) = Language::from_name(&lang) else {
+        return Ok((None, Some(format!("unknown language: {lang}"))));
+    };
+    let ts_lang = language.ts_language();
+
+    let q = match Query::new(&ts_lang, query_str) {
+        Ok(q) => q,
+        Err(e) => return Ok((None, Some(format!("query parse error: {e}")))),
+    };
+
+    Ok((Some(LuaQuery { inner: Arc::new(q) }), None))
 }
 
 lua_table! {

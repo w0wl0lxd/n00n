@@ -12,26 +12,30 @@ struct LangRegistry {
 }
 
 /// Registers {lang} for use with tree-sitter.
-/// Call this to confirm a language grammar is available. Throws if {lang} is unknown.
+/// Call this to confirm a language grammar is available.
 /// Custom grammar paths are not yet supported.
 ///
 /// @param lang string Language name, e.g. `"rust"`.
 /// @param opts table? Options table (the `path` key is not yet supported).
+/// @return (boolean, string?) true on success, or false and an error message.
 /// @example
-/// n00n.treesitter.language.add("lua")
+/// local ok, err = n00n.treesitter.language.add("lua")
+/// if not ok then print("error: " .. err) end
 #[lua_fn]
-fn add(_lua: &Lua, lang: String, opts: Option<Table>) -> mlua::Result<()> {
+fn add(_lua: &Lua, lang: String, opts: Option<Table>) -> mlua::Result<(bool, Option<String>)> {
     if let Some(ref opts) = opts
         && opts.contains_key("path")?
     {
-        return Err(mlua::Error::runtime(
-            "custom grammar paths not supported yet",
+        let path: String = opts.get("path")?;
+        return Ok((
+            false,
+            Some(format!("custom grammar paths not supported yet: {path}")),
         ));
     }
     if Language::from_name(&lang).is_none() {
-        return Err(mlua::Error::runtime(format!("language not found: {lang}")));
+        return Ok((false, Some(format!("language not found: {lang}"))));
     }
-    Ok(())
+    Ok((true, None))
 }
 
 /// Associates {lang} with one or more filetypes, so you can look up the right

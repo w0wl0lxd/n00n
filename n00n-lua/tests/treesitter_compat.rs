@@ -287,7 +287,9 @@ fn language_module() {
         &host,
         "language_mod",
         r#"
-n00n.treesitter.language.add("rust")
+local ok, err = n00n.treesitter.language.add("rust")
+assert(ok == true, "add should succeed")
+assert(err == nil, "add error should be nil")
 
 n00n.treesitter.language.register("rust", "rs")
 assert(n00n.treesitter.language.get_lang("rs") == "rust")
@@ -384,6 +386,79 @@ end
 
 assert(found["iface_name:Config"], "should find Config interface")
 assert(found["fn_name:processConfig"], "should find processConfig function")
+"#,
+    );
+}
+
+#[test]
+fn get_node_test() {
+    let (_reg, host) = setup();
+    run_lua(
+        &host,
+        "get_node",
+        r#"
+local source = "local x = 1"
+local node, err = n00n.treesitter.get_node({
+    source = source,
+    lang = "lua",
+    pos = {0, 6}
+})
+assert(err == nil, "should not error: " .. (err or "nil"))
+assert(node ~= nil, "should return a node")
+assert(node:type() == "identifier", "node type should be identifier, got " .. node:type())
+"#,
+    );
+}
+
+#[test]
+fn language_add_test() {
+    let (_reg, host) = setup();
+    run_lua(
+        &host,
+        "language_add",
+        r#"
+local ok, err = n00n.treesitter.language.add("lua")
+assert(ok == true, "should succeed for valid language")
+assert(err == nil, "error should be nil")
+
+local ok2, err2 = n00n.treesitter.language.add("unknown_lang_xyz")
+assert(ok2 == false, "should fail for unknown language")
+assert(err2 ~= nil, "error should not be nil")
+assert(err2:find("language not found") ~= nil, "error should mention language not found")
+
+local ok3, err3 = n00n.treesitter.language.add("lua", {path = "/custom/path.so"})
+assert(ok3 == false, "should fail with path option")
+assert(err3 ~= nil, "error should not be nil")
+assert(err3:find("custom grammar paths not supported") ~= nil, "error should mention paths not supported")
+"#,
+    );
+}
+
+#[test]
+fn query_get_test() {
+    let (_reg, host) = setup();
+    run_lua(
+        &host,
+        "query_get",
+        r#"
+local q, err = n00n.treesitter.query.get("lua", "highlights")
+assert(err == nil, "should not error: " .. (err or "nil"))
+assert(q ~= nil, "should return a query")
+assert(#q.captures > 0, "should have captures")
+
+local q2, err2 = n00n.treesitter.query.get("rust", "highlights")
+assert(err2 == nil, "should not error for rust: " .. (err2 or "nil"))
+assert(q2 ~= nil, "should return a query for rust")
+assert(#q2.captures > 0, "should have captures for rust")
+
+local q3, err3 = n00n.treesitter.query.get("lua", "nonexistent")
+assert(q3 == nil, "should return nil for missing query")
+assert(err3 ~= nil, "should return error for missing query")
+assert(err3:find("query not found") ~= nil, "error should mention query not found")
+
+local q4, err4 = n00n.treesitter.query.get("unknown_lang", "highlights")
+assert(q4 == nil, "should return nil for unknown language")
+assert(err4 ~= nil, "should return error for unknown language")
 "#,
     );
 }

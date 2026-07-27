@@ -4,6 +4,8 @@ pub(crate) mod node;
 pub(crate) mod query;
 pub(crate) mod tree;
 
+use std::sync::Arc;
+
 use mlua::{AnyUserData, Lua, Result as LuaResult, Table};
 use n00n_lua_macro::{lua_fn, lua_table};
 
@@ -189,15 +191,79 @@ fn node_contains(_lua: &Lua, node: AnyUserData, range: Table) -> LuaResult<bool>
         && (er < ep.row || (er == ep.row && ec <= ep.column)))
 }
 
-/// Placeholder for cursor-based node lookup (not yet implemented, always returns nil).
+/// Gets the node at the given cursor position in the source code.
+/// Parses the source and returns the smallest node containing the position.
 ///
-/// @param opts table? Options (currently unused).
-/// @return (Node|nil) Always nil.
+/// @param opts table Options with keys:
+///   - `source` (string, required): source code to parse.
+///   - `lang` (string, required): language name, e.g. `"lua"`.
+///   - `pos` (table, required): `{row, col}` with 0-based row and column.
+///   - `bufnr` (integer, optional): accepted for Neovim compatibility but ignored.
+/// @return (Node|nil, string?) Node at position, or nil and an error message.
+/// @example
+/// local node, err = n00n.treesitter.get_node({
+///   source = "local x = 1",
+///   lang = "lua",
+///   pos = {0, 6}
+/// })
 #[lua_fn]
-#[allow(clippy::needless_pass_by_value, clippy::unnecessary_wraps)]
-fn get_node(_lua: &Lua, opts: Option<Table>) -> LuaResult<Option<LuaNode>> {
-    let _ = opts;
-    Ok(None)
+#[allow(clippy::needless_pass_by_value)]
+fn get_node(_lua: &Lua, opts: Option<Table>) -> LuaResult<(Option<LuaNode>, Option<String>)> {
+    let Some(opts) = opts else {
+        return Ok((None, Some("missing required option: opts".to_owned())));
+    };
+
+    let source: String = match opts.get("source") {
+        Ok(s) => s,
+        Err(_) => return Ok((None, Some("missing required option: source".to_owned()))),
+    };
+    let lang: String = match opts.get("lang") {
+        Ok(l) => l,
+        Err(_) => return Ok((None, Some("missing required option: lang".to_owned()))),
+    };
+    let pos: Table = match opts.get("pos") {
+        Ok(p) => p,
+        Err(_) => return Ok((None, Some("missing required option: pos".to_owned()))),
+    };
+
+    let row: usize = match pos.get(1) {
+        Ok(r) => r,
+        Err(_) => {
+            return Ok((
+                None,
+                Some("pos must be a table with row at index 1".to_owned()),
+            ));
+        }
+    };
+    let col: usize = match pos.get(2) {
+        Ok(c) => c,
+        Err(_) => {
+            return Ok((
+                None,
+                Some("pos must be a table with col at index 2".to_owned()),
+            ));
+        }
+    };
+
+    let Some(language) = Language::from_name(&lang) else {
+        return Ok((None, Some(format!("language not found: {lang}"))));
+    };
+
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&language.ts_language()).is_err() {
+        return Ok((None, Some("failed to set language".to_owned())));
+    }
+
+    let Some(tree) = parser.parse(&source, None) else {
+        return Ok((None, Some("parse failed".to_owned())));
+    };
+
+    let tree = Arc::new(tree);
+    let root = tree.root_node();
+    let point = tree_sitter::Point::new(row, col);
+    let node = root.descendant_for_point_range(point, point);
+
+    Ok((node.map(|n| LuaNode::new(n, Arc::clone(&tree))), None))
 }
 
 lua_table! {
