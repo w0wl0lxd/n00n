@@ -525,6 +525,8 @@ enum ServerEvent {
 const AGENTS_SUBDIR: &str = "agents";
 const STATE_FILE: &str = "agent.json";
 const SOCKET_FILE: &str = "control.sock";
+const DIR_PERMISSIONS: u32 = 0o700;
+const FILE_PERMISSIONS: u32 = 0o600;
 
 fn agent_dir(state_dir: &StateDir, agent_id: &str) -> Result<PathBuf> {
     validate_agent_id(agent_id)?;
@@ -540,7 +542,7 @@ fn socket_path(state_dir: &StateDir, agent_id: &str) -> Result<PathBuf> {
 fn restrict_dir_permissions(path: &std::path::Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+    fs::set_permissions(path, fs::Permissions::from_mode(DIR_PERMISSIONS))
         .wrap_err("failed to set agent directory permissions")
 }
 
@@ -548,7 +550,7 @@ fn restrict_dir_permissions(path: &std::path::Path) -> Result<()> {
 fn restrict_file_permissions(path: &std::path::Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+    fs::set_permissions(path, fs::Permissions::from_mode(FILE_PERMISSIONS))
         .wrap_err("failed to set socket permissions")
 }
 
@@ -992,37 +994,54 @@ pub fn message_client(
                 .wrap_err("failed to send command")?;
 
             let mut line = String::new();
+            let mut done_seen = false;
 
-            while let Ok(n) = reader.read_line(&mut line).await {
+            loop {
+                line.clear();
+                let n = reader
+                    .read_line(&mut line)
+                    .await
+                    .wrap_err("failed to read agent event stream")?;
                 if n == 0 {
-                    break;
+                    if done_seen || json {
+                        break;
+                    }
+                    return Err(eyre!("agent stream closed without a Done event"));
                 }
 
                 if json {
                     print!("{line}");
-                } else if let Ok(event) = serde_json::from_str::<ServerEvent>(&line) {
-                    match event {
-                        ServerEvent::TextDelta { text } => {
-                            print!("{text}");
-                        }
-                        ServerEvent::Done {
-                            error: Some(message),
-                            ..
-                        } => {
-                            eprintln!("\nError: {message}");
-                            return Err(color_eyre::eyre::eyre!(message));
-                        }
-                        ServerEvent::Done { .. } => {
-                            println!();
-                        }
-                        ServerEvent::Error { message } => {
-                            eprintln!("Error: {message}");
-                            return Err(color_eyre::eyre::eyre!(message));
-                        }
-                        ServerEvent::ToolOutput { .. } => {}
-                    }
+                    continue;
                 }
-                line.clear();
+
+                let event = serde_json::from_str::<ServerEvent>(&line)
+                    .wrap_err_with(|| format!("malformed server event: {line}"))?;
+                match event {
+                    ServerEvent::TextDelta { text } => {
+                        print!("{text}");
+                    }
+                    ServerEvent::Done {
+                        error: Some(message),
+                        ..
+                    } => {
+                        eprintln!("\nError: {message}");
+                        return Err(eyre!(message));
+                    }
+                    ServerEvent::Done { .. } => {
+                        done_seen = true;
+                        println!();
+                        break;
+                    }
+                    ServerEvent::Error { message } => {
+                        eprintln!("Error: {message}");
+                        return Err(eyre!(message));
+                    }
+                    ServerEvent::ToolOutput { .. } => {}
+                }
+            }
+
+            if !json && !done_seen {
+                return Err(eyre!("agent stream closed without a Done event"));
             }
 
             Ok(())
@@ -1081,9 +1100,10 @@ pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> 
             let response: serde_json::Value =
                 serde_json::from_str(&line).wrap_err("failed to parse response")?;
 
-            match response.get("ok").and_then(serde_json::Value::as_bool) {
-                Some(true) => println!("Agent {id} stopped"),
-                _ => eprintln!("Failed to stop agent {id}"),
+            if response.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+                println!("Agent {id} stopped");
+            } else {
+                return Err(eyre!("Failed to stop agent {id}"));
             }
 
             Ok(())
@@ -1346,9 +1366,10 @@ fn control_command_client(
             let response: serde_json::Value =
                 serde_json::from_str(&line).wrap_err("failed to parse response")?;
 
-            match response.get("ok").and_then(serde_json::Value::as_bool) {
-                Some(true) => println!("Agent {id} {success_label}"),
-                _ => eprintln!("Failed to update agent {id}"),
+            if response.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+                println!("Agent {id} {success_label}");
+            } else {
+                return Err(eyre!("Failed to update agent {id}"));
             }
 
             Ok(())

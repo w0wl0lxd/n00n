@@ -12,8 +12,8 @@ use tracing::{debug, warn};
 
 use super::ResolvedAuth;
 use crate::{
-    AgentError, CacheControl, ContentBlock, Message, ProviderEvent, Role, StopReason,
-    StreamResponse, System, TokenUsage,
+    AgentError, CacheControl, ContentBlock, Message, ProviderEvent, RequestDeliveryMetadata,
+    RequestDeliveryPhase, Role, StopReason, StreamResponse, System, TokenUsage,
 };
 
 const STREAM_DONE: &str = "[DONE]";
@@ -25,10 +25,6 @@ fn model_supports_breakpoint(model: &crate::model::Model) -> bool {
     model.family == crate::model::ModelFamily::Gpt
         && model.id.starts_with(GPT_5_6_BREAKPOINT_PREFIX)
         && !model.id.contains(GPT_CODEX_MARKER)
-}
-
-fn suppress_retry_after_response(error: AgentError) -> AgentError {
-    error.suppress_retry_after_send(None)
 }
 
 fn value_hash(value: &Value) -> u64 {
@@ -306,7 +302,6 @@ impl OpenAiCompatProvider {
                 self.stream_timeout,
             )
             .await
-            .map_err(suppress_retry_after_response)
         } else {
             Err(AgentError::from_response(response).await)
         }
@@ -635,9 +630,25 @@ pub async fn parse_sse(
     let mut usage = TokenUsage::default();
     let mut stop_reason: Option<StopReason> = None;
     let mut is_first_content = true;
+    let mut emitted_event = false;
     let mut deadline = Instant::now() + stream_timeout;
 
-    while let Some(line) = super::next_sse_line(&mut lines, &mut deadline, stream_timeout).await? {
+    let delivery_metadata = |emitted_event| {
+        let mut metadata =
+            RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance);
+        metadata.emitted_event = emitted_event;
+        metadata
+    };
+
+    loop {
+        let line = match super::next_sse_line(&mut lines, &mut deadline, stream_timeout).await {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(error) => {
+                return Err(error.suppress_retry_after_send(Some(delivery_metadata(emitted_event))));
+            }
+        };
+
         let data = match line.strip_prefix("data:") {
             Some(d) => d.trim(),
             None => continue,
@@ -651,7 +662,9 @@ pub async fn parse_sse(
             && let Ok(ev) = serde_json::from_str::<super::SseErrorPayload>(data)
         {
             warn!(error_type = %ev.error.r#type, message = %ev.error.message, "SSE error in stream");
-            return Err(ev.into_agent_error());
+            return Err(ev
+                .into_agent_error()
+                .suppress_retry_after_send(Some(delivery_metadata(emitted_event))));
         }
 
         let chunk: SseChunk = match serde_json::from_str(data) {
@@ -712,6 +725,7 @@ pub async fn parse_sse(
             && !reasoning.is_empty()
         {
             reasoning_text.push_str(&reasoning);
+            emitted_event = true;
             event_tx
                 .send_async(ProviderEvent::ThinkingDelta { text: reasoning })
                 .await?;
@@ -728,6 +742,7 @@ pub async fn parse_sse(
 
                 if !content.is_empty() {
                     text.push_str(&content);
+                    emitted_event = true;
                     event_tx
                         .send_async(ProviderEvent::TextDelta { text: content })
                         .await?;
@@ -750,6 +765,7 @@ pub async fn parse_sse(
                                 }
 
                                 reasoning_text.push_str(&content);
+                                emitted_event = true;
                                 event_tx
                                     .send_async(ProviderEvent::ThinkingDelta { text: content })
                                     .await?;
@@ -765,6 +781,7 @@ pub async fn parse_sse(
 
                             if !content.is_empty() {
                                 text.push_str(&content);
+                                emitted_event = true;
                                 event_tx
                                     .send_async(ProviderEvent::TextDelta { text: content })
                                     .await?;
@@ -799,6 +816,7 @@ pub async fn parse_sse(
                     }
                 }
                 if was_unnamed && !acc.name.is_empty() {
+                    emitted_event = true;
                     event_tx
                         .send_async(ProviderEvent::ToolUseStart {
                             id: acc.id.clone(),
@@ -875,7 +893,7 @@ mod tests {
         ));
 
         assert!(matches!(
-            suppress_retry_after_response(error),
+            error.suppress_retry_after_send(None),
             AgentError::RequestSent { .. }
         ));
     }
@@ -1105,6 +1123,62 @@ data: {\"error\":{\"message\":\"Server overloaded\",\"type\":\"overloaded_error\
                     assert_eq!(message, "Server overloaded");
                 }
                 other => panic!("expected Api error, got: {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn parse_sse_text_error_after_partial_output_is_not_retryable() {
+        smol::block_on(async {
+            let sse = "\
+data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n\
+data: {\"error\":{\"message\":\"Server overloaded\",\"type\":\"overloaded_error\"}}\n";
+
+            let (tx, _rx) = flume::unbounded();
+            let err = parse_sse(Cursor::new(sse.as_bytes()), &tx, TEST_STREAM_TIMEOUT)
+                .await
+                .unwrap_err();
+
+            match err {
+                AgentError::RequestSent {
+                    metadata: Some(meta),
+                    ..
+                } => {
+                    assert!(meta.emitted_event);
+                    assert_eq!(
+                        meta.phase,
+                        crate::RequestDeliveryPhase::SentAwaitingAcceptance
+                    );
+                }
+                other => panic!("expected RequestSent, got: {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn parse_sse_tool_error_after_partial_output_is_not_retryable() {
+        smol::block_on(async {
+            let sse = "\
+data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"bash\"}}]}}]}\n\n\
+data: {\"error\":{\"message\":\"Server overloaded\",\"type\":\"overloaded_error\"}}\n";
+
+            let (tx, _rx) = flume::unbounded();
+            let err = parse_sse(Cursor::new(sse.as_bytes()), &tx, TEST_STREAM_TIMEOUT)
+                .await
+                .unwrap_err();
+
+            match err {
+                AgentError::RequestSent {
+                    metadata: Some(meta),
+                    ..
+                } => {
+                    assert!(meta.emitted_event);
+                    assert_eq!(
+                        meta.phase,
+                        crate::RequestDeliveryPhase::SentAwaitingAcceptance
+                    );
+                }
+                other => panic!("expected RequestSent, got: {other:?}"),
             }
         });
     }

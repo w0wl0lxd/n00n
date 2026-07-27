@@ -45,7 +45,6 @@ pub(crate) struct ResponsesWebSocket {
 #[derive(Debug)]
 pub(crate) struct WebSocketAttemptError {
     pub(crate) error: AgentError,
-    pub(crate) emitted_event: bool,
     pub(crate) transport_failure: bool,
     pub(crate) delivery: RequestDeliveryMetadata,
 }
@@ -54,20 +53,24 @@ impl WebSocketAttemptError {
     pub(crate) fn transport(
         error: AgentError,
         emitted_event: bool,
-        delivery: RequestDeliveryMetadata,
+        mut delivery: RequestDeliveryMetadata,
     ) -> Self {
+        delivery.emitted_event = emitted_event;
         Self {
             error,
-            emitted_event,
             transport_failure: true,
             delivery,
         }
     }
 
-    fn response(error: AgentError, emitted_event: bool, delivery: RequestDeliveryMetadata) -> Self {
+    fn response(
+        error: AgentError,
+        emitted_event: bool,
+        mut delivery: RequestDeliveryMetadata,
+    ) -> Self {
+        delivery.emitted_event = emitted_event;
         Self {
             error,
-            emitted_event,
             transport_failure: false,
             delivery,
         }
@@ -78,7 +81,7 @@ impl WebSocketAttemptError {
     }
 
     pub(crate) fn definitive_rejection(&self) -> bool {
-        if self.emitted_event
+        if self.delivery.emitted_event
             || self.delivery.phase == RequestDeliveryPhase::Accepted
             || self.delivery.response_id.is_some()
         {
@@ -93,7 +96,7 @@ impl WebSocketAttemptError {
     }
 
     pub(crate) fn into_agent_error(self) -> AgentError {
-        let emitted_or_accepted = self.emitted_event
+        let emitted_or_accepted = self.delivery.emitted_event
             || self.delivery.phase == RequestDeliveryPhase::Accepted
             || self.delivery.response_id.is_some();
         if self.request_sent() && (self.transport_failure || emitted_or_accepted) {

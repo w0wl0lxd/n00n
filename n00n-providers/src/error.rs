@@ -34,6 +34,7 @@ pub struct RequestDeliveryMetadata {
     pub response_id: Option<String>,
     pub close_code: Option<u16>,
     pub close_reason: Option<String>,
+    pub emitted_event: bool,
 }
 
 impl RequestDeliveryMetadata {
@@ -43,6 +44,7 @@ impl RequestDeliveryMetadata {
             response_id: None,
             close_code: None,
             close_reason: None,
+            emitted_event: false,
         }
     }
 }
@@ -120,17 +122,29 @@ impl AgentError {
         }
     }
 
-    /// Converts transport-level failures that may have occurred after the
-    /// provider accepted the request into [`AgentError::RequestSent`], which is not
-    /// retryable. Leaves explicit API/server errors unchanged so the caller
-    /// can apply its own retry/backoff policy when no output has been emitted.
+    /// Converts failures that may have occurred after the provider accepted the
+    /// request or emitted output into [`AgentError::RequestSent`], which is not
+    /// retryable. Transport-level failures are treated as request-sent once the
+    /// request has left the client. API/server errors are only suppressed when
+    /// output has already been emitted or the request was accepted, preserving
+    /// retryability when no output has been accepted.
     #[must_use]
     pub fn suppress_retry_after_send(self, metadata: Option<RequestDeliveryMetadata>) -> Self {
+        let emitted_or_accepted = metadata.as_ref().is_some_and(|m| {
+            m.emitted_event || m.phase == RequestDeliveryPhase::Accepted || m.response_id.is_some()
+        });
+        let sent = metadata
+            .as_ref()
+            .map_or(true, |m| m.phase != RequestDeliveryPhase::NotSent);
+
         match self {
-            Self::Io(_) | Self::Http(_) | Self::Timeout { .. } => Self::RequestSent {
+            Self::Io(_) | Self::Http(_) | Self::Timeout { .. } if sent => Self::RequestSent {
                 message: self.to_string(),
                 metadata,
             },
+            Self::Api { message, .. } if emitted_or_accepted => {
+                Self::RequestSent { message, metadata }
+            }
             _ => self,
         }
     }

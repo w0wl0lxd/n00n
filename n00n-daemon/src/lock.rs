@@ -97,14 +97,41 @@ pub fn pid_alive(pid: u32) -> bool {
     }
 }
 
-/// Stub for Windows: we cannot query another process's liveness without
-/// unsafe Win32 APIs, but we can at least treat the current process as alive.
-/// This is enough for in-process tests; cross-process daemon discovery on
-/// Windows is not yet supported.
+/// Windows PID liveness check using `tasklist`. This avoids unsafe Win32
+/// calls while still preventing competing listeners from overwriting a live
+/// process's endpoint metadata. If the probe itself fails, we conservatively
+/// treat the PID as alive rather than risk stealing an active lock.
 #[must_use]
 #[cfg(not(unix))]
 pub fn pid_alive(pid: u32) -> bool {
-    pid != 0 && pid == std::process::id()
+    if pid == 0 {
+        return false;
+    }
+    if pid == std::process::id() {
+        return true;
+    }
+    match probe_windows_process(pid) {
+        Ok(alive) => alive,
+        Err(_) => true,
+    }
+}
+
+#[cfg(not(unix))]
+fn probe_windows_process(pid: u32) -> std::io::Result<bool> {
+    const TASKLIST_EXE: &str = "tasklist";
+    const PID_FILTER: &str = "PID eq ";
+    const NO_TASKS: &str = "No tasks";
+
+    let filter = format!("{PID_FILTER}{pid}");
+    let output = std::process::Command::new(TASKLIST_EXE)
+        .args(["/FI", &filter, "/NH", "/FO", "CSV"])
+        .output()?;
+    if !output.status.success() {
+        return Ok(false);
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+    Ok(!trimmed.is_empty() && !trimmed.contains(NO_TASKS))
 }
 
 /// Remove a lock file whose owner pid is no longer alive.
