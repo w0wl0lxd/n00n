@@ -142,13 +142,6 @@ local function normalize_session(s, expanded_state)
   s.depth = 0
 end
 
-local function collect_nodes(roots, out)
-  for _, n in ipairs(roots) do
-    out[#out + 1] = n
-    collect_nodes(n.children, out)
-  end
-end
-
 local function sort_tree(nodes)
   table.sort(nodes, by_recency)
   for _, n in ipairs(nodes) do
@@ -412,6 +405,7 @@ local function refresh()
       assign_ranks(fresh)
     end
   end
+  table.sort(all, by_recency)
 
   board.nodes = all
   board.roots = build_tree(all)
