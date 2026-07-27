@@ -897,6 +897,21 @@ fn sanitize_property_schema(schema: &mut Value) {
                 || map.contains_key("allOf")
                 || map.contains_key("$ref")
             {
+                if let Some(arr) = map.get_mut("anyOf").and_then(|v| v.as_array_mut()) {
+                    for item in arr {
+                        sanitize_property_schema(item);
+                    }
+                }
+                if let Some(arr) = map.get_mut("oneOf").and_then(|v| v.as_array_mut()) {
+                    for item in arr {
+                        sanitize_property_schema(item);
+                    }
+                }
+                if let Some(arr) = map.get_mut("allOf").and_then(|v| v.as_array_mut()) {
+                    for item in arr {
+                        sanitize_property_schema(item);
+                    }
+                }
             } else {
                 sanitize_object_schema(map);
             }
@@ -1635,5 +1650,28 @@ mod tests {
                 .is_none()
         );
         assert!(minified_tokens < raw_tokens);
+    }
+
+    #[test]
+    fn any_of_subschema_sanitization_test() {
+        let schema_with_any_of = json!({
+            "type": "object",
+            "properties": {
+                "input": {
+                    "anyOf": [
+                        { "type": "string", "title": "Variant1", "$schema": "http://json-schema.org/draft-07/schema#" },
+                        { "type": "null", "title": "Variant2", "additionalProperties": false }
+                    ]
+                }
+            }
+        });
+
+        let minified = sanitize_tool_input_schema(schema_with_any_of);
+        let any_of_array = minified["properties"]["input"]["anyOf"].as_array().unwrap();
+
+        assert!(any_of_array[0].get("title").is_none());
+        assert!(any_of_array[0].get("$schema").is_none());
+        assert!(any_of_array[1].get("title").is_none());
+        assert!(any_of_array[1].get("additionalProperties").is_none());
     }
 }
