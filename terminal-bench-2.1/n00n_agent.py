@@ -272,7 +272,10 @@ class N00nAgent(BaseInstalledAgent):
             "XDG_CONFIG_HOME": "/opt/n00n/.config",
             "XDG_DATA_HOME": "/opt/n00n/.local/share",
             "XDG_CACHE_HOME": "/opt/n00n/.cache",
-            "PATH": "/opt/n00n/bin:/usr/local/bin:/usr/bin:/bin",
+            # /opt/n00n must precede /opt/n00n/bin so the n00n wrapper is
+            # found before the n00n ELF binary (which relies on the wrapper's
+            # bundled loader and libs).
+            "PATH": "/opt/n00n:/opt/n00n/bin:/usr/local/bin:/usr/bin:/bin",
         }
 
         # Append extra PATH if provided
