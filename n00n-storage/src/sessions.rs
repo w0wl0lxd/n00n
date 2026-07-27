@@ -207,6 +207,19 @@ pub enum TranscriptEntry<M> {
     },
 }
 
+#[must_use]
+pub fn active_messages_from_transcript<M: Clone>(transcript: &[TranscriptEntry<M>]) -> Vec<M> {
+    transcript
+        .iter()
+        .filter_map(|entry| match entry {
+            TranscriptEntry::Message(message) | TranscriptEntry::GeneratedMessage(message) => {
+                Some(message.clone())
+            }
+            TranscriptEntry::Compaction { .. } => None,
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session<M, U, T> {
     pub version: u32,
@@ -1015,7 +1028,7 @@ where
 
 fn parse_records<M, U, T>(path: &Path) -> Result<(Session<M, U, T>, bool, bool, u64), SessionError>
 where
-    M: DeserializeOwned + Default,
+    M: DeserializeOwned + Default + Clone,
     U: DeserializeOwned + Default,
     T: DeserializeOwned,
 {
@@ -1061,7 +1074,7 @@ where
         .ok_or(StorageError::NotFound(path.display().to_string()))?;
     let saw_legacy_transcript = builder.saw_legacy_transcript;
     let log_appends = builder.log_appends;
-    let session = Session {
+    let mut session = Session {
         version: SESSION_VERSION,
         id,
         title: normalize_title(&builder.title),
@@ -1077,7 +1090,32 @@ where
         created_at: builder.created_at,
         updated_at: builder.updated_at,
     };
-    Ok((session, saw_legacy_transcript, recovered_tail, log_appends))
+    let transcript_only = session.messages.is_empty() && !session.transcript.is_empty();
+    let hydrated_messages = if transcript_only {
+        session.messages = active_messages_from_transcript(&session.transcript);
+        if session.messages.is_empty() {
+            warn!(
+                session_id = %session.id,
+                "session transcript has no recoverable active provider messages"
+            );
+            false
+        } else {
+            warn!(
+                session_id = %session.id,
+                recovered_messages = session.messages.len(),
+                "recovered active provider messages from session transcript"
+            );
+            true
+        }
+    } else {
+        false
+    };
+    Ok((
+        session,
+        saw_legacy_transcript || hydrated_messages,
+        recovered_tail,
+        log_appends,
+    ))
 }
 
 fn apply_record<M, U, T>(
@@ -2047,6 +2085,64 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn active_messages_exclude_nested_compaction_entries() {
+        let transcript = vec![
+            TranscriptEntry::Compaction {
+                entries: vec![TranscriptEntry::Message(user_message("archived"))],
+                generated_summary: Some(assistant_message("archived summary")),
+            },
+            TranscriptEntry::GeneratedMessage(user_message("summary prompt")),
+            TranscriptEntry::GeneratedMessage(assistant_message("active summary")),
+            TranscriptEntry::Message(user_message("continued")),
+        ];
+
+        let messages = super::active_messages_from_transcript(&transcript);
+
+        assert_eq!(
+            messages,
+            vec![
+                user_message("summary prompt"),
+                assistant_message("active summary"),
+                user_message("continued"),
+            ]
+        );
+    }
+
+    #[test]
+    fn opening_transcript_only_session_hydrates_and_rewrites_messages() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.transcript = vec![
+            TranscriptEntry::Compaction {
+                entries: vec![TranscriptEntry::Message(user_message("archived"))],
+                generated_summary: None,
+            },
+            TranscriptEntry::GeneratedMessage(user_message("summary prompt")),
+            TranscriptEntry::GeneratedMessage(assistant_message("summary")),
+            TranscriptEntry::Message(user_message("continued")),
+        ];
+        let log = SessionLog::create(dir, &session).unwrap();
+        drop(log);
+
+        let (loaded, log) = SessionLog::open::<Value, Value, Value>(dir, session.id).unwrap();
+        assert_eq!(
+            loaded.messages,
+            vec![
+                user_message("summary prompt"),
+                assistant_message("summary"),
+                user_message("continued"),
+            ]
+        );
+        drop(log);
+
+        let (rewritten, needs_rewrite, _, _) =
+            super::parse_records::<Value, Value, Value>(&jsonl_path(dir, session.id)).unwrap();
+        assert_eq!(rewritten.messages, loaded.messages);
+        assert!(!needs_rewrite);
     }
 
     #[test]

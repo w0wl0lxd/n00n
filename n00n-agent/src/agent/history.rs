@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use n00n_providers::{ContentBlock, Message, Role};
-use n00n_storage::sessions::TranscriptEntry;
+use n00n_storage::sessions::{TranscriptEntry, active_messages_from_transcript};
 use tracing::warn;
 
 const CANCEL_MARKER: &str = "[Cancelled by user]";
@@ -41,11 +41,17 @@ impl History {
         mut messages: Vec<Message>,
         transcript: Vec<TranscriptEntry<Message>>,
     ) -> Self {
-        sanitize_restored(&mut messages);
         let mut transcript = transcript;
+        if messages.is_empty() && !transcript.is_empty() {
+            messages = active_messages_from_transcript(&transcript);
+            if messages.is_empty() {
+                warn!("restored transcript has no recoverable active provider messages");
+            }
+        }
+        sanitize_restored(&mut messages);
         if transcript.is_empty() {
             transcript.extend(messages.iter().cloned().map(TranscriptEntry::Message));
-        } else {
+        } else if !messages.is_empty() {
             rebuild_transcript(&mut transcript, &messages);
         }
         Self {
@@ -393,6 +399,55 @@ mod tests {
         assert!(matches!(
             history.transcript(),
             [TranscriptEntry::Message(message)] if message.user_text() == Some("legacy")
+        ));
+    }
+
+    #[test]
+    fn restored_empty_messages_hydrates_only_active_transcript_entries() {
+        let transcript = vec![
+            TranscriptEntry::Compaction {
+                entries: vec![TranscriptEntry::Message(Message::user("archived".into()))],
+                generated_summary: Some(assistant("archived summary")),
+            },
+            TranscriptEntry::GeneratedMessage(Message::user("summary prompt".into())),
+            TranscriptEntry::GeneratedMessage(assistant("active summary")),
+            TranscriptEntry::Message(Message::user("continued".into())),
+        ];
+
+        let history = History::restored_with_transcript(Vec::new(), transcript);
+
+        assert_eq!(history.len(), 3);
+        assert_eq!(history.as_slice()[0].user_text(), Some("summary prompt"));
+        assert!(matches!(
+            &history.as_slice()[1].content[0],
+            ContentBlock::Text { text } if text == "active summary"
+        ));
+        assert_eq!(history.as_slice()[2].user_text(), Some("continued"));
+        assert!(matches!(
+            history.transcript(),
+            [
+                TranscriptEntry::Compaction { .. },
+                TranscriptEntry::GeneratedMessage(_),
+                TranscriptEntry::GeneratedMessage(_),
+                TranscriptEntry::Message(_),
+            ]
+        ));
+    }
+
+    #[test]
+    fn restored_compaction_without_active_entries_stays_empty() {
+        let transcript = vec![TranscriptEntry::Compaction {
+            entries: vec![TranscriptEntry::Message(Message::user("archived".into()))],
+            generated_summary: None,
+        }];
+
+        let history = History::restored_with_transcript(Vec::new(), transcript);
+
+        assert!(history.is_empty());
+        assert!(matches!(
+            history.transcript(),
+            [TranscriptEntry::Compaction { entries, .. }]
+                if matches!(entries.as_slice(), [TranscriptEntry::Message(message)] if message.user_text() == Some("archived"))
         ));
     }
 
