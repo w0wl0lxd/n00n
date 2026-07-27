@@ -41,7 +41,7 @@ fn encode(_lua: &Lua, data: LuaValue) -> LuaResult<String> {
 /// n00n.base64.decode("aGVsbG8=") -- "hello"
 #[lua_fn]
 #[allow(clippy::needless_pass_by_value)]
-fn decode(lua: &Lua, str: LuaValue) -> LuaResult<mlua::String> {
+fn decode(lua: &Lua, str: LuaValue) -> LuaResult<mlua::LuaString> {
     let encoded = bytes_arg(&str, "base64.decode")?;
     let decoded = BASE64
         .decode(encoded)
@@ -79,7 +79,7 @@ mod tests {
         let bytes = [0u8, 159, 146, 150];
         let encoded: String = encode.call(lua.create_string(bytes).unwrap()).unwrap();
         assert_eq!(encoded, "AJ+Slg==");
-        let decoded: mlua::String = decode.call(encoded).unwrap();
+        let decoded: mlua::LuaString = decode.call(encoded).unwrap();
         assert_eq!(&*decoded.as_bytes(), &bytes);
     }
 
@@ -88,6 +88,6 @@ mod tests {
         let lua = Lua::new();
         let t = create_base64_table(&lua).unwrap();
         let decode: mlua::Function = t.get("decode").unwrap();
-        assert!(decode.call::<mlua::String>("!!!not base64!!!").is_err());
+        assert!(decode.call::<mlua::LuaString>("!!!not base64!!!").is_err());
     }
 }
