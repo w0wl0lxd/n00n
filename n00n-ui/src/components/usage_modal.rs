@@ -129,7 +129,7 @@ impl UsageModal {
 
 fn pricing_for(id: &str, current: &Model) -> Option<ModelPricing> {
     if id == current.id {
-        return Some(current.pricing.clone());
+        return Some(current.pricing);
     }
     Model::from_spec(id).ok().map(|m| m.pricing).or_else(|| {
         Model::from_spec(&format!("{}/{}", current.provider, id))

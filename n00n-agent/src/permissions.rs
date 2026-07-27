@@ -378,6 +378,10 @@ impl PermissionManager {
         !prev
     }
 
+    pub fn set_yolo(&self, yolo: bool) {
+        self.yolo.store(yolo, Ordering::Relaxed);
+    }
+
     pub fn is_yolo(&self) -> bool {
         self.yolo.load(Ordering::Relaxed)
     }

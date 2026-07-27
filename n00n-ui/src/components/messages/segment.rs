@@ -76,6 +76,7 @@ pub(super) enum Surface {
     Plain,
     User,
     Assistant,
+    Control,
     Tool,
 }
 
@@ -238,7 +239,7 @@ impl Segment {
 
 impl Surface {
     pub fn is_framed(self) -> bool {
-        matches!(self, Self::User | Self::Tool)
+        matches!(self, Self::User | Self::Control | Self::Tool)
     }
 
     pub fn content_width(self, width: u16) -> u16 {

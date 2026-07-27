@@ -32,10 +32,10 @@ pub const DEFAULT_TONE: &str = r"- Be concise. Your output is displayed on a CLI
 - NEVER create files unless absolutely necessary. ALWAYS prefer editing existing files.";
 
 const NATIVE_EFFICIENT_TOOLS: &[&str] = &[
-    "arbor (optional, requires Arbor CLI)",
+    "arbor (optional, needs Arbor CLI)",
     "batch",
     "code_execution",
-    "codegraph (optional, requires .codegraph/ index)",
+    "codegraph (optional, needs .codegraph/ index)",
     "index",
     "semble",
     "task",
@@ -310,7 +310,7 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
-    const NATIVE_EFFICIENT_LINE: &str = "Most efficient tools: arbor (optional, requires Arbor CLI), batch, code_execution, codegraph (optional, requires .codegraph/ index), index, semble, task, thoughtbox";
+    const NATIVE_EFFICIENT_LINE: &str = "Most efficient tools: arbor (optional, needs Arbor CLI), batch, code_execution, codegraph (optional, needs .codegraph/ index), index, semble, task, thoughtbox";
 
     fn slots(prompt: PromptId, entries: &[(Slot, &str)]) -> ResolvedSlots {
         let mut slots = ResolvedSlots::default();

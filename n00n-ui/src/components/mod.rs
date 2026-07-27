@@ -422,6 +422,7 @@ pub enum DisplayRole {
     User,
     Assistant,
     Thinking,
+    Control,
     Tool(Box<ToolRole>),
     Error,
     Done,
