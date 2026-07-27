@@ -96,7 +96,7 @@ scripts/
 | Checksum probe | Compare requests with/without `x-cursor-checksum` |
 | Binary analysis | Extract header setter `f._5` from cursor-agent bundle |
 
-**Exit gate**: Experiment A (cli + default) succeeds from standalone Rust client calling `GetUsableModels` (curl-only reproduction **failed** with HTTP 415 — see `adversarial-review.md`). Two-turn `conversation_id` persistence spike passes.
+**Exit gate**: Experiment A (cli + default) succeeds from standalone Rust client calling `GetUsableModels` (done via JSON unary on api2). Two-turn spike using **KvClientMessage checkpoint replay** (user decision) passes before Phase 1.
 
 ### Phase 1 — Native MVP (`cursor/default` + streaming)
 

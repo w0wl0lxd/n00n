@@ -44,7 +44,7 @@ PR #150 hacked multi-turn via text prompts + `--resume`. Native `AgentService` u
 
 **pi_agent_rust explicitly does not reimplement checkpoints** and only sends latest user text — relying on Cursor server memory via `conversation_id`.
 
-**Plan fix**: Phase 0 spike must validate `conversation_id` persistence across two native turns before Phase 1 exit gate.
+**User decision (2026-07-27)**: Implement **KvClientMessage checkpoint replay** for multi-turn (hardest path, closest to Cursor IDE). Phase 0 must capture checkpoint blob shape from live `cursor-agent` traffic before Phase 1.
 
 ### G2 — Auth storage is SQLite, not JSON
 
