@@ -29,19 +29,15 @@ args=(
   "${EXTRA_ARGS[@]}"
 )
 
-run_harbor() {
-  harbor run "${args[@]}"
-}
-
 if [[ "${HARBOR_TIMEOUT}" == "0" ]]; then
-  run_harbor
+  harbor run "${args[@]}"
 else
   if command -v timeout >/dev/null 2>&1; then
-    timeout "${HARBOR_TIMEOUT}" run_harbor
+    timeout "${HARBOR_TIMEOUT}" harbor run "${args[@]}"
   elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout "${HARBOR_TIMEOUT}" run_harbor
+    gtimeout "${HARBOR_TIMEOUT}" harbor run "${args[@]}"
   else
     echo "warning: timeout/gtimeout not available, running without a timeout" >&2
-    run_harbor
+    harbor run "${args[@]}"
   fi
 fi
