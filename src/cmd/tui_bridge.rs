@@ -274,12 +274,9 @@ fn required_str(value: &Value, key: &str, err: &str) -> ControlResult<String> {
 mod tests {
     use super::*;
     use n00n_daemon::backend::ControlBackend;
-    use n00n_daemon::paths::daemon_socket_in;
-    use n00n_daemon::protocol::ControlRequest;
     use n00n_lua::SessionReply;
     use serde_json::json;
     use std::time::Duration;
-    use tempfile::TempDir;
 
     fn respond_live(rx: flume::Receiver<UiAction>, body: Value) {
         thread::spawn(move || {
@@ -448,7 +445,9 @@ mod tests {
     #[test]
     fn spawn_serves_tui_list_over_uds() -> Result<(), String> {
         use n00n_daemon::client;
-        use n00n_daemon::protocol::{ControlResponse, PROTOCOL_VERSION};
+        use n00n_daemon::paths::daemon_socket_in;
+        use n00n_daemon::protocol::{ControlRequest, ControlResponse, PROTOCOL_VERSION};
+        use tempfile::TempDir;
 
         let tmp = TempDir::new().map_err(|e| e.to_string())?;
         let (tx, rx) = flume::unbounded();
