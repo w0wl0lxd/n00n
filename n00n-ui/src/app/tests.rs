@@ -3510,7 +3510,7 @@ fn re_edit_keeps_plan_form_visible() {
     assert!(app.plan_form.is_visible());
 }
 
-#[test_case(1, Mode::Build, true,  true  ; "clear_and_implement")]
+#[test_case(1, Mode::Build, true,  false ; "clear_and_implement")]
 #[test_case(2, Mode::Build, false, true  ; "implement_keeps_context")]
 fn plan_form_menu_options(
     downs: usize,
@@ -3539,6 +3539,36 @@ fn plan_form_menu_options(
             .any(|a| matches!(a, Action::SendMessage(i) if i.input.message == expected_msg)),
         has_send_message
     );
+    if !has_send_message {
+        let pending = app
+            .pending_plan_submit
+            .as_ref()
+            .expect("pending plan submit");
+        assert_eq!(pending.message.text, expected_msg);
+    }
+}
+
+#[test]
+fn clear_and_implement_defers_submission_until_new_session() {
+    let mut app = plan_app();
+    assert!(app.state.plan.is_ready());
+    let old_session_id = app.state.session.id;
+
+    let actions = app.implement_plan(true);
+
+    assert!(matches!(&actions[..], [Action::NewSession]));
+    assert_ne!(app.state.session.id, old_session_id);
+    let pending = app
+        .pending_plan_submit
+        .as_ref()
+        .expect("pending plan submit");
+    assert!(pending.plan.is_some());
+    assert_eq!(
+        pending.message.text,
+        implement_msg(PlanForm::new().parallel())
+    );
+    assert!(app.queue.is_empty());
+    assert_eq!(app.main_chat().message_count(), 0);
 }
 
 #[test]
