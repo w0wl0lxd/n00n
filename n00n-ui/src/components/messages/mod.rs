@@ -11,8 +11,8 @@ pub(crate) use self::segment::wrapped_line_count;
 
 use super::tool_display::{
     RenderCtx, ToolLines, append_annotation, append_right_info, assistant_style,
-    build_instructions_lines, build_tool_lines, done_style, error_style, format_timestamp_now,
-    thinking_style, truncate_to_header, user_style,
+    build_instructions_lines, build_tool_lines, control_style, done_style, error_style,
+    format_timestamp_now, thinking_style, truncate_to_header, user_style,
 };
 use super::{
     CompactionDisplay, DisplayMessage, DisplayMetadata, DisplayRole, ToolRole, ToolStatus,
@@ -1735,6 +1735,7 @@ impl MessagesPanel {
             DisplayRole::User => user_style(),
             DisplayRole::Assistant => assistant_style(),
             DisplayRole::Thinking => thinking_style(),
+            DisplayRole::Control => control_style(),
             DisplayRole::Error => error_style(),
             DisplayRole::Done => done_style(),
             DisplayRole::Tool(_) => unreachable!(),
@@ -1747,6 +1748,7 @@ impl MessagesPanel {
         let surface = match msg.role {
             DisplayRole::User => Surface::User,
             DisplayRole::Assistant => Surface::Assistant,
+            DisplayRole::Control => Surface::Control,
             _ => Surface::Plain,
         };
         let base_width = surface.content_width(self.viewport_width).max(1);
@@ -1880,6 +1882,7 @@ impl MessagesPanel {
                     DisplayRole::User => user_style(),
                     DisplayRole::Assistant => assistant_style(),
                     DisplayRole::Thinking => thinking_style(),
+                    DisplayRole::Control => control_style(),
                     DisplayRole::Error => error_style(),
                     DisplayRole::Done => done_style(),
                     DisplayRole::Tool(_) => unreachable!(),
@@ -1892,6 +1895,7 @@ impl MessagesPanel {
                 let surface = match msg.role {
                     DisplayRole::User => Surface::User,
                     DisplayRole::Assistant => Surface::Assistant,
+                    DisplayRole::Control => Surface::Control,
                     _ => Surface::Plain,
                 };
                 let base_width = surface.content_width(self.viewport_width).max(1);
@@ -2126,6 +2130,7 @@ fn role_name(role: &DisplayRole) -> &'static str {
         DisplayRole::User => "you",
         DisplayRole::Assistant => "n00n",
         DisplayRole::Thinking => "thinking",
+        DisplayRole::Control => "control",
         DisplayRole::Error => "error",
         DisplayRole::Done => "done",
         DisplayRole::Tool(_) => "tool",

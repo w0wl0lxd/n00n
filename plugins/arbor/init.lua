@@ -81,22 +81,17 @@ n00n.api.register_tool({
   name = "arbor",
   kind = "read",
   description = [[
-Graph-based code analysis using Arbor. Returns structured, compact
-caller/callee/project maps; prefer it over broad grep or unfiltered reads
-for relationship and impact questions.
+Graph-based code analysis using Arbor. Returns compact caller/callee/project maps; prefer over broad grep for relationship/impact questions.
 
 Commands:
-- callers <symbol>: Who calls this function/class? Returns name, kind, file, and line.
-- callees <symbol>: What does this function/class call?
-- map: Ranked project skeleton with entry points, centrality scores, and symbol coverage.
-- diff: Blast radius of unpushed git changes — shows direct/indirect callers, entry points affected.
-- query <text>: Free-text search of the code graph.
-- status: Index status (node count, edge count, file count).
+- callers <symbol>: who calls it.
+- callees <symbol>: what it calls.
+- map: ranked project skeleton.
+- diff: blast radius of unpushed git changes.
+- query <text>: free-text search.
+- status: index status.
 
-Use this to understand call relationships, find affected code, and get a
-structured overview of a codebase. Complements codegraph — Arbor shows the
-full set of callers/callees, while codegraph traces the call path between
-two symbols.]],
+Complements codegraph — Arbor shows the full caller/callee set, while codegraph traces call paths between two symbols.]],
   schema = {
     type = "object",
     properties = {

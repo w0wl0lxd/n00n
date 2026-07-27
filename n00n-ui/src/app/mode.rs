@@ -130,6 +130,7 @@ impl App {
             thinking: self.state.thinking,
             fast: self.state.fast,
             workflow: self.state.workflow,
+            control: msg.control,
             prompt: None,
         }
     }
