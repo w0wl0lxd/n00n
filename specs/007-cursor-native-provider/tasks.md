@@ -16,7 +16,7 @@
 - [ ] reqwest HTTP/2 client for `AgentService/Run` on agentn
 - [ ] Minimal Run protobuf encoder (from shunt RE)
 - [ ] Live Run spike with `default` + empty tools
-- [ ] Two-turn `conversation_id` persistence experiment
+- [ ] Two-turn **checkpoint (KvClientMessage) replay** experiment
 - [ ] Auto entitlement matrix (cli headers × model wire id)
 - [ ] Traffic capture doc (mitmproxy optional)
 
