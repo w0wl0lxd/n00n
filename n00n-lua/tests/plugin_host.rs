@@ -1807,7 +1807,7 @@ n00n.api.register_tool({{
         exec_warm_tool(&reg, TOOL, &ctx).expect("tool output");
         bodies.push(recv_live_buf(&rx, &id).expect("live explore card"));
     }
-    assert_eq!(bodies[0].read().len(), 6, "five rows plus expand hint");
+    assert_eq!(bodies[0].read().len(), 4, "three rows plus expand hint");
 
     let evicted_id = "explore-0";
     let item = n00n_lua::RestoreItem {
@@ -1834,7 +1834,7 @@ n00n.api.register_tool({{
 
     assert_eq!(
         bodies[0].read().len(),
-        6,
+        4,
         "evicted live card must not receive the click"
     );
     assert_eq!(
