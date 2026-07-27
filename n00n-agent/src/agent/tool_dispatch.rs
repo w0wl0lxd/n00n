@@ -224,6 +224,16 @@ fn is_authorized_plan_target(plan_path: &Path, target: &Path) -> bool {
     plan == target
 }
 
+fn skill_policy_denied(name: &str, ctx: &ToolContext) -> Option<String> {
+    let policy = ctx.active_skill_policy.as_ref()?;
+    let decision = policy.evaluate(name);
+    if decision.allowed {
+        None
+    } else {
+        decision.reason
+    }
+}
+
 pub(super) struct RecentCalls(VecDeque<(String, u64)>);
 
 impl RecentCalls {
@@ -285,6 +295,9 @@ pub async fn run(
             Arc::from(crate::tools::BASH_TOOL_NAME),
             BASH_BLOCKED_IN_PLAN.into(),
         );
+    }
+    if let Some(reason) = skill_policy_denied(name, ctx) {
+        return tool_done_error(id.clone(), Arc::from(name), reason);
     }
     if let Some(local) = ctx.local_tools.get(name) {
         return run_local_tool(local, id, name, input, ctx, emit);
@@ -1577,22 +1590,78 @@ mod tests {
     }
 
     #[test]
-    fn local_tool_error_preserves_message_unchanged() {
+    fn skill_policy_blocks_disallowed_local_tool() {
         smol::block_on(async {
-            const ERROR_MSG: &str = "100% failed";
-            let ctx = local_ctx("fail", |_| Err(ERROR_MSG.to_string()));
+            let mut ctx = local_ctx("bash", |_| Ok("ran".into()));
+            ctx.active_skill_policy = Some(crate::skill_policy::ActiveSkillPolicy {
+                name: "safe".into(),
+                allowed_tools: None,
+                disallowed_tools: Some(vec!["bash".into()]),
+            });
             let done = run(
                 ToolRegistry::global(),
                 None,
                 "t1".into(),
-                "fail",
+                "bash",
                 &serde_json::json!({}),
                 &ctx,
                 Emit::Silent,
             )
             .await;
             assert!(done.is_error);
-            assert_eq!(done.output.as_text(), ERROR_MSG);
+            assert!(
+                done.output
+                    .as_text()
+                    .contains(crate::skill_policy::SKILL_POLICY_DENIED_PREFIX)
+            );
+        });
+    }
+
+    #[test]
+    fn skill_policy_allows_listed_tool() {
+        smol::block_on(async {
+            let mut ctx = local_ctx("read", |_| Ok("ok".into()));
+            ctx.active_skill_policy = Some(crate::skill_policy::ActiveSkillPolicy {
+                name: "safe".into(),
+                allowed_tools: Some(vec!["read".into()]),
+                disallowed_tools: None,
+            });
+            let done = run(
+                ToolRegistry::global(),
+                None,
+                "t1".into(),
+                "read",
+                &serde_json::json!({}),
+                &ctx,
+                Emit::Silent,
+            )
+            .await;
+            assert!(!done.is_error);
+            assert_eq!(done.output.as_text(), "ok");
+        });
+    }
+
+    #[test]
+    fn skill_policy_always_allows_skill_tool() {
+        smol::block_on(async {
+            let mut ctx = local_ctx("skill", |_| Ok("loaded".into()));
+            ctx.active_skill_policy = Some(crate::skill_policy::ActiveSkillPolicy {
+                name: "safe".into(),
+                allowed_tools: Some(vec!["read".into()]),
+                disallowed_tools: None,
+            });
+            let done = run(
+                ToolRegistry::global(),
+                None,
+                "t1".into(),
+                "skill",
+                &serde_json::json!({}),
+                &ctx,
+                Emit::Silent,
+            )
+            .await;
+            assert!(!done.is_error);
+            assert_eq!(done.output.as_text(), "loaded");
         });
     }
 }

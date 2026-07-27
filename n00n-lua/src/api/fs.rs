@@ -2,6 +2,7 @@ use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::fs::FileType;
 use std::io::ErrorKind;
+use std::time::UNIX_EPOCH;
 
 use futures_lite::io::AsyncReadExt;
 use std::path::{Component, Path, PathBuf};
@@ -268,6 +269,11 @@ async fn metadata(lua: Lua, path: String) -> LuaResult<(Value, Value)> {
             tbl.set("size", meta.len())?;
             tbl.set("is_file", meta.is_file())?;
             tbl.set("is_dir", meta.is_dir())?;
+            if let Ok(modified) = meta.modified()
+                && let Ok(duration) = modified.duration_since(UNIX_EPOCH)
+            {
+                tbl.set("mtime", duration.as_secs())?;
+            }
             Ok((Value::Table(tbl), Value::Nil))
         }
         Err(e) if e.kind() == ErrorKind::NotFound => Ok((Value::Nil, Value::Nil)),
@@ -963,6 +969,7 @@ mod tests {
         assert!(f.get::<bool>("is_file").unwrap());
         assert!(!f.get::<bool>("is_dir").unwrap());
         assert_eq!(f.get::<u64>("size").unwrap(), 5);
+        assert!(f.get::<u64>("mtime").unwrap() > 0);
 
         let d: Table =
             smol::block_on(metadata.call_async::<Table>(tmp.path().to_str().unwrap())).unwrap();
