@@ -3,6 +3,7 @@
 ## Search semantics
 
 - `search` uses **keyword/token overlap** and tag filters only. Not semantic paraphrase.
+- Entries with no token or phrase match are **excluded** from search results (importance alone is not enough).
 - Tool description and search output MUST state this limitation.
 - Results include `score=` for transparency.
 
@@ -10,7 +11,8 @@
 
 - Only entries with `layer: lite` in frontmatter are injected into `after_instructions`.
 - Max 5 entries, 120 chars per line, 800 bytes total.
-- Content is sanitized: control chars stripped, markdown heading/list prefixes removed, common injection phrases stripped.
+- Content is sanitized: control chars stripped, markdown heading/list prefixes removed, `ignore previous` / `ignore all previous` phrases stripped, role prefixes (`system:`, `user:`, etc.) stripped, HTML-like tags removed.
+- Memory paths in hints are sanitized (control chars and colons replaced).
 - Injected text is prefixed with `Project memory (lite):` and formatted as bullet list with path labels.
 - Untrusted user-editable content MUST NOT be injected without sanitization.
 

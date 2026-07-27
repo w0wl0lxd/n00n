@@ -37,6 +37,13 @@ local function normalize_string_list(values)
 end
 
 local function clamp_importance(value)
+  if type(value) == "string" then
+    local parsed = tonumber(value)
+    if not parsed then
+      return 1
+    end
+    value = parsed
+  end
   if type(value) ~= "number" then
     return 1
   end
@@ -184,26 +191,31 @@ function M.normalize_metadata(input)
 end
 
 function M.build_frontmatter(meta, body)
-  local fields = {}
+  local fm = {}
   if meta.tags then
-    fields[#fields + 1] = "tags: [" .. table.concat(meta.tags, ", ") .. "]"
+    fm.tags = meta.tags
   end
   if meta.topic then
-    fields[#fields + 1] = "topic: " .. meta.topic
+    fm.topic = meta.topic
   end
   if meta.importance and meta.importance ~= 1 then
-    fields[#fields + 1] = "importance: " .. tostring(meta.importance)
+    fm.importance = meta.importance
   end
   if meta.layer and meta.layer ~= "deep" then
-    fields[#fields + 1] = "layer: " .. meta.layer
+    fm.layer = meta.layer
   end
   if meta.synopsis then
-    fields[#fields + 1] = "synopsis: " .. meta.synopsis
+    fm.synopsis = meta.synopsis
   end
-  if #fields == 0 then
-    return body
+  if next(fm) == nil then
+    return body, nil
   end
-  return "---\n" .. table.concat(fields, "\n") .. "\n---\n" .. body
+  local encoded, encode_err = n00n.yaml.encode(fm)
+  if encode_err or not encoded then
+    return nil, encode_err or "failed to encode frontmatter"
+  end
+  encoded = encoded:gsub("\r\n", "\n"):match("^%s*(.-)\n?$")
+  return "---\n" .. encoded .. "\n---\n" .. body, nil
 end
 
 function M.parse_memory_file(relative_path, raw)
@@ -272,6 +284,26 @@ function M.searchable_text(entry)
   return table.concat(parts, " ")
 end
 
+function M.memory_matches_query(entry, query)
+  if not query or #query == 0 then
+    return true
+  end
+  local haystack = M.searchable_text(entry)
+  local lowered = haystack:lower()
+  local needle = query:lower()
+  if lowered:find(needle, 1, true) then
+    return true
+  end
+  local qtokens = M.tokenize(query)
+  local htokens = M.tokenize(haystack)
+  for token in pairs(qtokens) do
+    if htokens[token] then
+      return true
+    end
+  end
+  return false
+end
+
 function M.score_memory(entry, query, focus_path)
   local meta = entry.meta or {}
   local score = meta.importance or 1
@@ -310,11 +342,14 @@ end
 
 function M.rank_memories(entries, query, focus_path)
   local ranked = {}
+  local has_query = query and #query > 0
   for _, entry in ipairs(entries) do
-    ranked[#ranked + 1] = {
-      entry = entry,
-      score = M.score_memory(entry, query, focus_path),
-    }
+    if (not has_query) or M.memory_matches_query(entry, query) then
+      ranked[#ranked + 1] = {
+        entry = entry,
+        score = M.score_memory(entry, query, focus_path),
+      }
+    end
   end
   table.sort(ranked, function(a, b)
     if a.score ~= b.score then
@@ -408,13 +443,33 @@ function M.sanitize_hint_text(text, max_len)
   trimmed = trimmed:gsub("[%c]", " ")
   trimmed = trimmed:gsub("^#+%s*", "")
   trimmed = trimmed:gsub("^%s*%-+%s*", "")
+  trimmed = trimmed:gsub("---+", " ")
+  trimmed = trimmed:gsub("<[^>]->", " ")
   trimmed = trimmed:gsub("%s+", " ")
-  trimmed = trimmed:gsub("[Ii]gnore [Pp]revious", "")
-  trimmed = trimmed:gsub("[Ss]ystem:", "")
+  trimmed = trimmed:gsub("[Ii]gnore%s+[Aa]ll%s+[Pp]revious", "")
+  trimmed = trimmed:gsub("[Ii]gnore%s+[Pp]revious", "")
+  trimmed = trimmed:gsub("[Yy]ou%s+[Mm]ust", "")
+  trimmed = trimmed:gsub("[Dd]eveloper%s+[Mm]ode", "")
+  trimmed = trimmed:gsub("[Ss]ystem%s*:", "")
+  trimmed = trimmed:gsub("[Uu]ser%s*:", "")
+  trimmed = trimmed:gsub("[Aa]ssistant%s*:", "")
+  trimmed = trimmed:gsub("[Hh]uman%s*:", "")
+  trimmed = trimmed:match("^%s*(.-)%s*$")
   if #trimmed > max_len then
     trimmed = trimmed:sub(1, max_len) .. "..."
   end
   return trimmed
+end
+
+local function sanitize_hint_path(path)
+  if not path then
+    return "memory"
+  end
+  local safe = path:gsub("[%c]", ""):gsub(":", "_")
+  if #safe > 64 then
+    safe = safe:sub(1, 64)
+  end
+  return safe
 end
 
 function M.build_lite_hint(entries)
@@ -442,7 +497,7 @@ function M.build_lite_hint(entries)
     local entry = lite[i]
     local summary = M.sanitize_hint_text(M.lite_summary(entry), max_line)
     if summary ~= "" then
-      local line = "- " .. entry.path .. ": " .. summary
+      local line = "- " .. sanitize_hint_path(entry.path) .. ": " .. summary
       if total_bytes + #line > max_total then
         break
       end
