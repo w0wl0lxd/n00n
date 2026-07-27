@@ -15,7 +15,7 @@ use crate::manifest::ManifestRegistry;
 use crate::model::{FastPricing, Model, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider, ProviderKind};
 use crate::providers::Timeouts;
-use crate::types::ThinkingConfig;
+use crate::types::{System, ThinkingConfig};
 use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse};
 
 include!(concat!(env!("OUT_DIR"), "/provider_configs/custom.rs"));
@@ -276,7 +276,7 @@ impl Provider for CustomOpenAiProvider {
         &'a self,
         model: &'a Model,
         messages: &'a [Message],
-        system: &'a str,
+        system: &'a System,
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
@@ -310,6 +310,7 @@ impl Provider for CustomOpenAiProvider {
                 system,
                 tools,
                 session_id.map(n00n_storage::id::SessionRef::as_str),
+                None,
             );
             if matches!(opts.thinking, ThinkingConfig::Off) {
                 body["thinking"] = serde_json::json!({"type": "disabled"});
