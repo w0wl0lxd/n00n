@@ -58,6 +58,7 @@ All fields are optional. Typos in field names cause an error right away.
 | `always_yolo` | bool | `false` | Start every session with YOLO mode (skip permission prompts, deny rules still apply) |
 | `always_fast` | bool | `false` | Start every session with Anthropic fast mode (Opus only; ignored otherwise) |
 | `always_workflow` | bool | `false` | Start every session with workflow mode (task callable inside code_execution) |
+| `always_fusion` | bool | `false` | Start every session with Fusion dual-lane routing (lead + sidekick) |
 | `always_thinking` | bool \| string | `false` | Start every session with extended thinking (true/"adaptive", "off", an effort level ("minimal" to "max"), or a token budget) |
 
 ### `ui`
@@ -176,6 +177,13 @@ n00n.setup({
 | `edit_lines` | boolean | `true` | - | Provide the line-based `edit_lines` tool. |
 | `insert_lines` | boolean | `true` | - | Provide the line-based `insert_lines` tool. |
 | `multiedit` | boolean | `true` | - | Provide the `multiedit` tool. |
+
+### `plugins.fusion`
+
+| Field | Type | Default | Min | Description |
+|-------|------|---------|-----|-------------|
+| `auto_tier` | boolean | `true` | - | Route sidekick model tier from the brief (on by default in Fusion). |
+| `default_subagent_type` | string | `"general"` | - | Default subagent_type when omitted. |
 
 ### `plugins.glob`
 

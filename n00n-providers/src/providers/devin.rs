@@ -1097,6 +1097,67 @@ fn fallback_models() -> Vec<crate::model::ModelInfo> {
         .collect()
 }
 
+fn models_from_config_options(opts: &[SessionConfigOption]) -> Vec<crate::model::ModelInfo> {
+    let mut models = Vec::new();
+    for opt in opts {
+        if opt.category != Some(SessionConfigOptionCategory::Model) {
+            continue;
+        }
+        let SessionConfigKind::Select(select) = &opt.kind else {
+            continue;
+        };
+        let options: Vec<_> = match &select.options {
+            SessionConfigSelectOptions::Ungrouped(opts) => opts.clone(),
+            SessionConfigSelectOptions::Grouped(groups) => {
+                groups.iter().flat_map(|g| g.options.clone()).collect()
+            }
+            _ => Vec::new(),
+        };
+        for option in options {
+            let value_str = option.value.to_string();
+            let mut info = crate::model::ModelInfo::id_only(value_str.clone());
+            info.name = Some(option.name.clone()).filter(|n| !n.trim().is_empty());
+            info.supports_vision = option
+                .meta
+                .as_ref()
+                .and_then(|m| m.get("cognition.ai/supportsImages"))
+                .and_then(Value::as_bool);
+            if let Some(meta) = &option.meta {
+                info.context_window = meta
+                    .get("cognition.ai/contextWindow")
+                    .and_then(Value::as_u64)
+                    .map(clamped_u32)
+                    .or_else(|| infer_context_window(&value_str));
+                info.max_output_tokens = meta
+                    .get("cognition.ai/maxOutputTokens")
+                    .and_then(Value::as_u64)
+                    .map(clamped_u32)
+                    .or_else(|| infer_max_output_tokens(&value_str));
+                info.pricing = meta
+                    .get("cognition.ai/pricing")
+                    .and_then(parse_pricing)
+                    .or_else(|| infer_pricing(&value_str));
+                info.is_free = meta
+                    .get("cognition.ai/free")
+                    .and_then(Value::as_bool)
+                    .or_else(|| infer_is_free(&value_str));
+                info.is_promo = meta
+                    .get("cognition.ai/promo")
+                    .and_then(Value::as_bool)
+                    .or_else(|| infer_is_promo(&value_str));
+            } else {
+                info.context_window = infer_context_window(&value_str);
+                info.max_output_tokens = infer_max_output_tokens(&value_str);
+                info.pricing = infer_pricing(&value_str);
+                info.is_free = infer_is_free(&value_str);
+                info.is_promo = infer_is_promo(&value_str);
+            }
+            models.push(info);
+        }
+    }
+    models
+}
+
 #[derive(Debug, Clone)]
 struct DevinModelMeta {
     id: &'static str,
@@ -1765,6 +1826,16 @@ impl Provider for Devin {
         Box::pin(async move {
             let inner = self.get_inner().await?;
 
+            {
+                let guard = inner.config_options.lock().await;
+                if !guard.is_empty() {
+                    let models = models_from_config_options(&guard);
+                    if !models.is_empty() {
+                        return Ok(models);
+                    }
+                }
+            }
+
             let cwd = match std::env::current_dir() {
                 Ok(p) => p,
                 Err(_) => PathBuf::from("."),
@@ -1777,74 +1848,18 @@ impl Provider for Devin {
                     message: format!("session/new failed: {e}"),
                 })?;
 
-            let models = response
-                .config_options
-                .map_or_else(fallback_models, |opts| {
-                    let mut models = Vec::new();
-                    for opt in opts {
-                        if opt.category != Some(SessionConfigOptionCategory::Model) {
-                            continue;
-                        }
-                        let SessionConfigKind::Select(select) = opt.kind else {
-                            continue;
-                        };
-                        let options: Vec<_> = match select.options {
-                            SessionConfigSelectOptions::Ungrouped(opts) => opts,
-                            SessionConfigSelectOptions::Grouped(groups) => {
-                                groups.into_iter().flat_map(|g| g.options).collect()
-                            }
-                            _ => Vec::new(),
-                        };
-                        for option in options {
-                            let value_str = option.value.to_string();
-                            let mut info = crate::model::ModelInfo::id_only(value_str.clone());
-                            info.name = Some(option.name.clone()).filter(|n| !n.trim().is_empty());
-                            info.supports_vision = option
-                                .meta
-                                .as_ref()
-                                .and_then(|m| m.get("cognition.ai/supportsImages"))
-                                .and_then(Value::as_bool);
-                            if let Some(meta) = &option.meta {
-                                info.context_window = meta
-                                    .get("cognition.ai/contextWindow")
-                                    .and_then(Value::as_u64)
-                                    .map(clamped_u32)
-                                    .or_else(|| infer_context_window(&value_str));
-                                info.max_output_tokens = meta
-                                    .get("cognition.ai/maxOutputTokens")
-                                    .and_then(Value::as_u64)
-                                    .map(clamped_u32)
-                                    .or_else(|| infer_max_output_tokens(&value_str));
-                                info.pricing = meta
-                                    .get("cognition.ai/pricing")
-                                    .and_then(parse_pricing)
-                                    .or_else(|| infer_pricing(&value_str));
-                                info.is_free = meta
-                                    .get("cognition.ai/free")
-                                    .and_then(Value::as_bool)
-                                    .or_else(|| infer_is_free(&value_str));
-                                info.is_promo = meta
-                                    .get("cognition.ai/promo")
-                                    .and_then(Value::as_bool)
-                                    .or_else(|| infer_is_promo(&value_str));
-                            } else {
-                                info.context_window = infer_context_window(&value_str);
-                                info.max_output_tokens = infer_max_output_tokens(&value_str);
-                                info.pricing = infer_pricing(&value_str);
-                                info.is_free = infer_is_free(&value_str);
-                                info.is_promo = infer_is_promo(&value_str);
-                            }
-                            models.push(info);
-                        }
-                    }
-                    if models.is_empty() {
-                        fallback_models()
-                    } else {
-                        models
-                    }
-                });
-
-            Ok(models)
+            if let Some(opts) = response.config_options {
+                let mut config_options = inner.config_options.lock().await;
+                config_options.clone_from(&opts);
+                let models = models_from_config_options(&opts);
+                if models.is_empty() {
+                    Ok(fallback_models())
+                } else {
+                    Ok(models)
+                }
+            } else {
+                Ok(fallback_models())
+            }
         })
     }
 

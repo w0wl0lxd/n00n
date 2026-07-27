@@ -1073,6 +1073,7 @@ impl EventPump {
                 usage,
                 num_turns,
                 stop_reason: _,
+                ..
             } => self.handle_done(usage, *num_turns),
             AgentEvent::Error { message } => self.handle_error(message),
         }

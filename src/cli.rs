@@ -193,6 +193,10 @@ pub struct Cli {
     #[arg(long, hide = true)]
     pub thinking_display: Option<String>,
 
+    /// Enable Fusion dual-lane routing (frontier lead + cost-aware sidekick)
+    #[arg(long)]
+    pub fusion: bool,
+
     /// Initial prompt (reads stdin if piped)
     #[arg(value_name = "PROMPT")]
     pub initial_prompt: Option<String>,

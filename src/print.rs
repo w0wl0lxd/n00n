@@ -420,6 +420,7 @@ fn handle_print_event(
             usage: u,
             num_turns: turns,
             stop_reason: sr,
+            ..
         } => {
             *state.num_turns = *turns;
             *state.usage = *u;

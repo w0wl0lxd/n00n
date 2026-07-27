@@ -307,6 +307,7 @@ pub struct AgentRunOptions<'a> {
     pub task_description: Option<&'a str>,
     pub yolo: bool,
     pub no_jit: bool,
+    pub fusion: bool,
 }
 
 struct PreparedEnv {
@@ -322,7 +323,12 @@ struct PreparedEnv {
     prompt_slots: ResolvedSlots,
 }
 
-fn prepare_agent_env(model_arg: Option<&str>, yolo: bool, no_jit: bool) -> Result<PreparedEnv> {
+fn prepare_agent_env(
+    model_arg: Option<&str>,
+    yolo: bool,
+    no_jit: bool,
+    fusion: bool,
+) -> Result<PreparedEnv> {
     let storage = StateDir::resolve().context("resolve data directory")?;
     n00n_providers::model_registry::load_from_storage(&storage);
 
@@ -346,6 +352,9 @@ fn prepare_agent_env(model_arg: Option<&str>, yolo: bool, no_jit: bool) -> Resul
 
     if yolo || config.always_yolo {
         config.permissions.yolo = true;
+    }
+    if fusion || config.always_fusion {
+        config.agent.fusion.enabled = true;
     }
     config.validate()?;
 
@@ -400,7 +409,7 @@ async fn write_line<W: AsyncWriteExt + Unpin>(writer: &mut W, line: &str) -> Res
 }
 
 pub fn run(opts: &AgentRunOptions<'_>, json: bool) -> Result<()> {
-    let env = prepare_agent_env(opts.model, opts.yolo, opts.no_jit)?;
+    let env = prepare_agent_env(opts.model, opts.yolo, opts.no_jit, opts.fusion)?;
     let message = build_message(
         opts.mode,
         opts.prompt,
@@ -576,7 +585,7 @@ fn now_epoch() -> u64 {
 }
 
 pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()> {
-    let env = prepare_agent_env(opts.model, opts.yolo, opts.no_jit)?;
+    let env = prepare_agent_env(opts.model, opts.yolo, opts.no_jit, opts.fusion)?;
     let message = build_message(
         opts.mode,
         opts.prompt,
