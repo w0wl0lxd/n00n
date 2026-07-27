@@ -1853,6 +1853,23 @@ fn ctrl_c_while_streaming_cancels_instead_of_quitting() {
 }
 
 #[test]
+fn streaming_status_keeps_app_animating() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    app.update(agent_msg(AgentEvent::TextDelta { text: "x".into() }));
+    app.update(agent_msg(AgentEvent::Done {
+        usage: TokenUsage::default(),
+        num_turns: 1,
+        stop_reason: None,
+    }));
+    assert!(!app.is_animating());
+
+    app.status = Status::Streaming;
+    assert!(app.is_animating());
+}
+
+#[test]
 fn edge_scroll_makes_app_animating() {
     let mut app = test_app();
     app.status = Status::Streaming;

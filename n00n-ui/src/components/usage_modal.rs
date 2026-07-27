@@ -138,6 +138,26 @@ fn pricing_for(id: &str, current: &Model) -> Option<ModelPricing> {
     })
 }
 
+pub(crate) fn attributed_costs(
+    by_model: &HashMap<String, StoredTokenUsage>,
+    current: &Model,
+    fast: bool,
+) -> Option<(f64, f64)> {
+    if by_model.is_empty() {
+        return None;
+    }
+    by_model
+        .iter()
+        .try_fold((0.0, 0.0), |(cost, savings), (id, usage)| {
+            let pricing = pricing_for(id, current)?;
+            let usage = TokenUsage::from(*usage);
+            Some((
+                cost + usage.cost(&pricing, fast),
+                savings + usage.savings_cost(&pricing, fast),
+            ))
+        })
+}
+
 fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = Vec::new();
     let fg = Style::new().fg(theme.foreground);
@@ -537,6 +557,36 @@ mod tests {
         for value in ["10", "20", "30", "40", "$0.123"] {
             assert!(row.contains(value));
         }
+    }
+
+    #[test]
+    fn attributed_costs_price_each_model_separately() {
+        let current = Model::from_spec("anthropic/claude-sonnet-4-5").unwrap();
+        let mut by_model = HashMap::new();
+        let usage = StoredTokenUsage {
+            input: 1_000_000,
+            output: 1_000_000,
+            cache_read: 1_000_000,
+            cache_creation: 1_000_000,
+        };
+        by_model.insert(current.id.clone(), usage);
+        by_model.insert("claude-haiku-4-5".into(), usage);
+
+        let (cost, savings) = attributed_costs(&by_model, &current, false).unwrap();
+        let current_pricing = pricing_for(&current.id, &current).unwrap();
+        let other_pricing = pricing_for("claude-haiku-4-5", &current).unwrap();
+        let token_usage = TokenUsage::from(usage);
+        let expected_cost =
+            token_usage.cost(&current_pricing, false) + token_usage.cost(&other_pricing, false);
+        let expected_savings = token_usage.savings_cost(&current_pricing, false)
+            + token_usage.savings_cost(&other_pricing, false);
+
+        assert!((cost - expected_cost).abs() < f64::EPSILON);
+        assert!((savings - expected_savings).abs() < f64::EPSILON);
+        assert!(
+            (savings - token_usage.savings_cost(&current.pricing, false) * 2.0).abs()
+                > f64::EPSILON
+        );
     }
 
     #[test]
