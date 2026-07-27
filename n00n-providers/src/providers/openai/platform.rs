@@ -21,7 +21,7 @@ use tracing::{debug, warn};
 use crate::model::Model;
 use crate::provider::{BoxFuture, Provider};
 use crate::{
-    AgentError, HistoryReplayReason, Message, ProviderEvent, ProviderUsage,
+    AgentError, CacheHealth, CacheKind, HistoryReplayReason, Message, ProviderEvent, ProviderUsage,
     RequestDeliveryMetadata, RequestDeliveryPhase, RequestOptions, StreamResponse, System,
     UsageLimit, dialect,
 };
@@ -1161,6 +1161,47 @@ impl OpenAi {
         }
     }
 
+    async fn emit_cache_health(
+        &self,
+        session_id: Option<&SessionRef>,
+        hit: bool,
+        event_tx: &Sender<ProviderEvent>,
+    ) {
+        let Some(session_id) = session_id else {
+            return;
+        };
+        let session_id = canonical_session_key(session_id);
+        let health = {
+            let states = self
+                .session_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(state) = states.get(&session_id) else {
+                return;
+            };
+            match state.last_response_id.as_ref() {
+                Some(_) => CacheHealth {
+                    kind: CacheKind::ResponseChain,
+                    valid_until: state.expires_at,
+                    ttl_seconds: OPENAI_RESPONSE_CHAIN_TTL_SECONDS,
+                    hit,
+                },
+                None => CacheHealth {
+                    kind: CacheKind::ResponseChain,
+                    valid_until: 0,
+                    ttl_seconds: 0,
+                    hit: false,
+                },
+            }
+        };
+        if let Err(error) = event_tx
+            .send_async(ProviderEvent::CacheHealth { cache: health })
+            .await
+        {
+            warn!(error = %error, "failed to send cache health event");
+        }
+    }
+
     fn reset_connection_local_chain(&self, session_id: Option<n00nId>) {
         if let Some(session_id) = session_id {
             self.session_state
@@ -1342,6 +1383,8 @@ impl OpenAi {
                 }),
             };
         }
+        self.emit_cache_health(session_id, previous_response_id.is_some(), event_tx)
+            .await;
         let prompt_cache_key = prompt_cache_key(&model.id, system, tools_hash, session_id);
         let body = super::websocket::build_request_body(
             model,
@@ -1570,6 +1613,8 @@ impl OpenAi {
             response_chain_lock.as_ref(),
         )
         .await;
+        self.emit_cache_health(session_id, previous_response_id.is_some(), event_tx)
+            .await;
         CodexAttempt {
             previous_response_id,
             store,
