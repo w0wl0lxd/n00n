@@ -99,19 +99,19 @@ pub fn pid_alive(pid: u32) -> bool {
 
 /// Windows fallback: ask the OS whether `pid` is still running.
 ///
-/// `Unknown` is treated as alive so we never delete a live daemon's lock
-/// just because we lack permission to inspect the process.
+/// Only an explicitly `Alive` result keeps a lock alive. `Dead` and `Unknown`
+/// are treated as not alive so stale locks (including unresolvable pids) are
+/// swept instead of blocking a new daemon instance.
 #[must_use]
 #[cfg(not(unix))]
 pub fn pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
-    match process_alive::state(process_alive::Pid::from(pid)) {
-        process_alive::State::Alive => true,
-        process_alive::State::Dead => false,
-        process_alive::State::Unknown => true,
-    }
+    matches!(
+        process_alive::state(process_alive::Pid::from(pid)),
+        process_alive::State::Alive
+    )
 }
 
 /// Remove a lock file whose owner pid is no longer alive.
