@@ -597,12 +597,11 @@ local function make_progress(ctx)
   local function refresh_header()
     local elapsed = math.max(os.time() - started_at, 0)
     local header = {
-      { state.name .. " · " .. state.phase .. " · " .. n00n.ui.humantime(elapsed), "bold" },
+      { { state.name .. " · " .. state.phase .. " · " .. n00n.ui.humantime(elapsed), "bold" } },
     }
     if state.agents > 0 or state.cached > 0 then
       header[#header + 1] = {
-        string.format("agents %d/%d cached %d", state.done, state.agents, state.cached),
-        "dim",
+        { string.format("agents %d/%d cached %d", state.done, state.agents, state.cached), "dim" },
       }
     end
     view:set_header(header)
@@ -795,6 +794,7 @@ local function handler(input, ctx)
   }
 
   local progress = make_progress(ctx)
+  ctx:live_buf(progress.buf)
   progress.log("run_id " .. run_id)
   local captured = {}
   local saga = { compensations = {}, error_handlers = {} }
