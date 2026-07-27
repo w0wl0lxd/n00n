@@ -1,7 +1,9 @@
 """Harbor agent wrapper for running n00n on Terminal-Bench 2.1."""
 
 import json
+import os
 import shlex
+import tempfile
 from pathlib import Path
 
 from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_template
@@ -55,25 +57,135 @@ class N00nAgent(BaseInstalledAgent):
         return "n00n"
 
     def get_version_command(self) -> str | None:
-        return "export PATH=/opt/n00n/bin:$PATH && devin --version && n00n --version"
+        return "n00n --version"
 
     async def install(self, environment: BaseEnvironment) -> None:
-        # Upload the bundled n00n binary (glibc-linked with its own loader/libs).
-        bundle_local = Path(__file__).with_name("n00n-bundle.tar.gz")
-        await environment.upload_file(bundle_local, "/tmp/n00n-bundle.tar.gz")
+        # Probe for an already-installed n00n binary.
+        probe = await environment.exec(
+            command="command -v n00n >/dev/null 2>&1 && n00n --version",
+            user="root",
+        )
+        if probe.return_code != 0:
+            # No n00n in PATH: try a mounted binary first.
+            mount_check = await environment.exec(
+                command="test -f /mnt/n00n",
+                user="root",
+            )
+            if mount_check.return_code == 0:
+                await self.exec_as_root(
+                    environment,
+                    command=(
+                        "cp /mnt/n00n /usr/local/bin/n00n && "
+                        "chmod +x /usr/local/bin/n00n"
+                    ),
+                )
+
+                auth_check = await environment.exec(
+                    command="test -d /mnt/n00n-auth",
+                    user="root",
+                )
+                if auth_check.return_code == 0:
+                    await self.exec_as_root(
+                        environment,
+                        command=(
+                            "mkdir -p /root/.n00n/auth && "
+                            "cp -r /mnt/n00n-auth/. /root/.n00n/auth/ "
+                            "2>/dev/null || true"
+                        ),
+                    )
+
+                providers_check = await environment.exec(
+                    command="test -d /mnt/n00n-providers",
+                    user="root",
+                )
+                if providers_check.return_code == 0:
+                    await self.exec_as_root(
+                        environment,
+                        command=(
+                            "mkdir -p /root/.n00n/providers && "
+                            "cp -r /mnt/n00n-providers/. /root/.n00n/providers/ "
+                            "2>/dev/null || true && "
+                            "chmod +x /root/.n00n/providers/* "
+                            "2>/dev/null || true"
+                        ),
+                    )
+            else:
+                # Fall back to the bundled tarball (e.g. Daytona/cloud envs).
+                bundle_local = Path(__file__).with_name("n00n-bundle.tar.gz")
+                if not bundle_local.exists():
+                    raise FileNotFoundError(
+                        f"n00n bundle not found at {bundle_local}. "
+                        "Provide a mounted binary at /mnt/n00n, "
+                        "or place n00n-bundle.tar.gz next to this script."
+                    )
+                await environment.upload_file(bundle_local, "/tmp/n00n-bundle.tar.gz")
+                await self.exec_as_root(
+                    environment,
+                    command=(
+                        "mkdir -p /opt/n00n /opt/n00n/.config "
+                        "/opt/n00n/.local/share /opt/n00n/.cache "
+                        "&& tar -xzf /tmp/n00n-bundle.tar.gz -C /opt/n00n "
+                        "--strip-components=1 "
+                        "&& chmod -R a+rX /opt/n00n "
+                        "&& ln -sf /opt/n00n/n00n /usr/local/bin/n00n "
+                        "&& rm -f /tmp/n00n-bundle.tar.gz"
+                    ),
+                )
+
+        # Ensure isolated XDG state exists and is writable for any user.
+        await self.exec_as_root(
+            environment,
+            command=(
+                "mkdir -p /opt/n00n/.config /opt/n00n/.local/share "
+                "/opt/n00n/.cache "
+                "&& chmod -R a+rwx /opt/n00n/.config /opt/n00n/.local "
+                "/opt/n00n/.cache"
+            ),
+        )
+
+        # Devin needs a credentials file and a minimal config so it never prompts.
+        provider = self._parsed_model_provider or ""
+        is_devin = provider == "devin" or (self.model_name or "").startswith("devin/")
+        windsurf_key = self._get_env("WINDSURF_API_KEY")
+        if is_devin and windsurf_key:
+            await self._write_devin_config(environment, windsurf_key)
+
+    async def _write_devin_config(
+        self, environment: BaseEnvironment, windsurf_api_key: str
+    ) -> None:
+        config_dir = "/opt/n00n/.config/devin"
+        data_dir = "/opt/n00n/.local/share/devin"
+        await self.exec_as_root(
+            environment,
+            command=f"mkdir -p {config_dir} {data_dir}",
+        )
+
+        config_json = '{"shell":{"setup_complete":true}}'
+        credentials_toml = f'windsurf_api_key = "{windsurf_api_key}"\n'
+
+        await self._upload_text(environment, config_json, f"{config_dir}/config.json")
+        await self._upload_text(
+            environment, credentials_toml, f"{data_dir}/credentials.toml"
+        )
 
         await self.exec_as_root(
             environment,
             command=(
-                "mkdir -p /opt/n00n /opt/n00n/.config /opt/n00n/.local/share /opt/n00n/.cache "
-                "&& tar -xzf /tmp/n00n-bundle.tar.gz -C /opt/n00n --strip-components=1 "
-                "&& chmod -R a+rX /opt/n00n "
-                "&& ln -sf /opt/n00n/n00n /usr/local/bin/n00n "
-                "&& rm -f /tmp/n00n-bundle.tar.gz"
+                f"chmod 644 {data_dir}/credentials.toml "
+                f"&& chmod 644 {config_dir}/config.json"
             ),
         )
 
-        # The n00n-bundle already contains a static-pie Devin CLI at /opt/n00n/bin/devin.
+    async def _upload_text(
+        self, environment: BaseEnvironment, content: str, remote_path: str
+    ) -> None:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".tmp", delete=False) as tmp:
+            tmp.write(content)
+            tmp_path = Path(tmp.name)
+        try:
+            await environment.upload_file(tmp_path, remote_path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
     @with_prompt_template
     async def run(
@@ -86,28 +198,38 @@ class N00nAgent(BaseInstalledAgent):
             raise ValueError("Model is required. Pass -m to harbor run.")
 
         model = self.model_name
-        if "/" not in model:
-            model = f"devin/{model}"
-
         self._last_instruction = instruction
         escaped = shlex.quote(instruction)
 
-        devin_model = model.split("/", 1)[1] if "/" in model else model
+        # Forward provider API keys from the host .env / --ae flags.
         env: dict[str, str] = {
-            "DEVIN_MODEL": devin_model,
-            "DEVIN_PERMISSION_MODE": "dangerous",
-            "WINDSURF_API_KEY": self._get_env("WINDSURF_API_KEY") or "",
             "XDG_CONFIG_HOME": "/opt/n00n/.config",
             "XDG_DATA_HOME": "/opt/n00n/.local/share",
             "XDG_CACHE_HOME": "/opt/n00n/.cache",
+            "PATH": "/opt/n00n/bin:/usr/local/bin:/usr/bin:/bin",
         }
-        if devin_api_key := self._get_env("DEVIN_API_KEY"):
-            env["DEVIN_API_KEY"] = devin_api_key
+
+        for key, value in os.environ.items():
+            if key.endswith("_API_KEY") or key.endswith("_AUTH_TOKEN"):
+                env[key] = value
+        for key, value in self.extra_env.items():
+            if key.endswith("_API_KEY") or key.endswith("_AUTH_TOKEN"):
+                env[key] = value
+
+        extra_path = self.extra_env.get("PATH", "")
+        if extra_path:
+            env["PATH"] = f"{env['PATH']}:{extra_path}"
+
+        provider = self._parsed_model_provider or ""
+        if provider == "devin" or model.startswith("devin/"):
+            env["DEVIN_PERMISSION_MODE"] = "dangerous"
+            if windsurf_key := self._get_env("WINDSURF_API_KEY"):
+                env["WINDSURF_API_KEY"] = windsurf_key
 
         command = (
-            f'export PATH="/opt/n00n/bin:$PATH"; '
-            f"/opt/n00n/n00n --print --yolo --verbose --output-format stream-json "
-            f"--model {shlex.quote(model)} -- {escaped} 2>&1 | tee /logs/agent/{AGENT_LOG_FILE}"
+            f"n00n --print --yolo --verbose --output-format stream-json "
+            f"--model {shlex.quote(model)} -- {escaped} 2>&1 | "
+            f"tee /logs/agent/{AGENT_LOG_FILE}"
         )
 
         await self.exec_as_agent(environment, command=command, env=env)
