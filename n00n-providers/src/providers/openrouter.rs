@@ -8,7 +8,7 @@ use crate::model::{Model, ModelEntry, ModelInfo, ModelPricing};
 use crate::provider::{BoxFuture, Provider};
 use crate::{
     AgentError, Effort, EffortDialect, Message, ProviderEvent, RequestOptions, StreamResponse,
-    dialect,
+    System, dialect,
 };
 
 use super::openai_compat::OpenAiCompatProvider;
@@ -173,7 +173,7 @@ impl Provider for OpenRouter {
         &'a self,
         model: &'a Model,
         messages: &'a [Message],
-        system: &'a str,
+        system: &'a System,
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
@@ -185,14 +185,13 @@ impl Provider for OpenRouter {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
-            let mut buf = String::new();
-            let system = super::with_prefix(self.system_prefix.as_deref(), system, &mut buf);
             let mut body = self.compat.build_body_with_session(
                 model,
                 messages,
                 system,
                 tools,
                 session_id.map(n00n_storage::id::SessionRef::as_str),
+                self.system_prefix.as_deref(),
             );
 
             body["cache_control"] = json!({"type": "ephemeral"});

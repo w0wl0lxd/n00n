@@ -29,7 +29,7 @@ use crate::providers::tensorx::TensorX;
 use crate::providers::zai::Zai;
 use crate::{
     AgentError, Message, OpenAiOptions, ProviderEvent, ProviderUsage, RequestOptions,
-    StreamResponse,
+    StreamResponse, System,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, EnumIter)]
@@ -259,7 +259,7 @@ pub trait Provider: Send + Sync {
         &'a self,
         model: &'a Model,
         messages: &'a [Message],
-        system: &'a str,
+        system: &'a System,
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
@@ -370,7 +370,7 @@ impl Provider for UnconfiguredProvider {
         &'a self,
         _model: &'a Model,
         _messages: &'a [Message],
-        _system: &'a str,
+        _system: &'a System,
         _tools: &'a Value,
         _event_tx: &'a Sender<ProviderEvent>,
         _opts: RequestOptions,
