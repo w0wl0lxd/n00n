@@ -11,7 +11,7 @@ use tracing::{debug, error, warn};
 use crate::mcp::{McpSession, TOOL_SEARCH_TOOL_NAME, UNKNOWN_MCP};
 use crate::permissions::PermissionCheckContext;
 use crate::task_set::TaskSet;
-use crate::tools::registry::{ToolInvocation, ToolRegistry};
+use crate::tools::registry::{ToolInvocation, ToolRegistry, ToolSource};
 use crate::tools::{LocalToolFn, ToolContext};
 use crate::{AgentError, AgentEvent, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use n00n_config::ToolKey;
@@ -224,7 +224,25 @@ fn is_authorized_plan_target(plan_path: &Path, target: &Path) -> bool {
     plan == target
 }
 
-const SUBAGENT_TOOLS: &[&str] = &["task", "workflow"];
+const SUBAGENT_PLUGINS: &[&str] = &["task", "workflow"];
+
+fn is_subagent_failure(event: &ToolDoneEvent, ctx: &ToolContext) -> bool {
+    if !event.is_error {
+        return false;
+    }
+    // A local override (e.g. a test mock) should not be treated as a built-in
+    // subagent just because it shares a name with one.
+    if ctx.local_tools.contains_key(event.tool.as_ref()) {
+        return false;
+    }
+    let Some(entry) = ctx.registry.get(event.tool.as_ref()) else {
+        return false;
+    };
+    matches!(
+        entry.source,
+        ToolSource::Lua { plugin } if SUBAGENT_PLUGINS.contains(&plugin.as_ref())
+    )
+}
 
 pub(super) struct RecentCalls(VecDeque<(String, u64)>);
 
@@ -763,10 +781,7 @@ pub(super) async fn process_tool_calls(
     })?;
     history.push(tool_msg);
 
-    if let Some(failed) = all_results
-        .iter()
-        .find(|r| r.is_error && SUBAGENT_TOOLS.contains(&r.tool.as_ref()))
-    {
+    if let Some(failed) = all_results.iter().find(|r| is_subagent_failure(r, ctx)) {
         return Err(AgentError::Tool {
             tool: failed.tool.to_string(),
             message: failed.output.as_text(),
@@ -1609,6 +1624,53 @@ mod tests {
         });
     }
 
+    #[derive(Default)]
+    struct FailingSubagentTool {
+        message: String,
+    }
+
+    struct FailingSubagentInvocation {
+        message: String,
+    }
+
+    impl FailingSubagentTool {
+        fn new(message: impl Into<String>) -> Self {
+            Self {
+                message: message.into(),
+            }
+        }
+    }
+
+    impl ToolInvocation for FailingSubagentInvocation {
+        fn start_header(&self) -> HeaderFuture {
+            HeaderFuture::Ready(HeaderResult::plain("subagent".into()))
+        }
+        fn execute(self: Box<Self>, _ctx: &ToolContext) -> ExecFuture<'_> {
+            let message = self.message;
+            Box::pin(async move { ToolExecResult::from(Err::<ToolOutput, String>(message)) })
+        }
+    }
+
+    impl Tool for FailingSubagentTool {
+        fn name(&self) -> &'static str {
+            "task"
+        }
+        fn description(&self, _ctx: &DescriptionContext) -> std::borrow::Cow<'_, str> {
+            "failing subagent".into()
+        }
+        fn schema(&self) -> Value {
+            serde_json::json!({"type": "object", "properties": {}, "additionalProperties": false})
+        }
+        fn audience(&self) -> crate::tools::ToolAudience {
+            crate::tools::ToolAudience::MAIN
+        }
+        fn parse(&self, _input: &Value) -> Result<Box<dyn ToolInvocation>, ParseError> {
+            Ok(Box::new(FailingSubagentInvocation {
+                message: self.message.clone(),
+            }))
+        }
+    }
+
     #[test]
     fn failed_subagent_tool_aborts_process_tool_calls() {
         smol::block_on(async {
@@ -1617,7 +1679,18 @@ mod tests {
             const ERROR_MSG: &str = "sub-agent error: API 500";
             let (tx, _rx) = flume::unbounded::<crate::Envelope>();
             let event_tx = crate::EventSender::new(tx, 0);
-            let ctx = local_ctx("task", |_| Err(ERROR_MSG.to_string()));
+            let mut ctx = crate::tools::test_support::stub_ctx(&AgentMode::Build);
+            let registry = ToolRegistry::new();
+            let tool: Arc<dyn Tool> = Arc::new(FailingSubagentTool::new(ERROR_MSG));
+            registry
+                .register(
+                    &tool,
+                    &ToolSource::Lua {
+                        plugin: "task".into(),
+                    },
+                )
+                .unwrap();
+            ctx.registry = Arc::new(registry);
             let mut history = crate::History::new(Vec::new());
             let response = StreamResponse {
                 message: Message {
