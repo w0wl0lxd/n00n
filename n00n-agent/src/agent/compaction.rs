@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::env;
 
 use n00n_config::CompactionBuffer;
@@ -240,6 +241,41 @@ fn strip_thinking(messages: &mut [Message]) {
 const TOOL_RESULT_PLACEHOLDER: &str = "[tool result]";
 const KEEP_LAST_TOOL_RESULTS: usize = 3;
 
+fn compact_tool_input(val: &mut serde_json::Value) {
+    const COMPACT_MIN_BYTES: usize = 120;
+    match val {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map.iter_mut() {
+                if let serde_json::Value::String(s) = v {
+                    if (k == "content"
+                        || k == "old_string"
+                        || k == "new_string"
+                        || k == "code"
+                        || k == "script"
+                        || k == "patch"
+                        || k == "diff")
+                        && s.len() > COMPACT_MIN_BYTES
+                    {
+                        *s = format!("[compacted: {} bytes]", s.len());
+                    }
+                } else if let serde_json::Value::Array(arr) = v {
+                    for item in arr {
+                        compact_tool_input(item);
+                    }
+                } else if let serde_json::Value::Object(_) = v {
+                    compact_tool_input(v);
+                }
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr {
+                compact_tool_input(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn strip_old_tool_results(messages: &mut [Message]) {
     let total: usize = messages
         .iter()
@@ -248,13 +284,34 @@ fn strip_old_tool_results(messages: &mut [Message]) {
         .count();
 
     let mut seen = 0;
-    for msg in messages {
+    let mut stripped_ids = HashSet::new();
+
+    for msg in messages.iter_mut() {
         for block in &mut msg.content {
-            if let ContentBlock::ToolResult { content, .. } = block {
+            if let ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } = block
+            {
                 if seen < total.saturating_sub(KEEP_LAST_TOOL_RESULTS) {
                     *content = TOOL_RESULT_PLACEHOLDER.into();
+                    stripped_ids.insert(tool_use_id.clone());
                 }
                 seen += 1;
+            }
+        }
+    }
+
+    if !stripped_ids.is_empty() {
+        for msg in messages.iter_mut() {
+            for block in &mut msg.content {
+                match block {
+                    ContentBlock::ToolUse { id, input, .. } if stripped_ids.contains(id) => {
+                        compact_tool_input(input);
+                    }
+                    _ => {}
+                }
             }
         }
     }
@@ -751,5 +808,124 @@ mod tests {
                     .contains("What did we do so far?")
             );
         });
+    }
+
+    #[test]
+    fn strip_old_tool_results_compacts_tool_use_inputs() {
+        let large_content = "a".repeat(300);
+        let mut messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "t1".into(),
+                    name: "write".into(),
+                    input: serde_json::json!({
+                        "path": "src/main.rs",
+                        "content": large_content,
+                    }),
+                }],
+                ..Default::default()
+            },
+            Message {
+                role: Role::User,
+                content: vec![
+                    ContentBlock::ToolResult {
+                        tool_use_id: "t1".into(),
+                        content: "wrote 300 bytes".into(),
+                        is_error: false,
+                    },
+                    ContentBlock::ToolResult {
+                        tool_use_id: "t2".into(),
+                        content: "keep 1".into(),
+                        is_error: false,
+                    },
+                    ContentBlock::ToolResult {
+                        tool_use_id: "t3".into(),
+                        content: "keep 2".into(),
+                        is_error: false,
+                    },
+                    ContentBlock::ToolResult {
+                        tool_use_id: "t4".into(),
+                        content: "keep 3".into(),
+                        is_error: false,
+                    },
+                ],
+                ..Default::default()
+            },
+        ];
+
+        strip_old_tool_results(&mut messages);
+
+        if let ContentBlock::ToolUse { input, .. } = &messages[0].content[0] {
+            let content_str = input["content"].as_str().unwrap();
+            assert!(content_str.starts_with("[compacted: 300 bytes]"));
+        } else {
+            panic!("expected ToolUse content block");
+        }
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn empirical_debloat_benchmark() {
+        let bpe = tiktoken_rs::cl100k_base_singleton();
+
+        // 1. File modification: Write (full file 500 lines) vs Block Edit vs Line Edit
+        let full_file_content = (1..500)
+            .map(|i| format!("fn line_{i}() {{ println!(\"line {i}\"); }}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let line_edit_payload = serde_json::json!({
+            "path": "src/main.rs",
+            "start": 42,
+            "end": 42,
+            "new_string": "fn line_42() { println!(\"modified line 42\"); }"
+        })
+        .to_string();
+        let write_payload = serde_json::json!({
+            "path": "src/main.rs",
+            "content": full_file_content
+        })
+        .to_string();
+
+        let write_tokens = bpe.encode_ordinary(&write_payload).len();
+        let line_edit_tokens = bpe.encode_ordinary(&line_edit_payload).len();
+
+        let edit_token_savings_pct =
+            (1.0 - (line_edit_tokens as f64 / write_tokens as f64)) * 100.0;
+        eprintln!(
+            "[BENCHMARK] Write tokens: {write_tokens}, Line Edit tokens: {line_edit_tokens} ({edit_token_savings_pct:.1}% savings)"
+        );
+
+        assert!(
+            line_edit_tokens < write_tokens / 10,
+            "Line edit must use >90% fewer tokens than full write"
+        );
+
+        // 2. Compaction: Uncompacted ToolUse payload vs Compacted ToolUse payload
+        let uncompacted_input = serde_json::json!({
+            "path": "src/large.rs",
+            "content": "a".repeat(5000)
+        })
+        .to_string();
+        let mut compacted_val = serde_json::json!({
+            "path": "src/large.rs",
+            "content": "a".repeat(5000)
+        });
+        compact_tool_input(&mut compacted_val);
+        let compacted_input = compacted_val.to_string();
+
+        let uncompacted_tokens = bpe.encode_ordinary(&uncompacted_input).len();
+        let compacted_tokens = bpe.encode_ordinary(&compacted_input).len();
+
+        let compaction_savings_pct =
+            (1.0 - (compacted_tokens as f64 / uncompacted_tokens as f64)) * 100.0;
+        eprintln!(
+            "[BENCHMARK] History Payload Uncompacted: {uncompacted_tokens} tokens -> Compacted: {compacted_tokens} tokens ({compaction_savings_pct:.1}% savings)"
+        );
+
+        assert!(
+            compacted_tokens < uncompacted_tokens / 5,
+            "Compaction must save >80% tokens on large payloads"
+        );
     }
 }
