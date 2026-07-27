@@ -596,7 +596,7 @@ pub fn index(path: &str, no_plugins: bool, no_jit: bool) -> Result<()> {
     let abs_path = Path::new(path)
         .canonicalize()
         .unwrap_or_else(|_| Path::new(path).to_path_buf());
-    let input = json!({"path": abs_path.to_str().unwrap_or_else(|| path)});
+    let input = serde_json::json!({"path": abs_path.to_str().unwrap_or_else(|| path)});
     let reg = ToolRegistry::global_arc();
     let entry = reg
         .get("index")
@@ -731,5 +731,3 @@ pub fn prompt(variant: &crate::cli::PromptVariant, flags: PromptFlags) -> Result
     print!("{output}");
     Ok(())
 }
-
-use serde_json::json;

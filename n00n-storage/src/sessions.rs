@@ -1795,7 +1795,7 @@ mod tests {
     use crate::StateDir;
     use crate::id::N00nId;
     use serde::Serializer;
-    use serde_json::{Value, json};
+    use serde_json::Value;
     use std::collections::HashMap;
     use std::fmt::Write as _;
     use std::fs::{self, File, OpenOptions};
@@ -1853,7 +1853,7 @@ mod tests {
     }
 
     fn text_message(role: &str, text: &str) -> Value {
-        json!({
+        serde_json::json!({
             "role": role,
             "content": [{"type": "text", "text": text}]
         })
@@ -1947,7 +1947,7 @@ mod tests {
 
     #[test]
     fn legacy_compaction_without_summary_metadata_deserializes() {
-        let entry: TranscriptEntry<Value> = serde_json::from_value(json!({
+        let entry: TranscriptEntry<Value> = serde_json::from_value(serde_json::json!({
             "Compaction": { "entries": [] }
         }))
         .unwrap();
@@ -2007,7 +2007,7 @@ mod tests {
         session.messages.push(user_message("second"));
         session
             .tool_outputs
-            .insert("tool-1".into(), json!({"result": "ok"}));
+            .insert("tool-1".into(), serde_json::json!({"result": "ok"}));
         session
             .subagent_messages
             .insert("sub-1".into(), vec![user_message("sub-prompt")]);
@@ -2193,7 +2193,7 @@ mod tests {
         let path = jsonl_path(dir, session.id);
         let records = format!(
             "{}\n{}\n",
-            json!({
+            serde_json::json!({
                 "t": "header",
                 "v": LOG_FORMAT_VERSION,
                 "id": session.id,
@@ -2201,7 +2201,7 @@ mod tests {
                 "cwd": session.cwd,
                 "created_at": session.created_at,
             }),
-            json!({
+            serde_json::json!({
                 "t": "meta",
                 "title": session.title,
                 "token_usage": {},
@@ -2561,7 +2561,7 @@ mod tests {
         let dir = tmp.path();
         let session: TestSession = Session::new("model", "/project");
         let jsonl = jsonl_path(dir, session.id);
-        let header = json!({
+        let header = serde_json::json!({
             "t": "header",
             "v": 3,
             "id": session.id,

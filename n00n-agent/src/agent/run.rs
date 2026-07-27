@@ -849,7 +849,7 @@ mod tests {
 
     #[test]
     fn estimate_tool_tokens_counts_json() {
-        let tools = json!([{"name": "skill", "description": "A tool"}]);
+        let tools = serde_json::json!([{"name": "skill", "description": "A tool"}]);
         let tokens = estimate_tool_tokens(&tools, "");
         assert!(tokens > 0, "expected positive token count for tools");
     }
@@ -915,7 +915,7 @@ mod tests {
 
     #[test]
     fn estimate_tool_tokens_empty_array_costs_one() {
-        assert_eq!(estimate_tool_tokens(&json!([]), ""), 1);
+        assert_eq!(estimate_tool_tokens(&serde_json::json!([]), ""), 1);
     }
 
     struct MockInterruptSource {
@@ -1081,7 +1081,7 @@ mod tests {
                 history,
                 system: "system".into(),
                 event_tx: EventSender::new(raw_tx, 0),
-                tools: json!([]),
+                tools: serde_json::json!([]),
                 tool_filter: ToolFilter::All,
             },
         );
@@ -1145,7 +1145,7 @@ mod tests {
                 content: vec![ContentBlock::ToolUse {
                     id: tool_id.into(),
                     name: tool_name.into(),
-                    input: json!({"pattern": "*.nonexistent_test_xyz", "path": "/tmp"}),
+                    input: serde_json::json!({"pattern": "*.nonexistent_test_xyz", "path": "/tmp"}),
                 }],
                 ..Default::default()
             },
@@ -1464,7 +1464,7 @@ mod tests {
                     history: &mut history,
                     system: "system".into(),
                     event_tx: EventSender::new(raw_tx, 0),
-                    tools: json!([]),
+                    tools: serde_json::json!([]),
                     tool_filter: ToolFilter::All,
                 },
             )

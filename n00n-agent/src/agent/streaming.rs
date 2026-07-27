@@ -125,7 +125,6 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use n00n_providers::provider::BoxFuture;
-    use serde_json::json;
 
     use super::*;
     use crate::Envelope;
@@ -174,7 +173,7 @@ mod tests {
                 model: &model,
                 messages: &[Message::user("task".into())],
                 system: "system",
-                tools: &json!([]),
+                tools: &serde_json::json!([]),
                 event_tx: &event_tx,
                 cancel: &CancelToken::none(),
                 opts: RequestOptions::default(),

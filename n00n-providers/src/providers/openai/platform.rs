@@ -1941,7 +1941,6 @@ mod tests {
 
     use super::*;
     use crate::{ContentBlock, Role, TokenUsage};
-    use serde_json::json;
 
     const TOOLS_HASH: &str = "[]";
     const AUTH_SCOPE_HASH: &str = "account";
@@ -2044,7 +2043,7 @@ mod tests {
                 content: vec![ContentBlock::ToolUse {
                     id: "call_1".into(),
                     name: "read".into(),
-                    input: json!({"path": "one"}),
+                    input: serde_json::json!({"path": "one"}),
                 }],
                 ..Default::default()
             },
@@ -2351,7 +2350,7 @@ mod tests {
                     .unwrap();
                 socket
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"response.created",
                             "response":{"id":"resp_first"}
                         })
@@ -2362,7 +2361,7 @@ mod tests {
                     .unwrap();
                 socket
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"response.completed",
                             "response":{"id":"resp_first","status":"completed"}
                         })
@@ -2388,7 +2387,7 @@ mod tests {
                     .unwrap();
                 socket
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"response.created",
                             "response":{"id":"resp_second"}
                         })
@@ -2399,7 +2398,7 @@ mod tests {
                     .unwrap();
                 socket
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"response.completed",
                             "response":{"id":"resp_second","status":"completed"}
                         })
@@ -2428,7 +2427,7 @@ mod tests {
             provider.response_state_storage = Some(storage);
             let session_id = SessionRef::generate();
             let model = Model::from_spec("openai/gpt-5.3-codex").unwrap();
-            let tools = json!([]);
+            let tools = serde_json::json!([]);
             let (event_tx, _event_rx) = flume::unbounded();
             let first_messages = vec![Message::user("hello".into())];
 
@@ -2862,7 +2861,7 @@ mod tests {
                 }
                 socket
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"error",
                             "error": {
                                 "code":"websocket_connection_limit_reached",
@@ -2910,7 +2909,7 @@ mod tests {
             let error = provider
                 .stream_websocket(
                     Some(slot),
-                    &json!({"model":"test","input":[]}),
+                    &serde_json::json!({"model":"test","input":[]}),
                     &mut None,
                     false,
                     || Value::Null,
@@ -3030,7 +3029,7 @@ mod tests {
                 }
                 socket
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"response.created",
                             "response":{"id":"resp_accepted"}
                         })
@@ -3041,7 +3040,7 @@ mod tests {
                     .unwrap();
                 socket
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"error",
                             "status":401,
                             "error": {
@@ -3069,7 +3068,7 @@ mod tests {
             )
             .unwrap();
             let model = Model::from_spec("openai/gpt-5.3-codex").unwrap();
-            let tools = json!([]);
+            let tools = serde_json::json!([]);
             let (event_tx, _) = flume::unbounded();
 
             let attempt = provider
@@ -3123,7 +3122,7 @@ mod tests {
                 }
                 socket
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"response.created",
                             "response":{"id":"resp_accepted"}
                         })
@@ -3134,7 +3133,7 @@ mod tests {
                     .unwrap();
                 socket
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"error",
                             "error": {
                                 "code":"websocket_connection_limit_reached",
@@ -3181,7 +3180,7 @@ mod tests {
             let error = provider
                 .stream_websocket(
                     Some(slot),
-                    &json!({"model":"test","input":[]}),
+                    &serde_json::json!({"model":"test","input":[]}),
                     &mut None,
                     false,
                     || Value::Null,
@@ -3221,7 +3220,7 @@ mod tests {
                 }
                 first
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"response.created",
                             "response":{"id":"resp_first"}
                         })
@@ -3232,7 +3231,7 @@ mod tests {
                     .unwrap();
                 first
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"response.completed",
                             "response":{"id":"resp_first","status":"completed"}
                         })
@@ -3252,7 +3251,7 @@ mod tests {
                 }
                 second
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"response.created",
                             "response":{"id":"resp_second"}
                         })
@@ -3263,7 +3262,7 @@ mod tests {
                     .unwrap();
                 second
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"response.completed",
                             "response":{"id":"resp_second","status":"completed"}
                         })
@@ -3289,7 +3288,7 @@ mod tests {
             let session = SessionRef::generate();
             let slot = provider.response_connection_slot(Some(&session)).unwrap();
             let (event_tx, _) = flume::unbounded();
-            let body = json!({"model":"test","input":[]});
+            let body = serde_json::json!({"model":"test","input":[]});
 
             let (first_id, _) = provider
                 .stream_websocket(
@@ -3407,7 +3406,7 @@ mod tests {
                 assert!(matches!(second.next().await, Some(Ok(WsMessage::Text(_)))));
                 second
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"response.completed",
                             "response":{"id":"resp_fresh","status":"completed"}
                         })
@@ -3422,7 +3421,7 @@ mod tests {
             let (response_id, _) = provider
                 .stream_websocket(
                     None,
-                    &json!({"model":"test","input":[]}),
+                    &serde_json::json!({"model":"test","input":[]}),
                     &mut None,
                     false,
                     || Value::Null,
@@ -3475,7 +3474,7 @@ mod tests {
                 server_creates.fetch_add(1, Ordering::Relaxed);
                 first
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"response.completed",
                             "response":{"id":"resp_first","status":"completed"}
                         })
@@ -3508,7 +3507,7 @@ mod tests {
                 server_creates.fetch_add(1, Ordering::Relaxed);
                 second
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"response.completed",
                             "response":{"id":"resp_second","status":"completed"}
                         })
@@ -3521,7 +3520,7 @@ mod tests {
             let session = SessionRef::generate();
             let slot = provider.response_connection_slot(Some(&session)).unwrap();
             let (event_tx, _) = flume::unbounded();
-            let body = json!({"model":"test","input":[]});
+            let body = serde_json::json!({"model":"test","input":[]});
 
             let (first_id, _) = provider
                 .stream_websocket(
@@ -3585,7 +3584,7 @@ mod tests {
                         }
                         socket
                             .send(WsMessage::Text(
-                                json!({
+                                serde_json::json!({
                                     "type":"response.created",
                                     "response":{"id":format!("resp_{index}")}
                                 })
@@ -3616,7 +3615,7 @@ mod tests {
             .unwrap();
             let model = Model::from_spec("openai/gpt-5.3-codex").unwrap();
             let messages = [Message::user("hello".into())];
-            let tools = json!([]);
+            let tools = serde_json::json!([]);
             let (first_tx, _) = flume::unbounded();
             let (second_tx, _) = flume::unbounded();
             let first_session = SessionRef::generate();
@@ -3685,7 +3684,7 @@ mod tests {
             let session = SessionRef::generate();
             let slot = provider.response_connection_slot(Some(&session)).unwrap();
             let (event_tx, _event_rx) = flume::unbounded();
-            let body = json!({"model":"test","input":[]});
+            let body = serde_json::json!({"model":"test","input":[]});
             let mut full_history_body = None;
             let attempt = provider.stream_websocket(
                 Some(Arc::clone(&slot)),

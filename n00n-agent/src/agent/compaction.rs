@@ -6,8 +6,6 @@ use n00n_providers::{
 };
 use tracing::info;
 
-use serde_json::json;
-
 use super::compaction_hooks::{CompactionTrigger, run_postcompact_hooks, run_precompact_hooks};
 use super::history::History;
 use super::streaming::stream_with_retry;
@@ -105,7 +103,7 @@ pub(super) async fn compact_history(
     );
     compaction_history.push(Message::user(user_prompt));
 
-    let empty_tools = json!([]);
+    let empty_tools = serde_json::json!([]);
 
     let response = loop {
         match stream_with_retry(super::streaming::StreamContext {
@@ -609,7 +607,7 @@ mod tests {
                 content: vec![ContentBlock::ToolUse {
                     id: "t1".into(),
                     name: "bash".into(),
-                    input: json!({}),
+                    input: serde_json::json!({}),
                 }],
                 ..Default::default()
             },
@@ -639,7 +637,7 @@ mod tests {
                 content: vec![ContentBlock::ToolUse {
                     id: "t1".into(),
                     name: "bash".into(),
-                    input: json!({}),
+                    input: serde_json::json!({}),
                 }],
                 ..Default::default()
             },
@@ -695,7 +693,7 @@ mod tests {
                 content: vec![ContentBlock::ToolUse {
                     id: "t1".into(),
                     name: "bash".into(),
-                    input: json!({}),
+                    input: serde_json::json!({}),
                 }],
                 ..Default::default()
             },
