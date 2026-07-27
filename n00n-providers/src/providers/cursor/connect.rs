@@ -32,11 +32,14 @@ impl FrameBuffer {
         let flags = self.buf[0];
         let len = u32::from_be_bytes([self.buf[1], self.buf[2], self.buf[3], self.buf[4]]) as usize;
         if len > MAX_CONNECT_FRAME_LEN {
+            // Consume the bad header so callers looping on next_frame cannot spin forever.
+            self.buf.drain(0..5);
             return Some(Err(format!(
                 "connect frame length {len} exceeds maximum {MAX_CONNECT_FRAME_LEN}"
             )));
         }
         let Some(total) = 5usize.checked_add(len) else {
+            self.buf.drain(0..5);
             return Some(Err(format!(
                 "connect frame length {len} exceeds addressable buffer"
             )));
@@ -115,5 +118,64 @@ mod tests {
             Err(e) => assert!(e.contains("exceeds maximum")),
             Ok(_) => panic!("expected oversize rejection"),
         }
+    }
+
+    #[test]
+    fn fuzz_random_bytes_never_panic() {
+        let mut buf = FrameBuffer::default();
+        for i in 0..500 {
+            let n = (fastrand::u8(..) as usize % 32) + 1;
+            let mut chunk = vec![0u8; n];
+            for byte in &mut chunk {
+                *byte = fastrand::u8(..);
+            }
+            buf.push(&chunk);
+            loop {
+                match buf.next_frame() {
+                    None => break,
+                    Some(Ok(_)) | Some(Err(_)) => {}
+                }
+            }
+            if i % 25 == 24 {
+                buf = FrameBuffer::default();
+            }
+        }
+    }
+
+    #[test]
+    fn fuzz_valid_frames_roundtrip_random_payloads() {
+        for size in [0usize, 1, 7, 63, 256, 1024] {
+            let mut payload = vec![0u8; size];
+            for byte in &mut payload {
+                *byte = fastrand::u8(..);
+            }
+            let flags = fastrand::u8(..) & 0b11;
+            let encoded = encode_frame(flags, &payload);
+            let mut buf = FrameBuffer::default();
+            let mut offset = 0;
+            while offset < encoded.len() {
+                let take = ((fastrand::u8(..) as usize) % 17).max(1);
+                let end = (offset + take).min(encoded.len());
+                buf.push(&encoded[offset..end]);
+                offset = end;
+            }
+            let frame = buf.next_frame().expect("complete").expect("valid frame");
+            assert_eq!(frame.payload, payload);
+            assert_eq!(frame.end_stream, flags & CONNECT_END_STREAM_FLAG != 0);
+            assert_eq!(frame.compressed, flags & CONNECT_COMPRESSED_FLAG != 0);
+            assert!(buf.next_frame().is_none());
+        }
+    }
+
+    #[test]
+    fn oversized_header_is_consumed_so_loop_cannot_spin() {
+        let mut buf = FrameBuffer::default();
+        let over = (MAX_CONNECT_FRAME_LEN as u32).saturating_add(1);
+        let mut header = [0u8; 5];
+        header[1..].copy_from_slice(&over.to_be_bytes());
+        buf.push(&header);
+        assert!(buf.next_frame().expect("err").is_err());
+        // Second call must not keep returning the same error forever.
+        assert!(buf.next_frame().is_none());
     }
 }
