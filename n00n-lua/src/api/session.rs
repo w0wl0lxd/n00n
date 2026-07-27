@@ -38,7 +38,8 @@ async fn roundtrip(
 /// Lists sessions stored for the current project. Answered from a
 /// background scan, so a slow disk never blocks the UI.
 ///
-/// @return (table|nil, string|nil) Array of `{id, title, updated_at}`, or nil and an error.
+/// @return (table|nil, string|nil) Array of `{id, title, display_title, kind,
+/// parent_id, updated_at, cwd, model}`, or nil and an error.
 /// @example
 /// local stored, err = n00n.session.list()
 #[lua_fn]
