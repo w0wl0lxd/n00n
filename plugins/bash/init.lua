@@ -354,6 +354,7 @@ n00n.api.register_tool({
     end
 
     local buf, view = create_bash_view(command, ctx)
+    ctx:live_buf(buf)
 
     local output_parts = {}
     local has_output = false

@@ -152,6 +152,8 @@ local function make_preview(ctx, description)
     view:toggle()
   end)
 
+  ctx:live_buf(view.buf)
+
   return { buf = view.buf, update = update }
 end
 
