@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785141977433,
+  "lastUpdate": 1785142160275,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -7125,6 +7125,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 180326,
             "range": "± 2239",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "dbce7aef96ec6df7155552b756916357652feeb8",
+          "message": "fix(agent-control): tag control messages with dedicated role and resume paused team runs (#129)\n\n* fix(agent-control): route message/resume as steering interrupts, not queued prompts\n\n* fix(agent-control): distinguish control messages and resume paused team runs\n\n- Add `control` flag to `Message`, `AgentInput`, and `QueuedMessage`\n  so agent-control messages are tagged independently of user prompts.\n- Propagate the flag through `AgentEvent::QueueItemConsumed` and the\n  UI display pipeline, adding `DisplayRole::Control` with its own theme\n  style so control messages render distinctly from user messages.\n- Wire `n00n.session.prompt` `control` option and update `agent_control`\n  `message`/`resume` to use both `steer` and `control`.\n- Surface `last_user` from `SessionRequest::Status` so `agent_control`\n  resume can retrieve the paused `team` `run_id` from the target session\n  history and build a continuation prompt.\n- Include `run_id` in `team` `run_waves` pause payload for consistency.\n\nTests: cargo nextest run --workspace (3873 passed), cargo clippy --all --tests -- -D warnings.\n\n* fix(agent-control): harden paused team resume\n\n* docs: regenerate after main merge\n\n* docs: regenerate lua-api from branch sources\n\n* fix(agent-control): address full review feedback\n\nPreserve control tags through run start, edit, and session restore;\npersist queue Delivery; harden paused_team status parsing; document\npaused_team shape; assert resume steer/control flags.",
+          "timestamp": "2026-07-27T08:28:35Z",
+          "tree_id": "8d53f36cc102a4d35660cf28a2473a05812e920d",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/dbce7aef96ec6df7155552b756916357652feeb8"
+        },
+        "date": 1785142158875,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 8428862,
+            "range": "± 41796",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1733608,
+            "range": "± 15170",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1736644,
+            "range": "± 17866",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 9458793,
+            "range": "± 48591",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3381537,
+            "range": "± 21005",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3374646,
+            "range": "± 19774",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 855021,
+            "range": "± 4286",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 104165,
+            "range": "± 851",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 104524,
+            "range": "± 764",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1265318,
+            "range": "± 9624",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 532612,
+            "range": "± 3095",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 531136,
+            "range": "± 4303",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 52363,
+            "range": "± 7043",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 154493,
+            "range": "± 5215",
             "unit": "ns/iter"
           }
         ]
