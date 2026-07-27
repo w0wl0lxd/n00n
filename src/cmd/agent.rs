@@ -1,5 +1,6 @@
 use std::env;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,6 +26,28 @@ use crate::setup;
 
 fn workflow_from_mode(mode: CliAgentMode) -> bool {
     matches!(mode, CliAgentMode::Team | CliAgentMode::Workflow)
+}
+
+const MAX_AGENT_ID_LEN: usize = 64;
+
+fn validate_agent_id(id: &str) -> Result<()> {
+    if id.is_empty() {
+        return Err(color_eyre::eyre::eyre!("agent id cannot be empty"));
+    }
+    if id.len() > MAX_AGENT_ID_LEN {
+        return Err(color_eyre::eyre::eyre!(
+            "agent id must be {MAX_AGENT_ID_LEN} characters or fewer"
+        ));
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(color_eyre::eyre::eyre!(
+            "agent id must contain only ASCII letters, digits, hyphens, and underscores"
+        ));
+    }
+    Ok(())
 }
 
 async fn write_line<W: AsyncWriteExt + Unpin>(writer: &mut W, line: &str) -> Result<()> {
@@ -202,6 +225,7 @@ const STATE_FILE: &str = "agent.json";
 const SOCKET_FILE: &str = "control.sock";
 
 fn agent_dir(state_dir: &StateDir, agent_id: &str) -> Result<PathBuf> {
+    validate_agent_id(agent_id)?;
     let agents_dir = state_dir.ensure_subdir(AGENTS_SUBDIR)?;
     Ok(agents_dir.join(agent_id))
 }
@@ -339,6 +363,8 @@ pub fn server(
 
     let agent_dir_path = agent_dir(&storage, &agent_id)?;
     fs::create_dir_all(&agent_dir_path).wrap_err("failed to create agent directory")?;
+    fs::set_permissions(&agent_dir_path, fs::Permissions::from_mode(0o700))
+        .wrap_err("failed to set agent directory permissions")?;
 
     let socket_path_value = socket_path(&storage, &agent_id)?;
 
@@ -357,6 +383,8 @@ pub fn server(
     write_agent_state(&storage, &state)?;
 
     let listener = UnixListener::bind(&socket_path_value).wrap_err("failed to bind socket")?;
+    fs::set_permissions(&socket_path_value, fs::Permissions::from_mode(0o600))
+        .wrap_err("failed to set socket permissions")?;
 
     let message_lock = Arc::new(Mutex::new(()));
     let paused = Arc::new(AtomicBool::new(false));
@@ -946,5 +974,29 @@ mod tests {
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].id, "agent2");
         assert_eq!(all[1].id, "agent1");
+    }
+
+    #[test]
+    fn validate_agent_id_accepts_safe_ids() {
+        assert!(validate_agent_id("my-agent_1").is_ok());
+        assert!(validate_agent_id("a").is_ok());
+        assert!(validate_agent_id(&"x".repeat(64)).is_ok());
+    }
+
+    #[test]
+    fn validate_agent_id_rejects_unsafe_ids() {
+        assert!(validate_agent_id("").is_err());
+        assert!(validate_agent_id("a/b").is_err());
+        assert!(validate_agent_id("..").is_err());
+        assert!(validate_agent_id("../../../etc/passwd").is_err());
+        assert!(validate_agent_id("a b").is_err());
+        assert!(validate_agent_id(&"x".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn agent_dir_rejects_path_traversal_id() {
+        let tmp = TempDir::new().unwrap();
+        let state_dir = StateDir::from_path(tmp.path().to_path_buf());
+        assert!(agent_dir(&state_dir, "../escape").is_err());
     }
 }
