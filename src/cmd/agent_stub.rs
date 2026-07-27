@@ -7,6 +7,7 @@ use color_eyre::eyre::eyre;
 
 use crate::cli::AgentMode as CliAgentMode;
 
+#[allow(dead_code)]
 pub struct AgentRunOptions<'a> {
     pub prompt: &'a str,
     pub model: Option<&'a str>,
