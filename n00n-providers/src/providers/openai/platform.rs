@@ -61,6 +61,11 @@ const USAGE_WINDOW_1MONTH_SECONDS: i64 = 2_592_000;
 const USAGE_WINDOW_1YEAR_SECONDS: i64 = 31_536_000;
 const RESPONSE_CHAIN_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 const PROMPT_CACHE_SHARDS: u8 = 16;
+/// `OpenAI` rejects `prompt_cache_key` values longer than 64 characters.
+const PROMPT_CACHE_KEY_MAX_LEN: usize = 64;
+/// Hex digits taken from the SHA-256 digest so the full key stays ≤64 chars:
+/// `n00n-` (5) + digest + `-s` (2) + shard (1–2).
+const PROMPT_CACHE_DIGEST_HEX_LEN: usize = 48;
 
 static PROCESS_INSTANCE_NONCE: OnceLock<u64> = OnceLock::new();
 
@@ -304,11 +309,15 @@ fn prompt_cache_key(
     digest.update(system_text.as_bytes());
     digest.update(tools_hash.as_bytes());
     let prefix_hash = digest.finalize();
+    let digest_hex = format!("{prefix_hash:x}");
+    let digest_prefix = &digest_hex[..PROMPT_CACHE_DIGEST_HEX_LEN];
     let shard = session_id.map_or(0, |session_id| {
         Sha256::digest(canonical_session_key(session_id).to_string().as_bytes())[0]
             % PROMPT_CACHE_SHARDS
     });
-    format!("n00n-{prefix_hash:x}-s{shard}")
+    let key = format!("n00n-{digest_prefix}-s{shard}");
+    debug_assert!(key.len() <= PROMPT_CACHE_KEY_MAX_LEN);
+    key
 }
 
 fn log_responses_request(
@@ -3036,6 +3045,11 @@ mod tests {
         let system = System::from("stable instructions");
         let key = prompt_cache_key("gpt-5.6", &system, &tools_hash, None);
 
+        assert!(
+            key.len() <= PROMPT_CACHE_KEY_MAX_LEN,
+            "prompt_cache_key length {} exceeds OpenAI limit {PROMPT_CACHE_KEY_MAX_LEN}: {key}",
+            key.len()
+        );
         assert_eq!(key, prompt_cache_key("gpt-5.6", &system, &tools_hash, None));
         assert_ne!(
             key,
@@ -3049,6 +3063,28 @@ mod tests {
             key,
             prompt_cache_key("gpt-5.6", &system, "changed-tools", None)
         );
+    }
+
+    #[test]
+    fn prompt_cache_key_stays_within_openai_limit_for_all_shards() {
+        let tools_hash = "tools";
+        let system = System::from("system");
+        let no_session = prompt_cache_key("gpt-5.6", &system, tools_hash, None);
+        assert!(
+            no_session.len() <= PROMPT_CACHE_KEY_MAX_LEN,
+            "len {} > {PROMPT_CACHE_KEY_MAX_LEN}: {no_session}",
+            no_session.len()
+        );
+        // Cover single- and double-digit shard suffixes (0–9 and 10–15).
+        for _ in 0..64 {
+            let session = SessionRef::generate();
+            let key = prompt_cache_key("gpt-5.6", &system, tools_hash, Some(&session));
+            assert!(
+                key.len() <= PROMPT_CACHE_KEY_MAX_LEN,
+                "len {} > {PROMPT_CACHE_KEY_MAX_LEN}: {key}",
+                key.len()
+            );
+        }
     }
 
     #[test]
