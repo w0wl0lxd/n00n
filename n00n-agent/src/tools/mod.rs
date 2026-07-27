@@ -16,7 +16,7 @@ pub use file_tracker::FileReadTracker;
 pub use registry::{
     ActiveTools, BoxFuture, ExecFuture, HeaderFuture, HeaderResult, ParseError, PermissionScopes,
     RegisteredTool, RegistryError, Tool, ToolAudience, ToolExecResult, ToolInvocation,
-    ToolRegistry, ToolSearchResult, ToolSource,
+    ToolRegistry, ToolSearchResult, ToolSource, ToolsSnapshot,
 };
 
 use std::collections::HashMap;

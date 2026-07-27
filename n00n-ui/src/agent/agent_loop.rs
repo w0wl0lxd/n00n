@@ -8,8 +8,8 @@ use n00n_agent::permissions::PermissionManager;
 use n00n_agent::template;
 use n00n_agent::template::Vars;
 use n00n_agent::tools::{
-    ActiveTools, DescriptionContext, FileReadTracker, RegisteredTool, ToolAudience, ToolFilter,
-    ToolRegistry,
+    ActiveTools, DescriptionContext, FileReadTracker, ToolAudience, ToolFilter, ToolRegistry,
+    ToolsSnapshot,
 };
 use n00n_agent::{
     Agent, AgentConfig, AgentEvent, AgentInput, AgentParams, AgentRunParams, CancelMap,
@@ -55,7 +55,7 @@ pub(super) struct AgentLoop {
 }
 
 struct ToolsCache {
-    snap: Arc<Vec<RegisteredTool>>,
+    snap: Arc<ToolsSnapshot>,
     mcp_gen: Option<u64>,
     model_id: String,
     supports_tool_examples: bool,
