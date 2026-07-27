@@ -613,8 +613,7 @@ local function make_progress(ctx)
     }
     if state.agents > 0 or state.cached > 0 then
       header[#header + 1] = {
-        string.format("agents %d/%d cached %d", state.done, state.agents, state.cached),
-        "dim",
+        { string.format("agents %d/%d cached %d", state.done, state.agents, state.cached), "dim" },
       }
     end
     view:set_header(header)
