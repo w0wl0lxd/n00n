@@ -9,9 +9,14 @@
 //! A broken restore silently falls back to raw LLM output, so we assert
 //! things only the real views produce (gutters, command headers, truncation).
 
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    thread::JoinHandle,
+    time::{Duration, Instant},
+};
 
 use n00n_agent::AgentEvent;
+use n00n_agent::CancelTrigger;
 use n00n_agent::tools::ToolRegistry;
 use n00n_config::ToolOutputLines;
 use n00n_lua::PluginHost;
@@ -22,6 +27,7 @@ const BASH_SRC: &str = include_str!("../../plugins/bash/init.lua");
 const BATCH_SRC: &str = include_str!("../../plugins/batch/init.lua");
 const CODEGRAPH_SRC: &str = include_str!("../../plugins/codegraph/init.lua");
 const GREP_SRC: &str = include_str!("../../plugins/grep/init.lua");
+const WORKFLOW_SRC: &str = include_str!("../../plugins/workflow/init.lua");
 
 /// Only the real `ToolView` emits this when collapsed.
 const EXPAND_HINT: &str = "click to expand";
@@ -35,6 +41,37 @@ const BATCH_INPUT_GREP_BASH: &str = r#"{ "tool_calls": [
     { "tool": "grep", "parameters": { "pattern": "fn" } },
     { "tool": "bash", "parameters": { "command": "echo hello-from-bash" } }
 ]}"#;
+const WORKFLOW_TOOL: &str = "workflow";
+const LIVE_PREVIEW_ID: &str = "live-preview";
+const LIVE_PREVIEW_EVENT_SEQUENCE: u64 = 0;
+const LIVE_PREVIEW_RECEIVE_TIMEOUT: Duration = Duration::from_secs(5);
+const LIVE_PREVIEW_TIMEOUT_MSG: &str = "plugin did not publish a live preview";
+
+/// Cancels and joins the spawned tool on every exit path, including panics.
+struct LivePreviewGuard<T> {
+    cancel: Option<CancelTrigger>,
+    execution: Option<JoinHandle<T>>,
+}
+
+impl<T> LivePreviewGuard<T> {
+    fn new(cancel: CancelTrigger, execution: JoinHandle<T>) -> Self {
+        Self {
+            cancel: Some(cancel),
+            execution: Some(execution),
+        }
+    }
+}
+
+impl<T> Drop for LivePreviewGuard<T> {
+    fn drop(&mut self) {
+        if let Some(cancel) = self.cancel.take() {
+            cancel.cancel();
+        }
+        if let Some(execution) = self.execution.take() {
+            let _ = execution.join();
+        }
+    }
+}
 
 fn load_host() -> PluginHost {
     let reg = Arc::new(ToolRegistry::new());
@@ -45,6 +82,71 @@ fn load_host() -> PluginHost {
     host.load_source("codegraph", CODEGRAPH_SRC).unwrap();
     host.load_source("grep", GREP_SRC).unwrap();
     host
+}
+
+fn assert_publishes_live_buf(tool: &str, source: &str, input: Value, expected: &str) {
+    let reg = Arc::new(ToolRegistry::new());
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    if tool == WORKFLOW_TOOL {
+        host.load_source(
+            "disable_workflow_state",
+            "n00n.env.state_dir = function() return nil end",
+        )
+        .unwrap();
+    }
+    host.load_source("live_preview", source).unwrap();
+
+    let (tx, rx) = flume::unbounded();
+    let event_tx = n00n_agent::EventSender::new(tx, LIVE_PREVIEW_EVENT_SEQUENCE);
+    let mut ctx = n00n_agent::tools::test_support::stub_ctx_with(
+        &n00n_agent::AgentMode::Build,
+        Some(&event_tx),
+        Some(LIVE_PREVIEW_ID),
+    );
+    ctx.registry = Arc::clone(&reg);
+    let (cancel, token) = n00n_agent::CancelToken::new();
+    ctx.cancel = token;
+    let inv = reg.get(tool).unwrap().tool.parse(&input).unwrap();
+    let execution = std::thread::spawn(move || smol::block_on(inv.execute(&ctx)));
+    let _guard = LivePreviewGuard::new(cancel, execution);
+
+    let deadline = Instant::now() + LIVE_PREVIEW_RECEIVE_TIMEOUT;
+    let body = loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(!remaining.is_zero(), "{LIVE_PREVIEW_TIMEOUT_MSG}");
+        let env = rx
+            .recv_timeout(remaining)
+            .unwrap_or_else(|_| panic!("{LIVE_PREVIEW_TIMEOUT_MSG}"));
+        if let AgentEvent::LiveToolBuf { id, body } = env.event
+            && id == LIVE_PREVIEW_ID
+        {
+            break body;
+        }
+    };
+    assert!(
+        body.read()
+            .iter()
+            .flat_map(|line| &line.spans)
+            .any(|span| span.text.contains(expected))
+    );
+}
+
+#[test_case::test_case(
+    "bash",
+    BASH_SRC,
+    json!({ "command": "printf live-preview" }),
+    "live-preview";
+    "bash"
+)]
+#[test_case::test_case(
+    WORKFLOW_TOOL,
+    WORKFLOW_SRC,
+    json!({ "script": "meta({ name = 'preview' }) return 'done'" }),
+    "workflow";
+    "workflow"
+)]
+fn running_plugin_publishes_live_preview(tool: &str, source: &str, input: Value, expected: &str) {
+    assert_publishes_live_buf(tool, source, input, expected);
 }
 
 fn batch_state() -> Value {

@@ -37,6 +37,8 @@ const SUB_AGENT_ERROR_PREFIX: &str = "sub-agent error: ";
 
 const TASK_TOOL: &str = "task";
 const PROBE_TOOL: &str = "probe";
+const TASK_PREVIEW_ID: &str = "task-preview";
+const TASK_PREVIEW_EVENT_SEQUENCE: u64 = 0;
 const TASK_PROMPT: &str = "do the thing";
 const PLAIN_TEXT: &str = "plain text result";
 const PROMPT_ERR_MSG: &str = "model exploded";
@@ -570,4 +572,31 @@ fn three_concurrent_tasks_return_results_without_nil_lifecycle_errors() {
     let snap = probe(&reg);
     assert_eq!(snap["sessions"], json!(3));
     assert_eq!(snap["closed"], json!(3));
+}
+
+#[test_case::test_case(TASK_PREVIEW_ID; "running_task_publishes_live_preview")]
+fn running_task_publishes_live_preview(preview_id: &str) {
+    let (reg, _host) = load_task_host();
+    let entry = reg.get(TASK_TOOL).expect("task registered");
+    let inv = entry
+        .tool
+        .parse(&task_input(SCENARIO_PLAIN, None))
+        .expect("parse failed");
+    let (tx, rx) = flume::unbounded();
+    let event_tx = n00n_agent::EventSender::new(tx, TASK_PREVIEW_EVENT_SEQUENCE);
+    let mut ctx = n00n_agent::tools::test_support::stub_ctx_with(
+        &AgentMode::Build,
+        Some(&event_tx),
+        Some(preview_id),
+    );
+    ctx.registry = Arc::clone(&reg);
+
+    smol::block_on(inv.execute(&ctx)).output.unwrap();
+
+    rx.drain()
+        .find_map(|env| match env.event {
+            n00n_agent::AgentEvent::LiveToolBuf { id, body } if id == preview_id => Some(body),
+            _ => None,
+        })
+        .expect("task did not publish its live preview");
 }
