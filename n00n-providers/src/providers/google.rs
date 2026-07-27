@@ -16,8 +16,8 @@ use tracing::warn;
 use crate::model::{Model, ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider};
 use crate::{
-    AgentError, ContentBlock, Message, ProviderEvent, RequestOptions, Role, StopReason,
-    StreamResponse, System, ThinkingConfig, TokenUsage,
+    AgentError, CacheHealth, CacheKind, ContentBlock, Message, ProviderEvent, RequestOptions, Role,
+    StopReason, StreamResponse, System, ThinkingConfig, TokenUsage,
 };
 
 use super::{KeyPool, ResolvedAuth, http_client, next_sse_line};
@@ -624,6 +624,7 @@ impl Provider for Google {
             let status = response.status().as_u16();
 
             if status == 200 {
+<<<<<<< HEAD
                 let mut stream_response =
                     parse_sse(response, event_tx, self.stream_timeout).await?;
                 stream_response.usage.cache_creation = stream_response
@@ -647,6 +648,34 @@ impl Provider for Google {
                 }
                 self.do_stream(model, messages, system, tools, event_tx, opts.thinking)
                     .await
+||||||| parent of 8d887cc91 (feat(providers): emit CacheHealth for Anthropic, OpenRouter, Mistral, and Google)
+                parse_sse(response, event_tx, self.stream_timeout).await
+=======
+                let response = parse_sse(response, event_tx, self.stream_timeout).await?;
+
+                let hit = response.usage.cache_read > 0;
+                let cached = response.usage.cache_read > 0 || response.usage.cache_creation > 0;
+                let valid_until = if cached {
+                    n00n_storage::now_epoch().saturating_add(CACHE_TTL.as_secs())
+                } else {
+                    0
+                };
+                let ttl_seconds = if cached { CACHE_TTL.as_secs() } else { 0 };
+                let health = CacheHealth {
+                    kind: CacheKind::Prompt,
+                    valid_until,
+                    ttl_seconds,
+                    hit,
+                };
+                if let Err(error) = event_tx
+                    .send_async(ProviderEvent::CacheHealth { cache: health })
+                    .await
+                {
+                    warn!(error = %error, "failed to send Google cache health event");
+                }
+
+                Ok(response)
+>>>>>>> 8d887cc91 (feat(providers): emit CacheHealth for Anthropic, OpenRouter, Mistral, and Google)
             } else {
                 Err(AgentError::from_response(response).await)
             }
