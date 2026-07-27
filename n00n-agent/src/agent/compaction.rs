@@ -869,11 +869,31 @@ mod tests {
     fn empirical_debloat_benchmark() {
         let bpe = tiktoken_rs::cl100k_base_singleton();
 
-        // 1. File modification: Write (full file 500 lines) vs Block Edit vs Line Edit
+        // 1. Single Edit Comparison:
+        // A) Whole-File Write Fallback (500 lines)
         let full_file_content = (1..500)
             .map(|i| format!("fn line_{i}() {{ println!(\"line {i}\"); }}"))
             .collect::<Vec<_>>()
             .join("\n");
+        let write_payload = serde_json::json!({
+            "path": "src/main.rs",
+            "content": full_file_content
+        })
+        .to_string();
+
+        // B) Realistic Block-Search `edit` call (10 lines of surrounding old_string context)
+        let block_context = (40..50)
+            .map(|i| format!("fn line_{i}() {{ println!(\"line {i}\"); }}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let block_edit_payload = serde_json::json!({
+            "path": "src/main.rs",
+            "old_string": &block_context,
+            "new_string": block_context.replace("line 42", "modified line 42")
+        })
+        .to_string();
+
+        // C) `edit_lines` targeted line patch
         let line_edit_payload = serde_json::json!({
             "path": "src/main.rs",
             "start": 42,
@@ -881,24 +901,29 @@ mod tests {
             "new_string": "fn line_42() { println!(\"modified line 42\"); }"
         })
         .to_string();
-        let write_payload = serde_json::json!({
-            "path": "src/main.rs",
-            "content": full_file_content
-        })
-        .to_string();
 
         let write_tokens = bpe.encode_ordinary(&write_payload).len();
+        let block_edit_tokens = bpe.encode_ordinary(&block_edit_payload).len();
         let line_edit_tokens = bpe.encode_ordinary(&line_edit_payload).len();
 
-        let edit_token_savings_pct =
-            (1.0 - (line_edit_tokens as f64 / write_tokens as f64)) * 100.0;
+        let line_vs_write_savings = (1.0 - (line_edit_tokens as f64 / write_tokens as f64)) * 100.0;
+        let line_vs_block_savings =
+            (1.0 - (line_edit_tokens as f64 / block_edit_tokens as f64)) * 100.0;
+
         eprintln!(
-            "[BENCHMARK] Write tokens: {write_tokens}, Line Edit tokens: {line_edit_tokens} ({edit_token_savings_pct:.1}% savings)"
+            "[BENCHMARK] Write (500 lines): {write_tokens} t | Realistic Block Edit: {block_edit_tokens} t | Targeted Line Edit: {line_edit_tokens} t"
+        );
+        eprintln!(
+            "[BENCHMARK] Savings vs Write Fallback: {line_vs_write_savings:.1}% | Savings vs Block Edit: {line_vs_block_savings:.1}%"
         );
 
         assert!(
+            line_edit_tokens < block_edit_tokens,
+            "Targeted line edit must be smaller than block edit"
+        );
+        assert!(
             line_edit_tokens < write_tokens / 10,
-            "Line edit must use >90% fewer tokens than full write"
+            "Targeted line edit must be >90% smaller than full write"
         );
 
         // 2. Compaction: Uncompacted ToolUse payload vs Compacted ToolUse payload
@@ -934,44 +959,44 @@ mod tests {
     fn benchmark_multi_turn_session_context_growth() {
         let bpe = tiktoken_rs::cl100k_base_singleton();
 
-        let thousand_line_file = (1..=1000)
-            .map(|i| format!("pub fn handler_{i}() -> Result<(), Error> {{ Ok(()) }}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        let mut legacy_total_tokens = 0;
+        let mut realistic_legacy_total_tokens = 0;
         let mut debloated_total_tokens = 0;
 
         for turn in 1..=10 {
-            // Legacy flow: Re-sends full 1,000 line file via `write` on every turn
-            let legacy_input = serde_json::json!({
+            // Realistic legacy flow: Uses block search-and-replace edit with ~10 lines context (or occasional write fallback)
+            let block_context = (1..10)
+                .map(|i| format!("pub fn fn_{i}() {{ println!(\"fn {i}\"); }}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let legacy_block_edit = serde_json::json!({
                 "path": "src/lib.rs",
-                "content": thousand_line_file
+                "old_string": block_context.clone(),
+                "new_string": block_context.replace("fn 5", &format!("fn 5 mod {turn}"))
             })
             .to_string();
 
-            // Debloated flow: Sends line-targeted patch via `edit_lines`
-            let debloated_input = serde_json::json!({
+            // Debloated flow: Sends targeted line patch via `edit_lines`
+            let debloated_line_patch = serde_json::json!({
                 "path": "src/lib.rs",
-                "start": turn * 10,
-                "end": turn * 10,
-                "new_string": format!("pub fn handler_{}() -> Result<(), Error> {{ println!(\"mod\"); Ok(()) }}", turn * 10)
+                "start": turn * 5,
+                "end": turn * 5,
+                "new_string": format!("pub fn fn_{}() {{ println!(\"mod {turn}\"); }}", turn * 5)
             })
             .to_string();
 
-            legacy_total_tokens += bpe.encode_ordinary(&legacy_input).len();
-            debloated_total_tokens += bpe.encode_ordinary(&debloated_input).len();
+            realistic_legacy_total_tokens += bpe.encode_ordinary(&legacy_block_edit).len();
+            debloated_total_tokens += bpe.encode_ordinary(&debloated_line_patch).len();
         }
 
         let multi_turn_savings_pct =
-            (1.0 - (debloated_total_tokens as f64 / legacy_total_tokens as f64)) * 100.0;
+            (1.0 - (debloated_total_tokens as f64 / realistic_legacy_total_tokens as f64)) * 100.0;
         eprintln!(
-            "[BENCHMARK Multi-Turn 10-Edits] Legacy Total: {legacy_total_tokens} tokens | Debloated Total: {debloated_total_tokens} tokens ({multi_turn_savings_pct:.1}% total savings)"
+            "[BENCHMARK Realistic Multi-Turn 10-Edits] Block Edit Total: {realistic_legacy_total_tokens} t | Line Edit Total: {debloated_total_tokens} t ({multi_turn_savings_pct:.1}% savings)"
         );
 
         assert!(
-            debloated_total_tokens < legacy_total_tokens / 20,
-            "Multi-turn debloated flow must consume <5% of legacy tokens"
+            debloated_total_tokens < realistic_legacy_total_tokens,
+            "Line edit multi-turn flow must consume fewer tokens than block edit flow"
         );
     }
 
