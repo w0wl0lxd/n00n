@@ -2960,6 +2960,41 @@ fn bash_permission_scopes_allows_bounded_du_without_prompt() {
     );
 }
 
+#[test_case::test_case("rg -m 1 needle ." ; "rg_max_count_is_per_file")]
+#[test_case::test_case("git grep -m 1 needle" ; "git_grep_max_count_is_per_file")]
+#[test_case::test_case("rg needle . && printf done | head -n 1" ; "head_caps_only_its_pipeline")]
+#[test_case::test_case("rg needle . && printf done | tail -n 1" ; "tail_caps_only_its_pipeline")]
+#[test_case::test_case("LC_ALL=C rg needle ." ; "leading_environment_assignment")]
+#[test_case::test_case("LABEL='two words' rg needle ." ; "quoted_environment_assignment")]
+fn bash_permission_scopes_marks_reviewed_unbounded_commands_for_prompt(command: &str) {
+    let (reg, _host) = builtins_host();
+
+    let input = serde_json::json!({ "command": command });
+    let entry = reg.get("bash").expect("bash registered");
+    let inv = entry.tool.parse(&input).expect("parse failed");
+    let scopes = smol::block_on(inv.permission_scopes())
+        .expect("permission_scopes returned None for bash command");
+
+    assert!(
+        scopes.force_prompt,
+        "expected unbounded command to require a prompt: {command}"
+    );
+}
+
+#[test_case::test_case("rg -m 1 needle ." ; "rg_max_count_is_per_file")]
+#[test_case::test_case("rg needle . && printf done | head -n 1" ; "head_caps_only_its_pipeline")]
+#[test_case::test_case("LC_ALL=C rg needle ." ; "leading_environment_assignment")]
+fn bash_handler_blocks_reviewed_unbounded_commands(command: &str) {
+    let (reg, _host) = builtins_host();
+
+    let err = exec_tool(&reg, "bash", serde_json::json!({ "command": command })).unwrap_err();
+
+    assert!(
+        err.contains("justification is required"),
+        "missing guardrail feedback for {command}: {err}"
+    );
+}
+
 #[test]
 fn bash_handler_blocks_broad_command_without_justification() {
     let (reg, _host) = builtins_host();

@@ -82,16 +82,59 @@ local function has_output_cap(command)
   if normalized == "" then
     return false
   end
-  return normalized:find("|%s*head", 1) ~= nil or normalized:find("|%s*tail", 1) ~= nil
+
+  for _, executable in ipairs({ "head", "tail" }) do
+    if normalized:find("|%s*" .. executable .. "%s") or normalized:find("|%s*" .. executable .. "$") then
+      return true
+    end
+  end
+  return false
 end
 
-local function broad_bash_command_reason(command, full_command)
-  local normalized = trim(command):lower()
+local function shell_word_end(command)
+  local quote
+  local index = 1
+  while index <= #command do
+    local char = command:sub(index, index)
+    if quote then
+      if char == quote then
+        quote = nil
+      elseif char == "\\" and quote == '"' then
+        index = index + 1
+      end
+    elseif char == "'" or char == '"' then
+      quote = char
+    elseif char == "\\" then
+      index = index + 1
+    elseif char:match("%s") then
+      return index - 1
+    end
+    index = index + 1
+  end
+  return #command
+end
+
+local function strip_leading_assignments(command)
+  local remaining = trim(command)
+  while remaining ~= "" do
+    local word_end = shell_word_end(remaining)
+    local word = remaining:sub(1, word_end)
+    if not word:match("^[_%a][_%w]*=") then
+      return remaining
+    end
+    remaining = trim(remaining:sub(word_end + 1))
+  end
+  return remaining
+end
+
+local function broad_bash_command_reason(command)
+  local executable_command = strip_leading_assignments(command)
+  local normalized = executable_command:lower()
   if normalized == "" then
     return nil
   end
 
-  local context = trim(full_command or command):lower()
+  local context = normalized
 
   local cmd = normalized:match("^(%S+)")
   if not cmd then
@@ -117,15 +160,12 @@ local function broad_bash_command_reason(command, full_command)
   end
 
   if (cmd == "rg" or cmd == "grep") and not has_output_cap(context) then
-    if has_option(normalized, "-m") or has_option(normalized, "--max-count") then
-      return nil
-    end
     return "search with unbounded result size"
   end
 
   if
     cmd == "ls"
-    and (has_option(normalized, "--recursive") or has_option(command, "-R"))
+    and (has_option(normalized, "--recursive") or has_option(executable_command, "-R"))
     and not has_output_cap(context)
   then
     return "recursive ls without output cap"
@@ -143,7 +183,7 @@ local function broad_bash_command_reason(command, full_command)
   end
 
   if cmd == "tree" and not has_output_cap(context) then
-    if not has_option(command, "-L") and not has_option(normalized, "--max-depth") then
+    if not has_option(executable_command, "-L") and not has_option(normalized, "--max-depth") then
       return "tree without depth bound"
     end
   end
@@ -159,9 +199,6 @@ local function broad_bash_command_reason(command, full_command)
       end
 
       if subcommand == "grep" then
-        if has_option(normalized, "-m") or has_option(normalized, "--max-count") then
-          return nil
-        end
         return "git grep without result limit"
       end
     end
@@ -352,20 +389,52 @@ local function collect_commands(node, source)
   return out
 end
 
+local function collect_guard_commands(node, source)
+  if node:type() == "pipeline" then
+    local commands = {}
+    for child in node:iter_children() do
+      if child:named() then
+        commands[#commands + 1] = trim(n00n.treesitter.get_node_text(child, source))
+      end
+    end
+
+    local guarded = {}
+    for index = 1, #commands do
+      guarded[#guarded + 1] = table.concat(commands, " | ", index)
+    end
+    return guarded
+  end
+
+  if LEAF_COMMAND_TYPES[node:type()] then
+    return { trim(n00n.treesitter.get_node_text(node, source)) }
+  end
+
+  local guarded = {}
+  for child in node:iter_children() do
+    if child:named() then
+      local nested = collect_guard_commands(child, source)
+      for _, command in ipairs(nested) do
+        guarded[#guarded + 1] = command
+      end
+    end
+  end
+  return guarded
+end
+
 local function broad_command_reason(command)
   local parser = n00n.treesitter.get_parser(command, "bash")
   if not parser then
-    return broad_bash_command_reason(command, command)
+    return broad_bash_command_reason(command)
   end
 
   local root = parser:parse()[1]:root()
   if root:has_error() or is_complex(root) then
-    return broad_bash_command_reason(command, command)
+    return broad_bash_command_reason(command)
   end
 
-  local segments = collect_commands(root, command)
+  local segments = collect_guard_commands(root, command)
   for _, segment in ipairs(segments) do
-    local reason = broad_bash_command_reason(segment, command)
+    local reason = broad_bash_command_reason(segment)
     if reason then
       return reason
     end
@@ -438,10 +507,8 @@ n00n.api.register_tool({
     if #segments == 0 then
       segments = { command }
     end
-    for _, segment in ipairs(segments) do
-      if broad_bash_command_reason(segment, command) then
-        return { scopes = segments, force_prompt = true }
-      end
+    if broad_command_reason(command) then
+      return { scopes = segments, force_prompt = true }
     end
     return { scopes = segments, force_prompt = false }
   end,
