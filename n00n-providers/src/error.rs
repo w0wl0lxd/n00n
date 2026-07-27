@@ -120,6 +120,21 @@ impl AgentError {
         }
     }
 
+    /// Converts transport-level failures that may have occurred after the
+    /// provider accepted the request into [`RequestSent`], which is not
+    /// retryable. Leaves explicit API/server errors unchanged so the caller
+    /// can apply its own retry/backoff policy when no output has been emitted.
+    #[must_use]
+    pub fn suppress_retry_after_send(self, metadata: Option<RequestDeliveryMetadata>) -> Self {
+        match self {
+            Self::Io(_) | Self::Http(_) | Self::Timeout { .. } => Self::RequestSent {
+                message: self.to_string(),
+                metadata,
+            },
+            _ => self,
+        }
+    }
+
     /// Returns true if the error indicates a context window overflow.
     ///
     /// Provider error formats:

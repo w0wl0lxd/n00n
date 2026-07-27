@@ -17,6 +17,7 @@ use crate::{
 const RESPONSES_PATH: &str = "/responses";
 const RESPONSE_IN_FLIGHT_TIMEOUT_MULTIPLIER: u32 = 6;
 const MAX_RESPONSE_IN_FLIGHT_TIMEOUT: Duration = Duration::from_mins(30);
+const TOOL_RESULT_ERROR_PREFIX: &str = "[ERROR] ";
 
 pub(crate) fn response_in_flight_timeout(stream_timeout: Duration) -> Duration {
     stream_timeout
@@ -82,12 +83,18 @@ pub(crate) fn convert_input(messages: &[Message]) -> Value {
                         ContentBlock::ToolResult {
                             tool_use_id,
                             content,
-                            ..
+                            is_error,
                         } => {
+                            let output =
+                                if *is_error && !content.starts_with(TOOL_RESULT_ERROR_PREFIX) {
+                                    format!("{TOOL_RESULT_ERROR_PREFIX}{content}")
+                                } else {
+                                    content.clone()
+                                };
                             input.push(json!({
                                 "type": "function_call_output",
                                 "call_id": tool_use_id,
-                                "output": content,
+                                "output": output,
                             }));
                         }
                         ContentBlock::ToolUse { .. }
@@ -235,14 +242,7 @@ pub(crate) fn convert_tools(anthropic_tools: &Value) -> Value {
 }
 
 fn suppress_retry_after_response(error: AgentError) -> AgentError {
-    if error.is_retryable() {
-        AgentError::RequestSent {
-            message: error.to_string(),
-            metadata: None,
-        }
-    } else {
-        error
-    }
+    error.suppress_retry_after_send(None)
 }
 
 pub(crate) async fn do_stream(
@@ -1121,6 +1121,23 @@ data: {\"response\":{\"status\":\"incomplete\",\"usage\":{\"input_tokens\":10,\"
     }
 
     #[test]
+    fn convert_input_prefixes_error_tool_result() {
+        let messages = vec![Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "tc_1".into(),
+                content: "sub-agent error: API 500".into(),
+                is_error: true,
+            }],
+            ..Default::default()
+        }];
+        let input = convert_input(&messages);
+        let output = input[0]["output"].as_str().unwrap();
+        assert!(output.starts_with(TOOL_RESULT_ERROR_PREFIX));
+        assert!(output.contains("sub-agent error: API 500"));
+    }
+
+    #[test]
     fn parse_sse_opaque_reasoning_text_delta_is_not_displayed() {
         smol::block_on(async {
             let sse = "\
@@ -1588,16 +1605,15 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
     }
 
     #[test]
-    fn post_response_api_error_is_not_retried() {
+    fn post_response_api_error_stays_retryable() {
         let error = AgentError::Api {
             status: 500,
             message: "provider rejected request".into(),
         };
 
-        assert!(matches!(
-            suppress_retry_after_response(error),
-            AgentError::RequestSent { .. }
-        ));
+        let suppressed = suppress_retry_after_response(error);
+        assert!(matches!(suppressed, AgentError::Api { status: 500, .. }));
+        assert!(suppressed.is_retryable());
     }
 
     #[test]
