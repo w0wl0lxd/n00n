@@ -13,6 +13,7 @@ pub mod lock;
 pub mod paths;
 pub mod protocol;
 pub mod registry;
+pub mod scripting;
 pub mod server;
 pub mod transport;
 
@@ -22,4 +23,5 @@ pub use protocol::{
     AgentRecord, BackendKind, ControlRequest, ControlResponse, MessageOpts, PROTOCOL_VERSION,
 };
 pub use registry::{ControlPlane, TuiCallbackBackend};
+pub use scripting::{AgentScriptView, AgentStateKind, is_terminal_worker_status, normalize_state};
 pub use transport::Endpoint;

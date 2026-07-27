@@ -333,6 +333,15 @@ pub enum AgentCommand {
     },
     /// List background agents
     List {
+        /// Emit a JSON array for scripting (`claude agents --json` parity)
+        #[arg(long)]
+        json: bool,
+        /// Include stopped/completed background workers
+        #[arg(long)]
+        all: bool,
+        /// Only list agents for this working directory
+        #[arg(long)]
+        cwd: Option<PathBuf>,
         /// Override state directory
         #[arg(long)]
         state_dir: Option<PathBuf>,
@@ -340,6 +349,9 @@ pub enum AgentCommand {
     /// Show agent status
     Status {
         id: String,
+        /// Emit a JSON object for scripting
+        #[arg(long)]
+        json: bool,
         #[arg(long)]
         state_dir: Option<PathBuf>,
     },
@@ -604,7 +616,12 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::Agent {
-                action: AgentCommand::List { state_dir: None }
+                action: AgentCommand::List {
+                    state_dir: None,
+                    json: false,
+                    all: false,
+                    cwd: None,
+                }
             })
         ));
     }

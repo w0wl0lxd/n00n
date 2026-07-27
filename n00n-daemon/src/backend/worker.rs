@@ -29,6 +29,8 @@ struct WorkerStateFile {
     prompt: String,
     #[serde(default)]
     updated_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cwd: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -111,6 +113,7 @@ impl WorkerBackend {
                 Some(state.model.clone())
             },
             output: None,
+            cwd: state.cwd.clone(),
         }
     }
 
@@ -275,6 +278,7 @@ mod tests {
             model: "test/model".into(),
             prompt: "hello world".into(),
             updated_at: 1,
+            cwd: None,
         };
         let encoded = sonic_rs::to_string_pretty(&state).map_err(|e| e.to_string())?;
         fs::write(agent_dir.join(STATE_FILE), encoded).map_err(|e| e.to_string())?;
@@ -376,6 +380,7 @@ mod tests {
             model: "test/model".into(),
             prompt: "hello world".into(),
             updated_at: 1,
+            cwd: None,
         };
         let encoded = sonic_rs::to_string_pretty(&state).map_err(|e| e.to_string())?;
         fs::write(agent_dir.join(STATE_FILE), encoded).map_err(|e| e.to_string())?;
