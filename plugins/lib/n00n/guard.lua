@@ -50,6 +50,10 @@ function M.new(opts)
       return nil, guard_error("budget", "agent-call limit " .. self.limit .. " reached")
     end
 
+    if self.consecutive_errors >= self.max_consecutive_errors then
+      return nil, guard_error("consecutive errors", self.consecutive_errors .. " in a row")
+    end
+
     if prompt then
       local count = self.prompts[prompt] or 0
       if count >= self.max_repeated then
@@ -57,11 +61,12 @@ function M.new(opts)
       end
     end
 
+    self.used = self.used + 1
     return true
   end
 
-  -- Record a subagent result. Returns (ok, err); on error the caller should
-  -- treat the run as failed even if the subagent returned a result.
+  -- Record a subagent result. Returns (ok, err); updates prompt-frequency and
+  -- consecutive-error heuristics.
   function self.record(_, prompt, err)
     if prompt then
       self.prompts[prompt] = (self.prompts[prompt] or 0) + 1
@@ -69,14 +74,13 @@ function M.new(opts)
 
     if err then
       self.consecutive_errors = self.consecutive_errors + 1
-      if self.consecutive_errors >= self.max_consecutive_errors then
+      if self.consecutive_errors > self.max_consecutive_errors then
         return nil, guard_error("consecutive errors", self.consecutive_errors .. " in a row")
       end
     else
       self.consecutive_errors = 0
     end
 
-    self.used = self.used + 1
     return true
   end
 
