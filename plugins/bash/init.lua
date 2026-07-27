@@ -235,8 +235,9 @@ local function collect_commands(node, source)
   return out
 end
 
-local description = [[Execute a bash command.
-Commands run in ]] .. cwd .. [[ by default.
+local description = [[Execute bash command in ]]
+  .. cwd
+  .. [[ by default.
 
 - **DO NOT** use for file ops! Only git, builds, tests, and system commands.
 - When `rtk` is installed, commands are auto-rewritten through `rtk` for 60-90% token savings (e.g. `git status` -> `rtk git status`, `rg` -> `rtk rg`, `jq`/`yq` -> `rtk jq`/`rtk yq`).
@@ -268,10 +269,10 @@ n00n.api.register_tool({
   schema = {
     type = "object",
     properties = {
-      command = { type = "string", description = "The bash command to execute", required = true },
-      timeout = { type = "integer", description = "Timeout in seconds (default 120)" },
+      command = { type = "string", description = "Bash command to execute", required = true },
+      timeout = { type = "integer", description = "Timeout seconds (default 120)" },
       workdir = { type = "string", description = "Working directory (default: cwd)" },
-      description = { type = "string", description = "Short description (3-5 words) of what the command does" },
+      description = { type = "string", description = "Short description (3-5 words) of what command does" },
     },
   },
   permission_scopes = function(input)

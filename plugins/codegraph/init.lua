@@ -60,7 +60,7 @@ Requires the codegraph CLI and a .codegraph/ index in the project root.]],
         type = "string",
         description = "Natural language question or symbol/file names to explore (e.g. 'AuthService login', 'GraphTraverser BFS impact')",
       },
-      projectPath = { type = "string", description = "Absolute path to the project (defaults to current workspace)" },
+      projectPath = { type = "string", description = "Absolute path to project (defaults to current workspace)" },
     },
   },
 

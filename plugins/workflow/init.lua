@@ -77,11 +77,11 @@ local INVALID_RUN_ID_ERROR = "resume must be a run_id (hex letters/digits only, 
 local RUN_ID_PATTERN = "^[%x]+$"
 local DEFAULT_TIMEOUT_SECS = 600
 
-local description = [[Run a bounded, sandboxed Lua workflow for multi-stage agent orchestration.
+local description = [[Run bounded, sandboxed Lua workflow for multi-stage agent orchestration.
 
 Start with meta({ name = ..., description = ..., phases = {...} }). Globals: agent({ prompt, subagent_type?, model_tier?, label?, output_schema? }) returns isolated agent result (research=read-only, general=default; tiers weak/medium/strong; output_schema returns validated JSON). parallel(fns, { concurrency? }) runs branches in order; any failure fails the call. pipeline(items, stages, { concurrency? }) runs each item through all stages. phase(name, fn), log(...), and inputs.
 
-No n00n, os, io, require, print, or load. Scripts must be deterministic for resume replay, must return the final string, and are limited to 24 agent calls by default (32 hard maximum). Use task for one agent.]]
+No n00n, os, io, require, print, or load. Scripts must be deterministic for resume replay, must return final string, limited to 24 agent calls by default (32 hard max). Use task for single agent.]]
 
 local schema = {
   type = "object",
@@ -99,18 +99,6 @@ local schema = {
       type = "string",
       description = "Prior run_id. Replays journaled agent() results; only spends tokens on new calls.",
     },
-  },
-}
-
-local examples = {
-  {
-    description = "Review two files in parallel",
-    script = [[meta({ name = "review" })
-local out = parallel({
-  function() return agent({ prompt = "Review src/a.rs." }) end,
-  function() return agent({ prompt = "Review src/b.rs." }) end,
-})
-return table.concat(out, "\n")]],
   },
 }
 
@@ -939,7 +927,6 @@ n00n.api.register_tool({
   description = description,
   kind = "execute",
   audiences = { "main" },
-  examples = examples,
   schema = schema,
   handler = handler,
   header = header,

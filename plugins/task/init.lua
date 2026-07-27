@@ -51,7 +51,7 @@ local function schema_within_depth(value, depth)
 end
 
 local description =
-  [[Launch one isolated agent; combine independent calls with batch. research (default) is read-only; general can edit. Each call starts fresh, so include context and ask for concise file:line results. Summarize returned results. auto_tier is opt-in. background returns agent_id.]]
+  [[Launch isolated agent; combine independent calls with batch. research (default) = read-only; general = can edit. Each call starts fresh; include context and ask for concise file:line results. Summarize returned results. auto_tier opt-in. background returns agent_id.]]
 
 local schema = {
   type = "object",
@@ -64,11 +64,11 @@ local schema = {
     },
     prompt = {
       type = "string",
-      description = "Detailed task prompt for the agent",
+      description = "Detailed task prompt for agent",
     },
     subagent_type = {
       type = "string",
-      description = '"research" (read-only, default) or "general" (can edit)',
+      description = "research (read-only, default) or general (can edit)",
     },
     model = {
       type = "string",
@@ -76,11 +76,11 @@ local schema = {
     },
     model_tier = {
       type = "string",
-      description = 'Capped tier: "weak", "medium", or "strong"',
+      description = "Capped tier: weak, medium, or strong",
     },
     thinking = {
       type = { "string", "integer" },
-      description = 'Thinking mode: "off", "adaptive", effort level, or token budget. Omit to inherit user setting.',
+      description = "Thinking: off, adaptive, effort, or token budget. Omit to inherit user setting.",
     },
     auto_tier = {
       type = "boolean",
@@ -88,19 +88,11 @@ local schema = {
     },
     background = {
       type = "boolean",
-      description = "Start in background session; return agent_id immediately.",
+      description = "Start in background; return agent_id immediately.",
     },
     output_schema = {
       description = "JSON Schema (object) subagent result must match. Result returned as validated JSON string.",
     },
-  },
-}
-
-local examples = {
-  {
-    description = "Find auth middleware",
-    prompt = "Search the codebase for authentication middleware. Return file paths and a summary of how auth is implemented.",
-    model_tier = "weak",
   },
 }
 
@@ -414,7 +406,6 @@ n00n.api.register_tool({
   description = description,
   kind = "execute",
   audiences = { "main", "workflow" },
-  examples = examples,
   schema = schema,
   handler = handler,
   header = header,

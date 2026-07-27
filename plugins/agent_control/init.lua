@@ -76,12 +76,12 @@ local schema = {
             restricted_tools = {
               type = "array",
               items = { type = "string" },
-              description = "Tools that agents in scope cannot use.",
+              description = "Tools agents in scope cannot use.",
             },
             allowed_tools = {
               type = "array",
               items = { type = "string" },
-              description = "Tools that agents in scope can use (whitelist mode).",
+              description = "Tools agents in scope can use (whitelist mode).",
             },
             paused = { type = "boolean", description = "Whether agents in scope are paused." },
             priority = { type = "integer", description = "Policy priority (higher wins on conflict)." },

@@ -108,7 +108,7 @@ local PLANNER_OUTPUT = {
 }
 
 local description =
-  [[Run an ALMAS team for an SDLC goal. supervised returns a plan; autonomous executes it; swarm runs decentralized rounds. background returns an agent_id for agent_control.]]
+  [[Run ALMAS team for SDLC goal. supervised=plan, autonomous=execute, swarm=decentralized rounds. background returns agent_id.]]
 
 local schema = {
   type = "object",
@@ -117,19 +117,19 @@ local schema = {
   properties = {
     goal = {
       type = "string",
-      description = "High-level SDLC goal.",
+      description = "SDLC goal.",
     },
     mode = {
       type = "string",
       enum = { "supervised", "autonomous", "swarm" },
       default = "supervised",
-      description = '"supervised" (return plan), "autonomous" (run plan), "swarm" (decentralized rounds).',
+      description = "supervised=plan, autonomous=run, swarm=decentralized.",
     },
     max_rounds = {
       type = "integer",
       minimum = 1,
       maximum = MAX_SWARM_ROUNDS,
-      description = "Swarm max rounds (default 2, max 4).",
+      description = "Swarm rounds (default 2, max 4).",
     },
     max_concurrent = {
       type = "integer",
@@ -141,13 +141,13 @@ local schema = {
       type = "integer",
       minimum = 1,
       maximum = MAX_TEAM_AGENTS,
-      description = "Team agent budget (default 16, max 24).",
+      description = "Agent budget (default 16, max 24).",
     },
     max_steps = {
       type = "integer",
       minimum = 1,
       maximum = MAX_PLAN_STEPS,
-      description = "Max plan steps (default 6, max 8).",
+      description = "Plan steps (default 6, max 8).",
     },
     model = {
       type = "string",
@@ -159,7 +159,7 @@ local schema = {
     },
     thinking = {
       type = { "string", "integer" },
-      description = 'Thinking mode: "off", "adaptive", effort level, or token budget. Default: "adaptive".',
+      description = 'Thinking: "off", "adaptive", effort, or token budget. Default: "adaptive".',
     },
     auto_tier = {
       type = "boolean",
@@ -182,7 +182,7 @@ local schema = {
     },
     background = {
       type = "boolean",
-      description = "Start in background session; return agent_id.",
+      description = "Start in background; return agent_id.",
     },
     compact = {
       type = "boolean",
@@ -192,12 +192,12 @@ local schema = {
     use_summary = {
       type = "boolean",
       default = false,
-      description = "Use the Summary Agent index for retrieval.",
+      description = "Use Summary Agent index for retrieval.",
     },
     human_escalation = {
       type = "boolean",
       default = false,
-      description = "Pause on step failure and return a resumable run_id.",
+      description = "Pause on step failure; return resumable run_id.",
     },
     resume = {
       type = "string",
@@ -205,24 +205,24 @@ local schema = {
     },
     continue = {
       type = "string",
-      description = "Human guidance appended when resuming.",
+      description = "Human guidance when resuming.",
     },
     waves = {
       type = "boolean",
       default = false,
-      description = "Execute plan in waves (plan, implement, validate) with validation gates.",
+      description = "Execute in waves (plan, implement, validate) with validation gates.",
     },
     checkpoints = {
       type = "boolean",
       default = false,
-      description = "Persist checkpoints after each wave for resume capability.",
+      description = "Persist checkpoints after each wave for resume.",
     },
     max_wave_retries = {
       type = "integer",
       minimum = 1,
       maximum = MAX_WAVE_RETRIES,
       default = DEFAULT_MAX_WAVE_RETRIES,
-      description = "Max retries when validation gate fails (default 3, max 5).",
+      description = "Validation gate retries (default 3, max 5).",
     },
   },
 }

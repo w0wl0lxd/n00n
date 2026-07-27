@@ -441,7 +441,7 @@ local function query_posts(filters)
 end
 
 local description =
-  "Shared coordination substrate for multi-agent sessions. Post observations, claim tasks atomically, and query coordination state."
+  "Shared coordination for multi-agent sessions. Post observations, claim tasks atomically, query state."
 
 local schema = {
   type = "object",
@@ -450,13 +450,13 @@ local schema = {
     action = {
       type = "string",
       enum = { "write", "read", "claim_task", "release_task", "update_task", "query", "list_claims" },
-      description = "Blackboard action.",
+      description = "Action.",
     },
     post = {
       type = "object",
-      description = "Post data for write action.",
+      description = "Post data for write.",
       properties = {
-        id = { type = "string", description = "Unique post identifier (optional, auto-generated if omitted)." },
+        id = { type = "string", description = "Unique ID (optional, auto-generated if omitted)." },
         type = {
           type = "string",
           enum = { "observation", "claim", "status", "escalation" },
@@ -470,29 +470,29 @@ local schema = {
     },
     post_id = {
       type = "string",
-      description = "Post ID for read action.",
+      description = "Post ID for read.",
     },
     task_id = {
       type = "string",
-      description = "Task ID for claim/release/update actions.",
+      description = "Task ID for claim/release/update.",
     },
     claim = {
       type = "object",
-      description = "Claim data for claim_task action.",
+      description = "Claim data for claim_task.",
       properties = {
         task_id = { type = "string", description = "Task ID to claim." },
-        expires_in = { type = "integer", description = "Claim TTL in seconds (default 300, max 3600)." },
+        expires_in = { type = "integer", description = "TTL seconds (default 300, max 3600)." },
       },
       required = { "task_id" },
     },
     status = {
       type = "string",
-      description = "Status for update_task action.",
+      description = "Status for update_task.",
       enum = { "done", "failed" },
     },
     query = {
       type = "object",
-      description = "Query parameters for query action.",
+      description = "Query parameters.",
       properties = {
         type = {
           type = "string",
@@ -502,12 +502,12 @@ local schema = {
         task_id = { type = "string", description = "Filter by task ID." },
         tags = { type = "array", items = { type = "string" }, description = "Filter by tags (any match)." },
         agent_id = { type = "string", description = "Filter by agent ID." },
-        limit = { type = "integer", description = "Maximum results (default 100, max 1000)." },
+        limit = { type = "integer", description = "Max results (default 100, max 1000)." },
       },
     },
     only_active = {
       type = "boolean",
-      description = "For list_claims: if true (default), return only active claims. If false, return all claims.",
+      description = "For list_claims: true (default) = active only, false = all.",
     },
   },
 }
