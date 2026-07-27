@@ -163,6 +163,8 @@ fn plan_git_is_read_only(arguments: &[&str]) -> bool {
                     *argument == "--output"
                         || argument.starts_with("--output=")
                         || *argument == "--ext-diff"
+                        || *argument == "--recurse-submodules"
+                        || argument.starts_with("--submodule")
                 }) {
                     return false;
                 }
@@ -1159,6 +1161,8 @@ mod tests {
     #[test_case("git --config-env=FOO=BAR log", false ; "git_config_env_rejected")]
     #[test_case("git --exec-path=/mal log", false ; "git_exec_path_rejected")]
     #[test_case("git diff --ext-diff", false ; "git_ext_diff_rejected")]
+    #[test_case("git diff --recurse-submodules", false ; "git_recurse_submodules_rejected")]
+    #[test_case("git diff --submodule=log", false ; "git_submodule_rejected")]
     #[test_case("git -c core.fsmonitor=false status", true ; "git_fsmonitor_false_allowed")]
     #[test_case("git -c core.fsmonitor=true status", false ; "git_fsmonitor_true_rejected")]
     #[test_case("git -c CORE.FSMONITOR=FALSE -C repo diff --stat", true ; "git_fsmonitor_false_case_insensitive")]
