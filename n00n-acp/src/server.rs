@@ -42,6 +42,7 @@ struct SessionState {
     current_mode: AgentMode,
     current_model: String,
     pending_prompt: PendingPrompt,
+    _daemon: Option<crate::SessionDaemonGuard>,
 }
 
 struct Server {
@@ -138,7 +139,7 @@ fn handle_request(srv: &mut Server, method: &str, id: RequestId, raw: &Value, pa
             let spec = params.model.spec();
             let resp = methods::new_session_response(handle.session_id.as_str())
                 .config_options(vec![methods::model_config_option(&spec, &srv.model_specs)]);
-            install_session(srv, handle, spec);
+            install_session(srv, handle, spec, params);
             AgentResponse::NewSessionResponse(resp)
         }),
         "session/load" => parse_params::<LoadSessionRequest>(raw).and_then(|req| {
@@ -155,7 +156,7 @@ fn handle_request(srv: &mut Server, method: &str, id: RequestId, raw: &Value, pa
             let spec = params.model.spec();
             let resp = methods::load_session_response()
                 .config_options(vec![methods::model_config_option(&spec, &srv.model_specs)]);
-            install_session(srv, handle, spec);
+            install_session(srv, handle, spec, params);
             Ok(AgentResponse::LoadSessionResponse(resp))
         }),
         "session/prompt" => match handle_prompt(srv, raw, &id) {
@@ -194,7 +195,12 @@ fn spawn_session(
     })
 }
 
-fn install_session(srv: &mut Server, handle: InteractiveHandle, current_model: String) {
+fn install_session(
+    srv: &mut Server,
+    handle: InteractiveHandle,
+    current_model: String,
+    params: &AcpParams,
+) {
     let pending = Arc::new(Mutex::new(PendingPromptState::default()));
     start_event_pump(
         handle.event_rx.clone(),
@@ -202,11 +208,17 @@ fn install_session(srv: &mut Server, handle: InteractiveHandle, current_model: S
         srv.out_tx.clone(),
         Arc::clone(&pending),
     );
+    let daemon = params.session_daemon_register.and_then(|register| {
+        n00n_storage::StateDir::resolve()
+            .ok()
+            .and_then(|storage| register(storage.path(), &handle, &current_model))
+    });
     srv.session = Some(SessionState {
         handle,
         current_mode: AgentMode::Build,
         current_model,
         pending_prompt: pending,
+        _daemon: daemon,
     });
 }
 

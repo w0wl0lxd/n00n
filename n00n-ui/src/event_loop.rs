@@ -883,6 +883,7 @@ impl<'t> EventLoop<'t> {
                             "status": SessionStatus::of(&rt.app).as_str(),
                             "updated_at": rt.app.state.session.updated_at,
                             "focused": i == self.focused,
+                            "cwd": rt.app.state.session.cwd,
                         })
                     })
                     .collect();
@@ -909,6 +910,7 @@ impl<'t> EventLoop<'t> {
                         "focused": idx == self.focused,
                         "output": output,
                         "paused_team": paused_team,
+                        "cwd": rt.app.state.session.cwd,
                     }))
                 });
                 let _ = reply_tx.send(reply);

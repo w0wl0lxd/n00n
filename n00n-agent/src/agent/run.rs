@@ -5,8 +5,8 @@ use tracing::{error, info, warn};
 
 use n00n_providers::provider::Provider;
 use n00n_providers::{
-    ContentBlock, Message, Model, OpenAiOptions, RequestOptions, Role, StopReason, StreamResponse,
-    System, TokenUsage,
+    ContentBlock, HistoryReplayReason, Message, Model, OpenAiOptions, RequestOptions, Role,
+    StopReason, StreamResponse, System, TokenUsage,
 };
 
 use super::compaction::{self, CONTINUE_AFTER_COMPACT};
@@ -17,15 +17,16 @@ use super::streaming::stream_with_retry;
 use super::tool_dispatch::{self, RecentCalls};
 use crate::cancel::{CancelMap, CancelToken, PreDispatchGate};
 use crate::mcp::McpSession;
-use crate::permissions::PermissionManager;
+use crate::permissions::{PermissionAnswer, PermissionManager};
 use crate::tools::{
     ActiveTools, Deadline, FileReadTracker, LocalTools, ToolAudience, ToolContext, ToolFilter,
+    ToolRegistry,
 };
 use crate::{
     AgentConfig, AgentError, AgentEvent, AgentInput, AgentMode, EventSender, ExtractedCommand,
     InterruptPoint, InterruptSource, ToolDoneEvent, TurnCompleteEvent,
 };
-use n00n_config::ToolOutputLines;
+use n00n_config::{ToolKey, ToolOutputLines};
 use n00n_storage::id::SessionRef;
 
 use crate::tokenize::{
@@ -37,6 +38,8 @@ const NUDGE_PROMPT: &str = "You just executed tool calls but returned an empty r
 const THINKING_NUDGE_PROMPT: &str = "You provided reasoning but no final response. Please summarize your reasoning into a concise answer for the user.";
 const MAX_TOKENS_CONTINUE_PROMPT: &str = "Continue exactly where you stopped.";
 const IMAGE_TOKEN_ESTIMATE: usize = 2_048;
+const HISTORY_REPLAY_PERMISSION_ID: &str = "history-replay";
+const HISTORY_REPLAY_TOOL: &str = "history_replay";
 
 const CACHE_BREAKPOINT_LONG_SESSION: usize = 60;
 const CACHE_BREAKPOINT_MEDIUM_SESSION: usize = 30;
@@ -46,6 +49,36 @@ const CACHE_BREAKPOINTS_LONG: usize = 4;
 const CACHE_BREAKPOINTS_MEDIUM: usize = 3;
 const CACHE_BREAKPOINTS_SHORT: usize = 2;
 const CACHE_BREAKPOINTS_MIN: usize = 1;
+
+fn filter_tools_for_mode(tools: &mut Value, mode: &AgentMode) {
+    if mode.plan_path().is_none() {
+        return;
+    }
+    if let Some(definitions) = tools.as_array_mut() {
+        let registry = ToolRegistry::global();
+        definitions.retain(|definition| {
+            let Some(name) = definition.get("name").and_then(Value::as_str) else {
+                return true;
+            };
+            // Bash is the only execute-kind tool allowed in plan mode, and only
+            // for commands that pass the read-only classifier.
+            if name == crate::tools::BASH_TOOL_NAME {
+                return true;
+            }
+            // Keep the historical name-based guard and extend it to any tool
+            // whose kind is "execute", so a renamed code_execution tool is
+            // also filtered out.
+            if name == crate::tools::CODE_EXECUTION_TOOL_NAME {
+                return false;
+            }
+            // Only remove tools we can positively identify as execute-kind.
+            // MCP and other unregistered tools are left for the dispatch layer.
+            registry
+                .get(name)
+                .map_or(true, |entry| entry.tool.tool_kind() != Some("execute"))
+        });
+    }
+}
 
 /// Choose how many recent user-message breakpoints to mark for prompt caching.
 ///
@@ -282,6 +315,7 @@ impl<'h> Agent<'h> {
     /// Returns an error if the agent loop fails due to provider errors,
     /// tool execution failures, or cancellation.
     pub async fn run(&mut self, input: AgentInput) -> Result<(), AgentError> {
+        let protect_history_replay = !self.history.is_empty();
         let rollback_len = self.rollback_len.unwrap_or_else(|| self.history.len());
         self.rollback_len = Some(rollback_len);
         let pre_dispatch_rollback_len = self
@@ -290,10 +324,19 @@ impl<'h> Agent<'h> {
         let mut msg = Message::user_with_images(input.message.clone(), input.images);
         msg.control = input.control;
         self.history.push(msg);
-        self.context_size = estimate_message_tokens(self.history.as_slice(), &self.model.id)
-            .saturating_add(estimate_tool_tokens(&self.tools, &self.model.id));
         self.mode = input.mode;
         self.workflow = input.workflow;
+        // Filter the caller-supplied tool list in place. Rebuilding from the
+        // global registry would replace curated/session-local definitions
+        // (e.g. structured_output) and expand restricted ToolFilter sets.
+        // Extend MCP definitions first (always-load + loaded tools) so the
+        // filtered list is complete without rebuilding from the registry.
+        if let Some(mcp) = self.mcp.as_ref() {
+            mcp.extend_tools(&mut self.tools);
+        }
+        filter_tools_for_mode(&mut self.tools, &self.mode);
+        self.context_size = estimate_message_tokens(self.history.as_slice(), &self.model.id)
+            .saturating_add(estimate_tool_tokens(&self.tools, &self.model.id));
         let user_message_count = self
             .history
             .as_slice()
@@ -304,6 +347,8 @@ impl<'h> Agent<'h> {
             thinking: input.thinking,
             fast: input.fast,
             message_cache_breakpoints: adaptive_cache_breakpoints(user_message_count),
+            protect_history_replay,
+            allow_history_replay: false,
         };
 
         info!(
@@ -359,11 +404,8 @@ impl<'h> Agent<'h> {
             .is_none_or(|gate| gate.try_commit())
     }
 
-    async fn turn(&mut self) -> Result<TurnOutcome, AgentError> {
-        if self.cancel.is_cancelled() || !self.commit_pre_dispatch() {
-            return Err(AgentError::Cancelled);
-        }
-        let response = match stream_with_retry(super::streaming::StreamContext {
+    async fn stream_response(&self, opts: RequestOptions) -> Result<StreamResponse, AgentError> {
+        stream_with_retry(super::streaming::StreamContext {
             provider: &*self.provider,
             model: &self.model,
             messages: self.history.as_slice(),
@@ -371,11 +413,63 @@ impl<'h> Agent<'h> {
             tools: &self.tools,
             event_tx: &self.event_tx,
             cancel: &self.cancel,
-            opts: self.opts,
+            opts,
             session_id: self.session_id.as_ref(),
         })
         .await
-        {
+    }
+
+    async fn approve_history_replay(&self, reason: HistoryReplayReason) -> Result<(), AgentError> {
+        let scope = history_replay_scope(
+            reason,
+            self.history.as_slice(),
+            &self.system,
+            &self.tools,
+            &self.model,
+            self.opts.fast,
+        );
+        let Some(response_rx) = self.user_response_rx.as_deref() else {
+            return Err(AgentError::Config {
+                message: format!("Full-history replay blocked without explicit approval. {scope}"),
+            });
+        };
+        let response_rx = response_rx.lock().await;
+        self.event_tx.send(AgentEvent::PermissionRequest {
+            id: HISTORY_REPLAY_PERMISSION_ID.to_string(),
+            tool: ToolKey::native(HISTORY_REPLAY_TOOL),
+            scopes: vec![scope.clone()],
+        })?;
+        let response = self.cancel.race(response_rx.recv_async()).await;
+        drop(response_rx);
+        let approved = response
+            .ok()
+            .and_then(Result::ok)
+            .and_then(|answer| PermissionAnswer::decode(&answer))
+            .is_some_and(|answer| answer.is_allow());
+        if approved {
+            Ok(())
+        } else {
+            Err(AgentError::Config {
+                message: format!("Full-history replay was not approved. {scope}"),
+            })
+        }
+    }
+
+    async fn turn(&mut self) -> Result<TurnOutcome, AgentError> {
+        if self.cancel.is_cancelled() || !self.commit_pre_dispatch() {
+            return Err(AgentError::Cancelled);
+        }
+        let initial = self.stream_response(self.opts).await;
+        let response = match initial {
+            Err(AgentError::HistoryReplayRequired { reason }) => {
+                self.approve_history_replay(reason).await?;
+                let mut approved_opts = self.opts;
+                approved_opts.allow_history_replay = true;
+                self.stream_response(approved_opts).await
+            }
+            result => result,
+        };
+        let response = match response {
             Ok(r) => {
                 self.reauth_attempts = 0;
                 r
@@ -627,6 +721,7 @@ impl<'h> Agent<'h> {
         if let Some(mcp) = &self.mcp {
             mcp.extend_tools(&mut tools);
         }
+        filter_tools_for_mode(&mut tools, &self.mode);
         self.tools = tools;
     }
 
@@ -771,6 +866,35 @@ impl<'h> Agent<'h> {
     }
 }
 
+fn history_replay_scope(
+    reason: HistoryReplayReason,
+    messages: &[Message],
+    system: &System,
+    tools: &Value,
+    model: &Model,
+    fast: bool,
+) -> String {
+    let tokenizer = tokenizer_for_model(&model.id);
+    let system_tokens =
+        u32_from_usize_saturating(count_tokens_with_tokenizer(tokenizer, &system.to_string()));
+    let estimated_tokens = estimate_message_tokens(messages, &model.id)
+        .saturating_add(estimate_tool_tokens(tools, &model.id))
+        .saturating_add(system_tokens);
+    let estimated_cost = TokenUsage {
+        input: estimated_tokens,
+        ..Default::default()
+    }
+    .cost(&model.pricing, fast);
+    let cost = if model.pricing.is_zero() {
+        "cost unavailable".to_string()
+    } else {
+        format!("up to ${estimated_cost:.4} before cache discounts")
+    };
+    format!(
+        "{reason}; resend approximately {estimated_tokens} input tokens ({cost}). Allow this replay?"
+    )
+}
+
 #[must_use]
 fn u32_from_usize_saturating(value: usize) -> u32 {
     if let Ok(n) = u32::try_from(value) {
@@ -837,8 +961,27 @@ mod tests {
 
     use super::*;
     use crate::Envelope;
-    use crate::permissions::PermissionManager;
+    use crate::permissions::{PermissionAnswer, PermissionManager};
     use serde_json::json;
+
+    #[test]
+    fn plan_mode_hides_code_execution_but_keeps_research_tools() {
+        let mut tools = json!([
+            {"name": "code_execution"},
+            {"name": "codegraph"},
+            {"name": "server__search"}
+        ]);
+
+        filter_tools_for_mode(&mut tools, &AgentMode::Plan("plan.md".into()));
+
+        let names: Vec<_> = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|definition| definition["name"].as_str())
+            .collect();
+        assert_eq!(names, ["codegraph", "server__search"]);
+    }
 
     #[test]
     fn estimate_message_tokens_empty_is_zero() {
@@ -869,6 +1012,68 @@ mod tests {
         let tools = json!([]);
         let tokens = estimate_tool_tokens(&tools, "");
         assert!(tokens > 0, "empty array JSON still has token count");
+    }
+
+    #[test]
+    fn history_replay_scope_reports_reason_tokens_and_cost() {
+        let scope = history_replay_scope(
+            HistoryReplayReason::ContinuationNotFound,
+            &[Message::user("restored context".into())],
+            &System::from("system"),
+            &json!([{"name": "read"}]),
+            &default_model(),
+            false,
+        );
+
+        assert!(scope.contains("saved continuation was not found"));
+        assert!(scope.contains("input tokens"));
+        assert!(scope.contains("before cache discounts"));
+    }
+
+    #[test]
+    fn history_replay_requires_an_interactive_approval_channel() {
+        smol::block_on(async {
+            let mut history = History::new(vec![Message::user("restored".into())]);
+            let (agent, _) = make_agent(MockProvider::new(Vec::new()), &mut history);
+
+            let error = agent
+                .approve_history_replay(HistoryReplayReason::ContinuationUnavailable)
+                .await
+                .unwrap_err();
+
+            assert!(matches!(
+                error,
+                AgentError::Config { message }
+                    if message.contains("blocked without explicit approval")
+                        && message.contains("input tokens")
+            ));
+        });
+    }
+
+    #[test]
+    fn history_replay_accepts_explicit_user_approval() {
+        smol::block_on(async {
+            let mut history = History::new(vec![Message::user("restored".into())]);
+            let (agent, event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
+            let (response_tx, response_rx) = flume::unbounded();
+            let agent = agent.with_user_response_rx(Arc::new(async_lock::Mutex::new(response_rx)));
+            response_tx
+                .send(PermissionAnswer::AllowOnce.encode())
+                .unwrap();
+
+            agent
+                .approve_history_replay(HistoryReplayReason::ContinuationNotFound)
+                .await
+                .unwrap();
+
+            let event = event_rx.recv().unwrap();
+            assert!(matches!(
+                event.event,
+                AgentEvent::PermissionRequest { tool, scopes, .. }
+                    if tool == ToolKey::native(HISTORY_REPLAY_TOOL)
+                        && scopes[0].contains("saved continuation was not found")
+            ));
+        });
     }
 
     #[test]

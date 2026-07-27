@@ -1,16 +1,15 @@
 use std::env;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[cfg(unix)]
 use async_lock::Mutex;
 use color_eyre::Result;
-use color_eyre::eyre::Context;
-#[cfg(unix)]
+use color_eyre::eyre::{Context, eyre};
 use flume::Sender;
-#[cfg(unix)]
 use futures_lite::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, split};
 use n00n_agent::headless;
 use n00n_agent::tools::ToolRegistry;
@@ -19,24 +18,132 @@ use n00n_agent::{
     PermissionsConfig, prompt::ResolvedSlots,
 };
 use n00n_config::{load_env_files, load_permissions};
+use n00n_daemon::ControlError;
+use n00n_daemon::backend::WorkerBackend;
+use n00n_daemon::client as daemon_client;
+use n00n_daemon::lock::DaemonRole;
+use n00n_daemon::protocol::{BackendKind, ControlRequest, ControlResponse, MessageOpts};
+use n00n_daemon::registry::ControlPlane;
+use n00n_daemon::server as daemon_server;
+use n00n_daemon::transport;
+use n00n_daemon::{AgentRecord, AgentScriptView, is_terminal_worker_status};
 use n00n_lua::PluginHost;
 use n00n_providers::{Model, OpenAiOptions, ThinkingConfig, Timeouts};
 use n00n_storage::StateDir;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-#[cfg(unix)]
 use smol::net::unix::{UnixListener, UnixStream};
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-#[cfg(unix)]
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::cli::AgentMode as CliAgentMode;
 use crate::setup;
 
-#[cfg(not(unix))]
-const BACKGROUND_AGENTS_UNSUPPORTED: &str =
-    "background agents require Unix domain sockets and are not supported on this platform";
+fn try_daemon(
+    state_dir: &std::path::Path,
+    req: &ControlRequest,
+) -> Option<Result<ControlResponse>> {
+    match transport::resolve_client(state_dir) {
+        Ok(_) => match daemon_client::call_blocking(state_dir, req) {
+            Ok(resp) => Some(Ok(resp)),
+            Err(ControlError::Io(_)) => None,
+            Err(e) => Some(Err(eyre!("daemon call failed: {e}"))),
+        },
+        Err(ControlError::Unavailable(_)) => None,
+        Err(e) => Some(Err(eyre!("daemon endpoint: {e}"))),
+    }
+}
+
+fn agent_state_dir(override_dir: Option<PathBuf>) -> Result<std::path::PathBuf> {
+    match override_dir {
+        Some(p) => Ok(p),
+        None => Ok(StateDir::resolve()
+            .wrap_err("state dir")?
+            .path()
+            .to_path_buf()),
+    }
+}
+
+fn agent_storage(dir: &std::path::Path) -> StateDir {
+    StateDir::from_path(dir.to_path_buf())
+}
+
+fn print_control_response(resp: &ControlResponse, json: bool) -> Result<()> {
+    if json {
+        let line = resp.to_line().map_err(|e| eyre!(e))?;
+        println!("{line}");
+        return Ok(());
+    }
+    match resp {
+        ControlResponse::Ok {
+            agents: Some(agents),
+            ..
+        } => {
+            if agents.is_empty() {
+                println!("(no agents)");
+            }
+            for a in agents {
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    a.id,
+                    a.backend,
+                    a.status,
+                    a.title.as_deref().map_or("", |t| t)
+                );
+            }
+        }
+        ControlResponse::Ok { agent: Some(a), .. } => {
+            println!("id:\t{}", a.id);
+            println!("backend:\t{}", a.backend);
+            println!("status:\t{}", a.status);
+            if let Some(t) = &a.title {
+                println!("title:\t{t}");
+            }
+            if let Some(m) = &a.model {
+                println!("model:\t{m}");
+            }
+        }
+        ControlResponse::Ok { state: Some(_), .. } => {
+            let line = resp.to_line().map_err(|e| eyre!(e))?;
+            println!("{line}");
+        }
+        ControlResponse::Ok {
+            version: Some(v), ..
+        } => {
+            println!("ok\tprotocol={v}");
+        }
+        ControlResponse::Ok { .. } => println!("ok"),
+        ControlResponse::Err { error, code } => {
+            if let Some(c) = code {
+                return Err(eyre!("[{c}] {error}"));
+            }
+            return Err(eyre!("{error}"));
+        }
+    }
+    Ok(())
+}
+
+/// Foreground worker-only control plane (no TUI backend). Prefer TUI-owned
+/// `daemon.sock` when the UI is running.
+pub fn daemon_serve(state_dir: Option<PathBuf>) -> Result<()> {
+    let storage = match state_dir {
+        Some(p) => StateDir::from_path(p),
+        None => StateDir::resolve().wrap_err("state dir")?,
+    };
+    let worker = Arc::new(WorkerBackend::new(storage.path()));
+    let plane = Arc::new(ControlPlane::new(None, Some(worker)));
+    let (_tx, rx) = flume::bounded::<()>(1);
+    println!(
+        "listening on {}",
+        storage.path().join("daemon.sock").display()
+    );
+    smol::block_on(daemon_server::serve(
+        storage.path(),
+        plane,
+        rx,
+        DaemonRole::Worker,
+    ))
+    .map_err(|e| eyre!(e))?;
+    Ok(())
+}
 
 fn workflow_from_mode(mode: CliAgentMode) -> bool {
     matches!(mode, CliAgentMode::Team | CliAgentMode::Workflow)
@@ -279,7 +386,6 @@ fn prepare_agent_env(model_arg: Option<&str>, yolo: bool, no_jit: bool) -> Resul
     })
 }
 
-#[cfg(unix)]
 async fn write_line<W: AsyncWriteExt + Unpin>(writer: &mut W, line: &str) -> Result<()> {
     writer
         .write_all(line.as_bytes())
@@ -374,6 +480,8 @@ struct AgentState {
     model: String,
     created_at: u64,
     updated_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cwd: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -467,7 +575,6 @@ fn now_epoch() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-#[cfg(unix)]
 pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()> {
     let env = prepare_agent_env(opts.model, opts.yolo, opts.no_jit)?;
     let message = build_message(
@@ -523,6 +630,9 @@ pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()
         model: model_spec,
         created_at: now_epoch(),
         updated_at: now_epoch(),
+        cwd: std::env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned()),
     };
 
     write_agent_state(&storage, &state)?;
@@ -547,8 +657,8 @@ pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()
             thinking: ThinkingConfig::default(),
             fast: false,
             workflow: workflow_from_mode(opts.mode),
-            control: false,
             prompt: None,
+            control: false,
         });
 
         // Wait for the initial run to complete.
@@ -599,12 +709,6 @@ pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub fn server(_opts: &AgentRunOptions<'_>, _agent_id: Option<String>) -> Result<()> {
-    Err(color_eyre::eyre::eyre!(BACKGROUND_AGENTS_UNSUPPORTED))
-}
-
-#[cfg(unix)]
 fn wait_for_run_done(event_rx: &flume::Receiver<Envelope>) {
     while let Ok(envelope) = event_rx.recv() {
         if matches!(
@@ -616,7 +720,6 @@ fn wait_for_run_done(event_rx: &flume::Receiver<Envelope>) {
     }
 }
 
-#[cfg(unix)]
 async fn handle_connection(
     stream: UnixStream,
     input_tx: Sender<AgentInput>,
@@ -672,8 +775,8 @@ async fn handle_connection(
                     thinking: ThinkingConfig::default(),
                     fast: false,
                     workflow: workflow_from_mode(mode),
-                    control: false,
                     prompt: None,
+                    control: true,
                 })
                 .wrap_err("failed to send input")?;
 
@@ -803,9 +906,29 @@ async fn handle_connection(
     Ok(())
 }
 
-#[cfg(unix)]
-pub fn message_client(id: &str, text: &str, json: bool) -> Result<()> {
-    let storage = StateDir::resolve().wrap_err("failed to resolve state directory")?;
+pub fn message_client(
+    id: &str,
+    text: &str,
+    json: bool,
+    state_dir_override: Option<PathBuf>,
+) -> Result<()> {
+    let state_dir = agent_state_dir(state_dir_override)?;
+    if let Some(result) = try_daemon(
+        &state_dir,
+        &ControlRequest::Message {
+            id: id.to_owned(),
+            text: text.to_owned(),
+            backend: None,
+            opts: MessageOpts {
+                steer: true,
+                control: true,
+            },
+        },
+    ) {
+        return print_control_response(&result?, json);
+    }
+
+    let storage = agent_storage(&state_dir);
     let state = read_agent_state(&storage, id).wrap_err("failed to read agent state")?;
 
     let stream = smol::block_on(UnixStream::connect(&state.socket_path))
@@ -862,14 +985,19 @@ pub fn message_client(id: &str, text: &str, json: bool) -> Result<()> {
     })
 }
 
-#[cfg(not(unix))]
-pub fn message_client(_id: &str, _text: &str, _json: bool) -> Result<()> {
-    Err(color_eyre::eyre::eyre!(BACKGROUND_AGENTS_UNSUPPORTED))
-}
+pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> {
+    let state_dir = agent_state_dir(state_dir_override)?;
+    if let Some(result) = try_daemon(
+        &state_dir,
+        &ControlRequest::Stop {
+            id: id.to_owned(),
+            backend: None,
+        },
+    ) {
+        return print_control_response(&result?, false);
+    }
 
-#[cfg(unix)]
-pub fn stop_client(id: &str) -> Result<()> {
-    let storage = StateDir::resolve().wrap_err("failed to resolve state directory")?;
+    let storage = agent_storage(&state_dir);
 
     let Ok(state) = read_agent_state(&storage, id) else {
         let agent_dir_path = agent_dir(&storage, id)?;
@@ -910,49 +1038,179 @@ pub fn stop_client(id: &str) -> Result<()> {
     })
 }
 
-#[cfg(not(unix))]
-pub fn stop_client(_id: &str) -> Result<()> {
-    Err(color_eyre::eyre::eyre!(BACKGROUND_AGENTS_UNSUPPORTED))
+fn agent_state_to_record(state: &AgentState) -> AgentRecord {
+    let title = if state.prompt.is_empty() {
+        None
+    } else {
+        Some(state.prompt.chars().take(40).collect())
+    };
+    AgentRecord {
+        id: state.id.clone(),
+        backend: BackendKind::Worker,
+        session_id: Some(state.session_id.clone()),
+        status: state.status.clone(),
+        title,
+        model: Some(state.model.clone()),
+        output: None,
+        cwd: state.cwd.clone(),
+    }
 }
 
-pub fn list_client(json: bool) -> Result<()> {
-    let storage = StateDir::resolve().wrap_err("failed to resolve state directory")?;
-    let states = list_agent_states(&storage)?;
+fn fetch_daemon_agents(state_dir: &std::path::Path) -> Option<Result<Vec<AgentRecord>>> {
+    let result = try_daemon(state_dir, &ControlRequest::List)?;
+    match result {
+        Ok(ControlResponse::Ok {
+            agents: Some(agents),
+            ..
+        }) => Some(Ok(agents)),
+        Ok(other) => Some(Err(eyre!("unexpected daemon list response: {other:?}"))),
+        Err(e) => Some(Err(e)),
+    }
+}
+
+fn filter_active_agents(agents: Vec<AgentRecord>) -> Vec<AgentRecord> {
+    agents
+        .into_iter()
+        .filter(|agent| {
+            !(agent.backend == BackendKind::Worker && is_terminal_worker_status(&agent.status))
+        })
+        .collect()
+}
+
+fn filter_agents_by_cwd(agents: Vec<AgentRecord>, cwd: &std::path::Path) -> Vec<AgentRecord> {
+    let filter = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    agents
+        .into_iter()
+        .filter(|agent| {
+            let Some(record_cwd) = agent.cwd.as_deref() else {
+                return false;
+            };
+            let Ok(canonical) = std::fs::canonicalize(record_cwd) else {
+                return false;
+            };
+            canonical == filter
+        })
+        .collect()
+}
+
+fn print_agent_table(agents: &[AgentRecord]) {
+    if agents.is_empty() {
+        println!("(no agents)");
+        return;
+    }
+    for agent in agents {
+        println!(
+            "{}\t{}\t{}\t{}",
+            agent.id,
+            agent.backend,
+            agent.status,
+            agent.title.as_deref().map_or("", |title| title)
+        );
+    }
+}
+
+pub fn list_client(
+    json: bool,
+    all: bool,
+    cwd: Option<PathBuf>,
+    state_dir_override: Option<PathBuf>,
+) -> Result<()> {
+    let state_dir = agent_state_dir(state_dir_override)?;
+    let (mut agents, from_daemon) = match fetch_daemon_agents(&state_dir) {
+        Some(Ok(list)) => (list, true),
+        Some(Err(e)) => return Err(e),
+        None => {
+            let storage = agent_storage(&state_dir);
+            let list = list_agent_states(&storage)?
+                .iter()
+                .map(agent_state_to_record)
+                .collect();
+            (list, false)
+        }
+    };
+
+    if !all {
+        agents = filter_active_agents(agents);
+    }
+    if let Some(cwd) = cwd {
+        agents = filter_agents_by_cwd(agents, &cwd);
+    }
 
     if json {
+        let views: Vec<AgentScriptView> = agents.iter().map(AgentScriptView::from_record).collect();
         let output =
-            serde_json::to_string_pretty(&states).wrap_err("failed to serialize agent list")?;
+            serde_json::to_string_pretty(&views).wrap_err("failed to serialize agent list")?;
         println!("{output}");
-    } else {
-        if states.is_empty() {
-            println!("No background agents running");
-            return Ok(());
-        }
+        return Ok(());
+    }
 
-        println!("Background agents:");
-        for state in &states {
-            let prompt_preview = if state.prompt.len() > 50 {
-                format!("{}...", &state.prompt[..50])
-            } else {
-                state.prompt.clone()
-            };
-            println!(
-                "  {} - {} - {} - {} - {}",
-                state.id, state.status, state.model, prompt_preview, state.updated_at
-            );
-        }
+    if from_daemon {
+        print_agent_table(&agents);
+        return Ok(());
+    }
+
+    if agents.is_empty() {
+        println!("No background agents running");
+        return Ok(());
+    }
+
+    println!("Background agents:");
+    for agent in &agents {
+        println!(
+            "  {} - {} - {} - {}",
+            agent.id,
+            agent.status,
+            agent.model.as_deref().map_or("?", |m| m),
+            agent.title.as_deref().map_or("", |t| t)
+        );
     }
 
     Ok(())
 }
 
-pub fn status_client(id: &str, json: bool) -> Result<()> {
-    let storage = StateDir::resolve().wrap_err("failed to resolve state directory")?;
+pub fn status_client(id: &str, json: bool, state_dir_override: Option<PathBuf>) -> Result<()> {
+    let state_dir = agent_state_dir(state_dir_override)?;
+    if let Some(result) = try_daemon(
+        &state_dir,
+        &ControlRequest::Status {
+            id: id.to_owned(),
+            backend: None,
+        },
+    ) {
+        let resp = result?;
+        if json {
+            match &resp {
+                ControlResponse::Ok {
+                    agent: Some(record),
+                    ..
+                } => {
+                    let view = AgentScriptView::from_record(record);
+                    let output = serde_json::to_string_pretty(&view)
+                        .wrap_err("failed to serialize agent status")?;
+                    println!("{output}");
+                    return Ok(());
+                }
+                ControlResponse::Err { error, code } => {
+                    if let Some(c) = code {
+                        return Err(eyre!("[{c}] {error}"));
+                    }
+                    return Err(eyre!("{error}"));
+                }
+                ControlResponse::Ok { .. } => {
+                    return Err(eyre!("unexpected daemon status response: {resp:?}"));
+                }
+            }
+        }
+        return print_control_response(&resp, false);
+    }
+
+    let storage = agent_storage(&state_dir);
     let state = read_agent_state(&storage, id).wrap_err("failed to read agent state")?;
 
     if json {
+        let view = AgentScriptView::from_record(&agent_state_to_record(&state));
         let output =
-            serde_json::to_string_pretty(&state).wrap_err("failed to serialize agent status")?;
+            serde_json::to_string_pretty(&view).wrap_err("failed to serialize agent status")?;
         println!("{output}");
     } else {
         println!("Agent: {}", state.id);
@@ -969,29 +1227,41 @@ pub fn status_client(id: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
-pub fn pause_client(id: &str) -> Result<()> {
-    control_command_client(id, &ClientCommand::Pause, "paused")
+pub fn pause_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> {
+    let state_dir = agent_state_dir(state_dir_override)?;
+    if let Some(result) = try_daemon(
+        &state_dir,
+        &ControlRequest::Pause {
+            id: id.to_owned(),
+            backend: None,
+        },
+    ) {
+        return print_control_response(&result?, false);
+    }
+    control_command_client(&state_dir, id, &ClientCommand::Pause, "paused")
 }
 
-#[cfg(not(unix))]
-pub fn pause_client(_id: &str) -> Result<()> {
-    Err(color_eyre::eyre::eyre!(BACKGROUND_AGENTS_UNSUPPORTED))
+pub fn resume_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> {
+    let state_dir = agent_state_dir(state_dir_override)?;
+    if let Some(result) = try_daemon(
+        &state_dir,
+        &ControlRequest::Resume {
+            id: id.to_owned(),
+            backend: None,
+        },
+    ) {
+        return print_control_response(&result?, false);
+    }
+    control_command_client(&state_dir, id, &ClientCommand::Resume, "resumed")
 }
 
-#[cfg(unix)]
-pub fn resume_client(id: &str) -> Result<()> {
-    control_command_client(id, &ClientCommand::Resume, "resumed")
-}
-
-#[cfg(not(unix))]
-pub fn resume_client(_id: &str) -> Result<()> {
-    Err(color_eyre::eyre::eyre!(BACKGROUND_AGENTS_UNSUPPORTED))
-}
-
-#[cfg(unix)]
-fn control_command_client(id: &str, command: &ClientCommand, success_label: &str) -> Result<()> {
-    let storage = StateDir::resolve().wrap_err("failed to resolve state directory")?;
+fn control_command_client(
+    state_dir: &std::path::Path,
+    id: &str,
+    command: &ClientCommand,
+    success_label: &str,
+) -> Result<()> {
+    let storage = agent_storage(state_dir);
     let state = read_agent_state(&storage, id).wrap_err("failed to read agent state")?;
     let stream = smol::block_on(UnixStream::connect(&state.socket_path))
         .wrap_err("failed to connect to agent socket")?;
@@ -1041,6 +1311,7 @@ mod tests {
             model: "anthropic/claude-3-opus".to_string(),
             created_at: 1_234_567_890,
             updated_at: 1_234_567_900,
+            cwd: Some("/tmp/proj".into()),
         };
 
         let json = serde_json::to_string(&state).unwrap();
@@ -1138,6 +1409,7 @@ mod tests {
             model: "model1".to_string(),
             created_at: 100,
             updated_at: 200,
+            cwd: None,
         };
         let data1 = serde_json::to_vec_pretty(&first_state).unwrap();
         n00n_storage::atomic_write(&agent1_path.join(STATE_FILE), &data1).unwrap();
@@ -1154,6 +1426,7 @@ mod tests {
             model: "model2".to_string(),
             created_at: 50,
             updated_at: 300,
+            cwd: None,
         };
         let data2 = serde_json::to_vec_pretty(&second_state).unwrap();
         n00n_storage::atomic_write(&agent2_path.join(STATE_FILE), &data2).unwrap();
@@ -1179,6 +1452,66 @@ mod tests {
         assert!(validate_agent_id("../../../etc/passwd").is_err());
         assert!(validate_agent_id("a b").is_err());
         assert!(validate_agent_id(&"x".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn filter_active_agents_hides_terminal_workers() {
+        let agents = vec![
+            AgentRecord {
+                id: "live".into(),
+                backend: BackendKind::Worker,
+                session_id: None,
+                status: "running".into(),
+                title: None,
+                model: None,
+                output: None,
+                cwd: None,
+            },
+            AgentRecord {
+                id: "done".into(),
+                backend: BackendKind::Worker,
+                session_id: None,
+                status: "stopped".into(),
+                title: None,
+                model: None,
+                output: None,
+                cwd: None,
+            },
+        ];
+        let filtered = filter_active_agents(agents);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "live");
+    }
+
+    #[test]
+    fn filter_agents_by_cwd_matches_canonical_path() {
+        let tmp = TempDir::new().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let agents = vec![
+            AgentRecord {
+                id: "here".into(),
+                backend: BackendKind::Tui,
+                session_id: Some("here".into()),
+                status: "idle".into(),
+                title: None,
+                model: None,
+                output: None,
+                cwd: Some(cwd.to_string_lossy().into_owned()),
+            },
+            AgentRecord {
+                id: "elsewhere".into(),
+                backend: BackendKind::Tui,
+                session_id: Some("elsewhere".into()),
+                status: "idle".into(),
+                title: None,
+                model: None,
+                output: None,
+                cwd: Some("/tmp/other".into()),
+            },
+        ];
+        let filtered = filter_agents_by_cwd(agents, &cwd);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "here");
     }
 
     #[test]

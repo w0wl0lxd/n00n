@@ -346,6 +346,13 @@ fn run_ui_loop(
             Model::from_spec(&focused_tab.model).unwrap_or_else(|_| stack.model.clone())
         };
 
+        // Bind daemon.sock for this UI generation so CLI `n00n agent list`
+        // unions live TUI sessions. Dropped on exit / before `/reload`.
+        let daemon = stack
+            .plugin_host
+            .ui_action_tx()
+            .and_then(|tx| crate::cmd::tui_bridge::try_spawn(storage.path(), tx));
+
         let outcome = n00n_ui::run(
             n00n_ui::EventLoopParams {
                 model,
@@ -374,6 +381,8 @@ fn run_ui_loop(
             initial_prompt.take(),
         )
         .context("run UI")?;
+
+        drop(daemon);
 
         match outcome {
             RunOutcome::Exit { session_id, code } => {

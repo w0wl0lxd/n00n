@@ -1,7 +1,9 @@
 mod acp;
 pub mod agent;
+pub(crate) mod session_daemon;
 mod subcmd;
 mod tui;
+mod tui_bridge;
 
 use color_eyre::Result;
 use color_eyre::eyre::Context;
@@ -95,33 +97,44 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     agent::run(&run_opts, json)?;
                 }
             }
-            AgentCommand::List => {
-                agent::list_client(matches!(
-                    cli.output_format,
-                    crate::print::OutputFormat::Json
-                ))?;
+            AgentCommand::List {
+                state_dir,
+                json,
+                all,
+                cwd,
+            } => {
+                agent::list_client(json, all, cwd, state_dir)?;
             }
-            AgentCommand::Status { id } => {
-                agent::status_client(
-                    &id,
-                    matches!(cli.output_format, crate::print::OutputFormat::Json),
-                )?;
+            AgentCommand::Status {
+                id,
+                state_dir,
+                json,
+            } => {
+                agent::status_client(&id, json, state_dir)?;
             }
-            AgentCommand::Message { id, text } => {
+            AgentCommand::Message {
+                id,
+                text,
+                state_dir,
+            } => {
                 agent::message_client(
                     &id,
                     &text,
                     matches!(cli.output_format, crate::print::OutputFormat::Json),
+                    state_dir,
                 )?;
             }
-            AgentCommand::Pause { id } => {
-                agent::pause_client(&id)?;
+            AgentCommand::Pause { id, state_dir } => {
+                agent::pause_client(&id, state_dir)?;
             }
-            AgentCommand::Resume { id } => {
-                agent::resume_client(&id)?;
+            AgentCommand::Resume { id, state_dir } => {
+                agent::resume_client(&id, state_dir)?;
             }
-            AgentCommand::Stop { id } => {
-                agent::stop_client(&id)?;
+            AgentCommand::Stop { id, state_dir } => {
+                agent::stop_client(&id, state_dir)?;
+            }
+            AgentCommand::Daemon { state_dir } => {
+                agent::daemon_serve(state_dir)?;
             }
         },
         None => {

@@ -15,6 +15,7 @@ use crate::providers::Timeouts;
 use crate::providers::anthropic::Anthropic;
 use crate::providers::anthropic::bedrock;
 use crate::providers::copilot::Copilot;
+use crate::providers::cursor::Cursor;
 use crate::providers::deepseek::DeepSeek;
 use crate::providers::devin::Devin;
 use crate::providers::dynamic;
@@ -56,6 +57,8 @@ pub enum ProviderKind {
     Opencode,
     #[strum(serialize = "devin")]
     Devin,
+    #[strum(serialize = "cursor")]
+    Cursor,
 }
 
 impl ProviderKind {
@@ -77,6 +80,7 @@ impl ProviderKind {
             Self::TensorX => "TensorX",
             Self::Opencode => "Opencode",
             Self::Devin => "Devin",
+            Self::Cursor => "Cursor",
         }
     }
 
@@ -98,6 +102,7 @@ impl ProviderKind {
             Self::TensorX => "TENSORX_API_KEY",
             Self::Opencode => "OPENCODE_API_KEY",
             Self::Devin => "DEVIN_API_KEY",
+            Self::Cursor => "CURSOR_API_KEY",
         }
     }
 
@@ -121,6 +126,7 @@ impl ProviderKind {
             Self::TensorX => "https://api.tensorx.ai/v1",
             Self::Opencode => "https://opencode.ai/zen/v1",
             Self::Devin => "devin acp subprocess (Agent Client Protocol)",
+            Self::Cursor => "cursor-agent subprocess (Cursor Agent CLI)",
         }
     }
 
@@ -151,6 +157,9 @@ impl ProviderKind {
                 "Dynamically discovered models via [models.dev](https://models.dev/) + all the models provided by Opencode Zen API",
             ),
             Self::Devin => Some("Agent Client Protocol via devin acp subprocess"),
+            Self::Cursor => Some(
+                "Cursor Agent CLI subprocess with stream-json parsing, session resume, and tool-call passthrough",
+            ),
             _ => None,
         }
     }
@@ -169,7 +178,8 @@ impl ProviderKind {
             | Self::OpenRouter
             | Self::TensorX
             | Self::Opencode
-            | Self::Devin => ModelFamily::Generic,
+            | Self::Devin
+            | Self::Cursor => ModelFamily::Generic,
             Self::Zai => ModelFamily::Glm,
             Self::Synthetic => ModelFamily::Synthetic,
         }
@@ -185,9 +195,12 @@ impl ProviderKind {
         match self {
             Self::OpenAi | Self::Copilot => Some(100_000),
             Self::Google => Some(65_536),
-            Self::Anthropic | Self::Codex | Self::OpenRouter | Self::Opencode | Self::Devin => {
-                Some(128_000)
-            }
+            Self::Anthropic
+            | Self::Codex
+            | Self::OpenRouter
+            | Self::Opencode
+            | Self::Devin
+            | Self::Cursor => Some(128_000),
             Self::Ollama => Some(16_384),
             Self::LlamaCpp | Self::TensorX => None,
             Self::Mistral | Self::Synthetic => Some(32_000),
@@ -204,7 +217,7 @@ impl ProviderKind {
                 200_000
             }
             Self::Devin => 262_144,
-            Self::Google | Self::DeepSeek => 1_000_000,
+            Self::Google | Self::DeepSeek | Self::Cursor => 1_000_000,
             Self::Ollama | Self::LlamaCpp | Self::Mistral | Self::Zai | Self::Synthetic => 128_000,
             Self::Opencode => 256_000,
         }
@@ -256,6 +269,7 @@ impl ProviderKind {
             Self::TensorX => Ok(Box::new(TensorX::new(timeouts)?)),
             Self::Opencode => Ok(Box::new(Opencode::new(timeouts)?)),
             Self::Devin => Ok(Box::new(Devin::new(timeouts))),
+            Self::Cursor => Ok(Box::new(Cursor::new(timeouts)?)),
         }
     }
 }

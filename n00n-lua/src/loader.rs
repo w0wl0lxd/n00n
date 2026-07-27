@@ -530,6 +530,13 @@ impl PluginHost {
     pub fn ui_action_rx(&self) -> Option<flume::Receiver<UiAction>> {
         self.inner.as_ref().map(|t| t.ui_action_rx.clone())
     }
+
+    /// Sender side of the UI action channel (clone of the Lua runtime's sender).
+    /// Used by the in-process daemon bridge to issue `SessionRequest`s.
+    #[must_use]
+    pub fn ui_action_tx(&self) -> Option<flume::Sender<UiAction>> {
+        self.inner.as_ref().map(|t| t.ui_action_tx.clone())
+    }
 }
 
 #[derive(Clone)]

@@ -70,5 +70,9 @@ pub fn run(model_arg: Option<&str>, yolo: bool, no_jit: bool) -> Result<()> {
         mcp_handle,
         prompt_slots: Arc::new(prompt_slots),
         yolo,
+        session_daemon_register: Some(|state_dir, handle, model| {
+            crate::cmd::session_daemon::register_acp_session(state_dir, handle, model)
+                .map(|guard| Box::new(guard) as n00n_acp::SessionDaemonGuard)
+        }),
     })
 }

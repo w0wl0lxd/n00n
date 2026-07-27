@@ -285,6 +285,130 @@ local function normalize_command(command)
   return command
 end
 
+local GIT_SANITIZE_SUBCOMMANDS = {
+  diff = true,
+  show = true,
+  log = true,
+}
+
+-- Global git options that consume the following word as their value.
+-- Long options can also use `=value`, which is handled inline.
+local GIT_ARG_OPTIONS = {
+  ["-C"] = true,
+  ["-c"] = true,
+  ["--work-tree"] = true,
+  ["--git-dir"] = true,
+  ["--namespace"] = true,
+  ["--super-prefix"] = true,
+  ["--exec-path"] = true,
+  ["--config-env"] = true,
+  ["--blob"] = true,
+}
+
+local function split_shell_words(command)
+  local words = {}
+  local index = 1
+  while index <= #command do
+    while index <= #command and command:sub(index, index):match("%s") do
+      index = index + 1
+    end
+    if index > #command then
+      break
+    end
+    local tail = command:sub(index)
+    local word_end = shell_word_end(tail)
+    words[#words + 1] = tail:sub(1, word_end)
+    index = index + word_end
+  end
+  return words
+end
+
+-- Harden git commands against repo-config injection of external diff/pagers.
+-- Inserts `--no-optional-locks` (prevents write locks) and `--no-ext-diff`
+-- for subcommands that may invoke an external diff driver.
+local function sanitize_git_command(command)
+  local trimmed = trim(command)
+  if not trimmed:lower():match("^git%s") then
+    return command
+  end
+
+  local words = split_shell_words(trimmed)
+  if #words < 2 or words[1]:lower() ~= "git" then
+    return command
+  end
+
+  -- Strip any -c core.fsmonitor=... override and force it to false. A repo or
+  -- parent config with core.fsmonitor set to a command can execute code during
+  -- git status/diff/log; this disables it without trusting the environment.
+  local i = 2
+  while i <= #words do
+    if words[i] == "-c" and words[i + 1] then
+      local value = words[i + 1]:lower()
+      if value:sub(1, #"core.fsmonitor") == "core.fsmonitor" then
+        table.remove(words, i)
+        table.remove(words, i)
+      else
+        i = i + 2
+      end
+    else
+      i = i + 1
+    end
+  end
+  table.insert(words, 2, "-c")
+  table.insert(words, 3, "core.fsmonitor=false")
+
+  local has_optional_locks = false
+  local subcommand_index = nil
+  local skip_next = false
+  for i = 2, #words do
+    if skip_next then
+      skip_next = false
+    elseif words[i] == "--no-optional-locks" and not subcommand_index then
+      has_optional_locks = true
+    elseif words[i]:sub(1, 1) == "-" and not subcommand_index then
+      -- If this option takes a separate argument, the next word is its value.
+      if not words[i]:find("=", 1, true) and GIT_ARG_OPTIONS[words[i]] then
+        skip_next = true
+      end
+    elseif not subcommand_index then
+      subcommand_index = i
+      break
+    end
+  end
+
+  if not has_optional_locks then
+    table.insert(words, 2, "--no-optional-locks")
+    if subcommand_index then
+      subcommand_index = subcommand_index + 1
+    end
+  end
+
+  if subcommand_index then
+    local subcommand = words[subcommand_index]:lower()
+    if GIT_SANITIZE_SUBCOMMANDS[subcommand] then
+      local has_no_ext_diff = false
+      local i = subcommand_index + 1
+      while i <= #words do
+        if words[i] == "--no-ext-diff" then
+          has_no_ext_diff = true
+          i = i + 1
+        elseif words[i] == "--ext-diff" then
+          -- Remove an explicit --ext-diff so the later --no-ext-diff cannot be
+          -- overridden by it.
+          table.remove(words, i)
+        else
+          i = i + 1
+        end
+      end
+      if not has_no_ext_diff then
+        table.insert(words, subcommand_index + 1, "--no-ext-diff")
+      end
+    end
+  end
+
+  return table.concat(words, " ")
+end
+
 local function rtk_rewrite(command, ctx)
   local config = ctx:config()
   if config and config.no_rtk then
@@ -596,6 +720,8 @@ n00n.api.register_tool({
 
     ctx:set_deadline(timeout_secs)
 
+    command = sanitize_git_command(command)
+
     local rewritten = rtk_rewrite(command, ctx)
     if rewritten then
       command = rewritten
@@ -640,7 +766,11 @@ n00n.api.register_tool({
 
     n00n.fn.jobstart(command, {
       cwd = workdir,
-      env = { GIT_TERMINAL_PROMPT = "0" },
+      env = {
+        GIT_TERMINAL_PROMPT = "0",
+        GIT_PAGER = "",
+        GIT_EXEC_PATH = "",
+      },
       on_stdout = function(_, line)
         if not has_output then
           has_output = true

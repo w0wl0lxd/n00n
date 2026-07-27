@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-n00n ships with 28 built-in tools. This is the full reference.
+n00n ships with 30 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -130,7 +130,7 @@ View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read`
 
 ### `codegraph` *(lua plugin)*
 
-Query a pre-indexed semantic codegraph for cross-file structural analysis. Returns verbatim source grouped by file plus a blast-radius summary. Typically cheaper than broad grep + read for cross-file questions.
+Query a semantic codegraph for cross-file structural analysis. Missing or stale project indexes are initialized or refreshed automatically. Returns verbatim source grouped by file plus a blast-radius summary. Typically cheaper than broad grep + read for cross-file questions.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -177,16 +177,31 @@ Ask the user questions during execution. Supports single/multi-select, custom an
 
 ## Agent & Knowledge
 
-### `agent_control` *(lua plugin)*
+### `agent_list` *(lua plugin)*
 
-Control background agents started by task, team, or workflow.
+List live background agents (task/team/workflow sessions).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `message` | string | no | Steering instructions. |
-| `policy` | object | no | Policy data. |
-| `action` | string | yes | Action. |
-| `agent_id` | string | no | Background agent id. |
+
+### `agent_status` *(lua plugin)*
+
+Show status for one live background agent.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `agent_id` | string | yes | Live agent/session id. |
+
+### `agent_control` *(lua plugin)*
+
+Mutate a background agent: message, stop, resume, or manage policy. Prefer agent_list/agent_status for reads. Pause is unsupported on TUI sessions.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `message` | string | no | Steering text for message/resume. |
+| `policy` | object | no | Policy payload when action=policy. |
+| `action` | string | yes | Mutating control action. |
+| `agent_id` | string | no | Target agent id. |
 
 ### `blackboard` *(lua plugin)*
 

@@ -123,6 +123,13 @@ Complements codegraph — Arbor shows the full caller/callee set, while codegrap
         is_error = true,
       }
     end
+    local project = input.project or "."
+    if input.command ~= "status" then
+      local indexed, index_err = pcall(n00n_arbor.ensure_indexed, project)
+      if not indexed then
+        return { llm_output = "error: Arbor index unavailable: " .. tostring(index_err), is_error = true }
+      end
+    end
     local card, live_err = ExploreResult.live(ctx)
     if not card then
       return { llm_output = "error: failed to publish Arbor results: " .. tostring(live_err), is_error = true }
