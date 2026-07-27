@@ -95,7 +95,19 @@ pub fn pid_alive(pid: u32) -> bool {
     }
 }
 
-/// True when another live listener already owns the lock.
+/// Remove a lock file whose owner pid is no longer alive.
+///
+/// # Errors
+/// Returns on io/decode failure other than a missing lock file.
+pub fn sweep_stale(state_dir: &Path) -> ControlResult<()> {
+    let Some(lock) = read(state_dir)? else {
+        return Ok(());
+    };
+    if pid_alive(lock.pid) {
+        return Ok(());
+    }
+    remove(state_dir)
+}
 ///
 /// TUI may always replace; other roles must not start while any live owner exists.
 #[must_use]
@@ -132,6 +144,17 @@ mod tests {
         let decoded = read(tmp.path()).map_err(|e| e.to_string())?;
         assert_eq!(decoded.as_ref(), Some(&lock));
         remove(tmp.path()).map_err(|e| e.to_string())?;
+        assert_eq!(read(tmp.path()).map_err(|e| e.to_string())?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn sweep_stale_removes_dead_pid_lock() -> Result<(), String> {
+        let tmp = TempDir::new().map_err(|e| e.to_string())?;
+        let mut lock = sample_lock(DaemonRole::Tui);
+        lock.pid = 9_999_999;
+        write(tmp.path(), &lock).map_err(|e| e.to_string())?;
+        sweep_stale(tmp.path()).map_err(|e| e.to_string())?;
         assert_eq!(read(tmp.path()).map_err(|e| e.to_string())?, None);
         Ok(())
     }

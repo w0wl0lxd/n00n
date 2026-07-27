@@ -28,6 +28,7 @@ impl Endpoint {
 /// # Errors
 /// Returns when the lock file is corrupt.
 pub fn resolve_client(state_dir: &Path) -> ControlResult<Endpoint> {
+    lock::sweep_stale(state_dir)?;
     if let Some(lock) = lock::read(state_dir)?
         && lock::pid_alive(lock.pid)
         && let Some(ep) = Endpoint::from_lock(&lock)
@@ -60,6 +61,7 @@ pub fn client_default(state_dir: &Path) -> ControlResult<Endpoint> {
 /// # Errors
 /// Returns when a live owner blocks this role.
 pub fn ensure_can_bind(state_dir: &Path, role: DaemonRole) -> ControlResult<()> {
+    lock::sweep_stale(state_dir)?;
     let Some(existing) = lock::read(state_dir)? else {
         return Ok(());
     };

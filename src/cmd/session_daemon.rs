@@ -141,7 +141,16 @@ fn spawn(
 ) -> ControlResult<SessionDaemonHandle> {
     let plane = Arc::new(ControlPlane::new(
         Some(Arc::new(TuiCallbackBackend::new(
-            list, status, message, stop,
+            list,
+            status,
+            message,
+            |_id| {
+                Err(ControlError::Unsupported {
+                    backend: BackendKind::Tui,
+                    verb: "resume",
+                })
+            },
+            stop,
         ))),
         Some(Arc::new(WorkerBackend::new(state_dir))),
     ));

@@ -13,6 +13,7 @@ type StatusCb = Box<dyn Fn(&str) -> ControlResult<AgentRecord> + Send + Sync>;
 type MessageCb =
     Box<dyn Fn(&str, &str, &MessageOpts) -> ControlResult<sonic_rs::Value> + Send + Sync>;
 type StopCb = Box<dyn Fn(&str) -> ControlResult<()> + Send + Sync>;
+type ResumeCb = Box<dyn Fn(&str) -> ControlResult<()> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct ControlPlane {
@@ -138,12 +139,12 @@ impl ControlPlane {
     }
 }
 
-/// TUI backend that returns typed Unsupported for pause/resume.
-/// Concrete session ops are supplied by the host via callbacks.
+/// TUI backend: pause stays unsupported; resume uses host callback when supplied.
 pub struct TuiCallbackBackend {
     list: ListCb,
     status: StatusCb,
     message: MessageCb,
+    resume: ResumeCb,
     stop: StopCb,
 }
 
@@ -156,12 +157,14 @@ impl TuiCallbackBackend {
         + Send
         + Sync
         + 'static,
+        resume: impl Fn(&str) -> ControlResult<()> + Send + Sync + 'static,
         stop: impl Fn(&str) -> ControlResult<()> + Send + Sync + 'static,
     ) -> Self {
         Self {
             list: Box::new(list),
             status: Box::new(status),
             message: Box::new(message),
+            resume: Box::new(resume),
             stop: Box::new(stop),
         }
     }
@@ -187,11 +190,8 @@ impl ControlBackend for TuiCallbackBackend {
         })
     }
 
-    fn resume(&self, _id: &str) -> ControlResult<()> {
-        Err(ControlError::Unsupported {
-            backend: BackendKind::Tui,
-            verb: "resume",
-        })
+    fn resume(&self, id: &str) -> ControlResult<()> {
+        (self.resume)(id)
     }
 
     fn stop(&self, id: &str) -> ControlResult<()> {
@@ -236,6 +236,12 @@ mod tests {
                     .ok_or_else(|| ControlError::NotFound(id.to_owned()))
             },
             |_id, _text, _opts| Ok(sonic_rs::json!({"queued": true})),
+            |_id| {
+                Err(ControlError::Unsupported {
+                    backend: BackendKind::Tui,
+                    verb: "resume",
+                })
+            },
             |_id| Ok(()),
         ))
     }
@@ -323,6 +329,71 @@ mod tests {
             let _ = cancel_tx.send(());
             let _ = handle.join();
             return Err("failed to connect to daemon".into());
+        }
+
+        let list =
+            client::call_blocking(tmp.path(), &ControlRequest::List).map_err(|e| e.to_string())?;
+        match list {
+            ControlResponse::Ok {
+                agents: Some(agents),
+                ..
+            } => {
+                assert_eq!(agents.len(), 1);
+                assert_eq!(agents[0].backend, BackendKind::Tui);
+            }
+            other => {
+                let _ = cancel_tx.send(());
+                let _ = handle.join();
+                return Err(format!("bad list: {other:?}"));
+            }
+        }
+
+        let _ = cancel_tx.send(());
+        match handle.join() {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(_) => Err("server thread panicked".into()),
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn tcp_client_server_health_and_list() -> Result<(), String> {
+        use crate::client;
+        use crate::server;
+        use std::time::Duration;
+
+        let tmp = TempDir::new().map_err(|e| e.to_string())?;
+        let plane = Arc::new(ControlPlane::new(Some(mem_tui()), None));
+        let (cancel_tx, cancel_rx) = flume::bounded(1);
+        let dir_serve = tmp.path().to_path_buf();
+        let plane_serve = Arc::clone(&plane);
+        let handle = std::thread::spawn(move || {
+            smol::block_on(server::serve(
+                &dir_serve,
+                plane_serve,
+                cancel_rx,
+                crate::lock::DaemonRole::Tui,
+            ))
+        });
+
+        let mut connected = false;
+        for _ in 0..50 {
+            std::thread::sleep(Duration::from_millis(20));
+            match client::call_blocking(tmp.path(), &ControlRequest::Health) {
+                Ok(ControlResponse::Ok {
+                    version: Some(v), ..
+                }) if v == PROTOCOL_VERSION => {
+                    connected = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        if !connected {
+            let _ = cancel_tx.send(());
+            let _ = handle.join();
+            return Err("failed to connect to tcp daemon".into());
         }
 
         let list =

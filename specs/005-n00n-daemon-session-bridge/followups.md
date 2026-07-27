@@ -69,4 +69,4 @@ Out of #149 once the above lands: **ready for review** — run `./scripts/smoke-
 
 ## Next sprint
 
-See `sprint-2.md` — plugin spec tests, `--state-dir` on control verbs, docs, TUI resume polish, Windows CI.
+Sprint 2 complete — see `sprint-2.md`. PR #149 ready for review after `./scripts/smoke-daemon.sh` is green.
