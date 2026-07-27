@@ -11,7 +11,8 @@ use tracing::{debug, warn};
 use crate::providers::ResolvedAuth;
 use crate::{
     AgentError, ContentBlock, Message, ProviderEvent, RequestDeliveryMetadata,
-    RequestDeliveryPhase, Role, StopReason, StreamResponse, System, TokenUsage,
+    RequestDeliveryPhase, Role, StopReason, StreamResponse, System, ThinkingConfig, TokenUsage,
+    dialect,
 };
 
 const RESPONSES_PATH: &str = "/responses";
@@ -32,6 +33,7 @@ pub(crate) fn build_body(
     previous_response_id: Option<&str>,
     prompt_cache_key: Option<&str>,
     store: bool,
+    thinking: ThinkingConfig,
 ) -> Value {
     let input = convert_input(messages);
     let wire_tools = convert_tools(tools);
@@ -53,6 +55,9 @@ pub(crate) fn build_body(
     }
     if wire_tools.as_array().is_some_and(|a| !a.is_empty()) {
         body["tools"] = wire_tools;
+    }
+    if let Some(effort) = thinking.effort_str(&dialect::STANDARD, model) {
+        body["reasoning"]["effort"] = json!(effort);
     }
     body
 }
@@ -1504,12 +1509,80 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             Some("resp_1"),
             Some("session_1"),
             true,
+            ThinkingConfig::default(),
         );
         assert_eq!(body["previous_response_id"], "resp_1");
         assert_eq!(body["prompt_cache_key"], "session_1");
         assert_eq!(body["store"], true);
         assert_eq!(body["reasoning"], json!({"summary":"auto"}));
         assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
+    }
+
+    #[test]
+    fn build_body_thinking_off() {
+        let model = crate::model::Model::from_spec("openai/gpt-5.6").unwrap();
+        let body = build_body(
+            &model,
+            &[],
+            &System::from("system"),
+            &json!([]),
+            None,
+            None,
+            false,
+            ThinkingConfig::Off,
+        );
+        assert_eq!(body["reasoning"], json!({"summary":"auto"}));
+    }
+
+    #[test]
+    fn build_body_thinking_adaptive() {
+        let model = crate::model::Model::from_spec("openai/gpt-5.6").unwrap();
+        let body = build_body(
+            &model,
+            &[],
+            &System::from("system"),
+            &json!([]),
+            None,
+            None,
+            false,
+            ThinkingConfig::Adaptive,
+        );
+        assert_eq!(body["reasoning"]["summary"], "auto");
+        assert_eq!(body["reasoning"]["effort"], "medium");
+    }
+
+    #[test]
+    fn build_body_thinking_effort_high() {
+        let model = crate::model::Model::from_spec("openai/gpt-5.6").unwrap();
+        let body = build_body(
+            &model,
+            &[],
+            &System::from("system"),
+            &json!([]),
+            None,
+            None,
+            false,
+            ThinkingConfig::Effort(crate::Effort::High),
+        );
+        assert_eq!(body["reasoning"]["summary"], "auto");
+        assert_eq!(body["reasoning"]["effort"], "high");
+    }
+
+    #[test]
+    fn build_body_thinking_budget() {
+        let model = crate::model::Model::from_spec("openai/gpt-5.6").unwrap();
+        let body = build_body(
+            &model,
+            &[],
+            &System::from("system"),
+            &json!([]),
+            None,
+            None,
+            false,
+            ThinkingConfig::Budget(1024),
+        );
+        assert_eq!(body["reasoning"]["summary"], "auto");
+        assert_eq!(body["reasoning"]["effort"], "minimal");
     }
 
     #[test]

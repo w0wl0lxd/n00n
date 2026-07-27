@@ -300,7 +300,8 @@ impl Copilot {
     ) -> Result<StreamResponse, AgentError> {
         let auth = self.auth().await?;
         let system = System::from(system);
-        let mut body = responses::build_body(model, messages, &system, tools, None, None, false);
+        let mut body =
+            responses::build_body(model, messages, &system, tools, None, None, false, thinking);
         if let Some(info) = self.reasoning_info_for(model) {
             apply_responses_reasoning(&mut body, thinking, model, &effort_dialect(&info));
         }
