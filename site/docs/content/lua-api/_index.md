@@ -87,6 +87,7 @@ a string belongs.
 | [`n00n.ui.Buf`](#n00n-ui-Buf) | A content buffer that holds styled lines of text. |
 | [`n00n.uv`](#n00n-uv) | System and environment utilities, modelled after `vim.uv`. |
 | [`n00n.arbor`](#n00n-arbor) | Graph-based code analysis via Arbor CLI. |
+| [`n00n.codegraph`](#n00n-codegraph) | Cross-file structural exploration via the codegraph CLI. |
 | [`n00n.workflow`](#n00n-workflow) | Sandboxed workflow script compilation. |
 | [`n00n.yaml`](#n00n-yaml) | YAML encoding and decoding. |
 
@@ -5028,6 +5029,69 @@ Run `arbor index` if the project is not yet indexed.
 - `{project}` (`string`) Path to the project root.
 
 **Returns:** (`nil`) nil on success, or error on failure.
+
+
+## n00n.codegraph {#n00n-codegraph}
+
+Cross-file structural exploration via the codegraph CLI. Wraps `codegraph explore` with timeout and index checks.
+
+---
+
+### `n00n.codegraph.check_binary()` {#n00n-codegraph-check_binary}
+
+```lua
+n00n.codegraph.check_binary()
+```
+
+Check that the `codegraph` CLI is installed and working.
+
+**Returns:** (`nil`) nil on success, or error on failure.
+
+---
+
+### `n00n.codegraph.available()` {#n00n-codegraph-available}
+
+```lua
+n00n.codegraph.available()
+```
+
+Returns true if the `codegraph` CLI is on PATH.
+
+**Returns:** (`boolean`) true when codegraph is available.
+
+---
+
+### `n00n.codegraph.has_index()` {#n00n-codegraph-has_index}
+
+```lua
+n00n.codegraph.has_index({project})
+```
+
+Returns true when `.codegraph/` exists in the project root.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`boolean`) true when a codegraph index is present.
+
+---
+
+### `n00n.codegraph.explore()` {#n00n-codegraph-explore}
+
+```lua
+n00n.codegraph.explore({query}, {project}, {timeout_secs?})
+```
+
+Run `codegraph explore` for a natural-language or symbol query.
+
+**Parameters:**
+
+- `{query}` (`string`) Natural language question or symbol names to explore.
+- `{project}` (`string`) Path to the project root.
+- `{timeout_secs}` (`integer`) Optional timeout in seconds (default 30).
+
+**Returns:** (`string`) Explore output text.
 
 
 ## n00n.workflow {#n00n-workflow}
