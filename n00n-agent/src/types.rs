@@ -443,7 +443,7 @@ impl ToolOutput {
             Self::GrepResult { entries } => Some(Self::grep_summary(entries)),
             Self::ReadDir(t) => {
                 let n = t.text.lines().count();
-                Some(format!("{n} entries"))
+                Some(format!("{n} {}", if n == 1 { "entry" } else { "entries" }))
             }
             Self::Plain(text) | Self::Markdown(text) if !text.text.is_empty() => {
                 let n = text.text.lines().count();
@@ -1278,6 +1278,8 @@ mod tests {
     #[test_case(ToolOutput::ReadCode { path: "a.rs".into(), start_line: 10, lines: vec!["x".into(); 5], total_lines: 100, instructions: None }, Some("5 of 100 lines") ; "read_code_partial")]
     #[test_case(ToolOutput::WriteCode { path: "a.rs".into(), byte_count: 99, lines: vec![] }, Some("99 bytes") ; "write_code_bytes")]
     #[test_case(ToolOutput::GrepResult { entries: vec![GrepFileEntry { path: "a.rs".into(), groups: vec![GrepMatchGroup::single(1, "hit")] }] }, Some("1 match in 1 file") ; "grep_file_count")]
+    #[test_case(ToolOutput::ReadDir("a.rs".into()),                   Some("1 entry")     ; "readdir_singular_annotates")]
+    #[test_case(ToolOutput::ReadDir("a.rs\nb.rs".into()),             Some("2 entries")   ; "readdir_plural_annotates")]
     #[test_case(ToolOutput::Diff { path: "a.rs".into(), before: String::new(), after: String::new(), summary: "ok".into(), telemetry: None }, None ; "diff_no_annotation")]
     #[allow(clippy::needless_pass_by_value)]
     fn annotation_cases(output: ToolOutput, expected: Option<&str>) {
