@@ -1,8 +1,7 @@
 local shorten_path = require("n00n.shorten_path")
 local ToolView = require("n00n.tool_view")
 
-local DESCRIPTION =
-  [[Write content to a file, replacing existing content. Creates parent directories. Always read first. Never create files unless necessary. Never proactively create docs (*.md, README) unless requested.]]
+local DESCRIPTION = [[Write content to a file. Prefer edit or edit_lines for existing files.]]
 
 local function write_view_opts(ctx)
   local tol = ctx:tool_output_lines()
