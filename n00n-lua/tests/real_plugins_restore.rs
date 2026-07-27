@@ -9,9 +9,14 @@
 //! A broken restore silently falls back to raw LLM output, so we assert
 //! things only the real views produce (gutters, command headers, truncation).
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    thread::JoinHandle,
+    time::{Duration, Instant},
+};
 
 use n00n_agent::AgentEvent;
+use n00n_agent::CancelTrigger;
 use n00n_agent::tools::ToolRegistry;
 use n00n_config::ToolOutputLines;
 use n00n_lua::PluginHost;
@@ -40,6 +45,33 @@ const WORKFLOW_TOOL: &str = "workflow";
 const LIVE_PREVIEW_ID: &str = "live-preview";
 const LIVE_PREVIEW_EVENT_SEQUENCE: u64 = 0;
 const LIVE_PREVIEW_RECEIVE_TIMEOUT: Duration = Duration::from_secs(5);
+const LIVE_PREVIEW_TIMEOUT_MSG: &str = "plugin did not publish a live preview";
+
+/// Cancels and joins the spawned tool on every exit path, including panics.
+struct LivePreviewGuard<T> {
+    cancel: Option<CancelTrigger>,
+    execution: Option<JoinHandle<T>>,
+}
+
+impl<T> LivePreviewGuard<T> {
+    fn new(cancel: CancelTrigger, execution: JoinHandle<T>) -> Self {
+        Self {
+            cancel: Some(cancel),
+            execution: Some(execution),
+        }
+    }
+}
+
+impl<T> Drop for LivePreviewGuard<T> {
+    fn drop(&mut self) {
+        if let Some(cancel) = self.cancel.take() {
+            cancel.cancel();
+        }
+        if let Some(execution) = self.execution.take() {
+            let _ = execution.join();
+        }
+    }
+}
 
 fn load_host() -> PluginHost {
     let reg = Arc::new(ToolRegistry::new());
@@ -76,11 +108,15 @@ fn assert_publishes_live_buf(tool: &str, source: &str, input: Value, expected: &
     ctx.cancel = token;
     let inv = reg.get(tool).unwrap().tool.parse(&input).unwrap();
     let execution = std::thread::spawn(move || smol::block_on(inv.execute(&ctx)));
+    let _guard = LivePreviewGuard::new(cancel, execution);
 
+    let deadline = Instant::now() + LIVE_PREVIEW_RECEIVE_TIMEOUT;
     let body = loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(!remaining.is_zero(), "{LIVE_PREVIEW_TIMEOUT_MSG}");
         let env = rx
-            .recv_timeout(LIVE_PREVIEW_RECEIVE_TIMEOUT)
-            .expect("plugin did not publish a live preview");
+            .recv_timeout(remaining)
+            .unwrap_or_else(|_| panic!("{LIVE_PREVIEW_TIMEOUT_MSG}"));
         if let AgentEvent::LiveToolBuf { id, body } = env.event
             && id == LIVE_PREVIEW_ID
         {
@@ -93,9 +129,6 @@ fn assert_publishes_live_buf(tool: &str, source: &str, input: Value, expected: &
             .flat_map(|line| &line.spans)
             .any(|span| span.text.contains(expected))
     );
-
-    cancel.cancel();
-    execution.join().expect("tool execution panicked");
 }
 
 #[test_case::test_case(
