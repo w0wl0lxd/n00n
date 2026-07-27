@@ -1,15 +1,16 @@
 use std::env;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(unix)]
 use async_lock::Mutex;
 use color_eyre::Result;
 use color_eyre::eyre::Context;
+#[cfg(unix)]
 use flume::Sender;
+#[cfg(unix)]
 use futures_lite::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, split};
 use n00n_agent::headless;
 use n00n_agent::tools::ToolRegistry;
@@ -23,10 +24,19 @@ use n00n_providers::{Model, OpenAiOptions, ThinkingConfig, Timeouts};
 use n00n_storage::StateDir;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+#[cfg(unix)]
 use smol::net::unix::{UnixListener, UnixStream};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::cli::AgentMode as CliAgentMode;
 use crate::setup;
+
+#[cfg(not(unix))]
+const BACKGROUND_AGENTS_UNSUPPORTED: &str =
+    "background agents require Unix domain sockets and are not supported on this platform";
 
 fn workflow_from_mode(mode: CliAgentMode) -> bool {
     matches!(mode, CliAgentMode::Team | CliAgentMode::Workflow)
@@ -269,6 +279,7 @@ fn prepare_agent_env(model_arg: Option<&str>, yolo: bool, no_jit: bool) -> Resul
     })
 }
 
+#[cfg(unix)]
 async fn write_line<W: AsyncWriteExt + Unpin>(writer: &mut W, line: &str) -> Result<()> {
     writer
         .write_all(line.as_bytes())
@@ -456,6 +467,7 @@ fn now_epoch() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+#[cfg(unix)]
 pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()> {
     let env = prepare_agent_env(opts.model, opts.yolo, opts.no_jit)?;
     let message = build_message(
@@ -587,6 +599,12 @@ pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()
     Ok(())
 }
 
+#[cfg(not(unix))]
+pub fn server(_opts: &AgentRunOptions<'_>, _agent_id: Option<String>) -> Result<()> {
+    Err(color_eyre::eyre::eyre!(BACKGROUND_AGENTS_UNSUPPORTED))
+}
+
+#[cfg(unix)]
 fn wait_for_run_done(event_rx: &flume::Receiver<Envelope>) {
     while let Ok(envelope) = event_rx.recv() {
         if matches!(
@@ -598,6 +616,7 @@ fn wait_for_run_done(event_rx: &flume::Receiver<Envelope>) {
     }
 }
 
+#[cfg(unix)]
 async fn handle_connection(
     stream: UnixStream,
     input_tx: Sender<AgentInput>,
@@ -784,6 +803,7 @@ async fn handle_connection(
     Ok(())
 }
 
+#[cfg(unix)]
 pub fn message_client(id: &str, text: &str, json: bool) -> Result<()> {
     let storage = StateDir::resolve().wrap_err("failed to resolve state directory")?;
     let state = read_agent_state(&storage, id).wrap_err("failed to read agent state")?;
@@ -842,6 +862,12 @@ pub fn message_client(id: &str, text: &str, json: bool) -> Result<()> {
     })
 }
 
+#[cfg(not(unix))]
+pub fn message_client(_id: &str, _text: &str, _json: bool) -> Result<()> {
+    Err(color_eyre::eyre::eyre!(BACKGROUND_AGENTS_UNSUPPORTED))
+}
+
+#[cfg(unix)]
 pub fn stop_client(id: &str) -> Result<()> {
     let storage = StateDir::resolve().wrap_err("failed to resolve state directory")?;
 
@@ -882,6 +908,11 @@ pub fn stop_client(id: &str) -> Result<()> {
 
         Ok(())
     })
+}
+
+#[cfg(not(unix))]
+pub fn stop_client(_id: &str) -> Result<()> {
+    Err(color_eyre::eyre::eyre!(BACKGROUND_AGENTS_UNSUPPORTED))
 }
 
 pub fn list_client(json: bool) -> Result<()> {
@@ -938,14 +969,27 @@ pub fn status_client(id: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 pub fn pause_client(id: &str) -> Result<()> {
     control_command_client(id, &ClientCommand::Pause, "paused")
 }
 
+#[cfg(not(unix))]
+pub fn pause_client(_id: &str) -> Result<()> {
+    Err(color_eyre::eyre::eyre!(BACKGROUND_AGENTS_UNSUPPORTED))
+}
+
+#[cfg(unix)]
 pub fn resume_client(id: &str) -> Result<()> {
     control_command_client(id, &ClientCommand::Resume, "resumed")
 }
 
+#[cfg(not(unix))]
+pub fn resume_client(_id: &str) -> Result<()> {
+    Err(color_eyre::eyre::eyre!(BACKGROUND_AGENTS_UNSUPPORTED))
+}
+
+#[cfg(unix)]
 fn control_command_client(id: &str, command: &ClientCommand, success_label: &str) -> Result<()> {
     let storage = StateDir::resolve().wrap_err("failed to resolve state directory")?;
     let state = read_agent_state(&storage, id).wrap_err("failed to read agent state")?;
