@@ -1,4 +1,8 @@
 mod acp;
+#[cfg(unix)]
+pub mod agent;
+#[cfg(not(unix))]
+#[path = "agent_stub.rs"]
 pub mod agent;
 pub(crate) mod session_daemon;
 mod subcmd;
@@ -92,7 +96,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     no_jit: cli.plugin_flags.no_jit,
                 };
                 if background {
-                    agent::server(&run_opts, id.as_deref())?;
+                    agent::server(&run_opts, id)?;
                 } else {
                     agent::run(&run_opts, json)?;
                 }
@@ -134,7 +138,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 agent::stop_client(&id, state_dir)?;
             }
             AgentCommand::Daemon { state_dir } => {
-                agent::daemon_serve(state_dir.as_ref())?;
+                agent::daemon_serve(state_dir)?;
             }
         },
         None => {
