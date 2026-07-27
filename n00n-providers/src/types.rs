@@ -726,6 +726,8 @@ pub struct RequestOptions {
     /// `cache_control`. Default is 2. Higher values increase cache write cost but
     /// may improve cache hit rates in long conversations.
     pub message_cache_breakpoints: usize,
+    pub protect_history_replay: bool,
+    pub allow_history_replay: bool,
 }
 
 impl Default for RequestOptions {
@@ -734,6 +736,8 @@ impl Default for RequestOptions {
             thinking: Default::default(),
             fast: false,
             message_cache_breakpoints: 2,
+            protect_history_replay: false,
+            allow_history_replay: false,
         }
     }
 }
@@ -752,6 +756,8 @@ impl RequestOptions {
             },
             fast: self.fast && model.supports_fast(),
             message_cache_breakpoints: self.message_cache_breakpoints,
+            protect_history_replay: self.protect_history_replay,
+            allow_history_replay: self.allow_history_replay,
         }
     }
 }
@@ -1066,6 +1072,8 @@ mod tests {
             thinking,
             fast: false,
             message_cache_breakpoints: 2,
+            protect_history_replay: false,
+            allow_history_replay: false,
         };
         assert_eq!(opts.clamped(&model).thinking, expected);
     }
@@ -1077,6 +1085,8 @@ mod tests {
             thinking: ThinkingConfig::Off,
             fast: true,
             message_cache_breakpoints: 2,
+            protect_history_replay: false,
+            allow_history_replay: false,
         };
         assert!(!opts.clamped(&model).fast);
     }
