@@ -643,11 +643,9 @@ pub fn message_client(id: &str, text: &str, json: bool) -> Result<()> {
                         print!("{text}");
                     }
                     ServerEvent::Done {
-                        text,
                         error: Some(message),
                         ..
                     } => {
-                        print!("{text}");
                         eprintln!("\nError: {message}");
                         return Err(color_eyre::eyre::eyre!(message));
                     }
