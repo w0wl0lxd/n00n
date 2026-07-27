@@ -231,6 +231,7 @@ fn live_item_to_record(value: &Value) -> ControlResult<AgentRecord> {
         title,
         model: None,
         output: None,
+        cwd: value.get("cwd").and_then(Value::as_str).map(str::to_owned),
     })
 }
 
@@ -257,6 +258,7 @@ fn status_value_to_record(value: &Value) -> ControlResult<AgentRecord> {
         title,
         model,
         output,
+        cwd: value.get("cwd").and_then(Value::as_str).map(str::to_owned),
     })
 }
 

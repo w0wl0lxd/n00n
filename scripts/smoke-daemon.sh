@@ -29,4 +29,8 @@ OUT="$(cargo run -q -p n00n --bin n00n -- agent list --state-dir "$SMOKE_DIR")"
 echo "$OUT" | grep -q 'demo'
 echo "$OUT" | grep -q 'Background agents'
 
+JSON_OUT="$(cargo run -q -p n00n --bin n00n -- agent list --json --state-dir "$SMOKE_DIR")"
+echo "$JSON_OUT" | grep -q '"state"'
+echo "$JSON_OUT" | grep -q '"id": "demo"'
+
 echo "ok: daemon smoke gate passed"

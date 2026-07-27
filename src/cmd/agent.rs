@@ -26,6 +26,7 @@ use n00n_daemon::protocol::{BackendKind, ControlRequest, ControlResponse, Messag
 use n00n_daemon::registry::ControlPlane;
 use n00n_daemon::server as daemon_server;
 use n00n_daemon::transport;
+use n00n_daemon::{AgentRecord, AgentScriptView, is_terminal_worker_status};
 use n00n_lua::PluginHost;
 use n00n_providers::{Model, OpenAiOptions, ThinkingConfig, Timeouts};
 use n00n_storage::StateDir;
@@ -479,6 +480,8 @@ struct AgentState {
     model: String,
     created_at: u64,
     updated_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cwd: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -627,6 +630,9 @@ pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()
         model: model_spec,
         created_at: now_epoch(),
         updated_at: now_epoch(),
+        cwd: std::env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned()),
     };
 
     write_agent_state(&storage, &state)?;
@@ -1032,37 +1038,131 @@ pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> 
     })
 }
 
-pub fn list_client(json: bool, state_dir_override: Option<PathBuf>) -> Result<()> {
+fn agent_state_to_record(state: &AgentState) -> AgentRecord {
+    let title = if state.prompt.is_empty() {
+        None
+    } else {
+        Some(state.prompt.chars().take(40).collect())
+    };
+    AgentRecord {
+        id: state.id.clone(),
+        backend: BackendKind::Worker,
+        session_id: Some(state.session_id.clone()),
+        status: state.status.clone(),
+        title,
+        model: Some(state.model.clone()),
+        output: None,
+        cwd: state.cwd.clone(),
+    }
+}
+
+fn fetch_daemon_agents(state_dir: &std::path::Path) -> Option<Result<Vec<AgentRecord>>> {
+    let result = try_daemon(state_dir, &ControlRequest::List)?;
+    match result {
+        Ok(ControlResponse::Ok {
+            agents: Some(agents),
+            ..
+        }) => Some(Ok(agents)),
+        Ok(other) => Some(Err(eyre!("unexpected daemon list response: {other:?}"))),
+        Err(e) => Some(Err(e)),
+    }
+}
+
+fn filter_active_agents(agents: Vec<AgentRecord>) -> Vec<AgentRecord> {
+    agents
+        .into_iter()
+        .filter(|agent| {
+            !(agent.backend == BackendKind::Worker && is_terminal_worker_status(&agent.status))
+        })
+        .collect()
+}
+
+fn filter_agents_by_cwd(agents: Vec<AgentRecord>, cwd: &std::path::Path) -> Vec<AgentRecord> {
+    let filter = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    agents
+        .into_iter()
+        .filter(|agent| {
+            let Some(record_cwd) = agent.cwd.as_deref() else {
+                return false;
+            };
+            let Ok(canonical) = std::fs::canonicalize(record_cwd) else {
+                return false;
+            };
+            canonical == filter
+        })
+        .collect()
+}
+
+fn print_agent_table(agents: &[AgentRecord]) {
+    if agents.is_empty() {
+        println!("(no agents)");
+        return;
+    }
+    for agent in agents {
+        println!(
+            "{}\t{}\t{}\t{}",
+            agent.id,
+            agent.backend,
+            agent.status,
+            agent.title.as_deref().map_or("", |title| title)
+        );
+    }
+}
+
+pub fn list_client(
+    json: bool,
+    all: bool,
+    cwd: Option<PathBuf>,
+    state_dir_override: Option<PathBuf>,
+) -> Result<()> {
     let state_dir = agent_state_dir(state_dir_override)?;
-    if let Some(result) = try_daemon(&state_dir, &ControlRequest::List) {
-        return print_control_response(&result?, json);
+    let (mut agents, from_daemon) = match fetch_daemon_agents(&state_dir) {
+        Some(Ok(list)) => (list, true),
+        Some(Err(e)) => return Err(e),
+        None => {
+            let storage = agent_storage(&state_dir);
+            let list = list_agent_states(&storage)?
+                .iter()
+                .map(agent_state_to_record)
+                .collect();
+            (list, false)
+        }
+    };
+
+    if !all {
+        agents = filter_active_agents(agents);
+    }
+    if let Some(cwd) = cwd {
+        agents = filter_agents_by_cwd(agents, &cwd);
     }
 
-    let storage = agent_storage(&state_dir);
-    let states = list_agent_states(&storage)?;
-
     if json {
+        let views: Vec<AgentScriptView> = agents.iter().map(AgentScriptView::from_record).collect();
         let output =
-            serde_json::to_string_pretty(&states).wrap_err("failed to serialize agent list")?;
+            serde_json::to_string_pretty(&views).wrap_err("failed to serialize agent list")?;
         println!("{output}");
-    } else {
-        if states.is_empty() {
-            println!("No background agents running");
-            return Ok(());
-        }
+        return Ok(());
+    }
 
-        println!("Background agents:");
-        for state in &states {
-            let prompt_preview = if state.prompt.len() > 50 {
-                format!("{}...", &state.prompt[..50])
-            } else {
-                state.prompt.clone()
-            };
-            println!(
-                "  {} - {} - {} - {} - {}",
-                state.id, state.status, state.model, prompt_preview, state.updated_at
-            );
-        }
+    if from_daemon {
+        print_agent_table(&agents);
+        return Ok(());
+    }
+
+    if agents.is_empty() {
+        println!("No background agents running");
+        return Ok(());
+    }
+
+    println!("Background agents:");
+    for agent in &agents {
+        println!(
+            "  {} - {} - {} - {}",
+            agent.id,
+            agent.status,
+            agent.model.as_deref().map_or("?", |m| m),
+            agent.title.as_deref().map_or("", |t| t)
+        );
     }
 
     Ok(())
@@ -1077,15 +1177,40 @@ pub fn status_client(id: &str, json: bool, state_dir_override: Option<PathBuf>) 
             backend: None,
         },
     ) {
-        return print_control_response(&result?, json);
+        let resp = result?;
+        if json {
+            match &resp {
+                ControlResponse::Ok {
+                    agent: Some(record),
+                    ..
+                } => {
+                    let view = AgentScriptView::from_record(record);
+                    let output = serde_json::to_string_pretty(&view)
+                        .wrap_err("failed to serialize agent status")?;
+                    println!("{output}");
+                    return Ok(());
+                }
+                ControlResponse::Err { error, code } => {
+                    if let Some(c) = code {
+                        return Err(eyre!("[{c}] {error}"));
+                    }
+                    return Err(eyre!("{error}"));
+                }
+                ControlResponse::Ok { .. } => {
+                    return Err(eyre!("unexpected daemon status response: {resp:?}"));
+                }
+            }
+        }
+        return print_control_response(&resp, false);
     }
 
     let storage = agent_storage(&state_dir);
     let state = read_agent_state(&storage, id).wrap_err("failed to read agent state")?;
 
     if json {
+        let view = AgentScriptView::from_record(&agent_state_to_record(&state));
         let output =
-            serde_json::to_string_pretty(&state).wrap_err("failed to serialize agent status")?;
+            serde_json::to_string_pretty(&view).wrap_err("failed to serialize agent status")?;
         println!("{output}");
     } else {
         println!("Agent: {}", state.id);
@@ -1186,6 +1311,7 @@ mod tests {
             model: "anthropic/claude-3-opus".to_string(),
             created_at: 1_234_567_890,
             updated_at: 1_234_567_900,
+            cwd: Some("/tmp/proj".into()),
         };
 
         let json = serde_json::to_string(&state).unwrap();
@@ -1283,6 +1409,7 @@ mod tests {
             model: "model1".to_string(),
             created_at: 100,
             updated_at: 200,
+            cwd: None,
         };
         let data1 = serde_json::to_vec_pretty(&first_state).unwrap();
         n00n_storage::atomic_write(&agent1_path.join(STATE_FILE), &data1).unwrap();
@@ -1299,6 +1426,7 @@ mod tests {
             model: "model2".to_string(),
             created_at: 50,
             updated_at: 300,
+            cwd: None,
         };
         let data2 = serde_json::to_vec_pretty(&second_state).unwrap();
         n00n_storage::atomic_write(&agent2_path.join(STATE_FILE), &data2).unwrap();
@@ -1324,6 +1452,66 @@ mod tests {
         assert!(validate_agent_id("../../../etc/passwd").is_err());
         assert!(validate_agent_id("a b").is_err());
         assert!(validate_agent_id(&"x".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn filter_active_agents_hides_terminal_workers() {
+        let agents = vec![
+            AgentRecord {
+                id: "live".into(),
+                backend: BackendKind::Worker,
+                session_id: None,
+                status: "running".into(),
+                title: None,
+                model: None,
+                output: None,
+                cwd: None,
+            },
+            AgentRecord {
+                id: "done".into(),
+                backend: BackendKind::Worker,
+                session_id: None,
+                status: "stopped".into(),
+                title: None,
+                model: None,
+                output: None,
+                cwd: None,
+            },
+        ];
+        let filtered = filter_active_agents(agents);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "live");
+    }
+
+    #[test]
+    fn filter_agents_by_cwd_matches_canonical_path() {
+        let tmp = TempDir::new().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let agents = vec![
+            AgentRecord {
+                id: "here".into(),
+                backend: BackendKind::Tui,
+                session_id: Some("here".into()),
+                status: "idle".into(),
+                title: None,
+                model: None,
+                output: None,
+                cwd: Some(cwd.to_string_lossy().into_owned()),
+            },
+            AgentRecord {
+                id: "elsewhere".into(),
+                backend: BackendKind::Tui,
+                session_id: Some("elsewhere".into()),
+                status: "idle".into(),
+                title: None,
+                model: None,
+                output: None,
+                cwd: Some("/tmp/other".into()),
+            },
+        ];
+        let filtered = filter_agents_by_cwd(agents, &cwd);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "here");
     }
 
     #[test]
