@@ -229,6 +229,11 @@ pub enum Command {
         #[command(subcommand)]
         action: AuthAction,
     },
+    /// Manage live/background agents via the on-device control plane
+    Agent {
+        #[command(subcommand)]
+        action: crate::cmd::agent::AgentAction,
+    },
     /// List all available models
     Models,
     /// Run the index tool on a file to see how it looks like

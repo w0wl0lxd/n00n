@@ -1,4 +1,5 @@
 mod acp;
+pub mod agent;
 mod subcmd;
 mod tui;
 
@@ -21,6 +22,9 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 AuthAction::Logout { provider } => subcmd::auth_logout(&provider, &storage)?,
                 AuthAction::Status => subcmd::auth_status(&storage),
             }
+        }
+        Some(Command::Agent { action }) => {
+            agent::run(agent::AgentArgs { action })?;
         }
         Some(Command::Index { path }) => {
             subcmd::index(&path, cli.plugin_flags.no_plugins, cli.plugin_flags.no_jit)?;
