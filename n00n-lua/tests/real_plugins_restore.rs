@@ -9,7 +9,7 @@
 //! A broken restore silently falls back to raw LLM output, so we assert
 //! things only the real views produce (gutters, command headers, truncation).
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use n00n_agent::AgentEvent;
 use n00n_agent::tools::ToolRegistry;
@@ -36,6 +36,10 @@ const BATCH_INPUT_GREP_BASH: &str = r#"{ "tool_calls": [
     { "tool": "grep", "parameters": { "pattern": "fn" } },
     { "tool": "bash", "parameters": { "command": "echo hello-from-bash" } }
 ]}"#;
+const WORKFLOW_TOOL: &str = "workflow";
+const LIVE_PREVIEW_ID: &str = "live-preview";
+const LIVE_PREVIEW_EVENT_SEQUENCE: u64 = 0;
+const LIVE_PREVIEW_RECEIVE_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn load_host() -> PluginHost {
     let reg = Arc::new(ToolRegistry::new());
@@ -51,7 +55,7 @@ fn load_host() -> PluginHost {
 fn assert_publishes_live_buf(tool: &str, source: &str, input: Value, expected: &str) {
     let reg = Arc::new(ToolRegistry::new());
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
-    if tool == "workflow" {
+    if tool == WORKFLOW_TOOL {
         host.load_source(
             "disable_workflow_state",
             "n00n.env.state_dir = function() return nil end",
@@ -61,11 +65,11 @@ fn assert_publishes_live_buf(tool: &str, source: &str, input: Value, expected: &
     host.load_source("live_preview", source).unwrap();
 
     let (tx, rx) = flume::unbounded();
-    let event_tx = n00n_agent::EventSender::new(tx, 0);
+    let event_tx = n00n_agent::EventSender::new(tx, LIVE_PREVIEW_EVENT_SEQUENCE);
     let mut ctx = n00n_agent::tools::test_support::stub_ctx_with(
         &n00n_agent::AgentMode::Build,
         Some(&event_tx),
-        Some("live-preview"),
+        Some(LIVE_PREVIEW_ID),
     );
     ctx.registry = Arc::clone(&reg);
     let (cancel, token) = n00n_agent::CancelToken::new();
@@ -75,10 +79,10 @@ fn assert_publishes_live_buf(tool: &str, source: &str, input: Value, expected: &
 
     let body = loop {
         let env = rx
-            .recv_timeout(std::time::Duration::from_secs(5))
+            .recv_timeout(LIVE_PREVIEW_RECEIVE_TIMEOUT)
             .expect("plugin did not publish a live preview");
         if let AgentEvent::LiveToolBuf { id, body } = env.event
-            && id == "live-preview"
+            && id == LIVE_PREVIEW_ID
         {
             break body;
         }
@@ -102,7 +106,7 @@ fn assert_publishes_live_buf(tool: &str, source: &str, input: Value, expected: &
     "bash"
 )]
 #[test_case::test_case(
-    "workflow",
+    WORKFLOW_TOOL,
     WORKFLOW_SRC,
     json!({ "script": "meta({ name = 'preview' }) return 'done'" }),
     "workflow";
