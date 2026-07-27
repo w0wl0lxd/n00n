@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785176796690,
+  "lastUpdate": 1785178773705,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -8097,6 +8097,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 113982,
             "range": "± 19674",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b93fcdb3c3493c4eaca52acd3c794229e58038a4",
+          "message": "feat(providers): wire ThinkingConfig into OpenAI responses body for local/custom providers (#178)\n\n* feat(providers): wire ThinkingConfig into OpenAI responses body for local/custom providers\n\n* fix(providers): clear stale standard-dialect reasoning effort in Copilot responses\n\n* fix(agent): gate unix-only background agent sockets for Windows CI\n\nBackground agent servers and direct control.sock clients compile only on\nunix; Windows builds use the daemon control plane or return a clear error.\n\n* fix(n00n-daemon): compile and lint on Windows and macOS\n\nGate unix-only imports and pid_alive, drop unused serde_json, and scope\nworker Path/JsonValueTrait usage so cross-platform CI passes.\n\n* chore(changelog): add fragment for PR 178\n\n* fix(daemon): gate unix-only test helpers behind cfg(unix)\n\n`write_worker_fixture` and `write_fixture_with_socket` are only used by\n#[cfg(unix)] tests. On Windows they were reported as dead code, failing\nthe workspace lint job. Gate them behind cfg(unix) so non-Unix test builds\nskip them.\n\n* fix: suppress Windows-only dead code in agent and skip broken daemon tests\n\nThe Windows lint job was failing because `src/cmd/agent.rs` contains\nUnix-only server code; on Windows its imports/variables/fields are\nflagged as dead. Add a Windows-only `allow` for dead/unused lints while\nkeeping the Linux path strict.\n\n`lock::tests::tui_blocks_worker_while_alive` relies on `pid_alive`,\nwhich is not supported on Windows, so gate it to Unix.\n`registry::tests::tcp_client_server_health_and_list` is ignored on\nWindows for the same reason (TCP daemon client needs live-lock\nresolution).\n\n* fix: resolve Windows/macOS lint failures\n\n- Remove needless `return` in `agent.rs` Windows-only error paths.\n- Gate `tui_bridge.rs` Unix-only test imports and `shutdown` helper.\n- Split `auth.rs` imports so `ControlError` is only pulled in on Linux.",
+          "timestamp": "2026-07-27T18:45:22Z",
+          "tree_id": "d6d4fada76700a5c1afd884c14549697e456342a",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/b93fcdb3c3493c4eaca52acd3c794229e58038a4"
+        },
+        "date": 1785178772561,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6689665,
+            "range": "± 12321",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2221110,
+            "range": "± 3180",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2219642,
+            "range": "± 25821",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8352882,
+            "range": "± 22505",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4321244,
+            "range": "± 29660",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4334749,
+            "range": "± 14416",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 581342,
+            "range": "± 2197",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191818,
+            "range": "± 405",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191717,
+            "range": "± 671",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1041112,
+            "range": "± 10570",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 587925,
+            "range": "± 1388",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 587753,
+            "range": "± 1296",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 61256,
+            "range": "± 5347",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 194312,
+            "range": "± 10248",
             "unit": "ns/iter"
           }
         ]
