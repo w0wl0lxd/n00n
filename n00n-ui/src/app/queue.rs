@@ -124,6 +124,7 @@ impl MessageQueue {
             QueuedMessage {
                 text,
                 images: input.images,
+                control: input.control,
             },
             delivery,
         ))
@@ -231,6 +232,24 @@ impl App {
         } else {
             self.run_id += 1;
             SubmitOutcome::Started(self.start_from_queue(&msg))
+        }
+    }
+
+    /// Control/steering path: interrupt an in-progress turn when possible,
+    /// otherwise start a new turn. Used by `agent_control` message/resume.
+    pub(crate) fn submit_control_prompt(&mut self, msg: QueuedMessage) -> SubmitOutcome {
+        if msg.text.trim().is_empty() && msg.images.is_empty() {
+            return SubmitOutcome::Rejected(EMPTY_PROMPT_ERR);
+        }
+        if self.status == Status::Streaming {
+            if self.queue_with_delivery(msg, Delivery::Steering) {
+                SubmitOutcome::Queued
+            } else {
+                SubmitOutcome::Rejected(NO_QUEUE_ERR)
+            }
+        } else {
+            self.run_id += 1;
+            SubmitOutcome::Started(self.start_background_submission(&msg))
         }
     }
 
@@ -362,9 +381,15 @@ impl App {
         text: &str,
         image_count: usize,
         images: Vec<ImageSource>,
+        control: bool,
     ) {
         let _ = image_count;
-        self.main_chat().show_user_message_with_images(text, images);
+        if control {
+            self.main_chat()
+                .show_control_message_with_images(text, images);
+        } else {
+            self.main_chat().show_user_message_with_images(text, images);
+        }
     }
 
     /// Immediate path: kick off the agent and draw the bubble in the same
@@ -454,6 +479,7 @@ mod tests {
                 thinking: ThinkingConfig::default(),
                 fast: false,
                 workflow: false,
+                control: false,
                 prompt: None,
             },
             run_id: 0,

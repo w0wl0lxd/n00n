@@ -348,7 +348,7 @@ fn run_ui_loop(
 
         // Bind daemon.sock for this UI generation so CLI `n00n agent list`
         // unions live TUI sessions. Dropped on exit / before `/reload`.
-        let _daemon = stack
+        let daemon = stack
             .plugin_host
             .ui_action_tx()
             .and_then(|tx| crate::cmd::tui_bridge::try_spawn(storage.path(), tx));
@@ -382,7 +382,7 @@ fn run_ui_loop(
         )
         .context("run UI")?;
 
-        drop(_daemon);
+        drop(daemon);
 
         match outcome {
             RunOutcome::Exit { session_id, code } => {

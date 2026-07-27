@@ -132,6 +132,8 @@ pub struct StoredQueuedMessage {
     pub fast: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub workflow: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub control: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<StoredMcpPrompt>,
 }
@@ -3127,6 +3129,7 @@ mod tests {
         assert!(stored.thinking.is_none());
         assert!(!stored.fast);
         assert!(!stored.workflow);
+        assert!(!stored.control);
         assert!(stored.prompt.is_none());
     }
 

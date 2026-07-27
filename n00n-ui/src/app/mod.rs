@@ -1611,10 +1611,11 @@ impl App {
             text,
             image_count,
             images,
+            control,
         } = result
         {
             if chat_idx == 0 {
-                self.on_queue_item_consumed(&text, image_count, images);
+                self.on_queue_item_consumed(&text, image_count, images, control);
             }
             return vec![];
         }
@@ -1900,6 +1901,7 @@ impl App {
         let mut input = self.build_agent_input(&QueuedMessage {
             text: display_text.clone(),
             images: Vec::new(),
+            control: false,
         });
         input.prompt = Some(Box::new(prompt_ref));
 
@@ -1912,6 +1914,7 @@ impl App {
                 &QueuedMessage {
                     text: display_text,
                     images: Vec::new(),
+                    control: false,
                 },
                 input,
                 true,
@@ -1951,6 +1954,7 @@ impl App {
         self.submit_or_queue(QueuedMessage {
             text: cmd.render(args),
             images: Vec::new(),
+            control: false,
         })
     }
 
@@ -2159,6 +2163,7 @@ impl App {
         let msg = QueuedMessage {
             text,
             images: vec![],
+            control: false,
         };
 
         if clear_context {

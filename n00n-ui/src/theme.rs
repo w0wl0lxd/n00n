@@ -303,6 +303,7 @@ pub fn style_by_name(name: &str) -> Style {
         "tool_error" => t.tool_error,
         "tool_annotation" => t.tool_annotation,
         "spinner" => t.spinner,
+        "control" => t.control,
         "error" => t.error,
         "bold" => t.bold,
         "italic" => t.italic,
@@ -344,6 +345,7 @@ pub struct Theme {
     pub foreground: Color,
 
     pub user: Style,
+    pub control: Style,
     pub assistant: Style,
     pub assistant_prefix: Style,
     pub thinking: Style,
@@ -741,6 +743,7 @@ impl Theme {
             background: Color::default(),
             foreground: Color::default(),
             user: style("user"),
+            control: Self::build_simple_fallback(style, "control", "user"),
             assistant: style("assistant"),
             assistant_prefix: style("assistant_prefix"),
             thinking: brighten_toward(

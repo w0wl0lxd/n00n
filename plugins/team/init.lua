@@ -410,8 +410,10 @@ local function run_autonomous(ctx, goal, input, steps, relay_k, logger, resume_s
           results = results,
           total_cost = total_cost,
           total_usage = total_usage,
+          mode = input.mode,
           failed_step = i,
           failed_role = step.role,
+          start_index = i,
           wave_index = 0,
           step_index = i,
         })
@@ -422,6 +424,7 @@ local function run_autonomous(ctx, goal, input, steps, relay_k, logger, resume_s
           {
             paused = true,
             run_id = pause_run_id,
+            mode = input.mode,
             failed_step = i,
             failed_role = step.role,
             error = r.error,
@@ -503,8 +506,10 @@ local function run_single_pass(ctx, goal, input, steps, relay_k, logger, resume_
           results = results,
           total_cost = total_cost,
           total_usage = total_usage,
+          mode = input.mode,
           failed_step = i,
           failed_role = step.role,
+          start_index = i,
           wave_index = 0,
           step_index = i,
         })
@@ -515,6 +520,7 @@ local function run_single_pass(ctx, goal, input, steps, relay_k, logger, resume_
           {
             paused = true,
             run_id = pause_run_id,
+            mode = input.mode,
             failed_step = i,
             failed_role = step.role,
             error = r.error,
@@ -560,7 +566,7 @@ local function run_wave(
   local failed_role = nil
 
   for i, entry in ipairs(wave_steps) do
-    if i >= start_step_index then
+    if entry.index >= start_step_index then
       local step = entry.step
       if logger then
         logger.log("step_started", { index = entry.index, role = step.role, tier = step.tier, wave = wave_name })
@@ -597,6 +603,7 @@ local function run_wave(
             failures = failures,
             step_outputs = step_outputs,
             paused = true,
+            run_id = run_id,
             failed_step = failed_step,
             failed_role = failed_role,
             error = r.error,
@@ -683,6 +690,15 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
         wave_steps[i] = { index = e.index, step = step_copy, original_prompt = step_copy.prompt or "" }
       end
 
+      if resume_state and wave_idx == start_wave_index and input.continue and #input.continue > 0 then
+        for _, entry in ipairs(wave_steps) do
+          if entry.index == wave_start_step then
+            entry.original_prompt = entry.original_prompt .. "\n\nHuman guidance:\n" .. input.continue
+            break
+          end
+        end
+      end
+
       local retry_count = 0
       local wave_passed = false
       local wave_cost = 0.0
@@ -733,6 +749,7 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
           if wave_result.paused then
             pause = {
               run_id = run_id,
+              mode = input.mode,
               failed_step = failed_step_index,
               failed_role = failed_role,
               error = wave_result.error,
@@ -784,12 +801,13 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
         end
       end
 
-      if input.checkpoints then
+      if input.checkpoints or pause then
         local ckpt_id = "wave_" .. wave_idx .. "_step_" .. #wave_steps
         local ckpt_state = {
           results = results,
           total_cost = total_cost,
           total_usage = total_usage,
+          mode = input.mode,
           wave_index = wave_passed and wave_idx + 1 or wave_idx,
           step_index = wave_passed and 1 or (failed_step_index or wave_start_step),
           steps = steps,
@@ -844,7 +862,7 @@ local function run_team(input, ctx)
     return n00n.json.encode({ agent_id = id, status = "started", title = title })
   end
 
-  input.mode = input.mode or "supervised"
+  local requested_mode = input.mode
   input.model_tier = input.model_tier or "strong"
   if input.auto_tier == nil then
     input.auto_tier = input.model == nil
@@ -861,7 +879,7 @@ local function run_team(input, ctx)
     goal = goal .. "\n\nPrior learnings for this goal:\n" .. prior
   end
 
-  local run_id = n00n.workflow.hash(input.goal .. "\0" .. tostring(os.time()))
+  local run_id = input.resume or n00n.workflow.hash(input.goal .. "\0" .. tostring(os.time()))
   local team_dir = memory.base_dir()
   local logger
   if team_dir then
@@ -878,7 +896,7 @@ local function run_team(input, ctx)
         resume_state = ckpt_state
         steps = resume_state.steps
         goal = resume_state.goal
-        input.mode = input.mode or "autonomous"
+        input.mode = requested_mode or resume_state.mode or "autonomous"
       else
         if logger then
           logger.log("checkpoint_load_failed", { run_id = input.resume, error = ckpt_err })
@@ -887,7 +905,7 @@ local function run_team(input, ctx)
         if resume_state then
           steps = resume_state.steps
           goal = resume_state.goal
-          input.mode = input.mode or "autonomous"
+          input.mode = requested_mode or resume_state.mode or "autonomous"
         else
           return { llm_output = "resume run_id not found: " .. input.resume, is_error = true }
         end
@@ -897,12 +915,14 @@ local function run_team(input, ctx)
       if resume_state then
         steps = resume_state.steps
         goal = resume_state.goal
-        input.mode = input.mode or "autonomous"
+        input.mode = requested_mode or resume_state.mode or "autonomous"
       else
         return { llm_output = "resume run_id not found: " .. input.resume, is_error = true }
       end
     end
   end
+
+  input.mode = input.mode or requested_mode or "supervised"
 
   if not steps then
     steps, perr, supervisor_cost, supervisor_usage = run_supervisor(ctx, goal, input)

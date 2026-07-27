@@ -84,6 +84,7 @@ fn stored_message(input: AgentInput) -> StoredQueuedMessage {
         thinking: Some(input.thinking.into()),
         fast: input.fast,
         workflow: input.workflow,
+        control: input.control,
         prompt: input.prompt.map(|prompt| StoredMcpPrompt {
             qualified_name: prompt.qualified_name,
             arguments: prompt.arguments,
@@ -95,6 +96,7 @@ fn restored_submission(app: &App, message: StoredQueuedMessage) -> (QueuedMessag
     let queued = QueuedMessage {
         text: message.text,
         images: message.images.into_iter().map(restored_image).collect(),
+        control: message.control,
     };
     let mut input = app.build_agent_input(&queued);
     if let Some(mode) = message.mode {
@@ -236,6 +238,7 @@ impl App {
                         let msg = QueuedMessage {
                             text,
                             images: Vec::new(),
+                            control: false,
                         };
                         let input = self.build_agent_input(&msg);
                         (msg, input)

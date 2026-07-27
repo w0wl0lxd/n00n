@@ -32,6 +32,7 @@ pub struct DaemonHandle {
 
 impl DaemonHandle {
     /// Signal the listener to stop and join the serve thread.
+    #[cfg(test)]
     pub fn shutdown(mut self) {
         let _ = self.cancel.send(());
         if let Some(handle) = self.join.take()
@@ -120,13 +121,13 @@ fn message_one(
     text: &str,
     opts: &MessageOpts,
 ) -> ControlResult<sonic_rs::Value> {
-    // steer/control flags land in stacked PR-C (SessionRequest::Prompt + #129).
-    let _ = opts;
     session_call(
         tx,
         SessionRequest::Prompt {
             id: Some(id.to_owned()),
             text: text.to_owned(),
+            steer: opts.steer,
+            control: opts.control,
         },
     )
     .map_err(|e| map_not_found(id, e))?;
@@ -301,6 +302,47 @@ mod tests {
         assert_eq!(agents[0].id, "sess-1");
         assert_eq!(agents[0].backend, BackendKind::Tui);
         assert_eq!(agents[0].status, "working");
+        Ok(())
+    }
+
+    #[test]
+    fn message_forwards_steer_and_control_opts() -> Result<(), String> {
+        let (tx, rx) = flume::unbounded();
+        thread::spawn(move || {
+            if let Ok(UiAction::Session { req, reply_tx }) = rx.recv_timeout(Duration::from_secs(2))
+            {
+                match req {
+                    SessionRequest::Prompt {
+                        id,
+                        text,
+                        steer,
+                        control,
+                    } => {
+                        if id.as_deref() != Some("sess-1") || text != "hi" || !steer || !control {
+                            let _ = reply_tx.send(Err(format!(
+                                "unexpected prompt id={id:?} text={text:?} steer={steer} control={control}"
+                            )));
+                            return;
+                        }
+                        let _ = reply_tx.send(Ok(json!("queued")) as SessionReply);
+                    }
+                    other => {
+                        let _ = reply_tx.send(Err(format!("unexpected {other:?}")));
+                    }
+                }
+            }
+        });
+        let backend = tui_backend(tx);
+        backend
+            .message(
+                "sess-1",
+                "hi",
+                &MessageOpts {
+                    steer: true,
+                    control: true,
+                },
+            )
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
