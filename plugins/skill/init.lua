@@ -257,16 +257,11 @@ local function normalize_path(path)
   return n00n.fs.joinpath(cwd, p):gsub("\\", "/")
 end
 
-local function path_matches_candidate(focus, candidate)
-  local normalized_candidate = candidate:gsub("\\", "/")
-  if normalized_candidate == focus then
-    return true
-  end
-  return normalized_candidate:sub(-#focus) == focus
-end
-
 local function path_in_scope(skill, focus_path)
   if not skill.paths or #skill.paths == 0 then
+    return true
+  end
+  if not focus_path or focus_path == "" then
     return true
   end
   local absolute_focus = normalize_path(focus_path)
@@ -275,11 +270,8 @@ local function path_in_scope(skill, focus_path)
   end
   local root = skill.scope_root or n00n.uv.cwd() or "."
   for _, pattern in ipairs(skill.paths) do
-    local matches = n00n.fs.glob(pattern, { path = root, limit = 500 }) or {}
-    for _, candidate in ipairs(matches) do
-      if path_matches_candidate(absolute_focus, candidate) then
-        return true
-      end
+    if helpers.path_matches_pattern(absolute_focus, pattern, root) then
+      return true
     end
   end
   return false
