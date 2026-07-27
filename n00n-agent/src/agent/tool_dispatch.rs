@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -23,9 +24,117 @@ pub enum Emit {
 
 const DOOM_LOOP_THRESHOLD: usize = 3;
 const DOOM_LOOP_MESSAGE: &str = "You have called this tool with identical input 3 times in a row. You are stuck in a loop. Break out and try a different approach.";
-const MCP_BLOCKED_IN_PLAN: &str = "MCP tools are not available in plan mode";
+const MCP_MUTATION_BLOCKED_IN_PLAN: &str =
+    "MCP tool is not explicitly marked read-only and cannot run in plan mode";
+const CODE_EXECUTION_BLOCKED_IN_PLAN: &str = "code_execution is not available in plan mode";
 const UNKNOWN_TOOL_PREFIX: &str = "unknown tool";
 const TOOL_AUDIENCE_DENIED: &str = "tool is not available to this agent audience";
+const BASH_BLOCKED_IN_PLAN: &str = "bash command is not provably read-only in plan mode";
+
+fn plan_bash_is_read_only(input: &Value) -> bool {
+    let Some(command) = input.get("command").and_then(Value::as_str) else {
+        return false;
+    };
+    let command = command.trim();
+    if command.is_empty()
+        || command
+            .chars()
+            .any(|character| "\n\r;&|><`$\\\"'(){}*?[]!~".contains(character))
+    {
+        return false;
+    }
+    let words: Vec<_> = command.split_whitespace().collect();
+    let Some(program) = words.first().copied() else {
+        return false;
+    };
+    let arguments = &words[1..];
+    match program {
+        "pwd" => arguments.is_empty(),
+        "ls" | "cat" | "head" | "tail" | "wc" | "grep" | "stat" | "file" | "du" | "df"
+        | "realpath" | "readlink" | "jq" => true,
+        "rg" => !arguments
+            .iter()
+            .any(|argument| argument.starts_with("--pre") || *argument == "--generate"),
+        "find" => !arguments.iter().any(|argument| {
+            matches!(
+                *argument,
+                "-delete" | "-exec" | "-execdir" | "-ok" | "-okdir"
+            ) || argument.starts_with("-fls")
+                || argument.starts_with("-fprint")
+                || argument.starts_with("-fprintf")
+        }),
+        "yq" => !arguments.iter().any(|argument| {
+            *argument == "-i" || argument.starts_with("-i=") || argument.starts_with("--inplace")
+        }),
+        "git" => plan_git_is_read_only(arguments),
+        "gh" => plan_gh_is_read_only(arguments),
+        _ => false,
+    }
+}
+
+fn plan_git_is_read_only(arguments: &[&str]) -> bool {
+    let mut index = 0;
+    while let Some(argument) = arguments.get(index) {
+        match *argument {
+            "-C" | "--git-dir" | "--work-tree" | "-c" => index += 2,
+            value if value.starts_with('-') => index += 1,
+            subcommand => {
+                let subcommand_arguments = &arguments[index + 1..];
+                if subcommand_arguments
+                    .iter()
+                    .any(|argument| *argument == "--output" || argument.starts_with("--output="))
+                {
+                    return false;
+                }
+                return matches!(
+                    subcommand,
+                    "status"
+                        | "diff"
+                        | "log"
+                        | "show"
+                        | "rev-parse"
+                        | "ls-files"
+                        | "ls-tree"
+                        | "describe"
+                        | "blame"
+                        | "shortlog"
+                ) || subcommand == "remote"
+                    && matches!(
+                        subcommand_arguments,
+                        [] | ["-v" | "--verbose"] | ["get-url", ..]
+                    );
+            }
+        }
+    }
+    false
+}
+
+fn plan_gh_is_read_only(arguments: &[&str]) -> bool {
+    match arguments {
+        ["pr", operation, ..] => {
+            matches!(*operation, "list" | "view" | "status" | "checks" | "diff")
+        }
+        ["issue", operation, ..] => matches!(*operation, "list" | "view" | "status"),
+        ["run", operation, ..] => matches!(*operation, "list" | "view" | "watch"),
+        ["repo", operation, ..] => matches!(*operation, "list" | "view"),
+        _ => false,
+    }
+}
+
+fn is_authorized_plan_target(plan_path: &Path, target: &Path) -> bool {
+    let is_symlink = |path: &Path| {
+        std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink())
+    };
+    if is_symlink(plan_path) || is_symlink(target) {
+        return false;
+    }
+    let normalize = |path: &Path| {
+        let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        n00n_storage::paths::incremental_canonicalize(&absolute)
+            .unwrap_or_else(|| n00n_storage::paths::normalize_path(&absolute))
+    };
+    normalize(plan_path) == normalize(target)
+}
 
 pub(super) struct RecentCalls(VecDeque<(String, u64)>);
 
@@ -72,6 +181,23 @@ pub async fn run(
 ) -> ToolDoneEvent {
     // GPT-5.6 was likely trained on Codex sessions where tools are `functions.<name>`
     let name = name.strip_prefix("functions.").map_or_else(|| name, |v| v);
+    if ctx.mode.plan_path().is_some() && name == crate::tools::CODE_EXECUTION_TOOL_NAME {
+        return tool_done_error(
+            id,
+            Arc::from(crate::tools::CODE_EXECUTION_TOOL_NAME),
+            CODE_EXECUTION_BLOCKED_IN_PLAN.into(),
+        );
+    }
+    if ctx.mode.plan_path().is_some()
+        && name == crate::tools::BASH_TOOL_NAME
+        && !plan_bash_is_read_only(input)
+    {
+        return tool_done_error(
+            id,
+            Arc::from(crate::tools::BASH_TOOL_NAME),
+            BASH_BLOCKED_IN_PLAN.into(),
+        );
+    }
     if let Some(local) = ctx.local_tools.get(name) {
         return run_local_tool(local, id, name, input, ctx, emit);
     }
@@ -118,7 +244,10 @@ pub async fn run(
         };
 
         if let Some(target) = invocation.mutable_path() {
-            let is_plan_target = ctx.mode.plan_path().is_some_and(|pp| target == pp);
+            let is_plan_target = ctx
+                .mode
+                .plan_path()
+                .is_some_and(|plan_path| is_authorized_plan_target(plan_path, target));
             if !is_plan_target {
                 if ctx.mode.plan_path().is_some() {
                     warn!(
@@ -373,48 +502,56 @@ async fn execute_mcp_tool(
         let _ = ctx.event_tx.send(AgentEvent::ToolStart(Box::new(start)));
     }
 
-    if ctx.mode.plan_path().is_some() {
+    let in_plan_mode = ctx.mode.plan_path().is_some();
+    let plan_read_only = in_plan_mode
+        && ctx
+            .mcp
+            .as_ref()
+            .is_some_and(|mcp| mcp.is_tool_read_only(tool_name));
+    if in_plan_mode && !plan_read_only {
         return tool_done_error(
             id.to_owned(),
             Arc::clone(&tool_id),
-            MCP_BLOCKED_IN_PLAN.into(),
+            MCP_MUTATION_BLOCKED_IN_PLAN.into(),
         );
     }
 
-    let perm_tool = match ToolKey::parse(tool_name) {
-        Ok(k) => k,
-        Err(e) => {
-            return tool_done_error(
-                id.to_owned(),
-                Arc::clone(&tool_id),
-                format!("invalid MCP tool key '{tool_name}': {e}"),
-            );
-        }
-    };
-    let perm_scope = {
-        let json = input.to_string();
-        if json.len() > 200 {
-            format!("{}\u{2026}", &json[..200])
-        } else {
-            json
-        }
-    };
-    let perm_scopes = crate::tools::PermissionScopes::single(perm_scope);
+    if !plan_read_only {
+        let perm_tool = match ToolKey::parse(tool_name) {
+            Ok(k) => k,
+            Err(e) => {
+                return tool_done_error(
+                    id.to_owned(),
+                    Arc::clone(&tool_id),
+                    format!("invalid MCP tool key '{tool_name}': {e}"),
+                );
+            }
+        };
+        let perm_scope = {
+            let json = input.to_string();
+            if json.len() > 200 {
+                format!("{}\u{2026}", &json[..200])
+            } else {
+                json
+            }
+        };
+        let perm_scopes = crate::tools::PermissionScopes::single(perm_scope);
 
-    if let Err(e) = ctx
-        .permissions
-        .enforce(PermissionCheckContext {
-            tool: &perm_tool,
-            scopes: &perm_scopes,
-            event_tx: &ctx.event_tx,
-            user_response_rx: ctx.user_response_rx.as_deref(),
-            request_id: id,
-            cancel: &ctx.cancel,
-            plan_path: ctx.mode.plan_path(),
-        })
-        .await
-    {
-        return tool_done_error(id.to_owned(), Arc::clone(&tool_id), e.to_string());
+        if let Err(e) = ctx
+            .permissions
+            .enforce(PermissionCheckContext {
+                tool: &perm_tool,
+                scopes: &perm_scopes,
+                event_tx: &ctx.event_tx,
+                user_response_rx: ctx.user_response_rx.as_deref(),
+                request_id: id,
+                cancel: &ctx.cancel,
+                plan_path: ctx.mode.plan_path(),
+            })
+            .await
+        {
+            return tool_done_error(id.to_owned(), Arc::clone(&tool_id), e.to_string());
+        }
     }
 
     let Some(mcp) = &ctx.mcp else {
@@ -867,7 +1004,104 @@ mod tests {
     }
 
     #[test]
-    fn mcp_tool_blocked_in_plan_mode() {
+    fn plan_target_requires_same_normalized_path() {
+        let dir = TempDir::new().unwrap();
+        let plan = dir.path().join("plan.md");
+        let equivalent = dir.path().join(".").join("plan.md");
+
+        assert!(is_authorized_plan_target(&plan, &equivalent));
+        assert!(!is_authorized_plan_target(
+            &plan,
+            &dir.path().join("other.md")
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plan_target_rejects_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TempDir::new().unwrap();
+        let actual = dir.path().join("actual.md");
+        std::fs::write(&actual, "plan").unwrap();
+        let linked = dir.path().join("plan.md");
+        symlink(&actual, &linked).unwrap();
+
+        assert!(!is_authorized_plan_target(&linked, &linked));
+    }
+
+    #[test_case("git status", true ; "git_status")]
+    #[test_case("git -C repo diff --stat", true ; "git_with_directory")]
+    #[test_case("gh pr checks 42", true ; "github_checks")]
+    #[test_case("rg pattern src", true ; "ripgrep")]
+    #[test_case("find . -name Cargo.toml", true ; "find_read")]
+    #[test_case("git remote -v", true ; "git_remote_list")]
+    #[test_case("git commit -am nope", false ; "git_commit")]
+    #[test_case("git branch -D old", false ; "git_branch_delete")]
+    #[test_case("git diff --output=patch", false ; "git_output_file")]
+    #[test_case("gh pr merge 42", false ; "github_merge")]
+    #[test_case("find . -delete", false ; "find_delete")]
+    #[test_case("find . '-delete'", false ; "find_quoted_delete")]
+    #[test_case("find . -fprint0 output", false ; "find_print_file")]
+    #[test_case("yq -i '.x = 1' file.yml", false ; "yq_in_place")]
+    #[test_case("yq '-i' expression file.yml", false ; "yq_quoted_in_place")]
+    #[test_case("tree -o output", false ; "tree_output")]
+    #[test_case("cargo test", false ; "code_execution")]
+    #[test_case("cat file > copy", false ; "redirect")]
+    #[test_case("git status && rm file", false ; "command_chain")]
+    #[test_case("python -c 'print(1)'", false ; "interpreter")]
+    fn classifies_plan_bash_commands(command: &str, expected: bool) {
+        assert_eq!(
+            plan_bash_is_read_only(&serde_json::json!({"command": command})),
+            expected
+        );
+    }
+
+    #[test]
+    fn mutating_bash_blocked_in_plan_mode_before_lookup() {
+        smol::block_on(async {
+            let ctx = crate::tools::test_support::stub_ctx(&AgentMode::Plan(PathBuf::from(
+                "/tmp/plan.md",
+            )));
+            let result = run(
+                ToolRegistry::global(),
+                None,
+                "t1".into(),
+                crate::tools::BASH_TOOL_NAME,
+                &serde_json::json!({"command": "rm -rf project"}),
+                &ctx,
+                Emit::Silent,
+            )
+            .await;
+
+            assert!(result.is_error);
+            assert_eq!(result.output.as_text(), BASH_BLOCKED_IN_PLAN);
+        });
+    }
+
+    #[test]
+    fn code_execution_blocked_in_plan_mode_before_lookup() {
+        smol::block_on(async {
+            let ctx = crate::tools::test_support::stub_ctx(&AgentMode::Plan(PathBuf::from(
+                "/tmp/plan.md",
+            )));
+            let result = run(
+                ToolRegistry::global(),
+                None,
+                "t1".into(),
+                crate::tools::CODE_EXECUTION_TOOL_NAME,
+                &serde_json::json!({"code": "print('no')"}),
+                &ctx,
+                Emit::Silent,
+            )
+            .await;
+
+            assert!(result.is_error);
+            assert_eq!(result.output.as_text(), CODE_EXECUTION_BLOCKED_IN_PLAN);
+        });
+    }
+    #[test]
+    fn mcp_unannotated_tool_blocked_in_plan_mode() {
         smol::block_on(async {
             let result = dispatch_mcp(
                 &crate::tools::test_support::stub_ctx(&AgentMode::Plan(PathBuf::from(
@@ -879,7 +1113,25 @@ mod tests {
             )
             .await;
             assert!(result.is_error);
-            assert_eq!(result.output.as_text(), MCP_BLOCKED_IN_PLAN);
+            assert_eq!(result.output.as_text(), MCP_MUTATION_BLOCKED_IN_PLAN);
+        });
+    }
+
+    #[test]
+    fn mcp_read_only_tool_allowed_in_plan_mode() {
+        smol::block_on(async {
+            let session =
+                crate::mcp::stub_session_with_read_only(&[("myserver.mytool", "read-only")], true);
+            let mut ctx = crate::tools::test_support::stub_ctx(&AgentMode::Plan(PathBuf::from(
+                "/tmp/plan.md",
+            )));
+            ctx.mcp = Some(session);
+
+            let result = dispatch_mcp(&ctx, "t1", "myserver.mytool", &serde_json::json!({})).await;
+
+            assert!(result.is_error);
+            assert_ne!(result.output.as_text(), MCP_MUTATION_BLOCKED_IN_PLAN);
+            assert!(result.output.as_text().contains("tools/call"));
         });
     }
 

@@ -68,6 +68,21 @@ pub fn initialize_params() -> Value {
     })
 }
 
+#[derive(Deserialize, Default)]
+pub struct ToolAnnotations {
+    #[serde(default, rename = "readOnlyHint")]
+    pub read_only_hint: bool,
+    #[serde(default, rename = "destructiveHint")]
+    pub destructive_hint: Option<bool>,
+}
+
+impl ToolAnnotations {
+    #[must_use]
+    pub fn is_read_only(&self) -> bool {
+        self.read_only_hint && self.destructive_hint != Some(true)
+    }
+}
+
 #[derive(Deserialize)]
 pub struct ToolInfo {
     pub name: String,
@@ -75,6 +90,8 @@ pub struct ToolInfo {
     pub description: String,
     #[serde(default, rename = "inputSchema")]
     pub input_schema: Value,
+    #[serde(default)]
+    pub annotations: ToolAnnotations,
 }
 
 #[derive(Deserialize)]
@@ -176,6 +193,21 @@ mod tests {
         let result: ToolsListResult = serde_json::from_value(raw).unwrap();
         assert_eq!(result.tools[0].name, "read_file");
         assert_eq!(result.tools[0].input_schema["type"], "object");
+        assert!(!result.tools[0].annotations.is_read_only());
+    }
+
+    #[test]
+    fn tool_annotations_require_unambiguously_read_only_hint() {
+        let raw = json!({"tools": [
+            {"name": "read", "annotations": {"readOnlyHint": true, "destructiveHint": false}},
+            {"name": "unknown"},
+            {"name": "contradictory", "annotations": {"readOnlyHint": true, "destructiveHint": true}}
+        ]});
+        let result: ToolsListResult = serde_json::from_value(raw).unwrap();
+
+        assert!(result.tools[0].annotations.is_read_only());
+        assert!(!result.tools[1].annotations.is_read_only());
+        assert!(!result.tools[2].annotations.is_read_only());
     }
 
     #[test]

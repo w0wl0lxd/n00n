@@ -689,6 +689,7 @@ async fn session(
         tool_filter,
         thinking,
         fast,
+        mode: agent_ctx.mode.clone(),
         mcp: agent_ctx.mcp.clone(),
         history: History::new(Vec::new()),
         sub_event_tx,
@@ -1188,6 +1189,7 @@ struct SessionState {
     tool_filter: ToolFilter,
     thinking: ThinkingConfig,
     fast: bool,
+    mode: AgentMode,
     mcp: Option<n00n_agent::mcp::McpSession>,
     history: History,
     sub_event_tx: EventSender,
@@ -1245,6 +1247,7 @@ struct PromptInterruptSource {
     rx: flume::Receiver<SubagentPrompt>,
     thinking: ThinkingConfig,
     fast: bool,
+    mode: AgentMode,
 }
 
 impl n00n_agent::InterruptSource for PromptInterruptSource {
@@ -1253,7 +1256,7 @@ impl n00n_agent::InterruptSource for PromptInterruptSource {
             n00n_agent::ExtractedCommand::Interrupt(
                 AgentInput {
                     message: prompt.text,
-                    mode: AgentMode::Build,
+                    mode: self.mode.clone(),
                     images: prompt.images,
                     preamble: Vec::new(),
                     thinking: self.thinking,
@@ -1354,6 +1357,7 @@ async fn prompt(
             rx: s.prompt_rx.clone(),
             thinking: s.thinking,
             fast: s.fast,
+            mode: s.mode.clone(),
         }))
         .with_cancel(s.child_cancel.clone())
         .with_mcp(s.mcp.clone())
@@ -1361,7 +1365,7 @@ async fn prompt(
 
         let input = AgentInput {
             message: message.text,
-            mode: AgentMode::Build,
+            mode: s.mode.clone(),
             images: message.images,
             preamble: Vec::new(),
             thinking: s.thinking,
@@ -1937,12 +1941,13 @@ mod tests {
     }
 
     #[test]
-    fn prompt_interrupt_source_preserves_session_thinking_and_fast() {
+    fn prompt_interrupt_source_preserves_session_mode_thinking_and_fast() {
         let (tx, rx) = flume::unbounded();
         let source = PromptInterruptSource {
             rx,
             thinking: ThinkingConfig::Budget(1234),
             fast: true,
+            mode: AgentMode::Plan("plan.md".into()),
         };
         tx.send(SubagentPrompt {
             text: "steer".into(),
@@ -1958,6 +1963,9 @@ mod tests {
         assert!(input.images.is_empty());
         assert!(matches!(input.thinking, ThinkingConfig::Budget(1234)));
         assert!(input.fast);
+        assert!(
+            matches!(input.mode, AgentMode::Plan(path) if path == std::path::Path::new("plan.md"))
+        );
     }
 
     #[test]

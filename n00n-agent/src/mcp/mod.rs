@@ -85,6 +85,7 @@ struct McpToolDef {
     raw_name: String,
     description: String,
     input_schema: Value,
+    read_only: bool,
 }
 
 struct McpPromptDef {
@@ -176,6 +177,7 @@ impl ServerEntry {
                 raw_name: info.name,
                 description: info.description,
                 input_schema: info.input_schema,
+                read_only: info.annotations.is_read_only(),
             })
             .collect();
         self.prompts = prompt_infos
@@ -220,6 +222,7 @@ impl ToolDescriptor {
 struct ToolRef {
     raw_name: String,
     transport: Arc<dyn McpTransport>,
+    read_only: bool,
 }
 
 struct PromptRef {
@@ -504,6 +507,15 @@ impl McpHandle {
     #[must_use]
     pub fn has_tool(&self, name: &str) -> bool {
         self.index.load().tools.contains_key(name)
+    }
+
+    #[must_use]
+    pub fn is_tool_read_only(&self, name: &str) -> bool {
+        self.index
+            .load()
+            .tools
+            .get(name)
+            .is_some_and(|tool| tool.read_only)
     }
 
     #[must_use]
@@ -976,6 +988,7 @@ fn publish(
                     ToolRef {
                         raw_name: t.raw_name.clone(),
                         transport: Arc::clone(transport),
+                        read_only: t.read_only,
                     },
                 );
 
@@ -1047,6 +1060,11 @@ fn publish(
 /// real `publish` path so it can't drift from production index construction.
 #[cfg(test)]
 pub(crate) fn stub_session(tools: &[(&str, &str)]) -> McpSession {
+    stub_session_with_read_only(tools, false)
+}
+
+#[cfg(test)]
+pub(crate) fn stub_session_with_read_only(tools: &[(&str, &str)], read_only: bool) -> McpSession {
     let entry = ServerEntry {
         name: "stub".into(),
         config: None,
@@ -1064,6 +1082,7 @@ pub(crate) fn stub_session(tools: &[(&str, &str)]) -> McpSession {
                     .into(),
                 description: (*description).into(),
                 input_schema: json!({}),
+                read_only,
             })
             .collect(),
         prompts: Vec::new(),
@@ -1395,6 +1414,7 @@ mod tests {
                 raw_name: "tool".into(),
                 description: String::new(),
                 input_schema: json!({}),
+                read_only: false,
             }],
             prompts: Vec::new(),
         }
@@ -1538,6 +1558,7 @@ mod tests {
                 raw_name: format!("tool-{i}"),
                 description: String::new(),
                 input_schema: json!({}),
+                read_only: false,
             })
             .collect();
         let (_inner, handle) = setup(vec![entry]);
@@ -1570,6 +1591,7 @@ mod tests {
             raw_name: raw.into(),
             description: description.into(),
             input_schema: schema,
+            read_only: false,
         }
     }
 

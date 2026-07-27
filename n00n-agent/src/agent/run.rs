@@ -47,6 +47,18 @@ const CACHE_BREAKPOINTS_MEDIUM: usize = 3;
 const CACHE_BREAKPOINTS_SHORT: usize = 2;
 const CACHE_BREAKPOINTS_MIN: usize = 1;
 
+fn filter_tools_for_mode(tools: &mut Value, mode: &AgentMode) {
+    if mode.plan_path().is_none() {
+        return;
+    }
+    if let Some(definitions) = tools.as_array_mut() {
+        definitions.retain(|definition| {
+            definition.get("name").and_then(Value::as_str)
+                != Some(crate::tools::CODE_EXECUTION_TOOL_NAME)
+        });
+    }
+}
+
 /// Choose how many recent user-message breakpoints to mark for prompt caching.
 ///
 /// Short conversations avoid paying for extra cache writes; longer
@@ -289,10 +301,11 @@ impl<'h> Agent<'h> {
             .unwrap_or_else(|| rollback_len);
         let msg = Message::user_with_images(input.message.clone(), input.images);
         self.history.push(msg);
-        self.context_size = estimate_message_tokens(self.history.as_slice(), &self.model.id)
-            .saturating_add(estimate_tool_tokens(&self.tools, &self.model.id));
         self.mode = input.mode;
         self.workflow = input.workflow;
+        self.rebuild_tools();
+        self.context_size = estimate_message_tokens(self.history.as_slice(), &self.model.id)
+            .saturating_add(estimate_tool_tokens(&self.tools, &self.model.id));
         let user_message_count = self
             .history
             .as_slice()
@@ -626,6 +639,7 @@ impl<'h> Agent<'h> {
         if let Some(mcp) = &self.mcp {
             mcp.extend_tools(&mut tools);
         }
+        filter_tools_for_mode(&mut tools, &self.mode);
         self.tools = tools;
     }
 
@@ -829,6 +843,25 @@ mod tests {
     use crate::Envelope;
     use crate::permissions::PermissionManager;
     use serde_json::json;
+
+    #[test]
+    fn plan_mode_hides_code_execution_but_keeps_research_tools() {
+        let mut tools = json!([
+            {"name": "code_execution"},
+            {"name": "codegraph"},
+            {"name": "server__search"}
+        ]);
+
+        filter_tools_for_mode(&mut tools, &AgentMode::Plan("plan.md".into()));
+
+        let names: Vec<_> = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|definition| definition["name"].as_str())
+            .collect();
+        assert_eq!(names, ["codegraph", "server__search"]);
+    }
 
     #[test]
     fn estimate_message_tokens_empty_is_zero() {
