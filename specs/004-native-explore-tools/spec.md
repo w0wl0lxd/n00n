@@ -23,7 +23,7 @@ A user analyzing a codebase wants `arbor` to work without installing a separate 
 **Acceptance Scenarios**:
 
 1. **Given** a project with source files and no `arbor` CLI installed, **When** the user invokes `arbor` with command `callers` and a symbol, **Then** n00n returns the list of callers without spawning an external process.
-2. **Given** an unindexed project, **When** the user invokes `arbor`, **Then** n00n indexes it automatically (or returns a clear instruction to run an explicit index command) and then answers the query.
+2. **Given** an unindexed project, **When** the user invokes `arbor`, **Then** n00n indexes it automatically, shows a moving status indicator, and then answers the query.
 3. **Given** a previously indexed project, **When** the user invokes `arbor map` with a token budget, **Then** the returned ranked skeleton matches the structure produced by the external `arbor map` command.
 
 ---
@@ -39,14 +39,14 @@ A user exploring cross-file relationships wants `codegraph` to run in-process, s
 **Acceptance Scenarios**:
 
 1. **Given** a project with a `.codegraph/` index and no `codegraph` CLI installed, **When** the user invokes `codegraph` with a query, **Then** n00n returns verbatim source grouped by file plus a blast-radius summary.
-2. **Given** an out-of-date `.codegraph/` index, **When** the user invokes `codegraph`, **Then** n00n re-indexes the project before answering or returns an actionable status message.
-3. **Given** a project with no `.codegraph/` index, **When** the user invokes `codegraph`, **Then** n00n either creates the index automatically or reports how to create it.
+2. **Given** an out-of-date `.codegraph/` index, **When** the user invokes `codegraph`, **Then** n00n re-indexes the project automatically, shows a moving status indicator, and then answers the query.
+3. **Given** a project with no `.codegraph/` index, **When** the user invokes `codegraph`, **Then** n00n creates the index automatically and answers the query.
 
 ---
 
 ### User Story 3 - Built-in `semblem` semantic code search (Priority: P2)
 
-A user searching for code by meaning wants `semblem` (semantic/BM25 code search) to be a built-in n00n tool, so that natural-language queries return relevant code snippets without an external Python `semblem` CLI or MCP server.
+A user searching for code by meaning wants `semblem` to be a built-in n00n tool, so that natural-language queries return relevant code snippets without an external Python `semblem` CLI or MCP server.
 
 **Why this priority**: `semblem` is currently only available as an MCP server or CLI. Making it a native built-in tool unifies the tool surface and removes the Python runtime dependency.
 
@@ -54,9 +54,10 @@ A user searching for code by meaning wants `semblem` (semantic/BM25 code search)
 
 **Acceptance Scenarios**:
 
-1. **Given** a repository with supported source files, **When** the user invokes `semblem search` with a query, **Then** n00n returns ranked file paths and line-bounded snippets.
-2. **Given** a repository with no pre-built `semblem` index, **When** the user invokes `semblem search`, **Then** n00n builds the index on first use and then returns results.
-3. **Given** a source file and a target line, **When** the user invokes `semblem find_related`, **Then** n00n returns code related to that location.
+1. **Given** a repository with supported source files, **When** the user invokes `semblem search` with a query and no embedder is configured, **Then** n00n returns BM25-ranked snippets without making network calls.
+2. **Given** a user who wants semantic/hybrid search, **When** they invoke `semblem` with `semantic = true` and no embedder configured, **Then** n00n nags the user with a clear message offering a local model (vLLM Podman presets) or a remote OpenAI-compatible endpoint, and falls back to BM25.
+3. **Given** a configured local or remote embedder, **When** the user invokes `semblem search`, **Then** n00n returns hybrid BM25 + semantic ranked snippets.
+4. **Given** a source file and a target line, **When** the user invokes `semblem find_related`, **Then** n00n returns code related to that location.
 
 ---
 
@@ -79,7 +80,8 @@ A user installing or distributing n00n wants the agent to ship with code-intelli
 
 - What happens when a repository contains no supported source files? The tool returns an empty result with a clear message instead of an opaque error.
 - What happens when indexing fails partway through? The tool reports the failure, leaves the prior index intact if possible, and does not crash the agent loop.
-- What happens when the embedding model for `semblem` is unavailable? The tool falls back to BM25 keyword search and reports the fallback.
+- What happens when a user requests semantic search but no embedder is configured? The tool nags the user with local/remote setup options and falls back to BM25.
+- What happens when a configured embedder is unreachable? The tool falls back to BM25 keyword search and reports the fallback.
 - What happens when two tools are asked to index the same project concurrently? Indexing operations are serialized per project or use filesystem locks to avoid corrupt indexes.
 - What happens when a user passes a project path outside the current workspace? The tool follows existing n00n permission and sandbox rules.
 
@@ -91,23 +93,28 @@ A user installing or distributing n00n wants the agent to ship with code-intelli
 
 - **FR-001**: `arbor` MUST be a built-in n00n tool that does not require an external `arbor` CLI on `PATH`.
 - **FR-002**: `arbor` MUST continue to support the commands `callers`, `callees`, `map`, `diff`, `query`, and `status`.
-- **FR-003**: `arbor` MUST be able to build or load its project index in-process when invoked.
+- **FR-003**: `arbor` MUST build or load its project index in-process when invoked and show a moving status indicator while indexing.
 - **FR-004**: `codegraph` MUST be a built-in n00n tool that does not require an external `codegraph` CLI on `PATH`.
 - **FR-005**: `codegraph` MUST continue to support natural-language `explore` queries and, where feasible, `callers`, `callees`, and `impact` sub-commands.
-- **FR-006**: `codegraph` MUST be able to build or load the `.codegraph/` SQLite index in-process when invoked.
+- **FR-006**: `codegraph` MUST query the `.codegraph/` SQLite index in-process using a modern, performant Rust SQLite layer (e.g., `rusqlite` with WAL/FTS5).
 - **FR-007**: `semblem` MUST be a built-in n00n tool that does not require an external `semblem` CLI or MCP server.
 - **FR-008**: `semblem` MUST support `search` and `find_related` commands.
-- **FR-009**: `semblem` MUST be able to build or load its project index in-process when invoked.
-- **FR-010**: All three tools MUST preserve their existing input schemas and output contracts so existing prompts and scripts continue to work.
-- **FR-011**: All three tools MUST respect `output_limits` and `ExploreResult` rendering like other built-in explore tools.
-- **FR-012**: Tool definitions MUST not include installation instructions for external binaries in their descriptions.
+- **FR-009**: `semblem` MUST build or load its project index in-process when invoked and show a moving status indicator while indexing.
+- **FR-010**: `semblem` MUST default to BM25-only search and MUST NOT bundle external API keys, providers, or models.
+- **FR-011**: `semblem` MUST nag the user to configure an embedder when semantic/hybrid search is requested and no embedder is configured, offering local vLLM Podman presets (3 memory/performance levels) and a remote OpenAI-compatible option.
+- **FR-012**: All three tools MUST preserve their existing input schemas and output contracts so existing prompts and scripts continue to work.
+- **FR-013**: All three tools MUST respect `output_limits` and `ExploreResult` rendering like other built-in explore tools.
+- **FR-014**: Tool definitions MUST not include installation instructions for external binaries in their descriptions.
+- **FR-015**: The implementation MUST segment responsibilities into appropriate crates, including a reusable `n00n-search` core for indexing, BM25, and embedder orchestration, and tool-specific crates (`n00n-arbor`, `n00n-codegraph`, `n00n-semble`) for tool logic and Lua bindings.
 
 ### Key Entities
 
 - **Arbor Graph**: Code entities (nodes) and relationships (edges) extracted from source files, including centrality scores and impact metadata.
 - **CodeGraph Index**: A SQLite database under `.codegraph/` containing `nodes`, `edges`, `files`, `unresolved_refs`, and an FTS5 virtual table.
-- **Semble Index**: A hybrid BM25/semantic index of source-file chunks with optional vector embeddings.
-- **Tool Output Card**: A live UI buffer used by `arbor`, `codegraph`, and `semblem` to display ranked, truncated results.
+- **Search Index**: A unified BM25 + optional semantic index of source-file chunks, managed by `n00n-search`.
+- **Embedder Config**: A user's choice of embedder source (none, local static, local vLLM, remote OpenAI-compatible) and any required model/URL/key.
+- **Vllm Preset**: A preconfigured Podman vLLM runtime definition at one of three memory/performance levels (light, medium, heavy) for local embedding serving.
+- **Tool Output Card**: A live UI buffer used by `arbor`, `codegraph`, and `semblem` to display ranked, truncated results and indexing progress.
 
 ---
 
@@ -120,12 +127,15 @@ A user installing or distributing n00n wants the agent to ship with code-intelli
 - **SC-003**: The combined token size of the three tool definitions is no larger than the current baseline after removing external-installation notes.
 - **SC-004**: `cargo test -p n00n-lua` and `cargo test -p n00n-agent` pass without any of `arbor`, `codegraph`, or `semblem` installed on `PATH`.
 - **SC-005**: A clean build of n00n exposes the three tools in its default tool set.
+- **SC-006**: `semblem` with no embedder configured returns BM25 results without network calls or bundled API keys.
+- **SC-007**: The vLLM Podman preset generator produces runnable commands for three memory/performance levels.
 
 ---
 
 ## Assumptions
 
 - Existing `.arbor/`, `.codegraph/`, and `semblem` index formats can be read or rebuilt by in-process Rust libraries.
-- The n00n binary may grow in size due to new parser/index dependencies; feature flags will be considered if binary bloat is measurable.
-- Users accept that `semblem` semantic search requires a vendored or cached embedding model; a BM25-only fallback is available.
+- The n00n binary may grow in size due to new parser/index dependencies; feature flags and crate separation will be used to manage bloat.
+- `semblem` semantic search requires explicit user configuration of an embedder; no cloud providers or API keys are bundled.
+- Local vLLM serving is optional; Podman runtime commands are generated for users who choose self-hosted embeddings.
 - The Lua plugin layer remains the primary tool registration mechanism; Rust tools will be exposed through `n00n.<tool>` tables.
