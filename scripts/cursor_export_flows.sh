@@ -41,7 +41,9 @@ def response(flow):
     path = flow.request.path.strip("/").replace("/", "_")[:80]
     base = out_dir / f"{idx:03d}_{host}_{path}"
     req = flow.request.content or b""
-    resp = flow.response.content if flow.response is not None else b""
+    resp = b""
+    if flow.response is not None and flow.response.content is not None:
+        resp = flow.response.content
     meta = (
         f"url={url}\n"
         f"method={flow.request.method}\n"
