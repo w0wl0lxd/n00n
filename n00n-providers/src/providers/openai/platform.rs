@@ -13,7 +13,6 @@ use n00n_storage::sessions::{
     delete_openai_response_chain, load_openai_response_chain, openai_response_chain_parent_exists,
     save_openai_response_chain, try_lock_openai_response_chain,
 };
-use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
@@ -21,8 +20,8 @@ use tracing::{debug, warn};
 use crate::model::Model;
 use crate::provider::{BoxFuture, Provider};
 use crate::{
-    AgentError, Message, ProviderEvent, ProviderUsage, RequestDeliveryMetadata,
-    RequestDeliveryPhase, RequestOptions, StreamResponse, UsageLimit, dialect,
+    AgentError, Message, ProviderEvent, RequestDeliveryMetadata, RequestDeliveryPhase,
+    RequestOptions, StreamResponse, dialect,
 };
 
 use super::auth;
@@ -53,13 +52,6 @@ const THIRTY_MINUTES_MILLIS: u64 = 30 * 60 * 1_000;
 const CODING_PLAN_DEFAULT_RETRY_DELAY: Duration = Duration::from_millis(250);
 const CODING_PLAN_MAX_SLOTS: u8 = 8;
 const RESPONSE_CHAIN_LOCK_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
-const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
-const USAGE_WINDOW_TOLERANCE: f64 = 0.05;
-const USAGE_WINDOW_5HOURS_SECONDS: i64 = 18_000;
-const USAGE_WINDOW_1DAY_SECONDS: i64 = 86_400;
-const USAGE_WINDOW_1WEEK_SECONDS: i64 = 604_800;
-const USAGE_WINDOW_1MONTH_SECONDS: i64 = 2_592_000;
-const USAGE_WINDOW_1YEAR_SECONDS: i64 = 31_536_000;
 const RESPONSE_CHAIN_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 
 static PROCESS_INSTANCE_NONCE: OnceLock<u64> = OnceLock::new();
@@ -1717,171 +1709,6 @@ impl OpenAi {
     }
 }
 
-#[derive(Deserialize)]
-struct RateLimitStatusResponse {
-    #[serde(default)]
-    plan_type: Option<String>,
-    #[serde(default)]
-    rate_limit: Option<RateLimitStatusDetails>,
-    #[serde(default)]
-    credits: Option<CreditStatusDetails>,
-    #[serde(default, rename = "additional_rate_limits")]
-    additional_rate_limits: Option<Vec<AdditionalRateLimitDetails>>,
-}
-
-#[derive(Deserialize)]
-struct RateLimitStatusDetails {
-    #[serde(default)]
-    primary_window: Option<RateLimitWindowSnapshot>,
-    #[serde(default)]
-    secondary_window: Option<RateLimitWindowSnapshot>,
-}
-
-#[derive(Deserialize)]
-struct RateLimitWindowSnapshot {
-    used_percent: i32,
-    #[serde(default)]
-    limit_window_seconds: Option<i64>,
-    #[serde(default)]
-    reset_at: Option<i64>,
-}
-
-#[derive(Deserialize)]
-struct AdditionalRateLimitDetails {
-    limit_name: String,
-    #[serde(default)]
-    rate_limit: Option<RateLimitStatusDetails>,
-}
-
-#[derive(Deserialize)]
-struct CreditStatusDetails {
-    has_credits: bool,
-    unlimited: bool,
-    #[serde(default)]
-    balance: Option<String>,
-}
-
-impl RateLimitWindowSnapshot {
-    fn to_limit(&self, is_secondary: bool, prefix: &str) -> UsageLimit {
-        let duration = rate_limit_window_label(self.limit_window_seconds)
-            .unwrap_or_else(|| if is_secondary { "weekly" } else { "5h" });
-        let duration = capitalize_first(duration);
-        let label = if prefix.is_empty() {
-            format!("{duration} limit")
-        } else {
-            format!("{prefix} {duration} limit")
-        };
-        UsageLimit {
-            label,
-            percentage: Some(percentage(self.used_percent)),
-            reset_at: self
-                .reset_at
-                .and_then(|s| u64::try_from(s).ok().map(|s| s.saturating_mul(1_000))),
-            detail: None,
-        }
-    }
-}
-
-impl From<RateLimitStatusResponse> for ProviderUsage {
-    fn from(resp: RateLimitStatusResponse) -> Self {
-        let mut limits = Vec::new();
-        if let Some(rate_limit) = &resp.rate_limit {
-            add_rate_limit_windows(&mut limits, rate_limit, "");
-        }
-        for additional in resp.additional_rate_limits.into_iter().flatten() {
-            let prefix = rate_limit_prefix(&additional.limit_name);
-            if let Some(rate_limit) = &additional.rate_limit {
-                add_rate_limit_windows(&mut limits, rate_limit, &prefix);
-            }
-        }
-        limits.extend(credits_limit(resp.credits));
-        Self {
-            plan: resp.plan_type,
-            limits,
-        }
-    }
-}
-
-fn add_rate_limit_windows(
-    limits: &mut Vec<UsageLimit>,
-    rate_limit: &RateLimitStatusDetails,
-    prefix: &str,
-) {
-    if let Some(window) = &rate_limit.primary_window {
-        limits.push(window.to_limit(false, prefix));
-    }
-    if let Some(window) = &rate_limit.secondary_window {
-        limits.push(window.to_limit(true, prefix));
-    }
-}
-
-fn rate_limit_window_label(seconds: Option<i64>) -> Option<&'static str> {
-    let seconds = seconds?;
-    if is_approximate_window(seconds, USAGE_WINDOW_5HOURS_SECONDS) {
-        Some("5h")
-    } else if is_approximate_window(seconds, USAGE_WINDOW_1DAY_SECONDS) {
-        Some("daily")
-    } else if is_approximate_window(seconds, USAGE_WINDOW_1WEEK_SECONDS) {
-        Some("weekly")
-    } else if is_approximate_window(seconds, USAGE_WINDOW_1MONTH_SECONDS) {
-        Some("monthly")
-    } else if is_approximate_window(seconds, USAGE_WINDOW_1YEAR_SECONDS) {
-        Some("annual")
-    } else {
-        None
-    }
-}
-
-fn is_approximate_window(value: i64, expected: i64) -> bool {
-    let Ok(value) = i32::try_from(value) else {
-        return false;
-    };
-    let Ok(expected) = i32::try_from(expected) else {
-        return false;
-    };
-    let value = f64::from(value);
-    let expected = f64::from(expected);
-    (value - expected).abs() <= expected * USAGE_WINDOW_TOLERANCE
-}
-
-fn capitalize_first(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().to_string() + &chars.as_str().to_lowercase(),
-        None => String::new(),
-    }
-}
-
-fn rate_limit_prefix(limit_name: &str) -> String {
-    limit_name
-        .split('_')
-        .map(capitalize_first)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn credits_limit(credits: Option<CreditStatusDetails>) -> Option<UsageLimit> {
-    let credits = credits?;
-    if !credits.has_credits {
-        return None;
-    }
-    let detail = if credits.unlimited {
-        Some("Unlimited credits".into())
-    } else {
-        credits.balance.map(|b| format!("${b} remaining"))
-    };
-    Some(UsageLimit {
-        label: "Credits".into(),
-        percentage: None,
-        reset_at: None,
-        detail,
-    })
-}
-
-fn percentage(used_percent: i32) -> u32 {
-    used_percent.clamp(0, 100).cast_unsigned()
-}
-
 impl Provider for OpenAi {
     #[allow(clippy::large_futures)]
     fn stream_message<'a>(
@@ -1983,21 +1810,6 @@ impl Provider for OpenAi {
                 self.compat.do_list_models(&auth).await
             })
             .await
-        })
-    }
-
-    fn fetch_usage(&self) -> BoxFuture<'_, Result<Option<ProviderUsage>, AgentError>> {
-        Box::pin(async move {
-            let auth = self
-                .coding_plan_auth(false, None, fastrand::u64(..))
-                .await?
-                .resolved;
-            if auth.base_url.as_deref() != Some(auth::CODING_PLAN_BASE_URL) {
-                return Ok(None);
-            }
-            let body = self.compat.get_text(&auth, USAGE_URL).await?;
-            let parsed: RateLimitStatusResponse = serde_json::from_str(&body)?;
-            Ok(Some(parsed.into()))
         })
     }
 
@@ -2129,7 +1941,6 @@ mod tests {
 
     use super::*;
     use crate::{ContentBlock, Role, TokenUsage};
-    use serde_json::json;
 
     const TOOLS_HASH: &str = "[]";
     const AUTH_SCOPE_HASH: &str = "account";
@@ -2232,7 +2043,7 @@ mod tests {
                 content: vec![ContentBlock::ToolUse {
                     id: "call_1".into(),
                     name: "read".into(),
-                    input: json!({"path": "one"}),
+                    input: serde_json::json!({"path": "one"}),
                 }],
                 ..Default::default()
             },
@@ -2539,7 +2350,7 @@ mod tests {
                     .unwrap();
                 socket
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"response.created",
                             "response":{"id":"resp_first"}
                         })
@@ -2550,7 +2361,7 @@ mod tests {
                     .unwrap();
                 socket
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"response.completed",
                             "response":{"id":"resp_first","status":"completed"}
                         })
@@ -2576,7 +2387,7 @@ mod tests {
                     .unwrap();
                 socket
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"response.created",
                             "response":{"id":"resp_second"}
                         })
@@ -2587,7 +2398,7 @@ mod tests {
                     .unwrap();
                 socket
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"response.completed",
                             "response":{"id":"resp_second","status":"completed"}
                         })
@@ -2616,7 +2427,7 @@ mod tests {
             provider.response_state_storage = Some(storage);
             let session_id = SessionRef::generate();
             let model = Model::from_spec("openai/gpt-5.3-codex").unwrap();
-            let tools = json!([]);
+            let tools = serde_json::json!([]);
             let (event_tx, _event_rx) = flume::unbounded();
             let first_messages = vec![Message::user("hello".into())];
 
@@ -3050,7 +2861,7 @@ mod tests {
                 }
                 socket
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"error",
                             "error": {
                                 "code":"websocket_connection_limit_reached",
@@ -3098,7 +2909,7 @@ mod tests {
             let error = provider
                 .stream_websocket(
                     Some(slot),
-                    &json!({"model":"test","input":[]}),
+                    &serde_json::json!({"model":"test","input":[]}),
                     &mut None,
                     false,
                     || Value::Null,
@@ -3218,7 +3029,7 @@ mod tests {
                 }
                 socket
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"response.created",
                             "response":{"id":"resp_accepted"}
                         })
@@ -3229,7 +3040,7 @@ mod tests {
                     .unwrap();
                 socket
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"error",
                             "status":401,
                             "error": {
@@ -3257,7 +3068,7 @@ mod tests {
             )
             .unwrap();
             let model = Model::from_spec("openai/gpt-5.3-codex").unwrap();
-            let tools = json!([]);
+            let tools = serde_json::json!([]);
             let (event_tx, _) = flume::unbounded();
 
             let attempt = provider
@@ -3311,7 +3122,7 @@ mod tests {
                 }
                 socket
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"response.created",
                             "response":{"id":"resp_accepted"}
                         })
@@ -3322,7 +3133,7 @@ mod tests {
                     .unwrap();
                 socket
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"error",
                             "error": {
                                 "code":"websocket_connection_limit_reached",
@@ -3369,7 +3180,7 @@ mod tests {
             let error = provider
                 .stream_websocket(
                     Some(slot),
-                    &json!({"model":"test","input":[]}),
+                    &serde_json::json!({"model":"test","input":[]}),
                     &mut None,
                     false,
                     || Value::Null,
@@ -3409,7 +3220,7 @@ mod tests {
                 }
                 first
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"response.created",
                             "response":{"id":"resp_first"}
                         })
@@ -3420,7 +3231,7 @@ mod tests {
                     .unwrap();
                 first
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"response.completed",
                             "response":{"id":"resp_first","status":"completed"}
                         })
@@ -3440,7 +3251,7 @@ mod tests {
                 }
                 second
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"response.created",
                             "response":{"id":"resp_second"}
                         })
@@ -3451,7 +3262,7 @@ mod tests {
                     .unwrap();
                 second
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"response.completed",
                             "response":{"id":"resp_second","status":"completed"}
                         })
@@ -3477,7 +3288,7 @@ mod tests {
             let session = SessionRef::generate();
             let slot = provider.response_connection_slot(Some(&session)).unwrap();
             let (event_tx, _) = flume::unbounded();
-            let body = json!({"model":"test","input":[]});
+            let body = serde_json::json!({"model":"test","input":[]});
 
             let (first_id, _) = provider
                 .stream_websocket(
@@ -3595,7 +3406,7 @@ mod tests {
                 assert!(matches!(second.next().await, Some(Ok(WsMessage::Text(_)))));
                 second
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"response.completed",
                             "response":{"id":"resp_fresh","status":"completed"}
                         })
@@ -3610,7 +3421,7 @@ mod tests {
             let (response_id, _) = provider
                 .stream_websocket(
                     None,
-                    &json!({"model":"test","input":[]}),
+                    &serde_json::json!({"model":"test","input":[]}),
                     &mut None,
                     false,
                     || Value::Null,
@@ -3663,7 +3474,7 @@ mod tests {
                 server_creates.fetch_add(1, Ordering::Relaxed);
                 first
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"response.completed",
                             "response":{"id":"resp_first","status":"completed"}
                         })
@@ -3696,7 +3507,7 @@ mod tests {
                 server_creates.fetch_add(1, Ordering::Relaxed);
                 second
                     .send(WsMessage::Text(
-                        json!({
+                        serde_json::json!({
                             "type":"response.completed",
                             "response":{"id":"resp_second","status":"completed"}
                         })
@@ -3709,7 +3520,7 @@ mod tests {
             let session = SessionRef::generate();
             let slot = provider.response_connection_slot(Some(&session)).unwrap();
             let (event_tx, _) = flume::unbounded();
-            let body = json!({"model":"test","input":[]});
+            let body = serde_json::json!({"model":"test","input":[]});
 
             let (first_id, _) = provider
                 .stream_websocket(
@@ -3773,7 +3584,7 @@ mod tests {
                         }
                         socket
                             .send(WsMessage::Text(
-                                json!({
+                                serde_json::json!({
                                     "type":"response.created",
                                     "response":{"id":format!("resp_{index}")}
                                 })
@@ -3804,7 +3615,7 @@ mod tests {
             .unwrap();
             let model = Model::from_spec("openai/gpt-5.3-codex").unwrap();
             let messages = [Message::user("hello".into())];
-            let tools = json!([]);
+            let tools = serde_json::json!([]);
             let (first_tx, _) = flume::unbounded();
             let (second_tx, _) = flume::unbounded();
             let first_session = SessionRef::generate();
@@ -3873,7 +3684,7 @@ mod tests {
             let session = SessionRef::generate();
             let slot = provider.response_connection_slot(Some(&session)).unwrap();
             let (event_tx, _event_rx) = flume::unbounded();
-            let body = json!({"model":"test","input":[]});
+            let body = serde_json::json!({"model":"test","input":[]});
             let mut full_history_body = None;
             let attempt = provider.stream_websocket(
                 Some(Arc::clone(&slot)),
@@ -4108,63 +3919,5 @@ mod tests {
         ));
         assert!(!error.is_retryable());
         assert!(!error.is_auth_error());
-    }
-
-    #[test]
-    fn parse_rate_limit_status_response() {
-        let body = r#"{
-            "plan_type": "pro",
-            "rate_limit": {
-                "allowed": true,
-                "limit_reached": false,
-                "primary_window": {"used_percent": 6, "limit_window_seconds": 18000, "reset_at": 1738300000},
-                "secondary_window": {"used_percent": 24, "limit_window_seconds": 604800, "reset_at": 1738900000}
-            },
-            "additional_rate_limits": [
-                {
-                    "limit_name": "code_review",
-                    "metered_feature": "code_review",
-                    "rate_limit": {
-                        "allowed": true,
-                        "limit_reached": false,
-                        "secondary_window": {"used_percent": 91, "limit_window_seconds": 604800, "reset_at": 1738900000}
-                    }
-                }
-            ],
-            "credits": {"has_credits": true, "unlimited": false, "balance": "5.39"}
-        }"#;
-        let parsed: RateLimitStatusResponse = serde_json::from_str(body).unwrap();
-        let usage: ProviderUsage = parsed.into();
-        assert_eq!(usage.plan.as_deref(), Some("pro"));
-        assert_eq!(usage.limits.len(), 4);
-        assert_eq!(usage.limits[0].label, "5h limit");
-        assert_eq!(usage.limits[0].percentage, Some(6));
-        assert_eq!(usage.limits[0].reset_at, Some(1_738_300_000_000));
-        assert_eq!(usage.limits[1].label, "Weekly limit");
-        assert_eq!(usage.limits[1].percentage, Some(24));
-        assert_eq!(usage.limits[2].label, "Code Review Weekly limit");
-        assert_eq!(usage.limits[2].percentage, Some(91));
-        assert_eq!(usage.limits[3].label, "Credits");
-        assert_eq!(usage.limits[3].percentage, None);
-        assert_eq!(usage.limits[3].detail.as_deref(), Some("$5.39 remaining"));
-    }
-
-    #[test]
-    fn parse_rate_limit_status_unknown_plan_type() {
-        let body = r#"{"plan_type": "prolite"}"#;
-        let parsed: RateLimitStatusResponse = serde_json::from_str(body).unwrap();
-        let usage: ProviderUsage = parsed.into();
-        assert_eq!(usage.plan.as_deref(), Some("prolite"));
-        assert!(usage.limits.is_empty());
-    }
-
-    #[test_case(Some(18_000), Some("5h"))]
-    #[test_case(Some(86_400), Some("daily"))]
-    #[test_case(Some(604_800), Some("weekly"))]
-    #[test_case(Some(2_592_000), Some("monthly"))]
-    #[test_case(Some(31_536_000), Some("annual"))]
-    #[test_case(Some(120), None)]
-    fn rate_limit_window_label_maps(seconds: Option<i64>, expected: Option<&str>) {
-        assert_eq!(super::rate_limit_window_label(seconds), expected);
     }
 }

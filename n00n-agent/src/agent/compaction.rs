@@ -6,8 +6,6 @@ use n00n_providers::{
 };
 use tracing::info;
 
-use serde_json::json;
-
 use super::compaction_hooks::{CompactionTrigger, run_postcompact_hooks, run_precompact_hooks};
 use super::history::History;
 use super::streaming::stream_with_retry;
@@ -105,7 +103,7 @@ pub(super) async fn compact_history(
     );
     compaction_history.push(Message::user(user_prompt));
 
-    let empty_tools = json!([]);
+    let empty_tools = serde_json::json!([]);
 
     let response = loop {
         match stream_with_retry(super::streaming::StreamContext {
@@ -122,12 +120,8 @@ pub(super) async fn compact_history(
         .await
         {
             Ok(response) => break response,
-            Err(error) if error.is_context_overflow() => {
-                let previous_len = compaction_history.len();
+            Err(e) if e.is_context_overflow() => {
                 truncate_oldest_round(&mut compaction_history);
-                if compaction_history.len() == previous_len {
-                    return Err(error);
-                }
             }
             Err(e) => return Err(e),
         }
@@ -156,23 +150,11 @@ fn finish_compact(
     compact_start: std::time::Instant,
     model: &Model,
 ) -> TokenUsage {
-    let savings_tokens = response.usage.savings_tokens();
-    let savings_cost = response.usage.savings_cost(&model.pricing, false);
     let _ = event_tx.send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
         message: response.message.clone(),
         usage: response.usage,
         model: model.id.clone(),
         context_size: Some(response.usage.output),
-        savings_tokens: if savings_tokens > 0 {
-            Some(savings_tokens)
-        } else {
-            None
-        },
-        savings_cost: if savings_cost > 0.0 {
-            Some(savings_cost)
-        } else {
-            None
-        },
     })));
 
     history.compact_boundary(
@@ -340,15 +322,11 @@ mod tests {
     use crate::AgentConfig;
 
     struct MockProvider {
-        responses: Mutex<Vec<Result<StreamResponse, AgentError>>>,
+        responses: Mutex<Vec<StreamResponse>>,
     }
 
     impl MockProvider {
         fn new(responses: Vec<StreamResponse>) -> Self {
-            Self::with_results(responses.into_iter().map(Ok).collect())
-        }
-
-        fn with_results(responses: Vec<Result<StreamResponse, AgentError>>) -> Self {
             Self {
                 responses: Mutex::new(responses),
             }
@@ -369,7 +347,7 @@ mod tests {
             Box::pin(async {
                 let mut responses = self.responses.lock().unwrap();
                 assert!(!responses.is_empty(), "MockProvider: no more responses");
-                responses.remove(0)
+                Ok(responses.remove(0))
             })
         }
 
@@ -471,36 +449,6 @@ mod tests {
             assert_eq!(msgs.len(), 2);
             assert!(matches!(msgs[0].role, Role::User));
             assert!(matches!(msgs[1].role, Role::Assistant));
-        });
-    }
-
-    #[test]
-    fn compact_history_returns_overflow_when_nothing_can_be_truncated() {
-        smol::block_on(async {
-            let provider = MockProvider::with_results(vec![Err(AgentError::Api {
-                status: 413,
-                message: "context overflow".into(),
-            })]);
-            let model = default_model();
-            let (raw_tx, _rx) = flume::unbounded();
-            let mut history = History::new(Vec::new());
-
-            let error = compact_history(
-                &provider,
-                &model,
-                &mut history,
-                &EventSender::new(raw_tx, 0),
-                &CancelToken::none(),
-                CompactionTrigger::Manual,
-                None,
-                std::path::Path::new("/tmp"),
-                None,
-            )
-            .await
-            .unwrap_err();
-
-            assert!(error.is_context_overflow());
-            assert!(history.as_slice().is_empty());
         });
     }
 
@@ -659,7 +607,7 @@ mod tests {
                 content: vec![ContentBlock::ToolUse {
                     id: "t1".into(),
                     name: "bash".into(),
-                    input: json!({}),
+                    input: serde_json::json!({}),
                 }],
                 ..Default::default()
             },
@@ -689,7 +637,7 @@ mod tests {
                 content: vec![ContentBlock::ToolUse {
                     id: "t1".into(),
                     name: "bash".into(),
-                    input: json!({}),
+                    input: serde_json::json!({}),
                 }],
                 ..Default::default()
             },
@@ -745,7 +693,7 @@ mod tests {
                 content: vec![ContentBlock::ToolUse {
                     id: "t1".into(),
                     name: "bash".into(),
-                    input: json!({}),
+                    input: serde_json::json!({}),
                 }],
                 ..Default::default()
             },

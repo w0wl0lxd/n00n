@@ -26,9 +26,6 @@ use ratatui::style::Color;
 use ratatui_image::picker::Picker;
 
 pub(crate) const DONE_TEXT: &str = "Done!";
-
-#[cfg(test)]
-use serde_json::json;
 pub(crate) const ERROR_TEXT: &str = "Error";
 pub(crate) const CANCELLED_TEXT: &str = "Cancelled";
 /// Messages rendered per frame when backfilling older history on resume.
@@ -1170,7 +1167,12 @@ mod tests {
     #[test_case(false, ToolStatus::Success ; "success")]
     #[test_case(true,  ToolStatus::Error   ; "error")]
     fn history_tool_result_status(is_error: bool, expected: ToolStatus) {
-        let msgs = tool_use_pair("bash", json!({"command": "ls"}), "output", is_error);
+        let msgs = tool_use_pair(
+            "bash",
+            serde_json::json!({"command": "ls"}),
+            "output",
+            is_error,
+        );
         let display = history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default()).0;
         assert_eq!(display.len(), 1);
         assert!(matches!(&display[0].role, DisplayRole::Tool(t) if t.status == expected));
@@ -1189,7 +1191,7 @@ mod tests {
                     ContentBlock::ToolUse {
                         id: "t1".into(),
                         name: "bash".into(),
-                        input: json!({"command": "echo hi"}),
+                        input: serde_json::json!({"command": "echo hi"}),
                     },
                 ],
                 ..Default::default()
@@ -1225,7 +1227,7 @@ mod tests {
         let variants: Vec<(&str, serde_json::Value, ToolOutput)> = vec![
             (
                 "edit",
-                json!({"path": "a", "old_string": "x", "new_string": "y"}),
+                serde_json::json!({"path": "a", "old_string": "x", "new_string": "y"}),
                 ToolOutput::Diff {
                     path: "a".into(),
                     before: "x\n".into(),
@@ -1236,7 +1238,7 @@ mod tests {
             ),
             (
                 "read",
-                json!({"path": "/src/main.rs"}),
+                serde_json::json!({"path": "/src/main.rs"}),
                 ToolOutput::ReadCode {
                     path: "/src/main.rs".into(),
                     start_line: 1,
@@ -1247,12 +1249,12 @@ mod tests {
             ),
             (
                 "grep",
-                json!({"pattern": "TODO"}),
+                serde_json::json!({"pattern": "TODO"}),
                 ToolOutput::GrepResult { entries: vec![] },
             ),
             (
                 "todo_write",
-                json!({"todos": []}),
+                serde_json::json!({"todos": []}),
                 ToolOutput::Plain("Todos cleared".into()),
             ),
         ];
@@ -1278,7 +1280,7 @@ mod tests {
         };
         let msgs = tool_use_pair(
             "write",
-            json!({"path": "/src/main.rs", "content": "fn main() {}"}),
+            serde_json::json!({"path": "/src/main.rs", "content": "fn main() {}"}),
             "wrote 12 bytes",
             false,
         );
@@ -1291,7 +1293,12 @@ mod tests {
     fn history_bash_output_truncated() {
         let long_output = (0..200).map(|i| format!("line {i}")).collect::<Vec<_>>();
         let joined = long_output.join("\n");
-        let msgs = tool_use_pair("bash", json!({"command": "cmd"}), &joined, false);
+        let msgs = tool_use_pair(
+            "bash",
+            serde_json::json!({"command": "cmd"}),
+            &joined,
+            false,
+        );
         let display = history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default()).0;
         let line_count = display[0].text.lines().count();
         assert!(
@@ -1304,7 +1311,7 @@ mod tests {
     fn history_no_stored_output_falls_back_to_plain_text() {
         let msgs = tool_use_pair(
             "read",
-            json!({"path": "/src/main.rs"}),
+            serde_json::json!({"path": "/src/main.rs"}),
             "1: fn main() {}",
             false,
         );
@@ -1325,7 +1332,7 @@ mod tests {
                 ContentBlock::ToolUse {
                     id: "tool1".into(),
                     name: "bash".into(),
-                    input: json!({"command": "true"}),
+                    input: serde_json::json!({"command": "true"}),
                 },
                 ContentBlock::Thinking {
                     thinking: "B".into(),
@@ -1334,7 +1341,7 @@ mod tests {
                 ContentBlock::ToolUse {
                     id: "tool2".into(),
                     name: "bash".into(),
-                    input: json!({"command": "true"}),
+                    input: serde_json::json!({"command": "true"}),
                 },
                 ContentBlock::RedactedThinking {
                     data: "opaque".into(),
@@ -1415,7 +1422,7 @@ mod tests {
             status: ToolStatus::Success,
             name: tool.into(),
         }));
-        msg.tool_raw_input = Some(Arc::new(json!({ "q": tool })));
+        msg.tool_raw_input = Some(Arc::new(serde_json::json!({ "q": tool })));
         msg.tool_output = Some(Arc::new(ToolOutput::Plain(RESTORE_OUTPUT.into())));
         msg
     }
@@ -1432,7 +1439,7 @@ mod tests {
         assert!(!item.is_error);
         assert_eq!(item.output, RESTORE_OUTPUT);
         assert_eq!(item.theme_gen, Some(RESTORE_THEME_GEN));
-        assert_eq!(item.input, json!({ "q": "bash" }));
+        assert_eq!(item.input, serde_json::json!({ "q": "bash" }));
     }
 
     #[test]
@@ -1446,7 +1453,7 @@ mod tests {
     fn history_structured_output_produces_no_restore_item() {
         let msgs = tool_use_pair(
             "edit",
-            json!({"path": "a", "old_string": "x", "new_string": "y"}),
+            serde_json::json!({"path": "a", "old_string": "x", "new_string": "y"}),
             "edited a",
             false,
         );

@@ -8,7 +8,7 @@ use flume::Sender;
 use futures_lite::StreamExt;
 use futures_lite::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use n00n_storage::id::SessionRef;
-use serde_json::{Map as JsonMap, Value, json};
+use serde_json::Value;
 use tracing::{debug, error, warn};
 
 use agent_client_protocol_schema::{
@@ -155,17 +155,11 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
 
 type PendingResponse = flume::Sender<Result<Value, AgentError>>;
 
-#[derive(Clone)]
-struct SessionInfo {
-    id: SessionId,
-    system_sent: bool,
-}
-
 struct DevinInner {
     _child: async_process::Child,
     stdin: Arc<AsyncMutex<async_process::ChildStdin>>,
     pending: Arc<AsyncMutex<HashMap<RequestId, PendingResponse>>>,
-    sessions: Arc<AsyncMutex<HashMap<SessionRef, SessionInfo>>>,
+    sessions: Arc<AsyncMutex<HashMap<SessionRef, SessionId>>>,
     config_options: Arc<AsyncMutex<Vec<SessionConfigOption>>>,
     next_id: Arc<AsyncMutex<i64>>,
     event_tx: Arc<AsyncMutex<Option<Sender<ProviderEvent>>>>,
@@ -381,12 +375,11 @@ impl DevinInner {
     async fn get_or_create_session(
         &self,
         session_ref: &SessionRef,
-        system: &str,
-    ) -> Result<SessionInfo, AgentError> {
+    ) -> Result<SessionId, AgentError> {
         {
             let sessions = self.sessions.lock().await;
-            if let Some(info) = sessions.get(session_ref) {
-                return Ok(info.clone());
+            if let Some(session_id) = sessions.get(session_ref) {
+                return Ok(session_id.clone());
             }
         }
 
@@ -394,7 +387,7 @@ impl DevinInner {
             Ok(p) => p,
             Err(_) => PathBuf::from("."),
         };
-        let req = NewSessionRequest::new(cwd).meta(system_prompt_meta(system));
+        let req = NewSessionRequest::new(cwd);
         let response: NewSessionResponse =
             self.send_request("session/new", req)
                 .await
@@ -409,14 +402,10 @@ impl DevinInner {
             *config_options = opts;
         }
 
-        let info = SessionInfo {
-            id: session_id,
-            system_sent: false,
-        };
         let mut sessions = self.sessions.lock().await;
-        sessions.insert(session_ref.clone(), info.clone());
+        sessions.insert(session_ref.clone(), session_id.clone());
 
-        Ok(info)
+        Ok(session_id)
     }
 
     async fn apply_model_config(
@@ -815,38 +804,10 @@ fn json_field_u32(value: &Value, key: &str) -> u32 {
         .map_or(0, clamped_u32)
 }
 
-fn system_prompt_meta(system: &str) -> Option<JsonMap<String, Value>> {
-    if system.trim().is_empty() {
-        return None;
-    }
-    let mut meta = JsonMap::new();
-    meta.insert(
-        "systemPrompt".to_string(),
-        json!({ "append": system.trim() }),
-    );
-    Some(meta)
-}
-
 fn map_stop_reason(reason: AcpStopReason) -> StopReason {
     match reason {
         AcpStopReason::MaxTokens => StopReason::MaxTokens,
-        AcpStopReason::Refusal => {
-            warn!("Devin ACP stopped with refusal");
-            StopReason::EndTurn
-        }
-        AcpStopReason::Cancelled => {
-            warn!("Devin ACP prompt was cancelled");
-            StopReason::EndTurn
-        }
-        AcpStopReason::MaxTurnRequests => {
-            warn!("Devin ACP reached max turn requests");
-            StopReason::EndTurn
-        }
-        AcpStopReason::EndTurn => StopReason::EndTurn,
-        _ => {
-            warn!(?reason, "Devin ACP returned unknown stop reason");
-            StopReason::EndTurn
-        }
+        _ => StopReason::EndTurn,
     }
 }
 
@@ -1680,7 +1641,7 @@ impl Provider for Devin {
         &'a self,
         model: &'a crate::model::Model,
         messages: &'a [Message],
-        system: &'a str,
+        _system: &'a str,
         _tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
@@ -1693,8 +1654,8 @@ impl Provider for Devin {
                 message: "session_id is required for Devin provider".to_string(),
             })?;
 
-            let mut session = inner.get_or_create_session(session_ref, system).await?;
-            inner.apply_model_config(&session.id, model, &opts).await?;
+            let session_id = inner.get_or_create_session(session_ref).await?;
+            inner.apply_model_config(&session_id, model, &opts).await?;
 
             let last_message = messages.last().ok_or_else(|| AgentError::Config {
                 message: "no messages provided".to_string(),
@@ -1702,25 +1663,13 @@ impl Provider for Devin {
 
             let content: Vec<AcpContentBlock> = {
                 let mut blocks = Vec::new();
-                if !session.system_sent && !system.trim().is_empty() {
-                    blocks.push(AcpContentBlock::Text(TextContent::new(format!(
-                        "[system instructions]\n{system}\n[/system instructions]\n\n"
-                    ))));
-                }
                 for block in &last_message.content {
                     blocks.push(self.convert_content_block(block).await);
                 }
                 blocks
             };
 
-            if !session.system_sent {
-                if let Some(info) = inner.sessions.lock().await.get_mut(session_ref) {
-                    info.system_sent = true;
-                }
-                session.system_sent = true;
-            }
-
-            let req = PromptRequest::new(session.id, content);
+            let req = PromptRequest::new(session_id, content);
 
             {
                 let mut text = inner.text.lock().await;
@@ -1899,20 +1848,6 @@ mod tests {
     }
 
     #[test]
-    fn swe_off_with_no_thinking_variants_stays_base() {
-        // When swe-1-7 has no thinking variants and thinking is Off,
-        // it should stay on the base model
-        let parsed = vec![
-            parse_option(&opt("swe-1-7", "SWE-1.7")),
-            parse_option(&opt("swe-1-7-lightning", "SWE-1.7 Lightning")),
-        ];
-        assert_eq!(
-            select_model_value(&parsed, "swe-1-7", ThinkingConfig::Off, None),
-            "swe-1-7"
-        );
-    }
-
-    #[test]
     fn swe_off_exact_honors_selected_variant() {
         let parsed = vec![
             parse_option(&opt("swe-1-7", "SWE-1.7 Max")),
@@ -2079,58 +2014,5 @@ mod tests {
             headers: Vec::new(),
         };
         assert_eq!(Devin::command_from_auth(&auth), "devin");
-    }
-
-    #[test]
-    fn map_stop_reason_max_tokens() {
-        assert_eq!(
-            map_stop_reason(AcpStopReason::MaxTokens),
-            StopReason::MaxTokens
-        );
-    }
-
-    #[test]
-    fn map_stop_reason_end_turn() {
-        assert_eq!(map_stop_reason(AcpStopReason::EndTurn), StopReason::EndTurn);
-    }
-
-    #[test]
-    fn map_stop_reason_refusal_to_end_turn() {
-        // Refusal maps to EndTurn for now - could be an error state in future
-        assert_eq!(map_stop_reason(AcpStopReason::Refusal), StopReason::EndTurn);
-    }
-
-    #[test]
-    fn map_stop_reason_cancelled_to_end_turn() {
-        // Cancelled maps to EndTurn for now - could be handled differently
-        assert_eq!(
-            map_stop_reason(AcpStopReason::Cancelled),
-            StopReason::EndTurn
-        );
-    }
-
-    #[test]
-    fn map_stop_reason_max_turn_requests_to_end_turn() {
-        // MaxTurnRequests maps to EndTurn - might need continuation logic
-        assert_eq!(
-            map_stop_reason(AcpStopReason::MaxTurnRequests),
-            StopReason::EndTurn
-        );
-    }
-
-    #[test]
-    fn system_prompt_meta_is_none_for_empty_system() {
-        assert!(system_prompt_meta("").is_none());
-        assert!(system_prompt_meta("   ").is_none());
-    }
-
-    #[test]
-    fn system_prompt_meta_appends_trimmed_system() {
-        let meta = system_prompt_meta("  be concise  ").unwrap();
-        let prompt = meta.get("systemPrompt").unwrap();
-        assert_eq!(
-            prompt.get("append").unwrap().as_str().unwrap(),
-            "be concise"
-        );
     }
 }

@@ -486,7 +486,6 @@ fn extract_tool_names(tools: &Value) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use n00n_storage::sessions::generate_title;
-    use serde_json::json;
     use tempfile::TempDir;
 
     use super::*;
@@ -558,7 +557,7 @@ mod tests {
 
     #[test]
     fn extract_tool_names_filters_valid_entries() {
-        let tools = json!([{"name": "read"}, {"type": "function"}, {"name": "bash"}]);
+        let tools = serde_json::json!([{"name": "read"}, {"type": "function"}, {"name": "bash"}]);
         assert_eq!(extract_tool_names(&tools), vec!["read", "bash"]);
     }
 }

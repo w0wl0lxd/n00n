@@ -62,10 +62,6 @@ struct PrintResult {
     total_cost_usd: f64,
     usage: TokenUsage,
     usage_note: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    savings_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    savings_cost_usd: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -172,8 +168,6 @@ struct ResultSummary {
     session_id: SessionRef,
     usage: TokenUsage,
     total_cost_usd: f64,
-    savings_tokens: Option<u64>,
-    savings_cost_usd: Option<f64>,
 }
 
 fn load_inputs(
@@ -311,8 +305,6 @@ pub fn run(model: &Model, args: PrintArgs<'_>) -> Result<()> {
 
     let duration_ms = start.elapsed().as_millis();
     let total_cost_usd = usage.cost(&model.pricing, fast);
-    let savings_tokens = usage.savings_tokens();
-    let savings_cost_usd = usage.savings_cost(&model.pricing, fast);
     output_result(
         format,
         std::mem::take(&mut verbose_out),
@@ -325,16 +317,6 @@ pub fn run(model: &Model, args: PrintArgs<'_>) -> Result<()> {
             session_id,
             usage,
             total_cost_usd,
-            savings_tokens: if savings_tokens > 0 {
-                Some(savings_tokens)
-            } else {
-                None
-            },
-            savings_cost_usd: if savings_cost_usd > 0.0 {
-                Some(savings_cost_usd)
-            } else {
-                None
-            },
         },
     )
 }
@@ -452,8 +434,6 @@ fn output_result(
         session_id,
         usage,
         total_cost_usd,
-        savings_tokens,
-        savings_cost_usd,
     } = summary;
 
     match format {
@@ -473,8 +453,6 @@ fn output_result(
                 total_cost_usd,
                 usage,
                 usage_note: LOCAL_TOKEN_USAGE_NOTE,
-                savings_tokens,
-                savings_cost_usd,
             };
             match verbose_out {
                 Some(VerboseOutput::Json(mut events)) => {
@@ -531,8 +509,6 @@ mod tests {
             total_cost_usd: 0.003,
             usage: TokenUsage::default(),
             usage_note: LOCAL_TOKEN_USAGE_NOTE,
-            savings_tokens: None,
-            savings_cost_usd: None,
         };
         let json: Value = serde_json::to_value(&result).unwrap();
         for field in PRINT_RESULT_FIELDS {

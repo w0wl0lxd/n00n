@@ -194,14 +194,10 @@ impl StatusBar {
             let rest_text = if ctx.stats.pricing.is_zero() {
                 format!("{context_text} ")
             } else {
-                let cost = ctx.stats.usage.cost(ctx.stats.pricing, ctx.fast);
-                let savings = ctx.stats.usage.savings_cost(ctx.stats.pricing, ctx.fast);
-                let savings_text = if savings > 0.0 {
-                    format!(" saved ${savings:.3}")
-                } else {
-                    String::new()
-                };
-                format!("{context_text} ${cost:.3}{savings_text} ")
+                format!(
+                    "{context_text} ${:.3} ",
+                    ctx.stats.usage.cost(ctx.stats.pricing, ctx.fast),
+                )
             };
             right_spans.push(Span::styled(
                 rest_text,
@@ -209,17 +205,10 @@ impl StatusBar {
             ));
 
             if ctx.stats.show_global && !ctx.stats.pricing.is_zero() {
-                let global_cost = ctx.stats.global_usage.cost(ctx.stats.pricing, ctx.fast);
-                let global_savings = ctx
-                    .stats
-                    .global_usage
-                    .savings_cost(ctx.stats.pricing, ctx.fast);
-                let global_savings_text = if global_savings > 0.0 {
-                    format!(" saved ${global_savings:.3}")
-                } else {
-                    String::new()
-                };
-                let global_text = format!(" \u{03a3}${global_cost:.3}{global_savings_text} ");
+                let global_text = format!(
+                    " \u{03a3}${:.3} ",
+                    ctx.stats.global_usage.cost(ctx.stats.pricing, ctx.fast),
+                );
                 right_spans.push(Span::styled(
                     global_text,
                     Style::new().fg(theme::current().foreground),

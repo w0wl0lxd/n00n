@@ -27,7 +27,10 @@ fn exec_tool(reg: &ToolRegistry, name: &str) -> String {
     let entry = reg
         .get(name)
         .unwrap_or_else(|| panic!("tool {name} not registered"));
-    let inv = entry.tool.parse(&json!({})).expect("parse failed");
+    let inv = entry
+        .tool
+        .parse(&serde_json::json!({}))
+        .expect("parse failed");
     let ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
     let out = smol::block_on(async { inv.execute(&ctx).await })
         .output
@@ -233,7 +236,7 @@ end }})
     load(&host, "listener", &listener);
     host.event_handle()
         .unwrap()
-        .fire_autocmd("TurnEnd", json!({ "k": "v" }));
+        .fire_autocmd("TurnEnd", serde_json::json!({ "k": "v" }));
     assert_eq!(exec_tool(&reg, "probe_turn_end"), "TurnEnd|nil|v");
 }
 
@@ -512,5 +515,3 @@ fn slot_reload_semantics() {
         "surviving filler re-attaches after owner reload"
     );
 }
-
-use serde_json::json;

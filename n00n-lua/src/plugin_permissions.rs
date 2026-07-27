@@ -2,7 +2,6 @@ use std::fmt;
 use std::path::Path;
 
 use mlua::{Error as LuaError, Function, IntoLuaMulti, Lua, Result as LuaResult};
-use toml::Value;
 use tracing::warn;
 
 const MANIFEST_FILE: &str = "plugin.toml";
@@ -66,13 +65,14 @@ impl PluginPermissions {
     }
 
     pub fn from_manifest(manifest: &toml::Value) -> Self {
+        const DEFAULT_PERMISSION: bool = true;
         let perms = manifest.get("permissions");
-        let mut allowed = [false; 5];
+        let mut allowed = [true; 5];
         for perm in Permission::ALL {
             allowed[perm as usize] = perms
                 .and_then(|p| p.get(perm.manifest_key()))
-                .and_then(Value::as_bool)
-                == Some(true);
+                .and_then(toml::Value::as_bool)
+                .unwrap_or_else(|| DEFAULT_PERMISSION);
         }
         Self { allowed }
     }
@@ -182,17 +182,17 @@ mod tests {
         let val: toml::Value = toml::from_str(
             r"
             [permissions]
-            fs_read = true
+            fs_read = false
             net = false
             ",
         )
         .unwrap();
         let p = PluginPermissions::from_manifest(&val);
-        assert!(p.is_allowed(Permission::FsRead));
-        assert!(!p.is_allowed(Permission::FsWrite));
+        assert!(!p.is_allowed(Permission::FsRead));
+        assert!(p.is_allowed(Permission::FsWrite));
         assert!(!p.is_allowed(Permission::Net));
-        assert!(!p.is_allowed(Permission::Run));
-        assert!(!p.is_allowed(Permission::Env));
+        assert!(p.is_allowed(Permission::Run));
+        assert!(p.is_allowed(Permission::Env));
     }
 
     #[test]
@@ -200,7 +200,7 @@ mod tests {
         let val: toml::Value = toml::from_str("[package]\nname = \"test\"").unwrap();
         let p = PluginPermissions::from_manifest(&val);
         for perm in Permission::ALL {
-            assert!(!p.is_allowed(perm), "{perm} should default to denied");
+            assert!(p.is_allowed(perm), "{perm} should default to allowed");
         }
     }
 

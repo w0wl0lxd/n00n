@@ -531,7 +531,6 @@ pub mod test_support {
     use std::borrow::Cow;
 
     use crate::{Envelope, EventSender, ToolOutput};
-    use serde_json::json;
 
     use super::{
         AgentMode, Arc, CancelToken, DescriptionContext, FileReadTracker, LazyLock,
@@ -568,7 +567,7 @@ pub mod test_support {
             "guarded mock".into()
         }
         fn schema(&self) -> Value {
-            json!({"type": "object", "properties": {}, "additionalProperties": false})
+            serde_json::json!({"type": "object", "properties": {}, "additionalProperties": false})
         }
         fn parse(
             &self,

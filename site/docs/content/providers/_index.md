@@ -69,7 +69,7 @@ You can override the model with `ANTHROPIC_MODEL` and the endpoint with `ANTHROP
 |------|--------|-------------------------------|---------|
 | Weak | **gpt-5.6-luna** (default), gpt-5.4-nano, gpt-5.4-mini, gpt-4.1-nano | $1.00 / $6.00 | 372K ctx / 128K out |
 | Medium | **gpt-5.6-terra** (default), gpt-4.1-mini, gpt-4.1, o4-mini, gpt-5.1-codex-mini | $2.50 / $15.00 | 372K ctx / 128K out |
-| Strong | **gpt-5.6-sol** (default), gpt-5.5, gpt-5.4, o3, gpt-5.3-codex-spark, gpt-5.3-codex, gpt-5.2-codex, gpt-5.1-codex-max, gpt-5.1-codex | $5.00 / $30.00 | 372K ctx / 128K out |
+| Strong | **gpt-5.6-sol** (default), gpt-5.5, gpt-5.4, o3, gpt-5.3-codex, gpt-5.2-codex, gpt-5.1-codex-max, gpt-5.1-codex | $5.00 / $30.00 | 372K ctx / 128K out |
 
 Defaults: gpt-5.6-luna (weak), gpt-5.6-terra (medium), gpt-5.6-sol (strong)
 
@@ -213,7 +213,7 @@ The default is `false`.
 
 | Tier | Models | Pricing (in/out per 1M tokens) | Context |
 |------|--------|-------------------------------|---------|
-| Strong | swe-1-7, **swe-1-7-max** (default), swe-1-7-lightning, claude-sonnet-4-6, gpt-5-4-none, gemini-3-1-pro-low | $0.00 / $0.00 | 262K ctx / 128K out |
+| Strong | swe-1-7, **swe-1-7-max** (default), claude-sonnet-4-6, gpt-5-4-none, gemini-3-1-pro-low | $0.00 / $0.00 | 200K ctx / 128K out |
 
 Defaults: swe-1-7-max (strong)
 
