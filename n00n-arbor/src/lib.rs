@@ -8,8 +8,10 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 
 mod graph_json;
+mod graph_query;
 
 pub use graph_json::{GraphIndex, GraphNode, SymbolRef};
+pub use graph_query::{graph_callees, graph_callers, graph_index_available, graph_trace_path};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Relation {
@@ -245,13 +247,17 @@ impl Client {
         Ok(())
     }
 
+    pub fn graph_json_path(project: &Path) -> PathBuf {
+        PathBuf::from(project).join(".arbor").join("graph.json")
+    }
+
     pub fn load_graph_index(project: &Path) -> Result<GraphIndex, ArborError> {
-        let graph_path = PathBuf::from(project).join(".arbor").join("graph.json");
-        if !graph_path.exists() {
+        let graph_path = Self::graph_json_path(project);
+        if !graph_path.is_file() {
             Self::ensure_indexed(project)?;
         }
-        let graph_path = PathBuf::from(project).join(".arbor").join("graph.json");
-        if !graph_path.exists() {
+        let graph_path = Self::graph_json_path(project);
+        if !graph_path.is_file() {
             return Err(ArborError::Cli {
                 message: format!("missing Arbor graph file: {}", graph_path.display()),
             });
