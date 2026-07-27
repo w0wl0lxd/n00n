@@ -364,6 +364,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn system_cache_boundary_precedes_dynamic_slots() {
+        let slots = slots(
+            PromptId::System,
+            &[
+                (Slot::Environment, "ENVIRONMENT"),
+                (Slot::AfterInstructions, "AFTER_INSTRUCTIONS"),
+            ],
+        );
+        let system = assemble_system(PromptId::System, &slots, "INSTRUCTIONS");
+
+        assert_eq!(
+            system.to_string(),
+            assemble(PromptId::System, &slots, "INSTRUCTIONS")
+        );
+        let blocks = system.blocks();
+        let boundary = blocks
+            .iter()
+            .position(|block| block.cache == n00n_providers::CacheControl::Ephemeral)
+            .unwrap_or_else(|| panic!("missing cache boundary"));
+        assert_eq!(
+            blocks
+                .iter()
+                .filter(|block| block.cache == n00n_providers::CacheControl::Ephemeral)
+                .count(),
+            1
+        );
+        assert!(!blocks[boundary].text.contains("ENVIRONMENT"));
+        assert!(
+            blocks[boundary + 1..]
+                .iter()
+                .any(|block| block.cache == n00n_providers::CacheControl::Dynamic)
+        );
+    }
+
     /// Regression: a `tool_usage` hint must land inside the `# Tool usage`
     /// section, not be appended after the rest of the prompt.
     #[test]
