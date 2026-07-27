@@ -35,8 +35,12 @@ const TRANSCRIPT_RECORD_TYPE: &str = "transcript";
 pub const SESSIONS_DIR: &str = "sessions";
 const CWD_INDEX_FILE: &str = "cwd_latest.json";
 const SCAN_CACHE_FILE: &str = "scan_cache_v3.json";
+const SCAN_CACHE_FILE_V2: &str = "scan_cache_v2.json";
 const DEFAULT_TITLE: &str = "New session";
 const MAX_TITLE_LEN: usize = 60;
+const MAX_SNIPPET_BYTES: usize = 256;
+const MAX_FIRST_MESSAGE_LINE_BYTES: usize = 64 * 1024;
+const MAX_FIRST_MESSAGE_TEXT_BYTES: usize = 1024;
 const OPENAI_RESPONSE_CHAIN_SUFFIX: &str = "openai-response.json";
 const OPENAI_RESPONSE_CHAIN_LOCK_SUFFIX: &str = "openai-response.lock";
 const OPENAI_RESPONSE_CHAIN_FILE_MODE: u32 = 0o600;
@@ -234,7 +238,9 @@ pub struct Session<M, U, T> {
 pub struct SessionSummary {
     pub id: N00nId,
     pub title: String,
+    #[serde(default)]
     pub display_title: String,
+    #[serde(default)]
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<N00nId>,
@@ -502,6 +508,7 @@ fn snippet_from_json(value: &serde_json::Value) -> Option<String> {
             .as_str()
             .map(std::string::ToString::to_string)
             .filter(|s| !s.is_empty())
+            .map(|s| cap_text(&s, MAX_SNIPPET_BYTES))
     }
 
     for key in SUBTASK_JSON_KEYS {
@@ -522,23 +529,28 @@ fn snippet_from_json(value: &serde_json::Value) -> Option<String> {
         .and_then(|obj| obj.values().find_map(find_string))
 }
 
+fn cap_text(text: &str, max_bytes: usize) -> String {
+    let cap = text.len().min(max_bytes);
+    let boundary = text.floor_char_boundary(cap);
+    text[..boundary].to_string()
+}
+
 fn snippet_from_text(text: &str) -> Option<String> {
     let trimmed = text.trim_start();
     if (trimmed.starts_with('{') || trimmed.starts_with('['))
         && let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed)
         && let Some(snippet) = snippet_from_json(&value)
     {
-        return Some(snippet);
+        return Some(cap_text(&snippet, MAX_SNIPPET_BYTES));
     }
     let first = trimmed
-        .split(['\n', '.'])
-        .next()
-        .map_or(trimmed, |s| s)
+        .split_once('\n')
+        .map_or(trimmed, |(line, _)| line)
         .trim();
     if first.is_empty() {
         None
     } else {
-        Some(first.to_string())
+        Some(cap_text(first, MAX_SNIPPET_BYTES))
     }
 }
 
@@ -1611,8 +1623,13 @@ where
             && h.cwd == cwd
         {
             let (display_title, kind) = classify_and_display(&h.title, h.first_message.as_deref());
+            let created_at = if h.created_at != 0 {
+                h.created_at
+            } else {
+                h.updated_at
+            };
             with_created.push((
-                h.created_at,
+                created_at,
                 SessionSummary {
                     id: h.id,
                     title: normalize_title(&h.title),
@@ -1634,6 +1651,7 @@ where
     {
         warn!(error = %e, "failed to write session scan cache");
     }
+    let _ = fs::remove_file(dir.join(SCAN_CACHE_FILE_V2));
 
     let mut order: Vec<usize> = (0..with_created.len()).collect();
     order.sort_by_key(|i| with_created[*i].0);
@@ -1716,12 +1734,13 @@ where
         }
         if offset == 0
             && first_message.is_none()
+            && trimmed.len() <= MAX_FIRST_MESSAGE_LINE_BYTES
             && trimmed.starts_with(MSG_RECORD_PREFIX)
             && let Ok(LogRecord::<M, serde_json::Value, serde_json::Value>::Msg { d }) =
                 serde_json::from_str(trimmed)
             && let Some(text) = d.first_user_text().map(str::trim).filter(|t| !t.is_empty())
         {
-            first_message = Some(text.to_owned());
+            first_message = Some(cap_text(text, MAX_FIRST_MESSAGE_TEXT_BYTES));
         }
     }
     if updated_at == 0 && title.is_empty() {
@@ -1750,14 +1769,17 @@ where
             Ok(_) => {}
         }
         let trimmed = line.trim_end_matches(['\r', '\n']);
-        if trimmed.is_empty() || !trimmed.starts_with(MSG_RECORD_PREFIX) {
+        if trimmed.is_empty()
+            || !trimmed.starts_with(MSG_RECORD_PREFIX)
+            || trimmed.len() > MAX_FIRST_MESSAGE_LINE_BYTES
+        {
             continue;
         }
         if let Ok(LogRecord::<M, serde_json::Value, serde_json::Value>::Msg { d }) =
             serde_json::from_str(trimmed)
             && let Some(text) = d.first_user_text().map(str::trim).filter(|t| !t.is_empty())
         {
-            return Some(text.to_owned());
+            return Some(cap_text(text, MAX_FIRST_MESSAGE_TEXT_BYTES));
         }
     }
 }
@@ -1837,12 +1859,13 @@ where
                     }
                     if first_message.is_none()
                         && line.starts_with(MSG_RECORD_PREFIX)
+                        && line.len() <= MAX_FIRST_MESSAGE_LINE_BYTES
                         && let Ok(LogRecord::<M, serde_json::Value, serde_json::Value>::Msg { d }) =
                             serde_json::from_str(line)
                         && let Some(text) =
                             d.first_user_text().map(str::trim).filter(|t| !t.is_empty())
                     {
-                        first_message = Some(text.to_owned());
+                        first_message = Some(cap_text(text, MAX_FIRST_MESSAGE_TEXT_BYTES));
                     }
                 }
                 Ok(())
