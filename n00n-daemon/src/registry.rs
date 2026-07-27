@@ -285,33 +285,38 @@ mod tests {
     #[test]
     fn uds_client_server_health_and_list() -> Result<(), String> {
         use crate::client;
-        use crate::paths::daemon_socket_in;
         use crate::server;
         use std::time::Duration;
 
         let tmp = TempDir::new().map_err(|e| e.to_string())?;
-        let sock = daemon_socket_in(tmp.path());
         let plane = Arc::new(ControlPlane::new(Some(mem_tui()), None));
         let (cancel_tx, cancel_rx) = flume::bounded(1);
-        let sock_serve = sock.clone();
+        let dir_serve = tmp.path().to_path_buf();
         let plane_serve = Arc::clone(&plane);
         let handle = std::thread::spawn(move || {
-            smol::block_on(server::serve(&sock_serve, plane_serve, cancel_rx))
+            smol::block_on(server::serve(
+                &dir_serve,
+                plane_serve,
+                cancel_rx,
+                crate::lock::DaemonRole::Tui,
+            ))
         });
 
+        let sock = crate::paths::daemon_socket_in(tmp.path());
         let mut connected = false;
         for _ in 0..50 {
             std::thread::sleep(Duration::from_millis(20));
-            if sock.exists() {
-                match client::call_blocking(&sock, &ControlRequest::Health) {
-                    Ok(ControlResponse::Ok {
-                        version: Some(v), ..
-                    }) if v == PROTOCOL_VERSION => {
-                        connected = true;
-                        break;
-                    }
-                    _ => {}
+            if !sock.exists() {
+                continue;
+            }
+            match client::call_blocking(tmp.path(), &ControlRequest::Health) {
+                Ok(ControlResponse::Ok {
+                    version: Some(v), ..
+                }) if v == PROTOCOL_VERSION => {
+                    connected = true;
+                    break;
                 }
+                _ => {}
             }
         }
         if !connected {
@@ -321,7 +326,7 @@ mod tests {
         }
 
         let list =
-            client::call_blocking(&sock, &ControlRequest::List).map_err(|e| e.to_string())?;
+            client::call_blocking(tmp.path(), &ControlRequest::List).map_err(|e| e.to_string())?;
         match list {
             ControlResponse::Ok {
                 agents: Some(agents),

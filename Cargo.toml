@@ -192,7 +192,10 @@ isahc = { version = "1.7", default-features = false, features = [
   "static-ssl",
 ] }
 libc = "0.2"
-rustix = { version = "0.38", default-features = false, features = ["process"] }
+rustix = { version = "0.38", default-features = false, features = [
+  "process",
+  "net",
+] }
 nucleo = "0.5"
 nucleo-matcher = "0.3"
 open = "5"

@@ -3024,6 +3024,7 @@ dependencies = [
  "flume 0.11.1",
  "futures-lite",
  "n00n-storage",
+ "rustix 0.38.44",
  "serde",
  "serde_json",
  "smol",

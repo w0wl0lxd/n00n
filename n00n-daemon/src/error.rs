@@ -19,6 +19,8 @@ pub enum ControlError {
     Unavailable(String),
     #[error("protocol error: {0}")]
     Protocol(String),
+    #[error("connection forbidden: {0}")]
+    Forbidden(String),
     #[error("io error: {0}")]
     Io(String),
 }

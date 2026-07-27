@@ -35,23 +35,21 @@ Out of #149 once the above lands: declare draft ready for review on the control-
 | Daemon `MessageOpts` → TUI `Prompt` flags | Done |
 | Plugin `agent_control` message path | Done (scoped tools + cards retained) |
 
-## Later / optional (not blocking merge)
+## Later / optional — landed in #149
 
-| Item | Notes |
-|------|-------|
-| Sock ownership protocol | If standalone `n00n agent daemon` and TUI both want the sock, prefer TUI replace-on-bind (current) or advertise PID in a sidecar lockfile. |
-| Windows transport | Named pipes / stub already returns typed Unavailable on non-unix. |
-| Authz / peer credential checks on UDS | `0600` sock is the v1 boundary; SO_PEERCRED later if multi-user state dirs appear. |
-| ACP / print-mode registration | Out of scope unless those modes need remote control. |
+| Item | Status |
+|------|--------|
+| Sock ownership protocol (`daemon.lock` sidecar: pid, role, transport, endpoint) | Done — TUI may replace; worker/headless blocked while live owner exists |
+| Windows transport | Done — loopback TCP listener; endpoint advertised in lock |
+| Authz / peer credential checks on UDS | Done (Linux) — SO_PEERCRED uid match on accept |
+| ACP / print-mode registration | Done — headless `ControlPlane` via `session_daemon`; print is list/status only |
 
 ## Dependency sketch
 
 ```text
-#149 daemon plane + TUI registration + scoped tools
+#149 daemon plane + TUI registration + scoped tools + optional transport/lock/auth/headless
   ├─ #129 control/steer + team resume   (absorbed)
   └─ #134 background worker socks/CLI   (absorbed)
-
-Optional later: sock ownership lockfile, Windows transport, peercred, ACP registration
 ```
 
 ## Verification gates (any PR in this stack)

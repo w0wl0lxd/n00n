@@ -20,10 +20,11 @@ use n00n_agent::{
 use n00n_config::{load_env_files, load_permissions};
 use n00n_daemon::backend::WorkerBackend;
 use n00n_daemon::client as daemon_client;
-use n00n_daemon::paths::{daemon_socket_in, daemon_socket_path};
+use n00n_daemon::lock::DaemonRole;
 use n00n_daemon::protocol::{BackendKind, ControlRequest, ControlResponse, MessageOpts};
 use n00n_daemon::registry::ControlPlane;
 use n00n_daemon::server as daemon_server;
+use n00n_daemon::transport;
 use n00n_lua::PluginHost;
 use n00n_providers::{Model, OpenAiOptions, ThinkingConfig, Timeouts};
 use n00n_storage::StateDir;
@@ -34,12 +35,25 @@ use smol::net::unix::{UnixListener, UnixStream};
 use crate::cli::AgentMode as CliAgentMode;
 use crate::setup;
 
-fn try_daemon(req: &ControlRequest) -> Option<Result<ControlResponse>> {
-    let sock = daemon_socket_path().ok()?;
-    if !sock.exists() {
-        return None;
+fn try_daemon(
+    state_dir: &std::path::Path,
+    req: &ControlRequest,
+) -> Option<Result<ControlResponse>> {
+    match transport::resolve_client(state_dir) {
+        Ok(_) => Some(
+            daemon_client::call_blocking(state_dir, req)
+                .map_err(|e| eyre!("daemon call failed: {e}")),
+        ),
+        Err(n00n_daemon::ControlError::Unavailable(_)) => None,
+        Err(e) => Some(Err(eyre!("daemon endpoint: {e}"))),
     }
-    Some(daemon_client::call_blocking(&sock, req).map_err(|e| eyre!("daemon call failed: {e}")))
+}
+
+fn daemon_state_dir() -> Result<std::path::PathBuf> {
+    Ok(StateDir::resolve()
+        .wrap_err("state dir")?
+        .path()
+        .to_path_buf())
 }
 
 fn print_control_response(resp: &ControlResponse, json: bool) -> Result<()> {
@@ -100,25 +114,25 @@ fn print_control_response(resp: &ControlResponse, json: bool) -> Result<()> {
 /// Foreground worker-only control plane (no TUI backend). Prefer TUI-owned
 /// `daemon.sock` when the UI is running.
 pub fn daemon_serve(state_dir: Option<PathBuf>) -> Result<()> {
-    #[cfg(unix)]
-    {
-        let storage = match state_dir {
-            Some(p) => StateDir::from_path(p),
-            None => StateDir::resolve().wrap_err("state dir")?,
-        };
-        let sock = daemon_socket_in(storage.path());
-        let worker = Arc::new(WorkerBackend::new(storage.path()));
-        let plane = Arc::new(ControlPlane::new(None, Some(worker)));
-        let (_tx, rx) = flume::bounded::<()>(1);
-        println!("listening on {}", sock.display());
-        smol::block_on(daemon_server::serve(&sock, plane, rx)).map_err(|e| eyre!(e))?;
-        Ok(())
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = state_dir;
-        Err(eyre!("agent daemon requires unix"))
-    }
+    let storage = match state_dir {
+        Some(p) => StateDir::from_path(p),
+        None => StateDir::resolve().wrap_err("state dir")?,
+    };
+    let worker = Arc::new(WorkerBackend::new(storage.path()));
+    let plane = Arc::new(ControlPlane::new(None, Some(worker)));
+    let (_tx, rx) = flume::bounded::<()>(1);
+    println!(
+        "listening on {}",
+        storage.path().join("daemon.sock").display()
+    );
+    smol::block_on(daemon_server::serve(
+        storage.path(),
+        plane,
+        rx,
+        DaemonRole::Worker,
+    ))
+    .map_err(|e| eyre!(e))?;
+    Ok(())
 }
 
 fn workflow_from_mode(mode: CliAgentMode) -> bool {
@@ -878,15 +892,19 @@ async fn handle_connection(
 }
 
 pub fn message_client(id: &str, text: &str, json: bool) -> Result<()> {
-    if let Some(result) = try_daemon(&ControlRequest::Message {
-        id: id.to_owned(),
-        text: text.to_owned(),
-        backend: None,
-        opts: MessageOpts {
-            steer: true,
-            control: true,
+    let state_dir = daemon_state_dir()?;
+    if let Some(result) = try_daemon(
+        &state_dir,
+        &ControlRequest::Message {
+            id: id.to_owned(),
+            text: text.to_owned(),
+            backend: None,
+            opts: MessageOpts {
+                steer: true,
+                control: true,
+            },
         },
-    }) {
+    ) {
         return print_control_response(&result?, json);
     }
 
@@ -948,10 +966,14 @@ pub fn message_client(id: &str, text: &str, json: bool) -> Result<()> {
 }
 
 pub fn stop_client(id: &str) -> Result<()> {
-    if let Some(result) = try_daemon(&ControlRequest::Stop {
-        id: id.to_owned(),
-        backend: None,
-    }) {
+    let state_dir = daemon_state_dir()?;
+    if let Some(result) = try_daemon(
+        &state_dir,
+        &ControlRequest::Stop {
+            id: id.to_owned(),
+            backend: None,
+        },
+    ) {
         return print_control_response(&result?, false);
     }
 
@@ -997,7 +1019,8 @@ pub fn stop_client(id: &str) -> Result<()> {
 }
 
 pub fn list_client(json: bool) -> Result<()> {
-    if let Some(result) = try_daemon(&ControlRequest::List) {
+    let state_dir = daemon_state_dir()?;
+    if let Some(result) = try_daemon(&state_dir, &ControlRequest::List) {
         return print_control_response(&result?, json);
     }
 
@@ -1032,10 +1055,14 @@ pub fn list_client(json: bool) -> Result<()> {
 }
 
 pub fn status_client(id: &str, json: bool) -> Result<()> {
-    if let Some(result) = try_daemon(&ControlRequest::Status {
-        id: id.to_owned(),
-        backend: None,
-    }) {
+    let state_dir = daemon_state_dir()?;
+    if let Some(result) = try_daemon(
+        &state_dir,
+        &ControlRequest::Status {
+            id: id.to_owned(),
+            backend: None,
+        },
+    ) {
         return print_control_response(&result?, json);
     }
 
@@ -1062,20 +1089,28 @@ pub fn status_client(id: &str, json: bool) -> Result<()> {
 }
 
 pub fn pause_client(id: &str) -> Result<()> {
-    if let Some(result) = try_daemon(&ControlRequest::Pause {
-        id: id.to_owned(),
-        backend: Some(BackendKind::Worker),
-    }) {
+    let state_dir = daemon_state_dir()?;
+    if let Some(result) = try_daemon(
+        &state_dir,
+        &ControlRequest::Pause {
+            id: id.to_owned(),
+            backend: Some(BackendKind::Worker),
+        },
+    ) {
         return print_control_response(&result?, false);
     }
     control_command_client(id, &ClientCommand::Pause, "paused")
 }
 
 pub fn resume_client(id: &str) -> Result<()> {
-    if let Some(result) = try_daemon(&ControlRequest::Resume {
-        id: id.to_owned(),
-        backend: Some(BackendKind::Worker),
-    }) {
+    let state_dir = daemon_state_dir()?;
+    if let Some(result) = try_daemon(
+        &state_dir,
+        &ControlRequest::Resume {
+            id: id.to_owned(),
+            backend: Some(BackendKind::Worker),
+        },
+    ) {
         return print_control_response(&result?, false);
     }
     control_command_client(id, &ClientCommand::Resume, "resumed")

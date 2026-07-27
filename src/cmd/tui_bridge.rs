@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use n00n_daemon::backend::WorkerBackend;
 use n00n_daemon::error::{ControlError, ControlResult};
-use n00n_daemon::paths::daemon_socket_in;
+use n00n_daemon::lock::DaemonRole;
 use n00n_daemon::protocol::{AgentRecord, BackendKind, MessageOpts};
 use n00n_daemon::registry::{ControlPlane, TuiCallbackBackend};
 use n00n_daemon::server;
@@ -71,16 +71,16 @@ pub fn try_spawn(state_dir: &Path, ui_tx: flume::Sender<UiAction>) -> Option<Dae
 }
 
 fn spawn(state_dir: &Path, ui_tx: flume::Sender<UiAction>) -> ControlResult<DaemonHandle> {
-    let sock = daemon_socket_in(state_dir);
     let plane = Arc::new(ControlPlane::new(
         Some(Arc::new(tui_backend(ui_tx))),
         Some(Arc::new(WorkerBackend::new(state_dir))),
     ));
     let (cancel, cancel_rx) = flume::bounded(1);
+    let dir = state_dir.to_path_buf();
     let join = thread::Builder::new()
         .name("n00n-daemon".into())
         .spawn(move || {
-            if let Err(e) = smol::block_on(server::serve(&sock, plane, cancel_rx)) {
+            if let Err(e) = smol::block_on(server::serve(&dir, plane, cancel_rx, DaemonRole::Tui)) {
                 tracing::warn!(error = %e, "tui daemon listener stopped");
             }
         })
@@ -228,6 +228,7 @@ fn required_str(value: &Value, key: &str, err: &str) -> ControlResult<String> {
 mod tests {
     use super::*;
     use n00n_daemon::backend::ControlBackend;
+    use n00n_daemon::paths::daemon_socket_in;
     use n00n_daemon::protocol::ControlRequest;
     use n00n_lua::SessionReply;
     use serde_json::json;
@@ -373,7 +374,7 @@ mod tests {
             if !sock.exists() {
                 continue;
             }
-            match client::call_blocking(&sock, &ControlRequest::Health) {
+            match client::call_blocking(tmp.path(), &ControlRequest::Health) {
                 Ok(ControlResponse::Ok {
                     version: Some(v), ..
                 }) if v == PROTOCOL_VERSION => {
@@ -389,7 +390,7 @@ mod tests {
         }
 
         let list =
-            client::call_blocking(&sock, &ControlRequest::List).map_err(|e| e.to_string())?;
+            client::call_blocking(tmp.path(), &ControlRequest::List).map_err(|e| e.to_string())?;
         handle.shutdown();
         match list {
             ControlResponse::Ok {

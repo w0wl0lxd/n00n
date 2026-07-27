@@ -143,6 +143,7 @@ impl ControlResponse {
             crate::ControlError::InvalidId(_) => Some("invalid_id".into()),
             crate::ControlError::Unavailable(_) => Some("unavailable".into()),
             crate::ControlError::Protocol(_) => Some("protocol".into()),
+            crate::ControlError::Forbidden(_) => Some("forbidden".into()),
             crate::ControlError::Io(_) => Some("io".into()),
         };
         Self::Err {

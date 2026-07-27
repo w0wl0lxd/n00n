@@ -1,5 +1,6 @@
 mod acp;
 pub mod agent;
+pub(crate) mod session_daemon;
 mod subcmd;
 mod tui;
 mod tui_bridge;

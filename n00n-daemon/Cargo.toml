@@ -17,6 +17,7 @@ tracing = { workspace = true }
 smol = { workspace = true }
 futures-lite = { workspace = true }
 flume = { workspace = true }
+rustix = { workspace = true }
 
 [dev-dependencies]
 test-case = { workspace = true }
