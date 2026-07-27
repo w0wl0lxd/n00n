@@ -49,7 +49,12 @@ inventory::submit!(n00n_config::providers::BuiltInProvider {
     needs_url: false,
 });
 
-include!("cursor_models.rs");
+include!("models_data.rs");
+
+mod auth;
+mod connect;
+mod discovery;
+mod wire;
 
 pub(crate) const fn models() -> &'static [ModelEntry] {
     MODELS
