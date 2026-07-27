@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785145831662,
+  "lastUpdate": 1785176796690,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -7989,6 +7989,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 163840,
             "range": "± 19867",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "18c8f19bbc3215ee3d1b5b0dda09facb85a8a19b",
+          "message": "Merge pull request #161 from w0wl0lxd/fix/n00n-tb21-acp\n\nfix: integrate terminal-bench-2.1 robustness fixes",
+          "timestamp": "2026-07-27T18:12:32Z",
+          "tree_id": "553b3d9e88ae11ca03e05aaf3af1e603ba241a59",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/18c8f19bbc3215ee3d1b5b0dda09facb85a8a19b"
+        },
+        "date": 1785176795331,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6717086,
+            "range": "± 110034",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2220489,
+            "range": "± 4555",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2218885,
+            "range": "± 57047",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8112314,
+            "range": "± 108193",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4297760,
+            "range": "± 14207",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4273422,
+            "range": "± 16661",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 583086,
+            "range": "± 2725",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191588,
+            "range": "± 210",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191903,
+            "range": "± 214",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1065682,
+            "range": "± 10973",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 600479,
+            "range": "± 1319",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 600554,
+            "range": "± 1014",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 80567,
+            "range": "± 2486",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 113982,
+            "range": "± 19674",
             "unit": "ns/iter"
           }
         ]
