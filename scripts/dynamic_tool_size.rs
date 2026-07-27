@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use n00n_agent::AgentConfig;
 use n00n_agent::tokenize::count_json_for_model;
 use n00n_agent::{
     template::Vars,
@@ -8,16 +9,19 @@ use n00n_agent::{
 use n00n_providers::Model;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let registry = ToolRegistry::global_arc();
-    let _host = n00n_lua::PluginHost::with_all_builtins(Arc::clone(registry))?;
+    let registry = Arc::new(ToolRegistry::new());
+    let _host = n00n_lua::PluginHost::with_all_builtins(Arc::clone(&registry))?;
 
-    let vars = Vars::new();
+    let vars = Vars::new()
+        .set("{cwd}", "/tmp/n00n-token-profile")
+        .set("{platform}", "linux")
+        .set("{date}", "2026-07-27");
     let model = Model::from_spec("anthropic/claude-sonnet-4-6")?;
 
-    let filter = ToolFilter::All;
+    let filter = ToolFilter::from_config(&AgentConfig::default(), &model, &[]);
     let active = ActiveTools::default();
 
-    println!("Tool definition size by audience:");
+    println!("Tool definition size by audience (cold-start filter, MCP excluded):");
     println!(
         "{:<18} {:<15} {:<15} {:<15}",
         "Audience", "Tool Count", "Bytes", "Tokens (est)"
@@ -61,6 +65,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "{:<18} {:<15} {:<15} {:<15}",
         "all (unfiltered)", all_count, all_bytes, all_tokens
     );
+    println!();
+    println!("For CI gates use: cargo test -p n00n-token-profile");
 
     Ok(())
 }
