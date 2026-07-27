@@ -72,12 +72,15 @@
               "--package"
               packageName
             ];
-            nativeBuildInputs = with pkgs; [
-              patchelf
-              pkg-config
-              perl
-              python3
-            ];
+            nativeBuildInputs =
+              with pkgs;
+              [
+                pkg-config
+                perl
+                python3
+              ]
+              ++ lib.optionals stdenv.isLinux [ patchelf ]
+              ++ lib.optionals (!stdenv.isLinux) [ makeWrapper ];
             # TODO: Upstream monty includes a relative README path that doesn't
             # survive nix vendoring. Remove this once `monty` stops including
             # the relative path
@@ -97,11 +100,16 @@
             ];
             doCheck = false;
 
-            postInstall = ''
-              old_rpath="$(patchelf --print-rpath "$out/bin/${packageName}")"
-              new_rpath="${lib.makeLibraryPath runtimeLibs}''${old_rpath:+:$old_rpath}"
-              patchelf --set-rpath "$new_rpath" "$out/bin/${packageName}"
-            '';
+            postFixup =
+              lib.optionalString pkgs.stdenv.isLinux ''
+                old_rpath="$(patchelf --print-rpath "$out/bin/${packageName}")"
+                new_rpath="${lib.makeLibraryPath runtimeLibs}''${old_rpath:+:$old_rpath}"
+                patchelf --set-rpath "$new_rpath" "$out/bin/${packageName}"
+              ''
+              + lib.optionalString (!pkgs.stdenv.isLinux) ''
+                wrapProgram $out/bin/n00n \
+                  --prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath runtimeLibs}"
+              '';
           };
         in
         {
