@@ -45,14 +45,19 @@ pub fn ensure_fresh_index(project: &Path) -> Result<(), ArborError> {
         return crate::Client::ensure_indexed(project);
     }
 
-    let status = crate::Client::status(project)?;
-    if status_needs_index(&status) {
-        return crate::Client::ensure_indexed(project);
+    match crate::Client::status(project) {
+        Ok(status) => {
+            if status_needs_index(&status) {
+                return crate::Client::ensure_indexed(project);
+            }
+            if status_is_stale(&status) {
+                return crate::Client::reindex(project);
+            }
+            Ok(())
+        }
+        Err(ArborError::Exec { .. }) => Ok(()),
+        Err(err) => Err(err),
     }
-    if status_is_stale(&status) {
-        return crate::Client::reindex(project);
-    }
-    Ok(())
 }
 
 #[cfg(test)]

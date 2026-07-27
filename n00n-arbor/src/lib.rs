@@ -11,7 +11,7 @@ mod graph_json;
 mod graph_query;
 mod index_health;
 
-pub use graph_json::{GraphIndex, GraphNode, SymbolRef};
+pub use graph_json::{GraphIndex, GraphNode, SymbolQuery, SymbolRef};
 pub use graph_query::{graph_callees, graph_callers, graph_index_available, graph_trace_path};
 pub use index_health::{
     ensure_fresh_index, graph_index_available as graph_file_available, graph_json_path,
