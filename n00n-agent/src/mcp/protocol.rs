@@ -68,6 +68,28 @@ pub fn initialize_params() -> Value {
     })
 }
 
+#[derive(Deserialize, Default)]
+pub struct ToolAnnotations {
+    #[serde(default, rename = "readOnlyHint")]
+    pub read_only_hint: bool,
+    #[serde(default, rename = "destructiveHint")]
+    pub destructive_hint: Option<bool>,
+    #[serde(default, rename = "idempotentHint")]
+    pub idempotent_hint: Option<bool>,
+    #[serde(default, rename = "openWorld")]
+    pub open_world: Option<bool>,
+}
+
+impl ToolAnnotations {
+    #[must_use]
+    pub fn is_read_only(&self) -> bool {
+        // Fail-safe: a tool is read-only only when the server explicitly
+        // promises both readOnlyHint and destructiveHint = false. An omitted
+        // destructiveHint is treated as unknown/unsafe.
+        self.read_only_hint && self.destructive_hint == Some(false)
+    }
+}
+
 #[derive(Deserialize)]
 pub struct ToolInfo {
     pub name: String,
@@ -75,6 +97,8 @@ pub struct ToolInfo {
     pub description: String,
     #[serde(default, rename = "inputSchema")]
     pub input_schema: Value,
+    #[serde(default)]
+    pub annotations: ToolAnnotations,
 }
 
 #[derive(Deserialize)]
@@ -176,6 +200,21 @@ mod tests {
         let result: ToolsListResult = serde_json::from_value(raw).unwrap();
         assert_eq!(result.tools[0].name, "read_file");
         assert_eq!(result.tools[0].input_schema["type"], "object");
+        assert!(!result.tools[0].annotations.is_read_only());
+    }
+
+    #[test]
+    fn tool_annotations_require_unambiguously_read_only_hint() {
+        let raw = json!({"tools": [
+            {"name": "read", "annotations": {"readOnlyHint": true, "destructiveHint": false}},
+            {"name": "unknown"},
+            {"name": "contradictory", "annotations": {"readOnlyHint": true, "destructiveHint": true}}
+        ]});
+        let result: ToolsListResult = serde_json::from_value(raw).unwrap();
+
+        assert!(result.tools[0].annotations.is_read_only());
+        assert!(!result.tools[1].annotations.is_read_only());
+        assert!(!result.tools[2].annotations.is_read_only());
     }
 
     #[test]
@@ -234,5 +273,32 @@ mod tests {
             Some("Review this code")
         );
         assert_eq!(result.messages[1].role, PromptRole::Assistant);
+    }
+
+    #[test]
+    fn tool_annotations_read_only_requires_explicit_non_destructive() {
+        let read_only = ToolAnnotations {
+            read_only_hint: true,
+            destructive_hint: Some(false),
+            idempotent_hint: None,
+            open_world: None,
+        };
+        assert!(read_only.is_read_only());
+
+        let missing_destructive = ToolAnnotations {
+            read_only_hint: true,
+            destructive_hint: None,
+            idempotent_hint: None,
+            open_world: None,
+        };
+        assert!(!missing_destructive.is_read_only());
+
+        let destructive = ToolAnnotations {
+            read_only_hint: true,
+            destructive_hint: Some(true),
+            idempotent_hint: None,
+            open_world: None,
+        };
+        assert!(!destructive.is_read_only());
     }
 }

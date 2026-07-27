@@ -6,10 +6,17 @@ pub mod translate;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use n00n_agent::headless::InteractiveHandle;
 use n00n_agent::prompt::ResolvedSlots;
 use n00n_agent::{AgentConfig, PermissionsConfig};
 use n00n_providers::model::Model;
 use n00n_providers::{OpenAiOptions, Timeouts};
+
+/// Keeps an optional in-process daemon registration alive for the ACP session.
+pub type SessionDaemonGuard = Box<dyn Send + 'static>;
+
+pub type SessionDaemonRegister =
+    fn(&std::path::Path, &InteractiveHandle, &str) -> Option<SessionDaemonGuard>;
 
 pub struct AcpParams {
     pub model: Model,
@@ -21,6 +28,7 @@ pub struct AcpParams {
     pub mcp_handle: Option<n00n_agent::McpHandle>,
     pub prompt_slots: Arc<ResolvedSlots>,
     pub yolo: bool,
+    pub session_daemon_register: Option<SessionDaemonRegister>,
 }
 
 /// Runs the ACP server with the given parameters.

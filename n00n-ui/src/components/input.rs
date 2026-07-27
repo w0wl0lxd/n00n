@@ -53,6 +53,7 @@ pub enum InputAction {
 pub struct Submission {
     pub text: String,
     pub images: Vec<ImageSource>,
+    pub control: bool,
 }
 
 impl Submission {
@@ -60,6 +61,7 @@ impl Submission {
         Self {
             text: String::new(),
             images: Vec::new(),
+            control: false,
         }
     }
 
@@ -264,7 +266,11 @@ impl InputBox {
         }
         self.history.push(text.as_str());
         self.discard();
-        Some(Submission { text, images })
+        Some(Submission {
+            text,
+            images,
+            control: false,
+        })
     }
 
     pub fn discard(&mut self) {
