@@ -103,6 +103,7 @@ pub fn pid_alive(pid: u32) -> bool {
 /// treat the PID as alive rather than risk stealing an active lock.
 #[must_use]
 #[cfg(not(unix))]
+#[allow(clippy::manual_unwrap_or)]
 pub fn pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
@@ -124,7 +125,7 @@ fn probe_windows_process(pid: u32) -> std::io::Result<bool> {
 
     let filter = format!("{PID_FILTER}{pid}");
     let output = std::process::Command::new(TASKLIST_EXE)
-        .args(["/FI", &filter, "/NH", "/FO", "CSV"])
+        .args(["/FI", filter.as_str(), "/NH", "/FO", "CSV"])
         .output()?;
     if !output.status.success() {
         return Ok(false);
