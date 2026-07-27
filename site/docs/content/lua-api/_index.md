@@ -3080,13 +3080,11 @@ n00n.treesitter.get_node({opts?})
 Gets the node at the given cursor position in the source code.
 Parses the source and returns the smallest node containing the position.
 
+Mirrors `vim.treesitter.get_node()`. {opts} accepts `source`/`bufnr`, `lang`, `pos`, and `named`.
+
 **Parameters:**
 
-- `{opts?}` (`table`) Options with keys:
-  - `source` (`string, required`) source code to parse.
-  - `lang` (`string, required`) language name, e.g. `"lua"`.
-  - `pos` (`table, required`) `{row, col}` with 0-based row and column.
-  - `bufnr` (`integer, optional`) accepted for Neovim compatibility but ignored.
+- `{opts?}` (`table`) Options for `get_node`: source (string, optional), bufnr (integer, optional), lang (string, required), pos ({row, col}, required), named (boolean, default true).
 
 **Returns:** ([`Node|nil`](#n00n-treesitter-Node), `string?`) Node at position, or nil and an error message.
 

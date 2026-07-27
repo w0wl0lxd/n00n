@@ -428,6 +428,40 @@ local node4, err4 = n00n.treesitter.get_node({
 })
 assert(node4 == nil, "should return nil for missing pos")
 assert(err4 ~= nil, "should return error for missing pos")
+
+-- Default named=true returns the named node at the `=` position.
+local named_node, _ = n00n.treesitter.get_node({
+    source = source,
+    lang = "lua",
+    pos = {0, 8}
+})
+assert(named_node ~= nil, "named node should not be nil")
+assert(named_node:type() ~= "=", "named node should not be anonymous `=` token, got " .. named_node:type())
+
+-- named=false returns the anonymous `=` token.
+local anon_node, _ = n00n.treesitter.get_node({
+    source = source,
+    lang = "lua",
+    pos = {0, 8},
+    named = false
+})
+assert(anon_node ~= nil, "anonymous node should not be nil")
+assert(anon_node:type() == "=", "anonymous node should be `=` token, got " .. anon_node:type())
+
+-- Type errors on required options should throw (programmer errors).
+local ok_type, err_type = pcall(function()
+    n00n.treesitter.get_node({ source = 123, lang = "lua", pos = {0, 6} })
+end)
+assert(not ok_type, "should throw for non-string source")
+
+-- bufnr without a task context returns a runtime error.
+local node5, err5 = n00n.treesitter.get_node({
+    bufnr = 1,
+    lang = "lua",
+    pos = {0, 6}
+})
+assert(node5 == nil, "should return nil for unresolved bufnr")
+assert(err5 ~= nil, "should return error for unresolved bufnr")
 "#,
     );
 }

@@ -6,10 +6,11 @@ pub(crate) mod tree;
 
 use std::sync::Arc;
 
-use mlua::{AnyUserData, Lua, Result as LuaResult, Table};
+use mlua::{AnyUserData, FromLua, Lua, Result as LuaResult, Table, Value as LuaValue};
 use n00n_lua_macro::{lua_fn, lua_table};
 
 use crate::language::Language;
+use crate::runtime::{TaskHandle, lock_cell};
 use language_tree::LuaLanguageTree;
 use node::LuaNode;
 
@@ -194,11 +195,8 @@ fn node_contains(_lua: &Lua, node: AnyUserData, range: Table) -> LuaResult<bool>
 /// Gets the node at the given cursor position in the source code.
 /// Parses the source and returns the smallest node containing the position.
 ///
-/// @param opts table Options with keys:
-///   - `source` (string, required): source code to parse.
-///   - `lang` (string, required): language name, e.g. `"lua"`.
-///   - `pos` (table, required): `{row, col}` with 0-based row and column.
-///   - `bufnr` (integer, optional): accepted for Neovim compatibility but ignored.
+/// Mirrors `vim.treesitter.get_node()`. {opts} accepts `source`/`bufnr`, `lang`, `pos`, and `named`.
+/// @param opts table Options for `get_node`: source (string, optional), bufnr (integer, optional), lang (string, required), pos ({row, col}, required), named (boolean, default true).
 /// @return (Node|nil, string?) Node at position, or nil and an error message.
 /// @example
 /// local node, err = n00n.treesitter.get_node({
@@ -208,41 +206,104 @@ fn node_contains(_lua: &Lua, node: AnyUserData, range: Table) -> LuaResult<bool>
 /// })
 #[lua_fn]
 #[allow(clippy::needless_pass_by_value)]
-fn get_node(_lua: &Lua, opts: Option<Table>) -> LuaResult<(Option<LuaNode>, Option<String>)> {
+fn get_node(lua: &Lua, opts: Option<Table>) -> LuaResult<(Option<LuaNode>, Option<String>)> {
     let Some(opts) = opts else {
         return Ok((None, Some("missing required option: opts".to_owned())));
     };
 
-    let source: String = match opts.get("source") {
-        Ok(s) => s,
-        Err(_) => return Ok((None, Some("missing required option: source".to_owned()))),
+    let source = match opts.get::<LuaValue>("source")? {
+        LuaValue::Nil => None,
+        LuaValue::String(s) => Some(s.to_str()?.to_owned()),
+        v => {
+            return Err(mlua::Error::FromLuaConversionError {
+                from: v.type_name(),
+                to: "String".to_owned(),
+                message: Some("expected string for 'source'".to_owned()),
+            });
+        }
     };
-    let lang: String = match opts.get("lang") {
-        Ok(l) => l,
-        Err(_) => return Ok((None, Some("missing required option: lang".to_owned()))),
+    let bufnr = match opts.get::<LuaValue>("bufnr")? {
+        LuaValue::Nil => None,
+        v => Some(u32::from_lua(v, lua)?),
     };
-    let pos: Table = match opts.get("pos") {
-        Ok(p) => p,
-        Err(_) => return Ok((None, Some("missing required option: pos".to_owned()))),
+    let lang = match opts.get::<LuaValue>("lang")? {
+        LuaValue::Nil => None,
+        LuaValue::String(s) => Some(s.to_str()?.to_owned()),
+        v => {
+            return Err(mlua::Error::FromLuaConversionError {
+                from: v.type_name(),
+                to: "String".to_owned(),
+                message: Some("expected string for 'lang'".to_owned()),
+            });
+        }
+    };
+    let pos = match opts.get::<LuaValue>("pos")? {
+        LuaValue::Nil => None,
+        LuaValue::Table(t) => Some(t),
+        v => {
+            return Err(mlua::Error::FromLuaConversionError {
+                from: v.type_name(),
+                to: "Table".to_owned(),
+                message: Some("expected table for 'pos'".to_owned()),
+            });
+        }
+    };
+    let named = match opts.get::<LuaValue>("named")? {
+        LuaValue::Nil => None,
+        LuaValue::Boolean(b) => Some(b),
+        v => {
+            return Err(mlua::Error::FromLuaConversionError {
+                from: v.type_name(),
+                to: "Boolean".to_owned(),
+                message: Some("expected boolean for 'named'".to_owned()),
+            });
+        }
     };
 
-    let row: usize = match pos.get(1) {
-        Ok(r) => r,
-        Err(_) => {
+    let source = match source {
+        Some(s) => s,
+        None => match bufnr {
+            Some(id) => {
+                let Some(handle) = lua.app_data_ref::<TaskHandle>() else {
+                    return Ok((
+                        None,
+                        Some("bufnr source resolution requires a task context".to_owned()),
+                    ));
+                };
+                let cell = lock_cell(&handle);
+                match cell.bufs.source(id) {
+                    Some(s) => s,
+                    None => return Ok((None, Some(format!("buffer {id} not found")))),
+                }
+            }
+            None => return Ok((None, Some("missing required option: source".to_owned()))),
+        },
+    };
+
+    let Some(lang) = lang else {
+        return Ok((None, Some("missing required option: lang".to_owned())));
+    };
+    let Some(pos) = pos else {
+        return Ok((None, Some("missing required option: pos".to_owned())));
+    };
+
+    let row = match pos.get::<LuaValue>(1)? {
+        LuaValue::Nil => {
             return Ok((
                 None,
                 Some("pos must be a table with row at index 1".to_owned()),
             ));
         }
+        v => usize::from_lua(v, lua)?,
     };
-    let col: usize = match pos.get(2) {
-        Ok(c) => c,
-        Err(_) => {
+    let col = match pos.get::<LuaValue>(2)? {
+        LuaValue::Nil => {
             return Ok((
                 None,
                 Some("pos must be a table with col at index 2".to_owned()),
             ));
         }
+        v => usize::from_lua(v, lua)?,
     };
 
     let Some(language) = Language::from_name(&lang) else {
@@ -261,7 +322,11 @@ fn get_node(_lua: &Lua, opts: Option<Table>) -> LuaResult<(Option<LuaNode>, Opti
     let tree = Arc::new(tree);
     let root = tree.root_node();
     let point = tree_sitter::Point::new(row, col);
-    let node = root.descendant_for_point_range(point, point);
+    let node = if named == Some(false) {
+        root.descendant_for_point_range(point, point)
+    } else {
+        root.named_descendant_for_point_range(point, point)
+    };
 
     Ok((node.map(|n| LuaNode::new(n, Arc::clone(&tree))), None))
 }
