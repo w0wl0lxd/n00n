@@ -1,4 +1,6 @@
 /target
+/n00n-bundle/
+/n00n-bundle.tar.gz
 __pycache__/
 runs.csv
 /.direnv/

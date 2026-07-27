@@ -7,7 +7,7 @@ PYTHONPATH="$(dirname "$0")${PYTHONPATH:+:$PYTHONPATH}" \
   exec harbor run \
   -d terminal-bench/terminal-bench-2-1 \
   -i 'terminal-bench/fix-git' \
-  -a n00n_agent:N00nAgent \
+  -a n00n_agent:n00nAgent \
   -m swe-1-7 \
   -e daytona \
   -k 1 \

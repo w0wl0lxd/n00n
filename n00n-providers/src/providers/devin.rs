@@ -17,13 +17,13 @@ use agent_client_protocol_schema::{
 };
 use agent_client_protocol_schema::{
     ContentBlock as AcpContentBlock, Error as AcpError, JsonRpcMessage, NewSessionRequest,
-    NewSessionResponse, Notification, PermissionOptionKind, PromptRequest, ProtocolVersion,
-    Request as AcpRequest, RequestId, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, Response as AcpResponse, SelectedPermissionOutcome,
-    SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption,
-    SessionConfigSelectOptions, SessionConfigValueId, SessionId, SessionNotification,
-    SessionUpdate, SetSessionConfigOptionRequest, StopReason as AcpStopReason, TextContent,
-    ToolCallContent, UsageUpdate,
+    NewSessionResponse, Notification, PermissionOption, PermissionOptionKind, PromptRequest,
+    ProtocolVersion, Request as AcpRequest, RequestId, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, Response as AcpResponse,
+    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
+    SessionConfigSelectOption, SessionConfigSelectOptions, SessionConfigValueId, SessionId,
+    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, StopReason as AcpStopReason,
+    TextContent, ToolCallContent, UsageUpdate,
 };
 #[allow(unused_imports)]
 use agent_client_protocol_schema::{ToolCall, ToolCallUpdate};
@@ -51,6 +51,7 @@ inventory::submit!(n00n_config::providers::BuiltInProvider {
 });
 
 const DEFAULT_COMMAND: &str = "devin";
+const REQUEST_PERMISSION_METHOD: &str = "session/request_permission";
 
 pub(crate) const fn models() -> &'static [ModelEntry] {
     &[
@@ -176,6 +177,10 @@ impl DevinInner {
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
+
+        // The Devin CLI may be a system binary; do not inherit a bundled glibc
+        // search path that n00n's wrapper sets for the n00n binary itself.
+        cmd.env_remove("LD_LIBRARY_PATH");
 
         if let Some(key) = api_key {
             cmd.env("DEVIN_API_KEY", key);
@@ -357,6 +362,9 @@ impl DevinInner {
                 .map_err(|e| AgentError::Config {
                     message: format!("failed to write newline: {e}"),
                 })?;
+            stdin.flush().await.map_err(|e| AgentError::Config {
+                message: format!("failed to flush stdin: {e}"),
+            })?;
         }
 
         let result = rx.recv_async().await.map_err(|e| AgentError::Config {
@@ -454,7 +462,7 @@ impl DevinInner {
             SessionConfigValueId::new(desired),
         );
         if let Err(e) = self
-            .send_request::<SetSessionConfigOptionRequest, Value>("session/setConfigOption", req)
+            .send_request::<SetSessionConfigOptionRequest, Value>("session/set_config_option", req)
             .await
         {
             debug!(error = %e, "failed to set devin model option");
@@ -545,7 +553,7 @@ impl DevinInner {
         stdin: &Arc<AsyncMutex<async_process::ChildStdin>>,
     ) -> Result<(), AgentError> {
         let response: AcpResponse<Value> = match request.method.as_ref() {
-            "requestPermission" => {
+            REQUEST_PERMISSION_METHOD | "requestPermission" => {
                 let permission = match request.params.as_ref() {
                     Some(p) => {
                         match serde_json::from_value::<RequestPermissionRequest>(p.clone()) {
@@ -559,17 +567,32 @@ impl DevinInner {
                     None => None,
                 };
 
+                let allowed = |o: &&PermissionOption| {
+                    matches!(
+                        o.kind,
+                        PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways
+                    )
+                };
                 let option_id = permission
                     .as_ref()
                     .and_then(|p| {
-                        p.options.iter().find(|o| {
-                            matches!(
-                                o.kind,
-                                PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways
-                            )
+                        // Prefer the most permissive option to avoid repeated prompts
+                        // in non-interactive benchmark runs.
+                        [
+                            "switch_bypass",
+                            "allow_always",
+                            "allow_session",
+                            "allow_once",
+                        ]
+                        .iter()
+                        .find_map(|id| {
+                            p.options
+                                .iter()
+                                .find(|o| allowed(o) && o.option_id.to_string().as_str() == *id)
                         })
+                        .or_else(|| p.options.iter().find(|o| allowed(o)))
+                        .or_else(|| p.options.first())
                     })
-                    .or_else(|| permission.as_ref().and_then(|p| p.options.first()))
                     .map_or_else(|| "approve".to_string(), |o| o.option_id.to_string());
 
                 let outcome =
@@ -608,6 +631,9 @@ impl DevinInner {
             .map_err(|e| AgentError::Config {
                 message: format!("failed to write newline: {e}"),
             })?;
+        stdin.flush().await.map_err(|e| AgentError::Config {
+            message: format!("failed to flush response: {e}"),
+        })?;
 
         Ok(())
     }
