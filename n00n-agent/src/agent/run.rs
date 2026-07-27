@@ -325,8 +325,8 @@ impl<'h> Agent<'h> {
         // Filter the caller-supplied tool list in place. Rebuilding from the
         // global registry would replace curated/session-local definitions
         // (e.g. structured_output) and expand restricted ToolFilter sets.
-        // Extend MCP definitions first so always-load and loaded tools are not
-        // dropped when the caller's list did not rebuild from the registry.
+        // Extend MCP definitions first (always-load + loaded tools) so the
+        // filtered list is complete without rebuilding from the registry.
         if let Some(mcp) = self.mcp.as_ref() {
             mcp.extend_tools(&mut self.tools);
         }

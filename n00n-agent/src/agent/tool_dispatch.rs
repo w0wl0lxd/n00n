@@ -140,19 +140,30 @@ fn plan_git_is_read_only(arguments: &[&str]) -> bool {
             value if value.starts_with("--git-dir=") || value.starts_with("--work-tree=") => {
                 index += 1;
             }
-            // `-c`, `--config-env`, and `--exec-path` can all change which
-            // commands git runs (aliases, pagers, external diff/hook tools).
-            value if value == "-c" || value.starts_with("-c") => return false,
+            // Allow the safe `-c core.fsmonitor=false` override injected by the
+            // bash sanitizer. All other `-c` values can introduce aliases,
+            // pagers, external diff/hook tools, etc.
+            "-c" => {
+                if let Some(next) = arguments.get(index + 1)
+                    && next.to_lowercase() == "core.fsmonitor=false"
+                {
+                    index += 2;
+                    continue;
+                }
+                return false;
+            }
+            value if value.starts_with("-c") => return false,
             value if value.starts_with("--config-env") || value.starts_with("--exec-path") => {
                 return false;
             }
             value if value.starts_with('-') => index += 1,
             subcommand => {
                 let subcommand_arguments = &arguments[index + 1..];
-                if subcommand_arguments
-                    .iter()
-                    .any(|argument| *argument == "--output" || argument.starts_with("--output="))
-                {
+                if subcommand_arguments.iter().any(|argument| {
+                    *argument == "--output"
+                        || argument.starts_with("--output=")
+                        || *argument == "--ext-diff"
+                }) {
                     return false;
                 }
                 return matches!(
@@ -1147,6 +1158,10 @@ mod tests {
     #[test_case("git -c core.pager=cat log", false ; "git_dash_c_rejected")]
     #[test_case("git --config-env=FOO=BAR log", false ; "git_config_env_rejected")]
     #[test_case("git --exec-path=/mal log", false ; "git_exec_path_rejected")]
+    #[test_case("git diff --ext-diff", false ; "git_ext_diff_rejected")]
+    #[test_case("git -c core.fsmonitor=false status", true ; "git_fsmonitor_false_allowed")]
+    #[test_case("git -c core.fsmonitor=true status", false ; "git_fsmonitor_true_rejected")]
+    #[test_case("git -c CORE.FSMONITOR=FALSE -C repo diff --stat", true ; "git_fsmonitor_false_case_insensitive")]
     #[test_case("python -c 'print(1)'", false ; "interpreter")]
     fn classifies_plan_bash_commands(command: &str, expected: bool) {
         assert_eq!(

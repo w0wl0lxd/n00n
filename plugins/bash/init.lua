@@ -337,6 +337,26 @@ local function sanitize_git_command(command)
     return command
   end
 
+  -- Strip any -c core.fsmonitor=... override and force it to false. A repo or
+  -- parent config with core.fsmonitor set to a command can execute code during
+  -- git status/diff/log; this disables it without trusting the environment.
+  local i = 2
+  while i <= #words do
+    if words[i] == "-c" and words[i + 1] then
+      local value = words[i + 1]:lower()
+      if value:sub(1, #"core.fsmonitor") == "core.fsmonitor" then
+        table.remove(words, i)
+        table.remove(words, i)
+      else
+        i = i + 2
+      end
+    else
+      i = i + 1
+    end
+  end
+  table.insert(words, 2, "-c")
+  table.insert(words, 3, "core.fsmonitor=false")
+
   local has_optional_locks = false
   local subcommand_index = nil
   local skip_next = false
@@ -367,10 +387,17 @@ local function sanitize_git_command(command)
     local subcommand = words[subcommand_index]:lower()
     if GIT_SANITIZE_SUBCOMMANDS[subcommand] then
       local has_no_ext_diff = false
-      for i = subcommand_index + 1, #words do
+      local i = subcommand_index + 1
+      while i <= #words do
         if words[i] == "--no-ext-diff" then
           has_no_ext_diff = true
-          break
+          i = i + 1
+        elseif words[i] == "--ext-diff" then
+          -- Remove an explicit --ext-diff so the later --no-ext-diff cannot be
+          -- overridden by it.
+          table.remove(words, i)
+        else
+          i = i + 1
         end
       end
       if not has_no_ext_diff then
