@@ -123,7 +123,7 @@ def _parse_stream_json(log_text: str) -> dict:
     return result
 
 
-class N00nAgent(BaseInstalledAgent):
+class n00nAgent(BaseInstalledAgent):
     """Runs n00n in headless --print mode inside a Harbor environment."""
 
     _last_instruction: str = ""
@@ -419,4 +419,4 @@ class N00nAgent(BaseInstalledAgent):
         }
 
 
-n00nAgent = N00nAgent
+n00nAgent = n00nAgent

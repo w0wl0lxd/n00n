@@ -10,7 +10,7 @@ environment:
   type: daytona
 
 agents:
-  - name: n00n_agent:N00nAgent
+  - name: n00n_agent:n00nAgent
     model_name: devin/swe-1-7
 
 datasets:
