@@ -303,6 +303,7 @@ impl App {
     }
 
     pub(super) fn reset_session(&mut self) -> Vec<Action> {
+        self.save_session();
         self.reset_ui_chrome();
         self.state.token_usage = TokenUsage::default();
         self.state.context_size = 0;
