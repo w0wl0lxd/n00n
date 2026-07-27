@@ -1,4 +1,3 @@
-use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::fs::FileType;
 use std::io::ErrorKind;
@@ -62,10 +61,21 @@ fn collect_dir_entries(
     visited: &mut HashSet<PathBuf>,
     out: &mut Vec<(String, &'static str)>,
 ) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!(path = %dir.display(), error = %e, "collect_dir_entries: read_dir failed");
+            return;
+        }
     };
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!(error = %e, "collect_dir_entries: entry error");
+                continue;
+            }
+        };
         let path = entry.path();
         let name = match path.strip_prefix(base).ok().and_then(|p| p.to_str()) {
             Some(s) => s.to_owned(),
@@ -81,8 +91,12 @@ fn collect_dir_entries(
         };
         out.push((name, type_str));
         if is_dir && depth < max_depth {
-            let Ok(canonical) = path.canonicalize() else {
-                continue;
+            let canonical = match path.canonicalize() {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), error = %e, "collect_dir_entries: canonicalize failed");
+                    continue;
+                }
             };
             if visited.insert(canonical) {
                 collect_dir_entries(base, &path, depth + 1, max_depth, visited, out);
@@ -493,7 +507,16 @@ fn ext(_lua: &Lua, path: String) -> LuaResult<Option<String>> {
 async fn dir(lua: Lua, path: String, opts: Option<Table>) -> LuaResult<(Value, Value)> {
     let abs = make_absolute(&path)?;
     let max_depth: u32 = match &opts {
-        Some(t) => t.get::<u32>("depth").unwrap_or_else(|_| 1),
+        Some(t) => match t.get::<Option<u32>>("depth") {
+            Ok(Some(d)) => d,
+            Ok(None) => 1,
+            Err(e) => {
+                return Ok((
+                    Value::Nil,
+                    Value::String(lua.create_string(format!("dir: invalid depth: {e}"))?),
+                ));
+            }
+        },
         None => 1,
     };
 
@@ -654,35 +677,71 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
 
     let result: Result<Vec<String>, String> = smol::unblock(move || {
         let root = n00n_agent::tools::resolve_search_path(path.as_deref())?;
+
+        if !Path::new(&root).is_dir() {
+            return Err(format!("glob: not a directory: {root}"));
+        }
+
         let pattern_refs: Vec<&str> = patterns.iter().map(std::string::String::as_str).collect();
 
         let walker = n00n_agent::tools::walk_builder_opts(&root, &pattern_refs, gitignore)?.build();
 
-        let iter = walker
-            .flatten()
-            .filter(|e| e.file_type().is_some_and(|ft| ft.is_file()));
-
         let paths: Vec<String> = if sort_mtime {
-            let mut entries: Vec<_> = iter
-                .filter_map(|e| {
-                    let p = e.into_path();
-                    let mt = n00n_agent::tools::mtime(&p);
-                    p.to_str().map(|s| (mt, s.to_owned()))
-                })
-                .collect();
-            entries.sort_unstable_by_key(|e| Reverse(e.0));
+            let mut entries: Vec<(u128, String)> = Vec::new();
+            for entry in walker {
+                let entry = match entry {
+                    Ok(e) => e,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "glob: walk error");
+                        continue;
+                    }
+                };
+                if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+                    continue;
+                }
+                let p = entry.into_path();
+                let Some(s) = p.to_str() else {
+                    tracing::warn!(path = %p.display(), "glob: skipping non-UTF-8 path");
+                    continue;
+                };
+                let mt = n00n_agent::tools::mtime(&p);
+                let nanos = match mt.duration_since(std::time::UNIX_EPOCH) {
+                    Ok(d) => d.as_nanos(),
+                    Err(_) => 0,
+                };
+                entries.push((nanos, s.to_owned()));
+            }
+            entries.sort_by(|a, b| a.0.cmp(&b.0).reverse().then_with(|| a.1.cmp(&b.1)));
             if let Some(lim) = limit {
                 entries.truncate(lim);
             }
             entries.into_iter().map(|(_, s)| s).collect()
         } else {
-            let bounded: Box<dyn Iterator<Item = _>> = match limit {
-                Some(lim) => Box::new(iter.take(lim)),
-                None => Box::new(iter),
-            };
-            bounded
-                .filter_map(|e| e.into_path().to_str().map(std::borrow::ToOwned::to_owned))
-                .collect()
+            let mut result = Vec::new();
+            for entry in walker {
+                let entry = match entry {
+                    Ok(e) => e,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "glob: walk error");
+                        continue;
+                    }
+                };
+                if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+                    continue;
+                }
+                let p = entry.into_path();
+                let Some(s) = p.to_str() else {
+                    tracing::warn!(path = %p.display(), "glob: skipping non-UTF-8 path");
+                    continue;
+                };
+                result.push(s.to_owned());
+                if let Some(lim) = limit
+                    && result.len() >= lim
+                {
+                    break;
+                }
+            }
+            result
         };
 
         Ok(paths)

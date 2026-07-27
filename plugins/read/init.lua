@@ -16,17 +16,23 @@ local function line_nr_fmt(count)
   return "%" .. w .. "d "
 end
 
+local function utf8_boundary(s, target)
+  local i = target
+  while i > 0 do
+    local next_b = s:byte(i + 1)
+    if not next_b or next_b < 0x80 or next_b >= 0xC0 then
+      break
+    end
+    i = i - 1
+  end
+  return i
+end
+
 local function truncate_bytes(line, max_bytes)
   if #line <= max_bytes then
     return line
   end
-  local i = max_bytes
-  while i > 0 and line:byte(i) >= 0x80 and line:byte(i) < 0xC0 do
-    i = i - 1
-  end
-  if i > 0 and line:byte(i) >= 0xC0 then
-    i = i - 1
-  end
+  local i = utf8_boundary(line, max_bytes)
   return line:sub(1, i) .. "..."
 end
 
@@ -289,3 +295,22 @@ n00n.api.register_tool({
     return read_file(path, input.offset, input.limit, ctx)
   end,
 })
+
+-- Tests
+do
+  local function test_utf8_truncate()
+    local s = "abc🎉xyz"
+    local max_bytes = 4
+    local result = truncate_bytes(s, max_bytes)
+    -- Emoji is 4 bytes, so with max_bytes=4 we should get "abc..." (emoji doesn't fit)
+    -- The old buggy version would return "abc..." anyway, but the new version
+    -- correctly handles UTF-8 boundaries
+    assert(result:sub(1, 3) == "abc", "should preserve ASCII prefix")
+    assert(result:sub(-3) == "...", "should add ellipsis")
+    -- Test with enough bytes for the emoji
+    local result2 = truncate_bytes(s, 7)
+    assert(result2:sub(1, 7) == "abc🎉", "should include full emoji when it fits")
+  end
+
+  test_utf8_truncate()
+end
