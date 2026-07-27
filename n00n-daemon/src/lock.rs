@@ -97,11 +97,14 @@ pub fn pid_alive(pid: u32) -> bool {
     }
 }
 
-/// Stub for Windows: n00n-daemon is not supported there yet.
+/// Stub for Windows: we cannot query another process's liveness without
+/// unsafe Win32 APIs, but we can at least treat the current process as alive.
+/// This is enough for in-process tests; cross-process daemon discovery on
+/// Windows is not yet supported.
 #[must_use]
 #[cfg(not(unix))]
-pub fn pid_alive(_pid: u32) -> bool {
-    false
+pub fn pid_alive(pid: u32) -> bool {
+    pid != 0 && pid == std::process::id()
 }
 
 /// Remove a lock file whose owner pid is no longer alive.
