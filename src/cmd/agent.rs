@@ -1,3 +1,5 @@
+#![cfg_attr(windows, allow(dead_code, unused_imports, unused_variables))]
+
 use std::env;
 use std::fs;
 use std::path::PathBuf;
