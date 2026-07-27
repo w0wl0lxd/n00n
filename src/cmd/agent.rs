@@ -156,6 +156,7 @@ pub fn daemon_serve(state_dir: Option<&PathBuf>) -> Result<()> {
     }
     #[cfg(windows)]
     {
+        let _ = state_dir.is_some();
         Err(eyre!("agent daemon serve is not supported on Windows"))
     }
 }
