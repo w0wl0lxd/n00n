@@ -35,3 +35,4 @@ runs.csv
 # hk local overrides
 hk.local.pkl
 .config/hk.local.pkl
+.arbor/
