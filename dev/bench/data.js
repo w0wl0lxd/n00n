@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785181789946,
+  "lastUpdate": 1785182974222,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -8313,6 +8313,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 151303,
             "range": "± 14002",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3f64203b7ac23b1af6569057af6e368c5beb86c0",
+          "message": "Merge pull request #153 from w0wl0lxd/fix/subagent-error-handling\n\nfix(agent,providers): halt turn on subagent failure and retry OpenAI 500s",
+          "timestamp": "2026-07-27T20:03:47Z",
+          "tree_id": "7c6f4300475e3230652936eb5b9098c964050d44",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/3f64203b7ac23b1af6569057af6e368c5beb86c0"
+        },
+        "date": 1785182972667,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 5134139,
+            "range": "± 169535",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1896886,
+            "range": "± 11959",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1896989,
+            "range": "± 12275",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 5938885,
+            "range": "± 20727",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3010244,
+            "range": "± 12093",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3006652,
+            "range": "± 34327",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 429728,
+            "range": "± 1654",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 130316,
+            "range": "± 167",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 130379,
+            "range": "± 249",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 832056,
+            "range": "± 2276",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 490701,
+            "range": "± 11167",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 489833,
+            "range": "± 3355",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 58338,
+            "range": "± 2465",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 103721,
+            "range": "± 15705",
             "unit": "ns/iter"
           }
         ]
