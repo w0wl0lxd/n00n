@@ -601,7 +601,7 @@ fn now_epoch() -> u64 {
 }
 
 #[cfg(unix)]
-pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()> {
+pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<&str>) -> Result<()> {
     use smol::net::unix::UnixListener;
     use std::os::unix::fs::PermissionsExt;
     let env = prepare_agent_env(opts.model, opts.yolo, opts.no_jit)?;
@@ -638,8 +638,10 @@ pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()
 
     let handle = headless::spawn_interactive(interactive_params);
 
-    let agent_id =
-        agent_id.unwrap_or_else(|| handle.session_id.to_string().chars().take(12).collect());
+    let agent_id = agent_id.map_or_else(
+        || handle.session_id.to_string().chars().take(12).collect(),
+        String::from,
+    );
 
     let agent_dir_path = agent_dir(&storage, &agent_id)?;
     fs::create_dir_all(&agent_dir_path).wrap_err("failed to create agent directory")?;
@@ -738,7 +740,7 @@ pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()
 }
 
 #[cfg(windows)]
-pub fn server(_opts: &AgentRunOptions<'_>, _agent_id: Option<String>) -> Result<()> {
+pub fn server(_opts: &AgentRunOptions<'_>, _agent_id: Option<&str>) -> Result<()> {
     Err(eyre!("agent server is not supported on Windows"))
 }
 
