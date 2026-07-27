@@ -655,7 +655,7 @@ impl<'t> EventLoop<'t> {
             return;
         }
         for rt in &mut self.sessions {
-            if rt.app.status == Status::Streaming || rt.app.has_content() {
+            if should_save_periodically(&rt.app.status) {
                 rt.app.save_session();
             }
         }
@@ -1461,6 +1461,10 @@ fn take_painted_submissions<T>(
     ready
 }
 
+fn should_save_periodically(status: &Status) -> bool {
+    matches!(status, Status::Streaming)
+}
+
 fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
     let lines = crate::cast::u32_to_isize(lines);
     let n = i32::try_from(lines).unwrap_or_else(|_| i32::MAX);
@@ -1473,7 +1477,11 @@ fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{DRAIN_BUDGET, DrainScheduler, draw_then_post_terminal, take_painted_submissions};
+    use super::{
+        DRAIN_BUDGET, DrainScheduler, draw_then_post_terminal, should_save_periodically,
+        take_painted_submissions,
+    };
+    use crate::components::Status;
     use n00n_storage::id::N00nId;
     use ratatui::{
         Terminal,
@@ -1549,6 +1557,13 @@ mod tests {
     enum Source {
         Input(usize),
         Agent(usize),
+    }
+
+    #[test]
+    fn periodic_save_skips_unchanged_idle_sessions() {
+        assert!(!should_save_periodically(&Status::Idle));
+        assert!(!should_save_periodically(&Status::error("failed".into())));
+        assert!(should_save_periodically(&Status::Streaming));
     }
 
     #[test]
