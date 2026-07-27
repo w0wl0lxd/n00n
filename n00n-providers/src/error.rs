@@ -47,6 +47,16 @@ impl RequestDeliveryMetadata {
             emitted_event: false,
         }
     }
+
+    /// Whether the provider accepted the request, emitted output, or assigned a
+    /// response id, all of which mean the request left the client and should not
+    /// be retried on later failure.
+    #[must_use]
+    pub(crate) fn emitted_or_accepted(&self) -> bool {
+        self.emitted_event
+            || self.phase == RequestDeliveryPhase::Accepted
+            || self.response_id.is_some()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -130,9 +140,9 @@ impl AgentError {
     /// retryability when no output has been accepted.
     #[must_use]
     pub fn suppress_retry_after_send(self, metadata: Option<RequestDeliveryMetadata>) -> Self {
-        let emitted_or_accepted = metadata.as_ref().is_some_and(|m| {
-            m.emitted_event || m.phase == RequestDeliveryPhase::Accepted || m.response_id.is_some()
-        });
+        let emitted_or_accepted = metadata
+            .as_ref()
+            .is_some_and(RequestDeliveryMetadata::emitted_or_accepted);
         let sent = metadata
             .as_ref()
             .map_or(true, |m| m.phase != RequestDeliveryPhase::NotSent);

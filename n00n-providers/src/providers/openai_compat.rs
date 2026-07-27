@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use tracing::{debug, warn};
 
 use super::ResolvedAuth;
+use crate::types::TOOL_RESULT_ERROR_PREFIX;
 use crate::{
     AgentError, CacheControl, ContentBlock, Message, ProviderEvent, RequestDeliveryMetadata,
     RequestDeliveryPhase, Role, StopReason, StreamResponse, System, TokenUsage,
@@ -19,7 +20,6 @@ use crate::{
 const STREAM_DONE: &str = "[DONE]";
 const GPT_5_6_BREAKPOINT_PREFIX: &str = "gpt-5.6-";
 const GPT_CODEX_MARKER: &str = "-codex";
-const TOOL_RESULT_ERROR_PREFIX: &str = "[ERROR] ";
 
 fn model_supports_breakpoint(model: &crate::model::Model) -> bool {
     model.family == crate::model::ModelFamily::Gpt

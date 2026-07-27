@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use tracing::{debug, warn};
 
 use crate::providers::ResolvedAuth;
+use crate::types::TOOL_RESULT_ERROR_PREFIX;
 use crate::{
     AgentError, ContentBlock, Message, ProviderEvent, RequestDeliveryMetadata,
     RequestDeliveryPhase, Role, StopReason, StreamResponse, System, ThinkingConfig, TokenUsage,
@@ -18,7 +19,6 @@ use crate::{
 const RESPONSES_PATH: &str = "/responses";
 const RESPONSE_IN_FLIGHT_TIMEOUT_MULTIPLIER: u32 = 6;
 const MAX_RESPONSE_IN_FLIGHT_TIMEOUT: Duration = Duration::from_mins(30);
-const TOOL_RESULT_ERROR_PREFIX: &str = "[ERROR] ";
 
 pub(crate) fn response_in_flight_timeout(stream_timeout: Duration) -> Duration {
     stream_timeout

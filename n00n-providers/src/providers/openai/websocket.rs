@@ -81,10 +81,7 @@ impl WebSocketAttemptError {
     }
 
     pub(crate) fn definitive_rejection(&self) -> bool {
-        if self.delivery.emitted_event
-            || self.delivery.phase == RequestDeliveryPhase::Accepted
-            || self.delivery.response_id.is_some()
-        {
+        if self.delivery.emitted_or_accepted() {
             return false;
         }
         !self.transport_failure
@@ -96,10 +93,7 @@ impl WebSocketAttemptError {
     }
 
     pub(crate) fn into_agent_error(self) -> AgentError {
-        let emitted_or_accepted = self.delivery.emitted_event
-            || self.delivery.phase == RequestDeliveryPhase::Accepted
-            || self.delivery.response_id.is_some();
-        if self.request_sent() && (self.transport_failure || emitted_or_accepted) {
+        if self.request_sent() && (self.transport_failure || self.delivery.emitted_or_accepted()) {
             AgentError::RequestSent {
                 message: self.error.to_string(),
                 metadata: Some(self.delivery),
