@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785142756600,
+  "lastUpdate": 1785142969125,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -7341,6 +7341,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 102746,
             "range": "± 10070",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c4888e265caddf19101882c38667b04deda50379",
+          "message": "Merge pull request #147 from w0wl0lxd/perf/provider-cache-efficiency-fold\n\nperf(providers): improve prompt cache efficiency",
+          "timestamp": "2026-07-27T08:44:20Z",
+          "tree_id": "4ba803077e98a0df15ddddb479fb65ad97535b5c",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/c4888e265caddf19101882c38667b04deda50379"
+        },
+        "date": 1785142968017,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6685671,
+            "range": "± 323876",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2229651,
+            "range": "± 43902",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2228180,
+            "range": "± 27600",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8091901,
+            "range": "± 55924",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4271192,
+            "range": "± 25505",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4327933,
+            "range": "± 120696",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 582754,
+            "range": "± 2725",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191219,
+            "range": "± 4226",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191675,
+            "range": "± 775",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1044185,
+            "range": "± 9622",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 588891,
+            "range": "± 1890",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 588006,
+            "range": "± 1949",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 70630,
+            "range": "± 7252",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 160744,
+            "range": "± 14163",
             "unit": "ns/iter"
           }
         ]
