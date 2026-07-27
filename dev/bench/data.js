@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785136666799,
+  "lastUpdate": 1785138817787,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -6693,6 +6693,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 176308,
             "range": "± 14428",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6351b86643959fc58429158720b1c9ce76b69747",
+          "message": "Merge pull request #125 from w0wl0lxd/fix/ui-tool-preview\n\nfix(plugins): publish live preview buffers for bash, task, workflow",
+          "timestamp": "2026-07-27T07:38:36Z",
+          "tree_id": "15b927074a3545acaf4c053e9072453f24c523d2",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/6351b86643959fc58429158720b1c9ce76b69747"
+        },
+        "date": 1785138817312,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6715029,
+            "range": "± 106679",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2219773,
+            "range": "± 5057",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2215866,
+            "range": "± 61366",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8066518,
+            "range": "± 41141",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4289230,
+            "range": "± 13656",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4294011,
+            "range": "± 13506",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 584109,
+            "range": "± 1928",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191602,
+            "range": "± 335",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191549,
+            "range": "± 423",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1037627,
+            "range": "± 12956",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 588242,
+            "range": "± 2255",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 588528,
+            "range": "± 1416",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 61846,
+            "range": "± 5593",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 191757,
+            "range": "± 4008",
             "unit": "ns/iter"
           }
         ]
