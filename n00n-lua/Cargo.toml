@@ -21,6 +21,7 @@ n00n-lua-macro = { workspace = true }
 n00n-markdown = { workspace = true }
 n00n-arbor = { workspace = true }
 n00n-providers = { workspace = true }
+n00n-search = { workspace = true }
 mlua = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

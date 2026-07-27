@@ -3103,6 +3103,7 @@ dependencies = [
  "n00n-lua-macro",
  "n00n-markdown",
  "n00n-providers",
+ "n00n-search",
  "n00n-storage",
  "pin-project-lite",
  "regex",
@@ -3211,6 +3212,20 @@ dependencies = [
  "toml",
  "tracing",
  "wait-timeout",
+]
+
+[[package]]
+name = "n00n-search"
+version = "0.4.2"
+dependencies = [
+ "futures-lite",
+ "htmd",
+ "isahc",
+ "serde",
+ "smol",
+ "test-case",
+ "thiserror 2.0.19",
+ "url",
 ]
 
 [[package]]

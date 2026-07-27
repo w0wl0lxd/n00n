@@ -39,6 +39,9 @@ pub fn run(model_arg: Option<&str>, yolo: bool, no_jit: bool) -> Result<()> {
     config.validate()?;
 
     plugin_host
+        .set_search_config(Arc::new(config.search.clone()))
+        .context("configure lua search services")?;
+    plugin_host
         .load_builtins(&config.plugins)
         .context("load builtin plugins")?;
 

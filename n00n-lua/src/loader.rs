@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use include_dir::{Dir, include_dir};
 use n00n_agent::tools::ToolRegistry;
-use n00n_config::{PluginsConfig, RawConfig};
+use n00n_config::{PluginsConfig, RawConfig, SearchConfig};
 
 use crate::api::keymap::KeymapReader;
 use crate::api::options::{PluginOptionSpecs, PluginOpts};
@@ -184,7 +184,19 @@ impl PluginHost {
     /// # Errors
     /// Returns an error if the Lua runtime cannot be spawned.
     pub fn with_jit(registry: Arc<ToolRegistry>, jit: bool) -> Result<Self, PluginError> {
-        let lua = runtime::spawn(registry, *BUNDLED_DIRS, jit)?;
+        Self::with_jit_and_search_config(registry, jit, Arc::new(SearchConfig::default()))
+    }
+
+    /// Creates a plugin host with immutable search configuration available to native APIs.
+    ///
+    /// # Errors
+    /// Returns an error if the Lua runtime cannot be spawned.
+    pub fn with_jit_and_search_config(
+        registry: Arc<ToolRegistry>,
+        jit: bool,
+        search_config: Arc<SearchConfig>,
+    ) -> Result<Self, PluginError> {
+        let lua = runtime::spawn(registry, search_config, *BUNDLED_DIRS, jit)?;
         Ok(Self { inner: Some(lua) })
     }
 
@@ -355,6 +367,25 @@ impl PluginHost {
             .as_ref()
             .map(|r| &r.tx)
             .ok_or(PluginError::HostDead)
+    }
+
+    /// Replaces the search configuration used to construct subsequent plugin APIs.
+    ///
+    /// # Errors
+    /// Returns an error if the Lua runtime cannot receive the configuration.
+    pub fn set_search_config(&self, config: Arc<SearchConfig>) -> Result<(), PluginError> {
+        let Some(inner) = &self.inner else {
+            return Ok(());
+        };
+        let (reply_tx, reply_rx) = flume::bounded(1);
+        inner
+            .tx
+            .send(Request::SetSearchConfig {
+                config,
+                reply: reply_tx,
+            })
+            .map_err(|_| PluginError::HostDead)?;
+        reply_rx.recv().map_err(|_| PluginError::HostDead)
     }
 
     fn send_load(

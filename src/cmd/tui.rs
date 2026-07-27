@@ -155,6 +155,9 @@ fn build_stack(
         fallback_config,
         &mut warnings,
     )?;
+    plugin_host
+        .set_search_config(Arc::new(config.search.clone()))
+        .context("configure lua search services")?;
     if let Err(e) = plugin_host.load_builtins(&config.plugins) {
         let e = color_eyre::eyre::Report::from(e).wrap_err("load builtin plugins");
         if reloading {

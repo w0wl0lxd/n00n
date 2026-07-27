@@ -71,6 +71,7 @@ members = [
   "n00n-lua",
   "n00n-markdown",
   "n00n-providers",
+  "n00n-search",
   "n00n-storage",
   "n00n-config-macro",
   "n00n-lua-macro",
@@ -93,6 +94,7 @@ n00n-acp = { path = "n00n-acp" }
 n00n-config = { path = "n00n-config" }
 n00n-interpreter = { path = "n00n-interpreter" }
 n00n-providers = { path = "n00n-providers" }
+n00n-search = { path = "n00n-search" }
 n00n-storage = { path = "n00n-storage" }
 n00n-ui = { path = "n00n-ui" }
 n00n-lua = { path = "n00n-lua" }
@@ -135,6 +137,7 @@ ignore = "0.4"
 memchr = "2"
 strum = { version = "0.27", features = ["derive"] }
 htmd = "0.5"
+url = "2.5.8"
 tempfile = "3"
 
 regex = { version = "1", default-features = false, features = [

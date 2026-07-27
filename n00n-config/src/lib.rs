@@ -230,6 +230,7 @@ pub struct RawConfig {
     pub ui: UiFileConfig,
     pub agent: AgentFileConfig,
     pub provider: ProviderFileConfig,
+    pub search: SearchFileConfig,
     pub storage: StorageFileConfig,
     pub plugins: HashMap<String, PluginFileConfig>,
 }
@@ -247,6 +248,7 @@ impl RawConfig {
         self.ui.merge(overlay.ui);
         self.agent.merge(&overlay.agent);
         self.provider.merge(overlay.provider);
+        self.search.merge(overlay.search);
         self.storage.merge(&overlay.storage);
         for (name, plugin) in overlay.plugins {
             let entry = self.plugins.entry(name).or_default();
@@ -283,6 +285,7 @@ impl RawConfig {
             ui: UiConfig::from_file(self.ui),
             agent: AgentConfig::from_file(self.agent.clone(), no_rtk, disabled_tools),
             provider: ProviderConfig::from_file(self.provider),
+            search: SearchConfig::from_file(self.search),
             storage: StorageConfig::from_file(&self.storage),
             permissions: PermissionsConfig::default(),
             plugins: PluginsConfig::from_plugins(&self.plugins),
@@ -532,6 +535,18 @@ impl ProviderFileConfig {
             stream_timeout_secs,
             openai_coding_plan_slots
         );
+    }
+}
+
+#[derive(Deserialize, Default, Debug)]
+#[serde(default, deny_unknown_fields)]
+pub struct SearchFileConfig {
+    pub enabled: Option<bool>,
+}
+
+impl SearchFileConfig {
+    fn merge(&mut self, overlay: Self) {
+        merge_option!(self, overlay, enabled);
     }
 }
 
@@ -838,6 +853,7 @@ pub struct Config {
     pub ui: UiConfig,
     pub agent: AgentConfig,
     pub provider: ProviderConfig,
+    pub search: SearchConfig,
     pub storage: StorageConfig,
     pub permissions: PermissionsConfig,
     pub plugins: PluginsConfig,
@@ -1213,6 +1229,24 @@ impl ProviderConfig {
             });
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SearchConfig {
+    enabled: bool,
+}
+
+impl SearchConfig {
+    #[must_use]
+    pub const fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    const fn from_file(file: SearchFileConfig) -> Self {
+        Self {
+            enabled: matches!(file.enabled, Some(true)),
+        }
     }
 }
 
@@ -2110,6 +2144,22 @@ mod tests {
         dir.join(".config/n00n")
     }
 
+    #[test]
+    fn enabled_search_is_keyless_and_needs_no_endpoint() {
+        let raw: RawConfig = toml::from_str("[search]\nenabled = true").unwrap();
+        assert!(raw.into_config(false).unwrap().search.enabled());
+    }
+
+    #[test]
+    fn search_rejects_remote_endpoint_configuration() {
+        assert!(
+            toml::from_str::<RawConfig>(
+                "[search]\nenabled = true\nendpoint = \"https://search.example.com\""
+            )
+            .is_err()
+        );
+    }
+
     #[test_case("12000", CompactionBuffer::Tokens(12_000) ; "tokens_number")]
     #[test_case("\"20%\"", CompactionBuffer::Percent(20) ; "percent_string")]
     #[test_case("\" 5 %\"", CompactionBuffer::Percent(5) ; "percent_with_spaces")]
@@ -2348,6 +2398,7 @@ mod tests {
             ui: UiConfig::default(),
             agent: AgentConfig::default(),
             provider: ProviderConfig::default(),
+            search: SearchConfig::default(),
             storage: StorageConfig::default(),
             permissions: PermissionsConfig::default(),
             plugins: PluginsConfig::default(),

@@ -21,7 +21,7 @@ use n00n_agent::tools::{
 use n00n_agent::{BufferSnapshot, SharedBuf, SnapshotLine, SnapshotSpan, SpanStyle};
 use serde_json::Value;
 
-use n00n_config::RawConfig;
+use n00n_config::{RawConfig, SearchConfig};
 
 use crate::api::autocmd::AutocmdStore;
 use crate::api::create_n00n_global;
@@ -174,6 +174,10 @@ pub enum Request {
     },
     CollectPluginOptions {
         reply: flume::Sender<PluginOptionSpecs>,
+    },
+    SetSearchConfig {
+        config: Arc<SearchConfig>,
+        reply: flume::Sender<()>,
     },
     Shutdown,
     RestoreToolAsync {
@@ -962,6 +966,7 @@ struct LuaRuntime {
     live_tasks: LiveTasks,
     warm_tools: WarmTools,
     registry: Arc<ToolRegistry>,
+    search_config: Arc<SearchConfig>,
     tx: flume::Sender<Request>,
     shutdown: Arc<AtomicBool>,
     bundled_dirs: &'static [&'static Dir<'static>],
@@ -972,6 +977,7 @@ impl LuaRuntime {
     #[allow(clippy::too_many_arguments)]
     fn new(
         registry: Arc<ToolRegistry>,
+        search_config: Arc<SearchConfig>,
         tx: flume::Sender<Request>,
         shutdown: Arc<AtomicBool>,
         bundled_dirs: &'static [&'static Dir<'static>],
@@ -1054,6 +1060,7 @@ impl LuaRuntime {
             live_tasks: Rc::new(RefCell::new(HashMap::new())),
             warm_tools: Rc::new(RefCell::new(VecDeque::new())),
             registry,
+            search_config,
             tx,
             shutdown,
             bundled_dirs,
@@ -1429,6 +1436,7 @@ impl LuaRuntime {
             self.ui_action_tx.clone(),
             permissions,
             Arc::clone(&opts),
+            Arc::clone(&self.search_config),
         )
         .map_err(&map_err)?;
 
@@ -2168,6 +2176,7 @@ pub(crate) struct LuaThread {
 #[allow(clippy::too_many_lines)]
 pub fn spawn(
     registry: Arc<ToolRegistry>,
+    search_config: Arc<SearchConfig>,
     bundled_dirs: &'static [&'static Dir<'static>],
     jit: bool,
 ) -> Result<LuaThread, PluginError> {
@@ -2188,6 +2197,7 @@ pub fn spawn(
         .spawn(move || {
             let mut rt = match LuaRuntime::new(
                 registry,
+                search_config,
                 tx_clone,
                 shutdown_thread,
                 bundled_dirs,
@@ -2359,6 +2369,11 @@ pub fn spawn(
                         }
                         Request::CollectPluginOptions { reply } => {
                             let _ = reply.send(collect_plugin_options(&rt.lua));
+                        }
+                        Request::SetSearchConfig { config, reply } => {
+                            rt.lua.set_app_data(Arc::clone(&config));
+                            rt.search_config = config;
+                            let _ = reply.send(());
                         }
                         Request::RestoreToolAsync { item, event_tx } => {
                             spawn_restore(&ex, &gate, &restores, &rt, item, event_tx);

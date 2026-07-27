@@ -146,6 +146,20 @@ impl LuaCtx {
         }
     }
 
+    pub(crate) fn cancel_token(&self) -> CancelToken {
+        self.cancel.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(cancel: CancelToken) -> Self {
+        Self {
+            caps: Caps::Restore { state: None },
+            cancel,
+            tool_output_lines: ToolOutputLines::default(),
+            finish_tx: None,
+        }
+    }
+
     /// Dispatch capability: only handler ctxs can call `n00n.agent.*`.
     pub(crate) fn agent(&self) -> Option<&AgentContext> {
         match &self.caps {

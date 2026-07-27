@@ -70,6 +70,7 @@ pub fn api_docs() -> Vec<&'static ModuleDoc> {
         &api::keymap::DOCS,
         &api::log::DOCS,
         &api::net::DOCS,
+        &api::search::DOCS,
         &api::session::DOCS,
         &api::text::DOCS,
         &api::treesitter::DOCS,
@@ -129,6 +130,7 @@ mod tests {
             Arc::from("docs-test"),
             Some(ui_tx),
             &PluginPermissions::trusted(),
+            Arc::default(),
             Arc::default(),
         )
         .unwrap();
