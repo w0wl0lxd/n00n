@@ -2041,7 +2041,8 @@ impl App {
 
     #[must_use]
     pub fn is_animating(&self) -> bool {
-        !self.image_paste_rx.is_empty()
+        self.status == Status::Streaming
+            || !self.image_paste_rx.is_empty()
             || self.btw_modal.is_animating()
             || self.file_picker.is_loading()
             || self.float_mgr.is_open()
