@@ -65,6 +65,8 @@ impl<'de> Deserialize<'de> for GraphEdge {
 
 #[derive(Debug, Deserialize)]
 struct GraphData {
+    #[serde(default)]
+    node_holes: Vec<usize>,
     nodes: Vec<GraphNode>,
     edges: Vec<GraphEdge>,
 }
@@ -97,6 +99,7 @@ impl GraphIndex {
     pub fn from_json_str(content: &str) -> Result<Self, crate::ArborError> {
         let raw: RawArborGraph =
             serde_json::from_str(content).map_err(|source| crate::ArborError::Parse { source })?;
+        validate_graph_data(&raw.graph)?;
         let mut outgoing: HashMap<usize, Vec<usize>> = HashMap::new();
         let mut incoming: HashMap<usize, Vec<usize>> = HashMap::new();
 
@@ -248,6 +251,22 @@ impl GraphIndex {
     }
 }
 
+fn validate_graph_data(data: &GraphData) -> Result<(), crate::ArborError> {
+    if data.nodes.is_empty() && !data.edges.is_empty() {
+        return Err(crate::ArborError::Cli {
+            message: String::from("graph has edges but no nodes"),
+        });
+    }
+    for hole in &data.node_holes {
+        if *hole >= data.nodes.len() {
+            return Err(crate::ArborError::Cli {
+                message: format!("graph node hole out of bounds: {hole}"),
+            });
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::GraphIndex;
@@ -318,6 +337,21 @@ mod tests {
         let path = graph.trace_path(0, 2).expect("path should exist");
         let names: Vec<_> = path.into_iter().map(|symbol| symbol.node.name).collect();
         assert_eq!(names, vec!["main", "helper", "lib_fn"]);
+    }
+
+    #[test]
+    fn parse_rejects_edges_without_nodes() {
+        let json = r#"{
+          "file_index": {},
+          "id_index": {},
+          "name_index": {},
+          "graph": {
+            "nodes": [],
+            "edges": [[0, 1, { "kind": "calls" }]]
+          }
+        }"#;
+        let result = GraphIndex::from_json_str(json);
+        assert!(result.is_err());
     }
 
     #[test]

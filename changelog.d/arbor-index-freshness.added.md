@@ -1,0 +1,1 @@
+Refresh Arbor graph indexes when status reports stale state and validate graph.json shape (including node holes) before building in-memory indexes.

@@ -88,7 +88,7 @@ pub fn graph_trace_path(from: &str, to: &str, project: &Path) -> Result<Vec<Rela
 }
 
 pub fn graph_index_available(project: &Path) -> bool {
-    crate::Client::graph_json_path(project).is_file()
+    crate::index_health::graph_index_available(project)
 }
 
 #[cfg(test)]

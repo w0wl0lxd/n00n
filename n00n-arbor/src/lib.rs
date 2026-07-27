@@ -9,9 +9,14 @@ use serde::{Deserialize, Serialize};
 
 mod graph_json;
 mod graph_query;
+mod index_health;
 
 pub use graph_json::{GraphIndex, GraphNode, SymbolRef};
 pub use graph_query::{graph_callees, graph_callers, graph_index_available, graph_trace_path};
+pub use index_health::{
+    ensure_fresh_index, graph_index_available as graph_file_available, graph_json_path,
+    graph_modified_at, status_is_stale, status_needs_index,
+};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Relation {
@@ -248,14 +253,27 @@ impl Client {
     }
 
     pub fn graph_json_path(project: &Path) -> PathBuf {
-        PathBuf::from(project).join(".arbor").join("graph.json")
+        index_health::graph_json_path(project)
+    }
+
+    pub fn reindex(project: &Path) -> Result<(), ArborError> {
+        let output = Command::new("arbor")
+            .arg("index")
+            .arg(project.as_os_str())
+            .output()
+            .map_err(|source| ArborError::Exec { source })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(ArborError::Cli {
+                message: format!("index failed: {stderr}"),
+            });
+        }
+        Ok(())
     }
 
     pub fn load_graph_index(project: &Path) -> Result<GraphIndex, ArborError> {
-        let graph_path = Self::graph_json_path(project);
-        if !graph_path.is_file() {
-            Self::ensure_indexed(project)?;
-        }
+        index_health::ensure_fresh_index(project)?;
         let graph_path = Self::graph_json_path(project);
         if !graph_path.is_file() {
             return Err(ArborError::Cli {
