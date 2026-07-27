@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785145596934,
+  "lastUpdate": 1785145664184,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -7773,6 +7773,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 182703,
             "range": "± 12013",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1160e032ed9ca2e942fd51fe91eee706c86273d8",
+          "message": "feat(plan): enable safe research tools (#141)\n\n* feat(plan): enable safe research tools\n\n* docs(changelog): note safe plan research\n\n* docs(tools): regenerate plan mode metadata\n\n* fix(agent): harden plan-mode command read-only filters\n\nUse shell-words tokenization and a quote-aware scan for unquoted shell\nmetacharacters in plan-mode bash commands. This closes injection paths\nthrough command substitution, process substitution, redirections, and\ngit -c/--config-env/--exec-path while still allowing quoted patterns.\n\nAlso drop execute-kind tools from plan-mode tool lists by registry kind\nrather than only by name, so a renamed code_execution tool is filtered\nout before dispatch, and block any execute-kind tool at dispatch time.\n\nFix is_authorized_plan_target to fall back to normalized paths instead\nof treating absolute-path failures as a path match.\n\n* fix(agent): tighten plan-mode guardrails for MCP and git execution\n\n- Filter the caller-supplied tool list in place when the agent mode changes,\n  instead of rebuilding from the global registry. Rebuilding would replace\n  curated/session-local definitions and expand restricted ToolFilter sets.\n- Enforce configured MCP allow/deny rules even for read-only tools in plan\n  mode; read-only classification only bypasses the mutation gate.\n- Make MCP ToolAnnotations fail-safe: a tool is read-only only when the\n  server explicitly promises readOnlyHint and destructiveHint = false.\n- Harden bash git execution: inject --no-optional-locks and --no-ext-diff,\n  set GIT_PAGER=cat, and clear GIT_EXEC_PATH to resist repo-config\n  injection of external diff/pagers/exec paths.\n\n* fix(agent): review feedback — preserve MCP tools and handle git -C args\n\n- Extend MCP tool definitions before filtering in Agent::run so always-load\n  and previously-loaded MCP tools are not dropped when the caller-supplied\n  tool list is preserved in place.\n- Recognize git global options that consume a following argument (-C, -c,\n  --work-tree, etc.) so the real subcommand is found and --no-ext-diff is\n  injected correctly for diff/show/log even when the directory/repo is\n  changed with -C.\n\n* fix(agent): additional edge cases for git and MCP guardrails\n\n- `sanitize_git_command` now injects `-c core.fsmonitor=false` so git\n  status/diff/log do not execute a malicious `core.fsmonitor` hook configured\n  in a repo or inherited config.\n- Strip existing `-c core.fsmonitor=...` overrides before injection and remove\n  any explicit `--ext-diff` so the injected `--no-ext-diff` cannot be disabled.\n- `plan_git_is_read_only` allows the safe `-c core.fsmonitor=false` override\n  and rejects `--ext-diff` and other unsafe `-c` options.\n- Extend MCP tool definitions in `Agent::run` before filtering so\n  always-load/loaded MCP tools are preserved when the caller-supplied list is\n  kept in place.\n\n* fix(agent): block git submodule recursion in plan mode\n\n--recurse-submodules and --submodule=* can cause git to run commands inside\nsubmodule repositories, where our injected -c core.fsmonitor=false,\n--no-ext-diff, and pager/exec-path overrides would not apply. Reject them in\nplan_git_is_read_only.\n\n* fix(agent): cross-platform and whitespace edge cases in git sanitization\n\n- Match `git` followed by any whitespace (not just a space) so `git<TAB>...`\n  commands are sanitized too.\n- Set `GIT_PAGER` to an empty string instead of `cat`; git docs and source\n  treat empty `GIT_PAGER` as \"no pager\", which is portable to Windows/Git\n  Bash/MSYS2/WSL environments without requiring `cat` in PATH.",
+          "timestamp": "2026-07-27T09:23:30Z",
+          "tree_id": "81310ad03d9675ce04d8fac5a2421134823a1d68",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/1160e032ed9ca2e942fd51fe91eee706c86273d8"
+        },
+        "date": 1785145663182,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6494147,
+            "range": "± 249960",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2466018,
+            "range": "± 79519",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2446664,
+            "range": "± 45841",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7652339,
+            "range": "± 109681",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3879400,
+            "range": "± 24477",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3880801,
+            "range": "± 96714",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 554312,
+            "range": "± 17448",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 168353,
+            "range": "± 2683",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 168151,
+            "range": "± 373",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1034568,
+            "range": "± 29015",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 635202,
+            "range": "± 4338",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 637119,
+            "range": "± 5574",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 63381,
+            "range": "± 6419",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 155433,
+            "range": "± 10245",
             "unit": "ns/iter"
           }
         ]
