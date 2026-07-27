@@ -303,9 +303,6 @@ pub enum AgentCommand {
         /// Agent mode
         #[arg(long, value_enum, default_value_t = AgentMode::General)]
         mode: AgentMode,
-        /// Goal for team mode
-        #[arg(long)]
-        goal: Option<String>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -328,23 +325,6 @@ pub enum AgentCommand {
     Resume { id: String },
     /// Stop agent
     Stop { id: String },
-    /// Agent policy management
-    Policy {
-        #[command(subcommand)]
-        action: PolicyAction,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum PolicyAction {
-    /// Set policy rule (stub)
-    Set,
-    /// Get policy rule (stub)
-    Get,
-    /// Delete policy rule (stub)
-    Delete,
-    /// List policy rules (stub)
-    List,
 }
 
 #[derive(Subcommand)]

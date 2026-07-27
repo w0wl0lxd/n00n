@@ -66,7 +66,6 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 prompt,
                 model,
                 mode,
-                goal: _,
                 json,
                 background,
                 id,
@@ -85,7 +84,6 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                         &prompt,
                         model.as_deref(),
                         mode,
-                        None,
                         json,
                         cli.permission_flags.yolo,
                         cli.plugin_flags.no_jit,
@@ -119,9 +117,6 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             }
             AgentCommand::Stop { id } => {
                 agent::stop_client(&id)?;
-            }
-            AgentCommand::Policy { action: _ } => {
-                eprintln!("Agent policy command is not yet implemented");
             }
         },
         None => {
