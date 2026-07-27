@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use super::{RetryInfo, Status};
 
-use crate::animation::spinner_frame;
+use crate::animation::{animation_elapsed_ms, spinner_frame};
 use crate::cast;
 use crate::theme;
 
@@ -29,11 +29,10 @@ pub(crate) fn format_tokens(n: u32) -> String {
 
 pub struct UsageStats<'a> {
     pub usage: &'a TokenUsage,
-    pub global_usage: &'a TokenUsage,
     pub context_size: u32,
     pub pricing: &'a ModelPricing,
     pub context_window: u32,
-    pub show_global: bool,
+    pub global_costs: Option<(f64, f64)>,
 }
 
 pub struct StatusBarContext<'a> {
@@ -53,7 +52,6 @@ pub struct StatusBarContext<'a> {
 
 pub struct StatusBar {
     flash: Option<(String, Instant)>,
-    started_at: Instant,
     cwd_branch: String,
     pub flash_duration: Duration,
     branch_update_rx: Option<flume::Receiver<()>>,
@@ -63,7 +61,6 @@ impl StatusBar {
     pub fn new(flash_duration: Duration) -> Self {
         Self {
             flash: None,
-            started_at: Instant::now(),
             cwd_branch: cwd_branch_label(),
             flash_duration,
             branch_update_rx: spawn_branch_watcher(),
@@ -109,8 +106,8 @@ impl StatusBar {
     pub fn view(&self, frame: &mut Frame, area: Rect, ctx: &StatusBarContext) {
         let mut left_spans = Vec::new();
 
-        if ctx.restoring {
-            let ch = spinner_frame(self.started_at.elapsed().as_millis());
+        if ctx.restoring || matches!(ctx.status, Status::Streaming) {
+            let ch = spinner_frame(animation_elapsed_ms());
             left_spans.push(Span::styled(
                 format!(" {ch}"),
                 theme::current().status_notice,
@@ -149,6 +146,7 @@ impl StatusBar {
         }
 
         let mut right_spans = Vec::new();
+        let mut usage_parts = Vec::new();
 
         if let Status::Error { message: e, .. } = ctx.status {
             left_spans.push(Span::styled(format!(" {e}"), theme::current().error));
@@ -185,34 +183,25 @@ impl StatusBar {
                 right_spans.push(Span::styled(WORKFLOW_LABEL, theme::current().status_dim));
             }
 
-            let context_text = format!(
-                "  {}/{} ({}%)",
+            usage_parts.push(format!(
+                "{}/{} ({}%)",
                 format_tokens(ctx.stats.context_size),
                 format_tokens(ctx.stats.context_window),
                 pct,
-            );
-            let rest_text = if ctx.stats.pricing.is_zero() {
-                format!("{context_text} ")
-            } else {
-                format!(
-                    "{context_text} ${:.3} ",
-                    ctx.stats.usage.cost(ctx.stats.pricing, ctx.fast),
-                )
-            };
-            right_spans.push(Span::styled(
-                rest_text,
-                Style::new().fg(theme::current().foreground),
             ));
-
-            if ctx.stats.show_global && !ctx.stats.pricing.is_zero() {
-                let global_text = format!(
-                    " \u{03a3}${:.3} ",
-                    ctx.stats.global_usage.cost(ctx.stats.pricing, ctx.fast),
-                );
-                right_spans.push(Span::styled(
-                    global_text,
-                    Style::new().fg(theme::current().foreground),
-                ));
+            if !ctx.stats.pricing.is_zero() {
+                let cost = ctx.stats.usage.cost(ctx.stats.pricing, ctx.fast);
+                let savings = ctx.stats.usage.savings_cost(ctx.stats.pricing, ctx.fast);
+                usage_parts.push(format!("cost ${cost:.3}"));
+                if savings > 0.0 {
+                    usage_parts.push(format!("saved ${savings:.3}"));
+                }
+                if let Some((global_cost, global_savings)) = ctx.stats.global_costs {
+                    usage_parts.push(format!("Σ cost ${global_cost:.3}"));
+                    if global_savings > 0.0 {
+                        usage_parts.push(format!("Σ saved ${global_savings:.3}"));
+                    }
+                }
             }
         }
 
@@ -223,16 +212,31 @@ impl StatusBar {
             ));
         }
 
-        let [left_area, right_area] = Layout::horizontal([
-            Constraint::Min(0),
-            Constraint::Length(
-                right_spans
-                    .iter()
-                    .map(|s| cast::usize_to_u16(s.width()))
-                    .sum(),
-            ),
-        ])
-        .areas(area);
+        let spans_width = |spans: &[Span<'_>]| {
+            spans.iter().fold(0u16, |width, span| {
+                width.saturating_add(cast::usize_to_u16(span.width()))
+            })
+        };
+        let left_width = spans_width(&left_spans).min(area.width);
+        let max_right_width = area.width.saturating_sub(left_width);
+        let mut right_width = spans_width(&right_spans);
+        for (index, part) in usage_parts.into_iter().enumerate() {
+            let separator = if index == 0 { "  " } else { " · " };
+            let span = Span::styled(
+                format!("{separator}{part}"),
+                Style::new().fg(theme::current().foreground),
+            );
+            let candidate_width = right_width.saturating_add(cast::usize_to_u16(span.width()));
+            if candidate_width > max_right_width {
+                break;
+            }
+            right_width = candidate_width;
+            right_spans.push(span);
+        }
+        right_width = right_width.min(max_right_width);
+
+        let [left_area, right_area] =
+            Layout::horizontal([Constraint::Min(0), Constraint::Length(right_width)]).areas(area);
 
         frame.render_widget(Paragraph::new(Line::from(left_spans)), left_area);
         frame.render_widget(
@@ -382,11 +386,10 @@ mod tests {
                         model_id: "test/model",
                         stats: UsageStats {
                             usage: &usage,
-                            global_usage: &usage,
                             context_size: 0,
                             pricing: &pricing,
                             context_window: 1,
-                            show_global: false,
+                            global_costs: None,
                         },
                         auto_scroll: true,
                         chat_name: None,
@@ -409,6 +412,78 @@ mod tests {
 
         assert!(!text.contains("thinking..."), "status bar: {text:?}");
         assert!(text.contains("NORMAL"), "status bar: {text:?}");
+        assert!(
+            text.chars()
+                .any(|ch| ('\u{2800}'..='\u{28ff}').contains(&ch)),
+            "status bar: {text:?}"
+        );
+    }
+
+    #[test]
+    fn narrow_status_bar_preserves_left_status() {
+        use n00n_providers::{ModelPricing, TokenUsage};
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let backend = TestBackend::new(60, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut bar = StatusBar::new(Duration::from_secs(1));
+        bar.flash("Connected".into());
+        let usage = TokenUsage {
+            input: 999_999,
+            output: 999_999,
+            cache_creation: 999_999,
+            cache_read: 999_999,
+        };
+        let pricing = ModelPricing {
+            input: 3.0,
+            output: 15.0,
+            cache_write: 3.75,
+            cache_read: 0.3,
+            fast: None,
+        };
+        terminal
+            .draw(|frame| {
+                bar.view(
+                    frame,
+                    frame.area(),
+                    &StatusBarContext {
+                        status: &Status::Streaming,
+                        mode_label: Cow::Borrowed("NORMAL"),
+                        mode_style: Style::default(),
+                        model_id: "anthropic/claude-sonnet-with-a-long-name",
+                        stats: UsageStats {
+                            usage: &usage,
+                            context_size: 999_999,
+                            pricing: &pricing,
+                            context_window: 1_000_000,
+                            global_costs: Some((999.999, 999.999)),
+                        },
+                        auto_scroll: true,
+                        chat_name: None,
+                        retry_info: None,
+                        thinking_label: None,
+                        fast: false,
+                        workflow: false,
+                        restoring: false,
+                    },
+                );
+            })
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+
+        assert!(text.contains("NORMAL"), "status bar: {text:?}");
+        assert!(text.contains("Connected"), "status bar: {text:?}");
+        assert!(
+            text.chars()
+                .any(|ch| ('\u{2800}'..='\u{28ff}').contains(&ch)),
+            "status bar: {text:?}"
+        );
     }
 
     #[test]

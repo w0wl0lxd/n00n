@@ -106,6 +106,7 @@ Every tool result spends context tokens. Prefer structural, pre-indexed tools ov
 
 - **Compress structured data:** prefer `n00n.json.tooned` (lossless JSON/TOON passthrough) over plain JSON when passing structured data between tools or scripts.
 - **Compress shell output with `rtk`:** the `bash` tool automatically rewrites supported commands through `rtk` when the `rtk` CLI is installed, typically cutting output tokens by 60-90%. Use `bash` (not raw `grep`/`read`/`cat`) for `git`, `cargo`, `rg`, `grep`, `gh`, `find`, `ls`, `cat`, `head`, `tail`, and other system commands. `jq`/`yq` and unsupported flags are run unchanged. Use `rtk proxy <command>` when exact raw shell output is required. Combine with `context-mode` once installed.
+- **Offload reasoning with `thoughtbox`:** use sessions and the knowledge graph for non-trivial reasoning, durable context, and anything that should outlive the session. This keeps the context window focused on the current task.
 
 ### Shell and RTK patterns
 

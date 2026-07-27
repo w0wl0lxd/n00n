@@ -6,7 +6,7 @@ use crate::components::keybindings::KeybindContext;
 use crate::components::queue_panel;
 use crate::components::split_layout::{MIN_CHAT_ROWS, SplitLayout, carve};
 use crate::components::status_bar::{StatusBarContext, UsageStats};
-use crate::components::usage_modal::UsageModalContext;
+use crate::components::usage_modal::{UsageModalContext, attributed_costs};
 use crate::selection::{self, SelectableZone, SelectionZone, ZoneRegistry};
 use crate::theme;
 use n00n_lua::Split;
@@ -295,6 +295,15 @@ impl App {
         let chat = &self.chats[render_chat];
         let chat_name = (self.chats.len() > 1).then_some(chat.name.as_str());
         let (mode_label, mode_style) = self.mode_label();
+        let global_costs = if self.chats.len() > 1 {
+            attributed_costs(
+                &self.state.session.meta.usage_by_model,
+                &self.state.model,
+                self.state.fast,
+            )
+        } else {
+            None
+        };
         let ctx = StatusBarContext {
             status: &self.status,
             mode_label,
@@ -305,11 +314,10 @@ impl App {
                 .unwrap_or_else(|| &self.state.session.model),
             stats: UsageStats {
                 usage: &chat.token_usage,
-                global_usage: &self.state.token_usage,
                 context_size: chat.context_size,
                 pricing: &self.state.model.pricing,
                 context_window: self.state.model.context_window,
-                show_global: self.chats.len() > 1,
+                global_costs,
             },
             auto_scroll: chat.auto_scroll(),
             chat_name,
