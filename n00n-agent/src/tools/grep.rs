@@ -2,9 +2,10 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::{GrepFileEntry, GrepLine, GrepMatchGroup};
+use flume;
 use grep_regex::RegexMatcher;
 use grep_searcher::Searcher;
 use grep_searcher::SearcherBuilder;
@@ -55,6 +56,11 @@ impl GrepParams {
 /// Returns an error if the search path or grep execution fails.
 pub fn grep_search(params: &GrepParams) -> Result<(PathBuf, Vec<GrepFileEntry>), String> {
     let search_path = resolve_search_path(params.path.as_deref())?;
+
+    if !Path::new(&search_path).exists() {
+        return Err(format!("grep: path not found: {search_path}"));
+    }
+
     let is_multiline = needs_multiline(&params.pattern);
     debug!(
         pattern = %params.pattern,
@@ -97,21 +103,25 @@ pub fn grep_search(params: &GrepParams) -> Result<(PathBuf, Vec<GrepFileEntry>),
     };
     let has_context = params.context_before > 0 || params.context_after > 0;
     let max_line_bytes = params.max_line_bytes;
-    let results: Arc<Mutex<Vec<GrepFileEntry>>> = Arc::new(Mutex::new(Vec::new()));
+    let (tx, rx) = flume::unbounded::<GrepFileEntry>();
     let base: Arc<Path> = Arc::from(base);
 
     walker.build_parallel().run({
-        let results = Arc::clone(&results);
+        let tx = tx.clone();
         let matcher = Arc::new(matcher);
         let base = Arc::clone(&base);
         move || {
             let mut searcher = builder.build();
             let matcher = Arc::clone(&matcher);
-            let results = Arc::clone(&results);
+            let tx = tx.clone();
             let base = Arc::clone(&base);
             Box::new(move |entry| {
-                let Ok(entry) = entry else {
-                    return WalkState::Continue;
+                let entry = match entry {
+                    Ok(e) => e,
+                    Err(e) => {
+                        warn!(error = %e, "grep walk entry error");
+                        return WalkState::Continue;
+                    }
                 };
                 if !entry.file_type().is_some_and(|ft| ft.is_file()) {
                     return WalkState::Continue;
@@ -124,7 +134,9 @@ pub fn grep_search(params: &GrepParams) -> Result<(PathBuf, Vec<GrepFileEntry>),
                     max_line_bytes,
                     has_context,
                 };
-                let _ = searcher.search_path(&*matcher, &path, &mut sink);
+                if let Err(e) = searcher.search_path(&*matcher, &path, &mut sink) {
+                    warn!(path = %path.display(), error = %e, "grep search_path failed");
+                }
 
                 if !groups.is_empty() {
                     let rel = path
@@ -132,21 +144,15 @@ pub fn grep_search(params: &GrepParams) -> Result<(PathBuf, Vec<GrepFileEntry>),
                         .unwrap_or_else(|_| &path)
                         .to_string_lossy()
                         .into_owned();
-                    let mut guard = results
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    guard.push(GrepFileEntry { path: rel, groups });
+                    let _ = tx.send(GrepFileEntry { path: rel, groups });
                 }
                 WalkState::Continue
             })
         }
     });
 
-    let mut entries = std::mem::take(
-        &mut *results
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-    );
+    drop(tx);
+    let mut entries: Vec<GrepFileEntry> = rx.iter().collect();
 
     if entries.is_empty() {
         return Ok((base.to_path_buf(), entries));
