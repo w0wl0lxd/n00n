@@ -2,10 +2,14 @@
 #![allow(clippy::new_without_default)]
 #![allow(clippy::must_use_candidate)]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde::{Deserialize, Serialize};
+
+mod graph_json;
+
+pub use graph_json::{GraphIndex, GraphNode, SymbolRef};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Relation {
@@ -211,18 +215,41 @@ impl Client {
 
     pub fn ensure_indexed(project: &Path) -> Result<(), ArborError> {
         let output = Command::new("arbor")
-            .arg("index")
+            .arg("status")
             .arg(project.as_os_str())
             .output()
             .map_err(|e| ArborError::Exec { source: e })?;
 
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(ArborError::Cli {
-                message: format!("index failed: {}", String::from_utf8_lossy(&output.stderr)),
-            })
+        let status = String::from_utf8_lossy(&output.stdout);
+        if status.contains("No index") || status.contains("not indexed") {
+            let output = Command::new("arbor")
+                .arg("index")
+                .arg(project.as_os_str())
+                .output()
+                .map_err(|e| ArborError::Exec { source: e })?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(ArborError::Cli {
+                    message: format!("index failed: {stderr}"),
+                });
+            }
         }
+        Ok(())
+    }
+
+    pub fn load_graph_index(project: &Path) -> Result<GraphIndex, ArborError> {
+        let graph_path = PathBuf::from(project).join(".arbor").join("graph.json");
+        if !graph_path.exists() {
+            Self::ensure_indexed(project)?;
+        }
+        let graph_path = PathBuf::from(project).join(".arbor").join("graph.json");
+        if !graph_path.exists() {
+            return Err(ArborError::Cli {
+                message: format!("missing Arbor graph file: {}", graph_path.display()),
+            });
+        }
+        GraphIndex::from_graph_json_path(&graph_path)
     }
 }
 
