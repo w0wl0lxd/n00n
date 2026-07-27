@@ -406,14 +406,32 @@ pub enum WinCommand {
 pub enum SessionRequest {
     List,
     Live,
-    Status { id: String },
+    Status {
+        id: String,
+    },
     Current,
-    New { prompt: Option<String>, focus: bool },
-    Prompt { id: Option<String>, text: String },
-    Cancel { id: String },
-    Focus { id: String },
-    Delete { id: String },
-    SetTitle { id: String, title: String },
+    New {
+        prompt: Option<String>,
+        focus: bool,
+        parent_id: Option<String>,
+    },
+    Prompt {
+        id: Option<String>,
+        text: String,
+    },
+    Cancel {
+        id: String,
+    },
+    Focus {
+        id: String,
+    },
+    Delete {
+        id: String,
+    },
+    SetTitle {
+        id: String,
+        title: String,
+    },
 }
 
 pub type SessionReply = Result<serde_json::Value, String>;
