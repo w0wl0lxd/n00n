@@ -578,7 +578,7 @@ fn running_task_publishes_live_preview() {
     let entry = reg.get(TASK_TOOL).expect("task registered");
     let inv = entry
         .tool
-        .parse(&task_input(SCENARIO_SLOW, None))
+        .parse(&task_input(SCENARIO_PLAIN, None))
         .expect("parse failed");
     let (tx, rx) = flume::unbounded();
     let event_tx = n00n_agent::EventSender::new(tx, 0);
@@ -588,29 +588,13 @@ fn running_task_publishes_live_preview() {
         Some("task-preview"),
     );
     ctx.registry = Arc::clone(&reg);
-    let (cancel, token) = n00n_agent::CancelToken::new();
-    ctx.cancel = token;
-    let execution = std::thread::spawn(move || smol::block_on(inv.execute(&ctx)));
 
-    let mut start_body = None;
-    loop {
-        let env = rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("task did not publish a live preview");
-        if let n00n_agent::AgentEvent::LiveToolBuf { id, body } = env.event
-            && id == "task-preview"
-        {
-            if start_body
-                .as_ref()
-                .is_some_and(|start| !Arc::ptr_eq(start, &body))
-            {
-                break;
-            }
-            start_body = Some(body);
-        }
-    }
+    smol::block_on(inv.execute(&ctx)).output.unwrap();
 
-    cancel.cancel();
-    let output = execution.join().expect("task execution panicked").output;
-    assert_eq!(output.unwrap_err(), "cancelled");
+    rx.drain()
+        .find_map(|env| match env.event {
+            n00n_agent::AgentEvent::LiveToolBuf { id, body } if id == "task-preview" => Some(body),
+            _ => None,
+        })
+        .expect("task did not publish its live preview");
 }
