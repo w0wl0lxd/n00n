@@ -63,6 +63,7 @@ use n00n_providers::{Effort, Message, Model, System, ThinkingConfig};
 use n00n_storage::StateDir;
 use n00n_storage::input_history::InputHistory;
 use n00n_storage::model::persist_model;
+use n00n_storage::sessions::StoredTokenUsage;
 
 use crate::storage_writer::StorageWriter;
 use ratatui::layout::Position;
@@ -1605,6 +1606,35 @@ impl App {
             let formatted =
                 format_turn_usage(&tc.usage, &self.state.model.pricing, self.state.fast);
             self.chats[chat_idx].set_pending_turn_usage(formatted);
+        }
+
+        if let AgentEvent::Done {
+            fusion: Some(stats),
+            ..
+        } = &envelope.event
+        {
+            self.state.session.meta.fusion = Some(n00n_storage::sessions::StoredFusionUsage {
+                lead_cost: stats.lead_cost,
+                sidekick_cost: stats.sidekick_cost,
+                lead_usage: StoredTokenUsage {
+                    input: stats.lead_usage.input,
+                    output: stats.lead_usage.output,
+                    cache_creation: stats.lead_usage.cache_creation,
+                    cache_read: stats.lead_usage.cache_read,
+                },
+                sidekick_usage: StoredTokenUsage {
+                    input: stats.sidekick_usage.input,
+                    output: stats.sidekick_usage.output,
+                    cache_creation: stats.sidekick_usage.cache_creation,
+                    cache_read: stats.sidekick_usage.cache_read,
+                },
+                delegation_count: stats.delegation_count,
+                compact_count: stats.compact_count,
+                final_lane: match stats.final_lane {
+                    n00n_agent::FusionLane::Lead => "lead".into(),
+                    n00n_agent::FusionLane::Sidekick => "sidekick".into(),
+                },
+            });
         }
 
         let result = self.chats[chat_idx].handle_event(envelope.event, plan_path);
