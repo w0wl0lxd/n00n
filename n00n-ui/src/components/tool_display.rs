@@ -23,7 +23,7 @@ use jiff::tz::TimeZone;
 
 use crate::markdown::{should_truncate, text_to_lines, truncate_output, truncation_notice};
 use n00n_agent::{
-    BufferSnapshot, InstructionBlock, SnapshotSpan, SpanStyle, ToolInput, ToolOutput,
+    BufferSnapshot, InstructionBlock, SnapshotSpan, SpanStyle, TextOutput, ToolInput, ToolOutput,
 };
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
@@ -246,6 +246,45 @@ struct ResolvedOutput<'a> {
     skipped: usize,
 }
 
+fn text_like_output_text(output: &ToolOutput) -> Option<Cow<'_, str>> {
+    match output {
+        ToolOutput::Plain(t) | ToolOutput::Markdown(t) | ToolOutput::ReadDir(t) => {
+            Some(format_text_output(t))
+        }
+        ToolOutput::Batch { text } => Some(Cow::Borrowed(text.as_str())),
+        ToolOutput::Image {
+            text, telemetry, ..
+        } => {
+            if let Some(tel) = telemetry {
+                let mut out = text.clone();
+                out.push_str("\nTelemetry: ");
+                out.push_str(&code_view::telemetry_text(tel));
+                Some(Cow::Owned(out))
+            } else {
+                Some(Cow::Borrowed(text.as_str()))
+            }
+        }
+        _ => None,
+    }
+}
+
+fn format_text_output(t: &TextOutput) -> Cow<'_, str> {
+    let has_extras = t.instructions.is_some() || t.state.is_some() || t.telemetry.is_some();
+    if !has_extras {
+        return Cow::Borrowed(t.text.as_str());
+    }
+    let mut out = ToolOutput::Plain(t.clone()).as_text();
+    if let Some(state) = &t.state {
+        out.push_str("\n\nState:\n");
+        out.push_str(&code_view::json_text(state));
+    }
+    if let Some(tel) = &t.telemetry {
+        out.push_str("\n\nTelemetry: ");
+        out.push_str(&code_view::telemetry_text(tel));
+    }
+    Cow::Owned(out)
+}
+
 fn resolve_output<'a>(
     output: Option<&'a ToolOutput>,
     body: Option<&'a str>,
@@ -253,13 +292,7 @@ fn resolve_output<'a>(
     pre_truncated: usize,
     limits: RenderLimits,
 ) -> ResolvedOutput<'a> {
-    let full_text: Option<Cow<'a, str>> = match output {
-        Some(ToolOutput::Plain(t) | ToolOutput::Markdown(t) | ToolOutput::ReadDir(t)) => {
-            Some(Cow::Borrowed(t.text.as_str()))
-        }
-        Some(ToolOutput::Batch { text }) => Some(Cow::Borrowed(text.as_str())),
-        _ => None,
-    };
+    let full_text: Option<Cow<'a, str>> = output.and_then(text_like_output_text);
 
     let expanded = limits.is_output_expanded();
     let (raw_text, already_truncated): (Option<Cow<'a, str>>, usize) = if expanded {
@@ -281,17 +314,22 @@ fn resolve_output<'a>(
             },
         }
     } else {
-        match (body, &full_text) {
-            (Some(b), _) => (Some(Cow::Borrowed(b)), pre_truncated),
-            (None, Some(t)) => (Some(t.clone()), 0),
-            (None, None) if output.is_some() => {
-                return ResolvedOutput {
-                    text: None,
-                    full_text: None,
-                    skipped: 0,
-                };
-            }
-            (None, None) => (None, 0),
+        match &full_text {
+            Some(t) => (Some(t.clone()), 0),
+            None => match body {
+                Some(b) => (Some(Cow::Borrowed(b)), pre_truncated),
+                None if output.is_some() => {
+                    return ResolvedOutput {
+                        text: None,
+                        full_text: None,
+                        skipped: 0,
+                    };
+                }
+                None => match live_output {
+                    Some(live) => (Some(Cow::Borrowed(live)), 0),
+                    None => (None, 0),
+                },
+            },
         }
     };
 
@@ -416,10 +454,16 @@ impl ToolLineBuilder {
         self.lines[0].spans.insert(0, Span::styled(text, style));
     }
 
-    fn push_code_content(&mut self, input: Option<&ToolInput>, output: Option<&ToolOutput>) {
-        let content = code_view::render_tool_content(input, output, false, self.limits);
+    fn push_code_content(
+        &mut self,
+        input: Option<&ToolInput>,
+        raw_input: Option<&serde_json::Value>,
+        output: Option<&ToolOutput>,
+    ) {
+        let content = code_view::render_tool_content(input, raw_input, output, false, self.limits);
         self.truncation.script |= content.truncation.script;
         self.truncation.output |= content.truncation.output;
+        self.truncation.details |= content.truncation.details;
         let start = self.lines.len();
         self.truncation_actions
             .extend(content.truncation_actions.into_iter().map(|mut action| {
@@ -491,6 +535,7 @@ impl ToolLineBuilder {
                 section: SectionFlags {
                     script: false,
                     output: true,
+                    details: false,
                 },
             });
             let text = truncation_notice(skipped);
@@ -653,6 +698,7 @@ pub fn build_tool_lines(
     let has_snapshot = msg.render_snapshot.is_some();
     b.push_code_content(
         msg.tool_input.as_deref(),
+        msg.tool_raw_input.as_deref(),
         if has_snapshot {
             None
         } else {
@@ -741,6 +787,7 @@ pub fn build_instructions_lines(
     let exp = SectionFlags {
         script: false,
         output: expanded,
+        details: false,
     };
     let mut b = ToolLineBuilder::new(width, exp, code_view::instruction_limit(expanded));
     b.push_header("load", header, annotation.as_deref(), None);
@@ -756,6 +803,7 @@ pub fn build_instructions_lines(
             section: SectionFlags {
                 script: false,
                 output: true,
+                details: false,
             },
         });
     }
@@ -801,6 +849,7 @@ mod tests {
         SectionFlags {
             script: both,
             output: both,
+            details: false,
         }
     }
 
@@ -822,7 +871,7 @@ mod tests {
     }
 
     fn plain_output() -> ToolOutput {
-        ToolOutput::Plain("ok".into())
+        ToolOutput::Plain("line1\nline2".into())
     }
 
     fn bash_msg(
@@ -1344,10 +1393,6 @@ mod tests {
     #[test_case(
         Some(&ToolOutput::Plain("world".into())), None, "bash", true
         ; "plain_no_body_uses_plain"
-    )]
-    #[test_case(
-        Some(&ToolOutput::Plain("world".into())), Some("override"), "bash", true
-        ; "body_takes_priority_over_plain"
     )]
     #[test_case(
         Some(&ToolOutput::Plain(String::new().into())), None, "bash", false

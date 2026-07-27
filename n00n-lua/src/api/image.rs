@@ -336,7 +336,7 @@ async fn encode(
     lua: Lua,
     this: mlua::UserDataRef<LuaImage>,
     format: String,
-) -> LuaResult<mlua::String> {
+) -> LuaResult<mlua::LuaString> {
     let img = Arc::clone(&this.0);
     drop(this);
     let out_format = match format.as_str() {

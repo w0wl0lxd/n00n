@@ -112,6 +112,7 @@ fn worker_loop(inner: &PoolInner) {
     while let Ok(job) = inner.job_rx.recv_timeout(IDLE_TIMEOUT) {
         let content = code_view::render_tool_content(
             job.tool_input.as_deref(),
+            None,
             job.tool_output.as_deref(),
             true,
             job.limits,

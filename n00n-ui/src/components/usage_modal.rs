@@ -95,7 +95,7 @@ impl UsageModal {
         let total = u16::try_from(lines.len()).unwrap_or_else(|_| u16::MAX);
         let modal = Modal {
             title: TITLE,
-            width_percent: 60,
+            width_percent: 90,
             max_height_percent: 70,
         };
         let (popup, inner) = modal.render(frame, area, total);
@@ -136,6 +136,26 @@ fn pricing_for(id: &str, current: &Model) -> Option<ModelPricing> {
             .ok()
             .map(|m| m.pricing)
     })
+}
+
+pub(crate) fn attributed_costs(
+    by_model: &HashMap<String, StoredTokenUsage>,
+    current: &Model,
+    fast: bool,
+) -> Option<(f64, f64)> {
+    if by_model.is_empty() {
+        return None;
+    }
+    by_model
+        .iter()
+        .try_fold((0.0, 0.0), |(cost, savings), (id, usage)| {
+            let pricing = pricing_for(id, current)?;
+            let usage = TokenUsage::from(*usage);
+            Some((
+                cost + usage.cost(&pricing, fast),
+                savings + usage.savings_cost(&pricing, fast),
+            ))
+        })
 }
 
 fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line<'static>> {
@@ -192,13 +212,18 @@ fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line
 
     for (id, usage) in entries {
         let pricing = pricing_for(id, ctx.model);
-        let cost = pricing
-            .as_ref()
-            .map(|p| TokenUsage::from(*usage).cost(p, ctx.fast));
+        let token_usage = TokenUsage::from(*usage);
+        let (cost, savings) = pricing.as_ref().map_or((None, None), |p| {
+            (
+                Some(token_usage.cost(p, ctx.fast)),
+                Some(token_usage.savings_cost(p, ctx.fast)),
+            )
+        });
         lines.push(Line::from(model_row(
             id,
             usage,
             cost,
+            savings,
             model_w,
             fg,
             theme.status_dim,
@@ -217,7 +242,7 @@ fn totals_row(
         Span::raw(PREFIX),
         Span::styled(
             format!(
-                "in {:<7} out {:<7} cache read {:<7} cache write {:<7} total {:<7}",
+                "in {:<7} out {:<7} read {:<7} write {:<7} total {:<7}",
                 format_tokens(total.input),
                 format_tokens(total.output),
                 format_tokens(total.cache_read),
@@ -253,6 +278,8 @@ fn header_row(model_w: usize, theme: &crate::theme::Theme) -> Vec<Span<'static>>
         gap(),
         h("total"),
         gap(),
+        h("saved $"),
+        gap(),
         Span::styled(format!("{:>6}", "cost"), theme.status_dim),
     ]
 }
@@ -261,12 +288,20 @@ fn model_row(
     id: &str,
     usage: &StoredTokenUsage,
     cost: Option<f64>,
+    savings: Option<f64>,
     model_w: usize,
     fg: Style,
     dim: Style,
 ) -> Vec<Span<'static>> {
     let num = |v: u32| Span::styled(format!("{:>NUM_COL$}", format_tokens(v)), fg);
     let gap = || Span::raw(" ".repeat(COL_GAP));
+    let money = |v: Option<f64>| match v {
+        Some(v) if v > 0.0 => {
+            let s = format!("${v:.3}");
+            Span::styled(format!("{s:>NUM_COL$}"), fg)
+        }
+        _ => Span::styled(format!("{:>NUM_COL$}", "—"), dim),
+    };
     vec![
         Span::raw(PREFIX),
         Span::styled(format!("{id:<model_w$}"), fg),
@@ -280,6 +315,8 @@ fn model_row(
         num(usage.cache_creation),
         gap(),
         num(usage.total()),
+        gap(),
+        money(savings),
         gap(),
         match cost {
             Some(c) => Span::styled(format!("{c:>6.3}"), fg),
@@ -497,6 +534,7 @@ mod tests {
         assert!(header.contains("fresh"));
         assert!(header.contains("read"));
         assert!(header.contains("write"));
+        assert!(header.contains("saved $"));
 
         let usage = StoredTokenUsage {
             input: 10,
@@ -504,13 +542,51 @@ mod tests {
             cache_read: 30,
             cache_creation: 40,
         };
-        let row = model_row("gpt", &usage, None, 10, Style::new(), Style::new())
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect::<String>();
-        for value in ["10", "20", "30", "40"] {
+        let row = model_row(
+            "gpt",
+            &usage,
+            None,
+            Some(0.123),
+            10,
+            Style::new(),
+            Style::new(),
+        )
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+        for value in ["10", "20", "30", "40", "$0.123"] {
             assert!(row.contains(value));
         }
+    }
+
+    #[test]
+    fn attributed_costs_price_each_model_separately() {
+        let current = Model::from_spec("anthropic/claude-sonnet-4-5").unwrap();
+        let mut by_model = HashMap::new();
+        let usage = StoredTokenUsage {
+            input: 1_000_000,
+            output: 1_000_000,
+            cache_read: 1_000_000,
+            cache_creation: 1_000_000,
+        };
+        by_model.insert(current.id.clone(), usage);
+        by_model.insert("claude-haiku-4-5".into(), usage);
+
+        let (cost, savings) = attributed_costs(&by_model, &current, false).unwrap();
+        let current_pricing = pricing_for(&current.id, &current).unwrap();
+        let other_pricing = pricing_for("claude-haiku-4-5", &current).unwrap();
+        let token_usage = TokenUsage::from(usage);
+        let expected_cost =
+            token_usage.cost(&current_pricing, false) + token_usage.cost(&other_pricing, false);
+        let expected_savings = token_usage.savings_cost(&current_pricing, false)
+            + token_usage.savings_cost(&other_pricing, false);
+
+        assert!((cost - expected_cost).abs() < f64::EPSILON);
+        assert!((savings - expected_savings).abs() < f64::EPSILON);
+        assert!(
+            (savings - token_usage.savings_cost(&current.pricing, false) * 2.0).abs()
+                > f64::EPSILON
+        );
     }
 
     #[test]
