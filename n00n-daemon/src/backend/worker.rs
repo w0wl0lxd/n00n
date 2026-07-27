@@ -1,10 +1,9 @@
 //! PR #134-compatible worker backend: `state_dir/agents/<id>/agent.json` + `control.sock`.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use sonic_rs::JsonValueTrait;
 
 use crate::backend::ControlBackend;
 use crate::error::{ControlError, ControlResult};
@@ -119,6 +118,8 @@ impl WorkerBackend {
 
     #[cfg(unix)]
     fn send_command(&self, id: &str, command: &WorkerCommand) -> ControlResult<sonic_rs::Value> {
+        use std::path::Path;
+
         use futures_lite::{AsyncBufReadExt, AsyncWriteExt, io::BufReader};
         use smol::net::unix::UnixStream;
 
@@ -162,6 +163,7 @@ impl WorkerBackend {
         reader: &mut futures_lite::io::BufReader<impl futures_lite::AsyncRead + Unpin>,
     ) -> ControlResult<()> {
         use futures_lite::AsyncBufReadExt;
+        use sonic_rs::JsonValueTrait;
 
         let mut line = String::new();
         loop {
@@ -267,7 +269,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    fn write_fixture(dir: &Path, id: &str, status: &str) -> Result<(), String> {
+    fn write_fixture(dir: &std::path::Path, id: &str, status: &str) -> Result<(), String> {
         let agent_dir = dir.join(AGENTS_SUBDIR).join(id);
         fs::create_dir_all(&agent_dir).map_err(|e| e.to_string())?;
         let state = WorkerStateFile {
@@ -366,10 +368,10 @@ mod tests {
 
     #[cfg(unix)]
     fn write_fixture_with_socket(
-        dir: &Path,
+        dir: &std::path::Path,
         id: &str,
         status: &str,
-        socket_path: &Path,
+        socket_path: &std::path::Path,
     ) -> Result<(), String> {
         let agent_dir = dir.join(AGENTS_SUBDIR).join(id);
         fs::create_dir_all(&agent_dir).map_err(|e| e.to_string())?;
