@@ -13,7 +13,7 @@ pub struct SurfaceLimit {
     pub tool_count_exact: bool,
     pub max_token_delta: Option<u64>,
     pub max_byte_delta: Option<u64>,
-    /// When set without hard max_*, breaches are warnings only (returned as Ok with note).
+    /// When set without hard max_*, growth beyond this emits a stderr warning only.
     #[serde(default)]
     pub warn_token_delta: Option<u64>,
 }
@@ -38,7 +38,7 @@ impl Baseline {
 /// Compare a live profile to a committed baseline.
 ///
 /// Hard surfaces (`max_token_delta` / `max_byte_delta` / `tool_count_exact`) fail the
-/// gate. Soft surfaces with only `warn_token_delta` never fail.
+/// gate. Soft surfaces with only `warn_token_delta` log to stderr and still succeed.
 ///
 /// # Errors
 /// Returns [`RegressionError::Breach`] when a hard limit is exceeded, or when a
@@ -89,6 +89,19 @@ pub fn assert_within_baseline(
                     "{name}: bytes grew by {delta} ({} -> {}), max allowed {max}",
                     expected.bytes, actual.bytes
                 )));
+            }
+        }
+
+        if limit.max_token_delta.is_none()
+            && limit.max_byte_delta.is_none()
+            && let Some(warn_at) = limit.warn_token_delta
+        {
+            let delta = actual.tokens.saturating_sub(expected.tokens);
+            if delta > warn_at {
+                eprintln!(
+                    "token-profile soft warning: {name} tokens grew by {delta} ({} -> {}), warn at {warn_at}",
+                    expected.tokens, actual.tokens
+                );
             }
         }
     }
