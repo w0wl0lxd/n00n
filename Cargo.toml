@@ -71,6 +71,7 @@ members = [
   "n00n-storage",
   "n00n-config-macro",
   "n00n-lua-macro",
+  "n00n-token-profile",
   "n00n-ui",
 ]
 resolver = "3"
@@ -97,6 +98,7 @@ n00n-lua-macro = { path = "n00n-lua-macro" }
 n00n-highlight = { path = "n00n-highlight" }
 n00n-arbor = { path = "n00n-arbor" }
 n00n-markdown = { path = "n00n-markdown" }
+n00n-token-profile = { path = "n00n-token-profile" }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 toon-format = "0.5"
@@ -148,11 +150,22 @@ similar = { version = "2", features = ["inline", "unicode"] }
 jsonrepair = { version = "0.1", default-features = false, features = ["serde"] }
 jsonschema = { version = "0.33", default-features = false }
 httpdate = "1.0.3"
-jiff = { version = "0.2", default-features = false, features = ["std", "tz-system"] }
-arboard = { version = "3", default-features = false, features = ["image-data", "wayland-data-control"] }
+jiff = { version = "0.2", default-features = false, features = [
+  "std",
+  "tz-system",
+] }
+arboard = { version = "3", default-features = false, features = [
+  "image-data",
+  "wayland-data-control",
+] }
 image = { version = "0.25", default-features = false, features = ["png"] }
-flume = { version = "0.11", default-features = false, features = ["async", "select"] }
-ratatui-image = { version = "11.0.6", default-features = false, features = ["crossterm"] }
+flume = { version = "0.11", default-features = false, features = [
+  "async",
+  "select",
+] }
+ratatui-image = { version = "11.0.6", default-features = false, features = [
+  "crossterm",
+] }
 humantime = "2"
 toml = "0.8"
 toml_edit = "0.22"

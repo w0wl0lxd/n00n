@@ -3181,6 +3181,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "n00n-token-profile"
+version = "0.4.2"
+dependencies = [
+ "n00n-agent",
+ "n00n-lua",
+ "n00n-providers",
+ "serde",
+ "serde_json",
+ "test-case",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "n00n-ui"
 version = "0.4.2"
 dependencies = [

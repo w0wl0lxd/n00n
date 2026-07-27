@@ -1,0 +1,54 @@
+{
+  "model_id": "anthropic/claude-sonnet-4-6",
+  "mcp_excluded": true,
+  "surfaces": {
+    "cache_prefix": {
+      "name": "cache_prefix",
+      "bytes": 14702,
+      "tokens": 3608
+    },
+    "main_tools_payload": {
+      "name": "main_tools_payload",
+      "tool_count": 26,
+      "bytes": 19410,
+      "tokens": 4852
+    },
+    "main_tools_schemas": {
+      "name": "main_tools_schemas",
+      "tool_count": 26,
+      "bytes": 12192,
+      "tokens": 3048
+    },
+    "system_prompt": {
+      "name": "system_prompt",
+      "bytes": 2510,
+      "tokens": 560
+    }
+  },
+  "limits": {
+    "cache_prefix": {
+      "tool_count_exact": false,
+      "max_token_delta": null,
+      "max_byte_delta": null,
+      "warn_token_delta": 200
+    },
+    "main_tools_payload": {
+      "tool_count_exact": false,
+      "max_token_delta": null,
+      "max_byte_delta": null,
+      "warn_token_delta": 200
+    },
+    "main_tools_schemas": {
+      "tool_count_exact": true,
+      "max_token_delta": 100,
+      "max_byte_delta": 400,
+      "warn_token_delta": null
+    },
+    "system_prompt": {
+      "tool_count_exact": false,
+      "max_token_delta": 80,
+      "max_byte_delta": 320,
+      "warn_token_delta": null
+    }
+  }
+}
