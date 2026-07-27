@@ -13,8 +13,7 @@ use super::streaming::stream_with_retry;
 use crate::cancel::CancelToken;
 use crate::{AgentError, AgentEvent, EventSender, TurnCompleteEvent};
 
-pub(super) const CONTINUE_AFTER_COMPACT: &str =
-    "Continue with next steps, ask if unsure, and restore todos with todo_write.";
+pub(super) const CONTINUE_AFTER_COMPACT: &str = "Continue with next steps, ask if unsure, restore todos with todo_write, and persist durable notes via memory.";
 
 const MINIMAL_CONTEXT_RATIO: f64 = 0.2;
 const AGGRESSIVE_CONTEXT_RATIO: f64 = 0.4;

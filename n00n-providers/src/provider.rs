@@ -39,6 +39,7 @@ pub enum ProviderKind {
     Anthropic,
     #[strum(serialize = "openai")]
     OpenAi,
+    Codex,
     Google,
     Copilot,
     Ollama,
@@ -66,6 +67,7 @@ impl ProviderKind {
         match self {
             Self::Anthropic => "Anthropic",
             Self::OpenAi => "OpenAI",
+            Self::Codex => "Codex",
             Self::Google => "Google",
             Self::Copilot => "Copilot",
             Self::Ollama => "Ollama",
@@ -87,6 +89,7 @@ impl ProviderKind {
         match self {
             Self::Anthropic => "ANTHROPIC_API_KEY",
             Self::OpenAi => "OPENAI_API_KEY",
+            Self::Codex => "",
             Self::Google => "GEMINI_API_KEY",
             Self::Copilot => "GH_COPILOT_TOKEN",
             Self::Ollama => "OLLAMA_API_KEY",
@@ -108,6 +111,7 @@ impl ProviderKind {
         match self {
             Self::Anthropic => "https://api.anthropic.com/v1/messages",
             Self::OpenAi => "https://api.openai.com/v1",
+            Self::Codex => "https://chatgpt.com/backend-api/codex",
             Self::Google => "https://generativelanguage.googleapis.com/v1beta",
             Self::Copilot => {
                 "https://api.githubcopilot.com (or GraphQL-discovered Copilot API endpoint)"
@@ -132,6 +136,7 @@ impl ProviderKind {
             Self::Anthropic => {
                 Some("Prompt caching, thinking mode (adaptive/budgeted), advanced tool use")
             }
+            Self::Codex => Some("ChatGPT/Codex plan via OAuth device flow"),
             Self::Google => Some("Native Gemini API with thinking support"),
             Self::Copilot => Some("Native Copilot Chat HTTP API with model endpoint discovery"),
             Self::Ollama => {
@@ -163,7 +168,7 @@ impl ProviderKind {
     pub const fn family(self) -> ModelFamily {
         match self {
             Self::Anthropic => ModelFamily::Claude,
-            Self::OpenAi => ModelFamily::Gpt,
+            Self::OpenAi | Self::Codex => ModelFamily::Gpt,
             Self::Google => ModelFamily::Gemini,
             Self::Copilot
             | Self::Ollama
@@ -190,9 +195,12 @@ impl ProviderKind {
         match self {
             Self::OpenAi | Self::Copilot => Some(100_000),
             Self::Google => Some(65_536),
-            Self::Anthropic | Self::OpenRouter | Self::Opencode | Self::Devin | Self::Cursor => {
-                Some(128_000)
-            }
+            Self::Anthropic
+            | Self::Codex
+            | Self::OpenRouter
+            | Self::Opencode
+            | Self::Devin
+            | Self::Cursor => Some(128_000),
             Self::Ollama => Some(16_384),
             Self::LlamaCpp | Self::TensorX => None,
             Self::Mistral | Self::Synthetic => Some(32_000),
@@ -204,6 +212,7 @@ impl ProviderKind {
     #[must_use]
     pub const fn fallback_context_window(self) -> u32 {
         match self {
+            Self::Codex => crate::providers::openai::CODING_PLAN_CONTEXT_WINDOW,
             Self::Anthropic | Self::OpenAi | Self::Copilot | Self::OpenRouter | Self::TensorX => {
                 200_000
             }
@@ -220,9 +229,6 @@ impl ProviderKind {
     /// Returns an error if the provider's configuration is missing or invalid
     /// (e.g., missing API key, invalid base URL, or provider-specific setup failure).
     pub fn create(self, timeouts: Timeouts) -> Result<Box<dyn Provider>, AgentError> {
-        if self == Self::OpenAi {
-            return Ok(Box::new(OpenAi::new(timeouts)?));
-        }
         self.create_with_openai_options(timeouts, OpenAiOptions::default())
     }
 
@@ -246,6 +252,10 @@ impl ProviderKind {
             Self::OpenAi => Ok(Box::new(OpenAi::new_with_options(
                 timeouts,
                 openai_options,
+            )?)),
+            Self::Codex => Ok(Box::new(OpenAi::new_with_options(
+                timeouts,
+                openai_options.with_codex(),
             )?)),
             Self::Google => Ok(Box::new(Google::new(timeouts)?)),
             Self::Copilot => Ok(Box::new(Copilot::new(timeouts)?)),

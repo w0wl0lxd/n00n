@@ -38,6 +38,17 @@ const OPENAI: ProviderManifest = ProviderManifest {
     models: openai::models(),
 };
 
+const CODEX: ProviderManifest = ProviderManifest {
+    slug: "codex",
+    display_name: "Codex",
+    family: ModelFamily::Gpt,
+    supports_thinking: true,
+    accepts_arbitrary_models: false,
+    fallback_max_output: Some(128_000),
+    fallback_context_window: openai::CODING_PLAN_CONTEXT_WINDOW,
+    models: openai::codex_models(),
+};
+
 const GOOGLE: ProviderManifest = ProviderManifest {
     slug: "google",
     display_name: "Google",
@@ -182,8 +193,8 @@ const CURSOR: ProviderManifest = ProviderManifest {
 };
 
 const BUILTINS: &[ProviderManifest] = &[
-    ANTHROPIC, OPENAI, GOOGLE, COPILOT, OLLAMA, LLAMA_CPP, MISTRAL, ZAI, DEEPSEEK, OPENROUTER,
-    SYNTHETIC, TENSORX, OPENCODE, DEVIN, CURSOR,
+    ANTHROPIC, OPENAI, CODEX, GOOGLE, COPILOT, OLLAMA, LLAMA_CPP, MISTRAL, ZAI, DEEPSEEK,
+    OPENROUTER, SYNTHETIC, TENSORX, OPENCODE, DEVIN, CURSOR,
 ];
 
 pub struct ManifestRegistry;
