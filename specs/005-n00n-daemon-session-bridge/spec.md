@@ -4,7 +4,7 @@
 
 **Created**: 2026-07-27
 
-**Status**: Active
+**Status**: Active (PR #149). Stacked follow-ups: see `followups.md`.
 
 **Input**: Approach 3 hybrid agent control; critique-fixed phased delivery; on-device, deterministic, no LLM summarization.
 

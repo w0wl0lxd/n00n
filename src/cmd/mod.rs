@@ -2,6 +2,7 @@ mod acp;
 pub mod agent;
 mod subcmd;
 mod tui;
+mod tui_bridge;
 
 use color_eyre::Result;
 use color_eyre::eyre::Context;
