@@ -66,7 +66,7 @@ function M.validate_wave(ctx, wave_result, goal, input)
     return nil, "validation prompt error: " .. rerr
   end
 
-  local response = res or ""
+  local response = (res and res.text) or ""
   local trimmed = response:match("^%s*(.-)%s*$") or response
   local first_word = trimmed:match("^%S+") or ""
   local upper_word = first_word:upper()

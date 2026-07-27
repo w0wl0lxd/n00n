@@ -358,10 +358,11 @@ case("validation_wave_resolves_exact_model", function()
     session_opts = opts
     return {
       prompt = function()
-        return "PASS", nil
+        return { text = "PASS" }, nil
       end,
       close = function() end,
-    }, nil
+    },
+      nil
   end
 
   local passed, err = validation.validate_wave({}, {
@@ -391,10 +392,11 @@ case("validation_wave_resolves_tier_or_default_model", function()
   n00n.agent.session = function()
     return {
       prompt = function()
-        return "PASS", nil
+        return { text = "PASS" }, nil
       end,
       close = function() end,
-    }, nil
+    },
+      nil
   end
 
   local wave_result = {
