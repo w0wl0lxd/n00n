@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 thiserror = { workspace = true }
 wait-timeout = { workspace = true }
+rusqlite = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
