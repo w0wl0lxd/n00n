@@ -1,6 +1,5 @@
 use std::env;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,7 +31,6 @@ use n00n_providers::{Model, OpenAiOptions, ThinkingConfig, Timeouts};
 use n00n_storage::StateDir;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use smol::net::unix::{UnixListener, UnixStream};
 
 use crate::cli::AgentMode as CliAgentMode;
 use crate::setup;
@@ -575,7 +573,11 @@ fn now_epoch() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+#[cfg(unix)]
 pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    use smol::net::unix::UnixListener;
     let env = prepare_agent_env(opts.model, opts.yolo, opts.no_jit)?;
     let message = build_message(
         opts.mode,
@@ -709,6 +711,13 @@ pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()
     Ok(())
 }
 
+#[cfg(not(unix))]
+pub fn server(_opts: &AgentRunOptions<'_>, _agent_id: Option<String>) -> Result<()> {
+    Err(eyre!(
+        "background agent mode requires Unix domain sockets; use `n00n agent daemon` on this platform"
+    ))
+}
+
 fn wait_for_run_done(event_rx: &flume::Receiver<Envelope>) {
     while let Ok(envelope) = event_rx.recv() {
         if matches!(
@@ -720,8 +729,9 @@ fn wait_for_run_done(event_rx: &flume::Receiver<Envelope>) {
     }
 }
 
+#[cfg(unix)]
 async fn handle_connection(
-    stream: UnixStream,
+    stream: smol::net::unix::UnixStream,
     input_tx: Sender<AgentInput>,
     event_rx: flume::Receiver<Envelope>,
     cancel_tx: Sender<()>,
@@ -931,58 +941,70 @@ pub fn message_client(
     let storage = agent_storage(&state_dir);
     let state = read_agent_state(&storage, id).wrap_err("failed to read agent state")?;
 
-    let stream = smol::block_on(UnixStream::connect(&state.socket_path))
-        .wrap_err("failed to connect to agent socket")?;
+    #[cfg(unix)]
+    {
+        use smol::net::unix::UnixStream;
 
-    let cmd = ClientCommand::Message {
-        text: text.to_string(),
-    };
-    let cmd_json = serde_json::to_string(&cmd).wrap_err("failed to serialize command")?;
+        let stream = smol::block_on(UnixStream::connect(&state.socket_path))
+            .wrap_err("failed to connect to agent socket")?;
 
-    smol::block_on(async {
-        let (reader, mut writer) = split(stream);
-        let mut reader = BufReader::new(reader);
+        let cmd = ClientCommand::Message {
+            text: text.to_string(),
+        };
+        let cmd_json = serde_json::to_string(&cmd).wrap_err("failed to serialize command")?;
 
-        write_line(&mut writer, &cmd_json)
-            .await
-            .wrap_err("failed to send command")?;
+        smol::block_on(async {
+            let (reader, mut writer) = split(stream);
+            let mut reader = BufReader::new(reader);
 
-        let mut line = String::new();
+            write_line(&mut writer, &cmd_json)
+                .await
+                .wrap_err("failed to send command")?;
 
-        while let Ok(n) = reader.read_line(&mut line).await {
-            if n == 0 {
-                break;
-            }
+            let mut line = String::new();
 
-            if json {
-                print!("{line}");
-            } else if let Ok(event) = serde_json::from_str::<ServerEvent>(&line) {
-                match event {
-                    ServerEvent::TextDelta { text } => {
-                        print!("{text}");
-                    }
-                    ServerEvent::Done {
-                        error: Some(message),
-                        ..
-                    } => {
-                        eprintln!("\nError: {message}");
-                        return Err(color_eyre::eyre::eyre!(message));
-                    }
-                    ServerEvent::Done { .. } => {
-                        println!();
-                    }
-                    ServerEvent::Error { message } => {
-                        eprintln!("Error: {message}");
-                        return Err(color_eyre::eyre::eyre!(message));
-                    }
-                    ServerEvent::ToolOutput { .. } => {}
+            while let Ok(n) = reader.read_line(&mut line).await {
+                if n == 0 {
+                    break;
                 }
-            }
-            line.clear();
-        }
 
-        Ok(())
-    })
+                if json {
+                    print!("{line}");
+                } else if let Ok(event) = serde_json::from_str::<ServerEvent>(&line) {
+                    match event {
+                        ServerEvent::TextDelta { text } => {
+                            print!("{text}");
+                        }
+                        ServerEvent::Done {
+                            error: Some(message),
+                            ..
+                        } => {
+                            eprintln!("\nError: {message}");
+                            return Err(color_eyre::eyre::eyre!(message));
+                        }
+                        ServerEvent::Done { .. } => {
+                            println!();
+                        }
+                        ServerEvent::Error { message } => {
+                            eprintln!("Error: {message}");
+                            return Err(color_eyre::eyre::eyre!(message));
+                        }
+                        ServerEvent::ToolOutput { .. } => {}
+                    }
+                }
+                line.clear();
+            }
+
+            Ok(())
+        })
+    }
+
+    #[cfg(not(unix))]
+    {
+        Err(eyre!(
+            "agent {id} has no daemon listener; direct worker sockets require Unix"
+        ))
+    }
 }
 
 pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> {
@@ -1006,36 +1028,48 @@ pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> 
         return Ok(());
     };
 
-    let stream = smol::block_on(UnixStream::connect(&state.socket_path))
-        .wrap_err("failed to connect to agent socket")?;
+    #[cfg(unix)]
+    {
+        use smol::net::unix::UnixStream;
 
-    let cmd = ClientCommand::Stop;
-    let cmd_json = serde_json::to_string(&cmd).wrap_err("failed to serialize command")?;
+        let stream = smol::block_on(UnixStream::connect(&state.socket_path))
+            .wrap_err("failed to connect to agent socket")?;
 
-    smol::block_on(async {
-        let (reader, mut writer) = split(stream);
-        let mut reader = BufReader::new(reader);
+        let cmd = ClientCommand::Stop;
+        let cmd_json = serde_json::to_string(&cmd).wrap_err("failed to serialize command")?;
 
-        write_line(&mut writer, &cmd_json)
-            .await
-            .wrap_err("failed to send command")?;
+        smol::block_on(async {
+            let (reader, mut writer) = split(stream);
+            let mut reader = BufReader::new(reader);
 
-        let mut line = String::new();
-        let _ = reader
-            .read_line(&mut line)
-            .await
-            .wrap_err("failed to read response")?;
+            write_line(&mut writer, &cmd_json)
+                .await
+                .wrap_err("failed to send command")?;
 
-        let response: serde_json::Value =
-            serde_json::from_str(&line).wrap_err("failed to parse response")?;
+            let mut line = String::new();
+            let _ = reader
+                .read_line(&mut line)
+                .await
+                .wrap_err("failed to read response")?;
 
-        match response.get("ok").and_then(serde_json::Value::as_bool) {
-            Some(true) => println!("Agent {id} stopped"),
-            _ => eprintln!("Failed to stop agent {id}"),
-        }
+            let response: serde_json::Value =
+                serde_json::from_str(&line).wrap_err("failed to parse response")?;
 
-        Ok(())
-    })
+            match response.get("ok").and_then(serde_json::Value::as_bool) {
+                Some(true) => println!("Agent {id} stopped"),
+                _ => eprintln!("Failed to stop agent {id}"),
+            }
+
+            Ok(())
+        })
+    }
+
+    #[cfg(not(unix))]
+    {
+        Err(eyre!(
+            "agent {id} has no daemon listener; direct worker sockets require Unix"
+        ))
+    }
 }
 
 fn agent_state_to_record(state: &AgentState) -> AgentRecord {
@@ -1263,35 +1297,48 @@ fn control_command_client(
 ) -> Result<()> {
     let storage = agent_storage(state_dir);
     let state = read_agent_state(&storage, id).wrap_err("failed to read agent state")?;
-    let stream = smol::block_on(UnixStream::connect(&state.socket_path))
-        .wrap_err("failed to connect to agent socket")?;
 
-    let cmd_json = serde_json::to_string(&command).wrap_err("failed to serialize command")?;
+    #[cfg(unix)]
+    {
+        use smol::net::unix::UnixStream;
 
-    smol::block_on(async {
-        let (reader, mut writer) = split(stream);
-        let mut reader = BufReader::new(reader);
+        let stream = smol::block_on(UnixStream::connect(&state.socket_path))
+            .wrap_err("failed to connect to agent socket")?;
 
-        write_line(&mut writer, &cmd_json)
-            .await
-            .wrap_err("failed to send command")?;
+        let cmd_json = serde_json::to_string(&command).wrap_err("failed to serialize command")?;
 
-        let mut line = String::new();
-        let _ = reader
-            .read_line(&mut line)
-            .await
-            .wrap_err("failed to read response")?;
+        smol::block_on(async {
+            let (reader, mut writer) = split(stream);
+            let mut reader = BufReader::new(reader);
 
-        let response: serde_json::Value =
-            serde_json::from_str(&line).wrap_err("failed to parse response")?;
+            write_line(&mut writer, &cmd_json)
+                .await
+                .wrap_err("failed to send command")?;
 
-        match response.get("ok").and_then(serde_json::Value::as_bool) {
-            Some(true) => println!("Agent {id} {success_label}"),
-            _ => eprintln!("Failed to update agent {id}"),
-        }
+            let mut line = String::new();
+            let _ = reader
+                .read_line(&mut line)
+                .await
+                .wrap_err("failed to read response")?;
 
-        Ok(())
-    })
+            let response: serde_json::Value =
+                serde_json::from_str(&line).wrap_err("failed to parse response")?;
+
+            match response.get("ok").and_then(serde_json::Value::as_bool) {
+                Some(true) => println!("Agent {id} {success_label}"),
+                _ => eprintln!("Failed to update agent {id}"),
+            }
+
+            Ok(())
+        })
+    }
+
+    #[cfg(not(unix))]
+    {
+        Err(eyre!(
+            "agent {id} has no daemon listener; direct worker sockets require Unix"
+        ))
+    }
 }
 
 #[cfg(test)]
