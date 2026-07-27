@@ -891,9 +891,10 @@ mod tests {
             std::io::ErrorKind::UnexpectedEof,
             "stream ended",
         ));
+        let metadata = RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance);
 
         assert!(matches!(
-            error.suppress_retry_after_send(None),
+            error.suppress_retry_after_send(Some(metadata)),
             AgentError::RequestSent { .. }
         ));
     }
