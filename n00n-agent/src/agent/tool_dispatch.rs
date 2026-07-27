@@ -604,42 +604,42 @@ async fn execute_mcp_tool(
         );
     }
 
-    if !plan_read_only {
-        let perm_tool = match ToolKey::parse(tool_name) {
-            Ok(k) => k,
-            Err(e) => {
-                return tool_done_error(
-                    id.to_owned(),
-                    Arc::clone(&tool_id),
-                    format!("invalid MCP tool key '{tool_name}': {e}"),
-                );
-            }
-        };
-        let perm_scope = {
-            let json = input.to_string();
-            if json.len() > 200 {
-                format!("{}\u{2026}", &json[..200])
-            } else {
-                json
-            }
-        };
-        let perm_scopes = crate::tools::PermissionScopes::single(perm_scope);
-
-        if let Err(e) = ctx
-            .permissions
-            .enforce(PermissionCheckContext {
-                tool: &perm_tool,
-                scopes: &perm_scopes,
-                event_tx: &ctx.event_tx,
-                user_response_rx: ctx.user_response_rx.as_deref(),
-                request_id: id,
-                cancel: &ctx.cancel,
-                plan_path: ctx.mode.plan_path(),
-            })
-            .await
-        {
-            return tool_done_error(id.to_owned(), Arc::clone(&tool_id), e.to_string());
+    // Plan-mode read-only classification only bypasses the mutation gate above.
+    // Configured MCP allow/deny rules still apply.
+    let perm_tool = match ToolKey::parse(tool_name) {
+        Ok(k) => k,
+        Err(e) => {
+            return tool_done_error(
+                id.to_owned(),
+                Arc::clone(&tool_id),
+                format!("invalid MCP tool key '{tool_name}': {e}"),
+            );
         }
+    };
+    let perm_scope = {
+        let json = input.to_string();
+        if json.len() > 200 {
+            format!("{}\u{2026}", &json[..200])
+        } else {
+            json
+        }
+    };
+    let perm_scopes = crate::tools::PermissionScopes::single(perm_scope);
+
+    if let Err(e) = ctx
+        .permissions
+        .enforce(PermissionCheckContext {
+            tool: &perm_tool,
+            scopes: &perm_scopes,
+            event_tx: &ctx.event_tx,
+            user_response_rx: ctx.user_response_rx.as_deref(),
+            request_id: id,
+            cancel: &ctx.cancel,
+            plan_path: ctx.mode.plan_path(),
+        })
+        .await
+    {
+        return tool_done_error(id.to_owned(), Arc::clone(&tool_id), e.to_string());
     }
 
     let Some(mcp) = &ctx.mcp else {
@@ -1230,6 +1230,41 @@ mod tests {
             assert!(result.is_error);
             assert_ne!(result.output.as_text(), MCP_MUTATION_BLOCKED_IN_PLAN);
             assert!(result.output.as_text().contains("tools/call"));
+        });
+    }
+
+    #[test]
+    fn mcp_read_only_plan_mode_still_enforces_deny_rules() {
+        smol::block_on(async {
+            let session =
+                crate::mcp::stub_session_with_read_only(&[("myserver.mytool", "read-only")], true);
+            let deny_cfg = PermissionsConfig {
+                rules: vec![PermissionRule {
+                    tool: ToolKey::parse("myserver.mytool").unwrap(),
+                    scope: None,
+                    effect: Effect::Deny,
+                }],
+                ..Default::default()
+            };
+            let dir = TempDir::new().unwrap();
+            let permissions = Arc::new(PermissionManager::new(deny_cfg, dir.path().to_path_buf()));
+            let mut ctx = crate::tools::test_support::stub_ctx_with_permissions(
+                &AgentMode::Plan(PathBuf::from("/tmp/plan.md")),
+                permissions,
+            );
+            ctx.mcp = Some(session);
+
+            let result = dispatch_mcp(&ctx, "t1", "myserver.mytool", &serde_json::json!({})).await;
+
+            assert!(result.is_error);
+            assert!(
+                result
+                    .output
+                    .as_text()
+                    .starts_with(PERMISSION_DENIED_PREFIX),
+                "plan-mode read-only must not skip deny rules, got: {}",
+                result.output.as_text()
+            );
         });
     }
 

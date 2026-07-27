@@ -285,6 +285,82 @@ local function normalize_command(command)
   return command
 end
 
+local GIT_SANITIZE_SUBCOMMANDS = {
+  diff = true,
+  show = true,
+  log = true,
+}
+
+local function split_shell_words(command)
+  local words = {}
+  local index = 1
+  while index <= #command do
+    while index <= #command and command:sub(index, index):match("%s") do
+      index = index + 1
+    end
+    if index > #command then
+      break
+    end
+    local tail = command:sub(index)
+    local word_end = shell_word_end(tail)
+    words[#words + 1] = tail:sub(1, word_end)
+    index = index + word_end
+  end
+  return words
+end
+
+-- Harden git commands against repo-config injection of external diff/pagers.
+-- Inserts `--no-optional-locks` (prevents write locks) and `--no-ext-diff`
+-- for subcommands that may invoke an external diff driver.
+local function sanitize_git_command(command)
+  local trimmed = trim(command)
+  if trimmed:lower():sub(1, 4) ~= "git " then
+    return command
+  end
+
+  local words = split_shell_words(trimmed)
+  if #words < 2 or words[1]:lower() ~= "git" then
+    return command
+  end
+
+  local has_optional_locks = false
+  local subcommand_index = nil
+  for i = 2, #words do
+    if words[i] == "--no-optional-locks" and not subcommand_index then
+      has_optional_locks = true
+    end
+    if words[i]:sub(1, 1) ~= "-" and not subcommand_index then
+      subcommand_index = i
+      break
+    end
+  end
+
+  if not has_optional_locks then
+    table.insert(words, 2, "--no-optional-locks")
+    if subcommand_index then
+      subcommand_index = subcommand_index + 1
+    end
+  end
+
+  if subcommand_index then
+    local subcommand = words[subcommand_index]:lower()
+    if GIT_SANITIZE_SUBCOMMANDS[subcommand] then
+      local has_no_ext_diff = false
+      for i = subcommand_index + 1, #words do
+        if words[i] == "--no-ext-diff" then
+          has_no_ext_diff = true
+          break
+        end
+      end
+      if not has_no_ext_diff then
+        table.insert(words, subcommand_index + 1, "--no-ext-diff")
+      end
+    end
+  end
+
+  return table.concat(words, " ")
+end
+
 local function rtk_rewrite(command, ctx)
   local config = ctx:config()
   if config and config.no_rtk then
@@ -597,6 +673,8 @@ n00n.api.register_tool({
 
     ctx:set_deadline(timeout_secs)
 
+    command = sanitize_git_command(command)
+
     local rewritten = rtk_rewrite(command, ctx)
     if rewritten then
       command = rewritten
@@ -641,7 +719,11 @@ n00n.api.register_tool({
 
     n00n.fn.jobstart(command, {
       cwd = workdir,
-      env = { GIT_TERMINAL_PROMPT = "0" },
+      env = {
+        GIT_TERMINAL_PROMPT = "0",
+        GIT_PAGER = "cat",
+        GIT_EXEC_PATH = "",
+      },
       on_stdout = function(_, line)
         if not has_output then
           has_output = true

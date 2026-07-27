@@ -322,7 +322,10 @@ impl<'h> Agent<'h> {
         self.history.push(msg);
         self.mode = input.mode;
         self.workflow = input.workflow;
-        self.rebuild_tools();
+        // Filter the caller-supplied tool list in place. Rebuilding from the
+        // global registry would replace curated/session-local definitions
+        // (e.g. structured_output) and expand restricted ToolFilter sets.
+        filter_tools_for_mode(&mut self.tools, &self.mode);
         self.context_size = estimate_message_tokens(self.history.as_slice(), &self.model.id)
             .saturating_add(estimate_tool_tokens(&self.tools, &self.model.id));
         let user_message_count = self
