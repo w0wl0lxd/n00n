@@ -137,6 +137,9 @@ class N00nAgent(BaseInstalledAgent):
                         "&& tar -xzf /tmp/n00n-bundle.tar.gz -C /opt/n00n "
                         "--strip-components=1 "
                         "&& chmod -R a+rX /opt/n00n "
+                        # The bundled n00n wrapper computes DIR from $0, so a
+                        # symlink in /usr/local/bin resolves to the wrong path.
+                        "&& sed -i 's|^DIR=.*|DIR=/opt/n00n|' /opt/n00n/n00n "
                         "&& ln -sf /opt/n00n/n00n /usr/local/bin/n00n "
                         "&& rm -f /tmp/n00n-bundle.tar.gz"
                     ),
