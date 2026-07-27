@@ -1,7 +1,10 @@
 //! Peer credential checks for Unix domain sockets.
 
 #[cfg(unix)]
-use crate::error::{ControlError, ControlResult};
+use crate::error::ControlResult;
+
+#[cfg(all(unix, target_os = "linux"))]
+use crate::error::ControlError;
 
 /// Reject UDS connections whose peer uid differs from ours (Linux only).
 ///

@@ -598,7 +598,7 @@ pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()
     #[cfg(not(unix))]
     {
         let _ = (opts, agent_id);
-        return Err(eyre!("background agent server requires unix"));
+        Err(eyre!("background agent server requires unix"))
     }
 
     #[cfg(unix)]
@@ -965,7 +965,7 @@ pub fn message_client(
 
     #[cfg(not(unix))]
     {
-        return Err(eyre!("direct agent socket control requires unix"));
+        Err(eyre!("direct agent socket control requires unix"))
     }
 
     #[cfg(unix)]
@@ -1048,7 +1048,7 @@ pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> 
 
     #[cfg(not(unix))]
     {
-        return Err(eyre!("direct agent socket control requires unix"));
+        Err(eyre!("direct agent socket control requires unix"))
     }
 
     #[cfg(unix)]
@@ -1314,7 +1314,7 @@ fn control_command_client(
 
     #[cfg(not(unix))]
     {
-        return Err(eyre!("direct agent socket control requires unix"));
+        Err(eyre!("direct agent socket control requires unix"))
     }
 
     #[cfg(unix)]
