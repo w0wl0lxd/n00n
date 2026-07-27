@@ -26,6 +26,7 @@ fn protocol_kind(protocol: Protocol) -> ProviderKind {
         Protocol::Anthropic => ProviderKind::Anthropic,
         Protocol::Google => ProviderKind::Google,
         Protocol::Devin => ProviderKind::Devin,
+        Protocol::Cursor => ProviderKind::Cursor,
     }
 }
 
