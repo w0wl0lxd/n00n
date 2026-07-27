@@ -2677,14 +2677,13 @@ local live, err = n00n.session.live()
 n00n.session.status({id})
 ```
 
-Returns one live session with its status, latest assistant text output,
-and paused team run metadata when the latest tool result is from `team`.
+Returns one live session with its status and latest assistant text output.
 
 **Parameters:**
 
 - `{id}` (`string`) Live session id.
 
-**Returns:** (`table|nil`, `string|nil`) `{id, title, status, updated_at, focused, output?, paused_team?}`, or nil and an error.
+**Returns:** (`table|nil`, `string|nil`) `{id, title, status, updated_at, focused, output?}`, or nil and an error.
 
 ---
 
@@ -2792,13 +2791,7 @@ the prompt is queued and picked up when the agent reaches it.
 - `{text}` (`string`) The prompt to send. Must not be blank.
 - `{opts?}` (`table?`) Optional fields: session (string) id of a live
 
-  session (defaults to the focused one); steer (boolean) request
-
-
-  delivery as a steering interrupt when the session is busy; control
-
-
-  (boolean) mark the message as an agent-to-agent control message.
+  session; defaults to the focused one.
 
 
 **Returns:** (`string|nil`, `string|nil`) "started" or "queued", or nil and an error.
@@ -2806,7 +2799,7 @@ the prompt is queued and picked up when the agent reaches it.
 **Example:**
 
 ```lua
-local state, err = n00n.session.prompt("run the tests", { session = id, steer = true, control = true })
+local state, err = n00n.session.prompt("run the tests", { session = id })
 ```
 
 ---
