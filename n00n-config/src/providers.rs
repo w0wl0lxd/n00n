@@ -93,6 +93,7 @@ pub enum Protocol {
     Anthropic,
     Google,
     Devin,
+    Cursor,
 }
 
 impl FromStr for Protocol {
@@ -105,6 +106,7 @@ impl FromStr for Protocol {
             "anthropic" => Ok(Self::Anthropic),
             "google" => Ok(Self::Google),
             "devin" => Ok(Self::Devin),
+            "cursor" => Ok(Self::Cursor),
             _ => Err(format!("unknown protocol: {s}")),
         }
     }
