@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785143261181,
+  "lastUpdate": 1785145333682,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -7557,6 +7557,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 124083,
             "range": "± 6422",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9503c37633769d7b8dccd16585a08127d533ea9e",
+          "message": "feat(providers): add Cursor provider (#150)\n\n* feat(providers): add Cursor provider\n\nAdd Protocol::Cursor, ProviderKind::Cursor, and a new cursor provider\nmodule that shells out to cursor-agent.\n\n- Integrates the built-in slug/manifest entry and dynamic-provider base\n  mapping so both `cursor/...` specs and custom scripts backed by Cursor work.\n- Streams `cursor-agent --print --output-format stream-json` output,\n  parsing NDJSON system/assistant/thinking/tool_call/result events into\n  n00n ProviderEvents.\n- Supports session resume via the CLI's `--resume` flag and tracks the\n  cursor session id per n00n session.\n- Maps n00n thinking levels to cursor-agent `[effort=...]` model brackets.\n- Ships a generated static model registry (cursor_models.rs) covering the\n  190 model ids returned by `cursor-agent --list-models` with pricing,\n  context windows, and tier metadata.\n- Forces vision support off so n00n adapts image blocks to text notes\n  before the prompt reaches the cursor-agent CLI.\n\nTests, fmt, clippy, and workspace nextest pass.\n\n* merge: sync cursor provider with main\n\nMerge latest main, add changelog fragment, and regenerate provider docs.\n\n* fix(providers): drop redundant clone on Copy ModelPricing\n\n* fix(providers): Cursor review fixes\n\n- Regenerate cursor_models.rs so Weak/Medium/Strong each have one default entry.\n- Require explicit CURSOR_AGENT_TRUST=true and CURSOR_AGENT_YOLO=true to run cursor-agent.\n- Guard --resume against empty/missing cursor session IDs.\n- Remove unused parse_stream timeout argument.\n- Handle ProviderKind::Cursor in custom provider creation.\n- Add scripts/gen_cursor_models.py so the model registry is reproducible.\n\n* docs(providers): regenerate provider docs after main merge",
+          "timestamp": "2026-07-27T09:20:42Z",
+          "tree_id": "5782fcc5ecf43c5430d03ba7c2344e857741b49f",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/9503c37633769d7b8dccd16585a08127d533ea9e"
+        },
+        "date": 1785145333068,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6705324,
+            "range": "± 119601",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2223176,
+            "range": "± 9306",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2216924,
+            "range": "± 3537",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8004064,
+            "range": "± 180972",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4311567,
+            "range": "± 19567",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4311089,
+            "range": "± 26711",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 584520,
+            "range": "± 46268",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 195386,
+            "range": "± 2560",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 192086,
+            "range": "± 725",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1046152,
+            "range": "± 19628",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 588922,
+            "range": "± 1209",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 588917,
+            "range": "± 1905",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 73713,
+            "range": "± 5982",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 180615,
+            "range": "± 14198",
             "unit": "ns/iter"
           }
         ]
