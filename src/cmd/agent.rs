@@ -22,7 +22,7 @@ use n00n_daemon::ControlError;
 use n00n_daemon::backend::WorkerBackend;
 use n00n_daemon::client as daemon_client;
 use n00n_daemon::lock::DaemonRole;
-use n00n_daemon::protocol::{ControlRequest, ControlResponse, MessageOpts};
+use n00n_daemon::protocol::{BackendKind, ControlRequest, ControlResponse, MessageOpts};
 use n00n_daemon::registry::ControlPlane;
 use n00n_daemon::server as daemon_server;
 use n00n_daemon::transport;
