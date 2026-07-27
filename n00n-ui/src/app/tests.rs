@@ -9,8 +9,9 @@ use arc_swap::ArcSwap;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use n00n_agent::permissions::PermissionManager;
 use n00n_agent::{
-    ImageMediaType, InterruptSource, McpConfigErrors, McpPromptArg, McpServerInfo, McpServerStatus,
-    McpSnapshot, McpSnapshotReader, ToolDoneEvent, ToolOutput, ToolStartEvent, TurnCompleteEvent,
+    ExtractedCommand, ImageMediaType, InterruptPoint, InterruptSource, McpConfigErrors,
+    McpPromptArg, McpServerInfo, McpServerStatus, McpSnapshot, McpSnapshotReader, ToolDoneEvent,
+    ToolOutput, ToolStartEvent, TurnCompleteEvent,
 };
 use n00n_config::{PermissionsConfig, UiConfig};
 use n00n_lua::{HintReader, KeymapReader, LuaCommandReader};
@@ -231,6 +232,7 @@ fn rapid_submissions_keep_fifo_while_first_waits_for_persistence() {
     app.handle_submit(Submission {
         text: "second".into(),
         images: Vec::new(),
+        control: false,
     });
 
     assert!(
@@ -2349,6 +2351,7 @@ fn submit_exit_quits() {
     let actions = app.handle_submit(Submission {
         text: "exit".into(),
         images: vec![],
+        control: false,
     });
     assert_eq!(app.exit_request, ExitRequest::Success);
     assert!(actions.is_empty());
@@ -2530,18 +2533,29 @@ fn draw_failure_pending_submission_restores_fifo_images_and_control_after_restar
         &test_model(),
     );
 
-    let Some(shared_queue::QueueItem::Message { text, input, .. }) = receiver.pop() else {
+    let Some(shared_queue::QueueItem::Message {
+        text,
+        input,
+        delivery,
+        ..
+    }) = receiver.pop()
+    else {
         panic!("first pending message must be restored");
     };
     assert_eq!(text, "first with image");
     assert_eq!(input.images.len(), 1);
     assert_eq!(&*input.images[0].data, "dGVzdA==");
-    let Some(shared_queue::QueueItem::Message { text, input, .. }) = receiver.pop() else {
-        panic!("second queued message must be restored");
+    assert_eq!(delivery, shared_queue::Delivery::TurnEnd);
+    let ExtractedCommand::Interrupt(input, _) =
+        InterruptSource::poll(&receiver, InterruptPoint::Safe)
+            .expect("steering control must be restorable at a safe boundary")
+    else {
+        panic!("second queued message must restore as a steering interrupt");
     };
-    assert_eq!(text, "second control in fifo");
+    assert_eq!(input.message, "second control in fifo");
     assert!(input.control);
     assert!(receiver.pop().is_none());
+    assert!(InterruptSource::poll(&receiver, InterruptPoint::Safe).is_none());
 
     drop(restarted);
     Arc::try_unwrap(writer)

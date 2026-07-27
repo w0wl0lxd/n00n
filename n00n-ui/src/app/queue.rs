@@ -192,7 +192,7 @@ impl MessageQueue {
         )
     }
 
-    pub(crate) fn queued_inputs(&self) -> Vec<n00n_agent::AgentInput> {
+    pub(crate) fn queued_inputs(&self) -> Vec<(n00n_agent::AgentInput, Delivery)> {
         self.shared.as_ref().map_or(
             vec![],
             super::super::agent::shared_queue::QueueSender::queued_inputs,
@@ -300,8 +300,9 @@ impl App {
         &mut self,
         msg: QueuedMessage,
         input: n00n_agent::AgentInput,
+        delivery: Delivery,
     ) -> bool {
-        self.queue_input(msg, input, Delivery::TurnEnd)
+        self.queue_input(msg, input, delivery)
     }
 
     fn queue_input(
@@ -526,5 +527,34 @@ mod tests {
         assert_eq!(queue.panel_len(), 1);
         assert_eq!(queue.panel_entries()[0].text, "/compact");
         assert_eq!(queue.focus(), Some(0));
+    }
+
+    #[test]
+    fn take_focused_for_edit_preserves_control_flag() {
+        let (shared, _receiver) = shared_queue::queue();
+        let mut message = displayed_message("control nudge");
+        if let QueueItem::Message {
+            input,
+            delivery,
+            displayed,
+            ..
+        } = &mut message
+        {
+            input.control = true;
+            *delivery = Delivery::Steering;
+            *displayed = false;
+        }
+        shared.push(message);
+
+        let mut queue = MessageQueue::default();
+        queue.set_shared(shared);
+        queue.set_focus();
+
+        let (_, msg, delivery) = queue
+            .take_focused_for_edit()
+            .expect("focused control message");
+        assert!(msg.control);
+        assert_eq!(delivery, Delivery::Steering);
+        assert_eq!(queue.editing(), Some(Delivery::Steering));
     }
 }

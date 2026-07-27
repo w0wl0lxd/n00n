@@ -298,7 +298,35 @@ local control_schema = {
           type = "string",
           enum = { "set", "get", "delete", "list" },
         },
-        rule = { type = "object" },
+        rule = {
+          type = "object",
+          description = "Rule for set.",
+          properties = {
+            id = { type = "string", description = "Unique rule id." },
+            scope = {
+              type = "object",
+              description = "Scope filters.",
+              properties = {
+                tag = { type = "string", description = "Filter by tag." },
+                session_type = { type = "string", description = "Filter by session type." },
+                agent_id = { type = "string", description = "Filter by agent id." },
+              },
+            },
+            restricted_tools = {
+              type = "array",
+              items = { type = "string" },
+              description = "Denied tools.",
+            },
+            allowed_tools = {
+              type = "array",
+              items = { type = "string" },
+              description = "Allowed tools (whitelist).",
+            },
+            paused = { type = "boolean", description = "Pause agents in scope." },
+            priority = { type = "integer", description = "Priority (higher wins)." },
+          },
+          required = { "id", "scope", "priority" },
+        },
         rule_id = { type = "string" },
       },
     },

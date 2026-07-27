@@ -414,6 +414,7 @@ pub enum SessionRequest {
     New {
         prompt: Option<String>,
         focus: bool,
+        parent_id: Option<String>,
     },
     Prompt {
         id: Option<String>,

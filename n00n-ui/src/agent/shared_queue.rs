@@ -34,7 +34,7 @@ pub(crate) struct QueuedMessage {
     pub(crate) control: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Delivery {
     TurnEnd,
     Steering,
@@ -46,7 +46,7 @@ impl From<Submission> for QueuedMessage {
         Self {
             text: sub.text,
             images: sub.images,
-            control: false,
+            control: sub.control,
         }
     }
 }
@@ -283,11 +283,13 @@ impl QueueSender {
             .collect()
     }
 
-    pub(crate) fn queued_inputs(&self) -> Vec<AgentInput> {
+    pub(crate) fn queued_inputs(&self) -> Vec<(AgentInput, Delivery)> {
         lock(&self.items)
             .iter()
             .filter_map(|item| match item {
-                QueueItem::Message { input, .. } => Some(input.clone()),
+                QueueItem::Message {
+                    input, delivery, ..
+                } => Some((input.clone(), *delivery)),
                 QueueItem::Compact { .. } => None,
             })
             .collect()
