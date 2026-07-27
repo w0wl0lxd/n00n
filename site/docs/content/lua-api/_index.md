@@ -5113,7 +5113,7 @@ n00n.codegraph.check_binary()
 
 Check that the `codegraph` CLI is installed and working.
 
-**Returns:** (`nil`) nil on success, or error on failure.
+**Returns:** (`boolean`, `string?`) ok and optional error message.
 
 ---
 
@@ -5159,7 +5159,7 @@ Run `codegraph explore` for a natural-language or symbol query.
 - `{project}` (`string`) Path to the project root.
 - `{timeout_secs}` (`integer`) Optional timeout in seconds (default 30).
 
-**Returns:** (`string`) Explore output text.
+**Returns:** (`string?`, `string?`) output and optional error message.
 
 
 ## n00n.workflow {#n00n-workflow}

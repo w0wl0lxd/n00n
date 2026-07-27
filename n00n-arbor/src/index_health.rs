@@ -32,11 +32,11 @@ pub fn graph_modified_at(project: &Path) -> Result<Option<SystemTime>, ArborErro
     if !graph_path.is_file() {
         return Ok(None);
     }
-    let metadata = std::fs::metadata(&graph_path).map_err(|source| ArborError::Exec { source })?;
+    let metadata = std::fs::metadata(&graph_path).map_err(|source| ArborError::Io { source })?;
     metadata
         .modified()
         .map(Some)
-        .map_err(|source| ArborError::Exec { source })
+        .map_err(|source| ArborError::Io { source })
 }
 
 pub fn ensure_fresh_index(project: &Path) -> Result<(), ArborError> {
@@ -55,7 +55,6 @@ pub fn ensure_fresh_index(project: &Path) -> Result<(), ArborError> {
             }
             Ok(())
         }
-        Err(ArborError::Exec { .. }) => Ok(()),
         Err(err) => Err(err),
     }
 }

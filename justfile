@@ -75,7 +75,7 @@ explore-health PROJECT=".":
     fi
     echo "== codegraph =="
     if command -v codegraph >/dev/null 2>&1; then
-        codegraph --version
+        codegraph --version || true
     else
         echo "codegraph CLI: not installed"
     fi

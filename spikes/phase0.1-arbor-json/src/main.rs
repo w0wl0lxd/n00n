@@ -103,7 +103,16 @@ impl<'de> Deserialize<'de> for Edge {
 fn main() -> Result<()> {
     color_eyre::install()?;
 
-    let graph_path = PathBuf::from("../../.arbor/graph.json");
+    let graph_path: PathBuf = match std::env::args().nth(1) {
+        Some(path) => path.into(),
+        None => {
+            eprintln!(
+                "Usage: {} <graph.json>",
+                std::env::args().next().unwrap_or_default()
+            );
+            std::process::exit(1);
+        }
+    };
     if !graph_path.exists() {
         return Err(eyre!("Graph file not found: {}", graph_path.display()));
     }

@@ -66,10 +66,41 @@ case("trace_path_symbols", function()
   eq(to_symbol, "bar")
 end)
 
+case("query_path_selects_index", function()
+  eq(router.normalize_intent({ query = "src/main.rs" }), "file")
+end)
+
+case("what_calls_routes_to_callers", function()
+  eq(router.parse_arbor_command({ query = "what calls restore_item" }), "callers")
+  eq(router.extract_symbol("what calls restore_item", "callers"), "restore_item")
+end)
+
+case("what_does_call_routes_to_callees", function()
+  eq(router.parse_arbor_command({ query = "what does restore_item call" }), "callees")
+  eq(router.extract_symbol("what does restore_item call", "callees"), "restore_item")
+end)
+
+case("impact_routes_to_cross_file", function()
+  eq(router.normalize_intent({ query = "impact of changing restore_item" }), "cross_file")
+end)
+
+case("symbol_case_preserved", function()
+  eq(router.extract_symbol("Callers of AuthService", "callers"), "AuthService")
+  local from_symbol, to_symbol = router.extract_trace_symbols("call path from Foo to Bar")
+  eq(from_symbol, "Foo")
+  eq(to_symbol, "Bar")
+end)
+
 case("cache_key_is_stable", function()
   local key_a = router.cache_key("arbor", { command = "map", project = "." })
   local key_b = router.cache_key("arbor", { project = ".", command = "map" })
   eq(key_a, key_b)
+end)
+
+case("cache_key_is_injective", function()
+  local key_a = router.cache_key("codegraph", { query = "foo", projectPath = "bar" })
+  local key_b = router.cache_key("codegraph", { query = "bar", projectPath = "foo" })
+  assert(key_a ~= key_b, "swapped query/projectPath must produce different cache keys")
 end)
 
 if #failures > 0 then

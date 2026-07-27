@@ -954,6 +954,7 @@ pub fn message_client(
 
     #[cfg(not(unix))]
     {
+        let _ = (&state_dir, text, json);
         return Err(eyre!(
             "agent {id} has no daemon listener; direct worker sockets require Unix"
         ));
@@ -984,7 +985,12 @@ pub fn message_client(
 
             let mut line = String::new();
 
-            while let Ok(n) = reader.read_line(&mut line).await {
+            loop {
+                line.clear();
+                let n = reader
+                    .read_line(&mut line)
+                    .await
+                    .wrap_err("failed to read response")?;
                 if n == 0 {
                     break;
                 }
@@ -1013,7 +1019,6 @@ pub fn message_client(
                         ServerEvent::ToolOutput { .. } => {}
                     }
                 }
-                line.clear();
             }
 
             Ok(())
@@ -1075,10 +1080,13 @@ pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> 
                 .wrap_err("failed to send command")?;
 
             let mut line = String::new();
-            let _ = reader
+            let n = reader
                 .read_line(&mut line)
                 .await
                 .wrap_err("failed to read response")?;
+            if n == 0 {
+                return Err(eyre!("agent {id} closed connection before responding"));
+            }
 
             let response: serde_json::Value =
                 serde_json::from_str(&line).wrap_err("failed to parse response")?;
@@ -1336,10 +1344,13 @@ fn control_command_client(
             .wrap_err("failed to send command")?;
 
         let mut line = String::new();
-        let _ = reader
+        let n = reader
             .read_line(&mut line)
             .await
             .wrap_err("failed to read response")?;
+        if n == 0 {
+            return Err(eyre!("agent {id} closed connection before responding"));
+        }
 
         let response: serde_json::Value =
             serde_json::from_str(&line).wrap_err("failed to parse response")?;

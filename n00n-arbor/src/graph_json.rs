@@ -2,6 +2,9 @@ use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, from_str, from_value};
+
+use crate::ArborError;
 
 const CALLS_EDGE_KIND: &str = "calls";
 
@@ -39,7 +42,7 @@ impl<'de> Deserialize<'de> for GraphEdge {
     where
         D: serde::Deserializer<'de>,
     {
-        let value = serde_json::Value::deserialize(deserializer)?;
+        let value = Value::deserialize(deserializer)?;
         let arr = value
             .as_array()
             .ok_or_else(|| serde::de::Error::custom("edge must be an array"))?;
@@ -60,8 +63,7 @@ impl<'de> Deserialize<'de> for GraphEdge {
         let target = usize::try_from(target_u64)
             .map_err(|_| serde::de::Error::custom("edge target does not fit usize"))?;
 
-        let meta: EdgeMeta =
-            serde_json::from_value(arr[2].clone()).map_err(serde::de::Error::custom)?;
+        let meta: EdgeMeta = from_value(arr[2].clone()).map_err(serde::de::Error::custom)?;
 
         Ok(Self {
             source,
@@ -118,16 +120,16 @@ pub struct GraphIndex {
 }
 
 impl GraphIndex {
-    pub fn from_json_str(content: &str) -> Result<Self, crate::ArborError> {
+    pub fn from_json_str(content: &str) -> Result<Self, ArborError> {
         let raw: RawArborGraph =
-            serde_json::from_str(content).map_err(|source| crate::ArborError::Parse { source })?;
+            from_str(content).map_err(|source| ArborError::Parse { source })?;
         validate_graph_data(&raw.graph)?;
         let mut outgoing: HashMap<usize, Vec<EdgeLink>> = HashMap::new();
         let mut incoming: HashMap<usize, Vec<EdgeLink>> = HashMap::new();
 
         for edge in raw.graph.edges {
             if edge.source >= raw.graph.nodes.len() || edge.target >= raw.graph.nodes.len() {
-                return Err(crate::ArborError::Cli {
+                return Err(ArborError::Cli {
                     message: format!(
                         "graph edge index out of bounds: {} -> {} ({})",
                         edge.source, edge.target, edge.kind
@@ -154,9 +156,8 @@ impl GraphIndex {
         })
     }
 
-    pub fn from_graph_json_path(path: &Path) -> Result<Self, crate::ArborError> {
-        let content =
-            std::fs::read_to_string(path).map_err(|source| crate::ArborError::Exec { source })?;
+    pub fn from_graph_json_path(path: &Path) -> Result<Self, ArborError> {
+        let content = std::fs::read_to_string(path).map_err(|source| ArborError::Io { source })?;
         Self::from_json_str(&content)
     }
 
@@ -205,7 +206,8 @@ impl GraphIndex {
             candidates.retain(|symbol| symbol.node.qualified_name == *qualified_name);
         }
         if let Some(file) = &query.file {
-            candidates.retain(|symbol| symbol.node.file.contains(file.as_str()));
+            let query_path = Path::new(file);
+            candidates.retain(|symbol| Path::new(&symbol.node.file).ends_with(query_path));
         }
         if let Some(kind) = &query.kind {
             candidates.retain(|symbol| symbol.node.kind == *kind);
@@ -225,16 +227,16 @@ impl GraphIndex {
         &self,
         from: &SymbolQuery,
         to: &SymbolQuery,
-    ) -> Result<Vec<SymbolRef>, crate::ArborError> {
+    ) -> Result<Vec<SymbolRef>, ArborError> {
         let from_matches = self.resolve_symbol(from);
         let to_matches = self.resolve_symbol(to);
         if from_matches.is_empty() {
-            return Err(crate::ArborError::Cli {
+            return Err(ArborError::Cli {
                 message: format!("symbol not found in graph index: {}", from.name),
             });
         }
         if to_matches.is_empty() {
-            return Err(crate::ArborError::Cli {
+            return Err(ArborError::Cli {
                 message: format!("symbol not found in graph index: {}", to.name),
             });
         }
@@ -254,7 +256,7 @@ impl GraphIndex {
             }
         }
 
-        best.ok_or_else(|| crate::ArborError::Cli {
+        best.ok_or_else(|| ArborError::Cli {
             message: format!("no call path found from {} to {}", from.name, to.name),
         })
     }
@@ -352,15 +354,15 @@ impl GraphIndex {
     }
 }
 
-fn validate_graph_data(data: &GraphData) -> Result<(), crate::ArborError> {
+fn validate_graph_data(data: &GraphData) -> Result<(), ArborError> {
     if data.nodes.is_empty() && !data.edges.is_empty() {
-        return Err(crate::ArborError::Cli {
+        return Err(ArborError::Cli {
             message: String::from("graph has edges but no nodes"),
         });
     }
     for hole in &data.node_holes {
         if *hole >= data.nodes.len() {
-            return Err(crate::ArborError::Cli {
+            return Err(ArborError::Cli {
                 message: format!("graph node hole out of bounds: {hole}"),
             });
         }
