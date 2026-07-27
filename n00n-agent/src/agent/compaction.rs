@@ -928,4 +928,181 @@ mod tests {
             "Compaction must save >80% tokens on large payloads"
         );
     }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn benchmark_multi_turn_session_context_growth() {
+        let bpe = tiktoken_rs::cl100k_base_singleton();
+
+        let thousand_line_file = (1..=1000)
+            .map(|i| format!("pub fn handler_{i}() -> Result<(), Error> {{ Ok(()) }}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let mut legacy_total_tokens = 0;
+        let mut debloated_total_tokens = 0;
+
+        for turn in 1..=10 {
+            // Legacy flow: Re-sends full 1,000 line file via `write` on every turn
+            let legacy_input = serde_json::json!({
+                "path": "src/lib.rs",
+                "content": thousand_line_file
+            })
+            .to_string();
+
+            // Debloated flow: Sends line-targeted patch via `edit_lines`
+            let debloated_input = serde_json::json!({
+                "path": "src/lib.rs",
+                "start": turn * 10,
+                "end": turn * 10,
+                "new_string": format!("pub fn handler_{}() -> Result<(), Error> {{ println!(\"mod\"); Ok(()) }}", turn * 10)
+            })
+            .to_string();
+
+            legacy_total_tokens += bpe.encode_ordinary(&legacy_input).len();
+            debloated_total_tokens += bpe.encode_ordinary(&debloated_input).len();
+        }
+
+        let multi_turn_savings_pct =
+            (1.0 - (debloated_total_tokens as f64 / legacy_total_tokens as f64)) * 100.0;
+        eprintln!(
+            "[BENCHMARK Multi-Turn 10-Edits] Legacy Total: {legacy_total_tokens} tokens | Debloated Total: {debloated_total_tokens} tokens ({multi_turn_savings_pct:.1}% total savings)"
+        );
+
+        assert!(
+            debloated_total_tokens < legacy_total_tokens / 20,
+            "Multi-turn debloated flow must consume <5% of legacy tokens"
+        );
+    }
+
+    #[test]
+    fn regression_test_compaction_preserves_nested_batch_and_multiedit_structure() {
+        let mut val = serde_json::json!({
+            "path": "src/main.rs",
+            "edits": [
+                {
+                    "old_string": "a".repeat(200),
+                    "new_string": "b".repeat(200),
+                }
+            ],
+            "nested_batch": {
+                "calls": [
+                    {
+                        "name": "write",
+                        "input": {
+                            "path": "src/sub.rs",
+                            "content": "c".repeat(300),
+                        }
+                    }
+                ]
+            }
+        });
+
+        compact_tool_input(&mut val);
+
+        assert_eq!(val["path"], "src/main.rs");
+        assert!(
+            val["edits"][0]["old_string"]
+                .as_str()
+                .unwrap()
+                .starts_with("[compacted: 200 bytes]")
+        );
+        assert!(
+            val["edits"][0]["new_string"]
+                .as_str()
+                .unwrap()
+                .starts_with("[compacted: 200 bytes]")
+        );
+        assert_eq!(val["nested_batch"]["calls"][0]["name"], "write");
+        assert_eq!(
+            val["nested_batch"]["calls"][0]["input"]["path"],
+            "src/sub.rs"
+        );
+        assert!(
+            val["nested_batch"]["calls"][0]["input"]["content"]
+                .as_str()
+                .unwrap()
+                .starts_with("[compacted: 300 bytes]")
+        );
+    }
+
+    #[test]
+    fn regression_test_compaction_preserves_small_strings() {
+        let mut val = serde_json::json!({
+            "path": "src/short.rs",
+            "old_string": "small old string",
+            "new_string": "small new string",
+            "content": "short content"
+        });
+
+        compact_tool_input(&mut val);
+
+        assert_eq!(val["path"], "src/short.rs");
+        assert_eq!(val["old_string"], "small old string");
+        assert_eq!(val["new_string"], "small new string");
+        assert_eq!(val["content"], "short content");
+    }
+
+    #[test]
+    fn regression_test_compaction_maintains_message_schema_validity() {
+        let mut messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "call_123".into(),
+                    name: "edit".into(),
+                    input: serde_json::json!({
+                        "path": "src/lib.rs",
+                        "old_string": "x".repeat(300),
+                        "new_string": "y".repeat(300),
+                    }),
+                }],
+                ..Default::default()
+            },
+            Message {
+                role: Role::User,
+                content: vec![
+                    ContentBlock::ToolResult {
+                        tool_use_id: "call_123".into(),
+                        content: "edited".into(),
+                        is_error: false,
+                    },
+                    ContentBlock::ToolResult {
+                        tool_use_id: "t2".into(),
+                        content: "r2".into(),
+                        is_error: false,
+                    },
+                    ContentBlock::ToolResult {
+                        tool_use_id: "t3".into(),
+                        content: "r3".into(),
+                        is_error: false,
+                    },
+                    ContentBlock::ToolResult {
+                        tool_use_id: "t4".into(),
+                        content: "r4".into(),
+                        is_error: false,
+                    },
+                ],
+                ..Default::default()
+            },
+        ];
+
+        strip_old_tool_results(&mut messages);
+
+        // Assert message roles and ContentBlock types remain intact for provider serialization
+        assert!(matches!(messages[0].role, Role::Assistant));
+        if let ContentBlock::ToolUse { id, name, input } = &messages[0].content[0] {
+            assert_eq!(id, "call_123");
+            assert_eq!(name, "edit");
+            assert_eq!(input["path"], "src/lib.rs");
+            assert!(
+                input["old_string"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("[compacted: 300 bytes]")
+            );
+        } else {
+            panic!("Expected ToolUse block");
+        }
+    }
 }
