@@ -2,20 +2,25 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(unix)]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(unix)]
 use async_lock::Mutex;
 use color_eyre::Result;
 use color_eyre::eyre::{Context, eyre};
+#[cfg(unix)]
 use flume::Sender;
+#[cfg(unix)]
 use futures_lite::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, split};
 use n00n_agent::headless;
 use n00n_agent::tools::ToolRegistry;
 use n00n_agent::{
-    AgentConfig, AgentEvent, AgentInput, AgentMode as RuntimeAgentMode, Envelope, McpHandle,
-    PermissionsConfig, prompt::ResolvedSlots,
+    AgentConfig, AgentEvent, Envelope, McpHandle, PermissionsConfig, prompt::ResolvedSlots,
 };
+#[cfg(unix)]
+use n00n_agent::{AgentInput, AgentMode as RuntimeAgentMode};
 use n00n_config::{load_env_files, load_permissions};
 use n00n_daemon::ControlError;
 use n00n_daemon::backend::WorkerBackend;
@@ -27,7 +32,9 @@ use n00n_daemon::server as daemon_server;
 use n00n_daemon::transport;
 use n00n_daemon::{AgentRecord, AgentScriptView, is_terminal_worker_status};
 use n00n_lua::PluginHost;
-use n00n_providers::{Model, OpenAiOptions, ThinkingConfig, Timeouts};
+#[cfg(unix)]
+use n00n_providers::ThinkingConfig;
+use n00n_providers::{Model, OpenAiOptions, Timeouts};
 use n00n_storage::StateDir;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -384,6 +391,7 @@ fn prepare_agent_env(model_arg: Option<&str>, yolo: bool, no_jit: bool) -> Resul
     })
 }
 
+#[cfg(unix)]
 async fn write_line<W: AsyncWriteExt + Unpin>(writer: &mut W, line: &str) -> Result<()> {
     writer
         .write_all(line.as_bytes())
