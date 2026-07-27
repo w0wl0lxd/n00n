@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 //! Peer credential checks for Unix domain sockets.
 
 use crate::error::ControlResult;

@@ -16,6 +16,8 @@ tracing = { workspace = true }
 smol = { workspace = true }
 futures-lite = { workspace = true }
 flume = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
 rustix = { workspace = true }
 
 [dev-dependencies]

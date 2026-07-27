@@ -1,6 +1,5 @@
 use std::env;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,7 +31,6 @@ use n00n_providers::{Model, OpenAiOptions, ThinkingConfig, Timeouts};
 use n00n_storage::StateDir;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use smol::net::unix::{UnixListener, UnixStream};
 
 use crate::cli::AgentMode as CliAgentMode;
 use crate::setup;
@@ -575,7 +573,10 @@ fn now_epoch() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+#[cfg(unix)]
 pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()> {
+    use smol::net::unix::UnixListener;
+    use std::os::unix::fs::PermissionsExt;
     let env = prepare_agent_env(opts.model, opts.yolo, opts.no_jit)?;
     let message = build_message(
         opts.mode,
@@ -709,6 +710,11 @@ pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()
     Ok(())
 }
 
+#[cfg(windows)]
+pub fn server(_opts: &AgentRunOptions<'_>, _agent_id: Option<String>) -> Result<()> {
+    Err(eyre!("agent server is not supported on Windows"))
+}
+
 fn wait_for_run_done(event_rx: &flume::Receiver<Envelope>) {
     while let Ok(envelope) = event_rx.recv() {
         if matches!(
@@ -720,8 +726,9 @@ fn wait_for_run_done(event_rx: &flume::Receiver<Envelope>) {
     }
 }
 
+#[cfg(unix)]
 async fn handle_connection(
-    stream: UnixStream,
+    stream: smol::net::unix::UnixStream,
     input_tx: Sender<AgentInput>,
     event_rx: flume::Receiver<Envelope>,
     cancel_tx: Sender<()>,
@@ -928,7 +935,19 @@ pub fn message_client(
         return print_control_response(&result?, json);
     }
 
-    let storage = agent_storage(&state_dir);
+    message_direct_client(id, text, json, &state_dir)
+}
+
+#[cfg(unix)]
+fn message_direct_client(
+    id: &str,
+    text: &str,
+    json: bool,
+    state_dir: &std::path::Path,
+) -> Result<()> {
+    use smol::net::unix::UnixStream;
+
+    let storage = agent_storage(state_dir);
     let state = read_agent_state(&storage, id).wrap_err("failed to read agent state")?;
 
     let stream = smol::block_on(UnixStream::connect(&state.socket_path))
@@ -985,6 +1004,18 @@ pub fn message_client(
     })
 }
 
+#[cfg(windows)]
+fn message_direct_client(
+    id: &str,
+    _text: &str,
+    _json: bool,
+    _state_dir: &std::path::Path,
+) -> Result<()> {
+    Err(eyre!(
+        "cannot message agent {id}: daemon not available and direct agent sockets are not supported on Windows"
+    ))
+}
+
 pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> {
     let state_dir = agent_state_dir(state_dir_override)?;
     if let Some(result) = try_daemon(
@@ -1005,6 +1036,13 @@ pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> 
         eprintln!("Agent {id} not found, cleaned up directory");
         return Ok(());
     };
+
+    stop_direct_client(id, &state)
+}
+
+#[cfg(unix)]
+fn stop_direct_client(id: &str, state: &AgentState) -> Result<()> {
+    use smol::net::unix::UnixStream;
 
     let stream = smol::block_on(UnixStream::connect(&state.socket_path))
         .wrap_err("failed to connect to agent socket")?;
@@ -1036,6 +1074,13 @@ pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> 
 
         Ok(())
     })
+}
+
+#[cfg(windows)]
+fn stop_direct_client(id: &str, _state: &AgentState) -> Result<()> {
+    Err(eyre!(
+        "cannot stop agent {id}: daemon not available and direct agent sockets are not supported on Windows"
+    ))
 }
 
 fn agent_state_to_record(state: &AgentState) -> AgentRecord {
@@ -1238,7 +1283,16 @@ pub fn pause_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()>
     ) {
         return print_control_response(&result?, false);
     }
-    control_command_client(&state_dir, id, &ClientCommand::Pause, "paused")
+    #[cfg(unix)]
+    {
+        control_command_client(&state_dir, id, &ClientCommand::Pause, "paused")
+    }
+    #[cfg(windows)]
+    {
+        Err(eyre!(
+            "cannot pause agent {id}: daemon not available and direct agent sockets are not supported on Windows"
+        ))
+    }
 }
 
 pub fn resume_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> {
@@ -1252,15 +1306,27 @@ pub fn resume_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()
     ) {
         return print_control_response(&result?, false);
     }
-    control_command_client(&state_dir, id, &ClientCommand::Resume, "resumed")
+    #[cfg(unix)]
+    {
+        control_command_client(&state_dir, id, &ClientCommand::Resume, "resumed")
+    }
+    #[cfg(windows)]
+    {
+        Err(eyre!(
+            "cannot resume agent {id}: daemon not available and direct agent sockets are not supported on Windows"
+        ))
+    }
 }
 
+#[cfg(unix)]
 fn control_command_client(
     state_dir: &std::path::Path,
     id: &str,
     command: &ClientCommand,
     success_label: &str,
 ) -> Result<()> {
+    use smol::net::unix::UnixStream;
+
     let storage = agent_storage(state_dir);
     let state = read_agent_state(&storage, id).wrap_err("failed to read agent state")?;
     let stream = smol::block_on(UnixStream::connect(&state.socket_path))
