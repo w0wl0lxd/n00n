@@ -1,5 +1,6 @@
 [package]
 name = "n00n-search"
+description = "Provider-neutral search and bounded web content extraction for n00n."
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -12,11 +13,18 @@ workspace = true
 
 [dependencies]
 fs2 = { workspace = true }
+futures-lite = { workspace = true }
+htmd = { workspace = true }
 ignore = { workspace = true }
+isahc = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+smol = { workspace = true }
 tantivy = { workspace = true }
 thiserror = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
+smol = { workspace = true }
 tempfile = { workspace = true }
+test-case = { workspace = true }

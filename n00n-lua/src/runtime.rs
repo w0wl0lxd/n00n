@@ -207,6 +207,10 @@ pub enum Request {
     },
     DropStateOwner {
         owner: n00nId,
+=======
+    SetSearchConfig {
+        config: Arc<SearchConfig>,
+>>>>>>> 070514ca2 (feat(search): add native extraction core)
         reply: flume::Sender<()>,
     },
     Shutdown,
@@ -1599,6 +1603,7 @@ impl LuaRuntime {
     #[allow(clippy::too_many_arguments)]
     fn new(
         registry: Arc<ToolRegistry>,
+        search_config: Arc<SearchConfig>,
         tx: flume::Sender<Request>,
         shutdown: Arc<AtomicBool>,
         bundled_dirs: &'static [&'static Dir<'static>],
@@ -2924,6 +2929,7 @@ pub(crate) struct LuaThread {
 #[allow(clippy::too_many_lines)]
 pub fn spawn(
     registry: Arc<ToolRegistry>,
+    search_config: Arc<SearchConfig>,
     bundled_dirs: &'static [&'static Dir<'static>],
     jit: bool,
 ) -> Result<LuaThread, PluginError> {
@@ -2944,6 +2950,7 @@ pub fn spawn(
         .spawn(move || {
             let mut rt = match LuaRuntime::new(
                 registry,
+                search_config,
                 tx_clone,
                 shutdown_thread,
                 bundled_dirs,
@@ -3242,6 +3249,11 @@ pub fn spawn(
                                 break;
                             }
                             rt.state.drop_owner(owner);
+=======
+                        Request::SetSearchConfig { config, reply } => {
+                            rt.lua.set_app_data(Arc::clone(&config));
+                            rt.search_config = config;
+>>>>>>> 070514ca2 (feat(search): add native extraction core)
                             let _ = reply.send(());
                         }
                         Request::RestoreToolAsync { item, event_tx } => {
