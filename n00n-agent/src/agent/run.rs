@@ -20,6 +20,7 @@ use crate::mcp::McpSession;
 use crate::permissions::PermissionManager;
 use crate::tools::{
     ActiveTools, Deadline, FileReadTracker, LocalTools, ToolAudience, ToolContext, ToolFilter,
+    ToolRegistry,
 };
 use crate::{
     AgentConfig, AgentError, AgentEvent, AgentInput, AgentMode, EventSender, ExtractedCommand,
@@ -52,9 +53,27 @@ fn filter_tools_for_mode(tools: &mut Value, mode: &AgentMode) {
         return;
     }
     if let Some(definitions) = tools.as_array_mut() {
+        let registry = ToolRegistry::global();
         definitions.retain(|definition| {
-            definition.get("name").and_then(Value::as_str)
-                != Some(crate::tools::CODE_EXECUTION_TOOL_NAME)
+            let Some(name) = definition.get("name").and_then(Value::as_str) else {
+                return true;
+            };
+            // Bash is the only execute-kind tool allowed in plan mode, and only
+            // for commands that pass the read-only classifier.
+            if name == crate::tools::BASH_TOOL_NAME {
+                return true;
+            }
+            // Keep the historical name-based guard and extend it to any tool
+            // whose kind is "execute", so a renamed code_execution tool is
+            // also filtered out.
+            if name == crate::tools::CODE_EXECUTION_TOOL_NAME {
+                return false;
+            }
+            // Only remove tools we can positively identify as execute-kind.
+            // MCP and other unregistered tools are left for the dispatch layer.
+            registry
+                .get(name)
+                .map_or(true, |entry| entry.tool.tool_kind() != Some("execute"))
         });
     }
 }

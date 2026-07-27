@@ -31,23 +31,81 @@ const UNKNOWN_TOOL_PREFIX: &str = "unknown tool";
 const TOOL_AUDIENCE_DENIED: &str = "tool is not available to this agent audience";
 const BASH_BLOCKED_IN_PLAN: &str = "bash command is not provably read-only in plan mode";
 
+/// Returns true when `command` contains shell metacharacters that are outside
+/// any quote and not escaped by a backslash. These are the characters that let
+/// a single command string request additional programs or I/O redirection.
+fn has_unquoted_shell_meta(command: &str) -> bool {
+    let mut chars = command.chars().peekable();
+    let mut in_single = false;
+    let mut in_double = false;
+    while let Some(c) = chars.next() {
+        if c == '\\' && !in_single {
+            // Escaped characters are literal. Skip the next char if there is one.
+            chars.next();
+            continue;
+        }
+        if in_single {
+            if c == '\'' {
+                in_single = false;
+            }
+            continue;
+        }
+        if in_double {
+            if c == '"' {
+                in_double = false;
+                continue;
+            }
+            // Command substitution still happens inside double quotes.
+            if c == '$' && chars.peek() == Some(&'(') {
+                return true;
+            }
+            if c == '`' {
+                return true;
+            }
+            continue;
+        }
+        if c == '\'' {
+            in_single = true;
+            continue;
+        }
+        if c == '"' {
+            in_double = true;
+            continue;
+        }
+        if matches!(
+            c,
+            '\n' | '\r' | ';' | '|' | '&' | '>' | '<' | '(' | ')' | '{' | '}'
+        ) {
+            return true;
+        }
+        if c == '$' && chars.peek() == Some(&'(') {
+            return true;
+        }
+        if c == '`' {
+            return true;
+        }
+    }
+    false
+}
+
 fn plan_bash_is_read_only(input: &Value) -> bool {
     let Some(command) = input.get("command").and_then(Value::as_str) else {
         return false;
     };
     let command = command.trim();
-    if command.is_empty()
-        || command
-            .chars()
-            .any(|character| "\n\r;&|><`$\\\"'(){}*?[]!~".contains(character))
-    {
+    if command.is_empty() || command.contains('\n') || command.contains('\r') {
         return false;
     }
-    let words: Vec<_> = command.split_whitespace().collect();
-    let Some(program) = words.first().copied() else {
+    if has_unquoted_shell_meta(command) {
+        return false;
+    }
+    let Ok(words) = shell_words::split(command) else {
         return false;
     };
-    let arguments = &words[1..];
+    let Some(program) = words.first().map(String::as_str) else {
+        return false;
+    };
+    let arguments: Vec<&str> = words.iter().skip(1).map(String::as_str).collect();
     match program {
         "pwd" => arguments.is_empty(),
         "ls" | "cat" | "head" | "tail" | "wc" | "grep" | "stat" | "file" | "du" | "df"
@@ -66,8 +124,8 @@ fn plan_bash_is_read_only(input: &Value) -> bool {
         "yq" => !arguments.iter().any(|argument| {
             *argument == "-i" || argument.starts_with("-i=") || argument.starts_with("--inplace")
         }),
-        "git" => plan_git_is_read_only(arguments),
-        "gh" => plan_gh_is_read_only(arguments),
+        "git" => plan_git_is_read_only(&arguments),
+        "gh" => plan_gh_is_read_only(&arguments),
         _ => false,
     }
 }
@@ -76,7 +134,18 @@ fn plan_git_is_read_only(arguments: &[&str]) -> bool {
     let mut index = 0;
     while let Some(argument) = arguments.get(index) {
         match *argument {
-            "-C" | "--git-dir" | "--work-tree" | "-c" => index += 2,
+            "-C" => index += 2,
+            value if value.starts_with("-C") => index += 1,
+            "--git-dir" | "--work-tree" => index += 2,
+            value if value.starts_with("--git-dir=") || value.starts_with("--work-tree=") => {
+                index += 1;
+            }
+            // `-c`, `--config-env`, and `--exec-path` can all change which
+            // commands git runs (aliases, pagers, external diff/hook tools).
+            value if value == "-c" || value.starts_with("-c") => return false,
+            value if value.starts_with("--config-env") || value.starts_with("--exec-path") => {
+                return false;
+            }
             value if value.starts_with('-') => index += 1,
             subcommand => {
                 let subcommand_arguments = &arguments[index + 1..];
@@ -128,12 +197,18 @@ fn is_authorized_plan_target(plan_path: &Path, target: &Path) -> bool {
     if is_symlink(plan_path) || is_symlink(target) {
         return false;
     }
-    let normalize = |path: &Path| {
-        let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let normalize = |path: &Path| -> Option<std::path::PathBuf> {
+        let absolute = std::path::absolute(path).ok()?;
         n00n_storage::paths::incremental_canonicalize(&absolute)
-            .unwrap_or_else(|| n00n_storage::paths::normalize_path(&absolute))
+            .or(Some(n00n_storage::paths::normalize_path(&absolute)))
     };
-    normalize(plan_path) == normalize(target)
+    let Some(plan) = normalize(plan_path) else {
+        return false;
+    };
+    let Some(target) = normalize(target) else {
+        return false;
+    };
+    plan == target
 }
 
 pub(super) struct RecentCalls(VecDeque<(String, u64)>);
@@ -216,6 +291,19 @@ pub async fn run(
         .or_else(|| mcp.map(|m| m.interned_name(&mcp_lookup)))
         .unwrap_or_else(|| Arc::from(UNKNOWN_MCP));
     let started = Instant::now();
+
+    if ctx.mode.plan_path().is_some()
+        && name != crate::tools::BASH_TOOL_NAME
+        && entry
+            .as_ref()
+            .is_some_and(|entry| entry.tool.tool_kind() == Some("execute"))
+    {
+        return tool_done_error(
+            id.clone(),
+            Arc::clone(&tool_id),
+            CODE_EXECUTION_BLOCKED_IN_PLAN.into(),
+        );
+    }
 
     if entry
         .as_ref()
@@ -1035,6 +1123,9 @@ mod tests {
     #[test_case("gh pr checks 42", true ; "github_checks")]
     #[test_case("rg pattern src", true ; "ripgrep")]
     #[test_case("find . -name Cargo.toml", true ; "find_read")]
+    #[test_case("find . -name '*.rs'", true ; "find_quoted_glob")]
+    #[test_case("grep 'a|b' file", true ; "grep_quoted_pipe")]
+    #[test_case("grep '$(rm)' file", true ; "grep_quoted_dollar_paren")]
     #[test_case("git remote -v", true ; "git_remote_list")]
     #[test_case("git commit -am nope", false ; "git_commit")]
     #[test_case("git branch -D old", false ; "git_branch_delete")]
@@ -1049,6 +1140,13 @@ mod tests {
     #[test_case("cargo test", false ; "code_execution")]
     #[test_case("cat file > copy", false ; "redirect")]
     #[test_case("git status && rm file", false ; "command_chain")]
+    #[test_case("cat $(ls)", false ; "command_substitution")]
+    #[test_case("cat `ls`", false ; "backtick_substitution")]
+    #[test_case("cat <(ls)", false ; "process_substitution")]
+    #[test_case("grep \"$(rm)\" file", false ; "double_quoted_command_substitution")]
+    #[test_case("git -c core.pager=cat log", false ; "git_dash_c_rejected")]
+    #[test_case("git --config-env=FOO=BAR log", false ; "git_config_env_rejected")]
+    #[test_case("git --exec-path=/mal log", false ; "git_exec_path_rejected")]
     #[test_case("python -c 'print(1)'", false ; "interpreter")]
     fn classifies_plan_bash_commands(command: &str, expected: bool) {
         assert_eq!(
@@ -1336,6 +1434,71 @@ mod tests {
                 !executed.load(Ordering::SeqCst),
                 "execute must not run after denial"
             );
+        });
+    }
+
+    const RENAMED_EXECUTE_NAME: &str = "shell";
+
+    #[derive(Default)]
+    struct RenamedExecuteTool;
+
+    struct RenamedExecuteInvocation;
+
+    impl ToolInvocation for RenamedExecuteInvocation {
+        fn start_header(&self) -> HeaderFuture {
+            HeaderFuture::Ready(HeaderResult::plain("renamed execute".into()))
+        }
+        fn execute(self: Box<Self>, _ctx: &ToolContext) -> ExecFuture<'_> {
+            Box::pin(async {
+                ToolExecResult::from(Ok::<_, String>(ToolOutput::Plain("ran".into())))
+            })
+        }
+    }
+
+    impl Tool for RenamedExecuteTool {
+        fn name(&self) -> &str {
+            RENAMED_EXECUTE_NAME
+        }
+        fn description(&self, _ctx: &DescriptionContext) -> std::borrow::Cow<'_, str> {
+            "renamed execute".into()
+        }
+        fn schema(&self) -> Value {
+            serde_json::json!({"type": "object", "properties": {}, "additionalProperties": false})
+        }
+        fn tool_kind(&self) -> Option<&str> {
+            Some("execute")
+        }
+        fn parse(&self, _input: &Value) -> Result<Box<dyn ToolInvocation>, ParseError> {
+            Ok(Box::new(RenamedExecuteInvocation))
+        }
+    }
+
+    #[test]
+    fn renamed_execute_tool_blocked_in_plan_mode() {
+        smol::block_on(async {
+            let ctx = crate::tools::test_support::stub_ctx(&AgentMode::Plan(PathBuf::from(
+                "/tmp/plan.md",
+            )));
+            let registry = ToolRegistry::new();
+            let tool: Arc<dyn Tool> = Arc::new(RenamedExecuteTool);
+            let source = ToolSource::Lua {
+                plugin: "test".into(),
+            };
+            registry.register(&tool, &source).unwrap();
+
+            let result = run(
+                &registry,
+                None,
+                "t1".into(),
+                RENAMED_EXECUTE_NAME,
+                &serde_json::json!({}),
+                &ctx,
+                Emit::Silent,
+            )
+            .await;
+
+            assert!(result.is_error);
+            assert_eq!(result.output.as_text(), CODE_EXECUTION_BLOCKED_IN_PLAN);
         });
     }
 
