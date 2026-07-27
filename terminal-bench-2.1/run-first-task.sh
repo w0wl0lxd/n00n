@@ -12,30 +12,24 @@ EXTRA_ARGS=("${@:3}")
 
 trap 'if [[ "$?" -eq 124 ]]; then echo "harbor run timed out after ${HARBOR_TIMEOUT}s" >&2; fi' EXIT
 
+PYTHONPATH="${PWD}${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH
+
+args=(
+  -d terminal-bench/terminal-bench-2-1
+  -i 'terminal-bench/fix-git'
+  -a n00n_agent:n00nAgent
+  -m "$MODEL"
+  -e "$ENVIRONMENT"
+  -k 1
+  -n 1
+  --env-file .env
+  --yes
+  "${EXTRA_ARGS[@]}"
+)
+
 if [[ "${HARBOR_TIMEOUT}" == "0" ]]; then
-  PYTHONPATH="$(dirname "$0")${PYTHONPATH:+:$PYTHONPATH}" \
-    harbor run \
-    -d terminal-bench/terminal-bench-2-1 \
-    -i 'terminal-bench/fix-git' \
-    -a n00n_agent:n00nAgent \
-    -m "$MODEL" \
-    -e "$ENVIRONMENT" \
-    -k 1 \
-    -n 1 \
-    --env-file .env \
-    --yes \
-    "${EXTRA_ARGS[@]}"
+  harbor run "${args[@]}"
 else
-  PYTHONPATH="$(dirname "$0")${PYTHONPATH:+:$PYTHONPATH}" \
-    timeout "${HARBOR_TIMEOUT}" harbor run \
-    -d terminal-bench/terminal-bench-2-1 \
-    -i 'terminal-bench/fix-git' \
-    -a n00n_agent:n00nAgent \
-    -m "$MODEL" \
-    -e "$ENVIRONMENT" \
-    -k 1 \
-    -n 1 \
-    --env-file .env \
-    --yes \
-    "${EXTRA_ARGS[@]}"
+  timeout "${HARBOR_TIMEOUT}" harbor run "${args[@]}"
 fi

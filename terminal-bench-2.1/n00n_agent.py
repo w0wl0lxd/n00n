@@ -72,20 +72,13 @@ def main() -> int:
     stop = threading.Event()
     proc: list[subprocess.Popen] = [p]
 
-    def cleanup(signum=None, frame=None):
-        _info(f"cleanup triggered (signum={signum})")
+    def _on_signal(signum=None, frame=None):
         stop.set()
         if proc[0].poll() is None:
             proc[0].terminate()
-            try:
-                proc[0].wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                _info("devin-real did not terminate, killing")
-                proc[0].kill()
-                proc[0].wait()
 
-    signal.signal(signal.SIGTERM, cleanup)
-    signal.signal(signal.SIGINT, cleanup)
+    signal.signal(signal.SIGTERM, _on_signal)
+    signal.signal(signal.SIGINT, _on_signal)
 
     def forward_input():
         try:
@@ -96,6 +89,11 @@ def main() -> int:
                     continue
                 data = os.read(fd, 4096)
                 if not data:
+                    _info("stdin EOF, closing pty master")
+                    try:
+                        os.close(master)
+                    except OSError:
+                        pass
                     break
                 os.write(master, data)
         except OSError as exc:
@@ -103,6 +101,12 @@ def main() -> int:
 
     t = threading.Thread(target=forward_input)
     t.start()
+
+    def cleanup():
+        _info("cleanup triggered")
+        stop.set()
+        if proc[0].poll() is None:
+            proc[0].terminate()
 
     try:
         while True:
@@ -126,7 +130,13 @@ def main() -> int:
         _info("devin-real still running after cleanup")
         p.kill()
         p.wait()
-    return p.poll() if p.poll() is not None else 0
+
+    rc = p.poll()
+    if rc is None:
+        return 0
+    if rc < 0:
+        return 128 - rc
+    return rc
 
 
 if __name__ == "__main__":
@@ -240,14 +250,27 @@ class N00nAgent(BaseInstalledAgent):
         finally:
             tmp_path.unlink(missing_ok=True)
 
+    @property
+    def _model_provider(self) -> str:
+        """Return the provider prefix for the configured model.
+
+        Bare model names (e.g. ``swe-1-7``) are treated as Devin because
+        this wrapper is the n00n Devin harness.
+        """
+        if self._parsed_model_provider:
+            return self._parsed_model_provider
+        if self.model_name and "/" in self.model_name:
+            return self.model_name.split("/", 1)[0]
+        return "devin"
+
     def _is_devin(self) -> bool:
-        provider = self._parsed_model_provider or ""
-        return provider == "devin" or (self.model_name or "").startswith("devin/")
+        provider = self._model_provider
+        return provider == "devin" or provider.startswith("devin/")
 
     def _is_provider_api_key(self, key: str) -> bool:
         """Check if an environment variable key is a provider API key
         for the current model."""
-        provider = (self._parsed_model_provider or "").lower()
+        provider = self._model_provider.lower()
         if not provider:
             return False
 
@@ -351,7 +374,10 @@ class N00nAgent(BaseInstalledAgent):
                         "or place n00n-bundle.tar.gz next to this script."
                     )
                 await self._timed_upload(
-                    environment, bundle_local, "/tmp/n00n-bundle.tar.gz", label="n00n bundle"
+                    environment,
+                    bundle_local,
+                    "/tmp/n00n-bundle.tar.gz",
+                    label="n00n bundle",
                 )
                 await self._timed_exec(
                     self.exec_as_root,
@@ -399,12 +425,17 @@ class N00nAgent(BaseInstalledAgent):
         )
         if real_check.return_code == 0:
             self.logger.info("uploading devin pty wrapper")
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as tmp:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".py", delete=False
+            ) as tmp:
                 tmp.write(_DEVIN_WRAPPER)
                 wrapper_path = Path(tmp.name)
             try:
                 await self._timed_upload(
-                    environment, wrapper_path, "/opt/n00n/bin/devin", label="devin wrapper"
+                    environment,
+                    wrapper_path,
+                    "/opt/n00n/bin/devin",
+                    label="devin wrapper",
                 )
             finally:
                 wrapper_path.unlink(missing_ok=True)
@@ -450,15 +481,17 @@ class N00nAgent(BaseInstalledAgent):
         )
 
         await self._upload_text(environment, config_json, f"{config_dir}/config.json")
-        await self._upload_text(environment, credentials_toml, f"{data_dir}/credentials.toml")
+        await self._upload_text(
+            environment, credentials_toml, f"{data_dir}/credentials.toml"
+        )
 
         await self._timed_exec(
             self.exec_as_root,
             environment,
             command=(
-                f"chmod -R a+rwX,+t {config_dir} {data_dir} "
-                f"&& chmod 644 {data_dir}/credentials.toml "
-                f"&& chmod 644 {config_dir}/config.json"
+                f"chmod -R u=rwxX,go= {config_dir} {data_dir} "
+                f"&& chmod 600 {data_dir}/credentials.toml "
+                f"&& chmod 600 {config_dir}/config.json"
             ),
             timeout_sec=self._SETUP_TIMEOUT_SEC,
             label="set devin config permissions",
@@ -531,11 +564,17 @@ class N00nAgent(BaseInstalledAgent):
         # Merge provider API keys and tokens into the process environment.
         env.update(secrets)
 
+        log = f"/logs/agent/{AGENT_LOG_FILE}"
         command = (
+            f"{{ "
             f"n00n --print --yolo --verbose "
             f"--output-format stream-json "
             f"--model {shlex.quote(model)} -- {escaped} "
-            f"2>&1 | tee /logs/agent/{AGENT_LOG_FILE}"
+            f"</dev/null >{shlex.quote(log)} 2>&1; "
+            f"rc=$?; "
+            f"if [ $rc -ne 0 ]; then printf 'n00n exited %d\\n' \"$rc\" >&2; fi; "
+            f"exit $rc; "
+            f"}}"
         )
 
         run_start = time.monotonic()

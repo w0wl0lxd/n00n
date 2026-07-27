@@ -52,6 +52,7 @@ inventory::submit!(n00n_config::providers::BuiltInProvider {
 
 const DEFAULT_COMMAND: &str = "devin";
 const REQUEST_PERMISSION_METHOD: &str = "session/request_permission";
+const META_API_KEY: &str = "api_key";
 
 pub(crate) const fn models() -> &'static [ModelEntry] {
     &[
@@ -295,7 +296,7 @@ impl DevinInner {
 
         if let Some(key) = api_key {
             let mut meta = Meta::new();
-            meta.insert("api_key".to_string(), Value::String(key.to_string()));
+            meta.insert(META_API_KEY.to_string(), Value::String(key.to_string()));
             req = req.meta(meta);
         }
 
@@ -315,24 +316,33 @@ impl DevinInner {
             });
         }
 
-        if let Some(key) = api_key
-            && let Some(method) = response
+        if let Some(key) = api_key {
+            match response
                 .auth_methods
                 .iter()
                 .find(|m| m.id().to_string() == "api-key")
-                .or(response.auth_methods.first())
-        {
-            let mut meta = Meta::new();
-            meta.insert("api_key".to_string(), Value::String(key.to_string()));
-            let auth_req = AuthenticateRequest::new(method.id().clone()).meta(meta);
-            self.send_request::<AuthenticateRequest, AuthenticateResponse>(
-                "authenticate",
-                auth_req,
-            )
-            .await
-            .map_err(|e| AgentError::Config {
-                message: format!("authenticate failed: {e}"),
-            })?;
+            {
+                Some(method) => {
+                    let mut meta = Meta::new();
+                    meta.insert(META_API_KEY.to_string(), Value::String(key.to_string()));
+                    let auth_req = AuthenticateRequest::new(method.id().clone()).meta(meta);
+                    self.send_request::<AuthenticateRequest, AuthenticateResponse>(
+                        "authenticate",
+                        auth_req,
+                    )
+                    .await
+                    .map_err(|e| AgentError::Config {
+                        message: format!("authenticate failed: {e}"),
+                    })?;
+                }
+                None => {
+                    return Err(AgentError::Config {
+                        message:
+                            "api_key provided but agent did not advertise an api-key auth method"
+                                .into(),
+                    });
+                }
+            }
         }
 
         *self.agent_capabilities.lock().await = Some(response.agent_capabilities);
