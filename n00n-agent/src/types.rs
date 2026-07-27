@@ -769,7 +769,7 @@ impl ToolDoneEvent {
 /// Inspired by Perplexity's approach: drop repeated headers, excessive blank lines, and progress bars.
 fn filter_tool_result(content: &str, is_error: bool) -> String {
     if is_error {
-        return content.to_string();
+        return content.trim_end().to_string();
     }
 
     let lines: Vec<&str> = content.lines().collect();
@@ -814,7 +814,7 @@ fn filter_tool_result(content: &str, is_error: bool) -> String {
         filtered.push(*line);
     }
 
-    filtered.join("\n")
+    filtered.join("\n").trim_end().to_string()
 }
 
 #[must_use]
