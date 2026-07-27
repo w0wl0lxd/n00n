@@ -1,3 +1,10 @@
+// The `agent` subcommand is Unix-first; Windows builds contain stubs that
+// deliberately leave imports/variables unused, so silence those warnings.
+#![cfg_attr(
+    not(unix),
+    allow(dead_code, unused_imports, unused_variables, clippy::needless_return)
+)]
+
 use std::env;
 use std::fs;
 use std::path::PathBuf;
