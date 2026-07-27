@@ -418,6 +418,7 @@ pub enum SessionRequest {
         id: Option<String>,
         text: String,
         steer: bool,
+        control: bool,
     },
     Cancel {
         id: String,

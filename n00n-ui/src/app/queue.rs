@@ -124,6 +124,7 @@ impl MessageQueue {
             QueuedMessage {
                 text,
                 images: input.images,
+                control: input.control,
             },
             delivery,
         ))
@@ -380,9 +381,15 @@ impl App {
         text: &str,
         image_count: usize,
         images: Vec<ImageSource>,
+        control: bool,
     ) {
         let _ = image_count;
-        self.main_chat().show_user_message_with_images(text, images);
+        if control {
+            self.main_chat()
+                .show_control_message_with_images(text, images);
+        } else {
+            self.main_chat().show_user_message_with_images(text, images);
+        }
     }
 
     /// Immediate path: kick off the agent and draw the bubble in the same
@@ -472,6 +479,7 @@ mod tests {
                 thinking: ThinkingConfig::default(),
                 fast: false,
                 workflow: false,
+                control: false,
                 prompt: None,
             },
             run_id: 0,

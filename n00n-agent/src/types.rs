@@ -873,6 +873,7 @@ pub enum AgentEvent {
         text: String,
         image_count: usize,
         images: Vec<ImageSource>,
+        control: bool,
     },
     Done {
         usage: TokenUsage,

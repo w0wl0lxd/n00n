@@ -741,16 +741,25 @@ impl<'h> Agent<'h> {
                         text: input.message.clone(),
                         image_count: input.images.len(),
                         images: input.images.clone(),
+                        control: input.control,
                     })?;
                     for msg in std::mem::take(&mut input.preamble) {
                         self.history.push(msg);
                     }
                     self.mode = input.mode.clone();
                     let display = input.message.clone();
-                    let wrapped = format!(
-                        "<user-interrupt>\nThe user sent a new message while you were working. Address it and continue.\n\n{display}\n</user-interrupt>"
-                    );
-                    self.history.push(Message::user_display(wrapped, display));
+                    if input.control {
+                        let wrapped = format!(
+                            "<control-interrupt>\nA control message was sent to this session. Address it and continue.\n\n{display}\n</control-interrupt>"
+                        );
+                        self.history
+                            .push(Message::control_display(wrapped, display));
+                    } else {
+                        let wrapped = format!(
+                            "<user-interrupt>\nThe user sent a new message while you were working. Address it and continue.\n\n{display}\n</user-interrupt>"
+                        );
+                        self.history.push(Message::user_display(wrapped, display));
+                    }
                 }
                 ExtractedCommand::Compact(_) => {
                     self.do_compact().await?;
@@ -1097,6 +1106,7 @@ mod tests {
             thinking: n00n_providers::ThinkingConfig::default(),
             fast: false,
             workflow: false,
+            control: false,
             prompt: None,
         }
     }

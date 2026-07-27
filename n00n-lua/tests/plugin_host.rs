@@ -56,6 +56,7 @@ impl Provider for NetworkSessionProbe {
                         text: "network reached".into(),
                     }],
                     display_text: None,
+                    control: false,
                 },
                 usage: TokenUsage::default(),
                 stop_reason: Some(StopReason::EndTurn),

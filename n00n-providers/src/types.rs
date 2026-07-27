@@ -300,6 +300,8 @@ pub struct Message {
     pub content: Vec<ContentBlock>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_text: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub control: bool,
 }
 
 impl Message {
@@ -318,6 +320,27 @@ impl Message {
             role: Role::User,
             content: vec![ContentBlock::Text { text: ai_text }],
             display_text: Some(display),
+            control: false,
+        }
+    }
+
+    #[must_use]
+    pub fn control(ai_text: String) -> Self {
+        Self {
+            role: Role::User,
+            content: vec![ContentBlock::Text { text: ai_text }],
+            display_text: None,
+            control: true,
+        }
+    }
+
+    #[must_use]
+    pub fn control_display(ai_text: String, display: String) -> Self {
+        Self {
+            role: Role::User,
+            content: vec![ContentBlock::Text { text: ai_text }],
+            display_text: Some(display),
+            control: true,
         }
     }
 
@@ -343,6 +366,7 @@ impl Message {
             role: Role::User,
             content: vec![ContentBlock::Text { text }],
             display_text: Some(String::new()),
+            control: false,
         }
     }
 

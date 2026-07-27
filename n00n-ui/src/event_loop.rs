@@ -850,6 +850,11 @@ impl<'t> EventLoop<'t> {
                             .then(|| message.first_text_content())
                             .flatten()
                     });
+                    let last_user = history
+                        .iter()
+                        .rev()
+                        .find(|message| matches!(message.role, n00n_providers::Role::User))
+                        .and_then(|message| serde_json::to_value(message).ok());
                     Ok(json!({
                         "id": rt.id(),
                         "title": rt.app.state.session.title,
@@ -857,6 +862,7 @@ impl<'t> EventLoop<'t> {
                         "updated_at": rt.app.state.session.updated_at,
                         "focused": idx == self.focused,
                         "output": output,
+                        "last_user": last_user,
                     }))
                 });
                 let _ = reply_tx.send(reply);
@@ -873,14 +879,19 @@ impl<'t> EventLoop<'t> {
                 let idx = self.push_runtime(self.ctx.spawn_runtime(session));
                 let id = self.sessions[idx].id();
                 if let Some(prompt) = prompt {
-                    let _ = self.submit_text(idx, prompt, false);
+                    let _ = self.submit_text(idx, prompt, false, false);
                 }
                 if focus {
                     self.set_focus(idx);
                 }
                 let _ = reply_tx.send(Ok(json!(id)));
             }
-            SessionRequest::Prompt { id, text, steer } => {
+            SessionRequest::Prompt {
+                id,
+                text,
+                steer,
+                control,
+            } => {
                 let idx = match id {
                     None => Ok(self.focused),
                     Some(id) => parse_session_id(&id).and_then(|id| {
@@ -888,7 +899,8 @@ impl<'t> EventLoop<'t> {
                             .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))
                     }),
                 };
-                let _ = reply_tx.send(idx.and_then(|idx| self.submit_text(idx, text, steer)));
+                let _ =
+                    reply_tx.send(idx.and_then(|idx| self.submit_text(idx, text, steer, control)));
             }
             SessionRequest::Cancel { id } => {
                 let reply = parse_session_id(&id).and_then(|id| {
@@ -932,10 +944,17 @@ impl<'t> EventLoop<'t> {
         }
     }
 
-    fn submit_text(&mut self, idx: usize, text: String, steer: bool) -> SessionReply {
+    fn submit_text(
+        &mut self,
+        idx: usize,
+        text: String,
+        steer: bool,
+        control: bool,
+    ) -> SessionReply {
         let msg = QueuedMessage {
             text,
             images: Vec::new(),
+            control,
         };
         let outcome = if steer {
             self.sessions[idx].app.submit_control_prompt(msg)

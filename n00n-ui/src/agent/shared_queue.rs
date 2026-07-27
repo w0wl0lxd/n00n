@@ -31,6 +31,7 @@ type Items = Arc<Mutex<VecDeque<QueueItem>>>;
 pub(crate) struct QueuedMessage {
     pub(crate) text: String,
     pub(crate) images: Vec<ImageSource>,
+    pub(crate) control: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -45,6 +46,7 @@ impl From<Submission> for QueuedMessage {
         Self {
             text: sub.text,
             images: sub.images,
+            control: false,
         }
     }
 }
@@ -372,6 +374,7 @@ mod tests {
                 thinking: ThinkingConfig::default(),
                 fast: false,
                 workflow: false,
+                control: false,
                 prompt: None,
             },
             run_id: 0,
@@ -407,6 +410,7 @@ mod tests {
                 thinking: ThinkingConfig::default(),
                 fast: false,
                 workflow: false,
+                control: false,
                 prompt: None,
             },
             run_id: 0,

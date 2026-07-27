@@ -264,6 +264,7 @@ fn session_api_prompt_is_explicitly_non_paint_gated() {
     let outcome = app.submit_background_prompt(crate::app::queue::QueuedMessage {
         text: "background prompt".into(),
         images: Vec::new(),
+        control: false,
     });
     let SubmitOutcome::Started(actions) = outcome else {
         panic!("expected background prompt to start");
@@ -282,6 +283,7 @@ fn background_persistence_failure_is_terminal_without_composer_restore() {
     let SubmitOutcome::Started(actions) = app.submit_background_prompt(QueuedMessage {
         text: "background prompt".into(),
         images: Vec::new(),
+        control: false,
     }) else {
         panic!("expected background prompt to start");
     };
@@ -294,6 +296,7 @@ fn background_persistence_failure_is_terminal_without_composer_restore() {
         app.submit_background_prompt(QueuedMessage {
             text: "queued after failure".into(),
             images: Vec::new(),
+            control: false,
         }),
         SubmitOutcome::Queued
     ));
@@ -677,6 +680,7 @@ fn queue_item_consumed_pushes_deferred_user_message() {
             text: "queued".into(),
             image_count: 0,
             images: Vec::new(),
+            control: false,
         },
         app.run_id,
     ));
@@ -742,6 +746,7 @@ fn queued_msg(text: &str) -> QueuedMessage {
     QueuedMessage {
         text: text.into(),
         images: vec![],
+        control: false,
     }
 }
 
@@ -2479,6 +2484,7 @@ fn draw_failure_pending_submission_restores_fifo_and_images_after_restart() {
         app.submit_prompt(QueuedMessage {
             text: "second in fifo".into(),
             images: Vec::new(),
+            control: false,
         }),
         SubmitOutcome::Queued
     ));
@@ -4007,6 +4013,7 @@ fn workflow_toggle_flows_into_agent_input() {
     let msg = QueuedMessage {
         text: "hi".into(),
         images: Vec::new(),
+        control: false,
     };
     assert!(!app.build_agent_input(&msg).workflow);
 

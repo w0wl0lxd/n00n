@@ -57,10 +57,11 @@ async fn live(lua: Lua, #[ctx] tx: Option<flume::Sender<UiAction>>) -> LuaResult
     roundtrip(lua, tx, SessionRequest::Live).await
 }
 
-/// Returns one live session with its status and latest assistant text output.
+/// Returns one live session with its status, latest assistant text output,
+/// and last user message.
 ///
 /// @param id string Live session id.
-/// @return (table|nil, string|nil) `{id, title, status, updated_at, focused, output?}`, or nil and an error.
+/// @return (table|nil, string|nil) `{id, title, status, updated_at, focused, output?, last_user?}`, or nil and an error.
 #[lua_fn]
 async fn status(
     lua: Lua,
@@ -142,10 +143,11 @@ async fn new(
 /// @param text string The prompt to send. Must not be blank.
 /// @param opts table? Optional fields: session (string) id of a live
 ///   session (defaults to the focused one); steer (boolean) request
-///   delivery as a steering interrupt when the session is busy.
+///   delivery as a steering interrupt when the session is busy; control
+///   (boolean) mark the message as an agent-to-agent control message.
 /// @return (string|nil, string|nil) "started" or "queued", or nil and an error.
 /// @example
-/// local state, err = n00n.session.prompt("run the tests", { session = id, steer = true })
+/// local state, err = n00n.session.prompt("run the tests", { session = id, steer = true, control = true })
 #[lua_fn]
 async fn prompt(
     lua: Lua,
@@ -153,11 +155,25 @@ async fn prompt(
     text: String,
     opts: Option<Table>,
 ) -> LuaResult<Pair> {
-    let (id, steer) = match opts {
-        Some(opts) => (opts.get("session")?, opts.get("steer")?),
-        None => (None, false),
+    let (id, steer, control) = match opts {
+        Some(opts) => (
+            opts.get("session")?,
+            opts.get("steer")?,
+            opts.get("control")?,
+        ),
+        None => (None, false, false),
     };
-    roundtrip(lua, tx, SessionRequest::Prompt { id, text, steer }).await
+    roundtrip(
+        lua,
+        tx,
+        SessionRequest::Prompt {
+            id,
+            text,
+            steer,
+            control,
+        },
+    )
+    .await
 }
 
 /// Cancels the current turn in a live session without deleting the session.
@@ -304,7 +320,13 @@ mod tests {
         let expected_id = expected_id.map(str::to_owned);
         let checker = std::thread::spawn(move || {
             let Ok(UiAction::Session {
-                req: SessionRequest::Prompt { id, text, steer },
+                req:
+                    SessionRequest::Prompt {
+                        id,
+                        text,
+                        steer,
+                        control,
+                    },
                 reply_tx,
             }) = rx.recv()
             else {
@@ -313,6 +335,7 @@ mod tests {
             assert_eq!(id, expected_id);
             assert_eq!(text, "hi");
             assert_eq!(steer, expected_steer);
+            assert!(!control);
             reply_tx.send(Ok(json!("queued"))).unwrap();
         });
         let (val, err): (String, Option<String>) =

@@ -597,6 +597,7 @@ local function run_wave(
             failures = failures,
             step_outputs = step_outputs,
             paused = true,
+            run_id = run_id,
             failed_step = failed_step,
             failed_role = failed_role,
             error = r.error,

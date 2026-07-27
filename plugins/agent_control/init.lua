@@ -275,6 +275,46 @@ local function find_agent(id)
   return nil, "background agent is not live: " .. id
 end
 
+-- The last user message of a paused team run is a tool result whose content
+-- is the JSON pause payload. Extract the run_id and related fields so
+-- agent_control resume can tell the agent how to continue the run.
+local function extract_team_pause(last_user)
+  if not last_user or type(last_user.content) ~= "table" then
+    return nil
+  end
+  for _, block in ipairs(last_user.content) do
+    if block.type == "tool_result" and block.content then
+      local ok, decoded = pcall(n00n.json.decode, block.content)
+      if ok and type(decoded) == "table" and decoded.paused and decoded.run_id then
+        return decoded
+      end
+    end
+  end
+  return nil
+end
+
+local function build_resume_prompt(run_info, guidance)
+  guidance = guidance or ""
+  local continue_clause = ""
+  if guidance ~= "" then
+    continue_clause = " Include a `continue` field with this guidance: " .. guidance
+  end
+  return string.format(
+    "Resume the paused team run.\n"
+      .. "- run_id: %s\n"
+      .. "- failed step: %s\n"
+      .. "- failed role: %s\n"
+      .. "- original error: %s\n"
+      .. "Call the team tool with resume='%s' and goal='resume' (the actual goal will be loaded from the checkpoint).%s",
+    run_info.run_id,
+    tostring(run_info.failed_step or "unknown"),
+    tostring(run_info.failed_role or "unknown"),
+    tostring(run_info.error or "unknown"),
+    run_info.run_id,
+    continue_clause
+  )
+end
+
 local function handler(input)
   if input.action == "list" then
     local agents, err = n00n.session.live()
@@ -350,9 +390,9 @@ local function handler(input)
     return n00n.json.encode(agent)
   end
 
-  if input.action == "message" or input.action == "resume" then
+  if input.action == "message" then
     if not input.message or input.message == "" then
-      return { llm_output = "message is required for " .. input.action, is_error = true }
+      return { llm_output = "message is required for message", is_error = true }
     end
 
     local session_type = nil
@@ -369,11 +409,40 @@ local function handler(input)
       end
     end
 
-    local state, err = n00n.session.prompt(input.message, { session = input.agent_id, steer = true })
+    local state, err = n00n.session.prompt(input.message, { session = input.agent_id, steer = true, control = true })
     if not state then
       return { llm_output = err, is_error = true }
     end
     return n00n.json.encode({ agent_id = input.agent_id, action = input.action, state = state })
+  end
+
+  if input.action == "resume" then
+    local status, status_err = n00n.session.status(input.agent_id)
+    if not status then
+      return { llm_output = status_err or "session status unavailable", is_error = true }
+    end
+
+    if policy_ok and policy then
+      local policy_result = policy.evaluate_policy(input.agent_id, status.session_type, status.tags, "session.prompt")
+      if not policy_result.allowed then
+        return { llm_output = "Policy blocked: " .. (policy_result.reason or "unknown"), is_error = true }
+      end
+    end
+
+    if not status.last_user then
+      return { llm_output = "no user message found for agent " .. input.agent_id, is_error = true }
+    end
+    local run_info = extract_team_pause(status.last_user)
+    if not run_info then
+      return { llm_output = "no paused team run found for agent " .. input.agent_id, is_error = true }
+    end
+
+    local prompt = build_resume_prompt(run_info, input.message)
+    local state, err = n00n.session.prompt(prompt, { session = input.agent_id, steer = true, control = true })
+    if not state then
+      return { llm_output = err, is_error = true }
+    end
+    return n00n.json.encode({ agent_id = input.agent_id, action = "resume", run_id = run_info.run_id, state = state })
   end
 
   if input.action == "pause" then
