@@ -32,7 +32,7 @@ pub struct DaemonHandle {
 
 impl DaemonHandle {
     /// Signal the listener to stop and join the serve thread.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn shutdown(mut self) {
         let _ = self.cancel.send(());
         if let Some(handle) = self.join.take()
