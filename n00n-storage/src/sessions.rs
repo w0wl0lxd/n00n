@@ -192,9 +192,30 @@ pub struct SessionMeta {
     pub workflow: bool,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub usage_by_model: HashMap<String, StoredTokenUsage>,
+    /// Fusion dual-lane cost breakdown when `--fusion` / `always_fusion` was on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fusion: Option<StoredFusionUsage>,
     /// Monotonic snapshot ordering used by write-behind persistence.
     #[serde(default)]
     pub revision: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct StoredFusionUsage {
+    #[serde(default)]
+    pub lead_cost: f64,
+    #[serde(default)]
+    pub sidekick_cost: f64,
+    #[serde(default)]
+    pub lead_usage: StoredTokenUsage,
+    #[serde(default)]
+    pub sidekick_usage: StoredTokenUsage,
+    #[serde(default)]
+    pub delegation_count: u32,
+    #[serde(default)]
+    pub compact_count: u32,
+    #[serde(default)]
+    pub final_lane: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
