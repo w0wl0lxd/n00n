@@ -547,7 +547,6 @@ mod tests {
     use std::sync::Arc;
 
     use n00n_config::{Effect, PermissionRule, PermissionsConfig, ToolKey};
-    use serde_json::json;
     use tempfile::TempDir;
     use test_case::test_case;
 
@@ -573,9 +572,9 @@ mod tests {
     fn doom_loop_detection(name: &str, history: &[(&str, &str)], expected: bool) {
         let entries: Vec<_> = history
             .iter()
-            .map(|(n, p)| (*n, json!({"path": p})))
+            .map(|(n, p)| (*n, serde_json::json!({"path": p})))
             .collect();
-        let input = json!({"path": "/a"});
+        let input = serde_json::json!({"path": "/a"});
         assert_eq!(recent_calls(&entries).is_doom_loop(name, &input), expected);
     }
 
@@ -599,7 +598,7 @@ mod tests {
                 None,
                 "t1".into(),
                 "batch",
-                &json!({"path": "/a"}),
+                &serde_json::json!({"path": "/a"}),
                 &ctx,
                 Emit::Silent,
             )
@@ -613,7 +612,7 @@ mod tests {
                 None,
                 "t2".into(),
                 "boom",
-                &json!({}),
+                &serde_json::json!({}),
                 &ctx,
                 Emit::Silent,
             )
@@ -637,7 +636,7 @@ mod tests {
             );
             ctx.local_tools = Arc::new(map);
 
-            let input = json!({"path": "/a"});
+            let input = serde_json::json!({"path": "/a"});
             let done = run(
                 ToolRegistry::global(),
                 None,
@@ -672,7 +671,7 @@ mod tests {
                 Some(&mcp),
                 "t1".into(),
                 TOOL_SEARCH_TOOL_NAME,
-                &json!({"query": "issue"}),
+                &serde_json::json!({"query": "issue"}),
                 &ctx,
                 Emit::Silent,
             )
@@ -681,7 +680,7 @@ mod tests {
             assert_eq!(done.tool.as_ref(), TOOL_SEARCH_TOOL_NAME);
             assert!(done.output.as_text().contains("srv__fetch_issue"));
 
-            let mut tools = json!([]);
+            let mut tools = serde_json::json!([]);
             mcp.extend_tools(&mut tools);
             assert!(
                 crate::mcp::tool_names(&tools).contains(&"srv__fetch_issue"),
@@ -690,8 +689,8 @@ mod tests {
         });
     }
 
-    #[test_case(json!({"query": "  "}) ; "blank_query")]
-    #[test_case(json!({}) ; "missing_query")]
+    #[test_case(serde_json::json!({"query": "  "}) ; "blank_query")]
+    #[test_case(serde_json::json!({}) ; "missing_query")]
     #[allow(clippy::needless_pass_by_value)]
     fn tool_search_bad_query_is_error_event(input: Value) {
         smol::block_on(async {
@@ -723,14 +722,14 @@ mod tests {
                 Some(&mcp),
                 "t1".into(),
                 "srv__fetch_issue",
-                &json!({}),
+                &serde_json::json!({}),
                 &ctx,
                 Emit::Silent,
             )
             .await;
             assert_eq!(done.tool.as_ref(), "srv.fetch_issue", "must route to MCP");
 
-            let mut tools = json!([]);
+            let mut tools = serde_json::json!([]);
             mcp.extend_tools(&mut tools);
             assert_eq!(
                 crate::mcp::tool_names(&tools),
@@ -764,7 +763,7 @@ mod tests {
                 Some(&mcp),
                 "t1".into(),
                 "srv__fetch_issue",
-                &json!({}),
+                &serde_json::json!({}),
                 &ctx,
                 Emit::Silent,
             )
@@ -776,7 +775,7 @@ mod tests {
                 done.output.as_text()
             );
 
-            let mut tools = json!([]);
+            let mut tools = serde_json::json!([]);
             mcp.extend_tools(&mut tools);
             assert_eq!(
                 crate::mcp::tool_names(&tools),
@@ -796,7 +795,7 @@ mod tests {
                 Some(&mcp),
                 "t1".into(),
                 TOOL_SEARCH_TOOL_NAME,
-                &json!({"query": "tool"}),
+                &serde_json::json!({"query": "tool"}),
                 &ctx,
                 Emit::Silent,
             )
@@ -814,7 +813,7 @@ mod tests {
                 None,
                 "t1".into(),
                 "nonexistent.tool",
-                &json!({}),
+                &serde_json::json!({}),
                 &ctx,
                 Emit::Silent,
             )
@@ -837,7 +836,7 @@ mod tests {
                 None,
                 "t1".into(),
                 "progress",
-                &json!({}),
+                &serde_json::json!({}),
                 &ctx,
                 Emit::Silent,
             )
@@ -857,7 +856,7 @@ mod tests {
                 None,
                 "t1".into(),
                 "fail",
-                &json!({}),
+                &serde_json::json!({}),
                 &ctx,
                 Emit::Silent,
             )
@@ -876,7 +875,7 @@ mod tests {
                 ))),
                 "t1",
                 "myserver.mytool",
-                &json!({}),
+                &serde_json::json!({}),
             )
             .await;
             assert!(result.is_error);
@@ -891,7 +890,7 @@ mod tests {
                 &crate::tools::test_support::stub_ctx(&AgentMode::Build),
                 "t1",
                 "myserver.mytool",
-                &json!({}),
+                &serde_json::json!({}),
             )
             .await;
             assert!(result.is_error);
@@ -929,7 +928,7 @@ mod tests {
                 None,
                 "t1".into(),
                 GUARDED_TOOL_NAME,
-                &json!({}),
+                &serde_json::json!({}),
                 &ctx,
                 Emit::Silent,
             )
@@ -993,7 +992,7 @@ mod tests {
             "start probe".into()
         }
         fn schema(&self) -> Value {
-            json!({"type": "object", "properties": {}, "additionalProperties": false})
+            serde_json::json!({"type": "object", "properties": {}, "additionalProperties": false})
         }
         fn audience(&self) -> crate::tools::ToolAudience {
             crate::tools::ToolAudience::MAIN
@@ -1025,7 +1024,7 @@ mod tests {
                 None,
                 "t1".into(),
                 START_PROBE_NAME,
-                &json!({}),
+                &serde_json::json!({}),
                 &ctx,
                 Emit::Silent,
             )
@@ -1070,7 +1069,7 @@ mod tests {
                 None,
                 "t1".into(),
                 START_PROBE_NAME,
-                &json!({}),
+                &serde_json::json!({}),
                 &ctx,
                 Emit::Silent,
             )
@@ -1098,7 +1097,7 @@ mod tests {
                 None,
                 "t1".into(),
                 "progress",
-                &json!({}),
+                &serde_json::json!({}),
                 &ctx,
                 Emit::Silent,
             )
@@ -1118,7 +1117,7 @@ mod tests {
                 None,
                 "t1".into(),
                 "fail",
-                &json!({}),
+                &serde_json::json!({}),
                 &ctx,
                 Emit::Silent,
             )

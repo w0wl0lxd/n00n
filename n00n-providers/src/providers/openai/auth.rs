@@ -25,8 +25,6 @@ use crate::AgentError;
 use crate::providers::{ResolvedAuth, urlenc};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-
-use serde_json::json;
 pub(crate) const PROVIDER: &str = "openai";
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const DEVICE_CODE_URL: &str = "https://auth.openai.com/api/accounts/deviceauth/usercode";
@@ -513,7 +511,7 @@ fn extract_account_id_from_tokens(resp: &TokenResponse) -> Option<String> {
 
 fn request_device_code() -> Result<DeviceCodeResponse, AgentError> {
     let client = http_client(TOKEN_EXCHANGE_TIMEOUT)?;
-    let body = json!({"client_id": CLIENT_ID});
+    let body = serde_json::json!({"client_id": CLIENT_ID});
     let json_body = serde_json::to_vec(&body)?;
 
     let request = isahc::Request::builder()
@@ -543,7 +541,7 @@ fn poll_device_token(device: &DeviceCodeResponse) -> Result<DeviceTokenResponse,
     let poll_interval = Duration::from_secs(interval_secs) + POLL_SAFETY_MARGIN;
     let deadline = std::time::Instant::now() + POLL_TIMEOUT;
 
-    let body = json!({
+    let body = serde_json::json!({
         "device_auth_id": device.device_auth_id,
         "user_code": device.user_code,
     });
@@ -1286,7 +1284,7 @@ mod tests {
 
         let header = URL_SAFE_NO_PAD.encode(b"{}");
         let payload = URL_SAFE_NO_PAD.encode(
-            json!({"chatgpt_account_id": "acct_123"})
+            serde_json::json!({"chatgpt_account_id": "acct_123"})
                 .to_string()
                 .as_bytes(),
         );

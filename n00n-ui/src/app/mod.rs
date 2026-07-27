@@ -21,7 +21,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::AppSession;
-use crate::bunny::Bunny;
 use crate::chat::Chat;
 use crate::chat::{CANCELLED_TEXT, ChatEventResult, DONE_TEXT, ERROR_TEXT, transcript_to_display};
 use crate::clipboard::ClipboardState;
@@ -70,12 +69,10 @@ use ratatui::layout::Position;
 use ratatui_image::picker::Picker;
 
 pub(crate) use crate::agent::QueuedMessage;
-
 pub(crate) use mode::{Mode, PlanState, PlanTrigger};
 #[cfg(test)]
 use mouse::EDGE_SCROLL_LINES;
 pub(crate) use queue::{MessageQueue, SubmitOutcome};
-use serde_json::json;
 pub(crate) use session::session_has_content;
 use session_state::SessionState;
 
@@ -191,11 +188,6 @@ struct PendingSubmission {
     display_len_before: usize,
 }
 
-pub(crate) struct PendingPlanSubmit {
-    pub(crate) message: QueuedMessage,
-    pub(crate) plan: Option<(String, String)>,
-}
-
 pub enum Msg {
     Key(KeyEvent),
     Paste(String),
@@ -228,7 +220,6 @@ pub struct App {
     pub(super) plan_form: PlanForm,
     pub(super) status_bar: StatusBar,
     pub status: Status,
-    pub(crate) bunny: Bunny,
     pub(crate) state: session_state::SessionState,
     pub exit_request: ExitRequest,
     pub(crate) exit_on_done: bool,
@@ -239,7 +230,6 @@ pub struct App {
     pub(crate) run_id: u64,
     next_submission_id: u64,
     pending_submission: Option<PendingSubmission>,
-    pub(crate) pending_plan_submit: Option<PendingPlanSubmit>,
     submission_clock: Arc<dyn SubmissionClock>,
     pub(super) retry_info: Option<RetryInfo>,
     pub(super) zones: ZoneRegistry,
@@ -344,7 +334,6 @@ impl App {
             plan_form: PlanForm::new(),
             status_bar: StatusBar::new(ui_config.flash_duration()),
             status: Status::Idle,
-            bunny: Bunny::new(),
             state,
             exit_request: ExitRequest::None,
             exit_on_done: false,
@@ -355,7 +344,6 @@ impl App {
             run_id: 0,
             next_submission_id: 0,
             pending_submission: None,
-            pending_plan_submit: None,
             submission_clock: Arc::new(SystemSubmissionClock),
             retry_info: None,
             zones: ZoneRegistry::new(),
@@ -393,13 +381,6 @@ impl App {
 
     fn is_main_chat(&self) -> bool {
         self.active_chat == 0
-    }
-
-    fn set_active_chat(&mut self, idx: usize) {
-        if idx != self.active_chat {
-            self.input_box.clear();
-        }
-        self.active_chat = idx;
     }
 
     fn plan_form_active(&self) -> bool {
@@ -689,11 +670,11 @@ impl App {
             return Some(vec![]);
         }
         if key::PREV_CHAT.matches(key) {
-            self.set_active_chat(self.active_chat.saturating_sub(1));
+            self.active_chat = self.active_chat.saturating_sub(1);
             return Some(vec![]);
         }
         if key::NEXT_CHAT.matches(key) {
-            self.set_active_chat((self.active_chat + 1).min(self.chats.len() - 1));
+            self.active_chat = (self.active_chat + 1).min(self.chats.len() - 1);
             return Some(vec![]);
         }
         if key::SCROLL_HALF_UP.matches(key) {
@@ -850,12 +831,11 @@ impl App {
                 PickerAction::Consumed | PickerAction::Toggle(..) => vec![],
                 PickerAction::Select(idx, _) => {
                     self.task_picker_original = None;
-                    self.set_active_chat(idx);
+                    self.active_chat = idx;
                     vec![]
                 }
                 PickerAction::Close => {
-                    let original = self.task_picker_original.take().unwrap_or_else(|| 0);
-                    self.set_active_chat(original);
+                    self.active_chat = self.task_picker_original.take().unwrap_or_else(|| 0);
                     vec![]
                 }
             });
@@ -972,12 +952,12 @@ impl App {
     fn handle_subagent_chat_key(&mut self, key: KeyEvent) -> Vec<Action> {
         let finished = self.chats[self.active_chat].is_finished();
         if key.code == KeyCode::Left {
-            self.set_active_chat(0);
+            self.active_chat = 0;
             self.last_esc = None;
             return vec![];
         }
         if finished && key.code == KeyCode::Esc {
-            self.set_active_chat(0);
+            self.active_chat = 0;
             return vec![];
         }
         if key.code != KeyCode::Esc {
@@ -997,17 +977,10 @@ impl App {
                     vec![]
                 }
             }
-            InputAction::OpenFilePicker => {
-                if finished {
-                    self.flash(STEERING_UNAVAILABLE_MSG.into());
-                } else {
-                    self.file_picker.open_via_at(&self.state.session.cwd);
-                }
-                vec![]
-            }
             InputAction::Passthrough(_)
             | InputAction::ContinueLine
             | InputAction::None
+            | InputAction::OpenFilePicker
             | InputAction::PaletteSync(_) => vec![],
         }
     }
@@ -1321,7 +1294,10 @@ impl App {
                 DisplayRole::Error,
                 PERSISTENCE_FAILURE_MSG.into(),
             ));
-            self.fire_session_autocmd("TurnError", json!({ "message": PERSISTENCE_FAILURE_MSG }));
+            self.fire_session_autocmd(
+                "TurnError",
+                serde_json::json!({ "message": PERSISTENCE_FAILURE_MSG }),
+            );
         }
     }
     pub(crate) fn preserve_submission_for_shutdown(&mut self, dispatch: SubmissionDispatch) {
@@ -1535,7 +1511,7 @@ impl App {
         if let AgentEvent::ToolStart(ref e) = envelope.event {
             self.fire_session_autocmd(
                 "ToolStart",
-                json!({
+                serde_json::json!({
                     "id": e.id,
                     "tool": e.tool,
                     "summary": e.summary,
@@ -1547,7 +1523,7 @@ impl App {
         if let AgentEvent::ToolDone(ref e) = envelope.event {
             self.fire_session_autocmd(
                 "ToolDone",
-                json!({
+                serde_json::json!({
                     "id": e.id,
                     "tool": e.tool,
                     "is_error": e.is_error,
@@ -1682,7 +1658,7 @@ impl App {
                     self.subagent_answers.clear();
                     self.subagent_prompts.clear();
                     self.status = Status::Idle;
-                    self.fire_session_autocmd("TurnEnd", json!({}));
+                    self.fire_session_autocmd("TurnEnd", serde_json::json!({}));
                     if self.exit_on_done {
                         self.exit_request = ExitRequest::Success;
                     }
@@ -1700,7 +1676,10 @@ impl App {
                     for chat in &mut self.chats {
                         chat.fail_in_progress_with_message(message.as_str());
                     }
-                    self.fire_session_autocmd("TurnError", json!({ "message": message }));
+                    self.fire_session_autocmd(
+                        "TurnError",
+                        serde_json::json!({ "message": message }),
+                    );
                     if self.exit_on_done {
                         self.exit_request = ExitRequest::Error;
                     }
@@ -2154,36 +2133,31 @@ impl App {
 
         self.state.mode = Mode::Build;
 
-        let text = if let Some((content, path_str)) = plan_snapshot.as_ref() {
+        let mut actions = if clear_context {
+            self.reset_session()
+        } else {
+            vec![]
+        };
+
+        let text = if let Some((content, path_str)) = plan_snapshot {
             let text = if parallel {
                 format!("{IMPLEMENT_MSG_PREFIX} at `{path_str}`. {IMPLEMENT_PARALLEL_HINT}")
             } else {
                 format!("{IMPLEMENT_MSG_PREFIX} at `{path_str}`.")
             };
-            if !clear_context {
-                self.main_chat()
-                    .push(DisplayMessage::plan(content.clone(), path_str.clone()));
-            }
+            self.main_chat()
+                .push(DisplayMessage::plan(content, path_str));
             text
         } else {
             format!("{IMPLEMENT_MSG_PREFIX}.")
         };
-
+        self.run_id += 1;
         let msg = QueuedMessage {
             text,
             images: vec![],
         };
-
-        if clear_context {
-            self.pending_plan_submit = Some(PendingPlanSubmit {
-                message: msg,
-                plan: plan_snapshot,
-            });
-            self.reset_session()
-        } else {
-            self.run_id += 1;
-            self.start_from_queue(&msg)
-        }
+        actions.extend(self.start_from_queue(&msg));
+        actions
     }
 }
 

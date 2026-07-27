@@ -756,7 +756,6 @@ impl MessagesPanel {
         self.flush_thinking();
         self.prompt_progress = None;
         if !self.streaming_text.is_empty() {
-            self.streaming_text.finish();
             self.messages.push(DisplayMessage::new(
                 DisplayRole::Assistant,
                 self.streaming_text.take_all(),
@@ -1527,7 +1526,6 @@ impl MessagesPanel {
         if self.streaming_thinking.is_empty() {
             return;
         }
-        self.streaming_thinking.finish();
         let mut msg =
             DisplayMessage::new(DisplayRole::Thinking, self.streaming_thinking.take_all());
         msg.thinking_collapsed = true;

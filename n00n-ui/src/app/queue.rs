@@ -9,7 +9,6 @@ use std::sync::{Arc, atomic::AtomicBool};
 
 pub(crate) use crate::agent::shared_queue::QueuedMessage;
 
-use serde_json::json;
 pub(crate) const EMPTY_PROMPT_ERR: &str = "prompt is empty";
 pub(crate) const NO_QUEUE_ERR: &str = "session cannot queue messages";
 
@@ -79,10 +78,12 @@ impl MessageQueue {
         let Some(shared) = self.shared.clone() else {
             return;
         };
-        // Atomic check-and-push: hold the lock across both operations to prevent race
+        if shared.contains_submission(dispatch.submission_id) {
+            return;
+        }
         let image_count = dispatch.input.images.len();
         let text = dispatch.input.message.clone();
-        shared.push_front_if_missing(QueueItem::Message {
+        shared.push_front(QueueItem::Message {
             text,
             image_count,
             input: dispatch.input,
@@ -370,7 +371,7 @@ impl App {
 
     /// Immediate path: kick off the agent and draw the bubble in the same
     /// frame, so the user sees their message land where it will stay.
-    pub(crate) fn start_from_queue(&mut self, msg: &QueuedMessage) -> Vec<Action> {
+    pub(super) fn start_from_queue(&mut self, msg: &QueuedMessage) -> Vec<Action> {
         self.start_submission(msg, self.build_agent_input(msg), true)
     }
 
@@ -385,7 +386,7 @@ impl App {
         paint_required: bool,
     ) -> Vec<Action> {
         self.status = Status::Streaming;
-        self.fire_session_autocmd("TurnStart", json!({}));
+        self.fire_session_autocmd("TurnStart", serde_json::json!({}));
         let display_len_before = self.main_chat().message_count();
         if paint_required {
             self.main_chat()
