@@ -139,3 +139,6 @@ class N00nAgent(BaseInstalledAgent):
             "num_turns": result.get("num_turns"),
             "is_error": result.get("is_error", False),
         }
+
+
+n00nAgent = N00nAgent
