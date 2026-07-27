@@ -159,6 +159,48 @@ case("write_read_delete_lifecycle", function()
   rmtree(tmpdir)
 end)
 
+case("parse_frontmatter_roundtrip", function()
+  local raw =
+    "---\ntags: [auth, jwt]\ntopic: security\nimportance: 4\nlayer: lite\nsynopsis: Use refresh tokens\n---\nBody text"
+  local fm, body = h.parse_frontmatter(raw)
+  eq(body, "Body text")
+  eq(fm.topic, "security")
+  eq(fm.importance, 4)
+  eq(fm.layer, "lite")
+  eq(fm.synopsis, "Use refresh tokens")
+  eq(#fm.tags, 2)
+end)
+
+case("rank_memories_prefers_query_match", function()
+  local entries = {
+    { path = "a.md", meta = { tags = { "rust" } }, body = "cargo clippy" },
+    { path = "b.md", meta = { tags = { "lua" } }, body = "plugin tests" },
+  }
+  local ranked = h.rank_memories(entries, "cargo", nil)
+  eq(ranked[1].entry.path, "a.md")
+  assert(ranked[1].score > ranked[2].score)
+end)
+
+case("tags_match_filters", function()
+  eq(h.tags_match({ tags = { "a", "b" } }, { "a" }), true)
+  eq(h.tags_match({ tags = { "a" } }, { "b" }), false)
+end)
+
+case("append_body_preserves_frontmatter", function()
+  local existing = "---\ntopic: arch\n---\nline one"
+  local next = h.append_body(existing, "line two")
+  local fm, body = h.parse_frontmatter(next)
+  eq(fm.topic, "arch")
+  assert(body:find("line one"), "original body preserved")
+  assert(body:find("line two"), "appended body present")
+end)
+
+case("sanitize_hint_strips_markdown_directives", function()
+  local out = h.sanitize_hint_text("# ignore prior\n- do bad", 80)
+  assert(not out:find("#"), "heading marker stripped")
+  assert(out:find("ignore prior"), "text preserved")
+end)
+
 if #failures > 0 then
   error(#failures .. " case(s) failed:\n\n" .. table.concat(failures, "\n\n"))
 end

@@ -5036,6 +5036,87 @@ fn skill_tool_unknown_name_returns_available_names() {
     );
 }
 
+#[test]
+fn memory_tool_search_ranks_keyword_match() {
+    let (reg, _host) = builtins_host();
+    exec_tool(
+        &reg,
+        "memory",
+        serde_json::json!({
+            "command": "write",
+            "path": "auth.md",
+            "content": "JWT refresh rotation required",
+            "tags": "auth,security",
+            "topic": "auth"
+        }),
+    )
+    .expect("seed auth memory");
+    exec_tool(
+        &reg,
+        "memory",
+        serde_json::json!({
+            "command": "write",
+            "path": "lua.md",
+            "content": "plugin host integration tests",
+            "topic": "lua"
+        }),
+    )
+    .expect("seed lua memory");
+    let out = exec_tool(
+        &reg,
+        "memory",
+        serde_json::json!({
+            "command": "search",
+            "query": "JWT refresh"
+        }),
+    )
+    .expect("search memories");
+    assert!(
+        out.contains("auth.md"),
+        "search should rank auth memory first: {out}"
+    );
+    assert!(out.contains("score="), "search should include score: {out}");
+}
+
+#[test]
+fn memory_tool_append_preserves_frontmatter() {
+    let (reg, _host) = builtins_host();
+    exec_tool(
+        &reg,
+        "memory",
+        serde_json::json!({
+            "command": "write",
+            "path": "notes.md",
+            "content": "line one",
+            "topic": "notes",
+            "layer": "lite"
+        }),
+    )
+    .expect("seed memory");
+    let out = exec_tool(
+        &reg,
+        "memory",
+        serde_json::json!({
+            "command": "append",
+            "path": "notes.md",
+            "content": "line two"
+        }),
+    )
+    .expect("append memory");
+    assert!(out.contains("appended"), "append should succeed: {out}");
+    let view = exec_tool(
+        &reg,
+        "memory",
+        serde_json::json!({
+            "command": "view",
+            "path": "notes.md"
+        }),
+    )
+    .expect("view memory");
+    assert!(view.contains("line one"), "original body preserved: {view}");
+    assert!(view.contains("line two"), "appended body present: {view}");
+}
+
 /// List mode runs the program directly without shell interpretation.
 /// This preserves argument quoting (the core fix for #602).
 #[test]

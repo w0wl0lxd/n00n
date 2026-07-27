@@ -2,9 +2,65 @@ local M = {}
 
 M.MAX_LINES_PER_FILE = 200
 M.MAX_DIR_BYTES = 50 * 1024
+M.DEFAULT_SEARCH_LIMIT = 10
+M.MAX_SEARCH_LIMIT = 50
+M.LITE_HINT_LIMIT = 5
+M.MIN_TOKEN_LEN = 2
 
--- Lua's bit32 is 32-bit only, so we split the 64-bit FNV-1a state into
--- hi/lo halves and propagate carries by hand during multiplication.
+local function normalize_string_list(values)
+  if values == nil then
+    return nil
+  end
+  if type(values) == "string" then
+    local normalized = {}
+    for token in values:gmatch("([^,]+)") do
+      local trimmed = token:match("^%s*(.-)%s*$")
+      if trimmed ~= "" then
+        normalized[#normalized + 1] = trimmed
+      end
+    end
+    return (#normalized > 0) and normalized or nil
+  end
+  if type(values) == "table" then
+    local normalized = {}
+    for _, token in ipairs(values) do
+      if type(token) == "string" then
+        local trimmed = token:match("^%s*(.-)%s*$")
+        if trimmed ~= "" then
+          normalized[#normalized + 1] = trimmed
+        end
+      end
+    end
+    return (#normalized > 0) and normalized or nil
+  end
+  return nil
+end
+
+local function clamp_importance(value)
+  if type(value) ~= "number" then
+    return 1
+  end
+  local rounded = math.floor(value)
+  if rounded < 1 then
+    return 1
+  end
+  if rounded > 5 then
+    return 5
+  end
+  return rounded
+end
+
+local function normalize_layer(layer)
+  if type(layer) ~= "string" then
+    return "deep"
+  end
+  local normalized = layer:lower()
+  if normalized == "lite" then
+    return "lite"
+  end
+  return "deep"
+end
+
 function M.fnv1a_64(data)
   local lo = 0x84222325
   local hi = 0xcbf29ce4
@@ -22,8 +78,6 @@ function M.fnv1a_64(data)
   return string.format("%08x%08x", hi, lo)
 end
 
--- Counts lines the way editors do: empty string is 1 line,
--- and a trailing newline does not start a new line.
 function M.count_lines(s)
   if s == "" then
     return 1
@@ -40,8 +94,6 @@ function M.project_id(path)
   return base .. "-" .. M.fnv1a_64(path)
 end
 
--- Normalize both paths and check the prefix to block "../" traversal
--- out of the memories sandbox.
 function M.safe_resolve(memories_dir, relative)
   if not relative or relative == "" then
     return nil, "path is required"
@@ -50,7 +102,6 @@ function M.safe_resolve(memories_dir, relative)
   if relative:find("\0") or first == "/" or first == "\\" then
     return nil, "path must be relative"
   end
-  -- Drive letter (C:\, D:/)
   if relative:match("^%a:") then
     return nil, "path must be relative"
   end
@@ -74,7 +125,7 @@ function M.collect_file_entries(dir)
     if entry[2] == "file" then
       local meta = n00n.fs.metadata(n00n.fs.joinpath(dir, entry[1]))
       if meta then
-        files[#files + 1] = { entry[1], meta.size }
+        files[#files + 1] = { entry[1], meta.size, meta.mtime or 0 }
       end
     end
   end
@@ -89,23 +140,331 @@ function M.dir_total_bytes(dir)
   return total
 end
 
-function M.list_memories(dir)
-  local files = M.collect_file_entries(dir)
+function M.parse_frontmatter(content)
+  local rest = content:match("^%s*%-%-%-\n(.*)")
+  if not rest then
+    return {}, content
+  end
+  local end_pos = rest:find("\n%-%-%-")
+  if not end_pos then
+    return {}, content
+  end
+  local yaml_str = rest:sub(1, end_pos)
+  local body = rest:sub(end_pos + 4):match("^%s*(.-)%s*$")
+  local fm, _ = n00n.yaml.decode(yaml_str)
+  if type(fm) ~= "table" then
+    fm = {}
+  end
+  fm.tags = normalize_string_list(fm.tags)
+  fm.importance = clamp_importance(fm.importance)
+  fm.layer = normalize_layer(fm.layer)
+  if type(fm.topic) == "string" then
+    local topic = fm.topic:match("^%s*(.-)%s*$")
+    fm.topic = (#topic > 0) and topic or nil
+  else
+    fm.topic = nil
+  end
+  if type(fm.synopsis) == "string" then
+    local synopsis = fm.synopsis:match("^%s*(.-)%s*$")
+    fm.synopsis = (#synopsis > 0) and synopsis or nil
+  else
+    fm.synopsis = nil
+  end
+  return fm, body or ""
+end
+
+function M.normalize_metadata(input)
+  return {
+    tags = normalize_string_list(input and input.tags),
+    topic = type(input and input.topic) == "string" and input.topic:match("^%s*(.-)%s*$") or nil,
+    importance = clamp_importance(input and input.importance),
+    layer = normalize_layer(input and input.layer),
+    synopsis = type(input and input.synopsis) == "string" and input.synopsis:match("^%s*(.-)%s*$") or nil,
+  }
+end
+
+function M.build_frontmatter(meta, body)
+  local fields = {}
+  if meta.tags then
+    fields[#fields + 1] = "tags: [" .. table.concat(meta.tags, ", ") .. "]"
+  end
+  if meta.topic then
+    fields[#fields + 1] = "topic: " .. meta.topic
+  end
+  if meta.importance and meta.importance ~= 1 then
+    fields[#fields + 1] = "importance: " .. tostring(meta.importance)
+  end
+  if meta.layer and meta.layer ~= "deep" then
+    fields[#fields + 1] = "layer: " .. meta.layer
+  end
+  if meta.synopsis then
+    fields[#fields + 1] = "synopsis: " .. meta.synopsis
+  end
+  if #fields == 0 then
+    return body
+  end
+  return "---\n" .. table.concat(fields, "\n") .. "\n---\n" .. body
+end
+
+function M.parse_memory_file(relative_path, raw)
+  local fm, body = M.parse_frontmatter(raw)
+  return {
+    path = relative_path,
+    meta = fm,
+    body = body,
+  }
+end
+
+function M.tokenize(text)
+  if not text or #text == 0 then
+    return {}
+  end
+  local tokens = {}
+  for token in text:lower():gmatch("[%w_]+") do
+    if #token >= M.MIN_TOKEN_LEN then
+      tokens[token] = true
+    end
+  end
+  return tokens
+end
+
+function M.tokenize_path(path)
+  if not path or #path == 0 then
+    return {}
+  end
+  local tokens = {}
+  for part in path:lower():gmatch("[^/\\]+") do
+    local base = part:match("(.+)%.[^%.]+$") or part
+    for token in base:gmatch("[%w_]+") do
+      if #token >= M.MIN_TOKEN_LEN then
+        tokens[token] = true
+      end
+    end
+  end
+  return tokens
+end
+
+function M.tags_match(meta, required_tags)
+  if not required_tags or #required_tags == 0 then
+    return true
+  end
+  if not meta.tags then
+    return false
+  end
+  local have = {}
+  for _, tag in ipairs(meta.tags) do
+    have[tag:lower()] = true
+  end
+  for _, tag in ipairs(required_tags) do
+    if not have[tag:lower()] then
+      return false
+    end
+  end
+  return true
+end
+
+function M.searchable_text(entry)
+  local meta = entry.meta or {}
+  local parts = { entry.path or "", meta.topic or "", meta.synopsis or "", entry.body or "" }
+  if meta.tags then
+    parts[#parts + 1] = table.concat(meta.tags, " ")
+  end
+  return table.concat(parts, " ")
+end
+
+function M.score_memory(entry, query, focus_path)
+  local meta = entry.meta or {}
+  local score = meta.importance or 1
+  if query and #query > 0 then
+    local qtokens = M.tokenize(query)
+    local haystack = M.searchable_text(entry)
+    local htokens = M.tokenize(haystack)
+    for token in pairs(qtokens) do
+      if htokens[token] then
+        score = score + 10
+      end
+    end
+    if haystack:lower():find(query:lower(), 1, true) then
+      score = score + 20
+    end
+  end
+  if focus_path and focus_path ~= "" then
+    local ptokens = M.tokenize_path(focus_path)
+    if meta.topic then
+      for token in pairs(M.tokenize(meta.topic)) do
+        if ptokens[token] then
+          score = score + 5
+        end
+      end
+    end
+    if meta.tags then
+      for _, tag in ipairs(meta.tags) do
+        if ptokens[tag:lower()] then
+          score = score + 5
+        end
+      end
+    end
+  end
+  return score
+end
+
+function M.rank_memories(entries, query, focus_path)
+  local ranked = {}
+  for _, entry in ipairs(entries) do
+    ranked[#ranked + 1] = {
+      entry = entry,
+      score = M.score_memory(entry, query, focus_path),
+    }
+  end
+  table.sort(ranked, function(a, b)
+    if a.score ~= b.score then
+      return a.score > b.score
+    end
+    return (a.entry.path or "") < (b.entry.path or "")
+  end)
+  return ranked
+end
+
+function M.lite_summary(entry)
+  local meta = entry.meta or {}
+  if meta.synopsis and #meta.synopsis > 0 then
+    return meta.synopsis
+  end
+  local first = entry.body:match("^%s*([^\n]+)")
+  if first and #first > 0 then
+    return first
+  end
+  return entry.path
+end
+
+function M.format_search_result(entry, score)
+  local meta = entry.meta or {}
+  local parts = { entry.path }
+  if meta.topic then
+    parts[#parts + 1] = "topic=" .. meta.topic
+  end
+  if meta.tags then
+    parts[#parts + 1] = "tags=" .. table.concat(meta.tags, ",")
+  end
+  if score and score > 0 then
+    parts[#parts + 1] = string.format("score=%d", score)
+  end
+  return table.concat(parts, " | ")
+end
+
+function M.format_list(entries, ranked)
+  if ranked then
+    local lines = {}
+    for _, row in ipairs(ranked) do
+      lines[#lines + 1] = M.format_search_result(row.entry, row.score)
+    end
+    if #lines == 0 then
+      return "No matching memories."
+    end
+    return table.concat(lines, "\n")
+  end
+
+  local files = entries
   if #files == 0 then
     return "No memories yet."
   end
   table.sort(files, function(a, b)
-    return a[1] < b[1]
+    return a.path < b.path
   end)
   local lines = {}
   local total = 0
-  for _, f in ipairs(files) do
-    lines[#lines + 1] = f[1] .. " (" .. f[2] .. " bytes)"
-    total = total + f[2]
+  for _, entry in ipairs(files) do
+    local meta = entry.meta or {}
+    local size = entry.size or 0
+    lines[#lines + 1] = M.format_search_result(entry, nil) .. " (" .. size .. " bytes)"
+    total = total + size
   end
   lines[#lines + 1] = ""
   lines[#lines + 1] = #files .. " files, " .. total .. " bytes total"
   return table.concat(lines, "\n")
+end
+
+function M.load_entries(dir)
+  local entries = {}
+  for _, f in ipairs(M.collect_file_entries(dir)) do
+    local rel = f[1]
+    local file_path = n00n.fs.joinpath(dir, rel)
+    local raw = n00n.fs.read(file_path)
+    if raw then
+      local entry = M.parse_memory_file(rel, raw)
+      entry.size = f[2]
+      entry.mtime = f[3]
+      entries[#entries + 1] = entry
+    end
+  end
+  return entries
+end
+
+function M.sanitize_hint_text(text, max_len)
+  if not text then
+    return ""
+  end
+  local trimmed = text:match("^%s*(.-)%s*$")
+  trimmed = trimmed:gsub("[%c]", " ")
+  trimmed = trimmed:gsub("^#+%s*", "")
+  trimmed = trimmed:gsub("^%s*%-+%s*", "")
+  trimmed = trimmed:gsub("%s+", " ")
+  trimmed = trimmed:gsub("[Ii]gnore [Pp]revious", "")
+  trimmed = trimmed:gsub("[Ss]ystem:", "")
+  if #trimmed > max_len then
+    trimmed = trimmed:sub(1, max_len) .. "..."
+  end
+  return trimmed
+end
+
+function M.build_lite_hint(entries)
+  local lite = {}
+  for _, entry in ipairs(entries) do
+    local meta = entry.meta or {}
+    if meta.layer == "lite" then
+      lite[#lite + 1] = entry
+    end
+  end
+  table.sort(lite, function(a, b)
+    local ai = (a.meta and a.meta.importance) or 1
+    local bi = (b.meta and b.meta.importance) or 1
+    if ai ~= bi then
+      return ai > bi
+    end
+    return (a.path or "") < (b.path or "")
+  end)
+
+  local lines = {}
+  local total_bytes = 0
+  local max_total = 800
+  local max_line = 120
+  for i = 1, math.min(#lite, M.LITE_HINT_LIMIT) do
+    local entry = lite[i]
+    local summary = M.sanitize_hint_text(M.lite_summary(entry), max_line)
+    if summary ~= "" then
+      local line = "- " .. entry.path .. ": " .. summary
+      if total_bytes + #line > max_total then
+        break
+      end
+      lines[#lines + 1] = line
+      total_bytes = total_bytes + #line
+    end
+  end
+  if #lines == 0 then
+    return nil
+  end
+  return "\n\nProject memory (lite):\n" .. table.concat(lines, "\n") .. "\n"
+end
+
+function M.list_memories(dir)
+  return M.format_list(M.load_entries(dir), nil)
+end
+
+function M.append_body(existing_raw, addition)
+  local fm, body = M.parse_frontmatter(existing_raw)
+  local separator = (#body > 0 and not body:match("%s$")) and "\n" or ""
+  local next_body = body .. separator .. addition
+  return M.build_frontmatter(fm, next_body)
 end
 
 return M

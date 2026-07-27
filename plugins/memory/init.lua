@@ -2,6 +2,15 @@ local ToolView = require("n00n.tool_view")
 local helpers = require("memory_helpers")
 local ListPicker = require("n00n.list_picker")
 
+local load_entries = helpers.load_entries
+local rank_memories = helpers.rank_memories
+local format_list = helpers.format_list
+local build_frontmatter = helpers.build_frontmatter
+local normalize_metadata = helpers.normalize_metadata
+local append_body = helpers.append_body
+local build_lite_hint = helpers.build_lite_hint
+local tags_match = helpers.tags_match
+
 local function memories_path_suffix()
   local cwd = n00n.uv.cwd()
   local root = n00n.fs.root(cwd, ".git") or cwd
@@ -16,6 +25,47 @@ local function resolve_dir()
   return n00n.fs.joinpath(state, memories_path_suffix())
 end
 
+local function parse_tag_filter(tags)
+  if type(tags) ~= "string" or tags == "" then
+    return nil
+  end
+  local normalized = {}
+  for token in tags:gmatch("([^,]+)") do
+    local trimmed = token:match("^%s*(.-)%s*$")
+    if trimmed ~= "" then
+      normalized[#normalized + 1] = trimmed
+    end
+  end
+  return (#normalized > 0) and normalized or nil
+end
+
+local function filter_entries(entries, tag_filter)
+  if not tag_filter then
+    return entries
+  end
+  local filtered = {}
+  for _, entry in ipairs(entries) do
+    if tags_match(entry.meta or {}, tag_filter) then
+      filtered[#filtered + 1] = entry
+    end
+  end
+  return filtered
+end
+
+local function clamp_limit(limit)
+  if type(limit) ~= "number" then
+    return helpers.DEFAULT_SEARCH_LIMIT
+  end
+  local rounded = math.floor(limit)
+  if rounded < 1 then
+    return 1
+  end
+  if rounded > helpers.MAX_SEARCH_LIMIT then
+    return helpers.MAX_SEARCH_LIMIT
+  end
+  return rounded
+end
+
 n00n.api.register_prompt_hint({
   prompt = "system",
   slot = "after_instructions",
@@ -24,17 +74,21 @@ n00n.api.register_prompt_hint({
     if not dir then
       return nil
     end
-    local entries = helpers.collect_file_entries(dir)
+    local entries = load_entries(dir)
     if #entries == 0 then
       return nil
     end
-    return "\n\nMemory files: " .. #entries .. " entries (use memory tool to view/update)\n"
+    local lite = build_lite_hint(entries)
+    if lite then
+      return lite
+    end
+    return "\n\nMemory files: " .. #entries .. " entries (use memory tool to view/search/update)\n"
   end,
 })
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Proactively save non-obvious project gotchas and architecture decisions to **memory**.",
+  content = "- Proactively save non-obvious project gotchas and architecture decisions to **memory**. Use `search` for keyword/tag recall (not semantic paraphrase).",
 })
 
 local function render_content(content, path, ctx)
@@ -56,25 +110,52 @@ local function render_content(content, path, ctx)
   return buf
 end
 
-local function cmd_view(path, dir, ctx)
+local function cmd_view(path, query, focus_path, dir, ctx)
   if not path then
-    return helpers.list_memories(dir)
+    local entries = load_entries(dir)
+    if query and #query > 0 then
+      local ranked = rank_memories(entries, query, focus_path)
+      return { llm_output = format_list(entries, ranked) }
+    end
+    return { llm_output = format_list(entries, nil) }
   end
   local file_path, err = helpers.safe_resolve(dir, path)
   if not file_path then
     return nil, err
   end
-  local content, err = n00n.fs.read(file_path)
+  local content, read_err = n00n.fs.read(file_path)
   if not content then
-    return nil, "read error: " .. err
+    return nil, "read error: " .. read_err
   end
+  local entry = helpers.parse_memory_file(path, content)
   return {
-    llm_output = content,
-    body = render_content(content, path, ctx),
+    llm_output = entry.body,
+    body = render_content(entry.body, path, ctx),
   }
 end
 
-local function cmd_write(path, content, dir, ctx)
+local function cmd_search(query, tags, focus_path, limit, dir)
+  if not query or #query == 0 then
+    return nil, "query is required for search"
+  end
+  local entries = filter_entries(load_entries(dir), parse_tag_filter(tags))
+  local ranked = rank_memories(entries, query, focus_path)
+  local capped = {}
+  local max = clamp_limit(limit)
+  for i = 1, math.min(#ranked, max) do
+    capped[#capped + 1] = ranked[i]
+  end
+  if #capped == 0 then
+    return { llm_output = "No matching memories for query: " .. query }
+  end
+  local lines = { "Search results (keyword/tag match):" }
+  for _, row in ipairs(capped) do
+    lines[#lines + 1] = helpers.format_search_result(row.entry, row.score)
+  end
+  return { llm_output = table.concat(lines, "\n") }
+end
+
+local function cmd_write(path, content, metadata, dir, ctx)
   local lc = helpers.count_lines(content)
   if lc > helpers.MAX_LINES_PER_FILE then
     return nil, "content exceeds " .. helpers.MAX_LINES_PER_FILE .. " lines (" .. lc .. " lines); reduce content size"
@@ -83,19 +164,60 @@ local function cmd_write(path, content, dir, ctx)
   if not file_path then
     return nil, err
   end
+  local payload = build_frontmatter(metadata, content)
   local meta = n00n.fs.metadata(file_path)
   local existing_size = meta and meta.size or 0
-  if helpers.dir_total_bytes(dir) - existing_size + #content > helpers.MAX_DIR_BYTES then
+  if helpers.dir_total_bytes(dir) - existing_size + #payload > helpers.MAX_DIR_BYTES then
     return nil, "memory directory would exceed " .. helpers.MAX_DIR_BYTES .. " byte limit; delete stale entries first"
   end
   n00n.fs.mkdir(dir, { parents = true })
-  local ok, write_err = n00n.fs.write(file_path, content)
+  local ok, write_err = n00n.fs.write(file_path, payload)
   if not ok then
     return nil, "write error: " .. tostring(write_err)
   end
   return {
     llm_output = "wrote " .. path .. " (" .. lc .. " lines)",
     body = render_content(content, path, ctx),
+  }
+end
+
+local function cmd_append(path, content, dir, ctx)
+  if not path then
+    return nil, "'path' is required for append"
+  end
+  if not content then
+    return nil, "'content' is required for append"
+  end
+  local file_path, err = helpers.safe_resolve(dir, path)
+  if not file_path then
+    return nil, err
+  end
+  local existing = ""
+  local meta = n00n.fs.metadata(file_path)
+  if meta then
+    local read_ok, text = pcall(n00n.fs.read, file_path)
+    if read_ok and text then
+      existing = text
+    end
+  end
+  local payload = append_body(existing, content)
+  local lc = helpers.count_lines(payload)
+  if lc > helpers.MAX_LINES_PER_FILE then
+    return nil, "content exceeds " .. helpers.MAX_LINES_PER_FILE .. " lines (" .. lc .. " lines); reduce content size"
+  end
+  local existing_size = meta and meta.size or 0
+  if helpers.dir_total_bytes(dir) - existing_size + #payload > helpers.MAX_DIR_BYTES then
+    return nil, "memory directory would exceed " .. helpers.MAX_DIR_BYTES .. " byte limit; delete stale entries first"
+  end
+  n00n.fs.mkdir(dir, { parents = true })
+  local ok, write_err = n00n.fs.write(file_path, payload)
+  if not ok then
+    return nil, "write error: " .. tostring(write_err)
+  end
+  local entry = helpers.parse_memory_file(path, payload)
+  return {
+    llm_output = "appended to " .. path .. " (" .. helpers.count_lines(content) .. " lines added)",
+    body = render_content(entry.body, path, ctx),
   }
 end
 
@@ -109,21 +231,39 @@ local function cmd_delete(path, dir)
   end
   local ok, rm_err = n00n.fs.rm(file_path)
   if not ok then
-    return nil, "delete error: " .. tostring(rm_err)
+    return nil, "delete error: " .. rm_err
   end
   return "deleted " .. path
 end
 
 n00n.api.register_tool({
   name = "memory",
-  description = "Persistent, project-scoped scratchpad for learnings, patterns, decisions, and gotchas across sessions. Save important context before compaction or to build project knowledge. Keep entries concise and current. Delete outdated information.",
+  description = "Persistent, project-scoped scratchpad for learnings, patterns, decisions, and gotchas across sessions. Save important context before compaction or to build project knowledge. Use `search` for keyword/tag recall (not semantic paraphrase). Keep entries concise and current. Delete outdated information.",
 
   schema = {
     type = "object",
     properties = {
-      command = { type = "string", description = "Command: view, write, delete", required = true },
+      command = {
+        type = "string",
+        description = "Command: view, write, delete, search, append",
+        required = true,
+      },
       path = { type = "string", description = "Relative path (e.g. 'architecture.md'). Omit to list all." },
-      content = { type = "string", description = "File content for 'write'" },
+      content = { type = "string", description = "File content for 'write' or text to add for 'append'" },
+      query = {
+        type = "string",
+        description = "Keyword query for 'search' or optional ranking when listing via 'view'",
+      },
+      tags = { type = "string", description = "Comma-separated tags filter for 'search'" },
+      focus_path = { type = "string", description = "Optional file path context to boost ranking" },
+      limit = { type = "integer", description = "Max search results (default 10, max 50)" },
+      topic = { type = "string", description = "Topic metadata for 'write'" },
+      importance = { type = "integer", description = "Importance 1-5 for 'write' (default 1)" },
+      layer = {
+        type = "string",
+        description = "Memory layer: lite or deep (default deep). Lite entries surface in session hints.",
+      },
+      synopsis = { type = "string", description = "One-line summary for lite layer injection" },
     },
   },
 
@@ -131,11 +271,16 @@ n00n.api.register_tool({
     if input.path then
       return (input.command or "") .. " " .. input.path
     end
+    if input.command == "search" and input.query then
+      return "search " .. input.query
+    end
     return input.command
   end,
 
   restore = function(input, output, _is_error, ctx)
-    local content = (input.command == "write" and input.content) or output
+    local content = (input.command == "write" and input.content)
+      or (input.command == "append" and input.content)
+      or output
     return render_content(content, input.path or "file.md", ctx)
   end,
 
@@ -148,7 +293,9 @@ n00n.api.register_tool({
 
     local result, err
     if cmd == "view" then
-      result, err = cmd_view(input.path, dir, ctx)
+      result, err = cmd_view(input.path, input.query, input.focus_path, dir, ctx)
+    elseif cmd == "search" then
+      result, err = cmd_search(input.query, input.tags, input.focus_path, input.limit, dir)
     elseif cmd == "write" then
       if not input.path then
         return { llm_output = "error: 'path' is required for write", is_error = true }
@@ -156,7 +303,10 @@ n00n.api.register_tool({
       if not input.content then
         return { llm_output = "error: 'content' is required for write", is_error = true }
       end
-      result, err = cmd_write(input.path, input.content, dir, ctx)
+      local metadata = normalize_metadata(input)
+      result, err = cmd_write(input.path, input.content, metadata, dir, ctx)
+    elseif cmd == "append" then
+      result, err = cmd_append(input.path, input.content, dir, ctx)
     elseif cmd == "delete" then
       if not input.path then
         return { llm_output = "error: 'path' is required for delete", is_error = true }
@@ -164,7 +314,9 @@ n00n.api.register_tool({
       result, err = cmd_delete(input.path, dir)
     else
       return {
-        llm_output = "error: unknown command '" .. tostring(cmd) .. "'. Valid commands: view, write, delete",
+        llm_output = "error: unknown command '"
+          .. tostring(cmd)
+          .. "'. Valid commands: view, write, delete, search, append",
         is_error = true,
       }
     end
@@ -185,19 +337,19 @@ n00n.api.register_command({
       return
     end
 
-    local entries = helpers.collect_file_entries(dir)
+    local entries = load_entries(dir)
     if #entries == 0 then
       n00n.ui.flash("No memory files yet")
       return
     end
     table.sort(entries, function(a, b)
-      return a[1] < b[1]
+      return a.path < b.path
     end)
 
     local function build_items()
       local items = {}
       for _, e in ipairs(entries) do
-        items[#items + 1] = { label = e[1], detail = "(" .. e[2] .. " bytes)" }
+        items[#items + 1] = { label = e.path, detail = "(" .. (e.size or 0) .. " bytes)" }
       end
       return items
     end
@@ -223,20 +375,20 @@ n00n.api.register_command({
       if event.type == "choice" then
         local item = entries[event.index]
         if item then
-          local path = n00n.fs.joinpath(dir, item[1])
+          local path = n00n.fs.joinpath(dir, item.path)
           local code = n00n.ui.open_editor(path)
           if code == 0 then
             local meta = n00n.fs.metadata(path)
             if meta then
-              item[2] = meta.size
+              item.size = meta.size
             end
           end
         end
       elseif event.type == "delete" then
         local item = entries[event.index]
-        local ok, err = n00n.fs.rm(n00n.fs.joinpath(dir, item[1]))
+        local ok, err = n00n.fs.rm(n00n.fs.joinpath(dir, item.path))
         if ok then
-          n00n.ui.flash("Deleted " .. item[1])
+          n00n.ui.flash("Deleted " .. item.path)
           table.remove(entries, event.index)
           if #entries == 0 then
             break
