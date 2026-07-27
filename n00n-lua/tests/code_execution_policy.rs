@@ -116,7 +116,7 @@ fn exec_code(reg: &ToolRegistry, ctx: &ToolContext, code: &str) -> Result<String
         .expect("code_execution registered");
     let inv = entry
         .tool
-        .parse(&json!({ "code": code, "timeout": 10 }))
+        .parse(&serde_json::json!({ "code": code, "timeout": 10 }))
         .expect("parse failed");
     smol::block_on(async { inv.execute(ctx).await })
         .output
@@ -233,7 +233,7 @@ fn parse_code(reg: &ToolRegistry, code: &str) -> Box<dyn n00n_agent::tools::Tool
     reg.get("code_execution")
         .expect("code_execution registered")
         .tool
-        .parse(&json!({ "code": code, "timeout": 10 }))
+        .parse(&serde_json::json!({ "code": code, "timeout": 10 }))
         .expect("parse failed")
 }
 
@@ -362,7 +362,7 @@ fn restore_lines_with(code: &str, output: &str, is_error: bool, clicks: Vec<usiz
             tool: Arc::from("code_execution"),
             tool_use_id: SCRIPT_TOOL_ID.into(),
             output: output.into(),
-            input: json!({ "code": code }),
+            input: serde_json::json!({ "code": code }),
             is_error,
             tool_output_lines: n00n_config::ToolOutputLines::default(),
             theme_gen: None,
@@ -422,5 +422,3 @@ fn restore_expanded_shows_full_script_beyond_cap() {
         "output must stay below the expanded script"
     );
 }
-
-use serde_json::json;

@@ -253,8 +253,6 @@ fn header_row(model_w: usize, theme: &crate::theme::Theme) -> Vec<Span<'static>>
         gap(),
         h("total"),
         gap(),
-        h("saved"),
-        gap(),
         Span::styled(format!("{:>6}", "cost"), theme.status_dim),
     ]
 }
@@ -269,13 +267,6 @@ fn model_row(
 ) -> Vec<Span<'static>> {
     let num = |v: u32| Span::styled(format!("{:>NUM_COL$}", format_tokens(v)), fg);
     let gap = || Span::raw(" ".repeat(COL_GAP));
-    let saved = if usage.savings_tokens > 0 {
-        #[allow(clippy::cast_precision_loss)]
-        let tokens_f = usage.savings_tokens as f64;
-        format!("{:.1}k", tokens_f / 1_000.0)
-    } else {
-        String::new()
-    };
     vec![
         Span::raw(PREFIX),
         Span::styled(format!("{id:<model_w$}"), fg),
@@ -289,8 +280,6 @@ fn model_row(
         num(usage.cache_creation),
         gap(),
         num(usage.total()),
-        gap(),
-        Span::styled(format!("{saved:>NUM_COL$}"), fg),
         gap(),
         match cost {
             Some(c) => Span::styled(format!("{c:>6.3}"), fg),
@@ -514,7 +503,6 @@ mod tests {
             output: 20,
             cache_read: 30,
             cache_creation: 40,
-            savings_tokens: 0,
         };
         let row = model_row("gpt", &usage, None, 10, Style::new(), Style::new())
             .iter()
