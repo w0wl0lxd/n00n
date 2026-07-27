@@ -19,6 +19,75 @@ _PROVIDER_API_KEY_OVERRIDES: dict[str, frozenset[str]] = {
     "zai": frozenset({"ZHIPU_API_KEY"}),
 }
 
+# devin-real block-buffers stdout when run through a pipe; run it under a
+# pseudo-tty so ACP traffic is line-buffered and n00n sees responses promptly.
+_DEVIN_WRAPPER = """#!/usr/bin/env python3
+import os
+import pty
+import select
+import subprocess
+import sys
+import termios
+import threading
+import tty
+
+REAL = "/opt/n00n/bin/devin-real"
+LOG = "/tmp/devin-acp.log"
+
+
+def main() -> int:
+    # n00n already passes the "acp" subcommand; do not duplicate it.
+    argv = [REAL, "--permission-mode", "dangerous"] + sys.argv[1:]
+    log = open(LOG, "wb")
+    master, slave = pty.openpty()
+    tty.setraw(master, termios.TCSANOW)
+    p = subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave)
+    os.close(slave)
+
+    def forward_input():
+        try:
+            fd = sys.stdin.buffer.fileno()
+            while True:
+                data = os.read(fd, 4096)
+                if not data:
+                    break
+                log.write(b"IN>> " + data)
+                log.flush()
+                os.write(master, data)
+        except OSError:
+            pass
+
+    t = threading.Thread(target=forward_input)
+    t.start()
+
+    try:
+        while True:
+            r, _, _ = select.select([master], [], [], 0.1)
+            if not r:
+                if p.poll() is not None:
+                    break
+                continue
+            data = os.read(master, 4096)
+            if not data:
+                break
+            log.write(b"OUT<< " + data)
+            log.flush()
+            sys.stdout.buffer.write(data)
+            sys.stdout.buffer.flush()
+    except OSError:
+        pass
+
+    t.join()
+    rc = p.wait()
+    log.write(f"EXIT rc={rc}\\n".encode())
+    log.close()
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+"""
+
 
 def _parse_stream_json(log_text: str) -> dict:
     """Parse n00n --verbose --output-format stream-json output.
@@ -145,6 +214,14 @@ class N00nAgent(BaseInstalledAgent):
                     ),
                 )
 
+        # devin-real block-buffers stdout when run through a pipe; replace the
+        # bundled wrapper with one that runs devin-real under a pseudo-tty.
+        await self._upload_text(environment, _DEVIN_WRAPPER, "/opt/n00n/bin/devin")
+        await self.exec_as_root(
+            environment,
+            command="chmod +x /opt/n00n/bin/devin",
+        )
+
         # Ensure isolated XDG state exists and is writable for any user.
         await self.exec_as_root(
             environment,
@@ -172,7 +249,13 @@ class N00nAgent(BaseInstalledAgent):
         )
 
         config_json = '{"shell":{"setup_complete":true}}'
-        credentials_toml = f"windsurf_api_key = {json.dumps(windsurf_api_key)}\n"
+        credentials_toml = (
+            f"api_key = {json.dumps(windsurf_api_key)}\n"
+            f"windsurf_api_key = {json.dumps(windsurf_api_key)}\n"
+            'api_server_url = "https://server.codeium.com"\n'
+            'devin_webapp_host = "app.devin.ai"\n'
+            'devin_api_url = "https://api.devin.ai"\n'
+        )
 
         await self._upload_text(environment, config_json, f"{config_dir}/config.json")
         await self._upload_text(
@@ -283,9 +366,14 @@ class N00nAgent(BaseInstalledAgent):
         if extra_path:
             env["PATH"] = f"{env['PATH']}:{extra_path}"
 
-        # Set DEVIN_PERMISSION_MODE for devin provider (non-secret)
+        # Set Devin CLI env hints for the acp subprocess.
         if self._is_devin():
             env["DEVIN_PERMISSION_MODE"] = "dangerous"
+            devin_model = self.model_name
+            if "/" in devin_model:
+                devin_model = devin_model.split("/", 1)[1]
+            if devin_model:
+                env["DEVIN_MODEL"] = devin_model
 
         # Write secrets to file if any exist
         if secrets:
