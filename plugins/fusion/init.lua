@@ -1,0 +1,128 @@
+-- Fusion sidekick delegation (Cognition Devin Fusion pattern).
+-- Lead agent delegates via spec-quality briefs; sidekick runs in an isolated
+-- cached context on a cost-aware tier (auto_tier on by default).
+
+local subagent = require("n00n.subagent")
+
+local description =
+  [[Delegate mechanical work to a Fusion sidekick subagent. Provide goal, constraints, and definition of done — not full file contents. Sidekick returns concise evidence and test results.]]
+
+local schema = {
+  type = "object",
+  required = { "description", "goal", "definition_of_done" },
+  additionalProperties = false,
+  properties = {
+    description = {
+      type = "string",
+      description = "Short label (3-5 words).",
+    },
+    goal = {
+      type = "string",
+      description = "What the sidekick should accomplish.",
+    },
+    constraints = {
+      type = "string",
+      description = "Boundaries, files in scope, patterns to follow.",
+    },
+    definition_of_done = {
+      type = "string",
+      description = "How you will verify success (tests, checks, artifacts).",
+    },
+    escalation_triggers = {
+      type = "string",
+      description = "When the sidekick should stop and ask the lead to take over.",
+    },
+    subagent_type = {
+      type = "string",
+      description = "research (read-only) or general (can edit). Default: general.",
+    },
+    model_tier = {
+      type = "string",
+      description = "weak/medium/strong override for sidekick.",
+    },
+    model = {
+      type = "string",
+      description = "Exact model spec override.",
+    },
+    auto_tier = {
+      type = "boolean",
+      description = "Route tier from brief text (default: true).",
+    },
+  },
+}
+
+local opts = n00n.api.register_options({
+  auto_tier = { default = true, desc = "Route sidekick model tier from the brief (on by default in Fusion)." },
+  default_subagent_type = { default = "general", desc = "Default subagent_type when omitted." },
+})
+
+local function build_prompt(input)
+  local parts = {
+    "# Fusion sidekick brief\n",
+    "## Goal\n",
+    input.goal,
+    "\n",
+  }
+  if input.constraints and input.constraints ~= "" then
+    parts[#parts + 1] = "## Constraints\n"
+    parts[#parts + 1] = input.constraints
+    parts[#parts + 1] = "\n"
+  end
+  parts[#parts + 1] = "## Definition of done\n"
+  parts[#parts + 1] = input.definition_of_done
+  parts[#parts + 1] = "\n"
+  if input.escalation_triggers and input.escalation_triggers ~= "" then
+    parts[#parts + 1] = "## Escalate to lead when\n"
+    parts[#parts + 1] = input.escalation_triggers
+    parts[#parts + 1] = "\n"
+  end
+  parts[#parts + 1] =
+    "\nExecute efficiently. Prefer index/codegraph/arbor before broad reads. Return concise file:line evidence, test/lint results, and a short summary — not full file dumps."
+  return table.concat(parts)
+end
+
+local function handler(input, ctx)
+  local subagent_type = input.subagent_type or opts.default_subagent_type
+  if subagent_type ~= "research" and subagent_type ~= "general" then
+    return { llm_output = "unknown subagent_type: " .. tostring(subagent_type), is_error = true }
+  end
+
+  local auto_tier = input.auto_tier
+  if auto_tier == nil then
+    auto_tier = opts.auto_tier
+  end
+
+  local prompt = build_prompt(input)
+  local result, err, cost, usage, model_spec = subagent.launch(ctx, {
+    description = input.description,
+    prompt = prompt,
+    subagent_type = subagent_type,
+    model_spec = input.model,
+    model_tier = input.model_tier,
+    auto_tier = auto_tier,
+    audience = "general_sub",
+  })
+
+  if err then
+    return { llm_output = err, is_error = true, cost = cost, usage = usage, model = model_spec }
+  end
+
+  local footer = ""
+  if cost and model_spec then
+    footer = string.format("\n\n[sidekick cost: $%.4f · %s]", cost, model_spec)
+  end
+
+  return {
+    llm_output = tostring(result) .. footer,
+    cost = cost,
+    usage = usage,
+    model = model_spec,
+  }
+end
+
+n00n.api.register_tool({
+  name = "fusion_delegate",
+  description = description,
+  input_schema = schema,
+  handler = handler,
+})

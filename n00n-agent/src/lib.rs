@@ -4,6 +4,7 @@ pub mod agent;
 pub mod cancel;
 pub mod child_guard;
 pub use child_guard::ChildGuard;
+pub mod fusion;
 pub mod headless;
 pub mod mcp;
 pub use mcp::config::{McpConfigError, McpConfigErrors, McpServerInfo, McpServerStatus};
@@ -17,7 +18,8 @@ pub use agent::{
     SharedTranscript, find_subdirectory_instructions, is_instruction_file,
 };
 pub use cancel::{CancelMap, CancelToken, CancelTrigger, PreDispatchGate};
-pub use n00n_config::{AgentConfig, PermissionsConfig, ToolOutputLines};
+pub use fusion::{FusionLane, FusionRoute, FusionState, FusionUsageStats};
+pub use n00n_config::{AgentConfig, FusionConfig, PermissionsConfig, ToolOutputLines};
 pub mod command;
 pub mod diff;
 pub mod permissions;

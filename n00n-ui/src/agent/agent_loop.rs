@@ -431,6 +431,7 @@ impl AgentLoop {
                     usage: TokenUsage::default(),
                     num_turns: 0,
                     stop_reason: None,
+                    fusion: None,
                 });
             }
             e => {

@@ -90,6 +90,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     task_description: task_description.as_deref(),
                     yolo: cli.permission_flags.yolo,
                     no_jit: cli.plugin_flags.no_jit,
+                    fusion: cli.fusion,
                 };
                 if background {
                     agent::server(&run_opts, id)?;

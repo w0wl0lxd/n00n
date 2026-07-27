@@ -5,8 +5,8 @@ use tracing::{error, info, warn};
 
 use n00n_providers::provider::Provider;
 use n00n_providers::{
-    ContentBlock, HistoryReplayReason, Message, Model, OpenAiOptions, RequestOptions, Role,
-    StopReason, StreamResponse, System, TokenUsage,
+    ContentBlock, HistoryReplayReason, Message, Model, ModelTier, OpenAiOptions, RequestOptions,
+    Role, StopReason, StreamResponse, System, TokenUsage,
 };
 
 use super::compaction::{self, CONTINUE_AFTER_COMPACT};
@@ -24,8 +24,10 @@ use crate::tools::{
 };
 use crate::{
     AgentConfig, AgentError, AgentEvent, AgentInput, AgentMode, EventSender, ExtractedCommand,
-    InterruptPoint, InterruptSource, ToolDoneEvent, TurnCompleteEvent,
+    FusionLane, FusionRoute, FusionState, InterruptPoint, InterruptSource, ToolDoneEvent,
+    TurnCompleteEvent,
 };
+use n00n_config::providers::Tier;
 use n00n_config::{ToolKey, ToolOutputLines};
 use n00n_storage::id::SessionRef;
 
@@ -49,6 +51,15 @@ const CACHE_BREAKPOINTS_LONG: usize = 4;
 const CACHE_BREAKPOINTS_MEDIUM: usize = 3;
 const CACHE_BREAKPOINTS_SHORT: usize = 2;
 const CACHE_BREAKPOINTS_MIN: usize = 1;
+
+fn tier_to_model_tier(tier: Tier) -> ModelTier {
+    match tier {
+        Tier::Weak => ModelTier::Weak,
+        Tier::Medium => ModelTier::Medium,
+        Tier::Strong => ModelTier::Strong,
+        Tier::Compaction => ModelTier::Compaction,
+    }
+}
 
 fn filter_tools_for_mode(tools: &mut Value, mode: &AgentMode) {
     if mode.plan_path().is_none() {
@@ -195,12 +206,25 @@ pub struct Agent<'h> {
     tool_filter: ToolFilter,
     active_tools: ActiveTools,
     supports_tool_examples: bool,
+    lead_model: Option<Arc<Model>>,
+    fusion_state: Option<FusionState>,
 }
 
 impl<'h> Agent<'h> {
     #[must_use]
     pub fn new(params: AgentParams, run: AgentRunParams<'h>) -> Self {
         let supports_tool_examples = params.model.supports_tool_examples();
+        let fusion_enabled = params.config.fusion.enabled;
+        let lead_model = if fusion_enabled {
+            Some(Arc::new(params.model.clone()))
+        } else {
+            None
+        };
+        let fusion_state = if fusion_enabled {
+            Some(FusionState::new_lead())
+        } else {
+            None
+        };
         let mut agent = Self {
             provider: params.provider,
             model: Arc::new(params.model),
@@ -243,7 +267,14 @@ impl<'h> Agent<'h> {
             tool_filter: run.tool_filter,
             active_tools: ActiveTools::default(),
             supports_tool_examples,
+            lead_model,
+            fusion_state,
         };
+        if fusion_enabled {
+            agent
+                .system
+                .push_dynamic(crate::fusion::fusion_lead_system_append());
+        }
         agent.warm_active_tools();
         agent
     }
@@ -512,6 +543,11 @@ impl<'h> Agent<'h> {
         if has_tools {
             let history_len_before = self.history.len();
             let tool_results = self.process_tool_calls(response).await?;
+            if self.config.fusion.enabled {
+                if let Some(state) = self.fusion_state.as_mut() {
+                    state.observe_tool_results(&tool_results);
+                }
+            }
             if self.apply_tool_search_results(&tool_results) {
                 self.rebuild_tools();
             }
@@ -630,6 +666,11 @@ impl<'h> Agent<'h> {
     }
 
     fn record_usage(&mut self, usage: TokenUsage, cost: f64) {
+        if self.config.fusion.enabled {
+            if let Some(state) = self.fusion_state.as_mut() {
+                state.record_lane_usage(state.lane, usage, cost);
+            }
+        }
         self.total_usage += usage;
         self.total_cost += cost;
     }
@@ -655,6 +696,11 @@ impl<'h> Agent<'h> {
             usage: self.total_usage,
             num_turns: self.num_turns,
             stop_reason,
+            fusion: self
+                .fusion_state
+                .as_ref()
+                .filter(|_| self.config.fusion.enabled)
+                .map(FusionState::usage_stats),
         })
     }
 
@@ -790,6 +836,65 @@ impl<'h> Agent<'h> {
         Ok(true)
     }
 
+    fn apply_fusion_route(&mut self, route: FusionRoute) {
+        let Some(lead) = self.lead_model.as_ref() else {
+            return;
+        };
+        match route {
+            FusionRoute::Stay(_) => {}
+            FusionRoute::EscalateToLead | FusionRoute::Switch(FusionLane::Lead) => {
+                if let Ok(mut model) = Model::from_spec(&lead.id) {
+                    if let Ok(provider) = n00n_providers::provider::from_model_with_openai_options(
+                        &mut model,
+                        self.timeouts,
+                        self.openai_options,
+                    ) {
+                        self.provider = Arc::from(provider);
+                    }
+                    self.model = Arc::new(model);
+                } else {
+                    self.model = Arc::clone(lead);
+                }
+                if let Some(state) = self.fusion_state.as_mut() {
+                    state.lane = FusionLane::Lead;
+                }
+                info!(model = %self.model.id, "fusion: escalated to lead lane");
+            }
+            FusionRoute::Switch(FusionLane::Sidekick) => {
+                let tier = tier_to_model_tier(self.config.fusion.sidekick_tier);
+                let spec = n00n_providers::model_registry::model_registry()
+                    .read()
+                    .ok()
+                    .and_then(|registry| registry.spec_for_tier_any(tier));
+                let Some(spec) = spec else {
+                    warn!(?tier, "fusion: no model for sidekick tier");
+                    return;
+                };
+                match Model::from_spec(&spec) {
+                    Ok(mut model) => {
+                        if let Ok(provider) =
+                            n00n_providers::provider::from_model_with_openai_options(
+                                &mut model,
+                                self.timeouts,
+                                self.openai_options,
+                            )
+                        {
+                            self.provider = Arc::from(provider);
+                        }
+                        self.model = Arc::new(model);
+                        if let Some(state) = self.fusion_state.as_mut() {
+                            state.record_delegation();
+                        }
+                        info!(model = %self.model.id, "fusion: switched to sidekick lane");
+                    }
+                    Err(e) => {
+                        warn!(error = %e, spec = %spec, "fusion: invalid sidekick model spec")
+                    }
+                }
+            }
+        }
+    }
+
     async fn do_compact(&mut self) -> Result<(), AgentError> {
         if !self.commit_pre_dispatch() {
             return Err(AgentError::Cancelled);
@@ -801,7 +906,7 @@ impl<'h> Agent<'h> {
             self.openai_options,
         );
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
-        let usage = compaction::compact_history(
+        let (usage, summary) = compaction::compact_history(
             &*compact_provider,
             &compact_model,
             self.history,
@@ -813,6 +918,17 @@ impl<'h> Agent<'h> {
             None,
         )
         .await?;
+        if self.config.fusion.enabled {
+            let route = self.fusion_state.as_mut().map(|state| {
+                let recent_errors = state.recent_tool_errors();
+                let route = crate::fusion::route_after_compact(state, &summary, recent_errors);
+                state.clear_recent_tool_errors();
+                route
+            });
+            if let Some(route) = route {
+                self.apply_fusion_route(route);
+            }
+        }
         let cost = usage.cost(&compact_model.pricing, false);
         self.record_usage(usage, cost);
         self.rollback_len = Some(self.history.len());

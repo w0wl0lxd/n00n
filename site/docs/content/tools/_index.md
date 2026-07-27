@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-n00n ships with 30 built-in tools. This is the full reference.
+n00n ships with 31 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -338,3 +338,12 @@ Search the web for real-time information using Exa AI.
 |-----------|------|----------|---------|-------------|
 | `num_results` | integer | no | 8 | Number of results to return |
 | `query` | string | yes |  | Search query |
+
+## Additional tools
+
+### `fusion_delegate` *(lua plugin)*
+
+Delegate mechanical work to a Fusion sidekick subagent. Provide goal, constraints, and definition of done — not full file contents. Sidekick returns concise evidence and test results.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
