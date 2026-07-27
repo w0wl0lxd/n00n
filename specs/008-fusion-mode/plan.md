@@ -40,7 +40,7 @@ Tracked in Linear: **[N00N-69](https://linear.app/n00n/issue/N00N-69/native-fusi
 | [N00N-72](https://linear.app/n00n/issue/N00N-72) | fusion_delegate plugin | Done |
 | [N00N-73](https://linear.app/n00n/issue/N00N-73) | Compaction routing hook | Done |
 | [N00N-74](https://linear.app/n00n/issue/N00N-74) | Devin cached model list | Done |
-| [N00N-75](https://linear.app/n00n/issue/N00N-75) | Fusion docs | Todo |
-| [N00N-76](https://linear.app/n00n/issue/N00N-76) | Lead vs sidekick cost stats | Backlog |
-| [N00N-77](https://linear.app/n00n/issue/N00N-77) | Tool-error escalation | Todo |
-| [N00N-78](https://linear.app/n00n/issue/N00N-78) | Open draft PR | In Progress |
+| [N00N-75](https://linear.app/n00n/issue/N00N-75) | Fusion docs | Done |
+| [N00N-76](https://linear.app/n00n/issue/N00N-76) | Lead vs sidekick cost stats | In Progress |
+| [N00N-77](https://linear.app/n00n/issue/N00N-77) | Tool-error escalation | Done |
+| [N00N-78](https://linear.app/n00n/issue/N00N-78) | Open draft PR | In Review — [PR #180](https://github.com/w0wl0lxd/n00n/pull/180) |
