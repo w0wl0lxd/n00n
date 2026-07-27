@@ -60,6 +60,7 @@ const USAGE_WINDOW_1WEEK_SECONDS: i64 = 604_800;
 const USAGE_WINDOW_1MONTH_SECONDS: i64 = 2_592_000;
 const USAGE_WINDOW_1YEAR_SECONDS: i64 = 31_536_000;
 const RESPONSE_CHAIN_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(25);
+const PROMPT_CACHE_SHARDS: u8 = 16;
 
 static PROCESS_INSTANCE_NONCE: OnceLock<u64> = OnceLock::new();
 
@@ -289,8 +290,25 @@ fn canonical_session_key(session_id: &SessionRef) -> n00nId {
     session_id.id()
 }
 
-fn canonical_prompt_cache_key(session_id: &SessionRef) -> String {
-    canonical_session_key(session_id).to_string()
+fn prompt_cache_key(
+    model_id: &str,
+    system: &System,
+    tools_hash: &str,
+    session_id: Option<&SessionRef>,
+) -> String {
+    let system_text = system.to_string();
+    let mut digest = Sha256::new();
+    digest.update(model_id.len().to_le_bytes());
+    digest.update(model_id.as_bytes());
+    digest.update(system_text.len().to_le_bytes());
+    digest.update(system_text.as_bytes());
+    digest.update(tools_hash.as_bytes());
+    let prefix_hash = digest.finalize();
+    let shard = session_id.map_or(0, |session_id| {
+        Sha256::digest(canonical_session_key(session_id).to_string().as_bytes())[0]
+            % PROMPT_CACHE_SHARDS
+    });
+    format!("n00n-{prefix_hash:x}-s{shard}")
 }
 
 fn log_responses_request(
@@ -1291,7 +1309,7 @@ impl OpenAi {
                 };
             }
         };
-        let prompt_cache_key = session_id.map(canonical_prompt_cache_key);
+        let prompt_cache_key = prompt_cache_key(&model.id, system, tools_hash, session_id);
         let body = super::websocket::build_request_body(
             model,
             incremental_messages,
@@ -1299,7 +1317,7 @@ impl OpenAi {
             tools,
             opts,
             previous_response_id.as_deref(),
-            prompt_cache_key.as_deref(),
+            Some(&prompt_cache_key),
             store,
         );
         let mut full_history_body = None;
@@ -1332,7 +1350,7 @@ impl OpenAi {
                             tools,
                             opts,
                             None,
-                            prompt_cache_key.as_deref(),
+                            Some(&prompt_cache_key),
                             false,
                         )
                     },
@@ -1360,7 +1378,7 @@ impl OpenAi {
                                 tools,
                                 opts,
                                 None,
-                                prompt_cache_key.as_deref(),
+                                Some(&prompt_cache_key),
                                 false,
                             )
                         })
@@ -1943,13 +1961,19 @@ impl Provider for OpenAi {
                     .result;
             }
 
-            let prompt_cache_key = session_id.map(canonical_prompt_cache_key);
+            let tools_hash = stable_json_hash(tools)?;
+            let prompt_cache_key = prompt_cache_key(
+                &model.id,
+                &System::from(prefixed_system),
+                &tools_hash,
+                session_id,
+            );
             let mut body = self.compat.build_body_with_session(
                 model,
                 messages,
                 system,
                 tools,
-                prompt_cache_key.as_deref(),
+                Some(&prompt_cache_key),
                 self.system_prefix.as_deref(),
             );
             opts.thinking
@@ -3007,6 +3031,27 @@ mod tests {
     }
 
     #[test]
+    fn prompt_cache_key_groups_matching_stable_prefixes() {
+        let tools_hash = stable_json_hash(&serde_json::json!([{"type": "function"}])).unwrap();
+        let system = System::from("stable instructions");
+        let key = prompt_cache_key("gpt-5.6", &system, &tools_hash, None);
+
+        assert_eq!(key, prompt_cache_key("gpt-5.6", &system, &tools_hash, None));
+        assert_ne!(
+            key,
+            prompt_cache_key("gpt-5.6", &System::from("changed"), &tools_hash, None)
+        );
+        assert_ne!(
+            key,
+            prompt_cache_key("gpt-5.6-sol", &system, &tools_hash, None)
+        );
+        assert_ne!(
+            key,
+            prompt_cache_key("gpt-5.6", &system, "changed-tools", None)
+        );
+    }
+
+    #[test]
     fn response_state_uses_canonical_session_identity() {
         let temp_dir = TempDir::new().unwrap();
         let provider = provider_with_response_storage(temp_dir.path());
@@ -3014,10 +3059,14 @@ mod tests {
         let canonical = SessionRef::from_id(legacy.id());
 
         assert_ne!(legacy.as_str(), canonical.as_str());
-        assert_eq!(canonical_prompt_cache_key(&legacy), canonical.as_str());
-        assert_ne!(
-            canonical_prompt_cache_key(&legacy),
-            canonical_prompt_cache_key(&SessionRef::generate())
+        assert_eq!(
+            prompt_cache_key("gpt-5.6", &System::from("system"), "tools", Some(&legacy)),
+            prompt_cache_key(
+                "gpt-5.6",
+                &System::from("system"),
+                "tools",
+                Some(&canonical)
+            )
         );
 
         let legacy_connection = provider.response_connection_slot(Some(&legacy)).unwrap();
