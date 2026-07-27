@@ -7,9 +7,8 @@ use uuid::Uuid;
 
 const UUID_BYTES: usize = 16;
 
-#[allow(non_camel_case_types)]
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum n00nIdParseError {
+pub enum N00nIdParseError {
     #[error("empty id")]
     Empty,
     #[error("invalid base58 character {0:?} at {1}")]
@@ -34,11 +33,10 @@ pub enum n00nIdParseError {
 /// and don't sort by time regardless. Nothing in n00n sorts by the string
 /// form today; storage uses the embedded timestamp directly. See issue
 /// #264 for future tree-ordered history work.
-#[allow(non_camel_case_types)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct n00nId([u8; UUID_BYTES]);
+pub struct N00nId([u8; UUID_BYTES]);
 
-impl n00nId {
+impl N00nId {
     #[allow(clippy::disallowed_methods)]
     #[must_use]
     pub fn generate() -> Self {
@@ -51,18 +49,18 @@ impl n00nId {
     }
 }
 
-impl fmt::Display for n00nId {
+impl fmt::Display for N00nId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&bs58::encode(&self.0).into_string())
     }
 }
 
-impl FromStr for n00nId {
-    type Err = n00nIdParseError;
+impl FromStr for N00nId {
+    type Err = N00nIdParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s.is_empty() {
-            return Err(n00nIdParseError::Empty);
+            return Err(N00nIdParseError::Empty);
         }
         if let Ok(u) = Uuid::parse_str(s) {
             return Ok(Self(u.into_bytes()));
@@ -71,31 +69,31 @@ impl FromStr for n00nId {
     }
 }
 
-fn decode_base58(s: &str) -> Result<n00nId, n00nIdParseError> {
+fn decode_base58(s: &str) -> Result<N00nId, N00nIdParseError> {
     let bytes = bs58::decode(s).into_vec().map_err(|e| match e {
         bs58::decode::Error::InvalidCharacter { character, index } => {
-            n00nIdParseError::InvalidBase58(character, index)
+            N00nIdParseError::InvalidBase58(character, index)
         }
         bs58::decode::Error::NonAsciiCharacter { index } => {
-            n00nIdParseError::InvalidBase58('\u{FFFD}', index)
+            N00nIdParseError::InvalidBase58('\u{FFFD}', index)
         }
-        _ => n00nIdParseError::InvalidBase58Length,
+        _ => N00nIdParseError::InvalidBase58Length,
     })?;
     if bytes.len() != UUID_BYTES {
-        return Err(n00nIdParseError::InvalidByteLen(bytes.len()));
+        return Err(N00nIdParseError::InvalidByteLen(bytes.len()));
     }
     let mut arr = [0u8; UUID_BYTES];
     arr.copy_from_slice(&bytes);
-    Ok(n00nId(arr))
+    Ok(N00nId(arr))
 }
 
-impl Serialize for n00nId {
+impl Serialize for N00nId {
     fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
         ser.collect_str(self)
     }
 }
 
-impl<'de> Deserialize<'de> for n00nId {
+impl<'de> Deserialize<'de> for N00nId {
     fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
         let s = String::deserialize(de)?;
         s.parse().map_err(serde::de::Error::custom)
@@ -106,18 +104,18 @@ impl<'de> Deserialize<'de> for n00nId {
 /// session resume, SDK mode).
 ///
 /// Preserves the caller's exact string verbatim (legacy hex ids resume
-/// unchanged) so wire echo and client correlation hold. The parsed [`n00nId`]
+/// unchanged) so wire echo and client correlation hold. The parsed [`N00nId`]
 /// is cached so [`id`](Self::id) is infallible. Canonical when self-generated
 /// via [`from_id`](Self::from_id) (base58).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SessionRef {
-    id: n00nId,
+    id: N00nId,
     raw: String,
 }
 
 impl SessionRef {
     #[must_use]
-    pub fn from_id(id: n00nId) -> Self {
+    pub fn from_id(id: N00nId) -> Self {
         Self {
             id,
             raw: id.to_string(),
@@ -126,7 +124,7 @@ impl SessionRef {
 
     #[must_use]
     pub fn generate() -> Self {
-        Self::from_id(n00nId::generate())
+        Self::from_id(N00nId::generate())
     }
 
     #[must_use]
@@ -135,13 +133,13 @@ impl SessionRef {
     }
 
     #[must_use]
-    pub fn id(&self) -> n00nId {
+    pub fn id(&self) -> N00nId {
         self.id
     }
 }
 
-impl From<n00nId> for SessionRef {
-    fn from(id: n00nId) -> Self {
+impl From<N00nId> for SessionRef {
+    fn from(id: N00nId) -> Self {
         Self::from_id(id)
     }
 }
@@ -153,10 +151,10 @@ impl fmt::Display for SessionRef {
 }
 
 impl FromStr for SessionRef {
-    type Err = n00nIdParseError;
+    type Err = N00nIdParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let id = s.parse::<n00nId>()?;
+        let id = s.parse::<N00nId>()?;
         Ok(Self {
             id,
             raw: s.to_string(),
@@ -184,52 +182,52 @@ mod tests {
 
     const SAMPLE_HEX: &str = "01965087-4c71-7f00-8000-000000000000";
 
-    fn parse(s: &str) -> n00nId {
+    fn parse(s: &str) -> N00nId {
         s.parse().unwrap()
     }
 
     #[test]
     fn generate_is_v7() {
-        let id = n00nId::generate();
+        let id = N00nId::generate();
         let uuid = Uuid::from_bytes(id.0);
         assert_eq!(uuid.get_version(), Some(uuid::Version::SortRand));
     }
 
     #[test]
     fn roundtrip_base58() {
-        let id = n00nId::generate();
+        let id = N00nId::generate();
         let s = id.to_string();
         assert!((21..=22).contains(&s.len()));
-        assert_eq!(s.parse::<n00nId>().unwrap(), id);
+        assert_eq!(s.parse::<N00nId>().unwrap(), id);
     }
 
     #[test_case("00000000-0000-7000-8000-000000000000")]
     #[test_case("00000001-0002-7000-8000-000000000000")]
     fn roundtrips_leading_zero_bytes(hex: &str) {
-        let id: n00nId = hex.parse().unwrap();
-        assert_eq!(id.to_string().parse::<n00nId>().unwrap(), id);
+        let id: N00nId = hex.parse().unwrap();
+        assert_eq!(id.to_string().parse::<N00nId>().unwrap(), id);
     }
 
     #[test_case(SAMPLE_HEX)]
     #[test_case("019650874c717f008000000000000000")]
     fn parses_legacy_and_canonical(s: &str) {
-        let expected = n00nId(Uuid::parse_str(SAMPLE_HEX).unwrap().into_bytes());
+        let expected = N00nId(Uuid::parse_str(SAMPLE_HEX).unwrap().into_bytes());
         assert_eq!(parse(s), expected);
     }
 
-    #[test_case("" => matches Err(n00nIdParseError::Empty))]
-    #[test_case("O" => matches Err(n00nIdParseError::InvalidBase58('O', 0)))]
-    #[test_case("2j87v4grC" => matches Err(n00nIdParseError::InvalidByteLen(_)))]
-    fn rejects_bad(s: &str) -> Result<n00nId, n00nIdParseError> {
+    #[test_case("" => matches Err(N00nIdParseError::Empty))]
+    #[test_case("O" => matches Err(N00nIdParseError::InvalidBase58('O', 0)))]
+    #[test_case("2j87v4grC" => matches Err(N00nIdParseError::InvalidByteLen(_)))]
+    fn rejects_bad(s: &str) -> Result<N00nId, N00nIdParseError> {
         s.parse()
     }
 
     #[test]
     fn serde_keyed_base58() {
-        let id = n00nId::generate();
+        let id = N00nId::generate();
         let s = serde_json::to_string(&id).unwrap();
         assert!((23..=24).contains(&s.len()));
-        let back: n00nId = serde_json::from_str(&s).unwrap();
+        let back: N00nId = serde_json::from_str(&s).unwrap();
         assert_eq!(back, id);
     }
 
@@ -243,7 +241,7 @@ mod tests {
 
     #[test]
     fn ref_from_id_is_canonical_base58() {
-        let id = n00nId::generate();
+        let id = N00nId::generate();
         let session_ref = SessionRef::from(id);
         assert_eq!(session_ref.as_str(), id.to_string());
         assert_eq!(session_ref.id(), id);
