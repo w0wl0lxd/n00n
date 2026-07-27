@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785118340069,
+  "lastUpdate": 1785118373007,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -5937,6 +5937,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 152357,
             "range": "± 25674",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1d6627fd44f9921304c705e3cb890ccb65bed2d5",
+          "message": "feat(prompts): prefer Thoughtbox and isolate policy tests (#121)\n\n* fix: resolve n00n-lua type mismatches after merge\n\n- Change SessionState.mcp from McpHandle to McpSession\n- Remove duplicate flatten() call in model tier lookup\n- Remove duplicate role_name function in messages/mod.rs\n- Remove duplicate UnicodeWidthStr import\n- Remove duplicate terminal_image module declaration\n- Remove duplicate PROCESS_WARMUP static\n- Fix wrapped_line_count import path in streaming_content.rs\n\n* fix: resolve remaining test failures and clippy warnings after maki merge\n\n- Fix n00n-providers anthropic cache_control breakpoints and zai quota\n  response JSON parsing.\n- Restore n00n-agent prompt environment default and clean clippy match.\n- Add missing n00n-lua index language mappings and view_image constants.\n- Fix n00n-lua tool_view byte/width truncation and todo_write panel height.\n- Restore task plugin schema size/depth validation, usage telemetry, and\n  fast-cost propagation.\n\n* fix: resolve n00n compile/test regressions after maki merge\n\n* refactor(config): remove unused bash_command helpers\n\nThe bash_command/find_bash_on_path/find_wsl helpers were added in the n00n/open-prs-merged fold but had no callers; they duplicated n00n-lua's shell_command. Remove the dead code and the unused Command import.\n\n* refactor(config): remove unused bash_command helpers\n\nThe bash_command/find_bash_on_path/find_wsl helpers had no callers; they duplicated n00n-lua's shell_command. Remove the dead code and the unused Command import.\n\n* feat(agent): add semble to efficient tools and prompt guidance\n\nInclude semble in NATIVE_EFFICIENT_TOOLS and in the tool-preference guidance for system, general, and research prompts. Update compression baselines to account for the added mentions.\n\n* feat(ui): add Ctrl+Shift+C to copy selected text\n\n* fix(lua): support directory removal in n00n.fs.rm\n\n* feat(lua): add list mode to n00n.fn.jobstart\n\n* fix(ui): downgrade RGB to 256 colors when terminal lacks truecolor\n\nFolds upstream maki PR #647 into n00n:\n- Add color_compat module that detects truecolor support from env,\n  terminfo, and a DECRQSS terminal probe.\n- Downgrade RGB colors to the nearest xterm-256 index before drawing\n  when truecolor is not detected.\n- Add N00N_TRUECOLOR override env var.\n- Add termini workspace dependency.\n- Update generated config docs and site docs.\n\nTests: cargo nextest run --workspace passed (3765 passed, 1 skipped).\n\n* feat(lua): add max_args to n00n.api.register_command\n\n* fix(permissions): absolutize paths before scope matching\n\n* feat(providers): use discovered copilot model metadata\n\nFolds upstream maki PR #601 into n00n.\n\n- Add `tier` to `ModelInfo` so discovered models can carry their own tier\n  assignment.\n- Let `Model::from_base` prefer discovered metadata (pricing, limits) over\n  static entries, falling back to manifest defaults.\n- Update `ModelRegistry::tier_for` and `spec_for_tier` to honor discovered\n  `tier` before positional/static fallbacks.\n- Parse Copilot `capabilities.limits`, `capabilities.supports`, and\n  `model_picker_category` from the models endpoint.\n- Build rich `ModelInfo` for Copilot discovered models and stash\n  `CopilotModelInfo` in `provider_info`.\n- Translate `ThinkingConfig` into a Copilot Responses `reasoning` object using\n  the model's supported reasoning efforts and dialect.\n- Add `Copilot::reasoning_info_for` to encapsulate registry-vs-local-cache\n  reasoning lookup.\n\nVerified:\n- cargo fmt --all\n- cargo clippy --all --tests -- -D warnings\n- cargo nextest run --workspace\n\n* chore: add changelog fragment\n\n* chore: add changelog fragment\n\n* chore: add changelog fragment\n\n* fix(devin): model names/pricing and thinking hang\n\nAdd display names and pricing for Devin ACP private models, and fix hang\nwhen models emit only reasoning without final text.\n\n- Add name field to ModelInfo and populate from Devin's session options\n- Add heuristics for MODEL_PRIVATE_* context window, output tokens, pricing\n- Update model picker to display discovered names instead of raw IDs\n- Capture thinking deltas in Devin provider and build proper content blocks\n- Remove invalid reasoning_content from OpenAI compat message conversion\n- Add nudge logic when assistant produces only reasoning without text\n- Add system prompt instruction to always end with user-facing answer\n\n* fix(ci): regenerate providers docs and allowlist maki-providers in gitleaks\n\n- `just gen-docs` updated site/docs/content/providers/_index.md after recent\n  provider/model changes.\n- Add `maki-providers/` to `.gitleaks.toml` allowlist to suppress false\n  positives from removed subtree test fixtures.\n\n* fix(prompt): update size baselines and regenerate lua-api docs for semble\n\n* fix(devin): forward system prompt and warn on ACP stop reasons\n\n- Pass the n00n system prompt to Devin ACP `session/new` via the\n  `_meta.systemPrompt.append` extension and prepend it as a text block\n  on the first `session/prompt` of each session.\n- Track per-session whether the system block has already been sent so\n  later turns are not duplicated.\n- Map `Refusal`, `Cancelled`, and `MaxTurnRequests` ACP stop reasons to\n  `EndTurn` while logging a warning, and add a wildcard arm for unknown\n  future stop reasons.\n- Add unit tests for `system_prompt_meta`.\n\n* fix(code_execution): warn when ruff is unavailable for ruff_fix\n\n- Detect whether `ruff` is installed before attempting `ruff_fix`.\n- Log a warning and skip autofixing/formatting when `ruff` is missing\n  so users know why code was not fixed.\n- Keep existing behavior when `ruff` is available.\n\n* fix(n00n-ui): defer plan submission until after new-session respawn\n\nWhen the user chose \"Clear context and implement\" from the plan form,\n`implement_plan` queued a `QueueItem` on the current agent's queue and then\nreturned `Action::NewSession`. The event loop processes `NewSession` first,\nwhich respawns the agent with a fresh queue, discarding the queued submission.\nThe persistence callback later marked the old (now dropped) item ready, so the\nnew agent loop saw an empty queue and never started a turn.\n\nNow `implement_plan(true)` stashes the message and optional plan snapshot in a\nnew `pending_plan_submit` field, resets the session, and returns only\n`Action::NewSession`. The event loop's `NewSession` handler respawns the agent\nfirst, then (if a pending plan submit exists) draws the plan card, increments\n`run_id`, and calls `start_from_queue` against the new queue. This guarantees\nthe `QueueItem` is created on the new agent's queue and survives the respawn.\n\n`start_from_queue` is widened from `pub(super)` to `pub(crate)` so the event\nloop can call it directly. Tests are updated/added for the deferred path.\n\n* chore: add bunny mascot and clean up serde_json macro usage\n\n- Add `Bunny` widget, `assets/bunny.png`, and `bunny_area` layout\n- Import `serde_json::json` and replace fully-qualified `serde_json::json!` calls\n- Add missing `JsonValue` imports in `n00n-lua` test modules\n- Fix clippy lints in `bunny.rs` and `cast.rs`\n\n* fix(session-durability): address critical lost-work and session durability issues\n\n- Add STORAGE_WRITER_SHUTDOWN_TIMEOUT (5s) and use it in shutdown path\n- Periodic save now saves all sessions with pending work, not just focused\n- Agent respawn drains pending queue from old handles to new queue\n- reset_session saves state before clearing\n- Storage writer retry bounded to MAX_RETRY_ATTEMPTS (5) with exhaustion handling\n- Queue preserve_submission uses atomic push_front_if_missing to prevent race\n- mark_submission_ready updates input and ready flag atomically under lock\n\n* fix(session-durability): clean up dead code and VecDeque conversion\n\n- Remove unused QueueItem re-export and unused push_front/contains_submission helpers\n- Convert drain_all VecDeque result to Vec via Into\n\n* fix(ui): reveal full streaming text and thinking immediately on flush\n\n- Add Typewriter::finish to force full text revelation, bypassing animation\n- Add StreamingContent::finish to switch to Markdown rendering after streaming ends\n- Call finish() in MessagesPanel::flush() and flush_thinking() before persisting\n- Add tests for flush persisting full streaming text and thinking content\n\n* feat: add token savings measurement and fix OpenAI reasoning-token billing\n\n- Add reasoning_tokens to output tokens in OpenAI Responses API parsing\n- Add TokenUsage::savings_tokens() and TokenUsage::savings_cost() methods\n- Extend StoredTokenUsage with savings_tokens and savings_cost fields\n- Update Agent::record_usage() to accumulate savings metrics\n- Add savings fields to TurnCompleteEvent\n- Display savings in status bar and usage modal\n- Add savings to CLI JSON output\n- Add unit tests for savings calculation\n\n* fix(storage): avoid f64 in StoredTokenUsage to work around serde_json/arbitrary_precision\n\nThe `StoredTokenUsage` struct is flattened into the internally-tagged\n`LogRecord::Meta` session record. With `serde_json`'s `arbitrary_precision`\nfeature enabled by `monty`, an `f64` field inside a flattened struct inside an\ninternally tagged enum fails to deserialize with \"invalid type: map, expected\nf64\". Remove `savings_cost` from `StoredTokenUsage`; the cost can be computed\non demand from `savings_tokens` (== cache_read) and model pricing.\n\n* fix: harden reviewed trust boundaries\n\n* fix: harden reviewed trust boundaries\n\n* fix: isolate session persistence retries\n\n* fix: reset retries for replaced snapshots\n\n* feat(openai): add ChatGPT/Codex plan usage tracking\n\n* feat(prompts): add thoughtbox to token-efficient tooling\n\nThe global agent mandates require rtk, codegraph, semble, and thoughtbox.\nn00n's system prompt already covered rtk/codegraph/semble but left thoughtbox\nout of the native efficient-tools list and static tool-usage guidance.\n\n- Add thoughtbox to NATIVE_EFFICIENT_TOOLS and update test constant.\n- Mention thoughtbox for reasoning in system.md, general.md, and research.md.\n- Update research.md guidance to start with codegraph/index/semble instead of\n  broad glob/grep.\n- Add thoughtbox to AGENTS.md's token-efficient exploration section.\n\n* fix(n00n-lua): isolate code_execution policy tests to per-test registry\n\n* chore: focus prompt token tools changes",
+          "timestamp": "2026-07-27T01:52:57Z",
+          "tree_id": "fa3415c45d5c26d0abec281585e8061029c541e3",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/1d6627fd44f9921304c705e3cb890ccb65bed2d5"
+        },
+        "date": 1785118372072,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6529358,
+            "range": "± 45802",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2434618,
+            "range": "± 3961",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2439291,
+            "range": "± 5886",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7618932,
+            "range": "± 54997",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3886208,
+            "range": "± 35089",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3907642,
+            "range": "± 14989",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 553533,
+            "range": "± 1639",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 167823,
+            "range": "± 456",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 167795,
+            "range": "± 298",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1036814,
+            "range": "± 12246",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 640879,
+            "range": "± 8726",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 640973,
+            "range": "± 6675",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 76857,
+            "range": "± 2051",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 169143,
+            "range": "± 16031",
             "unit": "ns/iter"
           }
         ]
