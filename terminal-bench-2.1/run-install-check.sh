@@ -6,6 +6,10 @@ cd "$(dirname "$0")"
 # Guard against indefinite environment-start hangs with a generous timeout.
 HARBOR_TIMEOUT="${HARBOR_TIMEOUT:-900}"
 
+MODEL="${1:-devin/swe-1-7}"
+ENVIRONMENT="${2:-daytona}"
+EXTRA_ARGS=("${@:3}")
+
 trap 'if [[ "$?" -eq 124 ]]; then echo "harbor run timed out after ${HARBOR_TIMEOUT}s" >&2; fi' EXIT
 
 PYTHONPATH="$(dirname "$0")${PYTHONPATH:+:$PYTHONPATH}" \
@@ -13,11 +17,11 @@ PYTHONPATH="$(dirname "$0")${PYTHONPATH:+:$PYTHONPATH}" \
   -d terminal-bench/terminal-bench-2-1 \
   -i 'terminal-bench/fix-git' \
   -a n00n_agent:n00nAgent \
-  -m swe-1-7 \
-  -e daytona \
+  -m "$MODEL" \
+  -e "$ENVIRONMENT" \
   -k 1 \
   -n 1 \
   --install-only \
   --env-file .env \
   --yes \
-  "$@"
+  "${EXTRA_ARGS[@]}"

@@ -1,13 +1,14 @@
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
-use std::hash::Hasher;
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use async_lock::RwLock;
 use flume::Sender;
 use futures_lite::io::{AsyncBufReadExt, BufReader};
 use isahc::{AsyncReadResponseExt, HttpClient, Request};
-use n00n_storage::id::SessionRef;
+use n00n_storage::id::{SessionRef, n00nId};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::warn;
@@ -16,7 +17,7 @@ use crate::model::{Model, ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider};
 use crate::{
     AgentError, ContentBlock, Message, ProviderEvent, RequestOptions, Role, StopReason,
-    StreamResponse, ThinkingConfig, TokenUsage,
+    StreamResponse, System, ThinkingConfig, TokenUsage,
 };
 
 use super::{KeyPool, ResolvedAuth, http_client, next_sse_line};
@@ -26,10 +27,18 @@ const ENV_VAR: &str = "GEMINI_API_KEY";
 const FLASH_MAX_THINKING: u32 = 24_576;
 const PRO_MAX_THINKING: u32 = 32_768;
 const CACHE_PREFIX_LEN: usize = 3;
-const CACHE_TTL: Duration = Duration::from_mins(5);
+const CACHE_TTL_SECONDS: u64 = 300;
+const CACHE_TTL: Duration = Duration::from_secs(CACHE_TTL_SECONDS);
+const CACHE_FAILURE_RETRY_DELAY: Duration = Duration::from_mins(1);
+const PRO_CACHE_WRITE_PRICE: f64 = 1.625;
+const FLASH_CACHE_WRITE_PRICE: f64 = 0.233_333_333_333_333_34;
 
 /// The generic per-model max, capped by Google's documented `thinkingBudget`
 /// hard limits per family.
+fn supports_explicit_cache(model_id: &str) -> bool {
+    !model_id.starts_with("gemini-2.0-flash-lite")
+}
+
 fn max_thinking(model: &Model) -> u32 {
     let cap = if model.id.contains("flash") {
         FLASH_MAX_THINKING
@@ -39,35 +48,101 @@ fn max_thinking(model: &Model) -> u32 {
     model.max_thinking_budget().map_or(cap, |m| m.min(cap))
 }
 
-fn tools_hash(tools: &Value) -> Result<u64, AgentError> {
+fn cached_content_metadata(cached: &Value) -> Result<(String, u32), AgentError> {
+    let name = cached["name"]
+        .as_str()
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| AgentError::Config {
+            message: "Google cached content response omitted its name".to_string(),
+        })?;
+    let total_token_count = cached["usageMetadata"]["totalTokenCount"]
+        .as_u64()
+        .ok_or_else(|| AgentError::Config {
+            message: "Google cached content response omitted its token count".to_string(),
+        })
+        .and_then(|count| {
+            u32::try_from(count).map_err(|_| AgentError::Config {
+                message: "Google cached content token count exceeded supported range".to_string(),
+            })
+        })?;
+    Ok((name.to_string(), total_token_count))
+}
+
+fn cached_input_hash(
+    model_id: &str,
+    system: &System,
+    tools: &Value,
+    messages: &[Message],
+    prefix_len: usize,
+) -> Result<u64, AgentError> {
     let mut hasher = DefaultHasher::new();
-    let json_str = serde_json::to_string(tools)?;
-    hasher.write(json_str.as_bytes());
+    model_id.hash(&mut hasher);
+    system.to_string().hash(&mut hasher);
+    serde_json::to_string(tools)?.hash(&mut hasher);
+    serde_json::to_string(&convert_messages(&messages[..prefix_len]))?.hash(&mut hasher);
     Ok(hasher.finish())
 }
 
 #[derive(Clone, Debug)]
 struct CachedContentState {
-    name: String,
-    tools_hash: u64,
+    name: Option<String>,
+    input_hash: u64,
     cached_count: usize,
-    created_at: Instant,
+    retry_at: Instant,
+    attempt_id: Option<u64>,
 }
 
 impl CachedContentState {
-    fn new(name: String, tools_hash: u64, cached_count: usize) -> Self {
+    fn ready(name: String, input_hash: u64, cached_count: usize) -> Self {
         Self {
-            name,
-            tools_hash,
+            name: Some(name),
+            input_hash,
             cached_count,
-            created_at: Instant::now(),
+            retry_at: Instant::now() + CACHE_TTL,
+            attempt_id: None,
         }
     }
 
-    fn is_valid(&self, tools_hash: u64, current_message_count: usize, now: Instant) -> bool {
-        self.tools_hash == tools_hash
+    fn failed(input_hash: u64) -> Self {
+        Self {
+            name: None,
+            input_hash,
+            cached_count: 0,
+            retry_at: Instant::now() + CACHE_FAILURE_RETRY_DELAY,
+            attempt_id: None,
+        }
+    }
+
+    fn creating(input_hash: u64, attempt_id: u64) -> Self {
+        Self {
+            name: None,
+            input_hash,
+            cached_count: 0,
+            retry_at: Instant::now() + CACHE_FAILURE_RETRY_DELAY,
+            attempt_id: Some(attempt_id),
+        }
+    }
+
+    fn owns_attempt(&self, input_hash: u64, attempt_id: u64) -> bool {
+        self.input_hash == input_hash && self.attempt_id == Some(attempt_id)
+    }
+
+    fn cached_content(
+        &self,
+        input_hash: u64,
+        current_message_count: usize,
+        now: Instant,
+    ) -> Option<(&str, usize)> {
+        (self.input_hash == input_hash
             && current_message_count >= self.cached_count
-            && now.saturating_duration_since(self.created_at) < CACHE_TTL
+            && now < self.retry_at)
+            .then(|| self.name.as_deref())
+            .flatten()
+            .map(|name| (name, self.cached_count))
+    }
+
+    fn suppress_retry(&self, input_hash: u64, now: Instant) -> bool {
+        self.name.is_none() && self.input_hash == input_hash && now < self.retry_at
     }
 }
 
@@ -94,7 +169,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             pricing: ModelPricing {
                 input: 1.25,
                 output: 5.00,
-                cache_write: 0.00,
+                cache_write: PRO_CACHE_WRITE_PRICE,
                 cache_read: 0.31,
                 fast: None,
             },
@@ -110,7 +185,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             pricing: ModelPricing {
                 input: 0.15,
                 output: 0.60,
-                cache_write: 0.00,
+                cache_write: FLASH_CACHE_WRITE_PRICE,
                 cache_read: 0.04,
                 fast: None,
             },
@@ -148,7 +223,8 @@ pub struct Google {
     auth: Arc<Mutex<ResolvedAuth>>,
     key_pool: Option<KeyPool>,
     stream_timeout: Duration,
-    cache_state: Arc<Mutex<HashMap<SessionRef, CachedContentState>>>,
+    cache_state: Arc<Mutex<HashMap<n00nId, CachedContentState>>>,
+    auth_scope_lock: Arc<RwLock<()>>,
 }
 
 impl Google {
@@ -161,6 +237,7 @@ impl Google {
             key_pool: Some(pool),
             stream_timeout: timeouts.stream,
             cache_state: Arc::new(Mutex::new(HashMap::new())),
+            auth_scope_lock: Arc::new(RwLock::new(())),
         })
     }
 
@@ -174,6 +251,7 @@ impl Google {
             key_pool: None,
             stream_timeout: timeouts.stream,
             cache_state: Arc::new(Mutex::new(HashMap::new())),
+            auth_scope_lock: Arc::new(RwLock::new(())),
         })
     }
 
@@ -249,20 +327,22 @@ impl Google {
     async fn create_cached_content(
         &self,
         model_id: &str,
-        system: &str,
+        system: &System,
         tools: &Value,
         messages: &[Message],
-    ) -> Result<(String, usize), AgentError> {
+    ) -> Result<(String, usize, u32), AgentError> {
         let url = self.cached_contents_url();
         let prefix_len = messages.len().min(CACHE_PREFIX_LEN);
+        let system_text = system.to_string();
 
         let mut body = json!({
             "model": format!("models/{}", model_id),
             "contents": convert_messages(&messages[..prefix_len]),
+            "ttl": format!("{CACHE_TTL_SECONDS}s"),
         });
 
-        if !system.is_empty() {
-            body["systemInstruction"] = json!({"parts": [{"text": system}]});
+        if !system_text.is_empty() {
+            body["systemInstruction"] = json!({"parts": [{"text": system_text}]});
         }
 
         let tool_decls = convert_tools(tools);
@@ -282,11 +362,9 @@ impl Google {
         }
 
         let response_text = response.text().await?;
-        let cached: serde_json::Value = serde_json::from_str(&response_text)?;
-        Ok((
-            cached["name"].as_str().unwrap_or_else(|| "").to_string(),
-            prefix_len,
-        ))
+        let cached: Value = serde_json::from_str(&response_text)?;
+        let (name, total_token_count) = cached_content_metadata(&cached)?;
+        Ok((name, prefix_len, total_token_count))
     }
 
     async fn delete_cached_content(&self, name: &str) -> Result<(), AgentError> {
@@ -316,16 +394,17 @@ impl Google {
     fn build_body(
         model: &Model,
         messages: &[Message],
-        system: &str,
+        system: &System,
         tools: &Value,
         thinking: ThinkingConfig,
     ) -> Value {
+        let system_text = system.to_string();
         let mut body = json!({
             "contents": convert_messages(messages),
         });
 
-        if !system.is_empty() {
-            body["systemInstruction"] = json!({"parts": [{"text": system}]});
+        if !system_text.is_empty() {
+            body["systemInstruction"] = json!({"parts": [{"text": system_text}]});
         }
 
         thinking.apply_google_thinking(&mut body, max_thinking(model));
@@ -346,7 +425,7 @@ impl Google {
         &self,
         model: &Model,
         messages: &[Message],
-        system: &str,
+        system: &System,
         tools: &Value,
         event_tx: &Sender<ProviderEvent>,
         thinking: ThinkingConfig,
@@ -376,14 +455,13 @@ impl Provider for Google {
         &'a self,
         model: &'a Model,
         messages: &'a [Message],
-        system: &'a str,
+        system: &'a System,
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
         session_id: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
-            let current_tools_hash = tools_hash(tools)?;
             let current_message_count = messages.len();
 
             // Caching requires a stable session key and a prefix worth caching.
@@ -392,60 +470,128 @@ impl Provider for Google {
                     .do_stream(model, messages, system, tools, event_tx, opts.thinking)
                     .await;
             };
-            if current_message_count <= CACHE_PREFIX_LEN {
+            if current_message_count <= CACHE_PREFIX_LEN || !supports_explicit_cache(&model.id) {
                 return self
                     .do_stream(model, messages, system, tools, event_tx, opts.thinking)
                     .await;
             }
 
+            let _auth_scope_guard = self.auth_scope_lock.read().await;
+            let prefix_len = current_message_count.min(CACHE_PREFIX_LEN);
+            let current_input_hash =
+                cached_input_hash(&model.id, system, tools, messages, prefix_len)?;
             let now = Instant::now();
 
-            let (cached, old_name_to_delete) = {
+            let session_key = sid.id();
+            let cache_attempt_id = fastrand::u64(..);
+            let (cached, suppress_retry, old_name_to_delete, owns_cache_attempt) = {
                 let mut cache_state = self
                     .cache_state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Some(state) = cache_state.get(sid) {
-                    if state.is_valid(current_tools_hash, current_message_count, now) {
-                        (Some((state.name.clone(), state.cached_count)), None)
+                if let Some(state) = cache_state.get(&session_key) {
+                    if let Some((name, cached_count)) =
+                        state.cached_content(current_input_hash, current_message_count, now)
+                    {
+                        (Some((name.to_string(), cached_count)), false, None, false)
+                    } else if state.suppress_retry(current_input_hash, now) {
+                        (None, true, None, false)
                     } else {
                         let old_name = state.name.clone();
-                        cache_state.remove(sid);
-                        (None, Some(old_name))
+                        cache_state.insert(
+                            session_key,
+                            CachedContentState::creating(current_input_hash, cache_attempt_id),
+                        );
+                        (None, false, old_name, true)
                     }
                 } else {
-                    (None, None)
+                    cache_state.insert(
+                        session_key,
+                        CachedContentState::creating(current_input_hash, cache_attempt_id),
+                    );
+                    (None, false, None, true)
                 }
             };
 
-            if let Some(name) = old_name_to_delete {
-                let _ = self.delete_cached_content(&name).await;
+            if suppress_retry {
+                return self
+                    .do_stream(model, messages, system, tools, event_tx, opts.thinking)
+                    .await;
             }
 
-            let (cached_content_name, cached_count) = if let Some(pair) = cached {
-                pair
-            } else {
+            if let Some(name) = old_name_to_delete
+                && let Err(error) = self.delete_cached_content(&name).await
+            {
+                warn!(error = %error, "failed to delete stale Google cached content");
+            }
+
+            let (cached_content_name, cached_count, cache_creation_tokens) = if let Some(pair) =
+                cached
+            {
+                (pair.0, pair.1, 0)
+            } else if owns_cache_attempt {
                 match self
                     .create_cached_content(&model.id, system, tools, messages)
                     .await
                 {
-                    Ok((name, prefix_len)) => {
-                        let mut cache_state = self
-                            .cache_state
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        cache_state.insert(
-                            sid.clone(),
-                            CachedContentState::new(name.clone(), current_tools_hash, prefix_len),
-                        );
-                        (name, prefix_len)
+                    Ok((name, prefix_len, cache_creation_tokens)) => {
+                        let accepted = {
+                            let mut cache_state = self
+                                .cache_state
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            if cache_state.get(&session_key).is_some_and(|state| {
+                                state.owns_attempt(current_input_hash, cache_attempt_id)
+                            }) {
+                                cache_state.insert(
+                                    session_key,
+                                    CachedContentState::ready(
+                                        name.clone(),
+                                        current_input_hash,
+                                        prefix_len,
+                                    ),
+                                );
+                                true
+                            } else {
+                                false
+                            }
+                        };
+                        if accepted {
+                            (name, prefix_len, cache_creation_tokens)
+                        } else {
+                            if let Err(error) = self.delete_cached_content(&name).await {
+                                warn!(error = %error, "failed to delete superseded Google cached content");
+                            }
+                            return self
+                                .do_stream(model, messages, system, tools, event_tx, opts.thinking)
+                                .await;
+                        }
                     }
-                    Err(_) => {
+                    Err(error) => {
+                        warn!(error = %error, "Google cached content unavailable; cooling down cache creation");
+                        {
+                            let mut cache_state = self
+                                .cache_state
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            if cache_state.get(&session_key).is_some_and(|state| {
+                                state.owns_attempt(current_input_hash, cache_attempt_id)
+                            }) {
+                                cache_state.insert(
+                                    session_key,
+                                    CachedContentState::failed(current_input_hash),
+                                );
+                            }
+                        }
                         return self
                             .do_stream(model, messages, system, tools, event_tx, opts.thinking)
                             .await;
                     }
                 }
+            } else {
+                return self
+                    .do_stream(model, messages, system, tools, event_tx, opts.thinking)
+                    .await;
             };
 
             if cached_content_name.is_empty() {
@@ -460,7 +606,7 @@ impl Provider for Google {
             let mut body = Self::build_body(
                 model,
                 &messages[cached_count..],
-                "",
+                &System::default(),
                 &no_tools,
                 opts.thinking,
             );
@@ -478,7 +624,29 @@ impl Provider for Google {
             let status = response.status().as_u16();
 
             if status == 200 {
-                parse_sse(response, event_tx, self.stream_timeout).await
+                let mut stream_response =
+                    parse_sse(response, event_tx, self.stream_timeout).await?;
+                stream_response.usage.cache_creation = stream_response
+                    .usage
+                    .cache_creation
+                    .saturating_add(cache_creation_tokens);
+                Ok(stream_response)
+            } else if status == 404 {
+                {
+                    let mut cache_state = self
+                        .cache_state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if cache_state
+                        .get(&session_key)
+                        .and_then(|state| state.name.as_deref())
+                        == Some(cached_content_name.as_str())
+                    {
+                        cache_state.remove(&session_key);
+                    }
+                }
+                self.do_stream(model, messages, system, tools, event_tx, opts.thinking)
+                    .await
             } else {
                 Err(AgentError::from_response(response).await)
             }
@@ -519,22 +687,35 @@ impl Provider for Google {
 
     fn reload_auth(&self) -> BoxFuture<'_, Result<(), AgentError>> {
         Box::pin(async {
+            let _auth_scope_guard = self.auth_scope_lock.write().await;
             let pool = KeyPool::resolve("google", ENV_VAR)?;
             *self
                 .auth
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) =
                 resolve_auth_from_key(pool.current());
+            self.cache_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
             Ok(())
         })
     }
 
     fn rotate_key(&self) -> BoxFuture<'_, Result<bool, AgentError>> {
         Box::pin(async {
-            Ok(self
+            let _auth_scope_guard = self.auth_scope_lock.write().await;
+            let rotated = self
                 .key_pool
                 .as_ref()
-                .is_some_and(|p| p.rotate_auth(&self.auth, resolve_auth_from_key)))
+                .is_some_and(|p| p.rotate_auth(&self.auth, resolve_auth_from_key));
+            if rotated {
+                self.cache_state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clear();
+            }
+            Ok(rotated)
         })
     }
 }
@@ -706,6 +887,10 @@ struct SseUsageMetadata {
     candidates_token_count: u32,
     #[serde(default)]
     cached_content_token_count: Option<u32>,
+    #[serde(default)]
+    thoughts_token_count: u32,
+    #[serde(default)]
+    tool_use_prompt_token_count: u32,
 }
 
 #[derive(Deserialize)]
@@ -757,11 +942,18 @@ async fn parse_sse(
         };
 
         if let Some(meta) = chunk.usage_metadata {
-            usage.input = meta.prompt_token_count;
-            usage.output = meta.candidates_token_count;
-            if let Some(cached) = meta.cached_content_token_count {
-                usage.cache_read = cached;
-            }
+            let cached = match meta.cached_content_token_count {
+                Some(cached) => cached.min(meta.prompt_token_count),
+                None => 0,
+            };
+            usage.input = meta
+                .prompt_token_count
+                .saturating_sub(cached)
+                .saturating_add(meta.tool_use_prompt_token_count);
+            usage.output = meta
+                .candidates_token_count
+                .saturating_add(meta.thoughts_token_count);
+            usage.cache_read = cached;
         }
 
         let Some(candidates) = chunk.candidates else {
@@ -856,7 +1048,7 @@ mod tests {
         let body = Google::build_body(
             &model,
             &messages,
-            "be helpful",
+            &System::from("be helpful"),
             &json!([]),
             ThinkingConfig::Off,
         );
@@ -873,7 +1065,7 @@ mod tests {
         let body = Google::build_body(
             &test_model(),
             &messages,
-            "",
+            &System::from(""),
             &json!([]),
             ThinkingConfig::Adaptive,
         );
@@ -890,7 +1082,7 @@ mod tests {
         let body = Google::build_body(
             &test_model(),
             &messages,
-            "",
+            &System::from(""),
             &json!([]),
             ThinkingConfig::Budget(8192),
         );
@@ -1085,6 +1277,40 @@ mod tests {
     }
 
     #[test]
+    fn explicit_cache_skips_unsupported_flash_lite() {
+        assert!(supports_explicit_cache("gemini-2.5-flash"));
+        assert!(supports_explicit_cache("gemini-3-flash"));
+        assert!(!supports_explicit_cache("gemini-2.0-flash-lite"));
+        assert!(!supports_explicit_cache("gemini-2.0-flash-lite-001"));
+    }
+
+    #[test]
+    fn cached_content_metadata_requires_name_and_token_count() {
+        assert_eq!(
+            cached_content_metadata(&json!({
+                "name": "cachedContents/one",
+                "usageMetadata": {"totalTokenCount": 2048}
+            }))
+            .unwrap(),
+            ("cachedContents/one".to_string(), 2048)
+        );
+
+        let missing_name = cached_content_metadata(&json!({
+            "usageMetadata": {"totalTokenCount": 2048}
+        }))
+        .unwrap_err();
+        assert!(missing_name.to_string().contains("omitted its name"));
+
+        let missing_count =
+            cached_content_metadata(&json!({"name": "cachedContents/one"})).unwrap_err();
+        assert!(
+            missing_count
+                .to_string()
+                .contains("omitted its token count")
+        );
+    }
+
+    #[test]
     fn parse_sse_thinking_part() {
         let data = b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"thinking...\",\"thought\":true,\"thoughtSignature\":\"sig1\"}]}},{\"content\":{\"parts\":[{\"text\":\"answer\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":20}}\n\n";
         let response = mock_response(data);
@@ -1114,50 +1340,103 @@ mod tests {
     }
 
     #[test]
-    fn parse_sse_cached_tokens() {
-        let data = b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":100,\"candidatesTokenCount\":10,\"cachedContentTokenCount\":50}}\n\n";
+    fn parse_sse_cached_thinking_and_tool_tokens() {
+        let data = b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":100,\"candidatesTokenCount\":10,\"cachedContentTokenCount\":50,\"thoughtsTokenCount\":7,\"toolUsePromptTokenCount\":5}}\n\n";
         let response = mock_response(data);
         let (tx, _rx) = flume::unbounded();
         let result = smol::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap();
-        assert_eq!(result.usage.input, 100);
-        assert_eq!(result.usage.output, 10);
+        assert_eq!(result.usage.input, 55);
+        assert_eq!(result.usage.output, 17);
         assert_eq!(result.usage.cache_read, 50);
+        assert_eq!(result.usage.total_input(), 105);
     }
 
     #[test]
-    fn cached_content_state_valid_when_tools_and_count_match() {
+    fn cached_content_state_valid_when_input_and_count_match() {
         let now = Instant::now();
-        let state = CachedContentState::new("cache1".to_string(), 123, 5);
-        assert!(state.is_valid(123, 5, now));
-        assert!(state.is_valid(123, 6, now));
-        assert!(!state.is_valid(124, 5, now));
-        assert!(!state.is_valid(123, 4, now));
+        let state = CachedContentState::ready("cache1".to_string(), 123, 5);
+        assert_eq!(state.cached_content(123, 5, now), Some(("cache1", 5)));
+        assert_eq!(state.cached_content(123, 6, now), Some(("cache1", 5)));
+        assert_eq!(state.cached_content(124, 5, now), None);
+        assert_eq!(state.cached_content(123, 4, now), None);
     }
 
     #[test]
     fn cached_content_state_invalid_after_ttl() {
         let now = Instant::now();
-        let mut state = CachedContentState::new("cache1".to_string(), 123, 5);
-        state.created_at = now
-            .checked_sub(CACHE_TTL)
-            .unwrap()
-            .checked_sub(Duration::from_secs(1))
-            .unwrap();
-        assert!(!state.is_valid(123, 5, now));
+        let mut state = CachedContentState::ready("cache1".to_string(), 123, 5);
+        state.retry_at = now.checked_sub(Duration::from_secs(1)).unwrap();
+        assert_eq!(state.cached_content(123, 5, now), None);
     }
 
     #[test]
-    fn tools_hash_is_deterministic() {
+    fn failed_cache_creation_suppresses_matching_retry_until_delay() {
+        let now = Instant::now();
+        let mut state = CachedContentState::failed(123);
+        assert!(state.suppress_retry(123, now));
+        assert!(!state.suppress_retry(124, now));
+
+        state.retry_at = now.checked_sub(Duration::from_secs(1)).unwrap();
+        assert!(!state.suppress_retry(123, now));
+    }
+
+    #[test]
+    fn creating_cache_reserves_only_its_attempt() {
+        let now = Instant::now();
+        let state = CachedContentState::creating(123, 456);
+        assert!(state.suppress_retry(123, now));
+        assert!(state.owns_attempt(123, 456));
+        assert!(!state.owns_attempt(123, 457));
+        assert!(!state.owns_attempt(124, 456));
+    }
+
+    #[test]
+    fn cached_input_hash_covers_all_immutable_cache_inputs() {
+        let system = System::from("system");
         let tools = json!([{"name": "bash", "input_schema": {"type": "object"}}]);
-        let hash1 = tools_hash(&tools).unwrap();
-        let hash2 = tools_hash(&tools).unwrap();
-        assert_eq!(hash1, hash2);
-    }
+        let messages = vec![
+            Message::user("one".into()),
+            Message::synthetic("two".into()),
+            Message::user("three".into()),
+            Message::synthetic("tail".into()),
+        ];
+        let hash = cached_input_hash("gemini-2.5-flash", &system, &tools, &messages, 3).unwrap();
 
-    #[test]
-    fn tools_hash_differs_for_different_tools() {
-        let tools1 = json!([{"name": "bash", "input_schema": {"type": "object"}}]);
-        let tools2 = json!([{"name": "read", "input_schema": {"type": "object"}}]);
-        assert_ne!(tools_hash(&tools1).unwrap(), tools_hash(&tools2).unwrap());
+        assert_eq!(
+            hash,
+            cached_input_hash("gemini-2.5-flash", &system, &tools, &messages, 3).unwrap()
+        );
+        assert_ne!(
+            hash,
+            cached_input_hash("gemini-2.5-pro", &system, &tools, &messages, 3).unwrap()
+        );
+        assert_ne!(
+            hash,
+            cached_input_hash(
+                "gemini-2.5-flash",
+                &System::from("changed"),
+                &tools,
+                &messages,
+                3
+            )
+            .unwrap()
+        );
+        assert_ne!(
+            hash,
+            cached_input_hash(
+                "gemini-2.5-flash",
+                &system,
+                &json!([{"name": "read"}]),
+                &messages,
+                3
+            )
+            .unwrap()
+        );
+        let mut changed_messages = messages;
+        changed_messages[0] = Message::user("changed".into());
+        assert_ne!(
+            hash,
+            cached_input_hash("gemini-2.5-flash", &system, &tools, &changed_messages, 3).unwrap()
+        );
     }
 }

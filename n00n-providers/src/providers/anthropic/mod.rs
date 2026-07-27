@@ -20,7 +20,8 @@ use tracing::debug;
 use crate::model::Model;
 use crate::provider::{BoxFuture, Provider};
 use crate::{
-    AgentError, Message, ProviderEvent, ProviderUsage, RequestOptions, StreamResponse, UsageLimit,
+    AgentError, CacheControl, Message, ProviderEvent, ProviderUsage, RequestOptions,
+    StreamResponse, System, UsageLimit,
 };
 
 use super::KeyPool;
@@ -384,33 +385,29 @@ impl Provider for Anthropic {
         &'a self,
         model: &'a Model,
         messages: &'a [Message],
-        system: &'a str,
+        system: &'a System,
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
         _session_id: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
-            let system_blocks = if let Some(prefix) = &self.system_prefix {
-                vec![
-                    shared::SystemBlock {
-                        r#type: "text",
-                        text: prefix,
-                        cache_control: None,
-                    },
-                    shared::SystemBlock {
-                        r#type: "text",
-                        text: system,
-                        cache_control: Some(shared::EPHEMERAL),
-                    },
-                ]
-            } else {
-                vec![shared::SystemBlock {
+            let mut system_blocks: Vec<shared::SystemBlock<'_>> = Vec::new();
+            if let Some(prefix) = &self.system_prefix {
+                system_blocks.push(shared::SystemBlock {
                     r#type: "text",
-                    text: system,
-                    cache_control: Some(shared::EPHEMERAL),
-                }]
-            };
+                    text: prefix,
+                    cache_control: None,
+                });
+            }
+            for block in system.blocks() {
+                system_blocks.push(shared::SystemBlock {
+                    r#type: "text",
+                    text: &block.text,
+                    cache_control: (block.cache == CacheControl::Ephemeral)
+                        .then_some(shared::EPHEMERAL),
+                });
+            }
 
             let mut body = shared::build_request_body_with_system(
                 model,

@@ -13,7 +13,7 @@ use n00n_config::{Config, load_env_files, load_permissions};
 use n00n_lua::PluginHost;
 use n00n_providers::model::Model;
 use n00n_storage::StateDir;
-use n00n_storage::id::N00nId;
+use n00n_storage::id::n00nId;
 use n00n_ui::{AppSession, RunOutcome};
 
 use crate::cli::{Cli, normalize_tool_name};
@@ -202,7 +202,7 @@ fn resolve_session(
     storage: &StateDir,
 ) -> Result<AppSession> {
     if let Some(raw) = session_id {
-        let id: N00nId = raw
+        let id: n00nId = raw
             .parse()
             .map_err(|e| color_eyre::eyre::eyre!("invalid session id {raw:?}: {e}"))?;
         return AppSession::load(id, storage).map_err(|e| color_eyre::eyre::eyre!("{e}"));
@@ -346,6 +346,13 @@ fn run_ui_loop(
             Model::from_spec(&focused_tab.model).unwrap_or_else(|_| stack.model.clone())
         };
 
+        // Bind daemon.sock for this UI generation so CLI `n00n agent list`
+        // unions live TUI sessions. Dropped on exit / before `/reload`.
+        let daemon = stack
+            .plugin_host
+            .ui_action_tx()
+            .and_then(|tx| crate::cmd::tui_bridge::try_spawn(storage.path(), tx));
+
         let outcome = n00n_ui::run(
             n00n_ui::EventLoopParams {
                 model,
@@ -374,6 +381,8 @@ fn run_ui_loop(
             initial_prompt.take(),
         )
         .context("run UI")?;
+
+        drop(daemon);
 
         match outcome {
             RunOutcome::Exit { session_id, code } => {

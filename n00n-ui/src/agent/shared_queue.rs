@@ -31,9 +31,10 @@ type Items = Arc<Mutex<VecDeque<QueueItem>>>;
 pub(crate) struct QueuedMessage {
     pub(crate) text: String,
     pub(crate) images: Vec<ImageSource>,
+    pub(crate) control: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Delivery {
     TurnEnd,
     Steering,
@@ -45,6 +46,7 @@ impl From<Submission> for QueuedMessage {
         Self {
             text: sub.text,
             images: sub.images,
+            control: sub.control,
         }
     }
 }
@@ -161,8 +163,19 @@ impl QueueSender {
         let _ = self.notify_tx.try_send(());
     }
 
-    pub(crate) fn push_front(&self, entry: QueueItem) {
-        lock(&self.items).push_front(entry);
+    pub(crate) fn push_front_if_missing(&self, entry: QueueItem) {
+        let mut items = lock(&self.items);
+        let submission_id = match &entry {
+            QueueItem::Message { submission_id, .. } => *submission_id,
+            QueueItem::Compact { .. } => return,
+        };
+        if items.iter().any(|item| {
+            matches!(item, QueueItem::Message { submission_id: id, .. } if *id == submission_id)
+        }) {
+            return;
+        }
+        items.push_front(entry);
+        drop(items);
         let _ = self.notify_tx.try_send(());
     }
 
@@ -213,6 +226,14 @@ impl QueueSender {
         lock(&self.items).clear();
     }
 
+    pub(crate) fn drain_all(&self) -> Vec<QueueItem> {
+        let mut items = lock(&self.items);
+        let drained = std::mem::take(&mut *items);
+        drop(items);
+        let _ = self.notify_tx.try_send(());
+        drained.into()
+    }
+
     pub(crate) fn remove_submission(&self, submission_id: u64) {
         let mut items = lock(&self.items);
         let before = items.len();
@@ -232,12 +253,6 @@ impl QueueSender {
         }
     }
 
-    pub(crate) fn contains_submission(&self, submission_id: u64) -> bool {
-        lock(&self.items).iter().any(|item| {
-            matches!(item, QueueItem::Message { submission_id: id, .. } if *id == submission_id)
-        })
-    }
-
     pub(crate) fn mark_submission_ready(&self, submission_id: u64, input: AgentInput) -> bool {
         let mut items = lock(&self.items);
         let Some(QueueItem::Message {
@@ -249,6 +264,7 @@ impl QueueSender {
         }) else {
             return false;
         };
+        // Update input and ready flag atomically while holding the lock
         *queued_input = input;
         ready.store(true, Ordering::Release);
         drop(items);
@@ -267,11 +283,13 @@ impl QueueSender {
             .collect()
     }
 
-    pub(crate) fn queued_inputs(&self) -> Vec<AgentInput> {
+    pub(crate) fn queued_inputs(&self) -> Vec<(AgentInput, Delivery)> {
         lock(&self.items)
             .iter()
             .filter_map(|item| match item {
-                QueueItem::Message { input, .. } => Some(input.clone()),
+                QueueItem::Message {
+                    input, delivery, ..
+                } => Some((input.clone(), *delivery)),
                 QueueItem::Compact { .. } => None,
             })
             .collect()
@@ -330,7 +348,10 @@ impl InterruptSource for QueueReceiver {
             match item {
                 QueueItem::Message { delivery, .. } => match delivery {
                     Delivery::TurnEnd => None,
-                    Delivery::Steering => (point == InterruptPoint::ToolComplete).then_some(index),
+                    Delivery::Steering => {
+                        matches!(point, InterruptPoint::ToolComplete | InterruptPoint::Safe)
+                            .then_some(index)
+                    }
                     Delivery::Immediate => Some(index),
                 },
                 QueueItem::Compact { .. } => (point == InterruptPoint::Safe).then_some(index),
@@ -358,6 +379,7 @@ mod tests {
                 thinking: ThinkingConfig::default(),
                 fast: false,
                 workflow: false,
+                control: false,
                 prompt: None,
             },
             run_id: 0,
@@ -393,6 +415,7 @@ mod tests {
                 thinking: ThinkingConfig::default(),
                 fast: false,
                 workflow: false,
+                control: false,
                 prompt: None,
             },
             run_id: 0,
@@ -405,6 +428,7 @@ mod tests {
         tx.push(queued("normal", Delivery::TurnEnd));
         tx.push(queued("steer one", Delivery::Steering));
         tx.push(queued("steer two", Delivery::Steering));
+        tx.push(queued("steer three", Delivery::Steering));
 
         let ExtractedCommand::Interrupt(first, _) = rx.poll(InterruptPoint::ToolComplete).unwrap()
         else {
@@ -414,13 +438,27 @@ mod tests {
         else {
             panic!("expected steering interrupt");
         };
-        assert!(rx.poll(InterruptPoint::Safe).is_none());
+        let ExtractedCommand::Interrupt(turn_end_fallback, _) =
+            rx.poll(InterruptPoint::Safe).unwrap()
+        else {
+            panic!("expected steering interrupt at turn end");
+        };
         let QueueItem::Message { input: normal, .. } = rx.pop().unwrap() else {
             panic!("expected normal queue item");
         };
         assert_eq!(
-            (first.message, second.message, normal.message),
-            ("steer one".into(), "steer two".into(), "normal".into())
+            (
+                first.message,
+                second.message,
+                turn_end_fallback.message,
+                normal.message,
+            ),
+            (
+                "steer one".into(),
+                "steer two".into(),
+                "steer three".into(),
+                "normal".into(),
+            )
         );
     }
 

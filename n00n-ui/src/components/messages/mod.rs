@@ -11,8 +11,8 @@ pub(crate) use self::segment::wrapped_line_count;
 
 use super::tool_display::{
     RenderCtx, ToolLines, append_annotation, append_right_info, assistant_style,
-    build_instructions_lines, build_tool_lines, done_style, error_style, format_timestamp_now,
-    thinking_style, truncate_to_header, user_style,
+    build_instructions_lines, build_tool_lines, control_style, done_style, error_style,
+    format_timestamp_now, thinking_style, truncate_to_header, user_style,
 };
 use super::{
     CompactionDisplay, DisplayMessage, DisplayMetadata, DisplayRole, ToolRole, ToolStatus,
@@ -957,7 +957,7 @@ impl MessagesPanel {
     }
 
     fn toggle_tool_section(&mut self, tool_id: &str, section: SectionFlags) -> bool {
-        if section.script == section.output {
+        if !section.any() {
             return false;
         }
         let tool_id = tool_id.to_owned();
@@ -965,8 +965,10 @@ impl MessagesPanel {
         let entry = self.expanded_tools.entry(tool_id.clone()).or_default();
         if section.script {
             entry.script = !entry.script;
-        } else {
+        } else if section.output {
             entry.output = !entry.output;
+        } else {
+            entry.details = !entry.details;
         }
         self.rebuild_expanded_tool(&tool_id);
         self.preserve_anchor(old_start, old_height, &tool_id);
@@ -980,6 +982,8 @@ impl MessagesPanel {
         let entry = self.expanded_tools.entry(tool_id.clone()).or_default();
         if truncation.output || entry.output {
             entry.output = !entry.output;
+        } else if truncation.details || entry.details {
+            entry.details = !entry.details;
         } else if truncation.script || entry.script {
             entry.script = !entry.script;
         } else {
@@ -1731,6 +1735,7 @@ impl MessagesPanel {
             DisplayRole::User => user_style(),
             DisplayRole::Assistant => assistant_style(),
             DisplayRole::Thinking => thinking_style(),
+            DisplayRole::Control => control_style(),
             DisplayRole::Error => error_style(),
             DisplayRole::Done => done_style(),
             DisplayRole::Tool(_) => unreachable!(),
@@ -1743,6 +1748,7 @@ impl MessagesPanel {
         let surface = match msg.role {
             DisplayRole::User => Surface::User,
             DisplayRole::Assistant => Surface::Assistant,
+            DisplayRole::Control => Surface::Control,
             _ => Surface::Plain,
         };
         let base_width = surface.content_width(self.viewport_width).max(1);
@@ -1876,6 +1882,7 @@ impl MessagesPanel {
                     DisplayRole::User => user_style(),
                     DisplayRole::Assistant => assistant_style(),
                     DisplayRole::Thinking => thinking_style(),
+                    DisplayRole::Control => control_style(),
                     DisplayRole::Error => error_style(),
                     DisplayRole::Done => done_style(),
                     DisplayRole::Tool(_) => unreachable!(),
@@ -1888,6 +1895,7 @@ impl MessagesPanel {
                 let surface = match msg.role {
                     DisplayRole::User => Surface::User,
                     DisplayRole::Assistant => Surface::Assistant,
+                    DisplayRole::Control => Surface::Control,
                     _ => Surface::Plain,
                 };
                 let base_width = surface.content_width(self.viewport_width).max(1);
@@ -2122,6 +2130,7 @@ fn role_name(role: &DisplayRole) -> &'static str {
         DisplayRole::User => "you",
         DisplayRole::Assistant => "n00n",
         DisplayRole::Thinking => "thinking",
+        DisplayRole::Control => "control",
         DisplayRole::Error => "error",
         DisplayRole::Done => "done",
         DisplayRole::Tool(_) => "tool",

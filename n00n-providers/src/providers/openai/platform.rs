@@ -6,13 +6,14 @@ use std::time::{Duration, Instant};
 use async_lock::Mutex as AsyncMutex;
 use flume::Sender;
 use n00n_storage::StateDir;
-use n00n_storage::id::{N00nId, SessionRef};
+use n00n_storage::id::{SessionRef, n00nId};
 use n00n_storage::now_epoch;
 use n00n_storage::sessions::{
     OPENAI_RESPONSE_CHAIN_TTL_SECONDS, OpenAiResponseChainLock, StoredOpenAiResponseChain,
     delete_openai_response_chain, load_openai_response_chain, openai_response_chain_parent_exists,
     save_openai_response_chain, try_lock_openai_response_chain,
 };
+use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
@@ -20,8 +21,9 @@ use tracing::{debug, warn};
 use crate::model::Model;
 use crate::provider::{BoxFuture, Provider};
 use crate::{
-    AgentError, Message, ProviderEvent, RequestDeliveryMetadata, RequestDeliveryPhase,
-    RequestOptions, StreamResponse, dialect,
+    AgentError, HistoryReplayReason, Message, ProviderEvent, ProviderUsage,
+    RequestDeliveryMetadata, RequestDeliveryPhase, RequestOptions, StreamResponse, System,
+    UsageLimit, dialect,
 };
 
 use super::auth;
@@ -29,30 +31,24 @@ use crate::providers::ResolvedAuth;
 use crate::providers::openai_compat::OpenAiCompatProvider;
 
 include!(concat!(env!("OUT_DIR"), "/provider_configs/openai.rs"));
+include!(concat!(env!("OUT_DIR"), "/provider_configs/codex.rs"));
 
-// Non-codex models OpenAI offers for subscription usage via the Coding Plan.
-// Codex models are matched by their `-codex` substring in
-// `coding_plan_context_window`, so they never need listing here.
-pub(crate) const PLAN_MODELS: &[&str] = &[
-    "gpt-5.6",
-    "gpt-5.6-luna",
-    "gpt-5.6-terra",
-    "gpt-5.6-sol",
-    "gpt-5.5",
-    "gpt-5.4",
-    "gpt-5.4-mini",
-    "gpt-5.2",
-];
-
-const CODEX_PLAN_CONTEXT_WINDOW: u32 = 272_000;
-const GPT_5_6_PLAN_CONTEXT_WINDOW: u32 = 272_000;
+pub(crate) const CODING_PLAN_CONTEXT_WINDOW: u32 = 272_000;
 const SESSION_STATE_TTL: Duration = Duration::from_hours(1);
 const FIVE_MINUTES_MILLIS: u64 = 5 * 60 * 1_000;
 const THIRTY_MINUTES_MILLIS: u64 = 30 * 60 * 1_000;
 const CODING_PLAN_DEFAULT_RETRY_DELAY: Duration = Duration::from_millis(250);
 const CODING_PLAN_MAX_SLOTS: u8 = 8;
 const RESPONSE_CHAIN_LOCK_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
+const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
+const USAGE_WINDOW_TOLERANCE: f64 = 0.05;
+const USAGE_WINDOW_5HOURS_SECONDS: i64 = 18_000;
+const USAGE_WINDOW_1DAY_SECONDS: i64 = 86_400;
+const USAGE_WINDOW_1WEEK_SECONDS: i64 = 604_800;
+const USAGE_WINDOW_1MONTH_SECONDS: i64 = 2_592_000;
+const USAGE_WINDOW_1YEAR_SECONDS: i64 = 31_536_000;
 const RESPONSE_CHAIN_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(25);
+const PROMPT_CACHE_SHARDS: u8 = 16;
 
 static PROCESS_INSTANCE_NONCE: OnceLock<u64> = OnceLock::new();
 
@@ -68,6 +64,7 @@ type ResponseOperationSlot = Arc<AsyncMutex<()>>;
 #[derive(Debug, Clone, Copy)]
 pub struct OpenAiOptions {
     coding_plan_slots: u8,
+    codex_provider: bool,
 }
 
 impl OpenAiOptions {
@@ -75,7 +72,19 @@ impl OpenAiOptions {
     pub fn with_coding_plan_slots(slots: u64) -> Self {
         Self {
             coding_plan_slots: coding_plan_slot_count(slots),
+            codex_provider: false,
         }
+    }
+
+    #[must_use]
+    pub const fn with_codex(mut self) -> Self {
+        self.codex_provider = true;
+        self
+    }
+
+    #[must_use]
+    pub fn codex() -> Self {
+        Self::with_coding_plan_slots(u64::from(CODING_PLAN_MAX_SLOTS / 2)).with_codex()
     }
 }
 
@@ -258,6 +267,18 @@ fn should_fallback_to_http(error: &super::websocket::WebSocketAttemptError) -> b
         && error.delivery.phase == RequestDeliveryPhase::NotSent
 }
 
+fn full_history_replay_required(
+    previous_response_id: Option<&str>,
+    message_count: usize,
+    protect_history_replay: bool,
+    allow_history_replay: bool,
+) -> bool {
+    protect_history_replay
+        && previous_response_id.is_none()
+        && message_count > 1
+        && !allow_history_replay
+}
+
 fn not_sent_websocket_error(error: AgentError) -> super::websocket::WebSocketAttemptError {
     super::websocket::WebSocketAttemptError::transport(
         error,
@@ -278,12 +299,29 @@ fn suppress_retry_after_send(error: AgentError) -> AgentError {
     }
 }
 
-fn canonical_session_key(session_id: &SessionRef) -> N00nId {
+fn canonical_session_key(session_id: &SessionRef) -> n00nId {
     session_id.id()
 }
 
-fn canonical_prompt_cache_key(session_id: &SessionRef) -> String {
-    canonical_session_key(session_id).to_string()
+fn prompt_cache_key(
+    model_id: &str,
+    system: &System,
+    tools_hash: &str,
+    session_id: Option<&SessionRef>,
+) -> String {
+    let system_text = system.to_string();
+    let mut digest = Sha256::new();
+    digest.update(model_id.len().to_le_bytes());
+    digest.update(model_id.as_bytes());
+    digest.update(system_text.len().to_le_bytes());
+    digest.update(system_text.as_bytes());
+    digest.update(tools_hash.as_bytes());
+    let prefix_hash = digest.finalize();
+    let shard = session_id.map_or(0, |session_id| {
+        Sha256::digest(canonical_session_key(session_id).to_string().as_bytes())[0]
+            % PROMPT_CACHE_SHARDS
+    });
+    format!("n00n-{prefix_hash:x}-s{shard}")
 }
 
 fn log_responses_request(
@@ -438,48 +476,24 @@ fn record_in_state(
     Ok(())
 }
 
-pub(crate) fn is_codex_model(model_id: &str) -> bool {
-    coding_plan_context_window(model_id).is_some()
-}
-
-// Codex models match by substring so future releases route without a registry
-// edit; the named non-codex plans match exactly to avoid catching near-misses
-// like `gpt-5.6-terra-preview`.
-fn coding_plan_context_window(model_id: &str) -> Option<u32> {
-    if model_id.contains("-codex") {
-        return Some(CODEX_PLAN_CONTEXT_WINDOW);
-    }
-    if !PLAN_MODELS.contains(&model_id) {
-        return None;
-    }
-    Some(if model_id.starts_with("gpt-5.6") {
-        GPT_5_6_PLAN_CONTEXT_WINDOW
-    } else {
-        CODEX_PLAN_CONTEXT_WINDOW
-    })
-}
-
 pub struct OpenAi {
     compat: OpenAiCompatProvider,
     auth: Arc<Mutex<ResolvedAuth>>,
     auth_refresh: AsyncMutex<()>,
     auth_generation: AtomicU64,
     auth_managed: bool,
+    codex: bool,
     storage: Option<StateDir>,
     response_state_storage: Option<StateDir>,
     websocket_connect_timeout: Duration,
     coding_plan_slots: u8,
     system_prefix: Option<String>,
-    session_state: Arc<Mutex<HashMap<N00nId, OpenAiSessionState>>>,
-    response_connections: Arc<Mutex<HashMap<N00nId, ResponseConnectionSlot>>>,
-    response_operations: Arc<Mutex<HashMap<N00nId, Weak<AsyncMutex<()>>>>>,
+    session_state: Arc<Mutex<HashMap<n00nId, OpenAiSessionState>>>,
+    response_connections: Arc<Mutex<HashMap<n00nId, ResponseConnectionSlot>>>,
+    response_operations: Arc<Mutex<HashMap<n00nId, Weak<AsyncMutex<()>>>>>,
 }
 
 impl OpenAi {
-    pub fn new(timeouts: crate::providers::Timeouts) -> Result<Self, AgentError> {
-        Self::new_with_options(timeouts, OpenAiOptions::default())
-    }
-
     pub fn new_with_options(
         timeouts: crate::providers::Timeouts,
         options: OpenAiOptions,
@@ -488,14 +502,24 @@ impl OpenAi {
         // Authentication refresh is deferred to the first request. Token files
         // are atomically replaced, so startup can safely read the cached copy
         // without waiting behind another process's network refresh.
-        let resolved = auth::resolve_cached(&storage)?;
-        let compat = OpenAiCompatProvider::new(&CONFIG, timeouts)?;
+        let resolved = if options.codex_provider {
+            auth::resolve_coding_plan(&storage)?
+        } else {
+            auth::resolve_api_key(&storage)?
+        };
+        let config = if options.codex_provider {
+            &CODEX_CONFIG
+        } else {
+            &CONFIG
+        };
+        let compat = OpenAiCompatProvider::new(config, timeouts)?;
         Ok(Self {
             compat,
             auth: Arc::new(Mutex::new(resolved)),
             auth_refresh: AsyncMutex::new(()),
             auth_generation: AtomicU64::new(0),
             auth_managed: true,
+            codex: options.codex_provider,
             storage: Some(storage.clone()),
             response_state_storage: Some(storage),
             websocket_connect_timeout: timeouts.connect,
@@ -519,12 +543,18 @@ impl OpenAi {
         timeouts: crate::providers::Timeouts,
         options: OpenAiOptions,
     ) -> Result<Self, AgentError> {
+        let config = if options.codex_provider {
+            &CODEX_CONFIG
+        } else {
+            &CONFIG
+        };
         Ok(Self {
-            compat: OpenAiCompatProvider::new(&CONFIG, timeouts)?,
+            compat: OpenAiCompatProvider::new(config, timeouts)?,
             auth,
             auth_refresh: AsyncMutex::new(()),
             auth_generation: AtomicU64::new(0),
             auth_managed: false,
+            codex: options.codex_provider,
             storage: None,
             response_state_storage: None,
             websocket_connect_timeout: timeouts.connect,
@@ -549,7 +579,7 @@ impl OpenAi {
     }
 
     fn is_oauth(&self) -> bool {
-        self.auth_managed && self.storage.as_ref().is_some_and(auth::is_oauth)
+        self.auth_managed && self.codex && self.storage.as_ref().is_some_and(auth::is_oauth)
     }
 
     async fn lock_response_chain(
@@ -674,7 +704,12 @@ impl OpenAi {
             message: "OpenAI credential storage is unavailable".into(),
         })?;
         let Some(tokens) = n00n_storage::auth::load_tokens(storage, auth::PROVIDER) else {
-            let mut resolved = auth::resolve_cached(storage)?;
+            if self.codex {
+                return Err(AgentError::Config {
+                    message: "OpenAI Codex authentication not available".into(),
+                });
+            }
+            let mut resolved = auth::resolve_api_key(storage)?;
             if resolved.base_url.is_none() {
                 resolved.base_url = Some(CONFIG.base_url.into());
             }
@@ -837,7 +872,7 @@ impl OpenAi {
         full_history_body: &mut Option<Value>,
         full_history_fallback_available: bool,
         mut build_full_history: F,
-        chain_session: Option<N00nId>,
+        chain_session: Option<n00nId>,
         admission_scope: Option<&str>,
         event_tx: &Sender<ProviderEvent>,
         _auth: &ResolvedAuth,
@@ -1126,7 +1161,7 @@ impl OpenAi {
         }
     }
 
-    fn reset_connection_local_chain(&self, session_id: Option<N00nId>) {
+    fn reset_connection_local_chain(&self, session_id: Option<n00nId>) {
         if let Some(session_id) = session_id {
             self.session_state
                 .lock()
@@ -1135,7 +1170,7 @@ impl OpenAi {
         }
     }
 
-    fn clear_local_response_chain(&self, session_id: N00nId) {
+    fn clear_local_response_chain(&self, session_id: n00nId) {
         self.session_state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1204,7 +1239,7 @@ impl OpenAi {
         &self,
         model: &Model,
         messages: &[Message],
-        system: &str,
+        system: &System,
         tools: &Value,
         tools_hash: &str,
         event_tx: &Sender<ProviderEvent>,
@@ -1290,7 +1325,24 @@ impl OpenAi {
                 };
             }
         };
-        let prompt_cache_key = session_id.map(canonical_prompt_cache_key);
+        if full_history_replay_required(
+            previous_response_id.as_deref(),
+            messages.len(),
+            opts.protect_history_replay,
+            opts.allow_history_replay,
+        ) {
+            return CodexAttempt {
+                previous_response_id: None,
+                store,
+                emitted_event: false,
+                definitive_rejection: false,
+                delivery: Some(RequestDeliveryMetadata::new(RequestDeliveryPhase::NotSent)),
+                result: Err(AgentError::HistoryReplayRequired {
+                    reason: HistoryReplayReason::ContinuationUnavailable,
+                }),
+            };
+        }
+        let prompt_cache_key = prompt_cache_key(&model.id, system, tools_hash, session_id);
         let body = super::websocket::build_request_body(
             model,
             incremental_messages,
@@ -1298,11 +1350,13 @@ impl OpenAi {
             tools,
             opts,
             previous_response_id.as_deref(),
-            prompt_cache_key.as_deref(),
+            Some(&prompt_cache_key),
             store,
         );
         let mut full_history_body = None;
-        let full_history_fallback_available = !store && previous_response_id.is_some();
+        let full_history_fallback_available = !store
+            && previous_response_id.is_some()
+            && (!opts.protect_history_replay || opts.allow_history_replay);
         log_responses_request(
             "websocket",
             &body,
@@ -1331,7 +1385,7 @@ impl OpenAi {
                             tools,
                             opts,
                             None,
-                            prompt_cache_key.as_deref(),
+                            Some(&prompt_cache_key),
                             false,
                         )
                     },
@@ -1347,6 +1401,28 @@ impl OpenAi {
             match websocket_result {
                 Ok((response_id, response)) => (response_id, response, true),
                 Err(error) if should_fallback_to_http(&error) => {
+                    if !store
+                        && previous_response_id.is_some()
+                        && opts.protect_history_replay
+                        && !opts.allow_history_replay
+                    {
+                        return self
+                            .finish_codex_attempt(
+                                CodexAttempt {
+                                    previous_response_id,
+                                    store,
+                                    emitted_event: false,
+                                    definitive_rejection: false,
+                                    delivery: Some(error.delivery),
+                                    result: Err(AgentError::HistoryReplayRequired {
+                                        reason: HistoryReplayReason::ContinuationUnavailable,
+                                    }),
+                                },
+                                session_id,
+                                response_chain_lock.as_ref(),
+                            )
+                            .await;
+                    }
                     warn!("OpenAI Responses WebSocket unavailable; falling back to HTTP");
                     let fallback_body = if store {
                         &body
@@ -1359,7 +1435,7 @@ impl OpenAi {
                                 tools,
                                 opts,
                                 None,
-                                prompt_cache_key.as_deref(),
+                                Some(&prompt_cache_key),
                                 false,
                             )
                         })
@@ -1511,7 +1587,7 @@ impl OpenAi {
         &self,
         model: &Model,
         messages: &[Message],
-        system: &str,
+        system: &System,
         tools: &Value,
         tools_hash: &str,
         event_tx: &Sender<ProviderEvent>,
@@ -1709,23 +1785,191 @@ impl OpenAi {
     }
 }
 
+#[derive(Deserialize)]
+struct RateLimitStatusResponse {
+    #[serde(default)]
+    plan_type: Option<String>,
+    #[serde(default)]
+    rate_limit: Option<RateLimitStatusDetails>,
+    #[serde(default)]
+    credits: Option<CreditStatusDetails>,
+    #[serde(default, rename = "additional_rate_limits")]
+    additional_rate_limits: Option<Vec<AdditionalRateLimitDetails>>,
+}
+
+#[derive(Deserialize)]
+struct RateLimitStatusDetails {
+    #[serde(default)]
+    primary_window: Option<RateLimitWindowSnapshot>,
+    #[serde(default)]
+    secondary_window: Option<RateLimitWindowSnapshot>,
+}
+
+#[derive(Deserialize)]
+struct RateLimitWindowSnapshot {
+    used_percent: i32,
+    #[serde(default)]
+    limit_window_seconds: Option<i64>,
+    #[serde(default)]
+    reset_at: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct AdditionalRateLimitDetails {
+    limit_name: String,
+    #[serde(default)]
+    rate_limit: Option<RateLimitStatusDetails>,
+}
+
+#[derive(Deserialize)]
+struct CreditStatusDetails {
+    has_credits: bool,
+    unlimited: bool,
+    #[serde(default)]
+    balance: Option<String>,
+}
+
+impl RateLimitWindowSnapshot {
+    fn to_limit(&self, is_secondary: bool, prefix: &str) -> UsageLimit {
+        let duration = rate_limit_window_label(self.limit_window_seconds)
+            .unwrap_or_else(|| if is_secondary { "weekly" } else { "5h" });
+        let duration = capitalize_first(duration);
+        let label = if prefix.is_empty() {
+            format!("{duration} limit")
+        } else {
+            format!("{prefix} {duration} limit")
+        };
+        UsageLimit {
+            label,
+            percentage: Some(percentage(self.used_percent)),
+            reset_at: self
+                .reset_at
+                .and_then(|s| u64::try_from(s).ok().map(|s| s.saturating_mul(1_000))),
+            detail: None,
+        }
+    }
+}
+
+impl From<RateLimitStatusResponse> for ProviderUsage {
+    fn from(resp: RateLimitStatusResponse) -> Self {
+        let mut limits = Vec::new();
+        if let Some(rate_limit) = &resp.rate_limit {
+            add_rate_limit_windows(&mut limits, rate_limit, "");
+        }
+        for additional in resp.additional_rate_limits.into_iter().flatten() {
+            let prefix = rate_limit_prefix(&additional.limit_name);
+            if let Some(rate_limit) = &additional.rate_limit {
+                add_rate_limit_windows(&mut limits, rate_limit, &prefix);
+            }
+        }
+        limits.extend(credits_limit(resp.credits));
+        Self {
+            plan: resp.plan_type,
+            limits,
+        }
+    }
+}
+
+fn add_rate_limit_windows(
+    limits: &mut Vec<UsageLimit>,
+    rate_limit: &RateLimitStatusDetails,
+    prefix: &str,
+) {
+    if let Some(window) = &rate_limit.primary_window {
+        limits.push(window.to_limit(false, prefix));
+    }
+    if let Some(window) = &rate_limit.secondary_window {
+        limits.push(window.to_limit(true, prefix));
+    }
+}
+
+fn rate_limit_window_label(seconds: Option<i64>) -> Option<&'static str> {
+    let seconds = seconds?;
+    if is_approximate_window(seconds, USAGE_WINDOW_5HOURS_SECONDS) {
+        Some("5h")
+    } else if is_approximate_window(seconds, USAGE_WINDOW_1DAY_SECONDS) {
+        Some("daily")
+    } else if is_approximate_window(seconds, USAGE_WINDOW_1WEEK_SECONDS) {
+        Some("weekly")
+    } else if is_approximate_window(seconds, USAGE_WINDOW_1MONTH_SECONDS) {
+        Some("monthly")
+    } else if is_approximate_window(seconds, USAGE_WINDOW_1YEAR_SECONDS) {
+        Some("annual")
+    } else {
+        None
+    }
+}
+
+fn is_approximate_window(value: i64, expected: i64) -> bool {
+    let Ok(value) = i32::try_from(value) else {
+        return false;
+    };
+    let Ok(expected) = i32::try_from(expected) else {
+        return false;
+    };
+    let value = f64::from(value);
+    let expected = f64::from(expected);
+    (value - expected).abs() <= expected * USAGE_WINDOW_TOLERANCE
+}
+
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().to_string() + &chars.as_str().to_lowercase(),
+        None => String::new(),
+    }
+}
+
+fn rate_limit_prefix(limit_name: &str) -> String {
+    limit_name
+        .split('_')
+        .map(capitalize_first)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn credits_limit(credits: Option<CreditStatusDetails>) -> Option<UsageLimit> {
+    let credits = credits?;
+    if !credits.has_credits {
+        return None;
+    }
+    let detail = if credits.unlimited {
+        Some("Unlimited credits".into())
+    } else {
+        credits.balance.map(|b| format!("${b} remaining"))
+    };
+    Some(UsageLimit {
+        label: "Credits".into(),
+        percentage: None,
+        reset_at: None,
+        detail,
+    })
+}
+
+fn percentage(used_percent: i32) -> u32 {
+    used_percent.clamp(0, 100).cast_unsigned()
+}
+
 impl Provider for OpenAi {
     #[allow(clippy::large_futures)]
     fn stream_message<'a>(
         &'a self,
         model: &'a Model,
         messages: &'a [Message],
-        system: &'a str,
+        system: &'a System,
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
         session_id: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
+            let system_text = system.to_string();
             let mut buf = String::new();
-            let system = super::super::with_prefix(self.system_prefix.as_deref(), system, &mut buf);
+            let prefixed_system =
+                super::super::with_prefix(self.system_prefix.as_deref(), &system_text, &mut buf);
 
-            if is_codex_model(&model.id) {
+            if self.codex {
+                let codex_system = System::from(prefixed_system);
                 let operation_slot = self.response_operation_slot(session_id);
                 let _operation_guard = match operation_slot.as_ref() {
                     Some(operation) => Some(operation.lock().await),
@@ -1737,7 +1981,7 @@ impl Provider for OpenAi {
                     .run_codex_attempt_with_auth_retry(
                         model,
                         messages,
-                        system,
+                        &codex_system,
                         tools,
                         &tools_hash,
                         event_tx,
@@ -1753,16 +1997,21 @@ impl Provider for OpenAi {
                     return attempt.result;
                 }
 
+                if opts.protect_history_replay && !opts.allow_history_replay {
+                    return Err(AgentError::HistoryReplayRequired {
+                        reason: HistoryReplayReason::ContinuationNotFound,
+                    });
+                }
                 warn!(
                     chain_reset = true,
                     full_history_fallback = true,
-                    "OpenAI Responses chain was not found; retrying with full history"
+                    "OpenAI Responses chain was not found; replaying approved full history"
                 );
                 return self
                     .run_codex_attempt_with_auth_retry(
                         model,
                         messages,
-                        system,
+                        &codex_system,
                         tools,
                         &tools_hash,
                         event_tx,
@@ -1774,13 +2023,20 @@ impl Provider for OpenAi {
                     .result;
             }
 
-            let prompt_cache_key = session_id.map(canonical_prompt_cache_key);
+            let tools_hash = stable_json_hash(tools)?;
+            let prompt_cache_key = prompt_cache_key(
+                &model.id,
+                &System::from(prefixed_system),
+                &tools_hash,
+                session_id,
+            );
             let mut body = self.compat.build_body_with_session(
                 model,
                 messages,
                 system,
                 tools,
-                prompt_cache_key.as_deref(),
+                Some(&prompt_cache_key),
+                self.system_prefix.as_deref(),
             );
             opts.thinking
                 .apply_reasoning_effort(&mut body, &dialect::STANDARD, model);
@@ -1796,11 +2052,10 @@ impl Provider for OpenAi {
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<crate::model::ModelInfo>, AgentError>> {
         Box::pin(async {
-            if self.is_oauth() {
-                let models = super::models()
+            if self.codex {
+                let models = super::codex_models()
                     .iter()
                     .flat_map(|e| e.prefixes.iter())
-                    .filter(|id| is_codex_model(id))
                     .map(|&s| crate::model::ModelInfo::id_only(s.to_string()))
                     .collect();
                 return Ok(models);
@@ -1810,6 +2065,24 @@ impl Provider for OpenAi {
                 self.compat.do_list_models(&auth).await
             })
             .await
+        })
+    }
+
+    fn fetch_usage(&self) -> BoxFuture<'_, Result<Option<ProviderUsage>, AgentError>> {
+        Box::pin(async move {
+            if !self.codex {
+                return Ok(None);
+            }
+            let auth = self
+                .coding_plan_auth(false, None, fastrand::u64(..))
+                .await?
+                .resolved;
+            if auth.base_url.as_deref() != Some(auth::CODING_PLAN_BASE_URL) {
+                return Ok(None);
+            }
+            let body = self.compat.get_text(&auth, USAGE_URL).await?;
+            let parsed: RateLimitStatusResponse = serde_json::from_str(&body)?;
+            Ok(Some(parsed.into()))
         })
     }
 
@@ -1840,7 +2113,15 @@ impl Provider for OpenAi {
                 return Ok(());
             };
             let _refresh_guard = self.auth_refresh.lock().await;
-            let resolved = smol::unblock(move || auth::resolve_cached(&storage)).await?;
+            let codex = self.codex;
+            let resolved = smol::unblock(move || {
+                if codex {
+                    auth::resolve_coding_plan(&storage)
+                } else {
+                    auth::resolve_api_key(&storage)
+                }
+            })
+            .await?;
             let previous_scope = credential_hash(&self.current_auth());
             let resolved_scope = credential_hash(&resolved);
             *self
@@ -1856,12 +2137,8 @@ impl Provider for OpenAi {
     }
 
     fn adjust_model(&self, model: &mut Model) {
-        let coding_plan_auth =
-            self.current_auth().base_url.as_deref() == Some(auth::CODING_PLAN_BASE_URL);
-        if (coding_plan_auth || self.is_oauth())
-            && let Some(context_window) = coding_plan_context_window(&model.id)
-        {
-            model.context_window = model.context_window.min(context_window);
+        if self.codex {
+            model.context_window = model.context_window.min(CODING_PLAN_CONTEXT_WINDOW);
         }
     }
 }
@@ -2094,47 +2371,57 @@ mod tests {
         assert_eq!(incremental_messages.len(), second.len());
     }
 
-    #[test_case("gpt-5.6")]
     #[test_case("gpt-5.6-luna")]
     #[test_case("gpt-5.6-terra")]
     #[test_case("gpt-5.6-sol")]
     #[test_case("gpt-5.5")]
+    #[test_case("gpt-5.4")]
+    #[test_case("gpt-5.4-nano")]
+    #[test_case("gpt-5.4-mini")]
     #[test_case("gpt-5.3-codex")]
-    fn coding_plan_models_use_websocket(model_id: &str) {
-        assert!(is_codex_model(model_id));
-    }
-
-    #[test_case("gpt-5.6", Some(272_000))]
-    #[test_case("gpt-5.6-luna", Some(272_000))]
-    #[test_case("gpt-5.6-terra", Some(272_000))]
-    #[test_case("gpt-5.6-sol", Some(272_000))]
-    #[test_case("gpt-5.5", Some(272_000))]
-    #[test_case("gpt-5.4", Some(272_000))]
-    #[test_case("gpt-5.2", Some(272_000))]
-    #[test_case("gpt-5.3-codex", Some(272_000))]
-    #[test_case("gpt-5.7-codex", Some(272_000) ; "unlisted codex model still routes")]
-    #[test_case("gpt-5.5-preview", None ; "non_plan_5_5_preview_rejected")]
-    #[test_case("gpt-5.6-terra-preview", None ; "non_plan_5_6_preview_rejected")]
-    #[test_case("gpt-5.6-codex", Some(272_000) ; "codex_model")]
-    #[test_case("gpt-5.4-nano", None ; "non_plan_5_4_nano_rejected")]
-    fn coding_plan_context_window_resolves_plan_models(model_id: &str, expected: Option<u32>) {
-        assert_eq!(coding_plan_context_window(model_id), expected);
+    #[test_case("gpt-5.2-codex")]
+    #[test_case("gpt-5.1-codex")]
+    #[test_case("gpt-5.1-codex-mini")]
+    fn codex_model_catalog_contains_known_plan_model(model_id: &str) {
+        assert!(
+            crate::model::lookup_entry(crate::providers::openai::codex_models(), model_id).is_ok()
+        );
     }
 
     #[test_case("gpt-5.6-luna")]
     #[test_case("gpt-5.6-terra")]
     #[test_case("gpt-5.6-sol")]
-    fn coding_plan_adjustment_caps_authenticated_gpt_5_6_at_272k(model_id: &str) {
+    fn codex_adjustment_caps_full_context_models(model_id: &str) {
         let auth = Arc::new(Mutex::new(ResolvedAuth {
             base_url: Some(auth::CODING_PLAN_BASE_URL.into()),
             headers: Vec::new(),
         }));
-        let provider = OpenAi::with_auth(auth, crate::providers::Timeouts::default()).unwrap();
+        let provider = OpenAi::with_auth_options(
+            auth,
+            crate::providers::Timeouts::default(),
+            OpenAiOptions::codex(),
+        )
+        .unwrap();
         let mut model = Model::from_spec(&format!("openai/{model_id}")).unwrap();
 
         provider.adjust_model(&mut model);
 
-        assert_eq!(model.context_window, 272_000);
+        assert_eq!(model.context_window, CODING_PLAN_CONTEXT_WINDOW);
+    }
+
+    #[test]
+    fn openai_adjustment_keeps_full_context() {
+        let auth = Arc::new(Mutex::new(ResolvedAuth {
+            base_url: None,
+            headers: vec![("authorization".into(), "Bearer key".into())],
+        }));
+        let provider = OpenAi::with_auth(auth, crate::providers::Timeouts::default()).unwrap();
+        let mut model = Model::from_spec("openai/gpt-5.6-luna").unwrap();
+        let expected = model.context_window;
+
+        provider.adjust_model(&mut model);
+
+        assert_eq!(model.context_window, expected);
     }
 
     #[test]
@@ -2331,7 +2618,7 @@ mod tests {
 
     #[test]
     #[allow(clippy::too_many_lines)]
-    fn ephemeral_preflight_failure_rebuilds_second_turn_with_full_history() {
+    fn approved_ephemeral_preflight_failure_rebuilds_second_turn_with_full_history() {
         smol::block_on(async {
             let temp_dir = TempDir::new().unwrap();
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2413,20 +2700,21 @@ mod tests {
                 base_url: Some(format!("http://{address}/v1")),
                 headers: Vec::new(),
             };
-            let mut provider = OpenAi::with_auth(
+            let mut provider = OpenAi::with_auth_options(
                 Arc::new(Mutex::new(auth)),
                 crate::providers::Timeouts {
                     connect: Duration::from_secs(2),
                     stream: Duration::from_secs(2),
                     low_speed: Duration::from_secs(2),
                 },
+                OpenAiOptions::codex(),
             )
             .unwrap();
             let storage = StateDir::from_path(temp_dir.path().to_path_buf());
             provider.storage = Some(storage.clone());
             provider.response_state_storage = Some(storage);
             let session_id = SessionRef::generate();
-            let model = Model::from_spec("openai/gpt-5.3-codex").unwrap();
+            let model = Model::from_spec("codex/gpt-5.3-codex").unwrap();
             let tools = serde_json::json!([]);
             let (event_tx, _event_rx) = flume::unbounded();
             let first_messages = vec![Message::user("hello".into())];
@@ -2435,7 +2723,7 @@ mod tests {
                 .stream_message(
                     &model,
                     &first_messages,
-                    "",
+                    &System::from(""),
                     &tools,
                     &event_tx,
                     RequestOptions::default(),
@@ -2452,10 +2740,14 @@ mod tests {
                 .stream_message(
                     &model,
                     &second_messages,
-                    "",
+                    &System::from(""),
                     &tools,
                     &event_tx,
-                    RequestOptions::default(),
+                    RequestOptions {
+                        protect_history_replay: true,
+                        allow_history_replay: true,
+                        ..Default::default()
+                    },
                     Some(&session_id),
                 )
                 .await
@@ -2650,7 +2942,7 @@ mod tests {
                 .unwrap();
             let session_id = std::env::var(SESSION_ENV)
                 .unwrap()
-                .parse::<N00nId>()
+                .parse::<n00nId>()
                 .unwrap();
             let ready = std::env::var_os(READY_ENV)
                 .map(std::path::PathBuf::from)
@@ -2822,6 +3114,27 @@ mod tests {
     }
 
     #[test]
+    fn prompt_cache_key_groups_matching_stable_prefixes() {
+        let tools_hash = stable_json_hash(&serde_json::json!([{"type": "function"}])).unwrap();
+        let system = System::from("stable instructions");
+        let key = prompt_cache_key("gpt-5.6", &system, &tools_hash, None);
+
+        assert_eq!(key, prompt_cache_key("gpt-5.6", &system, &tools_hash, None));
+        assert_ne!(
+            key,
+            prompt_cache_key("gpt-5.6", &System::from("changed"), &tools_hash, None)
+        );
+        assert_ne!(
+            key,
+            prompt_cache_key("gpt-5.6-sol", &system, &tools_hash, None)
+        );
+        assert_ne!(
+            key,
+            prompt_cache_key("gpt-5.6", &system, "changed-tools", None)
+        );
+    }
+
+    #[test]
     fn response_state_uses_canonical_session_identity() {
         let temp_dir = TempDir::new().unwrap();
         let provider = provider_with_response_storage(temp_dir.path());
@@ -2829,10 +3142,14 @@ mod tests {
         let canonical = SessionRef::from_id(legacy.id());
 
         assert_ne!(legacy.as_str(), canonical.as_str());
-        assert_eq!(canonical_prompt_cache_key(&legacy), canonical.as_str());
-        assert_ne!(
-            canonical_prompt_cache_key(&legacy),
-            canonical_prompt_cache_key(&SessionRef::generate())
+        assert_eq!(
+            prompt_cache_key("gpt-5.6", &System::from("system"), "tools", Some(&legacy)),
+            prompt_cache_key(
+                "gpt-5.6",
+                &System::from("system"),
+                "tools",
+                Some(&canonical)
+            )
         );
 
         let legacy_connection = provider.response_connection_slot(Some(&legacy)).unwrap();
@@ -3071,11 +3388,12 @@ mod tests {
             let tools = serde_json::json!([]);
             let (event_tx, _) = flume::unbounded();
 
+            let system = System::from("");
             let attempt = provider
                 .run_codex_attempt(
                     &model,
                     &[Message::user("hello".into())],
-                    "",
+                    &system,
                     &tools,
                     TOOLS_HASH,
                     &event_tx,
@@ -3604,27 +3922,29 @@ mod tests {
                 base_url: Some(format!("http://{address}/v1")),
                 headers: Vec::new(),
             };
-            let provider = OpenAi::with_auth(
+            let provider = OpenAi::with_auth_options(
                 Arc::new(Mutex::new(auth)),
                 crate::providers::Timeouts {
                     connect: Duration::from_secs(2),
                     stream: Duration::from_secs(2),
                     low_speed: Duration::from_secs(2),
                 },
+                OpenAiOptions::codex(),
             )
             .unwrap();
-            let model = Model::from_spec("openai/gpt-5.3-codex").unwrap();
+            let model = Model::from_spec("codex/gpt-5.3-codex").unwrap();
             let messages = [Message::user("hello".into())];
             let tools = serde_json::json!([]);
             let (first_tx, _) = flume::unbounded();
             let (second_tx, _) = flume::unbounded();
             let first_session = SessionRef::generate();
             let second_session = SessionRef::generate();
+            let system = System::from("");
 
             let first = provider.stream_message(
                 &model,
                 &messages,
-                "",
+                &system,
                 &tools,
                 &first_tx,
                 RequestOptions::default(),
@@ -3633,7 +3953,7 @@ mod tests {
             let second = provider.stream_message(
                 &model,
                 &messages,
-                "",
+                &system,
                 &tools,
                 &second_tx,
                 RequestOptions::default(),
@@ -3717,6 +4037,20 @@ mod tests {
             assert!(slot.lock().await.is_none());
             server.await;
         });
+    }
+
+    #[test]
+    fn full_history_replay_requires_explicit_approval() {
+        assert!(full_history_replay_required(None, 2, true, false));
+        assert!(!full_history_replay_required(None, 2, false, false));
+        assert!(!full_history_replay_required(None, 1, true, false));
+        assert!(!full_history_replay_required(None, 2, true, true));
+        assert!(!full_history_replay_required(
+            Some("response"),
+            2,
+            true,
+            false
+        ));
     }
 
     #[test]
@@ -3919,5 +4253,63 @@ mod tests {
         ));
         assert!(!error.is_retryable());
         assert!(!error.is_auth_error());
+    }
+
+    #[test]
+    fn parse_rate_limit_status_response() {
+        let body = r#"{
+            "plan_type": "pro",
+            "rate_limit": {
+                "allowed": true,
+                "limit_reached": false,
+                "primary_window": {"used_percent": 6, "limit_window_seconds": 18000, "reset_at": 1738300000},
+                "secondary_window": {"used_percent": 24, "limit_window_seconds": 604800, "reset_at": 1738900000}
+            },
+            "additional_rate_limits": [
+                {
+                    "limit_name": "code_review",
+                    "metered_feature": "code_review",
+                    "rate_limit": {
+                        "allowed": true,
+                        "limit_reached": false,
+                        "secondary_window": {"used_percent": 91, "limit_window_seconds": 604800, "reset_at": 1738900000}
+                    }
+                }
+            ],
+            "credits": {"has_credits": true, "unlimited": false, "balance": "5.39"}
+        }"#;
+        let parsed: RateLimitStatusResponse = serde_json::from_str(body).unwrap();
+        let usage: ProviderUsage = parsed.into();
+        assert_eq!(usage.plan.as_deref(), Some("pro"));
+        assert_eq!(usage.limits.len(), 4);
+        assert_eq!(usage.limits[0].label, "5h limit");
+        assert_eq!(usage.limits[0].percentage, Some(6));
+        assert_eq!(usage.limits[0].reset_at, Some(1_738_300_000_000));
+        assert_eq!(usage.limits[1].label, "Weekly limit");
+        assert_eq!(usage.limits[1].percentage, Some(24));
+        assert_eq!(usage.limits[2].label, "Code Review Weekly limit");
+        assert_eq!(usage.limits[2].percentage, Some(91));
+        assert_eq!(usage.limits[3].label, "Credits");
+        assert_eq!(usage.limits[3].percentage, None);
+        assert_eq!(usage.limits[3].detail.as_deref(), Some("$5.39 remaining"));
+    }
+
+    #[test]
+    fn parse_rate_limit_status_unknown_plan_type() {
+        let body = r#"{"plan_type": "prolite"}"#;
+        let parsed: RateLimitStatusResponse = serde_json::from_str(body).unwrap();
+        let usage: ProviderUsage = parsed.into();
+        assert_eq!(usage.plan.as_deref(), Some("prolite"));
+        assert!(usage.limits.is_empty());
+    }
+
+    #[test_case(Some(18_000), Some("5h"))]
+    #[test_case(Some(86_400), Some("daily"))]
+    #[test_case(Some(604_800), Some("weekly"))]
+    #[test_case(Some(2_592_000), Some("monthly"))]
+    #[test_case(Some(31_536_000), Some("annual"))]
+    #[test_case(Some(120), None)]
+    fn rate_limit_window_label_maps(seconds: Option<i64>, expected: Option<&str>) {
+        assert_eq!(super::rate_limit_window_label(seconds), expected);
     }
 }

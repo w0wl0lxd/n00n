@@ -27,7 +27,7 @@ use n00n_lua_macro::{lua_class, lua_fn, lua_table};
 use n00n_providers::model::ModelTier;
 use n00n_providers::provider;
 use n00n_providers::{ContentBlock, Model, ModelError, Role, ThinkingConfig, model::TokenUsage};
-use n00n_storage::id::N00nId;
+use n00n_storage::id::n00nId;
 use n00n_storage::sessions::StoredThinking;
 use serde_json::Value as JsonValue;
 use tracing::info;
@@ -615,7 +615,7 @@ async fn session(
         None => agent_ctx.opts.thinking,
     };
 
-    let session_id = N00nId::generate();
+    let session_id = n00nId::generate();
     let child_id = session_id.to_string();
     let parent_tool_use_id = child_id.clone();
     let start = Instant::now();
@@ -689,6 +689,7 @@ async fn session(
         tool_filter,
         thinking,
         fast,
+        mode: agent_ctx.mode.clone(),
         mcp: agent_ctx.mcp.clone(),
         history: History::new(Vec::new()),
         sub_event_tx,
@@ -1188,6 +1189,7 @@ struct SessionState {
     tool_filter: ToolFilter,
     thinking: ThinkingConfig,
     fast: bool,
+    mode: AgentMode,
     mcp: Option<n00n_agent::mcp::McpSession>,
     history: History,
     sub_event_tx: EventSender,
@@ -1245,6 +1247,7 @@ struct PromptInterruptSource {
     rx: flume::Receiver<SubagentPrompt>,
     thinking: ThinkingConfig,
     fast: bool,
+    mode: AgentMode,
 }
 
 impl n00n_agent::InterruptSource for PromptInterruptSource {
@@ -1253,12 +1256,13 @@ impl n00n_agent::InterruptSource for PromptInterruptSource {
             n00n_agent::ExtractedCommand::Interrupt(
                 AgentInput {
                     message: prompt.text,
-                    mode: AgentMode::Build,
+                    mode: self.mode.clone(),
                     images: prompt.images,
                     preamble: Vec::new(),
                     thinking: self.thinking,
                     fast: self.fast,
                     workflow: false,
+                    control: false,
                     prompt: None,
                 },
                 0,
@@ -1343,7 +1347,7 @@ async fn prompt(
             s.params.clone(),
             AgentRunParams {
                 history: &mut s.history,
-                system: s.system.clone(),
+                system: s.system.clone().into(),
                 event_tx: s.sub_event_tx.clone(),
                 tools: s.tools.clone(),
                 tool_filter: s.tool_filter.clone(),
@@ -1354,6 +1358,7 @@ async fn prompt(
             rx: s.prompt_rx.clone(),
             thinking: s.thinking,
             fast: s.fast,
+            mode: s.mode.clone(),
         }))
         .with_cancel(s.child_cancel.clone())
         .with_mcp(s.mcp.clone())
@@ -1361,12 +1366,13 @@ async fn prompt(
 
         let input = AgentInput {
             message: message.text,
-            mode: AgentMode::Build,
+            mode: s.mode.clone(),
             images: message.images,
             preamble: Vec::new(),
             thinking: s.thinking,
             fast: s.fast,
             workflow: false,
+            control: false,
             prompt: None,
         };
         let barrier_target = s.progress.next_forwarder_barrier();
@@ -1937,12 +1943,13 @@ mod tests {
     }
 
     #[test]
-    fn prompt_interrupt_source_preserves_session_thinking_and_fast() {
+    fn prompt_interrupt_source_preserves_session_mode_thinking_and_fast() {
         let (tx, rx) = flume::unbounded();
         let source = PromptInterruptSource {
             rx,
             thinking: ThinkingConfig::Budget(1234),
             fast: true,
+            mode: AgentMode::Plan("plan.md".into()),
         };
         tx.send(SubagentPrompt {
             text: "steer".into(),
@@ -1958,6 +1965,9 @@ mod tests {
         assert!(input.images.is_empty());
         assert!(matches!(input.thinking, ThinkingConfig::Budget(1234)));
         assert!(input.fast);
+        assert!(
+            matches!(input.mode, AgentMode::Plan(path) if path == std::path::Path::new("plan.md"))
+        );
     }
 
     #[test]

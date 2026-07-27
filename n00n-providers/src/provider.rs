@@ -15,6 +15,7 @@ use crate::providers::Timeouts;
 use crate::providers::anthropic::Anthropic;
 use crate::providers::anthropic::bedrock;
 use crate::providers::copilot::Copilot;
+use crate::providers::cursor::Cursor;
 use crate::providers::deepseek::DeepSeek;
 use crate::providers::devin::Devin;
 use crate::providers::dynamic;
@@ -29,7 +30,7 @@ use crate::providers::tensorx::TensorX;
 use crate::providers::zai::Zai;
 use crate::{
     AgentError, Message, OpenAiOptions, ProviderEvent, ProviderUsage, RequestOptions,
-    StreamResponse,
+    StreamResponse, System,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, EnumIter)]
@@ -38,6 +39,7 @@ pub enum ProviderKind {
     Anthropic,
     #[strum(serialize = "openai")]
     OpenAi,
+    Codex,
     Google,
     Copilot,
     Ollama,
@@ -55,6 +57,8 @@ pub enum ProviderKind {
     Opencode,
     #[strum(serialize = "devin")]
     Devin,
+    #[strum(serialize = "cursor")]
+    Cursor,
 }
 
 impl ProviderKind {
@@ -63,6 +67,7 @@ impl ProviderKind {
         match self {
             Self::Anthropic => "Anthropic",
             Self::OpenAi => "OpenAI",
+            Self::Codex => "Codex",
             Self::Google => "Google",
             Self::Copilot => "Copilot",
             Self::Ollama => "Ollama",
@@ -75,6 +80,7 @@ impl ProviderKind {
             Self::TensorX => "TensorX",
             Self::Opencode => "Opencode",
             Self::Devin => "Devin",
+            Self::Cursor => "Cursor",
         }
     }
 
@@ -83,6 +89,7 @@ impl ProviderKind {
         match self {
             Self::Anthropic => "ANTHROPIC_API_KEY",
             Self::OpenAi => "OPENAI_API_KEY",
+            Self::Codex => "",
             Self::Google => "GEMINI_API_KEY",
             Self::Copilot => "GH_COPILOT_TOKEN",
             Self::Ollama => "OLLAMA_API_KEY",
@@ -95,6 +102,7 @@ impl ProviderKind {
             Self::TensorX => "TENSORX_API_KEY",
             Self::Opencode => "OPENCODE_API_KEY",
             Self::Devin => "DEVIN_API_KEY",
+            Self::Cursor => "CURSOR_API_KEY",
         }
     }
 
@@ -103,6 +111,7 @@ impl ProviderKind {
         match self {
             Self::Anthropic => "https://api.anthropic.com/v1/messages",
             Self::OpenAi => "https://api.openai.com/v1",
+            Self::Codex => "https://chatgpt.com/backend-api/codex",
             Self::Google => "https://generativelanguage.googleapis.com/v1beta",
             Self::Copilot => {
                 "https://api.githubcopilot.com (or GraphQL-discovered Copilot API endpoint)"
@@ -117,6 +126,7 @@ impl ProviderKind {
             Self::TensorX => "https://api.tensorx.ai/v1",
             Self::Opencode => "https://opencode.ai/zen/v1",
             Self::Devin => "devin acp subprocess (Agent Client Protocol)",
+            Self::Cursor => "cursor-agent subprocess (Cursor Agent CLI)",
         }
     }
 
@@ -126,6 +136,7 @@ impl ProviderKind {
             Self::Anthropic => {
                 Some("Prompt caching, thinking mode (adaptive/budgeted), advanced tool use")
             }
+            Self::Codex => Some("ChatGPT/Codex plan via OAuth device flow"),
             Self::Google => Some("Native Gemini API with thinking support"),
             Self::Copilot => Some("Native Copilot Chat HTTP API with model endpoint discovery"),
             Self::Ollama => {
@@ -146,6 +157,9 @@ impl ProviderKind {
                 "Dynamically discovered models via [models.dev](https://models.dev/) + all the models provided by Opencode Zen API",
             ),
             Self::Devin => Some("Agent Client Protocol via devin acp subprocess"),
+            Self::Cursor => Some(
+                "Cursor Agent CLI subprocess with stream-json parsing, session resume, and tool-call passthrough",
+            ),
             _ => None,
         }
     }
@@ -154,7 +168,7 @@ impl ProviderKind {
     pub const fn family(self) -> ModelFamily {
         match self {
             Self::Anthropic => ModelFamily::Claude,
-            Self::OpenAi => ModelFamily::Gpt,
+            Self::OpenAi | Self::Codex => ModelFamily::Gpt,
             Self::Google => ModelFamily::Gemini,
             Self::Copilot
             | Self::Ollama
@@ -164,7 +178,8 @@ impl ProviderKind {
             | Self::OpenRouter
             | Self::TensorX
             | Self::Opencode
-            | Self::Devin => ModelFamily::Generic,
+            | Self::Devin
+            | Self::Cursor => ModelFamily::Generic,
             Self::Zai => ModelFamily::Glm,
             Self::Synthetic => ModelFamily::Synthetic,
         }
@@ -180,7 +195,12 @@ impl ProviderKind {
         match self {
             Self::OpenAi | Self::Copilot => Some(100_000),
             Self::Google => Some(65_536),
-            Self::Anthropic | Self::OpenRouter | Self::Opencode | Self::Devin => Some(128_000),
+            Self::Anthropic
+            | Self::Codex
+            | Self::OpenRouter
+            | Self::Opencode
+            | Self::Devin
+            | Self::Cursor => Some(128_000),
             Self::Ollama => Some(16_384),
             Self::LlamaCpp | Self::TensorX => None,
             Self::Mistral | Self::Synthetic => Some(32_000),
@@ -192,11 +212,12 @@ impl ProviderKind {
     #[must_use]
     pub const fn fallback_context_window(self) -> u32 {
         match self {
+            Self::Codex => crate::providers::openai::CODING_PLAN_CONTEXT_WINDOW,
             Self::Anthropic | Self::OpenAi | Self::Copilot | Self::OpenRouter | Self::TensorX => {
                 200_000
             }
             Self::Devin => 262_144,
-            Self::Google | Self::DeepSeek => 1_000_000,
+            Self::Google | Self::DeepSeek | Self::Cursor => 1_000_000,
             Self::Ollama | Self::LlamaCpp | Self::Mistral | Self::Zai | Self::Synthetic => 128_000,
             Self::Opencode => 256_000,
         }
@@ -208,9 +229,6 @@ impl ProviderKind {
     /// Returns an error if the provider's configuration is missing or invalid
     /// (e.g., missing API key, invalid base URL, or provider-specific setup failure).
     pub fn create(self, timeouts: Timeouts) -> Result<Box<dyn Provider>, AgentError> {
-        if self == Self::OpenAi {
-            return Ok(Box::new(OpenAi::new(timeouts)?));
-        }
         self.create_with_openai_options(timeouts, OpenAiOptions::default())
     }
 
@@ -235,6 +253,10 @@ impl ProviderKind {
                 timeouts,
                 openai_options,
             )?)),
+            Self::Codex => Ok(Box::new(OpenAi::new_with_options(
+                timeouts,
+                openai_options.with_codex(),
+            )?)),
             Self::Google => Ok(Box::new(Google::new(timeouts)?)),
             Self::Copilot => Ok(Box::new(Copilot::new(timeouts)?)),
             Self::Ollama => Ok(Box::new(LocalEndpoint::new(&OLLAMA, timeouts)?)),
@@ -247,6 +269,7 @@ impl ProviderKind {
             Self::TensorX => Ok(Box::new(TensorX::new(timeouts)?)),
             Self::Opencode => Ok(Box::new(Opencode::new(timeouts)?)),
             Self::Devin => Ok(Box::new(Devin::new(timeouts))),
+            Self::Cursor => Ok(Box::new(Cursor::new(timeouts)?)),
         }
     }
 }
@@ -259,7 +282,7 @@ pub trait Provider: Send + Sync {
         &'a self,
         model: &'a Model,
         messages: &'a [Message],
-        system: &'a str,
+        system: &'a System,
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
@@ -370,7 +393,7 @@ impl Provider for UnconfiguredProvider {
         &'a self,
         _model: &'a Model,
         _messages: &'a [Message],
-        _system: &'a str,
+        _system: &'a System,
         _tools: &'a Value,
         _event_tx: &'a Sender<ProviderEvent>,
         _opts: RequestOptions,

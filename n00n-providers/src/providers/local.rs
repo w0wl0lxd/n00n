@@ -11,7 +11,7 @@ use n00n_config::providers::Protocol;
 
 use crate::model::Model;
 use crate::provider::{BoxFuture, Provider};
-use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse};
+use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, System};
 
 use super::openai::responses;
 use super::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
@@ -131,7 +131,7 @@ impl Provider for LocalEndpoint {
         &'a self,
         model: &'a Model,
         messages: &'a [Message],
-        system: &'a str,
+        system: &'a System,
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
@@ -146,9 +146,12 @@ impl Provider for LocalEndpoint {
 
             if matches!(self.protocol, Some(Protocol::OpenaiResponses)) {
                 let mut buf = String::new();
-                let system = super::with_prefix(self.system_prefix.as_deref(), system, &mut buf);
+                let system_text = system.to_string();
+                let prefixed =
+                    super::with_prefix(self.system_prefix.as_deref(), &system_text, &mut buf);
+                let system = System::from(prefixed);
                 let mut body =
-                    responses::build_body(model, messages, system, tools, None, None, false);
+                    responses::build_body(model, messages, &system, tools, None, None, false);
                 body["return_progress"] = serde_json::Value::Bool(true);
                 // TODO: wire thinking budget into responses API when llama.cpp supports it
                 return responses::do_stream(
@@ -163,14 +166,13 @@ impl Provider for LocalEndpoint {
                 .map(|(_, response)| response);
             }
 
-            let mut buf = String::new();
-            let system = super::with_prefix(self.system_prefix.as_deref(), system, &mut buf);
             let mut body = self.compat.build_body_with_session(
                 model,
                 messages,
                 system,
                 tools,
                 session_id.map(n00n_storage::id::SessionRef::as_str),
+                self.system_prefix.as_deref(),
             );
 
             if self.thinking_budget_field {

@@ -2,6 +2,8 @@ local ActivityPreview = require("n00n.activity_preview")
 local ExploreResult = require("n00n.explore_result")
 local truncate = require("n00n.truncate")
 local ToolView = require("n00n.tool_view")
+local structured_output = require("n00n.structured_output")
+local guard = require("n00n.guard")
 
 local failures = {}
 
@@ -17,6 +19,51 @@ local function eq(actual, expected, msg)
     error((msg or "") .. "\nexpected: " .. tostring(expected) .. "\n  actual: " .. tostring(actual))
   end
 end
+
+case("guard_increments_used_on_check_not_record", function()
+  local g = guard.new({ max_calls = 2 })
+  eq(g.used, 0)
+  eq(g:check("p1"), true)
+  eq(g.used, 1)
+  eq(g:record("p1", nil), true)
+  eq(g.used, 1)
+  eq(g:check("p2"), true)
+  eq(g.used, 2)
+  local ok, err = g:check("p3")
+  eq(ok, nil)
+  assert(err:find("budget"), "third call must hit budget limit: " .. tostring(err))
+end)
+
+case("guard_blocks_repeated_prompts", function()
+  local g = guard.new({ max_calls = 10, max_repeated_prompt = 2 })
+  eq(g:check("x"), true)
+  eq(g:record("x", nil), true)
+  eq(g:check("x"), true)
+  eq(g:record("x", nil), true)
+  local ok, err = g:check("x")
+  eq(ok, nil)
+  assert(err:find("repeated"), "third identical prompt must be blocked: " .. tostring(err))
+end)
+
+case("guard_tracks_consecutive_errors", function()
+  local g = guard.new({ max_calls = 10, max_consecutive_errors = 2 })
+  eq(g:check("a"), true)
+  eq(g:record("a", "boom"), true)
+  eq(g:check("b"), true)
+  eq(g:record("b", "boom"), true)
+  local ok, err = g:check("c")
+  eq(ok, nil)
+  assert(err:find("consecutive errors"), "third consecutive error must abort: " .. tostring(err))
+end)
+
+case("guard_consume_is_backwards_compatible", function()
+  local g = guard.new({ max_calls = 1 })
+  eq(g:consume(), true)
+  eq(g.used, 1)
+  local ok, err = g:consume()
+  eq(ok, nil)
+  assert(err:find("budget"), "legacy consume must enforce limit: " .. tostring(err))
+end)
 
 -- Mock buf that records set_lines calls
 local function mock_buf()
@@ -1503,6 +1550,92 @@ case("activity_preview_repeated_prompts_keep_order_and_update_status_in_place", 
   end
   eq(tracked, 1, "per-session activity tracking must stay snapshot-bounded")
   n00n.ui.buf = old_buf
+end)
+
+-- Structured output tests
+
+case("structured_output_constants_defined", function()
+  eq(type(structured_output.STRUCTURED_OUTPUT_NAME), "string")
+  eq(type(structured_output.STRUCTURED_OUTPUT_DESCRIPTION), "string")
+  eq(type(structured_output.STRUCTURED_OUTPUT_ACK), "string")
+  eq(type(structured_output.STRUCTURED_OUTPUT_SUFFIX), "string")
+  eq(type(structured_output.MAX_STRUCTURED_RETRIES), "number")
+  eq(type(structured_output.MAX_SCHEMA_ERRORS), "number")
+  eq(type(structured_output.MAX_SCHEMA_BYTES), "number")
+  eq(type(structured_output.MAX_SCHEMA_DEPTH), "number")
+  eq(type(structured_output.SCHEMA_ROOT_ERROR), "string")
+  eq(type(structured_output.SCHEMA_COMPILE_ERROR), "string")
+  eq(type(structured_output.SCHEMA_SIZE_ERROR), "string")
+  eq(type(structured_output.SCHEMA_DEPTH_ERROR), "string")
+  eq(type(structured_output.STRUCTURED_MISSING_ERROR), "string")
+  eq(type(structured_output.STRUCTURED_INVALID_ERROR), "string")
+  eq(type(structured_output.NUDGE_MISSING), "string")
+  eq(type(structured_output.INVALID_INPUT_PREFIX), "string")
+end)
+
+case("structured_output_schema_within_depth_simple", function()
+  eq(structured_output.schema_within_depth("string", 1), true)
+  eq(structured_output.schema_within_depth(123, 1), true)
+  eq(structured_output.schema_within_depth(true, 1), true)
+end)
+
+case("structured_output_schema_within_depth_nested", function()
+  local shallow = { a = 1, b = 2 }
+  eq(structured_output.schema_within_depth(shallow, 1), true)
+
+  -- Create a structure that exceeds MAX_SCHEMA_DEPTH (16)
+  local deep = {}
+  local current = deep
+  for i = 1, 20 do
+    current.next = {}
+    current = current.next
+  end
+  eq(structured_output.schema_within_depth(deep, 1), false)
+end)
+
+case("structured_output_bounded_errors_limits_count", function()
+  local errors = {}
+  for i = 1, 10 do
+    errors[i] = "error " .. i
+  end
+  local bounded = structured_output.bounded_errors(errors)
+  assert(bounded:find("error 1"), "should include first error")
+  assert(bounded:find("error 3"), "should include third error")
+  assert(not bounded:find("error 4"), "should not include fourth error")
+end)
+
+case("structured_output_bounded_errors_empty", function()
+  local bounded = structured_output.bounded_errors({})
+  eq(bounded, "")
+end)
+
+case("structured_output_compile_validator_rejects_non_object", function()
+  local validator, err = structured_output.compile_validator({ type = "string" })
+  eq(validator, nil)
+  assert(err:find("must have type object"), "error should mention object requirement")
+end)
+
+case("structured_output_compile_validator_rejects_large_schema", function()
+  local large_schema = { type = "object", properties = {} }
+  for i = 1, 1000 do
+    large_schema.properties["field" .. i] = { type = "string", description = string.rep("x", 100) }
+  end
+  local validator, err = structured_output.compile_validator(large_schema)
+  eq(validator, nil)
+  assert(err:find("exceeds"), "error should mention size limit")
+end)
+
+case("structured_output_compile_validator_accepts_valid_schema", function()
+  local schema = {
+    type = "object",
+    properties = {
+      name = { type = "string" },
+      count = { type = "number" },
+    },
+  }
+  local validator, err = structured_output.compile_validator(schema)
+  assert(validator ~= nil, "should return validator")
+  eq(err, nil)
 end)
 
 if #failures > 0 then

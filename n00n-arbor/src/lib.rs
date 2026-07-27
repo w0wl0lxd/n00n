@@ -211,27 +211,18 @@ impl Client {
 
     pub fn ensure_indexed(project: &Path) -> Result<(), ArborError> {
         let output = Command::new("arbor")
-            .arg("status")
+            .arg("index")
             .arg(project.as_os_str())
             .output()
             .map_err(|e| ArborError::Exec { source: e })?;
 
-        let status = String::from_utf8_lossy(&output.stdout);
-        if status.contains("No index") || status.contains("not indexed") {
-            let output = Command::new("arbor")
-                .arg("index")
-                .arg(project.as_os_str())
-                .output()
-                .map_err(|e| ArborError::Exec { source: e })?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(ArborError::Cli {
-                    message: format!("index failed: {stderr}"),
-                });
-            }
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(ArborError::Cli {
+                message: format!("index failed: {}", String::from_utf8_lossy(&output.stderr)),
+            })
         }
-        Ok(())
     }
 }
 

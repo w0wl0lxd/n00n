@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use n00n_providers::System;
 use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
 
 pub trait ValidNames: IntoEnumIterator + std::fmt::Display {
@@ -31,12 +32,14 @@ pub const DEFAULT_TONE: &str = r"- Be concise. Your output is displayed on a CLI
 - NEVER create files unless absolutely necessary. ALWAYS prefer editing existing files.";
 
 const NATIVE_EFFICIENT_TOOLS: &[&str] = &[
-    "arbor (optional, requires Arbor CLI)",
+    "arbor (optional, needs Arbor CLI)",
     "batch",
     "code_execution",
-    "codegraph (optional, requires .codegraph/ index)",
+    "codegraph (optional, needs .codegraph/ index)",
     "index",
+    "semble",
     "task",
+    "thoughtbox",
 ];
 const INSTRUCTIONS_MARKER: &str = "{{instructions}}";
 
@@ -229,12 +232,85 @@ fn fill_marker(template: &str, marker: &str, content: &str) -> String {
     template.replace(marker, content)
 }
 
+/// Build a `System` prompt from the template, grouping static content before
+/// dynamic slots (`environment`, `after_instructions`) so providers can cache the
+/// reusable prefix.
+#[must_use]
+pub fn assemble_system(id: PromptId, slots: &ResolvedSlots, instructions: &str) -> System {
+    let template = id.template();
+    let mut system = System::new();
+    let mut pending = String::new();
+    let mut markers: Vec<(usize, &str, Option<Slot>)> = Vec::new();
+
+    if template.contains(INSTRUCTIONS_MARKER) {
+        for (pos, _) in template.match_indices(INSTRUCTIONS_MARKER) {
+            markers.push((pos, INSTRUCTIONS_MARKER, None));
+        }
+    }
+
+    for slot in Slot::iter() {
+        if !id.has_slot(slot) {
+            continue;
+        }
+        let marker = slot.marker();
+        for (pos, _) in template.match_indices(marker) {
+            markers.push((pos, marker, Some(slot)));
+        }
+    }
+
+    markers.sort_by_key(|(pos, _, _)| *pos);
+
+    let mut last_end = 0;
+    for (pos, marker, slot) in markers {
+        pending.push_str(&template[last_end..pos]);
+
+        let content = match slot {
+            None => instructions.to_string(),
+            Some(s) => render_slot(slots, id, s),
+        };
+
+        let is_dynamic = slot.map_or(false, |s| {
+            matches!(s, Slot::Environment | Slot::AfterInstructions)
+        });
+
+        if content.is_empty() {
+            let marker_end = pos + marker.len();
+            last_end = if template[marker_end..].starts_with('\n') {
+                marker_end + 1
+            } else {
+                marker_end
+            };
+            continue;
+        }
+
+        if is_dynamic {
+            if !pending.is_empty() {
+                system.push_static(pending.clone());
+            }
+            pending.clear();
+            system.push_dynamic(content);
+        } else {
+            pending.push_str(&content);
+        }
+
+        last_end = pos + marker.len();
+    }
+
+    pending.push_str(&template[last_end..]);
+    if !pending.is_empty() {
+        system.push_static(pending);
+    }
+
+    system.seal();
+    system
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use test_case::test_case;
 
-    const NATIVE_EFFICIENT_LINE: &str = "Most efficient tools: arbor (optional, requires Arbor CLI), batch, code_execution, codegraph (optional, requires .codegraph/ index), index, task";
+    const NATIVE_EFFICIENT_LINE: &str = "Most efficient tools: arbor (optional, needs Arbor CLI), batch, code_execution, codegraph (optional, needs .codegraph/ index), index, semble, task, thoughtbox";
 
     fn slots(prompt: PromptId, entries: &[(Slot, &str)]) -> ResolvedSlots {
         let mut slots = ResolvedSlots::default();
@@ -286,6 +362,41 @@ mod tests {
         assert!(
             positions.is_sorted(),
             "sections out of layout order ({positions:?}):\n{out}"
+        );
+    }
+
+    #[test]
+    fn system_cache_boundary_precedes_dynamic_slots() {
+        let slots = slots(
+            PromptId::System,
+            &[
+                (Slot::Environment, "ENVIRONMENT"),
+                (Slot::AfterInstructions, "AFTER_INSTRUCTIONS"),
+            ],
+        );
+        let system = assemble_system(PromptId::System, &slots, "INSTRUCTIONS");
+
+        assert_eq!(
+            system.to_string(),
+            assemble(PromptId::System, &slots, "INSTRUCTIONS")
+        );
+        let blocks = system.blocks();
+        let boundary = blocks
+            .iter()
+            .position(|block| block.cache == n00n_providers::CacheControl::Ephemeral)
+            .unwrap_or_else(|| panic!("missing cache boundary"));
+        assert_eq!(
+            blocks
+                .iter()
+                .filter(|block| block.cache == n00n_providers::CacheControl::Ephemeral)
+                .count(),
+            1
+        );
+        assert!(!blocks[boundary].text.contains("ENVIRONMENT"));
+        assert!(
+            blocks[boundary + 1..]
+                .iter()
+                .any(|block| block.cache == n00n_providers::CacheControl::Dynamic)
         );
     }
 
@@ -484,9 +595,9 @@ mod tests {
         // Baseline sizes before compression (from T061 audit, updated after origin/main merge).
         // Most prompts still aim for >=10% compression; system.md is intentionally capped
         // because it carries required static instructions that are not meant to shrink.
-        const SYSTEM_BASELINE: usize = 1573;
+        const SYSTEM_BASELINE: usize = 1645;
         const GENERAL_BASELINE: usize = 1759;
-        const RESEARCH_BASELINE: usize = 1438;
+        const RESEARCH_BASELINE: usize = 1439;
         const COMPACTION_USER_BASELINE: usize = 927;
         const COMPACTION_BASELINE: usize = 669;
         const PLAN_BASELINE: usize = 1031;
