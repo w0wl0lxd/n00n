@@ -345,6 +345,78 @@ case("roles_run_with_exact_model_and_thinking", function()
   }, "legacy role usage")
 end)
 
+case("validation_wave_resolves_exact_model", function()
+  local validation = require("validation")
+  local old_resolve = n00n.agent.resolve_model
+  local old_session = n00n.agent.session
+  local resolve_opts, session_opts
+  n00n.agent.resolve_model = function(_, opts)
+    resolve_opts = opts
+    return { spec = "openai/gpt-5.6-luna" }, nil
+  end
+  n00n.agent.session = function(_, opts)
+    session_opts = opts
+    return {
+      prompt = function()
+        return { text = "PASS" }, nil
+      end,
+      close = function() end,
+    },
+      nil
+  end
+
+  local passed, err = validation.validate_wave({}, {
+    wave_name = "implementation",
+    steps = { { index = 1, step = { role = "developer" } } },
+    step_outputs = { [1] = "implemented" },
+  }, "implement it", { model = "openai/gpt-5.6-luna", model_tier = "weak" })
+
+  n00n.agent.resolve_model = old_resolve
+  n00n.agent.session = old_session
+  assert(passed == true, "exact-model validation should pass")
+  assert(err == nil, "exact-model validation should not error")
+  assert(resolve_opts.spec == "openai/gpt-5.6-luna", "exact model must reach resolver")
+  assert(resolve_opts.tier == nil, "exact model must override tier routing")
+  assert(session_opts.model_spec == "openai/gpt-5.6-luna", "session must receive resolved model spec")
+end)
+
+case("validation_wave_resolves_tier_or_default_model", function()
+  local validation = require("validation")
+  local old_resolve = n00n.agent.resolve_model
+  local old_session = n00n.agent.session
+  local resolve_opts = {}
+  n00n.agent.resolve_model = function(_, opts)
+    resolve_opts[#resolve_opts + 1] = opts
+    return { spec = "mock-model" }, nil
+  end
+  n00n.agent.session = function()
+    return {
+      prompt = function()
+        return { text = "PASS" }, nil
+      end,
+      close = function() end,
+    },
+      nil
+  end
+
+  local wave_result = {
+    wave_name = "implementation",
+    steps = { { index = 1, step = { role = "developer" } } },
+    step_outputs = { [1] = "implemented" },
+  }
+  local tier_passed = validation.validate_wave({}, wave_result, "implement it", { model_tier = "medium" })
+  local default_passed = validation.validate_wave({}, wave_result, "implement it", {})
+
+  n00n.agent.resolve_model = old_resolve
+  n00n.agent.session = old_session
+  assert(tier_passed == true, "tier-routed validation should pass")
+  assert(default_passed == true, "default-routed validation should pass")
+  assert(resolve_opts[1].spec == nil, "tier routing must not set an exact model")
+  assert(resolve_opts[1].tier == "medium", "configured tier must reach resolver")
+  assert(resolve_opts[2].spec == nil, "default routing must not set an exact model")
+  assert(resolve_opts[2].tier == "strong", "default validation tier must be strong")
+end)
+
 case("ibn_exact_model_uses_resolved_tier", function()
   local ibn = require("ibn")
   local old_resolve = n00n.agent.resolve_model
