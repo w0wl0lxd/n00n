@@ -2361,11 +2361,11 @@ fn builtin_opts_flow_from_setup_plugins() {
 
 #[test_case::test_case(
     serde_json::json!({}),
-    &["edit", "multiedit"], &["edit_lines", "insert_lines"]
-    ; "multiedit_on_others_opt_in"
+    &["edit", "multiedit", "edit_lines", "insert_lines"], &[]
+    ; "all_edit_tools_on_by_default"
 )]
 #[test_case::test_case(
-    serde_json::json!({ "multiedit": false, "edit_lines": true }),
+    serde_json::json!({ "multiedit": false, "edit_lines": true, "insert_lines": false }),
     &["edit", "edit_lines"], &["multiedit", "insert_lines"]
     ; "toggles_flip_sub_tools"
 )]
@@ -4977,4 +4977,155 @@ fn jobstart_list_mode_non_string_arg_errors() {
     let out = exec_tool(&reg, "job_nonstr", serde_json::json!({})).unwrap();
     // When a non-string is in the array, mlua's get::<String> will error
     assert!(!out.is_empty(), "got empty error string");
+}
+
+#[test]
+fn live_debloat_tool_invocation_suite() {
+    let reg = fresh_registry();
+    let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let config = PluginsConfig {
+        enabled: true,
+        names: vec!["write".into(), "read".into(), "edit".into()],
+        opts: HashMap::new(),
+    };
+    host.load_builtins(&config).unwrap();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let test_file = temp_dir.path().join("debloat_live_test.txt");
+    let test_path = test_file.to_str().unwrap();
+
+    // 1. Live write call
+    let write_out = exec_tool_output(
+        &reg,
+        "write",
+        serde_json::json!({
+            "path": test_path,
+            "content": "line 1\nline 2\nline 3\n"
+        }),
+    )
+    .unwrap();
+    assert!(write_out.as_text().contains("wrote 21 bytes"));
+
+    // 2. Live read call
+    let read_out = exec_tool_output(
+        &reg,
+        "read",
+        serde_json::json!({
+            "path": test_path
+        }),
+    )
+    .unwrap();
+    assert!(read_out.as_text().contains("line 1"));
+    assert!(read_out.as_text().contains("line 2"));
+
+    // 3. Live edit_lines call
+    let edit_lines_out = exec_tool_output(
+        &reg,
+        "edit_lines",
+        serde_json::json!({
+            "path": test_path,
+            "start": 2,
+            "end": 2,
+            "new_string": "line 2 modified"
+        }),
+    )
+    .unwrap();
+    assert!(edit_lines_out.as_text().contains("replaced lines 2-2"));
+
+    // 4. Live insert_lines call
+    let insert_out = exec_tool_output(
+        &reg,
+        "insert_lines",
+        serde_json::json!({
+            "path": test_path,
+            "line": 2,
+            "new_string": "inserted line"
+        }),
+    )
+    .unwrap();
+    assert!(insert_out.as_text().contains("inserted at line 2"));
+
+    // 5. Live edit (string replace) call
+    let edit_out = exec_tool_output(
+        &reg,
+        "edit",
+        serde_json::json!({
+            "path": test_path,
+            "old_string": "line 1",
+            "new_string": "line 1 updated"
+        }),
+    )
+    .unwrap();
+    assert!(edit_out.as_text().contains("edited"));
+
+    let final_content = std::fs::read_to_string(&test_file).unwrap();
+    assert_eq!(
+        final_content,
+        "line 1 updated\ninserted line\nline 2 modified\nline 3\n"
+    );
+}
+
+#[test]
+fn live_followup_schema_debloat_suite() {
+    let reg = fresh_registry();
+    let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let config = PluginsConfig {
+        enabled: true,
+        names: vec!["glob".into(), "bash".into()],
+        opts: HashMap::new(),
+    };
+    host.load_builtins(&config).unwrap();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let test_file = temp_dir.path().join("live_test_file.rs");
+    std::fs::write(&test_file, "// live test file\n").unwrap();
+
+    // 1. Live glob call
+    let glob_out = exec_tool(
+        &reg,
+        "glob",
+        serde_json::json!({
+            "pattern": "*.rs",
+            "path": temp_dir.path().to_str().unwrap()
+        }),
+    )
+    .unwrap();
+    assert!(glob_out.contains("live_test_file.rs"));
+
+    // 2. Live bash call
+    let bash_out = exec_tool(
+        &reg,
+        "bash",
+        serde_json::json!({
+            "command": "echo 'followup live debloat test'",
+            "description": "test echo"
+        }),
+    )
+    .unwrap();
+    assert!(bash_out.contains("followup live debloat test"));
+
+    // 3. Schema minification check
+    let verbose_mcp = serde_json::json!({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "FastMCPInput",
+        "$comment": "Internal SDK comment",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "query": { "type": "string", "title": "Query", "description": "search query" },
+            "verbose": { "type": "boolean", "description": "" }
+        }
+    });
+
+    let minified = n00n_agent::tools::schema::sanitize_tool_input_schema(verbose_mcp);
+    assert!(minified.get("$schema").is_none());
+    assert!(minified.get("title").is_none());
+    assert!(minified.get("$comment").is_none());
+    assert!(minified.get("additionalProperties").is_none());
+    assert!(minified["properties"]["query"].get("title").is_none());
+    assert!(
+        minified["properties"]["verbose"]
+            .get("description")
+            .is_none()
+    );
 }

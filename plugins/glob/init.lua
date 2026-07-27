@@ -18,7 +18,7 @@ n00n.api.register_tool({
   name = "glob",
   kind = "search",
   modes = { "default", "research", "build", "compact" },
-  description = [[Find files by glob pattern. Respects .gitignore. Returns absolute paths sorted by modification time (newest first). Prefer speculative parallel searches over sequential glob+grep.]],
+  description = "Find files by glob pattern. Respects .gitignore. Returns matching paths sorted by mtime.",
 
   schema = {
     type = "object",
