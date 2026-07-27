@@ -412,7 +412,7 @@ pub fn all_builtin_tool_names() -> Vec<&'static str> {
         .collect()
 }
 
-use n00n_providers::{Message, ProviderEvent, StreamResponse};
+use n00n_providers::{Message, ProviderEvent, StreamResponse, System};
 
 struct NullProvider;
 
@@ -421,7 +421,7 @@ impl Provider for NullProvider {
         &'a self,
         _: &'a Model,
         _: &'a [Message],
-        _: &'a str,
+        _: &'a System,
         _: &'a Value,
         _: &'a flume::Sender<ProviderEvent>,
         _: RequestOptions,

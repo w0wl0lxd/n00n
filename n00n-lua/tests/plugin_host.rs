@@ -20,7 +20,7 @@ use n00n_lua::{PluginError, PluginHost, WARM_TOOL_CAP};
 use n00n_providers::provider::{BoxFuture, Provider};
 use n00n_providers::{
     AgentError, ContentBlock, Message, Model, ProviderEvent, RequestOptions, Role, StopReason,
-    StreamResponse, TokenUsage,
+    StreamResponse, System, TokenUsage,
 };
 use n00n_storage::id::SessionRef;
 
@@ -40,7 +40,7 @@ impl Provider for NetworkSessionProbe {
         &'a self,
         _: &'a Model,
         _: &'a [Message],
-        _: &'a str,
+        _: &'a System,
         _: &'a serde_json::Value,
         _: &'a flume::Sender<ProviderEvent>,
         _: RequestOptions,
@@ -1807,7 +1807,7 @@ n00n.api.register_tool({{
         exec_warm_tool(&reg, TOOL, &ctx).expect("tool output");
         bodies.push(recv_live_buf(&rx, &id).expect("live explore card"));
     }
-    assert_eq!(bodies[0].read().len(), 6, "five rows plus expand hint");
+    assert_eq!(bodies[0].read().len(), 4, "three rows plus expand hint");
 
     let evicted_id = "explore-0";
     let item = n00n_lua::RestoreItem {
@@ -1834,7 +1834,7 @@ n00n.api.register_tool({{
 
     assert_eq!(
         bodies[0].read().len(),
-        6,
+        4,
         "evicted live card must not receive the click"
     );
     assert_eq!(
@@ -2848,7 +2848,218 @@ fn bash_permission_scopes_never_falls_back_to_json(command: &str) {
         scopes.scopes
     );
 }
+#[test]
+fn bash_permission_scopes_marks_broad_commands_for_prompt() {
+    let (reg, _host) = builtins_host();
 
+    let input = serde_json::json!({ "command": "find . -type f" });
+    let entry = reg.get("bash").expect("bash registered");
+    let inv = entry.tool.parse(&input).expect("parse failed");
+    let scopes = smol::block_on(inv.permission_scopes())
+        .expect("permission_scopes returned None for bash command");
+
+    assert!(
+        scopes.force_prompt,
+        "expected broad command to require a prompt"
+    );
+}
+
+#[test]
+fn bash_permission_scopes_marks_broad_recursive_ls_for_prompt() {
+    let (reg, _host) = builtins_host();
+
+    let input = serde_json::json!({ "command": "ls -R ." });
+    let entry = reg.get("bash").expect("bash registered");
+    let inv = entry.tool.parse(&input).expect("parse failed");
+    let scopes = smol::block_on(inv.permission_scopes())
+        .expect("permission_scopes returned None for bash command");
+
+    assert!(
+        scopes.force_prompt,
+        "expected recursive ls to require a prompt"
+    );
+}
+
+#[test]
+fn bash_permission_scopes_marks_broad_du_for_prompt() {
+    let (reg, _host) = builtins_host();
+
+    let input = serde_json::json!({ "command": "du ." });
+    let entry = reg.get("bash").expect("bash registered");
+    let inv = entry.tool.parse(&input).expect("parse failed");
+    let scopes = smol::block_on(inv.permission_scopes())
+        .expect("permission_scopes returned None for bash command");
+
+    assert!(
+        scopes.force_prompt,
+        "expected unbounded du to require a prompt"
+    );
+}
+
+#[test]
+fn bash_permission_scopes_marks_broad_tree_for_prompt() {
+    let (reg, _host) = builtins_host();
+
+    let input = serde_json::json!({ "command": "tree ." });
+    let entry = reg.get("bash").expect("bash registered");
+    let inv = entry.tool.parse(&input).expect("parse failed");
+    let scopes = smol::block_on(inv.permission_scopes())
+        .expect("permission_scopes returned None for bash command");
+
+    assert!(
+        scopes.force_prompt,
+        "expected broad tree listing to require a prompt"
+    );
+}
+
+#[test]
+fn bash_permission_scopes_allows_bounded_find_without_prompt() {
+    let (reg, _host) = builtins_host();
+
+    let input = serde_json::json!({ "command": "find . -maxdepth 1 -type f" });
+    let entry = reg.get("bash").expect("bash registered");
+    let inv = entry.tool.parse(&input).expect("parse failed");
+    let scopes = smol::block_on(inv.permission_scopes())
+        .expect("permission_scopes returned None for bash command");
+
+    assert!(
+        !scopes.force_prompt,
+        "expected bounded find to avoid forced prompt"
+    );
+}
+
+#[test]
+fn bash_permission_scopes_allows_head_capped_search_without_prompt() {
+    let (reg, _host) = builtins_host();
+
+    let input = serde_json::json!({ "command": "rg 'fn' plugins/bash/init.lua | head -n 3" });
+    let entry = reg.get("bash").expect("bash registered");
+    let inv = entry.tool.parse(&input).expect("parse failed");
+    let scopes = smol::block_on(inv.permission_scopes())
+        .expect("permission_scopes returned None for bash command");
+
+    assert!(
+        !scopes.force_prompt,
+        "expected piped search to avoid forced prompt"
+    );
+}
+
+#[test]
+fn bash_permission_scopes_allows_bounded_du_without_prompt() {
+    let (reg, _host) = builtins_host();
+
+    let input = serde_json::json!({ "command": "du -s ." });
+    let entry = reg.get("bash").expect("bash registered");
+    let inv = entry.tool.parse(&input).expect("parse failed");
+    let scopes = smol::block_on(inv.permission_scopes())
+        .expect("permission_scopes returned None for bash command");
+
+    assert!(
+        !scopes.force_prompt,
+        "expected summarized du to avoid forced prompt"
+    );
+}
+
+#[test_case::test_case("rg -m 1 needle ." ; "rg_max_count_is_per_file")]
+#[test_case::test_case("git grep -m 1 needle" ; "git_grep_max_count_is_per_file")]
+#[test_case::test_case("rg needle . && printf done | head -n 1" ; "head_caps_only_its_pipeline")]
+#[test_case::test_case("rg needle . && printf done | tail -n 1" ; "tail_caps_only_its_pipeline")]
+#[test_case::test_case("LC_ALL=C rg needle ." ; "leading_environment_assignment")]
+#[test_case::test_case("LABEL='two words' rg needle ." ; "quoted_environment_assignment")]
+fn bash_permission_scopes_marks_reviewed_unbounded_commands_for_prompt(command: &str) {
+    let (reg, _host) = builtins_host();
+
+    let input = serde_json::json!({ "command": command });
+    let entry = reg.get("bash").expect("bash registered");
+    let inv = entry.tool.parse(&input).expect("parse failed");
+    let scopes = smol::block_on(inv.permission_scopes())
+        .expect("permission_scopes returned None for bash command");
+
+    assert!(
+        scopes.force_prompt,
+        "expected unbounded command to require a prompt: {command}"
+    );
+}
+
+#[test_case::test_case("rg -m 1 needle ." ; "rg_max_count_is_per_file")]
+#[test_case::test_case("rg needle . && printf done | head -n 1" ; "head_caps_only_its_pipeline")]
+#[test_case::test_case("LC_ALL=C rg needle ." ; "leading_environment_assignment")]
+fn bash_handler_blocks_reviewed_unbounded_commands(command: &str) {
+    let (reg, _host) = builtins_host();
+
+    let err = exec_tool(&reg, "bash", serde_json::json!({ "command": command })).unwrap_err();
+
+    assert!(
+        err.contains("justification is required"),
+        "missing guardrail feedback for {command}: {err}"
+    );
+}
+
+#[test]
+fn bash_handler_blocks_broad_command_without_justification() {
+    let (reg, _host) = builtins_host();
+
+    let err = exec_tool(&reg, "bash", serde_json::json!({ "command": "du ." })).unwrap_err();
+
+    assert!(
+        err.contains("justification is required"),
+        "missing guardrail feedback: {err}"
+    );
+}
+
+#[test]
+fn bash_handler_blocks_broad_command_later_in_chain_without_justification() {
+    let (reg, _host) = builtins_host();
+
+    let err = exec_tool(
+        &reg,
+        "bash",
+        serde_json::json!({ "command": "echo checking && find . -type f" }),
+    )
+    .unwrap_err();
+
+    assert!(
+        err.contains("justification is required"),
+        "missing guardrail feedback: {err}"
+    );
+}
+
+#[test]
+fn bash_handler_allows_broad_command_with_justification() {
+    let (reg, _host) = builtins_host();
+
+    let out = exec_tool(
+        &reg,
+        "bash",
+        serde_json::json!({
+            "command": "du .",
+            "justification": "Need a quick repository size estimate before cleanup"
+        }),
+    )
+    .unwrap();
+
+    assert!(
+        !out.contains("justification is required"),
+        "expected justification to allow command: {out}"
+    );
+}
+
+#[test]
+fn bash_handler_allows_head_capped_search_without_justification() {
+    let (reg, _host) = builtins_host();
+
+    let out = exec_tool(
+        &reg,
+        "bash",
+        serde_json::json!({ "command": "rg 'fn' plugins/bash/init.lua | head -n 3" }),
+    )
+    .unwrap();
+
+    assert!(
+        !out.contains("justification is required"),
+        "expected capped search output to run without justification: {out}"
+    );
+}
 fn exec_tool_with_perms(
     perms: n00n_lua::PluginPermissions,
     src: &str,
@@ -3413,7 +3624,7 @@ impl Provider for ScriptedSessionProvider {
         &'a self,
         _: &'a Model,
         _: &'a [Message],
-        _: &'a str,
+        _: &'a System,
         _: &'a serde_json::Value,
         _: &'a flume::Sender<ProviderEvent>,
         _: RequestOptions,

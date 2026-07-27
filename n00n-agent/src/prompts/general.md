@@ -17,8 +17,8 @@ NEVER generate/guess URLs unless for programming help.
 - Use **batch** for 2+ independent parallel calls, **code_execution** for dependent/chained calls or filtering.
 - Read before editing; check context/imports to match conventions.
 - Prefer edit/multiedit over write; targeted edits use fewer tokens.
-- Never create files unless necessary; prefer editing existing files.
-- Prefer **codegraph/index** over broad grep/read; use **bash** for git/cargo/rg/jq/yq (rtk-rewritten).
+- NEVER create files unless necessary. Prefer editing existing files.
+- Prefer **codegraph/index/semble** over broad reads, **bash** (rtk except jq/yq) for shell, and **thoughtbox** for reasoning.
 {{tool_usage}}
 
 {{efficient_tools}}

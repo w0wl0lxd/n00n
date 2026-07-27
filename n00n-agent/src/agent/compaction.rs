@@ -2,7 +2,7 @@ use std::env;
 
 use n00n_config::CompactionBuffer;
 use n00n_providers::{
-    ContentBlock, Message, Model, RequestOptions, Role, StreamResponse, TokenUsage,
+    ContentBlock, Message, Model, RequestOptions, Role, StreamResponse, System, TokenUsage,
 };
 use tracing::info;
 
@@ -111,7 +111,7 @@ pub(super) async fn compact_history(
             provider,
             model,
             messages: &compaction_history,
-            system: crate::prompt::COMPACTION_SYSTEM,
+            system: &System::from(crate::prompt::COMPACTION_SYSTEM),
             tools: &empty_tools,
             event_tx,
             cancel,
@@ -339,7 +339,7 @@ mod tests {
             &'a self,
             _: &'a Model,
             _: &'a [Message],
-            _: &'a str,
+            _: &'a System,
             _: &'a Value,
             _: &'a flume::Sender<ProviderEvent>,
             _: RequestOptions,

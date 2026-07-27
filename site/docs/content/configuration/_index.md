@@ -25,12 +25,12 @@ n00n.setup({
         mouse_scroll_lines = 5,
         theme = "tokyonight",
         tool_output_lines = {
-            bash = 8,
-            read = 5,
+            bash = 7,
+            read = 4,
         },
     },
     agent = {
-        max_output_lines = 3000,
+        max_output_lines = 1500,
     },
     provider = {
         default_model = "anthropic/claude-sonnet-4-6",
@@ -87,27 +87,27 @@ How many lines of output to show per tool in the UI. All values are `usize` with
 
 | Field | Default |
 |-------|---------|
-| `bash` | 5 |
-| `code_execution` | 5 |
-| `task` | 5 |
-| `workflow` | 8 |
-| `index` | 3 |
-| `grep` | 3 |
-| `explore` | 5 |
-| `read` | 3 |
-| `write` | 7 |
-| `web` | 3 |
-| `other` | 3 |
+| `bash` | 4 |
+| `code_execution` | 4 |
+| `task` | 4 |
+| `workflow` | 5 |
+| `index` | 2 |
+| `grep` | 2 |
+| `explore` | 3 |
+| `read` | 2 |
+| `write` | 5 |
+| `web` | 2 |
+| `other` | 2 |
 
 ### `agent`
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
-| `max_output_bytes` | usize | `51200` | 1024 | Max tool output size (bytes) |
-| `max_output_lines` | usize | `2000` | 10 | Max tool output lines |
+| `max_output_bytes` | usize | `16384` | 1024 | Max tool output size (bytes) |
+| `max_output_lines` | usize | `500` | 10 | Max tool output lines |
 | `max_continuation_turns` | u32 | `3` | 1 | Max automatic continuation turns |
 | `compaction_buffer` | u32 \| string | `20%` | - | Context reserved for compaction: token count or percent of the context window (e.g. "20%") |
-| `mcp_tool_desc_max_chars` | usize | `300` | 10 | Max MCP tool description length (characters) |
+| `mcp_tool_desc_max_chars` | usize | `200` | 10 | Max MCP tool description length (characters) |
 
 ### `provider`
 

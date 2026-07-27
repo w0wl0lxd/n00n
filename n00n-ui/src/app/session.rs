@@ -8,7 +8,7 @@ use crate::components::rewind_picker::RewindEntry;
 use crate::components::{Action, LoadedSession};
 use n00n_agent::{AgentInput, AgentMode, McpPromptRef};
 use n00n_providers::{Model, TokenUsage};
-use n00n_storage::id::N00nId;
+use n00n_storage::id::n00nId;
 use n00n_storage::sessions::{
     StoredImageMediaType, StoredImageSource, StoredMcpPrompt, StoredMode, StoredQueuedMessage,
     StoredSubagent, StoredThinking,
@@ -303,6 +303,7 @@ impl App {
     }
 
     pub(super) fn reset_session(&mut self) -> Vec<Action> {
+        self.save_session();
         self.reset_ui_chrome();
         self.state.token_usage = TokenUsage::default();
         self.state.context_size = 0;
@@ -374,7 +375,7 @@ impl App {
         self.loaded_session_snapshot()
     }
 
-    pub(crate) fn load_session(&mut self, session_id: N00nId) -> Vec<Action> {
+    pub(crate) fn load_session(&mut self, session_id: n00nId) -> Vec<Action> {
         let mut session = match AppSession::load(session_id, &self.storage) {
             Ok(s) => s,
             Err(e) => {
