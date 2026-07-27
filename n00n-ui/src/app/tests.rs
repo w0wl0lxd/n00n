@@ -9,8 +9,9 @@ use arc_swap::ArcSwap;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use n00n_agent::permissions::PermissionManager;
 use n00n_agent::{
-    ImageMediaType, InterruptSource, McpConfigErrors, McpPromptArg, McpServerInfo, McpServerStatus,
-    McpSnapshot, McpSnapshotReader, ToolDoneEvent, ToolOutput, ToolStartEvent, TurnCompleteEvent,
+    ExtractedCommand, ImageMediaType, InterruptPoint, InterruptSource, McpConfigErrors,
+    McpPromptArg, McpServerInfo, McpServerStatus, McpSnapshot, McpSnapshotReader, ToolDoneEvent,
+    ToolOutput, ToolStartEvent, TurnCompleteEvent,
 };
 use n00n_config::{PermissionsConfig, UiConfig};
 use n00n_lua::{HintReader, KeymapReader, LuaCommandReader};
@@ -231,6 +232,7 @@ fn rapid_submissions_keep_fifo_while_first_waits_for_persistence() {
     app.handle_submit(Submission {
         text: "second".into(),
         images: Vec::new(),
+        control: false,
     });
 
     assert!(
@@ -264,6 +266,7 @@ fn session_api_prompt_is_explicitly_non_paint_gated() {
     let outcome = app.submit_background_prompt(crate::app::queue::QueuedMessage {
         text: "background prompt".into(),
         images: Vec::new(),
+        control: false,
     });
     let SubmitOutcome::Started(actions) = outcome else {
         panic!("expected background prompt to start");
@@ -277,11 +280,36 @@ fn session_api_prompt_is_explicitly_non_paint_gated() {
 }
 
 #[test]
+fn session_api_control_prompt_steers_with_control_tag() {
+    let mut app = test_app();
+    let (sender, receiver) = shared_queue::queue();
+    app.queue.set_shared(sender);
+    app.status = Status::Streaming;
+
+    assert!(matches!(
+        app.submit_control_prompt(QueuedMessage {
+            text: "resume".into(),
+            images: Vec::new(),
+            control: true,
+        }),
+        SubmitOutcome::Queued
+    ));
+    let Some(n00n_agent::ExtractedCommand::Interrupt(input, _)) =
+        receiver.poll(n00n_agent::InterruptPoint::ToolComplete)
+    else {
+        panic!("expected steering interrupt");
+    };
+    assert_eq!(input.message, "resume");
+    assert!(input.control);
+}
+
+#[test]
 fn background_persistence_failure_is_terminal_without_composer_restore() {
     let mut app = test_app();
     let SubmitOutcome::Started(actions) = app.submit_background_prompt(QueuedMessage {
         text: "background prompt".into(),
         images: Vec::new(),
+        control: false,
     }) else {
         panic!("expected background prompt to start");
     };
@@ -294,6 +322,7 @@ fn background_persistence_failure_is_terminal_without_composer_restore() {
         app.submit_background_prompt(QueuedMessage {
             text: "queued after failure".into(),
             images: Vec::new(),
+            control: false,
         }),
         SubmitOutcome::Queued
     ));
@@ -677,6 +706,7 @@ fn queue_item_consumed_pushes_deferred_user_message() {
             text: "queued".into(),
             image_count: 0,
             images: Vec::new(),
+            control: false,
         },
         app.run_id,
     ));
@@ -742,6 +772,7 @@ fn queued_msg(text: &str) -> QueuedMessage {
     QueuedMessage {
         text: text.into(),
         images: vec![],
+        control: false,
     }
 }
 
@@ -2320,6 +2351,7 @@ fn submit_exit_quits() {
     let actions = app.handle_submit(Submission {
         text: "exit".into(),
         images: vec![],
+        control: false,
     });
     assert_eq!(app.exit_request, ExitRequest::Success);
     assert!(actions.is_empty());
@@ -2459,7 +2491,7 @@ fn loaded_metadata_consumption_survives_crash_restore() {
 }
 
 #[test]
-fn draw_failure_pending_submission_restores_fifo_and_images_after_restart() {
+fn draw_failure_pending_submission_restores_fifo_images_and_control_after_restart() {
     let (_tmp, dir, writer, mut app) = tempdir_app();
     let (shared, receiver) = shared_queue::queue();
     app.queue.set_shared(shared);
@@ -2476,9 +2508,10 @@ fn draw_failure_pending_submission_restores_fifo_and_images_after_restart() {
     );
 
     assert!(matches!(
-        app.submit_prompt(QueuedMessage {
-            text: "second in fifo".into(),
+        app.submit_control_prompt(QueuedMessage {
+            text: "second control in fifo".into(),
             images: Vec::new(),
+            control: true,
         }),
         SubmitOutcome::Queued
     ));
@@ -2500,17 +2533,29 @@ fn draw_failure_pending_submission_restores_fifo_and_images_after_restart() {
         &test_model(),
     );
 
-    let Some(shared_queue::QueueItem::Message { text, input, .. }) = receiver.pop() else {
+    let Some(shared_queue::QueueItem::Message {
+        text,
+        input,
+        delivery,
+        ..
+    }) = receiver.pop()
+    else {
         panic!("first pending message must be restored");
     };
     assert_eq!(text, "first with image");
     assert_eq!(input.images.len(), 1);
     assert_eq!(&*input.images[0].data, "dGVzdA==");
-    let Some(shared_queue::QueueItem::Message { text, .. }) = receiver.pop() else {
-        panic!("second queued message must be restored");
+    assert_eq!(delivery, shared_queue::Delivery::TurnEnd);
+    let ExtractedCommand::Interrupt(input, _) =
+        InterruptSource::poll(&receiver, InterruptPoint::Safe)
+            .expect("steering control must be restorable at a safe boundary")
+    else {
+        panic!("second queued message must restore as a steering interrupt");
     };
-    assert_eq!(text, "second in fifo");
+    assert_eq!(input.message, "second control in fifo");
+    assert!(input.control);
     assert!(receiver.pop().is_none());
+    assert!(InterruptSource::poll(&receiver, InterruptPoint::Safe).is_none());
 
     drop(restarted);
     Arc::try_unwrap(writer)
@@ -4007,6 +4052,7 @@ fn workflow_toggle_flows_into_agent_input() {
     let msg = QueuedMessage {
         text: "hi".into(),
         images: Vec::new(),
+        control: false,
     };
     assert!(!app.build_agent_input(&msg).workflow);
 

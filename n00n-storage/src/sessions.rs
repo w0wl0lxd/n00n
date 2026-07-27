@@ -34,9 +34,16 @@ const MAX_INCREMENTAL_FRAMES: u64 = 16_384;
 const TRANSCRIPT_RECORD_TYPE: &str = "transcript";
 pub const SESSIONS_DIR: &str = "sessions";
 const CWD_INDEX_FILE: &str = "cwd_latest.json";
-const SCAN_CACHE_FILE: &str = "scan_cache_v2.json";
+const SCAN_CACHE_FILE: &str = "scan_cache_v3.json";
+const SCAN_CACHE_FILE_V2: &str = "scan_cache_v2.json";
 const DEFAULT_TITLE: &str = "New session";
 const MAX_TITLE_LEN: usize = 60;
+const MAX_SNIPPET_BYTES: usize = 256;
+const MAX_FIRST_MESSAGE_LINE_BYTES: usize = 64 * 1024;
+const MAX_FIRST_MESSAGE_TEXT_BYTES: usize = 1024;
+const MAX_FIRST_MESSAGE_BYTES: usize = 256 * 1024;
+const META_RECORD_PREFIX: &str = r#"{"t":"meta""#;
+const MSG_RECORD_PREFIX: &str = r#"{"t":"msg""#;
 const OPENAI_RESPONSE_CHAIN_SUFFIX: &str = "openai-response.json";
 const OPENAI_RESPONSE_CHAIN_LOCK_SUFFIX: &str = "openai-response.lock";
 const OPENAI_RESPONSE_CHAIN_FILE_MODE: u32 = 0o600;
@@ -117,6 +124,15 @@ pub struct StoredMcpPrompt {
     pub arguments: HashMap<String, String>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StoredDelivery {
+    #[default]
+    TurnEnd,
+    Steering,
+    Immediate,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredQueuedMessage {
     pub text: String,
@@ -132,12 +148,23 @@ pub struct StoredQueuedMessage {
     pub fast: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub workflow: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub control: bool,
+    #[serde(default, skip_serializing_if = "is_default_delivery")]
+    pub delivery: StoredDelivery,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<StoredMcpPrompt>,
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde skip_serializing_if requires fn(&T) -> bool
+fn is_default_delivery(delivery: &StoredDelivery) -> bool {
+    *delivery == StoredDelivery::TurnEnd
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionMeta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<n00nId>,
     #[serde(default)]
     pub mode: Option<StoredMode>,
     #[serde(default)]
@@ -247,6 +274,12 @@ pub struct Session<M, U, T> {
 pub struct SessionSummary {
     pub id: n00nId,
     pub title: String,
+    #[serde(default)]
+    pub display_title: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<n00nId>,
     pub updated_at: u64,
     #[serde(default)]
     pub cwd: String,
@@ -461,18 +494,135 @@ pub fn generate_title<M: TitleSource>(messages: &[M]) -> String {
     let Some(text) = first_user_text.map(str::trim).filter(|t| !t.is_empty()) else {
         return DEFAULT_TITLE.into();
     };
-    let text = normalize_title(text);
+    truncate_label(text)
+}
 
+const SUBTASK_TITLE_PREFIXES: &[(&str, &str)] = &[
+    ("team:", "team"),
+    ("workflow:", "workflow"),
+    ("task:", "task"),
+];
+
+const SUBTASK_JSON_KEYS: &[&str] = &["goal", "description", "prompt", "name", "title", "input"];
+
+fn truncate_label(text: &str) -> String {
+    let text = normalize_title(text);
     if text.len() <= MAX_TITLE_LEN {
         return text;
     }
-
     let boundary = text.floor_char_boundary(MAX_TITLE_LEN);
     let truncated = &text[..boundary];
     match truncated.rfind(' ') {
         Some(pos) if pos > MAX_TITLE_LEN / 2 => format!("{}…", &truncated[..pos]),
         _ => format!("{truncated}…"),
     }
+}
+
+fn strip_tool_directive(text: &str) -> Option<(&'static str, &str)> {
+    let text = text.strip_prefix("Use the ")?;
+    let end = text.find(" tool now")?;
+    let requested_kind = &text[..end];
+    let (_, kind) = SUBTASK_TITLE_PREFIXES
+        .iter()
+        .find(|(_, kind)| *kind == requested_kind)?;
+    let after = &text[end + " tool now".len()..];
+    if after
+        .chars()
+        .next()
+        .is_some_and(|c| !c.is_whitespace() && !c.is_ascii_punctuation())
+    {
+        return None;
+    }
+    let body = after.split_once("\n\n").map_or(after, |(_, body)| body);
+    Some((kind, body.trim_start()))
+}
+
+fn snippet_from_json(value: &serde_json::Value) -> Option<String> {
+    fn find_string(value: &serde_json::Value) -> Option<String> {
+        value
+            .as_str()
+            .map(std::string::ToString::to_string)
+            .filter(|s| !s.is_empty())
+            .map(|s| cap_text(&s, MAX_SNIPPET_BYTES))
+    }
+
+    for key in SUBTASK_JSON_KEYS {
+        if let Some(v) = value.get(*key) {
+            if let Some(s) = find_string(v) {
+                return Some(s);
+            }
+            for key2 in SUBTASK_JSON_KEYS {
+                if let Some(nested) = v.get(*key2).and_then(find_string) {
+                    return Some(nested);
+                }
+            }
+        }
+    }
+
+    value
+        .as_object()
+        .and_then(|obj| obj.values().find_map(find_string))
+}
+
+fn cap_text(text: &str, max_bytes: usize) -> String {
+    let cap = text.len().min(max_bytes);
+    let boundary = text.floor_char_boundary(cap);
+    text[..boundary].to_string()
+}
+
+fn snippet_from_text(text: &str) -> Option<String> {
+    let trimmed = text.trim_start();
+    if (trimmed.starts_with('{') || trimmed.starts_with('['))
+        && let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed)
+        && let Some(snippet) = snippet_from_json(&value)
+    {
+        return Some(cap_text(&snippet, MAX_SNIPPET_BYTES));
+    }
+    let first = trimmed
+        .split_once('\n')
+        .map_or(trimmed, |(line, _)| line)
+        .trim();
+    if first.is_empty() {
+        None
+    } else {
+        Some(cap_text(first, MAX_SNIPPET_BYTES))
+    }
+}
+
+fn classify_and_display(title: &str, first_message: Option<&str>) -> (String, String) {
+    let title_norm = normalize_title(title);
+    let title_norm_lower = title_norm.to_ascii_lowercase();
+    let message = first_message.map(str::trim).filter(|t| !t.is_empty());
+
+    for (prefix, kind) in SUBTASK_TITLE_PREFIXES {
+        if title_norm_lower.starts_with(prefix) {
+            let rest = title_norm[prefix.len()..].trim();
+            let display = if rest.is_empty() {
+                message
+                    .and_then(snippet_from_text)
+                    .unwrap_or_else(|| title_norm.clone())
+            } else {
+                rest.to_string()
+            };
+            return (truncate_label(&display), kind.to_string());
+        }
+    }
+
+    if let Some(text) = message
+        && let Some((kind, body)) = strip_tool_directive(text)
+    {
+        let display = snippet_from_text(body).unwrap_or_else(|| body.to_string());
+        return (truncate_label(&display), kind.to_string());
+    }
+
+    let display = if title_norm == DEFAULT_TITLE || title_norm.starts_with("Use the ") {
+        message
+            .and_then(snippet_from_text)
+            .unwrap_or_else(|| title_norm.clone())
+    } else {
+        title_norm
+    };
+    (truncate_label(&display), "main".to_string())
 }
 
 // -- JSONL record types --
@@ -490,6 +640,8 @@ enum LogRecord<M, U, T> {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
         created_at: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_id: Option<n00nId>,
     },
     #[serde(rename = "msg")]
     Msg { d: M },
@@ -918,6 +1070,7 @@ where
             cwd: session.cwd.clone(),
             title: Some(session.title.clone()),
             created_at: session.created_at,
+            parent_id: session.meta.parent_id,
         },
     )?;
     for msg in &session.messages {
@@ -1136,6 +1289,7 @@ where
             cwd: h_cwd,
             title: h_title,
             created_at: h_created,
+            parent_id: h_parent,
         } => {
             if v != LOG_FORMAT_VERSION {
                 return Err(SessionError::VersionMismatch {
@@ -1147,6 +1301,7 @@ where
             builder.model = h_model;
             builder.cwd = h_cwd;
             builder.created_at = h_created;
+            builder.meta.parent_id = h_parent;
             if let Some(t) = h_title {
                 builder.title = t;
             }
@@ -1441,6 +1596,10 @@ struct ZstHeader {
     cwd: String,
     #[serde(default)]
     title: Option<String>,
+    #[serde(default)]
+    created_at: u64,
+    #[serde(default)]
+    parent_id: Option<n00nId>,
 }
 
 #[derive(Deserialize)]
@@ -1450,8 +1609,6 @@ struct MetaScan {
     updated_at: u64,
 }
 
-const META_RECORD_PREFIX: &str = r#"{"t":"meta""#;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ScannedHeader {
     id: n00nId,
@@ -1460,6 +1617,12 @@ struct ScannedHeader {
     updated_at: u64,
     #[serde(default)]
     model: String,
+    #[serde(default)]
+    created_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    first_message: Option<String>,
+    #[serde(default)]
+    parent_id: Option<n00nId>,
 }
 
 /// Cached scan result for one session file, keyed by file name and validated
@@ -1492,11 +1655,14 @@ fn file_signature(path: &Path) -> Option<(u64, u64)> {
     Some((meta.len(), mtime_ms))
 }
 
-fn scan_headers(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, StorageError> {
+fn scan_headers<M>(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, StorageError>
+where
+    M: TitleSource + DeserializeOwned + Default,
+{
     let mut cache = load_scan_cache(dir);
     let mut fresh = ScanCache::new();
     let mut dirty = false;
-    let mut summaries = Vec::new();
+    let mut with_created: Vec<(u64, SessionSummary)> = Vec::new();
     for path in session_entries(dir)? {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
@@ -1508,7 +1674,7 @@ fn scan_headers(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, StorageErr
             Some(e) if e.size == size && e.mtime_ms == mtime_ms => e,
             _ => {
                 dirty = true;
-                let header = scan_zst_header(&path);
+                let header = scan_zst_header::<M>(&path);
                 ScanCacheEntry {
                     size,
                     mtime_ms,
@@ -1519,13 +1685,25 @@ fn scan_headers(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, StorageErr
         if let Some(h) = &entry.header
             && h.cwd == cwd
         {
-            summaries.push(SessionSummary {
-                id: h.id,
-                title: normalize_title(&h.title),
-                updated_at: h.updated_at,
-                cwd: h.cwd.clone(),
-                model: h.model.clone(),
-            });
+            let (display_title, kind) = classify_and_display(&h.title, h.first_message.as_deref());
+            let created_at = if h.created_at != 0 {
+                h.created_at
+            } else {
+                h.updated_at
+            };
+            with_created.push((
+                created_at,
+                SessionSummary {
+                    id: h.id,
+                    title: normalize_title(&h.title),
+                    display_title,
+                    kind,
+                    parent_id: h.parent_id,
+                    updated_at: h.updated_at,
+                    cwd: h.cwd.clone(),
+                    model: h.model.clone(),
+                },
+            ));
         }
         fresh.insert(name.to_owned(), entry);
     }
@@ -1536,7 +1714,27 @@ fn scan_headers(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, StorageErr
     {
         warn!(error = %e, "failed to write session scan cache");
     }
-    Ok(summaries)
+    if let Err(error) = fs::remove_file(dir.join(SCAN_CACHE_FILE_V2))
+        && error.kind() != ErrorKind::NotFound
+    {
+        warn!(error = %error, "failed to remove stale v2 session scan cache");
+    }
+
+    let mut order: Vec<usize> = (0..with_created.len()).collect();
+    order.sort_unstable_by_key(|i| (with_created[*i].0, *with_created[*i].1.id.as_bytes()));
+    let mut last_main: Option<n00nId> = None;
+    for i in order {
+        let summary = &mut with_created[i].1;
+        if summary.kind == "main" {
+            last_main = Some(summary.id);
+        } else if summary.parent_id.is_none()
+            && let Some(parent) = last_main
+        {
+            summary.parent_id = Some(parent);
+        }
+    }
+
+    Ok(with_created.into_iter().map(|(_, s)| s).collect())
 }
 
 const ZSTD_MAGIC: &[u8] = &[0x28, 0xb5, 0x2f, 0xfd];
@@ -1569,7 +1767,10 @@ fn try_decode_header_at(path: &Path, offset: u64) -> Option<ZstHeader> {
     }
 }
 
-fn try_decode_last_meta_at(path: &Path, offset: u64) -> Option<(String, u64)> {
+fn try_decode_last_meta_at<M>(path: &Path, offset: u64) -> Option<(String, u64, Option<String>)>
+where
+    M: TitleSource + DeserializeOwned + Default,
+{
     let file = File::open(path).ok()?;
     let mut file = file;
     file.seek(SeekFrom::Start(offset)).ok()?;
@@ -1578,6 +1779,7 @@ fn try_decode_last_meta_at(path: &Path, offset: u64) -> Option<(String, u64)> {
     let mut line = String::new();
     let mut title = String::new();
     let mut updated_at = 0u64;
+    let mut first_message = None;
     loop {
         line.clear();
         match reader.read_line(&mut line) {
@@ -1598,14 +1800,60 @@ fn try_decode_last_meta_at(path: &Path, offset: u64) -> Option<(String, u64)> {
             title = t;
             updated_at = u;
         }
+        if offset == 0
+            && first_message.is_none()
+            && trimmed.len() <= MAX_FIRST_MESSAGE_LINE_BYTES
+            && trimmed.starts_with(MSG_RECORD_PREFIX)
+            && let Ok(LogRecord::<M, serde_json::Value, serde_json::Value>::Msg { d }) =
+                serde_json::from_str(trimmed)
+            && let Some(text) = d.first_user_text().map(str::trim).filter(|t| !t.is_empty())
+        {
+            first_message = Some(cap_text(text, MAX_FIRST_MESSAGE_TEXT_BYTES));
+        }
     }
     if updated_at == 0 && title.is_empty() {
         return None;
     }
-    Some((title, updated_at))
+    Some((title, updated_at, first_message))
 }
 
-fn find_last_frame_meta(path: &Path) -> Option<(String, u64)> {
+fn try_decode_first_message_at<M>(path: &Path, offset: u64) -> Option<String>
+where
+    M: TitleSource + DeserializeOwned + Default,
+{
+    let file = File::open(path).ok()?;
+    let mut file = file;
+    file.seek(SeekFrom::Start(offset)).ok()?;
+    let decoder = Decoder::new(file).ok()?;
+    let limited = decoder.take(MAX_FIRST_MESSAGE_BYTES as u64);
+    let mut reader = BufReader::new(limited);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => return None,
+            Ok(_) => {}
+        }
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty()
+            || !trimmed.starts_with(MSG_RECORD_PREFIX)
+            || trimmed.len() > MAX_FIRST_MESSAGE_LINE_BYTES
+        {
+            continue;
+        }
+        if let Ok(LogRecord::<M, serde_json::Value, serde_json::Value>::Msg { d }) =
+            serde_json::from_str(trimmed)
+            && let Some(text) = d.first_user_text().map(str::trim).filter(|t| !t.is_empty())
+        {
+            return Some(cap_text(text, MAX_FIRST_MESSAGE_TEXT_BYTES));
+        }
+    }
+}
+
+fn find_last_frame_meta<M>(path: &Path) -> Option<(String, u64, Option<String>)>
+where
+    M: TitleSource + DeserializeOwned + Default,
+{
     let file_len = fs::metadata(path).ok()?.len();
     if file_len < ZSTD_MAGIC.len() as u64 {
         return None;
@@ -1632,13 +1880,13 @@ fn find_last_frame_meta(path: &Path) -> Option<(String, u64)> {
 
         for &pos in positions.iter().rev() {
             let offset = start + pos as u64;
-            if let Some(meta) = try_decode_last_meta_at(path, offset) {
+            if let Some(meta) = try_decode_last_meta_at::<M>(path, offset) {
                 return Some(meta);
             }
         }
 
         if searched >= MAX_LAST_FRAME_SEARCH_BYTES {
-            return try_decode_last_meta_at(path, 0);
+            return try_decode_last_meta_at::<M>(path, 0);
         }
 
         if start == 0 {
@@ -1650,30 +1898,48 @@ fn find_last_frame_meta(path: &Path) -> Option<(String, u64)> {
     None
 }
 
-fn scan_zst_header(path: &Path) -> Option<ScannedHeader> {
+fn scan_zst_header<M>(path: &Path) -> Option<ScannedHeader>
+where
+    M: TitleSource + DeserializeOwned + Default,
+{
     let header = try_decode_header_at(path, 0)?;
     if header.v != LOG_FORMAT_VERSION {
         return None;
     }
 
-    let (meta_title, updated_at) = find_last_frame_meta(path).unwrap_or_else(|| {
-        let mut title = String::new();
-        let mut updated_at = 0u64;
-        let _ = visit_zstd_lines(path, |line| {
-            if !line.is_empty()
-                && line.starts_with(META_RECORD_PREFIX)
-                && let Ok(MetaScan {
-                    title: t,
-                    updated_at: u,
-                }) = serde_json::from_str(line)
-            {
-                title = t;
-                updated_at = u;
-            }
-            Ok(())
+    let (meta_title, updated_at, first_message) =
+        find_last_frame_meta::<M>(path).unwrap_or_else(|| {
+            let mut title = String::new();
+            let mut updated_at = 0u64;
+            let mut first_message = None;
+            let _ = visit_zstd_lines(path, |line| {
+                if !line.is_empty() {
+                    if line.starts_with(META_RECORD_PREFIX)
+                        && let Ok(MetaScan {
+                            title: t,
+                            updated_at: u,
+                        }) = serde_json::from_str(line)
+                    {
+                        title = t;
+                        updated_at = u;
+                    }
+                    if first_message.is_none()
+                        && line.starts_with(MSG_RECORD_PREFIX)
+                        && line.len() <= MAX_FIRST_MESSAGE_LINE_BYTES
+                        && let Ok(LogRecord::<M, serde_json::Value, serde_json::Value>::Msg { d }) =
+                            serde_json::from_str(line)
+                        && let Some(text) =
+                            d.first_user_text().map(str::trim).filter(|t| !t.is_empty())
+                    {
+                        first_message = Some(cap_text(text, MAX_FIRST_MESSAGE_TEXT_BYTES));
+                    }
+                }
+                Ok(())
+            });
+            (title, updated_at, first_message)
         });
-        (title, updated_at)
-    });
+
+    let first_message = first_message.or_else(|| try_decode_first_message_at::<M>(path, 0));
 
     Some(ScannedHeader {
         id: header.id,
@@ -1688,6 +1954,9 @@ fn scan_zst_header(path: &Path) -> Option<ScannedHeader> {
         },
         updated_at,
         model: header.model,
+        created_at: header.created_at,
+        first_message,
+        parent_id: header.parent_id,
     })
 }
 
@@ -1839,8 +2108,8 @@ where
     /// # Errors
     /// Returns `SessionError` if the scan fails.
     pub fn list_in(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, SessionError> {
-        let mut summaries = scan_headers(cwd, dir)?;
-        summaries.sort_unstable_by_key(|s| Reverse(s.updated_at));
+        let mut summaries = scan_headers::<M>(cwd, dir)?;
+        summaries.sort_unstable_by_key(|s| (Reverse(s.updated_at), *s.id.as_bytes()));
         Ok(summaries)
     }
 
@@ -1854,7 +2123,7 @@ where
     /// # Errors
     /// Returns `SessionError` if the scan or load fails.
     pub fn latest_in(cwd: &str, dir: &Path) -> Result<Option<Self>, SessionError> {
-        let latest = scan_headers(cwd, dir)?
+        let latest = scan_headers::<M>(cwd, dir)?
             .into_iter()
             .max_by_key(|s| s.updated_at);
         match latest {
@@ -1905,8 +2174,9 @@ mod tests {
     use super::ThinkingParseError;
     use super::{
         CWD_INDEX_FILE, DEFAULT_TITLE, LOG_FORMAT_VERSION, LogRecord, MAX_TITLE_LEN,
-        SESSION_VERSION, StoredSubagent, append_record, encode_frame, generate_title, jsonl_path,
-        load_cwd_index, now_epoch, update_cwd_index,
+        SESSION_VERSION, StoredDelivery, StoredQueuedMessage, StoredSubagent, append_record,
+        classify_and_display, encode_frame, generate_title, jsonl_path, load_cwd_index, now_epoch,
+        update_cwd_index,
     };
     use super::{
         OPENAI_RESPONSE_CHAIN_TTL_SECONDS, SESSIONS_DIR, StoredOpenAiResponseChain,
@@ -1915,8 +2185,8 @@ mod tests {
         try_lock_openai_response_chain,
     };
     use super::{
-        SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError, StoredQueuedMessage,
-        TitleSource, TranscriptEntry,
+        SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError, TitleSource,
+        TranscriptEntry,
     };
     use crate::StateDir;
     use crate::id::n00nId;
@@ -2451,6 +2721,7 @@ mod tests {
                 cwd: session.cwd.clone(),
                 title: Some(session.title.clone()),
                 created_at: session.created_at,
+                parent_id: None,
             },
         )
         .unwrap();
@@ -2494,6 +2765,7 @@ mod tests {
                 cwd: session.cwd.clone(),
                 title: Some(session.title.clone()),
                 created_at: session.created_at,
+                parent_id: None,
             },
         )
         .unwrap();
@@ -3126,6 +3398,67 @@ mod tests {
         assert_eq!(generate_title(&messages), expected);
     }
 
+    #[test_case(
+        "Use the team tool now. Do not only describe this request.\n\n{\"goal\":\"fix grouping\"}",
+        "fix grouping",
+        "team"
+        ; "recognized_directive"
+    )]
+    #[test_case(
+        "Use the bash tool now.\n\n{\"prompt\":\"not a sub-task\"}",
+        "Use the bash tool now.",
+        "main"
+        ; "unrecognized_tool"
+    )]
+    #[test_case(
+        "Use the team tool nowish.\n\n{\"goal\":\"not a directive\"}",
+        "Use the team tool nowish.",
+        "main"
+        ; "malformed_directive"
+    )]
+    fn display_title_only_classifies_known_tool_directives(
+        message: &str,
+        expected_title: &str,
+        expected_kind: &str,
+    ) {
+        let (title, kind) = classify_and_display(DEFAULT_TITLE, Some(message));
+        assert_eq!(title, expected_title);
+        assert_eq!(kind, expected_kind);
+    }
+
+    #[test]
+    fn equal_creation_times_group_and_sort_deterministically() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let ids = [
+            "00000000-0000-7000-8000-000000000001",
+            "00000000-0000-7000-8000-000000000002",
+            "00000000-0000-7000-8000-000000000003",
+            "00000000-0000-7000-8000-000000000004",
+        ]
+        .map(|id| id.parse::<n00nId>().unwrap());
+        let titles = ["main one", "task: child one", "main two", "team: child two"];
+
+        for (id, title) in ids.into_iter().zip(titles) {
+            let mut session: TestSession = Session::new("m", "/project");
+            session.id = id;
+            session.title = title.into();
+            session.created_at = 100;
+            session.updated_at = 200;
+            SessionLog::create(dir, &session).unwrap();
+        }
+
+        let list = TestSession::list_in("/project", dir).unwrap();
+        assert_eq!(
+            list.iter().map(|summary| summary.id).collect::<Vec<_>>(),
+            ids
+        );
+        assert_eq!(list[0].parent_id, None);
+        assert_eq!(list[1].parent_id, Some(ids[0]));
+        assert_eq!(list[2].parent_id, None);
+        assert_eq!(list[3].parent_id, Some(ids[2]));
+    }
+
     #[test]
     fn delete_removes_file_and_cwd_index() {
         let tmp = TempDir::new().unwrap();
@@ -3223,6 +3556,8 @@ mod tests {
         assert!(stored.thinking.is_none());
         assert!(!stored.fast);
         assert!(!stored.workflow);
+        assert!(!stored.control);
+        assert_eq!(stored.delivery, StoredDelivery::TurnEnd);
         assert!(stored.prompt.is_none());
     }
 
@@ -3291,6 +3626,7 @@ mod tests {
             model: session.model.clone(),
             cwd: session.cwd.clone(),
             created_at: session.created_at,
+            parent_id: None,
             title: Some("header title".into()),
         };
         let mut bytes = Vec::new();
