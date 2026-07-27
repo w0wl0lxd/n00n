@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use mlua::{AnyUserData, Lua, Result as LuaResult, Table};
@@ -17,8 +17,8 @@ use crate::docs::{FnDoc, ParamDoc};
 pub(crate) struct WinHandle {
     event_rx: flume::Receiver<WinEvent>,
     cmd_tx: flume::Sender<WinCommand>,
-    closed: Cell<bool>,
-    visible: Cell<bool>,
+    closed: AtomicBool,
+    visible: AtomicBool,
     init_width: u16,
     init_height: u16,
 }
@@ -34,15 +34,15 @@ impl WinHandle {
         Self {
             event_rx,
             cmd_tx,
-            closed: Cell::new(false),
-            visible: Cell::new(visible),
+            closed: AtomicBool::new(false),
+            visible: AtomicBool::new(visible),
             init_width,
             init_height,
         }
     }
 
     fn close(&self) {
-        if self.closed.replace(true) {
+        if self.closed.swap(true, Ordering::Relaxed) {
             return;
         }
         let _ = self.cmd_tx.try_send(WinCommand::Close);
@@ -50,7 +50,7 @@ impl WinHandle {
 
     fn send(&self, cmd: WinCommand) {
         if let Err(flume::TrySendError::Disconnected(_)) = self.cmd_tx.try_send(cmd) {
-            self.closed.set(true);
+            self.closed.store(true, Ordering::Relaxed);
         }
     }
 }
@@ -127,7 +127,7 @@ fn win_extra<M: mlua::UserDataMethods<WinHandle>>(methods: &mut M) {
         |lua, (ud, timeout_ms): (AnyUserData, Option<u64>)| async move {
             let rx = {
                 let this = ud.borrow::<WinHandle>()?;
-                if this.closed.get() {
+                if this.closed.load(Ordering::Relaxed) {
                     return Ok(mlua::Value::Nil);
                 }
                 this.event_rx.clone()
@@ -148,11 +148,15 @@ fn win_extra<M: mlua::UserDataMethods<WinHandle>>(methods: &mut M) {
             };
             if let Ok(event) = event {
                 if matches!(event, WinEvent::Close) {
-                    ud.borrow::<WinHandle>()?.closed.set(true);
+                    ud.borrow::<WinHandle>()?
+                        .closed
+                        .store(true, Ordering::Relaxed);
                 }
                 Ok(mlua::Value::Table(event_table(&lua, event)?))
             } else {
-                ud.borrow::<WinHandle>()?.closed.set(true);
+                ud.borrow::<WinHandle>()?
+                    .closed
+                    .store(true, Ordering::Relaxed);
                 Ok(mlua::Value::Nil)
             }
         },
@@ -180,7 +184,7 @@ fn win_extra<M: mlua::UserDataMethods<WinHandle>>(methods: &mut M) {
 /// win:set_config({ title = "Updated!", width = "80%" })
 #[lua_fn]
 fn set_config(_lua: &Lua, this: &WinHandle, opts: Table) -> LuaResult<()> {
-    if this.closed.get() {
+    if this.closed.load(Ordering::Relaxed) {
         return Ok(());
     }
     let mut patch = FloatConfigPatch::default();
@@ -231,7 +235,7 @@ fn set_config(_lua: &Lua, this: &WinHandle, opts: Table) -> LuaResult<()> {
 /// win:set_cursor(3) -- highlight the third line
 #[lua_fn]
 fn set_cursor(_lua: &Lua, this: &WinHandle, row: usize) -> LuaResult<()> {
-    if this.closed.get() {
+    if this.closed.load(Ordering::Relaxed) {
         return Ok(());
     }
     this.send(WinCommand::SetCursor(row.saturating_sub(1)));
@@ -261,10 +265,10 @@ fn close(_lua: &Lua, this: &WinHandle) -> LuaResult<()> {
 /// end
 #[lua_fn]
 fn is_open(_lua: &Lua, this: &WinHandle) -> LuaResult<bool> {
-    if !this.closed.get() && this.cmd_tx.is_disconnected() {
-        this.closed.set(true);
+    if !this.closed.load(Ordering::Relaxed) && this.cmd_tx.is_disconnected() {
+        this.closed.store(true, Ordering::Relaxed);
     }
-    Ok(!this.closed.get())
+    Ok(!this.closed.load(Ordering::Relaxed))
 }
 
 /// Makes the window visible again after it was hidden with `hide()`.
@@ -274,10 +278,10 @@ fn is_open(_lua: &Lua, this: &WinHandle) -> LuaResult<bool> {
 /// win:show()
 #[lua_fn]
 fn show(_lua: &Lua, this: &WinHandle) -> LuaResult<()> {
-    if this.closed.get() {
+    if this.closed.load(Ordering::Relaxed) {
         return Ok(());
     }
-    this.visible.set(true);
+    this.visible.store(true, Ordering::Relaxed);
     this.send(WinCommand::SetVisible(true));
     Ok(())
 }
@@ -292,10 +296,10 @@ fn show(_lua: &Lua, this: &WinHandle) -> LuaResult<()> {
 /// win:show()
 #[lua_fn]
 fn hide(_lua: &Lua, this: &WinHandle) -> LuaResult<()> {
-    if this.closed.get() {
+    if this.closed.load(Ordering::Relaxed) {
         return Ok(());
     }
-    this.visible.set(false);
+    this.visible.store(false, Ordering::Relaxed);
     this.send(WinCommand::SetVisible(false));
     Ok(())
 }
@@ -305,16 +309,18 @@ fn hide(_lua: &Lua, this: &WinHandle) -> LuaResult<()> {
 /// @return (boolean) true if visible.
 #[lua_fn]
 fn is_visible(_lua: &Lua, this: &WinHandle) -> LuaResult<bool> {
-    if !this.closed.get() && this.cmd_tx.is_disconnected() {
-        this.closed.set(true);
+    if !this.closed.load(Ordering::Relaxed) && this.cmd_tx.is_disconnected() {
+        this.closed.store(true, Ordering::Relaxed);
     }
-    Ok(this.visible.get() && !this.closed.get())
+    Ok(this.visible.load(Ordering::Relaxed) && !this.closed.load(Ordering::Relaxed))
 }
 
 fn win_fields<F: mlua::UserDataFields<WinHandle>>(fields: &mut F) {
     fields.add_field_method_get("width", |_, this| Ok(this.init_width));
     fields.add_field_method_get("height", |_, this| Ok(this.init_height));
-    fields.add_field_method_get("visible", |_, this| Ok(this.visible.get()));
+    fields.add_field_method_get("visible", |_, this| {
+        Ok(this.visible.load(Ordering::Relaxed))
+    });
 }
 
 lua_class! {
@@ -355,7 +361,7 @@ mod tests {
     fn close_is_idempotent_including_drop() {
         let (_event_tx, cmd_rx, handle) = make_channels();
         handle.close();
-        assert!(handle.closed.get());
+        assert!(handle.closed.load(Ordering::Relaxed));
         handle.close();
         drop(handle);
         assert!(matches!(cmd_rx.try_recv(), Ok(WinCommand::Close)));
@@ -385,7 +391,7 @@ mod tests {
         let handle = WinHandle::new(event_rx, cmd_tx, 80, 24, true);
         drop(cmd_rx);
         handle.close();
-        assert!(handle.closed.get());
+        assert!(handle.closed.load(Ordering::Relaxed));
         drop(event_tx);
     }
 
@@ -393,9 +399,9 @@ mod tests {
     fn send_detects_disconnect() {
         let (_event_tx, cmd_rx, handle) = make_channels();
         drop(cmd_rx);
-        assert!(!handle.closed.get());
+        assert!(!handle.closed.load(Ordering::Relaxed));
         handle.send(WinCommand::SetVisible(true));
-        assert!(handle.closed.get());
+        assert!(handle.closed.load(Ordering::Relaxed));
     }
 
     #[test]
@@ -453,7 +459,7 @@ mod tests {
     fn is_disconnected_marks_closed() {
         let (_event_tx, cmd_rx, handle) = make_channels();
         drop(cmd_rx);
-        assert!(!handle.closed.get());
+        assert!(!handle.closed.load(Ordering::Relaxed));
         assert!(handle.cmd_tx.is_disconnected());
     }
 }

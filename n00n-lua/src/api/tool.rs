@@ -541,7 +541,7 @@ fn parse_prompt_field(spec: &Table) -> LuaResult<Option<Vec<PromptId>>> {
         Ok(LuaValue::String(s)) => Ok(Some(vec![parse_one(&s.to_str()?)?])),
         Ok(LuaValue::Table(t)) => {
             let mut ids = Vec::new();
-            for pair in t.sequence_values::<mlua::String>() {
+            for pair in t.sequence_values::<mlua::LuaString>() {
                 ids.push(parse_one(&pair?.to_str()?)?);
             }
             if ids.is_empty() {
