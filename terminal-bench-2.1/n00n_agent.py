@@ -65,7 +65,7 @@ class n00nAgent(BaseInstalledAgent):
         await self.exec_as_root(
             environment,
             command=(
-                "mkdir -p /opt/n00n "
+                "mkdir -p /opt/n00n /opt/n00n/.config /opt/n00n/.local/share /opt/n00n/.cache "
                 "&& tar -xzf /tmp/n00n-bundle.tar.gz -C /opt/n00n --strip-components=1 "
                 "&& chmod -R a+rX /opt/n00n "
                 "&& ln -sf /opt/n00n/n00n /usr/local/bin/n00n "
@@ -93,12 +93,16 @@ class n00nAgent(BaseInstalledAgent):
         escaped = shlex.quote(instruction)
 
         devin_model = model.split("/", 1)[1] if "/" in model else model
-        env = {
-            "DEVIN_API_KEY": self._get_env("DEVIN_API_KEY") or "",
+        env: dict[str, str] = {
             "DEVIN_MODEL": devin_model,
             "DEVIN_PERMISSION_MODE": "dangerous",
             "WINDSURF_API_KEY": self._get_env("WINDSURF_API_KEY") or "",
+            "XDG_CONFIG_HOME": "/opt/n00n/.config",
+            "XDG_DATA_HOME": "/opt/n00n/.local/share",
+            "XDG_CACHE_HOME": "/opt/n00n/.cache",
         }
+        if devin_api_key := self._get_env("DEVIN_API_KEY"):
+            env["DEVIN_API_KEY"] = devin_api_key
 
         command = (
             f'export PATH="/opt/n00n/bin:$PATH"; '
