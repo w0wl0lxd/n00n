@@ -74,6 +74,7 @@ members = [
   "n00n-storage",
   "n00n-config-macro",
   "n00n-lua-macro",
+  "n00n-token-profile",
   "n00n-ui",
 ]
 resolver = "3"
@@ -101,6 +102,7 @@ n00n-highlight = { path = "n00n-highlight" }
 n00n-arbor = { path = "n00n-arbor" }
 n00n-markdown = { path = "n00n-markdown" }
 n00n-daemon = { path = "n00n-daemon" }
+n00n-token-profile = { path = "n00n-token-profile" }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 sonic-rs = "0.5.8"
