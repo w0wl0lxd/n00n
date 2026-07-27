@@ -5,6 +5,23 @@
 use isahc::AsyncReadResponseExt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryReplayReason {
+    ContinuationUnavailable,
+    ContinuationNotFound,
+}
+
+impl std::fmt::Display for HistoryReplayReason {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ContinuationUnavailable => {
+                formatter.write_str("saved continuation is unavailable")
+            }
+            Self::ContinuationNotFound => formatter.write_str("saved continuation was not found"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestDeliveryPhase {
     NotSent,
     SentAwaitingAcceptance,
@@ -68,6 +85,8 @@ pub enum AgentError {
     CodingPlanAdmission {
         retry_after: Option<std::time::Duration>,
     },
+    #[error("full-history replay requires explicit approval because {reason}")]
+    HistoryReplayRequired { reason: HistoryReplayReason },
     #[error("request may have been accepted before the connection failed: {message}")]
     RequestSent {
         message: String,
@@ -96,6 +115,7 @@ impl AgentError {
             | Self::ResponseChainBusy { .. }
             | Self::CodingPlanAdmissionScopeChanged
             | Self::CodingPlanAdmission { .. }
+            | Self::HistoryReplayRequired { .. }
             | Self::RequestSent { .. } => false,
         }
     }
@@ -150,6 +170,7 @@ impl AgentError {
             | Self::ResponseChainBusy { .. }
             | Self::CodingPlanAdmissionScopeChanged
             | Self::CodingPlanAdmission { .. }
+            | Self::HistoryReplayRequired { .. }
             | Self::RequestSent { .. } => false,
         }
     }
@@ -198,6 +219,9 @@ impl AgentError {
                 ),
                 None => "OpenAI Coding Plan rejected the connection before the request was sent; the account may be at its concurrent request limit".into(),
             },
+            Self::HistoryReplayRequired { reason } => {
+                format!("full-history replay requires explicit approval because {reason}")
+            }
             Self::HttpRequest(e) => format!("request error: {e}"),
             Self::Json(_) => "received an invalid response from the API".into(),
             Self::Storage => "local storage error, try again".into(),
