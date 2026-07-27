@@ -2993,6 +2993,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "n00n-codegraph"
+version = "0.4.2"
+dependencies = [
+ "serde",
+ "tempfile",
+ "thiserror 2.0.19",
+ "wait-timeout",
+]
+
+[[package]]
 name = "n00n-config"
 version = "0.4.2"
 dependencies = [
@@ -3098,6 +3108,7 @@ dependencies = [
  "mlua",
  "n00n-agent",
  "n00n-arbor",
+ "n00n-codegraph",
  "n00n-config",
  "n00n-highlight",
  "n00n-interpreter",
