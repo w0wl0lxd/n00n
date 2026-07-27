@@ -8,9 +8,10 @@ useDefault = true
 [allowlist]
 description = "Known false positives that are not real secrets"
 paths = [
-  # Removed subproject; its history contains version-date strings that look
-  # like API keys but are not credentials.
+  # Removed subprojects; their history contains test fixtures / version-date
+  # strings that look like API keys but are not credentials.
   '''maki-agent/''',
+  '''maki-providers/''',
 ]
 regexes = [
   # Feature/version date identifiers, e.g. "oauth-2025-04-20" or
