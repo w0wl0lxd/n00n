@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785129406932,
+  "lastUpdate": 1785136115705,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -6369,6 +6369,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 189050,
             "range": "± 6995",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f0e0d950ede090c7303f91a7450d4318b0a90764",
+          "message": "feat(agent): minify JSON schemas, strip grep indentation, and debloat plugin prompts\n\n* feat(agent): minify JSON schemas, strip grep indentation, and debloat plugin prompts\n\n* test(agent): add live tool invocation suite and strip grep line indentation\n\n* feat(agent): recursively sanitize metadata across anyOf, oneOf, and allOf sub-schemas\n\n* feat(agent): trim trailing whitespace in filter_tool_result payload normalization\n\n* feat(plugins): condense edit, multiedit, edit_lines, and insert_lines prose descriptions\n\n* fix(agent): annotate singular directory entries",
+          "timestamp": "2026-07-27T06:56:14Z",
+          "tree_id": "0841e8b50fee1268dada9bcff820b5c4395485f2",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/f0e0d950ede090c7303f91a7450d4318b0a90764"
+        },
+        "date": 1785136114043,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 7243881,
+            "range": "± 144181",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1476934,
+            "range": "± 12523",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1474697,
+            "range": "± 11073",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8119214,
+            "range": "± 530046",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 2931016,
+            "range": "± 144942",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 2926021,
+            "range": "± 14817",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 737131,
+            "range": "± 3138",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 89929,
+            "range": "± 4904",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 89728,
+            "range": "± 2223",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1088294,
+            "range": "± 7685",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 458159,
+            "range": "± 8491",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 457217,
+            "range": "± 3345",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 55466,
+            "range": "± 500",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 83805,
+            "range": "± 4328",
             "unit": "ns/iter"
           }
         ]
