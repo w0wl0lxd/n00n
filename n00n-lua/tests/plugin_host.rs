@@ -4819,9 +4819,17 @@ fn agent_control_resume_preserves_paused_team_mode() {
     else {
         panic!("expected session prompt request");
     };
-    let n00n_lua::SessionRequest::Prompt { text, .. } = req else {
+    let n00n_lua::SessionRequest::Prompt {
+        text,
+        steer,
+        control,
+        ..
+    } = req
+    else {
         panic!("expected session prompt request");
     };
+    assert!(steer, "resume must be submitted as a steering interrupt");
+    assert!(control, "resume must be tagged as a control message");
     assert!(text.contains(r#""mode":"swarm""#), "resume prompt: {text}");
     reply_tx.send(Ok(serde_json::json!("queued"))).unwrap();
     assert!(worker.join().unwrap().is_ok());

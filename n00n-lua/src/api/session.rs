@@ -61,7 +61,7 @@ async fn live(lua: Lua, #[ctx] tx: Option<flume::Sender<UiAction>>) -> LuaResult
 /// and paused team run metadata when the latest tool result is from `team`.
 ///
 /// @param id string Live session id.
-/// @return (table|nil, string|nil) `{id, title, status, updated_at, focused, output?, paused_team?}`, or nil and an error.
+/// @return (table|nil, string|nil) `{id, title, status, updated_at, focused, output?, paused_team?}` where `paused_team` is `{paused, run_id, mode?, ...}` when a paused team run is present, or nil and an error.
 #[lua_fn]
 async fn status(
     lua: Lua,

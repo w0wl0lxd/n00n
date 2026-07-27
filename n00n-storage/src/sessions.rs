@@ -117,6 +117,15 @@ pub struct StoredMcpPrompt {
     pub arguments: HashMap<String, String>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StoredDelivery {
+    #[default]
+    TurnEnd,
+    Steering,
+    Immediate,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredQueuedMessage {
     pub text: String,
@@ -134,8 +143,15 @@ pub struct StoredQueuedMessage {
     pub workflow: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub control: bool,
+    #[serde(default, skip_serializing_if = "is_default_delivery")]
+    pub delivery: StoredDelivery,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<StoredMcpPrompt>,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde skip_serializing_if requires fn(&T) -> bool
+fn is_default_delivery(delivery: &StoredDelivery) -> bool {
+    *delivery == StoredDelivery::TurnEnd
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1869,8 +1885,8 @@ mod tests {
     use super::ThinkingParseError;
     use super::{
         CWD_INDEX_FILE, DEFAULT_TITLE, LOG_FORMAT_VERSION, LogRecord, MAX_TITLE_LEN,
-        SESSION_VERSION, StoredSubagent, append_record, encode_frame, generate_title, jsonl_path,
-        load_cwd_index, now_epoch, update_cwd_index,
+        SESSION_VERSION, StoredDelivery, StoredQueuedMessage, StoredSubagent, append_record,
+        encode_frame, generate_title, jsonl_path, load_cwd_index, now_epoch, update_cwd_index,
     };
     use super::{
         OPENAI_RESPONSE_CHAIN_TTL_SECONDS, SESSIONS_DIR, StoredOpenAiResponseChain,
@@ -1879,8 +1895,8 @@ mod tests {
         try_lock_openai_response_chain,
     };
     use super::{
-        SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError, StoredQueuedMessage,
-        TitleSource, TranscriptEntry,
+        SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError, TitleSource,
+        TranscriptEntry,
     };
     use crate::StateDir;
     use crate::id::n00nId;
@@ -3130,6 +3146,7 @@ mod tests {
         assert!(!stored.fast);
         assert!(!stored.workflow);
         assert!(!stored.control);
+        assert_eq!(stored.delivery, StoredDelivery::TurnEnd);
         assert!(stored.prompt.is_none());
     }
 

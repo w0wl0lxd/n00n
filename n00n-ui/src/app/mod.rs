@@ -815,6 +815,7 @@ impl App {
                         self.input_box.set_submission(Submission {
                             text: msg.text,
                             images: msg.images,
+                            control: msg.control,
                         });
                     }
                 }
@@ -1266,6 +1267,7 @@ impl App {
         self.input_box.set_submission(Submission {
             text: pending.message.text,
             images: pending.message.images,
+            control: pending.message.control,
         });
         self.run_id += 1;
         self.status = Status::Idle;

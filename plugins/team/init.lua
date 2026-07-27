@@ -748,6 +748,7 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
           end
           if wave_result.paused then
             pause = {
+              paused = true,
               run_id = run_id,
               mode = input.mode,
               failed_step = failed_step_index,

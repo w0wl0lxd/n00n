@@ -2684,7 +2684,7 @@ and paused team run metadata when the latest tool result is from `team`.
 
 - `{id}` (`string`) Live session id.
 
-**Returns:** (`table|nil`, `string|nil`) `{id, title, status, updated_at, focused, output?, paused_team?}`, or nil and an error.
+**Returns:** (`table|nil`, `string|nil`) `{id, title, status, updated_at, focused, output?, paused_team?}` where `paused_team` is `{paused, run_id, mode?, ...}` when a paused team run is present, or nil and an error.
 
 ---
 

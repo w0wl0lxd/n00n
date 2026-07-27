@@ -287,7 +287,8 @@ impl<'h> Agent<'h> {
         let pre_dispatch_rollback_len = self
             .pre_dispatch_rollback_len
             .unwrap_or_else(|| rollback_len);
-        let msg = Message::user_with_images(input.message.clone(), input.images);
+        let mut msg = Message::user_with_images(input.message.clone(), input.images);
+        msg.control = input.control;
         self.history.push(msg);
         self.context_size = estimate_message_tokens(self.history.as_slice(), &self.model.id)
             .saturating_add(estimate_tool_tokens(&self.tools, &self.model.id));
@@ -1109,6 +1110,28 @@ mod tests {
             control: false,
             prompt: None,
         }
+    }
+
+    #[test]
+    fn run_preserves_control_on_initial_history_message() {
+        smol::block_on(async {
+            let mut history = History::new(Vec::new());
+            let (mut agent, _event_rx) = make_agent(
+                MockProvider::new(vec![text_response(StopReason::EndTurn)]),
+                &mut history,
+            );
+            let mut input = default_input();
+            input.control = true;
+            agent.run(input).await.unwrap();
+            let first = history
+                .as_slice()
+                .first()
+                .expect("history should contain user message");
+            assert!(
+                first.control,
+                "initial Agent::run message must retain input.control"
+            );
+        });
     }
 
     fn drain_events(rx: &flume::Receiver<Envelope>) -> Vec<Envelope> {
