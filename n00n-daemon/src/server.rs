@@ -3,9 +3,11 @@
 use std::path::Path;
 use std::sync::Arc;
 
+#[cfg(unix)]
 use crate::auth;
 use crate::error::{ControlError, ControlResult};
 use crate::lock::{self, DaemonRole};
+#[cfg(unix)]
 use crate::paths::daemon_socket_in;
 use crate::protocol::{ControlRequest, ControlResponse};
 use crate::registry::ControlPlane;
