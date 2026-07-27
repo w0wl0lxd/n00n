@@ -16,9 +16,7 @@ use tracing::{debug, warn};
 use crate::manifest::ManifestRegistry;
 use crate::model::{Model, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider, ProviderKind};
-use crate::{
-    AgentError, Message, ProviderEvent, ProviderUsage, RequestOptions, StreamResponse, System,
-};
+use crate::{AgentError, Message, ProviderEvent, ProviderUsage, RequestOptions, StreamResponse};
 
 use super::ResolvedAuth;
 use super::anthropic::Anthropic;
@@ -560,7 +558,7 @@ impl Provider for DynamicProvider {
         &'a self,
         model: &'a Model,
         messages: &'a [Message],
-        system: &'a System,
+        system: &'a str,
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,

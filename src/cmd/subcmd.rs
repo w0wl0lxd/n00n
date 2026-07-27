@@ -596,7 +596,7 @@ pub fn index(path: &str, no_plugins: bool, no_jit: bool) -> Result<()> {
     let abs_path = Path::new(path)
         .canonicalize()
         .unwrap_or_else(|_| Path::new(path).to_path_buf());
-    let input = json!({"path": abs_path.to_str().unwrap_or_else(|| path)});
+    let input = serde_json::json!({"path": abs_path.to_str().unwrap_or_else(|| path)});
     let reg = ToolRegistry::global_arc();
     let entry = reg
         .get("index")
@@ -724,12 +724,10 @@ pub fn prompt(variant: &crate::cli::PromptVariant, flags: PromptFlags) -> Result
             let model = Model::from_spec(model_spec).context("invalid default model")?;
             build_system_prompt(&vars, &mode, &instructions, &slots, &model)
         }
-        PromptVariant::Research => assemble(PromptId::Research, &slots, &instructions).into(),
-        PromptVariant::General => assemble(PromptId::General, &slots, &instructions).into(),
+        PromptVariant::Research => assemble(PromptId::Research, &slots, &instructions),
+        PromptVariant::General => assemble(PromptId::General, &slots, &instructions),
     };
 
     print!("{output}");
     Ok(())
 }
-
-use serde_json::json;

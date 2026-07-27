@@ -113,16 +113,6 @@ impl Typewriter {
         self.visible_len < self.anim_target
     }
 
-    /// Forces the typewriter to reveal all text immediately, bypassing the
-    /// animation. This should be called when streaming ends (e.g., on Done/Error)
-    /// to ensure the full content is visible without waiting for the typewriter
-    /// effect to complete.
-    pub fn finish(&mut self) {
-        if self.visible_len < self.anim_target {
-            self.advance_visible(self.anim_target);
-        }
-    }
-
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.buffer.is_empty()
@@ -329,29 +319,5 @@ mod tests {
         tw.push("hello world, this is enough text");
         assert_eq!(tw, "hello world, this is enough text");
         assert_eq!(tw.visible(), "");
-    }
-
-    #[test]
-    fn finish_reveals_all_text_immediately() {
-        let mut tw = Typewriter::new();
-        tw.push("hello world");
-        assert_eq!(tw.visible(), "");
-        assert!(tw.is_animating());
-
-        tw.finish();
-        assert_eq!(tw.visible(), "hello world");
-        assert!(!tw.is_animating());
-    }
-
-    #[test]
-    fn finish_on_completed_typewriter_is_noop() {
-        let mut tw = Typewriter::with_speed(0);
-        tw.push("already visible");
-        assert_eq!(tw.visible(), "already visible");
-        assert!(!tw.is_animating());
-
-        tw.finish();
-        assert_eq!(tw.visible(), "already visible");
-        assert!(!tw.is_animating());
     }
 }

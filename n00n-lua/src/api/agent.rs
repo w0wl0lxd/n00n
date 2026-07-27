@@ -29,7 +29,7 @@ use n00n_providers::provider;
 use n00n_providers::{ContentBlock, Model, ModelError, Role, ThinkingConfig, model::TokenUsage};
 use n00n_storage::id::N00nId;
 use n00n_storage::sessions::StoredThinking;
-use serde_json::{Value as JsonValue, json};
+use serde_json::Value as JsonValue;
 use tracing::info;
 
 use crate::api::ui::buf::BufHandle;
@@ -580,7 +580,7 @@ async fn session(
                 spec.get::<Function>("handler")
                     .map_err(|_| format!("local_tools.{name}: 'handler' is required"))
             );
-            defs.push(json!({
+            defs.push(serde_json::json!({
                 "name": name,
                 "description": description,
                 "input_schema": input_schema,
@@ -1343,7 +1343,7 @@ async fn prompt(
             s.params.clone(),
             AgentRunParams {
                 history: &mut s.history,
-                system: s.system.clone().into(),
+                system: s.system.clone(),
                 event_tx: s.sub_event_tx.clone(),
                 tools: s.tools.clone(),
                 tool_filter: s.tool_filter.clone(),

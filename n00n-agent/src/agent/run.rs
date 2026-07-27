@@ -6,7 +6,7 @@ use tracing::{error, info, warn};
 use n00n_providers::provider::Provider;
 use n00n_providers::{
     ContentBlock, Message, Model, OpenAiOptions, RequestOptions, Role, StopReason, StreamResponse,
-    System, TokenUsage,
+    TokenUsage,
 };
 
 use super::compaction::{self, CONTINUE_AFTER_COMPACT};
@@ -114,7 +114,7 @@ pub struct AgentParams {
 
 pub struct AgentRunParams<'h> {
     pub history: &'h mut History,
-    pub system: System,
+    pub system: String,
     pub event_tx: EventSender,
     pub tools: Value,
     pub tool_filter: ToolFilter,
@@ -124,7 +124,7 @@ pub struct Agent<'h> {
     provider: Arc<dyn Provider>,
     model: Arc<Model>,
     history: &'h mut History,
-    system: System,
+    system: String,
     event_tx: EventSender,
     tools: Value,
     mode: AgentMode,
@@ -133,8 +133,6 @@ pub struct Agent<'h> {
     cancel: CancelToken,
     total_usage: TokenUsage,
     total_cost: f64,
-    total_savings_tokens: u64,
-    total_savings_cost: f64,
     context_size: u32,
     num_turns: u32,
     recent_calls: RecentCalls,
@@ -188,8 +186,6 @@ impl<'h> Agent<'h> {
             cancel: CancelToken::none(),
             total_usage: TokenUsage::default(),
             total_cost: 0.0,
-            total_savings_tokens: 0,
-            total_savings_cost: 0.0,
             context_size: 0,
             num_turns: 0,
             recent_calls: RecentCalls::new(),
@@ -541,31 +537,15 @@ impl<'h> Agent<'h> {
     fn record_usage(&mut self, usage: TokenUsage, cost: f64) {
         self.total_usage += usage;
         self.total_cost += cost;
-        self.total_savings_tokens += usage.savings_tokens();
-        self.total_savings_cost += usage.savings_cost(&self.model.pricing, self.opts.fast);
     }
 
     fn emit_turn_complete(&self, response: &StreamResponse) -> Result<(), AgentError> {
-        let savings_tokens = response.usage.savings_tokens();
-        let savings_cost = response
-            .usage
-            .savings_cost(&self.model.pricing, self.opts.fast);
         self.event_tx
             .send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
                 message: response.message.clone(),
                 usage: response.usage,
                 model: self.model.id.clone(),
                 context_size: Some(response.usage.context_tokens()),
-                savings_tokens: if savings_tokens > 0 {
-                    Some(savings_tokens)
-                } else {
-                    None
-                },
-                savings_cost: if savings_cost > 0.0 {
-                    Some(savings_cost)
-                } else {
-                    None
-                },
             })))
     }
 
@@ -869,7 +849,7 @@ mod tests {
 
     #[test]
     fn estimate_tool_tokens_counts_json() {
-        let tools = json!([{"name": "skill", "description": "A tool"}]);
+        let tools = serde_json::json!([{"name": "skill", "description": "A tool"}]);
         let tokens = estimate_tool_tokens(&tools, "");
         assert!(tokens > 0, "expected positive token count for tools");
     }
@@ -935,7 +915,7 @@ mod tests {
 
     #[test]
     fn estimate_tool_tokens_empty_array_costs_one() {
-        assert_eq!(estimate_tool_tokens(&json!([]), ""), 1);
+        assert_eq!(estimate_tool_tokens(&serde_json::json!([]), ""), 1);
     }
 
     struct MockInterruptSource {
@@ -1001,7 +981,7 @@ mod tests {
             &'a self,
             _: &'a Model,
             messages: &'a [Message],
-            _: &'a System,
+            _: &'a str,
             _: &'a Value,
             _: &'a flume::Sender<ProviderEvent>,
             _: RequestOptions,
@@ -1099,9 +1079,9 @@ mod tests {
             },
             AgentRunParams {
                 history,
-                system: System::from("system"),
+                system: "system".into(),
                 event_tx: EventSender::new(raw_tx, 0),
-                tools: json!([]),
+                tools: serde_json::json!([]),
                 tool_filter: ToolFilter::All,
             },
         );
@@ -1165,7 +1145,7 @@ mod tests {
                 content: vec![ContentBlock::ToolUse {
                     id: tool_id.into(),
                     name: tool_name.into(),
-                    input: json!({"pattern": "*.nonexistent_test_xyz", "path": "/tmp"}),
+                    input: serde_json::json!({"pattern": "*.nonexistent_test_xyz", "path": "/tmp"}),
                 }],
                 ..Default::default()
             },
@@ -1433,7 +1413,7 @@ mod tests {
                     &'a self,
                     _: &'a Model,
                     _: &'a [Message],
-                    _: &'a System,
+                    _: &'a str,
                     _: &'a Value,
                     _: &'a flume::Sender<ProviderEvent>,
                     _: RequestOptions,
@@ -1482,9 +1462,9 @@ mod tests {
                 },
                 AgentRunParams {
                     history: &mut history,
-                    system: System::from("system"),
+                    system: "system".into(),
                     event_tx: EventSender::new(raw_tx, 0),
-                    tools: json!([]),
+                    tools: serde_json::json!([]),
                     tool_filter: ToolFilter::All,
                 },
             )

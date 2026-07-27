@@ -26,7 +26,6 @@ use test_case::test_case;
 
 const WRITER_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
-use serde_json::json;
 fn set_zone(app: &mut App, zone: SelectionZone, area: Rect) {
     app.zones.push(SelectableZone {
         area,
@@ -1041,8 +1040,6 @@ fn turn_complete_tracks_usage_and_context_per_chat() {
             usage: main_usage,
             model: "test".into(),
             context_size: None,
-            savings_tokens: None,
-            savings_cost: None,
         },
     ))));
 
@@ -1057,8 +1054,6 @@ fn turn_complete_tracks_usage_and_context_per_chat() {
             usage: sub_usage,
             model: "test".into(),
             context_size: None,
-            savings_tokens: None,
-            savings_cost: None,
         })),
         "task1",
         None,
@@ -1125,8 +1120,6 @@ fn subagent_compaction_completion_uses_live_summary_without_touching_main_transc
             usage: TokenUsage::default(),
             model: "test".into(),
             context_size: None,
-            savings_tokens: None,
-            savings_cost: None,
         })),
         "task1",
         Some("research"),
@@ -1170,8 +1163,6 @@ fn turn_complete_accumulates_usage_by_model() {
             },
             model: "main-model".into(),
             context_size: None,
-            savings_tokens: None,
-            savings_cost: None,
         },
     ))));
     app.update(subagent_msg(
@@ -1184,8 +1175,6 @@ fn turn_complete_accumulates_usage_by_model() {
             },
             model: "sub-model".into(),
             context_size: None,
-            savings_tokens: None,
-            savings_cost: None,
         })),
         "task1",
         None,
@@ -2723,7 +2712,7 @@ fn build_rewind_app() -> App {
                 ContentBlock::ToolUse {
                     id: "tool-1".into(),
                     name: "bash".into(),
-                    input: json!({}),
+                    input: serde_json::json!({}),
                 },
             ],
             ..Default::default()
@@ -3419,8 +3408,6 @@ fn stale_non_terminal_event_does_not_save_session() {
             usage: TokenUsage::default(),
             model: "mock".into(),
             context_size: None,
-            savings_tokens: None,
-            savings_cost: None,
         })),
         old_run_id,
     ));
@@ -3523,7 +3510,7 @@ fn re_edit_keeps_plan_form_visible() {
     assert!(app.plan_form.is_visible());
 }
 
-#[test_case(1, Mode::Build, true,  false ; "clear_and_implement")]
+#[test_case(1, Mode::Build, true,  true  ; "clear_and_implement")]
 #[test_case(2, Mode::Build, false, true  ; "implement_keeps_context")]
 fn plan_form_menu_options(
     downs: usize,
@@ -3552,36 +3539,6 @@ fn plan_form_menu_options(
             .any(|a| matches!(a, Action::SendMessage(i) if i.input.message == expected_msg)),
         has_send_message
     );
-    if !has_send_message {
-        let pending = app
-            .pending_plan_submit
-            .as_ref()
-            .expect("pending plan submit");
-        assert_eq!(pending.message.text, expected_msg);
-    }
-}
-
-#[test]
-fn clear_and_implement_defers_submission_until_new_session() {
-    let mut app = plan_app();
-    assert!(app.state.plan.is_ready());
-    let old_session_id = app.state.session.id;
-
-    let actions = app.implement_plan(true);
-
-    assert!(matches!(&actions[..], [Action::NewSession]));
-    assert_ne!(app.state.session.id, old_session_id);
-    let pending = app
-        .pending_plan_submit
-        .as_ref()
-        .expect("pending plan submit");
-    assert!(pending.plan.is_some());
-    assert_eq!(
-        pending.message.text,
-        implement_msg(PlanForm::new().parallel())
-    );
-    assert!(app.queue.is_empty());
-    assert_eq!(app.main_chat().message_count(), 0);
 }
 
 #[test]

@@ -1,1 +1,0 @@
-Fixed bash tool RTK auto-rewrite coverage: `cargo` commands with `--`, `cargo nextest run`, `head -n N`, and read-only `git` subcommands (`remote`, `config`, `tag`, etc.) are now routed through `rtk` when possible. Updated prompts and AGENTS.md to stop claiming `jq`/`yq` are rewritten.

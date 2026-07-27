@@ -20,7 +20,7 @@ use n00n_storage::sessions::TranscriptEntry;
 
 use self::cancel_map::new_run_cancel_map;
 use n00n_providers::provider::Provider;
-use n00n_providers::{Message, Model, OpenAiOptions, System};
+use n00n_providers::{Message, Model, OpenAiOptions};
 use tracing::{info, warn};
 
 use crate::app::App;
@@ -47,7 +47,7 @@ pub(crate) struct AgentHandles {
     pub(crate) answer_tx: flume::Sender<String>,
     pub(crate) history: Arc<ArcSwap<Vec<Message>>>,
     pub(crate) transcript: n00n_agent::SharedTranscript,
-    pub(crate) btw_system: Arc<ArcSwap<System>>,
+    pub(crate) btw_system: Arc<ArcSwap<String>>,
     pub(crate) tool_outputs: Arc<Mutex<HashMap<String, ToolOutput>>>,
     pub(crate) mcp_handle: Option<McpHandle>,
     pub(crate) mcp_config_errors: McpConfigErrors,
@@ -152,12 +152,6 @@ impl AgentHandles {
             lua_handle,
         );
         let old = mem::replace(self, new);
-        // Drain pending messages from the old queue and push them to the new queue
-        // to avoid losing work during agent respawn.
-        let pending = old.queue.drain_all();
-        for item in pending {
-            self.queue.push(item);
-        }
         // Repoint the app at the new queue before dropping `old`, otherwise the app keeps
         // the last old `QueueSender` alive and the old loop parks in `recv_notify` forever.
         self.apply_to_app(app);
@@ -232,7 +226,7 @@ fn spawn_agent_internal(
     };
     let shared_transcript: n00n_agent::SharedTranscript =
         Arc::new(ArcSwap::from_pointee(transcript_snapshot));
-    let btw_system: Arc<ArcSwap<System>> = Arc::new(ArcSwap::from_pointee(System::default()));
+    let btw_system: Arc<ArcSwap<String>> = Arc::new(ArcSwap::from_pointee(String::new()));
     let shared_tool_outputs: Arc<Mutex<HashMap<String, ToolOutput>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let (init_trigger, init_cancel) = CancelToken::new();

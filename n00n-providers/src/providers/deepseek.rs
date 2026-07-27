@@ -3,12 +3,12 @@ use std::sync::{Arc, Mutex};
 use flume::Sender;
 use n00n_storage::id::SessionRef;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 use tracing::warn;
 
 use crate::model::{Model, ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider};
-use crate::types::{ProviderUsage, System, UsageLimit};
+use crate::types::{ProviderUsage, UsageLimit};
 use crate::{
     AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, ThinkingConfig, dialect,
 };
@@ -157,7 +157,7 @@ impl Provider for DeepSeek {
         &'a self,
         model: &'a Model,
         messages: &'a [Message],
-        system: &'a System,
+        system: &'a str,
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
@@ -169,17 +169,18 @@ impl Provider for DeepSeek {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
+            let mut buf = String::new();
+            let system = super::with_prefix(self.system_prefix.as_deref(), system, &mut buf);
             let mut body = self.compat.build_body_with_session(
                 model,
                 messages,
                 system,
                 tools,
                 session_id.map(n00n_storage::id::SessionRef::as_str),
-                self.system_prefix.as_deref(),
             );
 
             if opts.thinking.is_enabled() {
-                body["thinking"] = json!({"type": "enabled"});
+                body["thinking"] = serde_json::json!({"type": "enabled"});
                 opts.thinking
                     .apply_reasoning_effort(&mut body, &dialect::DEEPSEEK, model);
                 if matches!(opts.thinking, ThinkingConfig::Budget(_)) {
@@ -187,7 +188,7 @@ impl Provider for DeepSeek {
                 }
                 pad_reasoning_content(&model.id, &mut body);
             } else {
-                body["thinking"] = json!({"type": "disabled"});
+                body["thinking"] = serde_json::json!({"type": "disabled"});
             }
 
             self.compat

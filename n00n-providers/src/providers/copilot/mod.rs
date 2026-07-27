@@ -17,7 +17,7 @@ use crate::model::{Model, ModelEntry, ModelFamily, ModelInfo, ModelPricing, Mode
 use crate::provider::{BoxFuture, Provider};
 use crate::{
     AgentError, Effort, EffortDialect, Message, ProviderEvent, RequestOptions, StreamResponse,
-    System, ThinkingConfig, dialect,
+    ThinkingConfig, dialect,
 };
 
 pub mod auth;
@@ -239,11 +239,10 @@ impl Copilot {
         event_tx: &Sender<ProviderEvent>,
     ) -> Result<StreamResponse, AgentError> {
         let auth = self.auth().await?;
-        let system_text = system.to_string();
         let wire_tools = openai_compat::convert_tools(tools);
         let mut body = json!({
             "model": model.id,
-            "messages": openai_compat::convert_messages(messages, Some(&system_text), false),
+            "messages": openai_compat::convert_messages(messages, system, false),
             "n": 1,
             "stream": true,
             "temperature": 0.1,
@@ -299,8 +298,7 @@ impl Copilot {
         thinking: ThinkingConfig,
     ) -> Result<StreamResponse, AgentError> {
         let auth = self.auth().await?;
-        let system = System::from(system);
-        let mut body = responses::build_body(model, messages, &system, tools, None, None, false);
+        let mut body = responses::build_body(model, messages, system, tools, None, None, false);
         if let Some(info) = self.reasoning_info_for(model) {
             apply_responses_reasoning(&mut body, thinking, model, &effort_dialect(&info));
         }
@@ -330,11 +328,10 @@ impl Copilot {
         thinking: ThinkingConfig,
     ) -> Result<StreamResponse, AgentError> {
         let auth = self.auth().await?;
-        let system_text = system.to_string();
         let mut body = json!({
             "model": model.id,
             "max_tokens": model.max_output_tokens.unwrap_or_else(|| shared::FALLBACK_MAX_TOKENS),
-            "system": [{"type": "text", "text": system_text}],
+            "system": [{"type": "text", "text": system}],
             "messages": anthropic_messages(messages),
             "tools": tools,
             "stream": true,
@@ -712,7 +709,7 @@ impl Provider for Copilot {
         &'a self,
         model: &'a Model,
         messages: &'a [Message],
-        system: &'a System,
+        system: &'a str,
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
@@ -720,12 +717,8 @@ impl Provider for Copilot {
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
             let mut prefixed_system = String::new();
-            let system_text = system.to_string();
-            let system = super::with_prefix(
-                self.system_prefix.as_deref(),
-                &system_text,
-                &mut prefixed_system,
-            );
+            let system =
+                super::with_prefix(self.system_prefix.as_deref(), system, &mut prefixed_system);
             let endpoint = self.model_endpoint(&model.id).await?;
             debug!(model = %model.id, ?endpoint, "running Copilot request");
             match endpoint {

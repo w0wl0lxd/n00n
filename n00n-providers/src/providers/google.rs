@@ -16,7 +16,7 @@ use crate::model::{Model, ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider};
 use crate::{
     AgentError, ContentBlock, Message, ProviderEvent, RequestOptions, Role, StopReason,
-    StreamResponse, System, ThinkingConfig, TokenUsage,
+    StreamResponse, ThinkingConfig, TokenUsage,
 };
 
 use super::{KeyPool, ResolvedAuth, http_client, next_sse_line};
@@ -249,21 +249,20 @@ impl Google {
     async fn create_cached_content(
         &self,
         model_id: &str,
-        system: &System,
+        system: &str,
         tools: &Value,
         messages: &[Message],
     ) -> Result<(String, usize), AgentError> {
         let url = self.cached_contents_url();
         let prefix_len = messages.len().min(CACHE_PREFIX_LEN);
-        let system_text = system.to_string();
 
         let mut body = json!({
             "model": format!("models/{}", model_id),
             "contents": convert_messages(&messages[..prefix_len]),
         });
 
-        if !system_text.is_empty() {
-            body["systemInstruction"] = json!({"parts": [{"text": system_text}]});
+        if !system.is_empty() {
+            body["systemInstruction"] = json!({"parts": [{"text": system}]});
         }
 
         let tool_decls = convert_tools(tools);
@@ -317,17 +316,16 @@ impl Google {
     fn build_body(
         model: &Model,
         messages: &[Message],
-        system: &System,
+        system: &str,
         tools: &Value,
         thinking: ThinkingConfig,
     ) -> Value {
-        let system_text = system.to_string();
         let mut body = json!({
             "contents": convert_messages(messages),
         });
 
-        if !system_text.is_empty() {
-            body["systemInstruction"] = json!({"parts": [{"text": system_text}]});
+        if !system.is_empty() {
+            body["systemInstruction"] = json!({"parts": [{"text": system}]});
         }
 
         thinking.apply_google_thinking(&mut body, max_thinking(model));
@@ -348,7 +346,7 @@ impl Google {
         &self,
         model: &Model,
         messages: &[Message],
-        system: &System,
+        system: &str,
         tools: &Value,
         event_tx: &Sender<ProviderEvent>,
         thinking: ThinkingConfig,
@@ -378,7 +376,7 @@ impl Provider for Google {
         &'a self,
         model: &'a Model,
         messages: &'a [Message],
-        system: &'a System,
+        system: &'a str,
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
@@ -462,7 +460,7 @@ impl Provider for Google {
             let mut body = Self::build_body(
                 model,
                 &messages[cached_count..],
-                &System::default(),
+                "",
                 &no_tools,
                 opts.thinking,
             );
@@ -858,7 +856,7 @@ mod tests {
         let body = Google::build_body(
             &model,
             &messages,
-            &System::from("be helpful"),
+            "be helpful",
             &json!([]),
             ThinkingConfig::Off,
         );
@@ -875,7 +873,7 @@ mod tests {
         let body = Google::build_body(
             &test_model(),
             &messages,
-            &System::from(""),
+            "",
             &json!([]),
             ThinkingConfig::Adaptive,
         );
@@ -892,7 +890,7 @@ mod tests {
         let body = Google::build_body(
             &test_model(),
             &messages,
-            &System::from(""),
+            "",
             &json!([]),
             ThinkingConfig::Budget(8192),
         );

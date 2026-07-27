@@ -12,19 +12,12 @@ use tracing::{debug, warn};
 
 use super::ResolvedAuth;
 use crate::{
-    AgentError, CacheControl, ContentBlock, Message, ProviderEvent, Role, StopReason,
-    StreamResponse, System, TokenUsage,
+    AgentError, ContentBlock, Message, ProviderEvent, Role, StopReason, StreamResponse, TokenUsage,
 };
 
 const STREAM_DONE: &str = "[DONE]";
 const GPT_5_6_BREAKPOINT_PREFIX: &str = "gpt-5.6-";
 const GPT_CODEX_MARKER: &str = "-codex";
-
-fn model_supports_breakpoint(model: &crate::model::Model) -> bool {
-    model.family == crate::model::ModelFamily::Gpt
-        && model.id.starts_with(GPT_5_6_BREAKPOINT_PREFIX)
-        && !model.id.contains(GPT_CODEX_MARKER)
-}
 
 fn suppress_retry_after_response(error: AgentError) -> AgentError {
     if error.is_retryable() {
@@ -179,16 +172,11 @@ impl OpenAiCompatProvider {
         &self,
         model: &crate::model::Model,
         messages: &[Message],
-        system: &System,
+        system: &str,
         tools: &Value,
         session_id: Option<&str>,
-        system_prefix: Option<&str>,
     ) -> Value {
-        let mut wire_messages =
-            convert_messages(messages, None, self.config.emit_reasoning_content);
-        if let Some(system_message) = self.build_system_message(system, system_prefix, model) {
-            wire_messages.insert(0, system_message);
-        }
+        let wire_messages = convert_messages(messages, system, self.config.emit_reasoning_content);
         let wire_tools = self.wire_tools(tools);
 
         let mut body = json!({
@@ -205,52 +193,28 @@ impl OpenAiCompatProvider {
         if wire_tools.as_array().is_some_and(|a| !a.is_empty()) {
             body["tools"] = wire_tools;
         }
-        if let Some(sid) = session_id
-            && self.config.supports_prompt_cache_key
-        {
-            body["prompt_cache_key"] = json!(sid);
+        if let Some(sid) = session_id {
+            if self.config.supports_prompt_cache_key {
+                body["prompt_cache_key"] = json!(sid);
+            }
+            if self.config.supports_prompt_cache_breakpoint
+                && model.family == crate::model::ModelFamily::Gpt
+                && model.id.starts_with(GPT_5_6_BREAKPOINT_PREFIX)
+                && !model.id.contains(GPT_CODEX_MARKER)
+                && let Some(msg) = body["messages"].as_array_mut().and_then(|arr| {
+                    arr.iter_mut()
+                        .find(|m| m.get("role").and_then(Value::as_str) == Some("system"))
+                })
+                && let Some(content) = msg.get("content").and_then(Value::as_str)
+            {
+                msg["content"] = json!([{
+                    "type": "text",
+                    "text": content,
+                    "prompt_cache_breakpoint": {"mode": "explicit"}
+                }]);
+            }
         }
         body
-    }
-
-    fn build_system_message(
-        &self,
-        system: &System,
-        prefix: Option<&str>,
-        model: &crate::model::Model,
-    ) -> Option<Value> {
-        let mut blocks: Vec<(&str, bool)> = Vec::new();
-        if let Some(prefix) = prefix
-            && !prefix.is_empty()
-        {
-            blocks.push((prefix, false));
-        }
-        for block in system.blocks() {
-            blocks.push((
-                block.text.as_str(),
-                block.cache == CacheControl::Ephemeral
-                    && self.config.supports_prompt_cache_breakpoint
-                    && model_supports_breakpoint(model),
-            ));
-        }
-        if blocks.is_empty() {
-            return None;
-        }
-        if blocks.iter().any(|(_, breakpoint)| *breakpoint) {
-            Some(json!({
-                "role": "system",
-                "content": blocks.iter().map(|(text, breakpoint)| {
-                    let mut obj = json!({"type": "text", "text": text});
-                    if *breakpoint {
-                        obj["prompt_cache_breakpoint"] = json!({"mode": "explicit"});
-                    }
-                    obj
-                }).collect::<Vec<Value>>()
-            }))
-        } else {
-            let text = blocks.iter().map(|(text, _)| *text).collect::<String>();
-            Some(json!({"role": "system", "content": text}))
-        }
     }
 
     /// Effective base URL: an auth-supplied value (dynamic/custom providers)
@@ -396,13 +360,10 @@ impl OpenAiCompatProvider {
 
 pub fn convert_messages(
     messages: &[Message],
-    system: Option<&str>,
+    system: &str,
     emit_reasoning_content: bool,
 ) -> Vec<Value> {
-    let mut out = Vec::new();
-    if let Some(system) = system {
-        out.push(json!({"role": "system", "content": system}));
-    }
+    let mut out = vec![json!({"role": "system", "content": system})];
 
     for msg in messages {
         match msg.role {
@@ -1007,7 +968,7 @@ data: [DONE]\n";
             },
         ];
 
-        let wire = convert_messages(&messages, Some("be helpful"), false);
+        let wire = convert_messages(&messages, "be helpful", false);
 
         assert_eq!(wire[0]["role"], "system");
         assert_eq!(wire[0]["content"], "be helpful");
@@ -1161,7 +1122,7 @@ data: [DONE]\n";
         use std::sync::Arc;
         let source = ImageSource::new(ImageMediaType::Png, Arc::from("abc123"));
         let msgs = vec![Message::user_with_images("describe".into(), vec![source])];
-        let result = convert_messages(&msgs, Some("system"), false);
+        let result = convert_messages(&msgs, "system", false);
         let user = &result[1];
         let content = user["content"].as_array().unwrap();
         assert_eq!(content.len(), 2);
@@ -1194,7 +1155,7 @@ data: [DONE]\n";
             ],
             ..Default::default()
         }];
-        let result = convert_messages(&msgs, Some("system"), false);
+        let result = convert_messages(&msgs, "system", false);
         assert_eq!(result[1]["role"], "tool");
         assert_eq!(result[1]["tool_call_id"], "t1");
         assert_eq!(result[2]["role"], "user");
@@ -1204,7 +1165,7 @@ data: [DONE]\n";
     #[test]
     fn convert_messages_user_text_only_stays_string() {
         let msgs = vec![Message::user("hello".into())];
-        let result = convert_messages(&msgs, Some("system"), false);
+        let result = convert_messages(&msgs, "system", false);
         assert!(result[1]["content"].is_string());
     }
 
@@ -1223,7 +1184,7 @@ data: [DONE]\n";
             ],
             ..Default::default()
         }];
-        let wire = convert_messages(&messages, Some(""), false);
+        let wire = convert_messages(&messages, "", false);
         let asst = &wire[1];
         assert_eq!(asst["role"], "assistant");
         assert_eq!(asst["content"], "Hello");
@@ -1240,7 +1201,7 @@ data: [DONE]\n";
             }],
             ..Default::default()
         }];
-        let wire = convert_messages(&messages, Some(""), false);
+        let wire = convert_messages(&messages, "", false);
         let asst = &wire[1];
         assert_eq!(asst["role"], "assistant");
         assert_eq!(asst["content"], "Just thinking...");
@@ -1325,10 +1286,9 @@ data: [DONE]\n";
         let body = provider.build_body_with_session(
             &model,
             &messages,
-            &System::from("system"),
+            "system",
             &tools,
             Some("session-123"),
-            None,
         );
 
         assert_eq!(body["prompt_cache_key"], "session-123");
@@ -1353,14 +1313,7 @@ data: [DONE]\n";
         let messages = vec![Message::user("hello".to_string())];
         let tools = json!([]);
 
-        let body = provider.build_body_with_session(
-            &model,
-            &messages,
-            &System::from("system"),
-            &tools,
-            None,
-            None,
-        );
+        let body = provider.build_body_with_session(&model, &messages, "system", &tools, None);
 
         assert!(body.get("prompt_cache_key").is_none());
     }
@@ -1387,10 +1340,9 @@ data: [DONE]\n";
         let body = provider.build_body_with_session(
             &model,
             &messages,
-            &System::from("be helpful"),
+            "be helpful",
             &tools,
             Some("session-123"),
-            None,
         );
 
         let system_msg = &body["messages"][0];

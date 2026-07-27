@@ -11,7 +11,7 @@ use tracing::{debug, warn};
 use crate::providers::ResolvedAuth;
 use crate::{
     AgentError, ContentBlock, Message, ProviderEvent, RequestDeliveryMetadata,
-    RequestDeliveryPhase, Role, StopReason, StreamResponse, System, TokenUsage,
+    RequestDeliveryPhase, Role, StopReason, StreamResponse, TokenUsage,
 };
 
 const RESPONSES_PATH: &str = "/responses";
@@ -27,7 +27,7 @@ pub(crate) fn response_in_flight_timeout(stream_timeout: Duration) -> Duration {
 pub(crate) fn build_body(
     model: &crate::model::Model,
     messages: &[Message],
-    system: &System,
+    system: &str,
     tools: &Value,
     previous_response_id: Option<&str>,
     prompt_cache_key: Option<&str>,
@@ -38,7 +38,7 @@ pub(crate) fn build_body(
 
     let mut body = json!({
         "model": model.id,
-        "instructions": system.to_string(),
+        "instructions": system,
         "input": input,
         "stream": true,
         "store": store,
@@ -864,15 +864,6 @@ fn parse_usage(u: &Value) -> TokenUsage {
             Err(_) => u32::MAX,
         },
     );
-    let reasoning_tokens = u["output_tokens_details"]["reasoning_tokens"]
-        .as_u64()
-        .map_or_else(
-            || 0,
-            |v| match u32::try_from(v) {
-                Ok(v) => v,
-                Err(_) => u32::MAX,
-            },
-        );
 
     let cached = u["input_tokens_details"]["cached_tokens"]
         .as_u64()
@@ -896,19 +887,16 @@ fn parse_usage(u: &Value) -> TokenUsage {
     let fresh_input = input_tokens
         .saturating_sub(cached)
         .saturating_sub(cache_write);
-    let total_output = output_tokens.saturating_add(reasoning_tokens);
     debug!(
         fresh_input_tokens = fresh_input,
         cache_read_tokens = cached,
         cache_write_tokens = cache_write,
         output_tokens,
-        reasoning_tokens,
-        total_output,
         "OpenAI Responses token usage"
     );
     TokenUsage {
         input: fresh_input,
-        output: total_output,
+        output: output_tokens,
         cache_read: cached,
         cache_creation: cache_write,
     }
@@ -1159,7 +1147,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
             let (_, resp) = resp.unwrap();
 
             assert_eq!(resp.usage.input, 90);
-            assert_eq!(resp.usage.output, 25);
+            assert_eq!(resp.usage.output, 20);
             assert_eq!(resp.usage.cache_read, 10);
 
             assert_eq!(resp.message.content.len(), 2);
@@ -1237,7 +1225,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"o
             let (_, resp) = resp.unwrap();
 
             assert!(resp.message.content.is_empty());
-            assert_eq!(resp.usage.output, 10);
+            assert_eq!(resp.usage.output, 5);
         });
     }
 
@@ -1511,7 +1499,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
         let body = build_body(
             &model,
             &[],
-            &System::from("system"),
+            "system",
             &json!([]),
             Some("resp_1"),
             Some("session_1"),

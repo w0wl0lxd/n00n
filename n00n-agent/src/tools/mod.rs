@@ -412,7 +412,7 @@ pub fn all_builtin_tool_names() -> Vec<&'static str> {
         .collect()
 }
 
-use n00n_providers::{Message, ProviderEvent, StreamResponse, System};
+use n00n_providers::{Message, ProviderEvent, StreamResponse};
 
 struct NullProvider;
 
@@ -421,7 +421,7 @@ impl Provider for NullProvider {
         &'a self,
         _: &'a Model,
         _: &'a [Message],
-        _: &'a System,
+        _: &'a str,
         _: &'a Value,
         _: &'a flume::Sender<ProviderEvent>,
         _: RequestOptions,
@@ -531,7 +531,6 @@ pub mod test_support {
     use std::borrow::Cow;
 
     use crate::{Envelope, EventSender, ToolOutput};
-    use serde_json::json;
 
     use super::{
         AgentMode, Arc, CancelToken, DescriptionContext, FileReadTracker, LazyLock,
@@ -568,7 +567,7 @@ pub mod test_support {
             "guarded mock".into()
         }
         fn schema(&self) -> Value {
-            json!({"type": "object", "properties": {}, "additionalProperties": false})
+            serde_json::json!({"type": "object", "properties": {}, "additionalProperties": false})
         }
         fn parse(
             &self,

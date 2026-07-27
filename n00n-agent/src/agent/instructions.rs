@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use n00n_providers::{System, model::Model};
+use n00n_providers::model::Model;
 
 use crate::AgentMode;
 use crate::command::find_project_ancestor_dirs;
@@ -65,21 +65,20 @@ pub fn build_system_prompt(
     instructions: &str,
     slots: &crate::prompt::ResolvedSlots,
     model: &Model,
-) -> System {
+) -> String {
     let env = vars.apply(
         "\n\nEnvironment:\n- Working directory: {cwd}\n- Platform: {platform}\n- Date: {date}",
     );
     let env = format!("{env}\n- Model: {}", model.spec());
     let instructions = format!("{env}{instructions}");
-    let mut system =
-        crate::prompt::assemble_system(crate::prompt::PromptId::System, slots, &instructions);
+    let mut out = crate::prompt::assemble(crate::prompt::PromptId::System, slots, &instructions);
 
     if let Some(plan_path) = mode.plan_path() {
         let plan_vars = Vars::new().set("{plan_path}", plan_path.display().to_string());
-        system.push_dynamic(plan_vars.apply(crate::prompt::PLAN_PROMPT));
+        out.push_str(&plan_vars.apply(crate::prompt::PLAN_PROMPT));
     }
 
-    system
+    out
 }
 
 fn read_instruction(path: &Path, loaded: &LoadedInstructions) -> Option<(PathBuf, String)> {
@@ -239,7 +238,7 @@ mod tests {
         let vars = Vars::new().set("{cwd}", "/tmp").set("{platform}", "linux");
         let slots = crate::prompt::ResolvedSlots::default();
         let model = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
-        let prompt = build_system_prompt(&vars, mode, "", &slots, &model).to_string();
+        let prompt = build_system_prompt(&vars, mode, "", &slots, &model);
         assert_eq!(prompt.contains("Plan Mode"), expect_plan);
         if expect_plan {
             assert!(prompt.contains(PLAN_PATH));
@@ -267,8 +266,7 @@ mod tests {
             &format!("\n{INSTR}"),
             &slots,
             &Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap(),
-        )
-        .to_string();
+        );
         let positions = [INSTR, EXTRA, "Plan Mode"].map(|n| prompt.find(n).unwrap());
         assert!(
             positions.is_sorted(),

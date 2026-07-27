@@ -19,10 +19,7 @@ use n00n_storage::auth::load_provider_credentials;
 use crate::model::{Model, ModelInfo, ModelPricing};
 use crate::provider::{BoxFuture, Provider};
 use crate::providers::openai_compat::OpenAiCompatProvider;
-use crate::{
-    AgentError, CacheControl, Message, ProviderEvent, RequestOptions, StreamResponse, System,
-    dialect,
-};
+use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, dialect};
 
 use super::{ResolvedAuth, http_client};
 use crate::providers::anthropic::shared;
@@ -491,7 +488,7 @@ impl Opencode {
         &self,
         model: &Model,
         messages: &[Message],
-        system: &System,
+        system: &str,
         tools: &Value,
         event_tx: &Sender<ProviderEvent>,
         auth: &ResolvedAuth,
@@ -504,7 +501,6 @@ impl Opencode {
             system,
             tools,
             session_id.map(n00n_storage::id::SessionRef::as_str),
-            self.system_prefix.as_deref(),
         );
         opts.thinking
             .apply_reasoning_effort(&mut body, &dialect::PREFER_HIGH, model);
@@ -518,28 +514,17 @@ impl Opencode {
         &self,
         model: &Model,
         messages: &[Message],
-        system: &System,
+        system: &str,
         tools: &Value,
         event_tx: &Sender<ProviderEvent>,
         auth: &ResolvedAuth,
         opts: &RequestOptions,
     ) -> Result<StreamResponse, AgentError> {
-        let mut system_blocks: Vec<shared::SystemBlock<'_>> = Vec::new();
-        if let Some(prefix) = self.system_prefix.as_deref() {
-            system_blocks.push(shared::SystemBlock {
-                r#type: "text",
-                text: prefix,
-                cache_control: None,
-            });
-        }
-        for block in system.blocks() {
-            system_blocks.push(shared::SystemBlock {
-                r#type: "text",
-                text: &block.text,
-                cache_control: (block.cache == CacheControl::Ephemeral)
-                    .then_some(shared::EPHEMERAL),
-            });
-        }
+        let system_blocks = vec![shared::SystemBlock {
+            r#type: "text",
+            text: system,
+            cache_control: Some(shared::EPHEMERAL),
+        }];
         let mut body = shared::build_request_body_with_system(
             model,
             messages,
@@ -609,7 +594,7 @@ impl Provider for Opencode {
         &'a self,
         model: &'a Model,
         messages: &'a [Message],
-        system: &'a System,
+        system: &'a str,
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
@@ -624,6 +609,9 @@ impl Provider for Opencode {
                 .unwrap_or_else(|| ("opencode", model_id));
 
             let (meta, api_format, auth) = self.lookup(sub_provider, actual_id).await?;
+
+            let mut buf = String::new();
+            let system = super::with_prefix(self.system_prefix.as_deref(), system, &mut buf);
 
             let model = Model {
                 id: actual_id.to_string(),

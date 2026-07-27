@@ -5,7 +5,6 @@ use async_lock::Mutex;
 use flume::Receiver;
 use n00n_providers::Message;
 use n00n_providers::OpenAiOptions;
-use n00n_providers::System;
 use n00n_providers::Timeouts;
 use n00n_providers::TokenUsage;
 use n00n_providers::model::Model;
@@ -385,9 +384,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                     model = new_model;
                 }
 
-                let mut system = if let Some(override_) = params.system_prompt_override.as_deref() {
-                    System::from(override_)
-                } else {
+                let mut system = params.system_prompt_override.clone().unwrap_or_else(|| {
                     agent::build_system_prompt(
                         &vars,
                         &input.mode,
@@ -395,9 +392,10 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                         &params.prompt_slots,
                         &model,
                     )
-                };
+                });
                 if let Some(append) = &params.append_system_prompt {
-                    system.push_static(format!("\n{append}"));
+                    system.push('\n');
+                    system.push_str(append);
                 }
 
                 let (trigger, cancel) = CancelToken::new();
@@ -488,7 +486,6 @@ fn extract_tool_names(tools: &Value) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use n00n_storage::sessions::generate_title;
-    use serde_json::json;
     use tempfile::TempDir;
 
     use super::*;
@@ -560,7 +557,7 @@ mod tests {
 
     #[test]
     fn extract_tool_names_filters_valid_entries() {
-        let tools = json!([{"name": "read"}, {"type": "function"}, {"name": "bash"}]);
+        let tools = serde_json::json!([{"name": "read"}, {"type": "function"}, {"name": "bash"}]);
         assert_eq!(extract_tool_names(&tools), vec!["read", "bash"]);
     }
 }

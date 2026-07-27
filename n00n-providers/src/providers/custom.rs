@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use flume::Sender;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use n00n_config::providers::{
     Protocol, ProviderDef, ProvidersConfig, resolve_api_key_env, resolve_base_url, resolve_protocol,
@@ -15,7 +15,7 @@ use crate::manifest::ManifestRegistry;
 use crate::model::{FastPricing, Model, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider, ProviderKind};
 use crate::providers::Timeouts;
-use crate::types::{System, ThinkingConfig};
+use crate::types::ThinkingConfig;
 use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse};
 
 include!(concat!(env!("OUT_DIR"), "/provider_configs/custom.rs"));
@@ -276,7 +276,7 @@ impl Provider for CustomOpenAiProvider {
         &'a self,
         model: &'a Model,
         messages: &'a [Message],
-        system: &'a System,
+        system: &'a str,
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
@@ -310,10 +310,9 @@ impl Provider for CustomOpenAiProvider {
                 system,
                 tools,
                 session_id.map(n00n_storage::id::SessionRef::as_str),
-                None,
             );
             if matches!(opts.thinking, ThinkingConfig::Off) {
-                body["thinking"] = json!({"type": "disabled"});
+                body["thinking"] = serde_json::json!({"type": "disabled"});
             }
             self.compat
                 .do_stream(model, &[], &body, event_tx, &auth)

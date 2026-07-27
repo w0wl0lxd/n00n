@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use crate::model::{Model, ModelEntry, ModelInfo, ModelPricing};
 use crate::provider::{BoxFuture, Provider};
-use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, System, dialect};
+use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, dialect};
 
 use super::openai_compat::OpenAiCompatProvider;
 use super::{KeyPool, ResolvedAuth};
@@ -77,7 +77,7 @@ impl Provider for TensorX {
         &'a self,
         model: &'a Model,
         messages: &'a [Message],
-        system: &'a System,
+        system: &'a str,
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
@@ -89,13 +89,14 @@ impl Provider for TensorX {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
+            let mut buf = String::new();
+            let system = super::with_prefix(self.system_prefix.as_deref(), system, &mut buf);
             let mut body = self.compat.build_body_with_session(
                 model,
                 messages,
                 system,
                 tools,
                 session_id.map(n00n_storage::id::SessionRef::as_str),
-                self.system_prefix.as_deref(),
             );
 
             let (has_thinking, has_reasoning_effort) = {
