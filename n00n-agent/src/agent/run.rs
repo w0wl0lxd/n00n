@@ -325,6 +325,11 @@ impl<'h> Agent<'h> {
         // Filter the caller-supplied tool list in place. Rebuilding from the
         // global registry would replace curated/session-local definitions
         // (e.g. structured_output) and expand restricted ToolFilter sets.
+        // Extend MCP definitions first so always-load and loaded tools are not
+        // dropped when the caller's list did not rebuild from the registry.
+        if let Some(mcp) = self.mcp.as_ref() {
+            mcp.extend_tools(&mut self.tools);
+        }
         filter_tools_for_mode(&mut self.tools, &self.mode);
         self.context_size = estimate_message_tokens(self.history.as_slice(), &self.model.id)
             .saturating_add(estimate_tool_tokens(&self.tools, &self.model.id));

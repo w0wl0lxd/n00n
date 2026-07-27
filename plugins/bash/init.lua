@@ -291,6 +291,20 @@ local GIT_SANITIZE_SUBCOMMANDS = {
   log = true,
 }
 
+-- Global git options that consume the following word as their value.
+-- Long options can also use `=value`, which is handled inline.
+local GIT_ARG_OPTIONS = {
+  ["-C"] = true,
+  ["-c"] = true,
+  ["--work-tree"] = true,
+  ["--git-dir"] = true,
+  ["--namespace"] = true,
+  ["--super-prefix"] = true,
+  ["--exec-path"] = true,
+  ["--config-env"] = true,
+  ["--blob"] = true,
+}
+
 local function split_shell_words(command)
   local words = {}
   local index = 1
@@ -325,11 +339,18 @@ local function sanitize_git_command(command)
 
   local has_optional_locks = false
   local subcommand_index = nil
+  local skip_next = false
   for i = 2, #words do
-    if words[i] == "--no-optional-locks" and not subcommand_index then
+    if skip_next then
+      skip_next = false
+    elseif words[i] == "--no-optional-locks" and not subcommand_index then
       has_optional_locks = true
-    end
-    if words[i]:sub(1, 1) ~= "-" and not subcommand_index then
+    elseif words[i]:sub(1, 1) == "-" and not subcommand_index then
+      -- If this option takes a separate argument, the next word is its value.
+      if not words[i]:find("=", 1, true) and GIT_ARG_OPTIONS[words[i]] then
+        skip_next = true
+      end
+    elseif not subcommand_index then
       subcommand_index = i
       break
     end
