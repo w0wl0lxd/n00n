@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785141806836,
+  "lastUpdate": 1785141977433,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -7017,6 +7017,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 194530,
             "range": "± 7674",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2f4168a91efaaad6e6df99e5100559dd944c0710",
+          "message": "perf: reduce per-turn token overhead (#132)\n\n* fix(devin): model names/pricing and thinking hang\n\nAdd display names and pricing for Devin ACP private models, and fix hang\nwhen models emit only reasoning without final text.\n\n- Add name field to ModelInfo and populate from Devin's session options\n- Add heuristics for MODEL_PRIVATE_* context window, output tokens, pricing\n- Update model picker to display discovered names instead of raw IDs\n- Capture thinking deltas in Devin provider and build proper content blocks\n- Remove invalid reasoning_content from OpenAI compat message conversion\n- Add nudge logic when assistant produces only reasoning without text\n- Add system prompt instruction to always end with user-facing answer\n\n* perf(agent): compress prompts, tighten output limits, and shorten compaction text\n\n- Compress system, general, research, plan, compaction, and compaction_user\n  prompt templates while preserving required markers and test substrings.\n- Tighten `ToolOutputLines` defaults and lower agent-wide max output\n  lines/bytes limits from 2000/50KiB to 500/16KiB.\n- Shorten `CONTINUE_AFTER_COMPACT` and reduce `KEEP_LAST_TOOL_RESULTS` to 2.\n- Reduce `DEFAULT_MCP_TOOL_DESC_MAX_CHARS` to 200.\n- Update `dynamic_tool_size.rs` to report prompt sizes and top per-tool costs.\n\n* refactor(tools): compress tool descriptions to reduce token cost\n\nShorten top-level descriptions and schema property descriptions for\nhigh-token tools (team, blackboard, code_execution, task, workflow, bash,\nagent_control, codegraph). Remove redundant prose while preserving meaning\nand schema structure. Remove examples from task and workflow (no test\nassertions).\n\n* fix(token-efficiency): address clippy and test regressions\n\n- Revert KEEP_LAST_TOOL_RESULTS to 3 to keep compaction test green.\n- Update test-only NATIVE_EFFICIENT_LINE constant to match shortened tool list.\n- Clean up dynamic_tool_size.rs for clippy (disallowed unwrap_or, sort_by_key,\n  format literal lints).\n\n* refactor(tools): further trim high-token tool descriptions and docs\n\n- Add output-limit note to `code_execution` tool description.\n- Restore concise prerequisites in `NATIVE_EFFICIENT_TOOLS`.\n- Compress `agent_control` schema property descriptions.\n\n* refactor(tools): compress remaining high-token tool descriptions\n\n- Shorten schema-property descriptions in `team`, `blackboard`, `task`,\n  `workflow`, `arbor`, and `codegraph`.\n- Shrink `workflow` and `codegraph` top-level descriptions while keeping\n  the essential API guidance and prerequisite notes.\n\n* docs: regenerate after main merge\n\n* docs: regenerate from branch sources",
+          "timestamp": "2026-07-27T08:15:08Z",
+          "tree_id": "75915fe00cfae87528ca1f50ed158f21aaa1f3df",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/2f4168a91efaaad6e6df99e5100559dd944c0710"
+        },
+        "date": 1785141976706,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6488665,
+            "range": "± 111983",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2461741,
+            "range": "± 6722",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2463079,
+            "range": "± 60711",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7600941,
+            "range": "± 21880",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3861865,
+            "range": "± 13911",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3862042,
+            "range": "± 57214",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 553638,
+            "range": "± 1247",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 167962,
+            "range": "± 185",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 167956,
+            "range": "± 1215",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1042455,
+            "range": "± 14837",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 646072,
+            "range": "± 4652",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 649302,
+            "range": "± 5040",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 62706,
+            "range": "± 6053",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 180326,
+            "range": "± 2239",
             "unit": "ns/iter"
           }
         ]
