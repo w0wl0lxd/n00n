@@ -1,5 +1,7 @@
 use mlua::{Lua, LuaSerdeExt, Result as LuaResult, Table};
-use n00n_arbor::{ArborError, Client};
+use n00n_arbor::{
+    ArborError, Client, graph_callees, graph_callers, graph_index_available, graph_trace_path,
+};
 
 use crate::docs::{DocKind, FnDoc, ModuleDoc, ParamDoc};
 
@@ -76,6 +78,31 @@ pub(crate) fn create_arbor_table(lua: &Lua) -> LuaResult<Table> {
         Ok(())
     })?;
     t.set("ensure_indexed", ensure_indexed)?;
+
+    let graph_available = lua.create_function(|_, project: String| {
+        Ok(graph_index_available(std::path::Path::new(&project)))
+    })?;
+    t.set("graph_index_available", graph_available)?;
+
+    let graph_callers_fn = lua.create_function(|lua, (symbol, project): (String, String)| {
+        value_or_err(lua, graph_callers(&symbol, std::path::Path::new(&project)))
+    })?;
+    t.set("graph_callers", graph_callers_fn)?;
+
+    let graph_callees_fn = lua.create_function(|lua, (symbol, project): (String, String)| {
+        value_or_err(lua, graph_callees(&symbol, std::path::Path::new(&project)))
+    })?;
+    t.set("graph_callees", graph_callees_fn)?;
+
+    let graph_trace = lua.create_function(
+        |lua, (from_symbol, to_symbol, project): (String, String, String)| {
+            value_or_err(
+                lua,
+                graph_trace_path(&from_symbol, &to_symbol, std::path::Path::new(&project)),
+            )
+        },
+    )?;
+    t.set("graph_trace_path", graph_trace)?;
 
     Ok(t)
 }
