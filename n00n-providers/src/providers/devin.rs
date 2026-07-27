@@ -52,6 +52,7 @@ inventory::submit!(n00n_config::providers::BuiltInProvider {
 
 const DEFAULT_COMMAND: &str = "devin";
 const REQUEST_PERMISSION_METHOD: &str = "session/request_permission";
+const API_KEY_AUTH_METHOD: &str = "api-key";
 const META_API_KEY: &str = "api_key";
 
 pub(crate) const fn models() -> &'static [ModelEntry] {
@@ -320,7 +321,7 @@ impl DevinInner {
             match response
                 .auth_methods
                 .iter()
-                .find(|m| m.id().to_string() == "api-key")
+                .find(|m| m.id().to_string() == API_KEY_AUTH_METHOD)
             {
                 Some(method) => {
                     let mut meta = Meta::new();

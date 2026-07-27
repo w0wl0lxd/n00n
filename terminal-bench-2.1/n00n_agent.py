@@ -89,9 +89,9 @@ def main() -> int:
                     continue
                 data = os.read(fd, 4096)
                 if not data:
-                    _info("stdin EOF, closing pty master")
+                    _info("stdin EOF, forwarding EOF to devin-real")
                     try:
-                        os.close(master)
+                        os.write(master, b"\\x04")
                     except OSError:
                         pass
                     break
