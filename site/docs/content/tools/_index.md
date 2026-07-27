@@ -18,9 +18,10 @@ Commands run in <cwd> by default.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `command` | string | yes |  | The bash command to execute |
 | `workdir` | string | no | cwd | Working directory |
 | `timeout` | integer | no | 120 | Timeout in seconds |
+| `command` | string | yes |  | The bash command to execute |
+| `justification` | string | no |  | Required when command is broad/unbounded. Explain scope and bound assumptions. |
 | `description` | string | no |  | Short description (3-5 words) of what the command does |
 
 ### `read` *(lua plugin)*
