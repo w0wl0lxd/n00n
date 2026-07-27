@@ -1,5 +1,11 @@
 //! TUI → `daemon.sock` registration: bridge live sessions via `UiAction::Session`.
 
+// The UDS test helpers are Unix-only, so silence Windows-only unused-item warnings.
+#![cfg_attr(
+    not(unix),
+    allow(dead_code, unused_imports, unused_variables, clippy::needless_return)
+)]
+
 use std::path::Path;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
