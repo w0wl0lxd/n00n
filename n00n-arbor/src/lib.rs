@@ -220,6 +220,13 @@ impl Client {
             .output()
             .map_err(|e| ArborError::Exec { source: e })?;
 
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(ArborError::Cli {
+                message: format!("status failed: {stderr}"),
+            });
+        }
+
         let status = String::from_utf8_lossy(&output.stdout);
         if status.contains("No index") || status.contains("not indexed") {
             let output = Command::new("arbor")
