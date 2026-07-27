@@ -92,7 +92,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     no_jit: cli.plugin_flags.no_jit,
                 };
                 if background {
-                    agent::server(&run_opts, id)?;
+                    agent::server(&run_opts, id.as_deref())?;
                 } else {
                     agent::run(&run_opts, json)?;
                 }
