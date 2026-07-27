@@ -10,15 +10,15 @@ use n00n_agent::{AgentInput, AgentMode, McpPromptRef};
 use n00n_providers::{Model, TokenUsage};
 use n00n_storage::id::n00nId;
 use n00n_storage::sessions::{
-    StoredImageMediaType, StoredImageSource, StoredMcpPrompt, StoredMode, StoredQueuedMessage,
-    StoredSubagent, StoredThinking,
+    StoredDelivery, StoredImageMediaType, StoredImageSource, StoredMcpPrompt, StoredMode,
+    StoredQueuedMessage, StoredSubagent, StoredThinking,
 };
 
 use crate::AppSession;
 
 use super::session_state::{SessionState, stored_to_rules};
 use super::{App, Mode, PendingInput, PlanState};
-use crate::agent::QueuedMessage;
+use crate::agent::{Delivery, QueuedMessage};
 
 /// The single content predicate: `App::save_session` persists a session
 /// iff this holds, and the shutdown path reuses it to tell which tabs were
@@ -67,7 +67,23 @@ fn restored_image(image: StoredImageSource) -> n00n_agent::ImageSource {
     n00n_agent::ImageSource::new(media_type, Arc::from(image.data))
 }
 
-fn stored_message(input: AgentInput) -> StoredQueuedMessage {
+fn stored_delivery(delivery: Delivery) -> StoredDelivery {
+    match delivery {
+        Delivery::TurnEnd => StoredDelivery::TurnEnd,
+        Delivery::Steering => StoredDelivery::Steering,
+        Delivery::Immediate => StoredDelivery::Immediate,
+    }
+}
+
+fn restored_delivery(delivery: StoredDelivery) -> Delivery {
+    match delivery {
+        StoredDelivery::TurnEnd => Delivery::TurnEnd,
+        StoredDelivery::Steering => Delivery::Steering,
+        StoredDelivery::Immediate => Delivery::Immediate,
+    }
+}
+
+fn stored_message(input: AgentInput, delivery: Delivery) -> StoredQueuedMessage {
     // Preamble contains live shell results and may include transient secrets.
     let (mode, plan_path) = match input.mode {
         AgentMode::Build => (Some(StoredMode::Build), None),
@@ -84,6 +100,8 @@ fn stored_message(input: AgentInput) -> StoredQueuedMessage {
         thinking: Some(input.thinking.into()),
         fast: input.fast,
         workflow: input.workflow,
+        control: input.control,
+        delivery: stored_delivery(delivery),
         prompt: input.prompt.map(|prompt| StoredMcpPrompt {
             qualified_name: prompt.qualified_name,
             arguments: prompt.arguments,
@@ -91,10 +109,15 @@ fn stored_message(input: AgentInput) -> StoredQueuedMessage {
     }
 }
 
-fn restored_submission(app: &App, message: StoredQueuedMessage) -> (QueuedMessage, AgentInput) {
+fn restored_submission(
+    app: &App,
+    message: StoredQueuedMessage,
+) -> (QueuedMessage, AgentInput, Delivery) {
+    let delivery = restored_delivery(message.delivery);
     let queued = QueuedMessage {
         text: message.text,
         images: message.images.into_iter().map(restored_image).collect(),
+        control: message.control,
     };
     let mut input = app.build_agent_input(&queued);
     if let Some(mode) = message.mode {
@@ -116,7 +139,7 @@ fn restored_submission(app: &App, message: StoredQueuedMessage) -> (QueuedMessag
             arguments: prompt.arguments,
         })
     });
-    (queued, input)
+    (queued, input, delivery)
 }
 
 impl App {
@@ -149,8 +172,10 @@ impl App {
 
         let queued = self.queue.queued_inputs();
         self.state.session.meta.queued_messages = self.queue.text_messages();
-        self.state.session.meta.queued_submissions =
-            queued.into_iter().map(stored_message).collect();
+        self.state.session.meta.queued_submissions = queued
+            .into_iter()
+            .map(|(input, delivery)| stored_message(input, delivery))
+            .collect();
 
         self.state.session.meta.subagents = self
             .chats
@@ -228,7 +253,7 @@ impl App {
             self.input_box.buffer.move_to_end();
         }
 
-        let queued: Vec<(QueuedMessage, AgentInput)> =
+        let queued: Vec<(QueuedMessage, AgentInput, Delivery)> =
             if self.state.session.meta.queued_submissions.is_empty() {
                 std::mem::take(&mut self.state.session.meta.queued_messages)
                     .into_iter()
@@ -236,9 +261,10 @@ impl App {
                         let msg = QueuedMessage {
                             text,
                             images: Vec::new(),
+                            control: false,
                         };
                         let input = self.build_agent_input(&msg);
-                        (msg, input)
+                        (msg, input, Delivery::TurnEnd)
                     })
                     .collect()
             } else {
@@ -248,8 +274,8 @@ impl App {
                     .collect()
             };
         self.state.session.meta.queued_messages.clear();
-        for (msg, input) in queued {
-            self.queue_restored_submission(msg, input);
+        for (msg, input, delivery) in queued {
+            self.queue_restored_submission(msg, input, delivery);
         }
 
         self.fire_restore_items(restore_items);

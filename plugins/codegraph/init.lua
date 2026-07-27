@@ -91,17 +91,11 @@ local opts = n00n.api.register_options(output_limits.extend({}))
 n00n.api.register_tool({
   name = "codegraph",
   kind = "read",
-  description = [[Query a semantic codegraph for cross-file structural analysis. Missing or stale project indexes are initialized or refreshed automatically. Returns verbatim source code grouped by file, plus a dependency impact "blast radius" summary with caller counts and test coverage info. Typically uses fewer tokens than broad grep + read for the same cross-file question.
+  description = [[Query a semantic codegraph for cross-file structural analysis. Missing or stale project indexes are initialized or refreshed automatically. Returns verbatim source grouped by file plus a blast-radius summary. Typically cheaper than broad grep + read for cross-file questions.
 
-Best for:
-- Understanding how a system works end-to-end ("how does X work")
-- Finding call paths ("what calls Y", "call path from A to B")
-- Checking blast radius before editing ("what depends on Z")
-- Cross-file symbol resolution
+Best for: system understanding, call paths, blast radius, cross-file symbol resolution.
 
-Prefer **index** for single-file structure, then **read** for specific sections. codegraph excels at multi-file exploration and impact analysis.
-
-Requires the codegraph CLI.]],
+Prefer **index** for single-file structure, then **read** for sections. Requires codegraph CLI.]],
 
   schema = {
     type = "object",
@@ -109,9 +103,9 @@ Requires the codegraph CLI.]],
     properties = {
       query = {
         type = "string",
-        description = "Natural language question or symbol/file names to explore (e.g. 'AuthService login', 'GraphTraverser BFS impact')",
+        description = "Question or symbol/file names to explore.",
       },
-      projectPath = { type = "string", description = "Absolute path to the project (defaults to current workspace)" },
+      projectPath = { type = "string", description = "Project path (defaults to workspace)." },
     },
   },
 

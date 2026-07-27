@@ -318,7 +318,8 @@ impl<'h> Agent<'h> {
         let pre_dispatch_rollback_len = self
             .pre_dispatch_rollback_len
             .unwrap_or_else(|| rollback_len);
-        let msg = Message::user_with_images(input.message.clone(), input.images);
+        let mut msg = Message::user_with_images(input.message.clone(), input.images);
+        msg.control = input.control;
         self.history.push(msg);
         self.mode = input.mode;
         self.workflow = input.workflow;
@@ -782,16 +783,25 @@ impl<'h> Agent<'h> {
                         text: input.message.clone(),
                         image_count: input.images.len(),
                         images: input.images.clone(),
+                        control: input.control,
                     })?;
                     for msg in std::mem::take(&mut input.preamble) {
                         self.history.push(msg);
                     }
                     self.mode = input.mode.clone();
                     let display = input.message.clone();
-                    let wrapped = format!(
-                        "<user-interrupt>\nThe user sent a new message while you were working. Address it and continue.\n\n{display}\n</user-interrupt>"
-                    );
-                    self.history.push(Message::user_display(wrapped, display));
+                    if input.control {
+                        let wrapped = format!(
+                            "<control-interrupt>\nA control message was sent to this session. Address it and continue.\n\n{display}\n</control-interrupt>"
+                        );
+                        self.history
+                            .push(Message::control_display(wrapped, display));
+                    } else {
+                        let wrapped = format!(
+                            "<user-interrupt>\nThe user sent a new message while you were working. Address it and continue.\n\n{display}\n</user-interrupt>"
+                        );
+                        self.history.push(Message::user_display(wrapped, display));
+                    }
                 }
                 ExtractedCommand::Compact(_) => {
                     self.do_compact().await?;
@@ -1157,8 +1167,31 @@ mod tests {
             thinking: n00n_providers::ThinkingConfig::default(),
             fast: false,
             workflow: false,
+            control: false,
             prompt: None,
         }
+    }
+
+    #[test]
+    fn run_preserves_control_on_initial_history_message() {
+        smol::block_on(async {
+            let mut history = History::new(Vec::new());
+            let (mut agent, _event_rx) = make_agent(
+                MockProvider::new(vec![text_response(StopReason::EndTurn)]),
+                &mut history,
+            );
+            let mut input = default_input();
+            input.control = true;
+            agent.run(input).await.unwrap();
+            let first = history
+                .as_slice()
+                .first()
+                .expect("history should contain user message");
+            assert!(
+                first.control,
+                "initial Agent::run message must retain input.control"
+            );
+        });
     }
 
     fn drain_events(rx: &flume::Receiver<Envelope>) -> Vec<Envelope> {
@@ -1193,7 +1226,7 @@ mod tests {
     fn has_interrupt_in_history(history: &[Message]) -> bool {
         history.iter().any(|m| {
             m.content.iter().any(
-                |b| matches!(b, ContentBlock::Text { text } if text.contains("<user-interrupt>")),
+                |b| matches!(b, ContentBlock::Text { text } if text.contains("<user-interrupt>") || text.contains("<control-interrupt>")),
             )
         })
     }
@@ -1339,15 +1372,22 @@ mod tests {
         });
     }
 
-    #[test_case(Some(true),  true,  true  ; "after_tool_use_turn")]
-    #[test_case(Some(false), true,  true  ; "after_text_only_turn")]
-    #[test_case(None,        false, false ; "channel_empty")]
-    fn interrupt_handling(queued: Option<bool>, expect_consumed: bool, expect_injected: bool) {
+    #[test_case(Some(true),  false, true,  true  ; "after_tool_use_turn")]
+    #[test_case(Some(false), false, true,  true  ; "after_text_only_turn")]
+    #[test_case(Some(false), true,  true,  true  ; "control_after_text_only_turn")]
+    #[test_case(None,        false, false, false ; "channel_empty")]
+    fn interrupt_handling(
+        queued: Option<bool>,
+        control: bool,
+        expect_consumed: bool,
+        expect_injected: bool,
+    ) {
         smol::block_on(async {
             let source = if queued.is_some() {
+                let mut input = default_input();
+                input.control = control;
                 Some(MockInterruptSource::new(vec![ExtractedCommand::Interrupt(
-                    default_input(),
-                    0,
+                    input, 0,
                 )]))
             } else {
                 None
@@ -1384,6 +1424,10 @@ mod tests {
             assert_eq!(
                 has_interrupt_in_history(history.as_slice()),
                 expect_injected
+            );
+            assert_eq!(
+                history.as_slice().iter().any(|message| message.control),
+                expect_injected && control
             );
         });
     }

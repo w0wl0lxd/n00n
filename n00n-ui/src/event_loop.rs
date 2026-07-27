@@ -29,12 +29,12 @@ use n00n_providers::provider::{
     Provider, fetch_all_models, from_model_fallback_with_openai_options,
     from_model_with_openai_options,
 };
-use n00n_providers::{Message, Model, OpenAiOptions};
+use n00n_providers::{ContentBlock, Message, Model, OpenAiOptions};
 use n00n_storage::StateDir;
 use n00n_storage::StorageError;
 use n00n_storage::id::{SessionRef, n00nId, n00nIdParseError};
 use n00n_storage::sessions::{SessionError, TranscriptEntry, normalize_title};
-use serde_json::json;
+use serde_json::{Value, json};
 use tracing::warn;
 
 use crate::AppSession;
@@ -63,6 +63,7 @@ const AGENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 const STORAGE_WRITER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const DELETE_FOCUSED_ERR: &str = "cannot delete the focused session";
 const NOT_LIVE_ERR: &str = "session not live";
+const TEAM_TOOL_NAME: &str = "team";
 
 /// Tabs carry their in-memory sessions so `/reload` reopens them without a
 /// disk round-trip; `session_has_content` tells which ones were saved.
@@ -123,6 +124,54 @@ impl SessionStatus {
 
 fn parse_session_id(id: &str) -> Result<n00nId, String> {
     id.parse().map_err(|e: n00nIdParseError| e.to_string())
+}
+
+fn paused_team_run(history: &[Message]) -> Option<Value> {
+    let (user_index, last_user) = history
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, message)| matches!(message.role, n00n_providers::Role::User))?;
+
+    for block in &last_user.content {
+        let ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            ..
+        } = block
+        else {
+            continue;
+        };
+        let is_team_result = history[..user_index].iter().rev().any(|message| {
+            message
+                .tool_uses()
+                .any(|(id, name, _)| id == tool_use_id && name == TEAM_TOOL_NAME)
+        });
+        if !is_team_result {
+            continue;
+        }
+
+        if !content.trim_start().starts_with('{') {
+            continue;
+        }
+        let payload: Value = match serde_json::from_str(content) {
+            Ok(payload) => payload,
+            Err(error) => {
+                warn!(%tool_use_id, %error, "invalid paused team result; ignoring");
+                continue;
+            }
+        };
+        let paused = payload.get("paused").and_then(Value::as_bool) == Some(true);
+        let has_run_id = payload
+            .get("run_id")
+            .and_then(Value::as_str)
+            .is_some_and(|run_id| !run_id.is_empty());
+        if paused && has_run_id {
+            return Some(payload);
+        }
+    }
+
+    None
 }
 
 struct SessionRuntime {
@@ -505,6 +554,7 @@ impl<'t> EventLoop<'t> {
             let sub = Submission {
                 text: prompt,
                 images: Vec::new(),
+                control: false,
             };
             let actions = self.focused_app().handle_submit(sub);
             self.dispatch(self.focused, actions);
@@ -850,6 +900,7 @@ impl<'t> EventLoop<'t> {
                             .then(|| message.first_text_content())
                             .flatten()
                     });
+                    let paused_team = paused_team_run(&history);
                     Ok(json!({
                         "id": rt.id(),
                         "title": rt.app.state.session.title,
@@ -857,6 +908,7 @@ impl<'t> EventLoop<'t> {
                         "updated_at": rt.app.state.session.updated_at,
                         "focused": idx == self.focused,
                         "output": output,
+                        "paused_team": paused_team,
                     }))
                 });
                 let _ = reply_tx.send(reply);
@@ -864,23 +916,43 @@ impl<'t> EventLoop<'t> {
             SessionRequest::Current => {
                 let _ = reply_tx.send(Ok(json!(self.sessions[self.focused].id())));
             }
-            SessionRequest::New { prompt, focus } => {
-                let session = {
+            SessionRequest::New {
+                prompt,
+                focus,
+                parent_id,
+            } => {
+                let mut session = {
                     let slot = self.ctx.model_slot.load();
                     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
                     AppSession::new(&slot.model.spec(), &cwd.to_string_lossy())
                 };
+                let parent_id = match parent_id {
+                    Some(id) => match parse_session_id(&id) {
+                        Ok(id) => Some(id),
+                        Err(error) => {
+                            let _ = reply_tx.send(Err(error));
+                            return;
+                        }
+                    },
+                    None => None,
+                };
+                session.meta.parent_id = parent_id;
                 let idx = self.push_runtime(self.ctx.spawn_runtime(session));
                 let id = self.sessions[idx].id();
                 if let Some(prompt) = prompt {
-                    let _ = self.submit_text(idx, prompt);
+                    let _ = self.submit_text(idx, prompt, false, false);
                 }
                 if focus {
                     self.set_focus(idx);
                 }
                 let _ = reply_tx.send(Ok(json!(id)));
             }
-            SessionRequest::Prompt { id, text } => {
+            SessionRequest::Prompt {
+                id,
+                text,
+                steer,
+                control,
+            } => {
                 let idx = match id {
                     None => Ok(self.focused),
                     Some(id) => parse_session_id(&id).and_then(|id| {
@@ -888,7 +960,8 @@ impl<'t> EventLoop<'t> {
                             .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))
                     }),
                 };
-                let _ = reply_tx.send(idx.and_then(|idx| self.submit_text(idx, text)));
+                let _ =
+                    reply_tx.send(idx.and_then(|idx| self.submit_text(idx, text, steer, control)));
             }
             SessionRequest::Cancel { id } => {
                 let reply = parse_session_id(&id).and_then(|id| {
@@ -932,12 +1005,24 @@ impl<'t> EventLoop<'t> {
         }
     }
 
-    fn submit_text(&mut self, idx: usize, text: String) -> SessionReply {
+    fn submit_text(
+        &mut self,
+        idx: usize,
+        text: String,
+        steer: bool,
+        control: bool,
+    ) -> SessionReply {
         let msg = QueuedMessage {
             text,
             images: Vec::new(),
+            control,
         };
-        match self.sessions[idx].app.submit_background_prompt(msg) {
+        let outcome = if steer {
+            self.sessions[idx].app.submit_control_prompt(msg)
+        } else {
+            self.sessions[idx].app.submit_background_prompt(msg)
+        };
+        match outcome {
             SubmitOutcome::Started(actions) => {
                 self.dispatch(idx, actions);
                 Ok(json!("started"))
@@ -1478,10 +1563,11 @@ fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        DRAIN_BUDGET, DrainScheduler, draw_then_post_terminal, should_save_periodically,
-        take_painted_submissions,
+        DRAIN_BUDGET, DrainScheduler, TEAM_TOOL_NAME, draw_then_post_terminal, paused_team_run,
+        should_save_periodically, take_painted_submissions,
     };
     use crate::components::Status;
+    use n00n_providers::{ContentBlock, Message, Role};
     use n00n_storage::id::n00nId;
     use ratatui::{
         Terminal,
@@ -1491,6 +1577,55 @@ mod tests {
         widgets::Paragraph,
     };
     use std::io;
+
+    #[test]
+    fn paused_team_run_requires_matching_team_tool_call() {
+        let tool_result = Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "tool-1".into(),
+                content: r#"{"paused":true,"run_id":"run-1"}"#.into(),
+                is_error: true,
+            }],
+            ..Default::default()
+        };
+        assert!(paused_team_run(std::slice::from_ref(&tool_result)).is_none());
+
+        let tool_call = Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: "tool-1".into(),
+                name: TEAM_TOOL_NAME.into(),
+                input: serde_json::json!({}),
+            }],
+            ..Default::default()
+        };
+        let paused = paused_team_run(&[tool_call, tool_result]).expect("paused team payload");
+        assert_eq!(paused["run_id"], "run-1");
+    }
+
+    #[test]
+    fn paused_team_run_ignores_malformed_team_json() {
+        let tool_call = Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: "tool-1".into(),
+                name: TEAM_TOOL_NAME.into(),
+                input: serde_json::json!({}),
+            }],
+            ..Default::default()
+        };
+        let tool_result = Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "tool-1".into(),
+                content: r#"{"paused":true,"run_id":"#.into(),
+                is_error: true,
+            }],
+            ..Default::default()
+        };
+        assert!(paused_team_run(&[tool_call, tool_result]).is_none());
+    }
 
     struct FailingBackend(TestBackend);
 
