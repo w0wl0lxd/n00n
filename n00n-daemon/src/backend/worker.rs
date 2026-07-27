@@ -1,14 +1,16 @@
 //! PR #134-compatible worker backend: `state_dir/agents/<id>/agent.json` + `control.sock`.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use sonic_rs::JsonValueTrait;
 
 use crate::backend::ControlBackend;
 use crate::error::{ControlError, ControlResult};
 use crate::protocol::{AgentRecord, BackendKind, MessageOpts};
+
+#[cfg(unix)]
+use sonic_rs::JsonValueTrait;
 
 const AGENTS_SUBDIR: &str = "agents";
 const STATE_FILE: &str = "agent.json";
@@ -119,6 +121,8 @@ impl WorkerBackend {
 
     #[cfg(unix)]
     fn send_command(&self, id: &str, command: &WorkerCommand) -> ControlResult<sonic_rs::Value> {
+        use std::path::Path;
+
         use futures_lite::{AsyncBufReadExt, AsyncWriteExt, io::BufReader};
         use smol::net::unix::UnixStream;
 
@@ -264,6 +268,8 @@ impl ControlBackend for WorkerBackend {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
     use tempfile::TempDir;
 
