@@ -20,6 +20,7 @@ use crate::mcp::McpSession;
 use crate::permissions::PermissionManager;
 use crate::tools::{
     ActiveTools, Deadline, FileReadTracker, LocalTools, ToolAudience, ToolContext, ToolFilter,
+    ToolRegistry,
 };
 use crate::{
     AgentConfig, AgentError, AgentEvent, AgentInput, AgentMode, EventSender, ExtractedCommand,
@@ -46,6 +47,36 @@ const CACHE_BREAKPOINTS_LONG: usize = 4;
 const CACHE_BREAKPOINTS_MEDIUM: usize = 3;
 const CACHE_BREAKPOINTS_SHORT: usize = 2;
 const CACHE_BREAKPOINTS_MIN: usize = 1;
+
+fn filter_tools_for_mode(tools: &mut Value, mode: &AgentMode) {
+    if mode.plan_path().is_none() {
+        return;
+    }
+    if let Some(definitions) = tools.as_array_mut() {
+        let registry = ToolRegistry::global();
+        definitions.retain(|definition| {
+            let Some(name) = definition.get("name").and_then(Value::as_str) else {
+                return true;
+            };
+            // Bash is the only execute-kind tool allowed in plan mode, and only
+            // for commands that pass the read-only classifier.
+            if name == crate::tools::BASH_TOOL_NAME {
+                return true;
+            }
+            // Keep the historical name-based guard and extend it to any tool
+            // whose kind is "execute", so a renamed code_execution tool is
+            // also filtered out.
+            if name == crate::tools::CODE_EXECUTION_TOOL_NAME {
+                return false;
+            }
+            // Only remove tools we can positively identify as execute-kind.
+            // MCP and other unregistered tools are left for the dispatch layer.
+            registry
+                .get(name)
+                .map_or(true, |entry| entry.tool.tool_kind() != Some("execute"))
+        });
+    }
+}
 
 /// Choose how many recent user-message breakpoints to mark for prompt caching.
 ///
@@ -290,10 +321,19 @@ impl<'h> Agent<'h> {
         let mut msg = Message::user_with_images(input.message.clone(), input.images);
         msg.control = input.control;
         self.history.push(msg);
-        self.context_size = estimate_message_tokens(self.history.as_slice(), &self.model.id)
-            .saturating_add(estimate_tool_tokens(&self.tools, &self.model.id));
         self.mode = input.mode;
         self.workflow = input.workflow;
+        // Filter the caller-supplied tool list in place. Rebuilding from the
+        // global registry would replace curated/session-local definitions
+        // (e.g. structured_output) and expand restricted ToolFilter sets.
+        // Extend MCP definitions first (always-load + loaded tools) so the
+        // filtered list is complete without rebuilding from the registry.
+        if let Some(mcp) = self.mcp.as_ref() {
+            mcp.extend_tools(&mut self.tools);
+        }
+        filter_tools_for_mode(&mut self.tools, &self.mode);
+        self.context_size = estimate_message_tokens(self.history.as_slice(), &self.model.id)
+            .saturating_add(estimate_tool_tokens(&self.tools, &self.model.id));
         let user_message_count = self
             .history
             .as_slice()
@@ -627,6 +667,7 @@ impl<'h> Agent<'h> {
         if let Some(mcp) = &self.mcp {
             mcp.extend_tools(&mut tools);
         }
+        filter_tools_for_mode(&mut tools, &self.mode);
         self.tools = tools;
     }
 
@@ -839,6 +880,25 @@ mod tests {
     use crate::Envelope;
     use crate::permissions::PermissionManager;
     use serde_json::json;
+
+    #[test]
+    fn plan_mode_hides_code_execution_but_keeps_research_tools() {
+        let mut tools = json!([
+            {"name": "code_execution"},
+            {"name": "codegraph"},
+            {"name": "server__search"}
+        ]);
+
+        filter_tools_for_mode(&mut tools, &AgentMode::Plan("plan.md".into()));
+
+        let names: Vec<_> = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|definition| definition["name"].as_str())
+            .collect();
+        assert_eq!(names, ["codegraph", "server__search"]);
+    }
 
     #[test]
     fn estimate_message_tokens_empty_is_zero() {

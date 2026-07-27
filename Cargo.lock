@@ -2969,6 +2969,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
+ "shell-words",
  "similar",
  "smol",
  "strum 0.27.2",
