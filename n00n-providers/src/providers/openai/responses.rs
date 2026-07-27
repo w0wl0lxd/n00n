@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use tracing::{debug, warn};
 
 use crate::providers::ResolvedAuth;
+use crate::types::TOOL_RESULT_ERROR_PREFIX;
 use crate::{
     AgentError, ContentBlock, Message, ProviderEvent, RequestDeliveryMetadata,
     RequestDeliveryPhase, Role, StopReason, StreamResponse, System, ThinkingConfig, TokenUsage,
@@ -87,12 +88,18 @@ pub(crate) fn convert_input(messages: &[Message]) -> Value {
                         ContentBlock::ToolResult {
                             tool_use_id,
                             content,
-                            ..
+                            is_error,
                         } => {
+                            let output =
+                                if *is_error && !content.starts_with(TOOL_RESULT_ERROR_PREFIX) {
+                                    format!("{TOOL_RESULT_ERROR_PREFIX}{content}")
+                                } else {
+                                    content.clone()
+                                };
                             input.push(json!({
                                 "type": "function_call_output",
                                 "call_id": tool_use_id,
-                                "output": content,
+                                "output": output,
                             }));
                         }
                         ContentBlock::ToolUse { .. }
@@ -239,17 +246,6 @@ pub(crate) fn convert_tools(anthropic_tools: &Value) -> Value {
     )
 }
 
-fn suppress_retry_after_response(error: AgentError) -> AgentError {
-    if error.is_retryable() {
-        AgentError::RequestSent {
-            message: error.to_string(),
-            metadata: None,
-        }
-    } else {
-        error
-    }
-}
-
 pub(crate) async fn do_stream(
     client: &HttpClient,
     model: &crate::model::Model,
@@ -289,7 +285,6 @@ pub(crate) async fn do_stream(
             stream_timeout,
         )
         .await
-        .map_err(suppress_retry_after_response)
     } else {
         let retry_after = super::websocket::retry_after(
             response
@@ -392,6 +387,7 @@ impl ResponseAccumulator {
         };
         let mut metadata = RequestDeliveryMetadata::new(phase);
         metadata.response_id.clone_from(&self.response_id);
+        metadata.emitted_event = self.emitted_event;
         metadata
     }
 
@@ -781,10 +777,7 @@ pub(crate) async fn parse_sse(
             Ok(Some(line)) => line,
             Ok(None) => break,
             Err(error) => {
-                return Err(AgentError::RequestSent {
-                    message: error.to_string(),
-                    metadata: Some(acc.delivery_metadata()),
-                });
+                return Err(error.suppress_retry_after_send(Some(acc.delivery_metadata())));
             }
         };
         if line.is_empty() {
@@ -803,21 +796,24 @@ pub(crate) async fn parse_sse(
         };
 
         if current_event == "error" {
-            if let Ok(ev) = serde_json::from_str::<crate::providers::SseErrorPayload>(data) {
-                warn!(error_type = %ev.error.r#type, "SSE error in stream");
-                return Err(ev.into_agent_error());
-            }
-            let parsed: Value = match serde_json::from_str(data) {
-                Ok(v) => v,
-                Err(_) => Value::Object(Default::default()),
-            };
-            let message = parsed["message"]
-                .as_str()
-                .map_or_else(|| "unknown error".to_string(), ToString::to_string);
-            return Err(AgentError::Api {
-                status: 500,
-                message,
-            });
+            let error =
+                if let Ok(ev) = serde_json::from_str::<crate::providers::SseErrorPayload>(data) {
+                    warn!(error_type = %ev.error.r#type, "SSE error in stream");
+                    ev.into_agent_error()
+                } else {
+                    let parsed: Value = match serde_json::from_str(data) {
+                        Ok(v) => v,
+                        Err(_) => Value::Object(Default::default()),
+                    };
+                    let message = parsed["message"]
+                        .as_str()
+                        .map_or_else(|| "unknown error".to_string(), ToString::to_string);
+                    AgentError::Api {
+                        status: 500,
+                        message,
+                    }
+                };
+            return Err(error.suppress_retry_after_send(Some(acc.delivery_metadata())));
         }
 
         let parsed_event = if current_event.is_empty() {
@@ -833,7 +829,11 @@ pub(crate) async fn parse_sse(
             Ok(v) => v,
             Err(_) => continue,
         };
-        if acc.handle_event(&parsed_event, &parsed, event_tx).await? {
+        if acc
+            .handle_event(&parsed_event, &parsed, event_tx)
+            .await
+            .map_err(|e| e.suppress_retry_after_send(Some(acc.delivery_metadata())))?
+        {
             break;
         }
     }
@@ -1055,6 +1055,54 @@ data: {\"response\":{\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"R
     }
 
     #[test]
+    fn parse_sse_text_error_after_partial_output_is_not_retryable() {
+        smol::block_on(async {
+            let sse = "\
+event: response.output_text.delta\ndata: {\"delta\":\"partial\"}\n\n\
+event: error\ndata: {\"error\":{\"message\":\"Server overloaded\",\"type\":\"overloaded_error\"}}\n\n";
+
+            let (err, _) = run_sse(sse).await;
+            match err.unwrap_err() {
+                AgentError::RequestSent {
+                    metadata: Some(meta),
+                    ..
+                } => {
+                    assert!(meta.emitted_event);
+                    assert_eq!(
+                        meta.phase,
+                        crate::RequestDeliveryPhase::SentAwaitingAcceptance
+                    );
+                }
+                other => panic!("expected RequestSent, got: {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn parse_sse_tool_error_after_partial_output_is_not_retryable() {
+        smol::block_on(async {
+            let sse = "\
+event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"bash\"}}\n\n\
+event: error\ndata: {\"error\":{\"message\":\"Server overloaded\",\"type\":\"overloaded_error\"}}\n\n";
+
+            let (err, _) = run_sse(sse).await;
+            match err.unwrap_err() {
+                AgentError::RequestSent {
+                    metadata: Some(meta),
+                    ..
+                } => {
+                    assert!(meta.emitted_event);
+                    assert_eq!(
+                        meta.phase,
+                        crate::RequestDeliveryPhase::SentAwaitingAcceptance
+                    );
+                }
+                other => panic!("expected RequestSent, got: {other:?}"),
+            }
+        });
+    }
+
+    #[test]
     fn parse_sse_incomplete_response() {
         smol::block_on(async {
             let sse = "\
@@ -1123,6 +1171,23 @@ data: {\"response\":{\"status\":\"incomplete\",\"usage\":{\"input_tokens\":10,\"
         assert_eq!(items[3]["type"], "function_call_output");
         assert_eq!(items[3]["call_id"], "tc_1");
         assert_eq!(items[3]["output"], "file.txt");
+    }
+
+    #[test]
+    fn convert_input_prefixes_error_tool_result() {
+        let messages = vec![Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "tc_1".into(),
+                content: "sub-agent error: API 500".into(),
+                is_error: true,
+            }],
+            ..Default::default()
+        }];
+        let input = convert_input(&messages);
+        let output = input[0]["output"].as_str().unwrap();
+        assert!(output.starts_with(TOOL_RESULT_ERROR_PREFIX));
+        assert!(output.contains("sub-agent error: API 500"));
     }
 
     #[test]
@@ -1661,28 +1726,28 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
     }
 
     #[test]
-    fn post_response_api_error_is_not_retried() {
+    fn post_response_api_error_stays_retryable() {
         let error = AgentError::Api {
             status: 500,
             message: "provider rejected request".into(),
         };
 
-        assert!(matches!(
-            suppress_retry_after_response(error),
-            AgentError::RequestSent { .. }
-        ));
+        let suppressed = error.suppress_retry_after_send(None);
+        assert!(matches!(suppressed, AgentError::Api { status: 500, .. }));
+        assert!(suppressed.is_retryable());
     }
 
     #[test]
     fn post_response_eof_is_non_retryable() {
-        let error = IoError::new(
+        let error: AgentError = IoError::new(
             ErrorKind::UnexpectedEof,
             "Responses API stream ended without a terminal event",
         )
         .into();
+        let metadata = RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance);
 
         assert!(matches!(
-            suppress_retry_after_response(error),
+            error.suppress_retry_after_send(Some(metadata)),
             AgentError::RequestSent { .. }
         ));
     }

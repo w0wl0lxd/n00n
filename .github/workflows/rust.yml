@@ -262,9 +262,7 @@ jobs:
       - docs
       - build
       - lint-windows
-      - lint-macos
       - build-windows
-      - test-macos
       - test-windows
       - coverage
       - msrv

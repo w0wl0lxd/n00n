@@ -45,7 +45,6 @@ pub(crate) struct ResponsesWebSocket {
 #[derive(Debug)]
 pub(crate) struct WebSocketAttemptError {
     pub(crate) error: AgentError,
-    pub(crate) emitted_event: bool,
     pub(crate) transport_failure: bool,
     pub(crate) delivery: RequestDeliveryMetadata,
 }
@@ -54,20 +53,24 @@ impl WebSocketAttemptError {
     pub(crate) fn transport(
         error: AgentError,
         emitted_event: bool,
-        delivery: RequestDeliveryMetadata,
+        mut delivery: RequestDeliveryMetadata,
     ) -> Self {
+        delivery.emitted_event = emitted_event;
         Self {
             error,
-            emitted_event,
             transport_failure: true,
             delivery,
         }
     }
 
-    fn response(error: AgentError, emitted_event: bool, delivery: RequestDeliveryMetadata) -> Self {
+    fn response(
+        error: AgentError,
+        emitted_event: bool,
+        mut delivery: RequestDeliveryMetadata,
+    ) -> Self {
+        delivery.emitted_event = emitted_event;
         Self {
             error,
-            emitted_event,
             transport_failure: false,
             delivery,
         }
@@ -78,10 +81,7 @@ impl WebSocketAttemptError {
     }
 
     pub(crate) fn definitive_rejection(&self) -> bool {
-        if self.emitted_event
-            || self.delivery.phase == RequestDeliveryPhase::Accepted
-            || self.delivery.response_id.is_some()
-        {
+        if self.delivery.emitted_or_accepted() {
             return false;
         }
         !self.transport_failure
@@ -93,7 +93,7 @@ impl WebSocketAttemptError {
     }
 
     pub(crate) fn into_agent_error(self) -> AgentError {
-        if self.request_sent() {
+        if self.request_sent() && (self.transport_failure || self.delivery.emitted_or_accepted()) {
             AgentError::RequestSent {
                 message: self.error.to_string(),
                 metadata: Some(self.delivery),
@@ -936,11 +936,15 @@ mod tests {
         assert!(delivery.response_id.is_none());
     }
 
-    #[test_case(400)]
-    #[test_case(401)]
-    #[test_case(429)]
-    #[test_case(500)]
-    fn provider_response_error_after_send_is_not_replayed(status: u16) {
+    #[test_case(400, false, false)]
+    #[test_case(401, false, true)]
+    #[test_case(429, true, false)]
+    #[test_case(500, true, false)]
+    fn provider_response_error_after_send_stays_retryable_before_output(
+        status: u16,
+        retryable: bool,
+        auth_error: bool,
+    ) {
         let error = WebSocketAttemptError::response(
             AgentError::Api {
                 status,
@@ -951,16 +955,9 @@ mod tests {
         )
         .into_agent_error();
 
-        assert!(matches!(
-            error,
-            AgentError::RequestSent {
-                metadata: Some(RequestDeliveryMetadata {
-                    phase: RequestDeliveryPhase::SentAwaitingAcceptance,
-                    ..
-                }),
-                ..
-            }
-        ));
+        assert!(!matches!(error, AgentError::RequestSent { .. }));
+        assert_eq!(error.is_retryable(), retryable);
+        assert_eq!(error.is_auth_error(), auth_error);
     }
     #[test]
     #[allow(clippy::large_futures)]
