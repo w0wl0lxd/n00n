@@ -970,7 +970,9 @@ data: [DONE]\n";
                 match e {
                     ProviderEvent::ThinkingDelta { text } => thinking.push(text),
                     ProviderEvent::TextDelta { text } => text_deltas.push(text),
-                    ProviderEvent::ToolUseStart { .. } | ProviderEvent::PromptProgress { .. } => {}
+                    ProviderEvent::ToolUseStart { .. }
+                    | ProviderEvent::PromptProgress { .. }
+                    | ProviderEvent::CacheHealth { .. } => {}
                 }
             }
             assert_eq!(thinking, vec!["Let me think", "..."]);
