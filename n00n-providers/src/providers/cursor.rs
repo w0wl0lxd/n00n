@@ -249,7 +249,7 @@ impl Cursor {
             if let Ok(entry) = lookup_entry(MODELS, id) {
                 info.context_window = Some(entry.context_window);
                 info.max_output_tokens = Some(entry.max_output_tokens);
-                info.pricing = Some(entry.pricing.clone());
+                info.pricing = Some(entry.pricing);
                 info.tier = Some(entry.tier);
             } else {
                 info.context_window = Some(128_000);
