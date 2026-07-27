@@ -2,6 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
+#[cfg(unix)]
+use rustix::process::{Pid, test_kill_process};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ControlError, ControlResult};
@@ -78,49 +80,38 @@ pub fn remove(state_dir: &Path) -> ControlResult<()> {
 
 /// Returns whether `pid` still refers to a live process on this host.
 #[must_use]
+#[cfg(unix)]
 pub fn pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
-    #[cfg(unix)]
-    {
-        use rustix::process::{Pid, test_kill_process};
-
-        let Ok(raw) = i32::try_from(pid) else {
-            return false;
-        };
-        let Some(pid) = Pid::from_raw(raw) else {
-            return false;
-        };
-        match test_kill_process(pid) {
-            Ok(()) | Err(rustix::io::Errno::PERM) => true,
-            Err(rustix::io::Errno::SRCH | _) => false,
-        }
+    let Ok(raw) = i32::try_from(pid) else {
+        return false;
+    };
+    let Some(pid) = Pid::from_raw(raw) else {
+        return false;
+    };
+    match test_kill_process(pid) {
+        Ok(()) | Err(rustix::io::Errno::PERM) => true,
+        Err(rustix::io::Errno::SRCH | _) => false,
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        use std::process::Command;
+}
 
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
-        let output = Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output();
-        match output {
-            Ok(out) => {
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                stdout.contains(&pid.to_string())
-            }
-            Err(_) => false,
-        }
+/// Windows fallback: ask the OS whether `pid` is still running.
+///
+/// Only an explicitly `Alive` result keeps a lock alive. `Dead` and `Unknown`
+/// are treated as not alive so stale locks (including unresolvable pids) are
+/// swept instead of blocking a new daemon instance.
+#[must_use]
+#[cfg(not(unix))]
+pub fn pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
     }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = pid;
-        false
-    }
+    matches!(
+        process_alive::state(process_alive::Pid::from(pid)),
+        process_alive::State::Alive
+    )
 }
 
 /// Remove a lock file whose owner pid is no longer alive.
@@ -187,6 +178,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
     #[test]
     fn tui_blocks_worker_while_alive() {
         let lock = sample_lock(DaemonRole::Tui);

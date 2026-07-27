@@ -118,9 +118,10 @@ impl WorkerBackend {
 
     #[cfg(unix)]
     fn send_command(&self, id: &str, command: &WorkerCommand) -> ControlResult<sonic_rs::Value> {
+        use std::path::Path;
+
         use futures_lite::{AsyncBufReadExt, AsyncWriteExt, io::BufReader};
         use smol::net::unix::UnixStream;
-        use std::path::Path;
 
         let state = self.read_state(id)?;
         if state.socket_path.is_empty() {
@@ -265,8 +266,9 @@ impl ControlBackend for WorkerBackend {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::Path;
+
+    use super::*;
     use tempfile::TempDir;
 
     fn write_fixture(dir: &Path, id: &str, status: &str) -> Result<(), String> {
