@@ -598,8 +598,12 @@ async fn handle_connection(
                 .wrap_err("failed to write response")?;
 
             let agent_dir_path = agent_dir(storage, agent_id)?;
-            let _ = fs::remove_file(&state.socket_path);
-            let _ = fs::remove_dir_all(&agent_dir_path);
+            if let Err(e) = fs::remove_file(&state.socket_path) {
+                tracing::warn!(error = %e, path = %state.socket_path, "failed to remove agent socket");
+            }
+            if let Err(e) = fs::remove_dir_all(&agent_dir_path) {
+                tracing::warn!(error = %e, path = %agent_dir_path.display(), "failed to remove agent state directory");
+            }
 
             std::process::exit(0);
         }
