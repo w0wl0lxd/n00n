@@ -13,12 +13,16 @@ The goal is to replace external CLI/MCP dependencies for `arbor`, `codegraph`, a
 
 - **Current state**: `plugins/arbor/init.lua` + `n00n-lua/src/api/arbor.rs` + `n00n-arbor` crate. The Rust `Client` shells out to the `arbor` binary for every command and parses JSON.
 - **Index format**: `.arbor/` contains `graph.bin` (Sled/graph store) and `graph.json` (serialized `ArborGraph`).
-- **Native option**: `arbor-core` and `arbor-graph` are official MIT crates. They expose `CodeNode`, `GraphBuilder`, `GraphStore`, `ArborGraph`, and methods for `get_callers`, `get_callees`, `analyze_impact`, `slice_context`, and `compute_centrality`.
-- **Decision**: Adopt `arbor-core` + `arbor-graph` and rewrite `n00n-arbor` to load/build the graph in-process.
-- **Rationale**: Official, stable API that mirrors the CLI's own data model; `GraphStore` supports incremental updates.
+- **Native option**: `arbor-core` 2.1.0 and `arbor-graph` 2.1.0 are published under MIT on crates.io. `arbor-graph` exposes `GraphStore::open(path)` and `GraphStore::load_graph()` to read the existing `.arbor/` store, plus `ArborGraph` query methods and `GraphBuilder` for incremental builds.
+- **Decision**: Adopt `arbor-core` 2.1.0 + `arbor-graph` 2.1.0 and rewrite `n00n-arbor` to load/build the graph in-process.
+- **Rationale**: Official, stable API that mirrors the CLI's own data model; `GraphStore` supports incremental updates and can read the CLI-produced cache.
 - **Alternatives rejected**:
   - Parse `graph.json` only: too large and stale.
   - Keep shelling out: defeats the native goal.
+
+**Compatibility notes**:
+- `arbor-graph` 2.1.0 depends on `tiktoken-rs ^0.5` while n00n already depends on `tiktoken-rs 0.9`. Cargo will build both versions; `deny.toml` sets `multiple-versions = "warn"`, so this produces a warning rather than a hard failure. A Phase 0 spike will confirm `cargo deny check` still passes.
+- `arbor-core` 2.1.0 depends on `tree-sitter ^0.22`; n00n uses `tree-sitter 0.26`. Again, Cargo can resolve both; `cargo deny` will warn.
 
 ### CodeGraph
 
@@ -59,6 +63,34 @@ The goal is to replace external CLI/MCP dependencies for `arbor`, `codegraph`, a
   - `snowflake-arctic-embed-l-v1.5`: 335M params, 1024 dim, highest quality.
 - These map to the three memory/performance presets requested.
 
+| Preset | Model | `--max-model-len` | `--max-num-seqs` | `--gpu-memory-utilization` | Notes |
+|--------|-------|-------------------|------------------|----------------------------|-------|
+| Light | `Snowflake/snowflake-arctic-embed-xs` | 512 | 32 | 0.4 | ~0.5-1 GB VRAM, fastest startup. |
+| Medium | `Snowflake/snowflake-arctic-embed-m-v1.5` | 512 | 64 | 0.6 | ~2-3 GB VRAM, balanced throughput. |
+| Heavy | `Snowflake/snowflake-arctic-embed-l-v1.5` | 512 | 128 | 0.8 | ~4-6 GB VRAM, best retrieval quality. |
+
+Generated Podman command shape (Light example):
+
+```bash
+podman run --rm -it --gpus all \
+  -p 8000:8000 \
+  -v "$HOME/.cache/huggingface:/root/.cache/huggingface" \
+  vllm/vllm-openai:latest \
+  --model Snowflake/snowflake-arctic-embed-xs \
+  --task embed \
+  --max-model-len 512 \
+  --max-num-seqs 32 \
+  --gpu-memory-utilization 0.4
+```
+
+CPU-only fallback is limited; the preset generator will include `--device cpu` documentation but warn that GPU is strongly recommended for vLLM embedding throughput.
+
+### Embedder License / Supply Chain
+
+- `model2vec-rs` 0.2.1 is MIT licensed (source `LICENSE` on docs.rs and GitHub badge confirm MIT). No supply-chain concern.
+- Snowflake Arctic Embed models are Apache-2.0 licensed on HuggingFace.
+- `rusqlite`, `tantivy`, `arbor-core`, `arbor-graph` are MIT licensed.
+
 ### n00n Integration Pattern
 
 - The `Tool` trait in `n00n-agent/src/tools/registry.rs` supports native Rust tools, but all built-in tools today are registered through Lua plugins.
@@ -66,13 +98,29 @@ The goal is to replace external CLI/MCP dependencies for `arbor`, `codegraph`, a
 - New tools should follow the same pattern: Rust core crate → `n00n-lua` API module → `plugins/<tool>/init.lua` → `BUNDLED_PLUGINS` / `DEFAULT_BUILTINS`.
 - `n00n.ui` can render live status cards for moving progress indicators.
 
+### Auto-indexing and Progress Indicators
+
+- `ExploreResult.live(ctx)` creates a live UI buffer and registers it via `ctx:live_buf(card.buf)`.
+- `Card:update(output)` replaces text in the buffer.
+- Long-running indexing must run off the `smol` async runtime to avoid blocking the agent loop. Options:
+  1. Spawn a dedicated `std::thread` and stream progress via a bounded channel (`flume`/`crossbeam`) to the Lua/Rust boundary.
+  2. Use `smol::unblock` for synchronous indexing calls and poll a progress receiver in the Lua plugin coroutine.
+- The chosen approach: `n00n-search`/`n00n-codegraph`/`n00n-arbor` expose an indexing function that accepts a `Fn(IndexProgress)` callback. The Rust Lua binding calls this on a thread and uses a channel to forward `card:update()` calls into the Lua thread. This matches the existing `ExploreResult`/`Card` pattern.
+
+### Concurrent Indexing
+
+- To prevent two simultaneous index builds from corrupting the same project index, use a project-scoped `fs2::FileLock` (or `file-lock` crate) on a sentinel file (e.g., `.n00n/search/.lock`, `.codegraph/.lock`, `.arbor/.lock`).
+- If the lock is already held, return a progress message telling the user an index is in progress; do not block the agent loop waiting for the lock.
+
 ## Open Questions / Risks
 
-1. `arbor-graph` depends on `tiktoken-rs ^0.5` while n00n uses `0.9`; Cargo can resolve both, but `cargo deny` must pass.
-2. `tantivy` is a large dependency; binary bloat must be measured and feature flags added if needed.
-3. Tree-sitter chunking needs to reuse workspace grammars and avoid duplicate parser deps.
-4. vLLM Podman presets assume a GPU; CPU fallback is limited and should be documented.
-5. Auto-indexing on first call must not block the `smol` runtime; indexing should run on a dedicated thread pool or as a spawned process with progress streamed back.
+1. `arbor-graph` 2.1.0 `GraphStore` can read `.arbor/` stores in principle, but a Phase 0 spike must verify compatibility with the index produced by the installed `arbor` CLI.
+2. `tiktoken-rs` duplicate-version warning is expected; `cargo deny check` must still be confirmed to pass.
+3. `tree-sitter` 0.22 vs 0.26 duplicate versions are expected; must verify no build/link issues.
+4. vLLM Podman presets assume a GPU; CPU fallback is limited and must be documented.
+5. `tantivy` is a large dependency; binary bloat must be measured and feature flags added if needed.
+6. Tree-sitter chunking in `n00n-search` needs to reuse workspace grammars and avoid duplicate parser deps.
+7. Fixture repositories for integration tests must be selected (n00n self-index and a small multi-language repo).
 
 ## Research Artifacts
 
@@ -81,3 +129,4 @@ The goal is to replace external CLI/MCP dependencies for `arbor`, `codegraph`, a
 - `semblem` indexed n00n and returned ranked chunk results.
 - `codegraph` DB schema captured via `sqlite3 .codegraph/codegraph.db .schema`.
 - vLLM embedding docs and Snowflake Arctic Embed specs captured via `exa`.
+- `arbor-graph` 2.1.0 API verified on docs.rs (`GraphStore::open`, `GraphStore::load_graph`).
