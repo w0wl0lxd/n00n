@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use sonic_rs::JsonValueTrait;
 
 use crate::backend::ControlBackend;
 use crate::error::{ControlError, ControlResult};
@@ -137,6 +138,10 @@ impl WorkerBackend {
             writer.write_all(b"\n").await.map_err(ControlError::io)?;
             writer.flush().await.map_err(ControlError::io)?;
             let mut reader = BufReader::new(reader);
+            if matches!(command, WorkerCommand::Message { .. }) {
+                Self::drain_worker_events(&mut reader).await?;
+                return Ok(sonic_rs::json!({"queued": true, "id": id}));
+            }
             let mut line = String::new();
             reader
                 .read_line(&mut line)
@@ -147,6 +152,43 @@ impl WorkerBackend {
             }
             sonic_rs::from_str(line.trim()).map_err(ControlError::protocol)
         })
+    }
+
+    #[cfg(unix)]
+    async fn drain_worker_events(
+        reader: &mut futures_lite::io::BufReader<impl futures_lite::AsyncRead + Unpin>,
+    ) -> ControlResult<()> {
+        use futures_lite::AsyncBufReadExt;
+
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let n = reader
+                .read_line(&mut line)
+                .await
+                .map_err(ControlError::io)?;
+            if n == 0 {
+                return Ok(());
+            }
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let Ok(value) = sonic_rs::from_str::<sonic_rs::Value>(trimmed) else {
+                continue;
+            };
+            match value.get("type").and_then(sonic_rs::Value::as_str) {
+                Some("done") => return Ok(()),
+                Some("error") => {
+                    let message = value
+                        .get("message")
+                        .and_then(sonic_rs::Value::as_str)
+                        .map_or_else(|| "worker message failed".to_owned(), str::to_owned);
+                    return Err(ControlError::Unavailable(message));
+                }
+                _ => {}
+            }
+        }
     }
 
     #[cfg(not(unix))]
