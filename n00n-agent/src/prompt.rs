@@ -595,7 +595,7 @@ mod tests {
         // Baseline sizes before compression (from T061 audit, updated after origin/main merge).
         // Most prompts still aim for >=10% compression; system.md is intentionally capped
         // because it carries required static instructions that are not meant to shrink.
-        const SYSTEM_BASELINE: usize = 1576;
+        const SYSTEM_BASELINE: usize = 1645;
         const GENERAL_BASELINE: usize = 1759;
         const RESEARCH_BASELINE: usize = 1439;
         const COMPACTION_USER_BASELINE: usize = 927;

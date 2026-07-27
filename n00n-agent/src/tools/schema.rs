@@ -840,7 +840,21 @@ fn wrap_root_schema(mut inner: Value) -> Value {
     })
 }
 
+fn sanitize_metadata(map: &mut serde_json::Map<String, Value>) {
+    map.remove("$schema");
+    map.remove("title");
+    map.remove("$comment");
+    map.remove("additionalProperties");
+    if let Some(desc) = map.get("description")
+        && desc.as_str().map_or(false, str::is_empty)
+    {
+        map.remove("description");
+    }
+}
+
 fn sanitize_object_schema(map: &mut serde_json::Map<String, Value>) {
+    sanitize_metadata(map);
+
     if map.get("type").and_then(|v| v.as_str()) != Some("object") {
         map.insert("type".to_string(), json!("object"));
     }
@@ -863,6 +877,8 @@ fn sanitize_object_schema(map: &mut serde_json::Map<String, Value>) {
 fn sanitize_property_schema(schema: &mut Value) {
     match schema {
         Value::Object(map) => {
+            sanitize_metadata(map);
+
             let type_str = map.get("type").and_then(|v| v.as_str());
 
             if type_str == Some("object") || (type_str.is_none() && map.contains_key("properties"))
@@ -881,6 +897,21 @@ fn sanitize_property_schema(schema: &mut Value) {
                 || map.contains_key("allOf")
                 || map.contains_key("$ref")
             {
+                if let Some(arr) = map.get_mut("anyOf").and_then(|v| v.as_array_mut()) {
+                    for item in arr {
+                        sanitize_property_schema(item);
+                    }
+                }
+                if let Some(arr) = map.get_mut("oneOf").and_then(|v| v.as_array_mut()) {
+                    for item in arr {
+                        sanitize_property_schema(item);
+                    }
+                }
+                if let Some(arr) = map.get_mut("allOf").and_then(|v| v.as_array_mut()) {
+                    for item in arr {
+                        sanitize_property_schema(item);
+                    }
+                }
             } else {
                 sanitize_object_schema(map);
             }
@@ -1563,5 +1594,84 @@ mod tests {
         let bad_input = json!({"name": "test", "count": "not_bool"});
         assert!(validate(&SCHEMA, bad_input.clone()).is_err());
         assert!(validate(recovered, bad_input).is_err());
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn empirical_schema_debloat_benchmark() {
+        let bpe = tiktoken_rs::cl100k_base_singleton();
+
+        // Verbose MCP schema containing $schema, title, $comment, additionalProperties, empty descriptions
+        let unminified_mcp_schema = json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "title": "SearchToolInput",
+            "$comment": "Internal FastMCP schema definition",
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "title": "Query",
+                    "description": "The search term query string"
+                },
+                "path": {
+                    "type": "string",
+                    "title": "Path",
+                    "description": ""
+                },
+                "limit": {
+                    "type": "integer",
+                    "title": "Limit",
+                    "description": "Max results to return"
+                }
+            },
+            "required": ["query"]
+        });
+
+        let minified_mcp_schema = sanitize_tool_input_schema(unminified_mcp_schema.clone());
+
+        let raw_tokens = bpe
+            .encode_ordinary(&unminified_mcp_schema.to_string())
+            .len();
+        let minified_tokens = bpe.encode_ordinary(&minified_mcp_schema.to_string()).len();
+
+        let savings_pct = (1.0 - (minified_tokens as f64 / raw_tokens as f64)) * 100.0;
+        eprintln!(
+            "[SCHEMA DEBLOAT BENCHMARK] Unminified MCP Schema: {raw_tokens} tokens -> Minified: {minified_tokens} tokens ({savings_pct:.1}% savings)"
+        );
+
+        assert!(minified_mcp_schema.get("$schema").is_none());
+        assert!(minified_mcp_schema.get("title").is_none());
+        assert!(minified_mcp_schema.get("$comment").is_none());
+        assert!(minified_mcp_schema.get("additionalProperties").is_none());
+        assert!(
+            minified_mcp_schema["properties"]["path"]
+                .get("description")
+                .is_none()
+        );
+        assert!(minified_tokens < raw_tokens);
+    }
+
+    #[test]
+    fn any_of_subschema_sanitization_test() {
+        let schema_with_any_of = json!({
+            "type": "object",
+            "properties": {
+                "input": {
+                    "anyOf": [
+                        { "type": "string", "title": "Variant1", "$schema": "http://json-schema.org/draft-07/schema#" },
+                        { "type": "null", "title": "Variant2", "additionalProperties": false }
+                    ]
+                }
+            }
+        });
+
+        let minified = sanitize_tool_input_schema(schema_with_any_of);
+        let any_of_array = minified["properties"]["input"]["anyOf"].as_array().unwrap();
+
+        assert!(any_of_array[0].get("title").is_none());
+        assert!(any_of_array[0].get("$schema").is_none());
+        assert!(any_of_array[1].get("title").is_none());
+        assert!(any_of_array[1].get("additionalProperties").is_none());
     }
 }

@@ -479,20 +479,14 @@ end
 local description = [[Execute a bash command.
 Commands run in ]] .. cwd .. [[ by default.
 
-- **DO NOT** use for file ops! Only git, builds, tests, and system commands.
-- When `rtk` is installed, supported commands are auto-rewritten for 60-90% token savings (e.g. `git status` -> `rtk git status`, `cargo test` -> `rtk cargo test`, `rg` -> `rtk rg`, `cat file` -> `rtk read file`). `jq`/`yq` and unsupported flags run unchanged.
-- Use `bash` for `git`, `cargo`, `rg`, `grep`, `gh`, `find`, `ls`, `cat`, `head`, `tail`, and similar system commands.
-- Use `workdir` param instead of `cd <dir> && <cmd>` patterns.
-- Do NOT use to communicate text to the user.
-- Chain dependent commands with `&&`. Use batch for independent ones.
-- Provide a short `description` (3-5 words).
-- Output truncated beyond 500 lines or 16KB.
-- Broad/unbounded commands (for example, `find` without `-maxdepth`, `locate`/`journalctl` without line bounds, recursive `ls`, `du` without `--max-depth`/`-d`/`-s`, `tree` without `-L`, or `git log`/`git grep`/`rg` without result limits) require `justification`.
-- Interactive commands (sudo, ssh prompts) fail immediately.]]
-
+- Reserve for git, builds, tests, and system CLI operations. Do NOT use for file edits/writes.
+- Auto-rewrites via rtk when installed (git, cargo, rg, grep, gh, find, ls, cat, head, tail).
+- Use `workdir` instead of `cd`. Chain dependent commands with `&&`.
+- Unbounded/broad commands (e.g. find without -maxdepth, rg without limits) require `justification`.
+- Interactive commands fail immediately. Truncated beyond 500 lines or 16KB.]]
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Reserve `bash` for system commands (git, cargo, rg, grep, gh, find, ls, cat, head, tail, builds, tests). `bash` auto-rewrites supported commands through `rtk` when installed for 60-90% token savings; `jq`/`yq` and unsupported invocations run unchanged. Do NOT use `bash` for destructive file operations (writes, moves, deletes, broad destructive operations). Read-only inspection (cat, head, tail) is allowed.",
+  content = "- Reserve `bash` for system CLI (git, cargo, rg, grep, gh, find, ls, builds, tests). Auto-rewrites via `rtk` when installed. Do NOT use `bash` for file modifications.",
 })
 
 local opts = n00n.api.register_options(output_limits.extend({
