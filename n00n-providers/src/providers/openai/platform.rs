@@ -1470,6 +1470,7 @@ impl OpenAi {
                                 },
                                 session_id,
                                 response_chain_lock.as_ref(),
+                                event_tx,
                             )
                             .await;
                     }

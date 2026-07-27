@@ -88,6 +88,7 @@ struct CachedContentState {
     name: Option<String>,
     input_hash: u64,
     cached_count: usize,
+    created_at_epoch: u64,
     retry_at: Instant,
     attempt_id: Option<u64>,
 }
@@ -98,6 +99,7 @@ impl CachedContentState {
             name: Some(name),
             input_hash,
             cached_count,
+            created_at_epoch: n00n_storage::now_epoch(),
             retry_at: Instant::now() + CACHE_TTL,
             attempt_id: None,
         }
@@ -108,6 +110,7 @@ impl CachedContentState {
             name: None,
             input_hash,
             cached_count: 0,
+            created_at_epoch: 0,
             retry_at: Instant::now() + CACHE_FAILURE_RETRY_DELAY,
             attempt_id: None,
         }
@@ -118,6 +121,7 @@ impl CachedContentState {
             name: None,
             input_hash,
             cached_count: 0,
+            created_at_epoch: 0,
             retry_at: Instant::now() + CACHE_FAILURE_RETRY_DELAY,
             attempt_id: Some(attempt_id),
         }
@@ -132,13 +136,13 @@ impl CachedContentState {
         input_hash: u64,
         current_message_count: usize,
         now: Instant,
-    ) -> Option<(&str, usize)> {
+    ) -> Option<(&str, usize, u64)> {
         (self.input_hash == input_hash
             && current_message_count >= self.cached_count
             && now < self.retry_at)
             .then(|| self.name.as_deref())
             .flatten()
-            .map(|name| (name, self.cached_count))
+            .map(|name| (name, self.cached_count, self.created_at_epoch))
     }
 
     fn suppress_retry(&self, input_hash: u64, now: Instant) -> bool {
@@ -490,10 +494,15 @@ impl Provider for Google {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if let Some(state) = cache_state.get(&session_key) {
-                    if let Some((name, cached_count)) =
+                    if let Some((name, cached_count, created_at_epoch)) =
                         state.cached_content(current_input_hash, current_message_count, now)
                     {
-                        (Some((name.to_string(), cached_count)), false, None, false)
+                        (
+                            Some((name.to_string(), cached_count, created_at_epoch)),
+                            false,
+                            None,
+                            false,
+                        )
                     } else if state.suppress_retry(current_input_hash, now) {
                         (None, true, None, false)
                     } else {
@@ -525,74 +534,81 @@ impl Provider for Google {
                 warn!(error = %error, "failed to delete stale Google cached content");
             }
 
-            let (cached_content_name, cached_count, cache_creation_tokens) = if let Some(pair) =
-                cached
-            {
-                (pair.0, pair.1, 0)
-            } else if owns_cache_attempt {
-                match self
-                    .create_cached_content(&model.id, system, tools, messages)
-                    .await
-                {
-                    Ok((name, prefix_len, cache_creation_tokens)) => {
-                        let accepted = {
-                            let mut cache_state = self
-                                .cache_state
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            if cache_state.get(&session_key).is_some_and(|state| {
-                                state.owns_attempt(current_input_hash, cache_attempt_id)
-                            }) {
-                                cache_state.insert(
-                                    session_key,
-                                    CachedContentState::ready(
-                                        name.clone(),
-                                        current_input_hash,
-                                        prefix_len,
-                                    ),
-                                );
-                                true
+            let (cached_content_name, cached_count, cache_creation_tokens, created_at_epoch) =
+                if let Some((name, count, epoch)) = cached {
+                    (name, count, 0, epoch)
+                } else if owns_cache_attempt {
+                    match self
+                        .create_cached_content(&model.id, system, tools, messages)
+                        .await
+                    {
+                        Ok((name, prefix_len, cache_creation_tokens)) => {
+                            let accepted = {
+                                let mut cache_state = self
+                                    .cache_state
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                if cache_state.get(&session_key).is_some_and(|state| {
+                                    state.owns_attempt(current_input_hash, cache_attempt_id)
+                                }) {
+                                    cache_state.insert(
+                                        session_key,
+                                        CachedContentState::ready(
+                                            name.clone(),
+                                            current_input_hash,
+                                            prefix_len,
+                                        ),
+                                    );
+                                    true
+                                } else {
+                                    false
+                                }
+                            };
+                            if accepted {
+                                let created_at_epoch = n00n_storage::now_epoch();
+                                (name, prefix_len, cache_creation_tokens, created_at_epoch)
                             } else {
-                                false
+                                if let Err(error) = self.delete_cached_content(&name).await {
+                                    warn!(error = %error, "failed to delete superseded Google cached content");
+                                }
+                                return self
+                                    .do_stream(
+                                        model,
+                                        messages,
+                                        system,
+                                        tools,
+                                        event_tx,
+                                        opts.thinking,
+                                    )
+                                    .await;
                             }
-                        };
-                        if accepted {
-                            (name, prefix_len, cache_creation_tokens)
-                        } else {
-                            if let Err(error) = self.delete_cached_content(&name).await {
-                                warn!(error = %error, "failed to delete superseded Google cached content");
+                        }
+                        Err(error) => {
+                            warn!(error = %error, "Google cached content unavailable; cooling down cache creation");
+                            {
+                                let mut cache_state = self
+                                    .cache_state
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                if cache_state.get(&session_key).is_some_and(|state| {
+                                    state.owns_attempt(current_input_hash, cache_attempt_id)
+                                }) {
+                                    cache_state.insert(
+                                        session_key,
+                                        CachedContentState::failed(current_input_hash),
+                                    );
+                                }
                             }
                             return self
                                 .do_stream(model, messages, system, tools, event_tx, opts.thinking)
                                 .await;
                         }
                     }
-                    Err(error) => {
-                        warn!(error = %error, "Google cached content unavailable; cooling down cache creation");
-                        {
-                            let mut cache_state = self
-                                .cache_state
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            if cache_state.get(&session_key).is_some_and(|state| {
-                                state.owns_attempt(current_input_hash, cache_attempt_id)
-                            }) {
-                                cache_state.insert(
-                                    session_key,
-                                    CachedContentState::failed(current_input_hash),
-                                );
-                            }
-                        }
-                        return self
-                            .do_stream(model, messages, system, tools, event_tx, opts.thinking)
-                            .await;
-                    }
-                }
-            } else {
-                return self
-                    .do_stream(model, messages, system, tools, event_tx, opts.thinking)
-                    .await;
-            };
+                } else {
+                    return self
+                        .do_stream(model, messages, system, tools, event_tx, opts.thinking)
+                        .await;
+                };
 
             if cached_content_name.is_empty() {
                 return self
@@ -624,39 +640,18 @@ impl Provider for Google {
             let status = response.status().as_u16();
 
             if status == 200 {
-<<<<<<< HEAD
                 let mut stream_response =
                     parse_sse(response, event_tx, self.stream_timeout).await?;
                 stream_response.usage.cache_creation = stream_response
                     .usage
                     .cache_creation
                     .saturating_add(cache_creation_tokens);
-                Ok(stream_response)
-            } else if status == 404 {
-                {
-                    let mut cache_state = self
-                        .cache_state
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if cache_state
-                        .get(&session_key)
-                        .and_then(|state| state.name.as_deref())
-                        == Some(cached_content_name.as_str())
-                    {
-                        cache_state.remove(&session_key);
-                    }
-                }
-                self.do_stream(model, messages, system, tools, event_tx, opts.thinking)
-                    .await
-||||||| parent of 8d887cc91 (feat(providers): emit CacheHealth for Anthropic, OpenRouter, Mistral, and Google)
-                parse_sse(response, event_tx, self.stream_timeout).await
-=======
-                let response = parse_sse(response, event_tx, self.stream_timeout).await?;
 
-                let hit = response.usage.cache_read > 0;
-                let cached = response.usage.cache_read > 0 || response.usage.cache_creation > 0;
+                let hit = stream_response.usage.cache_read > 0;
+                let cached = stream_response.usage.cache_read > 0
+                    || stream_response.usage.cache_creation > 0;
                 let valid_until = if cached {
-                    n00n_storage::now_epoch().saturating_add(CACHE_TTL.as_secs())
+                    created_at_epoch.saturating_add(CACHE_TTL.as_secs())
                 } else {
                     0
                 };
@@ -674,8 +669,23 @@ impl Provider for Google {
                     warn!(error = %error, "failed to send Google cache health event");
                 }
 
-                Ok(response)
->>>>>>> 8d887cc91 (feat(providers): emit CacheHealth for Anthropic, OpenRouter, Mistral, and Google)
+                Ok(stream_response)
+            } else if status == 404 {
+                {
+                    let mut cache_state = self
+                        .cache_state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if cache_state
+                        .get(&session_key)
+                        .and_then(|state| state.name.as_deref())
+                        == Some(cached_content_name.as_str())
+                    {
+                        cache_state.remove(&session_key);
+                    }
+                }
+                self.do_stream(model, messages, system, tools, event_tx, opts.thinking)
+                    .await
             } else {
                 Err(AgentError::from_response(response).await)
             }
@@ -1384,8 +1394,14 @@ mod tests {
     fn cached_content_state_valid_when_input_and_count_match() {
         let now = Instant::now();
         let state = CachedContentState::ready("cache1".to_string(), 123, 5);
-        assert_eq!(state.cached_content(123, 5, now), Some(("cache1", 5)));
-        assert_eq!(state.cached_content(123, 6, now), Some(("cache1", 5)));
+        assert_eq!(
+            state.cached_content(123, 5, now),
+            Some(("cache1", 5, state.created_at_epoch))
+        );
+        assert_eq!(
+            state.cached_content(123, 6, now),
+            Some(("cache1", 5, state.created_at_epoch))
+        );
         assert_eq!(state.cached_content(124, 5, now), None);
         assert_eq!(state.cached_content(123, 4, now), None);
     }
