@@ -57,18 +57,21 @@ impl FrameBuffer {
     }
 }
 
-#[must_use]
-pub(crate) fn encode_frame(flags: u8, payload: &[u8]) -> Vec<u8> {
-    let capped = payload.len().min(MAX_CONNECT_FRAME_LEN);
+pub(crate) fn encode_frame(flags: u8, payload: &[u8]) -> Result<Vec<u8>, String> {
+    if payload.len() > MAX_CONNECT_FRAME_LEN {
+        return Err(format!(
+            "connect frame payload length {} exceeds maximum {MAX_CONNECT_FRAME_LEN}",
+            payload.len()
+        ));
+    }
     // MAX_CONNECT_FRAME_LEN is 16 MiB, so this always fits in u32.
     #[allow(clippy::cast_possible_truncation)]
-    let len = capped as u32;
-    let payload = &payload[..capped];
+    let len = payload.len() as u32;
     let mut frame = Vec::with_capacity(5 + payload.len());
     frame.push(flags);
     frame.extend_from_slice(&len.to_be_bytes());
     frame.extend_from_slice(payload);
-    frame
+    Ok(frame)
 }
 
 #[cfg(test)]
@@ -79,7 +82,7 @@ mod tests {
     #[test]
     fn encode_frame_roundtrip() {
         let payload = b"hello";
-        let encoded = encode_frame(0, payload);
+        let encoded = encode_frame(0, payload).expect("encode");
         let mut buf = FrameBuffer::default();
         buf.push(&encoded);
         let frame = buf.next_frame().expect("frame").expect("ok");
@@ -90,7 +93,7 @@ mod tests {
 
     #[test]
     fn end_stream_flag_preserved() {
-        let encoded = encode_frame(CONNECT_END_STREAM_FLAG, b"");
+        let encoded = encode_frame(CONNECT_END_STREAM_FLAG, b"").expect("encode");
         let mut buf = FrameBuffer::default();
         buf.push(&encoded);
         let frame = buf.next_frame().expect("frame").expect("ok");
@@ -99,7 +102,7 @@ mod tests {
 
     #[test]
     fn chunked_input_reassembles() {
-        let encoded = encode_frame(0, b"chunked");
+        let encoded = encode_frame(0, b"chunked").expect("encode");
         let mut buf = FrameBuffer::default();
         for byte in encoded {
             buf.push(&[byte]);
@@ -131,9 +134,8 @@ mod tests {
             }
             buf.push(&chunk);
             loop {
-                match buf.next_frame() {
-                    None => break,
-                    Some(Ok(_)) | Some(Err(_)) => {}
+                if buf.next_frame().is_none() {
+                    break;
                 }
             }
             if i % 25 == 24 {
@@ -150,7 +152,7 @@ mod tests {
                 *byte = fastrand::u8(..);
             }
             let flags = fastrand::u8(..) & 0b11;
-            let encoded = encode_frame(flags, &payload);
+            let encoded = encode_frame(flags, &payload).expect("encode");
             let mut buf = FrameBuffer::default();
             let mut offset = 0;
             while offset < encoded.len() {
@@ -170,12 +172,20 @@ mod tests {
     #[test]
     fn oversized_header_is_consumed_so_loop_cannot_spin() {
         let mut buf = FrameBuffer::default();
-        let over = (MAX_CONNECT_FRAME_LEN as u32).saturating_add(1);
+        let over = u32::try_from(MAX_CONNECT_FRAME_LEN)
+            .unwrap()
+            .saturating_add(1);
         let mut header = [0u8; 5];
         header[1..].copy_from_slice(&over.to_be_bytes());
         buf.push(&header);
         assert!(buf.next_frame().expect("err").is_err());
         // Second call must not keep returning the same error forever.
         assert!(buf.next_frame().is_none());
+    }
+
+    #[test]
+    fn encode_frame_rejects_oversized_payload() {
+        let oversized = vec![0u8; MAX_CONNECT_FRAME_LEN + 1];
+        assert!(encode_frame(0, &oversized).is_err());
     }
 }

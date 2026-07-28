@@ -38,5 +38,5 @@ sources = ["mise.toml"]
 # mitmproxy for Cursor Connect traffic capture (Phase 0 RE).
 # Run `mise run mitm-setup`, then `.tools/mitm/bin/mitmdump`.
 [tasks.mitm-setup]
-run = "mkdir -p .tools && (test -d .tools/mitm || uv venv .tools/mitm) && uv pip install --python .tools/mitm/bin/python 'mitmproxy>=11'"
+run = "mkdir -p .tools && (test -d .tools/mitm || uv venv .tools/mitm) && uv pip install --python .tools/mitm/bin/python 'mitmproxy==11.0.0'"
 sources = ["mise.toml"]

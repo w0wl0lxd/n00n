@@ -38,7 +38,12 @@ pub(crate) fn read_ide_access_token_from(path: &Path) -> Result<String, AuthErro
             [ACCESS_TOKEN_KEY],
             |row| row.get(0),
         )
-        .map_err(|_| AuthError::TokenMissing)?;
+        .map_err(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => AuthError::TokenMissing,
+            other => AuthError::DbRead {
+                message: other.to_string(),
+            },
+        })?;
     if token.is_empty() {
         return Err(AuthError::TokenMissing);
     }

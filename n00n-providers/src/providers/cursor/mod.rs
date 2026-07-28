@@ -92,9 +92,8 @@ impl Cursor {
     }
 
     fn is_safe_command_name(s: &str) -> bool {
-        !s.is_empty()
-            && s.chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' || c == '/')
+        const ALLOWLIST: &[&str] = &["cursor-agent", "cursor-agent.exe"];
+        ALLOWLIST.contains(&s) || s.ends_with("/cursor-agent") || s.ends_with("/cursor-agent.exe")
     }
 
     fn command_from_auth(auth: &ResolvedAuth) -> PathBuf {

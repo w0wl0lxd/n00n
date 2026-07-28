@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use super::proto::{field_bytes, field_ld, field_varint};
+use super::proto::{decode_varint, field_bytes, field_ld, field_varint, iter_fields};
 
 #[derive(Debug, Default)]
 pub(crate) struct CheckpointStore {
@@ -75,8 +75,6 @@ pub(crate) enum KvServerOp {
 }
 
 pub(crate) fn parse_kv_server_message(payload: &[u8]) -> Result<Option<KvServerOp>, String> {
-    use super::proto::{decode_varint, iter_fields};
-
     for field in iter_fields(payload) {
         let (num, wire, data) = field?;
         if num != 4 || wire != 2 {
@@ -161,7 +159,6 @@ pub(crate) fn parse_kv_server_message(payload: &[u8]) -> Result<Option<KvServerO
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::cursor::proto::{field_bytes, field_ld, field_varint};
 
     #[test]
     fn store_roundtrip() {

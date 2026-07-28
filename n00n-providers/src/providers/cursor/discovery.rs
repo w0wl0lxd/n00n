@@ -8,6 +8,28 @@ use crate::AgentError;
 
 use super::wire::{CLIENT_TYPE, CLIENT_VERSION, CONNECT_PROTOCOL_VERSION};
 
+fn validate_agent_url(url: &str) -> Result<(), AgentError> {
+    let parsed = url::Url::parse(url).map_err(|error| AgentError::Config {
+        message: format!("cursor agent URL parse: {error}"),
+    })?;
+    if parsed.scheme() != "https" {
+        return Err(AgentError::Config {
+            message: format!("cursor agent URL must use HTTPS, got: {}", parsed.scheme()),
+        });
+    }
+    let host = parsed.host_str().ok_or_else(|| AgentError::Config {
+        message: "cursor agent URL missing host".into(),
+    })?;
+    if !host.ends_with(".cursor.sh") && !host.ends_with(".cursor.com") {
+        return Err(AgentError::Config {
+            message: format!(
+                "cursor agent URL domain must be *.cursor.sh or *.cursor.com, got: {host}"
+            ),
+        });
+    }
+    Ok(())
+}
+
 const API2_BASE: &str = "https://api2.cursor.sh";
 const GET_USABLE_MODELS_PATH: &str = "/agent.v1.AgentService/GetUsableModels";
 const GET_SERVER_CONFIG_PATH: &str = "/aiserver.v1.ServerConfigService/GetServerConfig";
@@ -119,6 +141,7 @@ pub(crate) fn fetch_agent_base_url(token: &str) -> Result<String, AgentError> {
             message: "cursor GetServerConfig returned empty agentnUrl".into(),
         });
     }
+    validate_agent_url(&url)?;
     Ok(url)
 }
 
