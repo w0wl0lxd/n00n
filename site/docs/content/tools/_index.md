@@ -318,6 +318,13 @@ Load all tools from a namespace. Returns the list of tools that were loaded.
 |-----------|------|----------|-------------|
 | `namespace` | string | yes | Namespace to load |
 
+### `fusion_delegate` *(lua plugin)*
+
+Delegate mechanical work to a Fusion sidekick subagent. Provide goal, constraints, and definition of done — not full file contents. Sidekick returns concise evidence and test results.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+
 ## Web
 
 ### `webfetch` *(lua plugin)*
@@ -338,12 +345,3 @@ Search the web for real-time information using Exa AI.
 |-----------|------|----------|---------|-------------|
 | `num_results` | integer | no | 8 | Number of results to return |
 | `query` | string | yes |  | Search query |
-
-## Additional tools
-
-### `fusion_delegate` *(lua plugin)*
-
-Delegate mechanical work to a Fusion sidekick subagent. Provide goal, constraints, and definition of done — not full file contents. Sidekick returns concise evidence and test results.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
