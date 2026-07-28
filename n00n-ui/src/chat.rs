@@ -18,12 +18,14 @@ use n00n_agent::{
     AgentEvent, BufferSnapshot, ImageSource, ToolDoneEvent, ToolOutput, ToolStartEvent,
 };
 use n00n_config::{ToolKey, ToolOutputLines, UiConfig};
-use n00n_providers::{ContentBlock, Message, Role, TokenUsage};
+use n00n_providers::{CacheHealth, ContentBlock, Message, Role, TokenUsage};
 use n00n_storage::sessions::TranscriptEntry;
+use quanta::Instant as CacheInstant;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui_image::picker::Picker;
+use std::time::Duration;
 
 pub(crate) const DONE_TEXT: &str = "Done!";
 pub(crate) const ERROR_TEXT: &str = "Error";
@@ -57,6 +59,8 @@ pub struct Chat {
     pub model_id: Option<String>,
     pub tool_use_id: Option<String>,
     pub failed: bool,
+    pub cache_health: Option<CacheHealth>,
+    pub cache_valid_until: Option<CacheInstant>,
     pending_turn_usage: Option<String>,
     messages_panel: MessagesPanel,
     finished: bool,
@@ -72,6 +76,8 @@ impl Chat {
             model_id: None,
             tool_use_id: None,
             failed: false,
+            cache_health: None,
+            cache_valid_until: None,
             pending_turn_usage: None,
             messages_panel: MessagesPanel::new(ui_config, picker),
             finished: false,
@@ -80,6 +86,28 @@ impl Chat {
 
     pub fn set_pending_turn_usage(&mut self, usage: String) {
         self.pending_turn_usage = Some(usage);
+    }
+
+    pub fn set_cache_health(&mut self, cache: CacheHealth) {
+        if cache.valid_until == 0 {
+            self.cache_health = None;
+            self.cache_valid_until = None;
+            return;
+        }
+        let remaining = cache.valid_until.saturating_sub(n00n_storage::now_epoch());
+        if remaining == 0 {
+            self.cache_health = None;
+            self.cache_valid_until = None;
+            return;
+        }
+        let Some(valid_until) = CacheInstant::now().checked_add(Duration::from_secs(remaining))
+        else {
+            self.cache_health = None;
+            self.cache_valid_until = None;
+            return;
+        };
+        self.cache_health = Some(cache);
+        self.cache_valid_until = Some(valid_until);
     }
 
     pub fn on_mouse(&mut self, column: u16, row: u16) {
@@ -206,6 +234,9 @@ impl Chat {
             AgentEvent::SubagentHistory { .. } => {}
             AgentEvent::LiveToolBuf { id, body } => {
                 self.messages_panel.register_live_buf(id, body);
+            }
+            AgentEvent::CacheHealth { cache } => {
+                self.set_cache_health(cache);
             }
             AgentEvent::PromptProgress {
                 processed,
