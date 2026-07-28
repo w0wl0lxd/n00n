@@ -373,6 +373,7 @@ fn handle_print_event(
         | AgentEvent::ToolHeaderSnapshot { .. }
         | AgentEvent::LiveToolBuf { .. }
         | AgentEvent::Nudge
+        | AgentEvent::CacheHealth { .. }
         | AgentEvent::PromptProgress { .. } => {}
         AgentEvent::Retry {
             attempt,

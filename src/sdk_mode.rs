@@ -1056,6 +1056,7 @@ impl EventPump {
             | AgentEvent::ToolHeaderSnapshot { .. }
             | AgentEvent::LiveToolBuf { .. }
             | AgentEvent::Nudge
+            | AgentEvent::CacheHealth { .. }
             | AgentEvent::PromptProgress { .. } => Ok(()),
             AgentEvent::Retry {
                 attempt,
