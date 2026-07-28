@@ -196,6 +196,7 @@ isahc = { version = "1.7", default-features = false, features = [
 ] }
 libc = "0.2"
 rustix = { version = "0.38", default-features = false, features = [
+  "std",
   "process",
   "net",
 ] }
