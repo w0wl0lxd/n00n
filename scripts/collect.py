@@ -6,6 +6,7 @@ import csv
 import json
 import subprocess
 import sys
+
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -71,7 +72,7 @@ _active_agent = ""
 
 
 def _ts():
-    return datetime.now().strftime("%H:%M:%S")
+    return datetime.now(timezone.utc).strftime("%H:%M:%S")
 
 
 def _log(msg):
