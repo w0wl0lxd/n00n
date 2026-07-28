@@ -1,5 +1,6 @@
 [package]
 name = "n00n-config"
+description = "User configuration, provider registry, and environment loading for n00n"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
