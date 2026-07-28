@@ -994,40 +994,6 @@ pub fn message_client(
                 .wrap_err("failed to send command")?;
 
             let mut line = String::new();
-<<<<<<< HEAD
-
-            while let Ok(n) = reader.read_line(&mut line).await {
-                if n == 0 {
-                    break;
-                }
-
-                if json {
-                    print!("{line}");
-                } else if let Ok(event) = serde_json::from_str::<ServerEvent>(&line) {
-                    match event {
-                        ServerEvent::TextDelta { text } => {
-                            print!("{text}");
-                        }
-                        ServerEvent::Done {
-                            error: Some(message),
-                            ..
-                        } => {
-                            eprintln!("\nError: {message}");
-                            return Err(color_eyre::eyre::eyre!(message));
-                        }
-                        ServerEvent::Done { .. } => {
-                            println!();
-                        }
-                        ServerEvent::Error { message } => {
-                            eprintln!("Error: {message}");
-                            return Err(color_eyre::eyre::eyre!(message));
-                        }
-                        ServerEvent::ToolOutput { .. } => {}
-                    }
-                }
-                line.clear();
-=======
-            let mut done_seen = false;
 
             loop {
                 line.clear();
@@ -1036,9 +1002,6 @@ pub fn message_client(
                     .await
                     .wrap_err("failed to read agent event stream")?;
                 if n == 0 {
-                    if done_seen {
-                        break;
-                    }
                     return Err(eyre!("agent stream closed without a Done event"));
                 }
 
@@ -1060,7 +1023,6 @@ pub fn message_client(
                             return Err(eyre!(message));
                         }
                         ServerEvent::Done { .. } => {
-                            done_seen = true;
                             if !json {
                                 println!();
                             }
@@ -1083,11 +1045,6 @@ pub fn message_client(
                 } else {
                     return Err(eyre!("malformed server event: {line}"));
                 }
-            }
-
-            if !done_seen {
-                return Err(eyre!("agent stream closed without a Done event"));
->>>>>>> origin/main
             }
 
             Ok(())
@@ -1148,9 +1105,6 @@ pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> 
 
             match response.get("ok").and_then(serde_json::Value::as_bool) {
                 Some(true) => println!("Agent {id} stopped"),
-<<<<<<< HEAD
-                _ => eprintln!("Failed to stop agent {id}"),
-=======
                 Some(false) => {
                     let message = match response.get("error").and_then(serde_json::Value::as_str) {
                         Some(message) => message.to_string(),
@@ -1159,7 +1113,6 @@ pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> 
                     return Err(eyre!("Failed to stop agent {id}: {message}"));
                 }
                 None => return Err(eyre!("control response missing ok field")),
->>>>>>> origin/main
             }
 
             Ok(())
@@ -1424,9 +1377,6 @@ fn control_command_client(
 
             match response.get("ok").and_then(serde_json::Value::as_bool) {
                 Some(true) => println!("Agent {id} {success_label}"),
-<<<<<<< HEAD
-                _ => eprintln!("Failed to update agent {id}"),
-=======
                 Some(false) => {
                     let message = match response.get("error").and_then(serde_json::Value::as_str) {
                         Some(message) => message.to_string(),
@@ -1435,7 +1385,6 @@ fn control_command_client(
                     return Err(eyre!("Failed to {success_label} agent {id}: {message}"));
                 }
                 None => return Err(eyre!("control response missing ok field")),
->>>>>>> origin/main
             }
 
             Ok(())

@@ -9,9 +9,6 @@ use crate::backend::ControlBackend;
 use crate::error::{ControlError, ControlResult};
 use crate::protocol::{AgentRecord, BackendKind, MessageOpts};
 
-#[cfg(unix)]
-use sonic_rs::JsonValueTrait;
-
 const AGENTS_SUBDIR: &str = "agents";
 const STATE_FILE: &str = "agent.json";
 const MAX_AGENT_ID_LEN: usize = 64;
@@ -272,7 +269,6 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use std::path::Path;
     use tempfile::TempDir;
 
     fn write_fixture(dir: &Path, id: &str, status: &str) -> Result<(), String> {
