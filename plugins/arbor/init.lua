@@ -137,6 +137,12 @@ local function dispatch(input)
     if not symbol then
       return { llm_output = "error: query string required (use 'symbol' field)", is_error = true }
     end
+    if not n00n_arbor.graph_index_available(project) then
+      return {
+        llm_output = "error: Arbor index not found in " .. project .. ". Run `arbor index` first.",
+        is_error = true,
+      }
+    end
     return { llm_output = n00n_arbor.query(symbol, project) }
   end
 
