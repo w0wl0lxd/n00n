@@ -36,6 +36,7 @@ async fn forward_provider_events(
             ProviderEvent::TextDelta { text } => AgentEvent::TextDelta { text },
             ProviderEvent::ThinkingDelta { text } => AgentEvent::ThinkingDelta { text },
             ProviderEvent::ToolUseStart { id, name } => AgentEvent::ToolPending { id, name },
+            ProviderEvent::CacheHealth { cache } => AgentEvent::CacheHealth { cache },
             ProviderEvent::PromptProgress {
                 processed,
                 total,
