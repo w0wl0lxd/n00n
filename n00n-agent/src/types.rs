@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use flume::Sender;
 use n00n_config::ToolKey;
 use n00n_providers::{
-    AgentError, ContentBlock, ImageSource, Message, Role, StopReason, TokenUsage,
+    AgentError, CacheHealth, ContentBlock, ImageSource, Message, Role, StopReason, TokenUsage,
 };
 use serde::de::Error as DeError;
 use serde::de::{Deserializer, MapAccess, Visitor};
@@ -921,6 +921,9 @@ pub enum AgentEvent {
     LiveToolBuf {
         id: String,
         body: Arc<SharedBuf>,
+    },
+    CacheHealth {
+        cache: CacheHealth,
     },
     PromptProgress {
         processed: u32,
