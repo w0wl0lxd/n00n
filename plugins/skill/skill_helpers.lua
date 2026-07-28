@@ -74,15 +74,26 @@ function M.skill_fingerprint(path)
     return nil
   end
   local content = n00n.fs.read(path) or ""
-  local ok_hash, memory_helpers = pcall(require, "memory.memory_helpers")
   local digest = "0"
-  if ok_hash and memory_helpers and memory_helpers.fnv1a_64 then
-    digest = memory_helpers.fnv1a_64(content)
+  local ok, hash = pcall(function()
+    return n00n.workflow.hash(content)
+  end)
+  if ok and hash then
+    digest = hash
   else
-    digest = tostring(#content)
+    local ok_hash, memory_helpers = pcall(require, "memory.memory_helpers")
+    if ok_hash and memory_helpers and memory_helpers.fnv1a_64 then
+      digest = memory_helpers.fnv1a_64(content)
+    else
+      -- Last-resort stable fallback: djb2 over bytes.
+      local h = 5381
+      for i = 1, #content do
+        h = bit32.bor(bit32.lshift(h, 5), h) + string.byte(content, i)
+      end
+      digest = string.format("%08x", h)
+    end
   end
-  local stamp = meta.mtime or 0
-  return path .. ":" .. tostring(stamp) .. ":" .. tostring(meta.size) .. ":" .. digest
+  return path .. ":" .. digest
 end
 
 function M.glob_pattern_to_lua(pattern)

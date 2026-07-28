@@ -97,10 +97,17 @@ impl ActiveSkillPolicy {
             return;
         }
         let Some(state) = state else {
-            *policy = None;
             return;
         };
-        *policy = Self::from_state_active_skill(state);
+        match state.get("active_skill") {
+            None => {}
+            Some(serde_json::Value::Null) => *policy = None,
+            Some(active) => {
+                if let Some(new_policy) = Self::from_value(active) {
+                    *policy = Some(new_policy);
+                }
+            }
+        }
     }
 }
 
@@ -193,7 +200,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_from_skill_tool_result_sets_and_clears_policy() {
+    fn apply_from_skill_tool_result_sets_and_preserves_policy() {
         let mut policy = None;
         ActiveSkillPolicy::apply_from_skill_tool_result(
             &mut policy,
@@ -208,11 +215,21 @@ mod tests {
         );
         assert!(policy.is_some());
 
+        // Discovery-only state (no active_skill) must not clear an existing policy.
         ActiveSkillPolicy::apply_from_skill_tool_result(
             &mut policy,
             "skill",
             false,
             Some(&json!({ "discovery_cache_hit": true })),
+        );
+        assert!(policy.is_some());
+
+        // Explicit null active_skill is the only signal that clears the policy.
+        ActiveSkillPolicy::apply_from_skill_tool_result(
+            &mut policy,
+            "skill",
+            false,
+            Some(&json!({ "active_skill": null })),
         );
         assert!(policy.is_none());
     }
