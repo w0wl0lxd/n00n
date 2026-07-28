@@ -166,46 +166,53 @@ pub(crate) fn heartbeat_frame() -> Result<Vec<u8>, String> {
     encode_frame(0, &field_ld(FIELD_CLIENT_HEARTBEAT, &[]))
 }
 
-/// Decode length-delimited fields from a protobuf message body (skips varints).
+/// Decode fields from a protobuf message body.
+///
+/// For length-delimited fields (wire type 2) the returned slice is the field
+/// payload. For varint fields (wire type 0) the returned slice is the varint
+/// value bytes; callers can decode it with `decode_varint`.
 pub(crate) fn iter_fields(
     mut buf: &[u8],
 ) -> impl Iterator<Item = Result<(u64, u8, &[u8]), String>> + '_ {
     std::iter::from_fn(move || {
-        while !buf.is_empty() {
-            let (tag, rest) = match decode_varint(buf) {
-                Ok(v) => v,
-                Err(e) => return Some(Err(e)),
-            };
-            buf = rest;
-            let field = tag >> 3;
-            let wire = (tag & 7) as u8;
-            match wire {
-                0 => {
-                    let (_, rest) = match decode_varint(buf) {
-                        Ok(v) => v,
-                        Err(e) => return Some(Err(e)),
-                    };
-                    buf = rest;
-                }
-                2 => {
-                    let (len, rest) = match decode_varint(buf) {
-                        Ok(v) => v,
-                        Err(e) => return Some(Err(e)),
-                    };
-                    let Ok(len) = usize::try_from(len) else {
-                        return Some(Err("protobuf length overflow".into()));
-                    };
-                    if rest.len() < len {
-                        return Some(Err("truncated length-delimited field".into()));
-                    }
-                    let (data, rest) = rest.split_at(len);
-                    buf = rest;
-                    return Some(Ok((field, wire, data)));
-                }
-                other => return Some(Err(format!("unsupported protobuf wire type {other}"))),
-            }
+        if buf.is_empty() {
+            return None;
         }
-        None
+        let (tag, rest) = match decode_varint(buf) {
+            Ok(v) => v,
+            Err(e) => return Some(Err(e)),
+        };
+        buf = rest;
+        let field = tag >> 3;
+        let wire = (tag & 7) as u8;
+        match wire {
+            0 => {
+                let value_start = buf;
+                let (_, rest) = match decode_varint(buf) {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(e)),
+                };
+                let value_bytes = &value_start[..value_start.len() - rest.len()];
+                buf = rest;
+                Some(Ok((field, wire, value_bytes)))
+            }
+            2 => {
+                let (len, rest) = match decode_varint(buf) {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(e)),
+                };
+                let Ok(len) = usize::try_from(len) else {
+                    return Some(Err("protobuf length overflow".into()));
+                };
+                if rest.len() < len {
+                    return Some(Err("truncated length-delimited field".into()));
+                }
+                let (data, rest) = rest.split_at(len);
+                buf = rest;
+                Some(Ok((field, wire, data)))
+            }
+            other => Some(Err(format!("unsupported protobuf wire type {other}"))),
+        }
     })
 }
 

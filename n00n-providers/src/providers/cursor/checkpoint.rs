@@ -74,6 +74,32 @@ pub(crate) enum KvServerOp {
     },
 }
 
+fn parse_get_blob_args(args: &[u8]) -> Result<Vec<u8>, String> {
+    for arg in iter_fields(args) {
+        let (anum, awire, adata) = arg?;
+        if anum == 1 && awire == 2 {
+            return Ok(adata.to_vec());
+        }
+    }
+    Err("missing blob_id in get_blob_args".into())
+}
+
+fn parse_set_blob_args(args: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let mut blob_id: Option<Vec<u8>> = None;
+    let mut blob_data: Option<Vec<u8>> = None;
+    for arg in iter_fields(args) {
+        let (anum, awire, adata) = arg?;
+        if anum == 1 && awire == 2 {
+            blob_id = Some(adata.to_vec());
+        } else if anum == 2 && awire == 2 {
+            blob_data = Some(adata.to_vec());
+        }
+    }
+    let blob_id = blob_id.ok_or("missing blob_id in set_blob_args")?;
+    let blob_data = blob_data.ok_or("missing blob_data in set_blob_args")?;
+    Ok((blob_id, blob_data))
+}
+
 pub(crate) fn parse_kv_server_message(payload: &[u8]) -> Result<Option<KvServerOp>, String> {
     for field in iter_fields(payload) {
         let (num, wire, data) = field?;
@@ -83,66 +109,16 @@ pub(crate) fn parse_kv_server_message(payload: &[u8]) -> Result<Option<KvServerO
         let mut id = 0u32;
         let mut get_blob: Option<Vec<u8>> = None;
         let mut set_blob: Option<(Vec<u8>, Vec<u8>)> = None;
-        let mut rest = data;
-        while !rest.is_empty() {
-            let (tag, after) = decode_varint(rest)?;
-            rest = after;
-            let field_no = tag >> 3;
-            let wire_ty = (tag & 7) as u8;
-            match (field_no, wire_ty) {
+        for inner in iter_fields(data) {
+            let (inum, iwire, idata) = inner?;
+            match (inum, iwire) {
                 (1, 0) => {
-                    let (value, after) = decode_varint(rest)?;
+                    let (value, _) = decode_varint(idata)?;
                     id = u32::try_from(value).map_err(|_| "kv id overflow".to_string())?;
-                    rest = after;
                 }
-                (2, 2) => {
-                    let (len, after) = decode_varint(rest)?;
-                    let len = usize::try_from(len).map_err(|_| "len overflow".to_string())?;
-                    if after.len() < len {
-                        return Err("truncated get_blob_args".into());
-                    }
-                    let (args, after) = after.split_at(len);
-                    rest = after;
-                    for arg in iter_fields(args) {
-                        let (anum, awire, adata) = arg?;
-                        if anum == 1 && awire == 2 {
-                            get_blob = Some(adata.to_vec());
-                        }
-                    }
-                }
-                (3, 2) => {
-                    let (len, after) = decode_varint(rest)?;
-                    let len = usize::try_from(len).map_err(|_| "len overflow".to_string())?;
-                    if after.len() < len {
-                        return Err("truncated set_blob_args".into());
-                    }
-                    let (args, after) = after.split_at(len);
-                    rest = after;
-                    let mut blob_id = Vec::new();
-                    let mut blob_data = Vec::new();
-                    for arg in iter_fields(args) {
-                        let (anum, awire, adata) = arg?;
-                        if anum == 1 && awire == 2 {
-                            blob_id = adata.to_vec();
-                        } else if anum == 2 && awire == 2 {
-                            blob_data = adata.to_vec();
-                        }
-                    }
-                    set_blob = Some((blob_id, blob_data));
-                }
-                (_, 2) => {
-                    let (len, after) = decode_varint(rest)?;
-                    let len = usize::try_from(len).map_err(|_| "len overflow".to_string())?;
-                    if after.len() < len {
-                        return Err("truncated kv field".into());
-                    }
-                    rest = &after[len..];
-                }
-                (_, 0) => {
-                    let (_, after) = decode_varint(rest)?;
-                    rest = after;
-                }
-                _ => return Err(format!("unsupported kv wire {wire_ty}")),
+                (2, 2) => get_blob = Some(parse_get_blob_args(idata)?),
+                (3, 2) => set_blob = Some(parse_set_blob_args(idata)?),
+                _ => {}
             }
         }
         if let Some(blob_id) = get_blob {
