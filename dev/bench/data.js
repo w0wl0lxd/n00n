@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785227791215,
+  "lastUpdate": 1785229078314,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -8745,6 +8745,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 159710,
             "range": "± 23830",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d464812d3819873a9c38fe9bc98b8bed971d8d37",
+          "message": "fix(filetools): fix JSON escaping, UTF-8 truncation, error handling, and channels (#152)\n\n* fix(n00n-daemon): compile and lint on windows and macos\n\n- Remove unused serde_json dependency from n00n-daemon/Cargo.toml\n- Gate rustix::process imports with #[cfg(unix)] in lock.rs\n- Add Windows stub for pid_alive that returns false (daemon not supported yet)\n- Make check_unix_peer_uid #[cfg(unix)] with Linux/non-Linux variants\n- Add # Errors documentation to non-Linux check_unix_peer_uid\n- Gate auth and daemon_socket_in imports with #[cfg(unix)] in server.rs\n- Gate daemon_socket_in import with #[cfg(unix)] in transport.rs\n- Move Path import into #[cfg(unix)] block in worker.rs\n- Gate JsonValueTrait import with #[cfg(unix)] in worker.rs\n\nThese changes allow n00n-daemon to compile and pass clippy on Windows and macOS\nwhile keeping Linux behavior intact. Windows pid_alive is a stub since the\ndaemon is not supported there yet.\n\n* fix(filetools): add changelog fragment and sync main for CI\n\nMerge main and apply n00n-daemon cross-platform cfg gates so Windows\nand macOS lint/build pass alongside the filetools correctness fixes.\n\n* fix(n00n-daemon): gate unix-only test helpers for Windows lint\n\n* fix(n00n-daemon): compile and lint on Windows and macOS\n\nGate unix-only imports and pid_alive, drop unused serde_json, and scope\nworker Path/JsonValueTrait usage so cross-platform CI passes.\n\n* fix(agent): gate unix-only background agent sockets for Windows CI\n\nBackground agent servers and direct control.sock clients compile only on\nunix; Windows builds use the daemon control plane or return a clear error.\n\n* fix(filetools): resolve merge conflicts from origin/main merge",
+          "timestamp": "2026-07-28T08:43:13Z",
+          "tree_id": "289cca1ba98e3dd2c45ddbf2afe90b0d8509e384",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/d464812d3819873a9c38fe9bc98b8bed971d8d37"
+        },
+        "date": 1785229077705,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 7284823,
+            "range": "± 75675",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2603040,
+            "range": "± 41118",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2604751,
+            "range": "± 36917",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7927475,
+            "range": "± 19132",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3874557,
+            "range": "± 81135",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3816445,
+            "range": "± 47350",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 572889,
+            "range": "± 1758",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 167764,
+            "range": "± 597",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 167883,
+            "range": "± 194",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1062203,
+            "range": "± 20350",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 642735,
+            "range": "± 6550",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 640283,
+            "range": "± 7979",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 65472,
+            "range": "± 6958",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 154383,
+            "range": "± 12329",
             "unit": "ns/iter"
           }
         ]
