@@ -442,6 +442,7 @@ pub fn run(opts: &AgentRunOptions<'_>, json: bool) -> Result<()> {
     let mut final_output = String::new();
     let mut final_usage = None;
     let mut stop_reason = String::from("completed");
+    let mut error_message: Option<String> = None;
 
     while let Ok(event) = handle.event_rx.recv() {
         match event.event {
@@ -453,6 +454,7 @@ pub fn run(opts: &AgentRunOptions<'_>, json: bool) -> Result<()> {
             }
             n00n_agent::AgentEvent::Error { message } => {
                 stop_reason = format!("error: {message}");
+                error_message = Some(message.clone());
                 eprintln!("Error: {message}");
             }
             _ => {}
@@ -472,6 +474,10 @@ pub fn run(opts: &AgentRunOptions<'_>, json: bool) -> Result<()> {
         println!("{json_output}");
     } else {
         println!("{final_output}");
+    }
+
+    if let Some(err) = error_message {
+        return Err(eyre!(err));
     }
 
     Ok(())
@@ -900,7 +906,10 @@ async fn handle_connection(
                 .wrap_err("failed to write event")?;
 
             let mut state = read_agent_state(storage, agent_id)?;
-            state.status = "running".to_string();
+            // Only update status to running if not paused
+            if !paused.load(Ordering::Relaxed) {
+                state.status = "running".to_string();
+            }
             state.updated_at = now_epoch();
             write_agent_state(storage, &state)?;
         }
@@ -1097,11 +1106,15 @@ pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> 
 
     let storage = agent_storage(&state_dir);
 
-    let Ok(state) = read_agent_state(&storage, id) else {
-        let agent_dir_path = agent_dir(&storage, id)?;
-        let _ = fs::remove_dir_all(&agent_dir_path);
-        eprintln!("Agent {id} not found, cleaned up directory");
-        return Ok(());
+    let state = match read_agent_state(&storage, id) {
+        Ok(s) => s,
+        Err(e) if e.to_string().contains("not found") || e.to_string().contains("No such file") => {
+            let agent_dir_path = agent_dir(&storage, id)?;
+            let _ = fs::remove_dir_all(&agent_dir_path);
+            eprintln!("Agent {id} not found, cleaned up directory");
+            return Ok(());
+        }
+        Err(e) => return Err(e.wrap_err("failed to read agent state")),
     };
 
     #[cfg(not(unix))]
