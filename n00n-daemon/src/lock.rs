@@ -97,14 +97,21 @@ pub fn pid_alive(pid: u32) -> bool {
     }
 }
 
-/// Stub for Windows: n00n-daemon is not supported there yet.
+/// Windows fallback: ask the OS whether `pid` is still running.
 ///
-/// Conservatively treats only the current process as alive so the lock
-/// tests pass and we do not false-positive on a real stale lock.
+/// Only an explicitly `Alive` result keeps a lock alive. `Dead` and `Unknown`
+/// are treated as not alive so stale locks (including unresolvable pids) are
+/// swept instead of blocking a new daemon instance.
 #[must_use]
 #[cfg(not(unix))]
 pub fn pid_alive(pid: u32) -> bool {
-    pid == std::process::id()
+    if pid == 0 {
+        return false;
+    }
+    matches!(
+        process_alive::state(process_alive::Pid::from(pid)),
+        process_alive::State::Alive
+    )
 }
 
 /// Remove a lock file whose owner pid is no longer alive.
@@ -171,6 +178,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
     #[test]
     fn tui_blocks_worker_while_alive() {
         let lock = sample_lock(DaemonRole::Tui);

@@ -3,5 +3,6 @@
 .env.*
 jobs/
 trials/
+n00n-bundle.tar.gz
 *.log
 __pycache__/

@@ -9,9 +9,6 @@ use crate::backend::ControlBackend;
 use crate::error::{ControlError, ControlResult};
 use crate::protocol::{AgentRecord, BackendKind, MessageOpts};
 
-#[cfg(unix)]
-use sonic_rs::JsonValueTrait;
-
 const AGENTS_SUBDIR: &str = "agents";
 const STATE_FILE: &str = "agent.json";
 const MAX_AGENT_ID_LEN: usize = 64;
@@ -166,6 +163,7 @@ impl WorkerBackend {
         reader: &mut futures_lite::io::BufReader<impl futures_lite::AsyncRead + Unpin>,
     ) -> ControlResult<()> {
         use futures_lite::AsyncBufReadExt;
+        use sonic_rs::JsonValueTrait;
 
         let mut line = String::new();
         loop {
