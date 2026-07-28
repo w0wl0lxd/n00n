@@ -34,6 +34,7 @@ pub struct RequestDeliveryMetadata {
     pub response_id: Option<String>,
     pub close_code: Option<u16>,
     pub close_reason: Option<String>,
+    pub emitted_event: bool,
 }
 
 impl RequestDeliveryMetadata {
@@ -43,7 +44,18 @@ impl RequestDeliveryMetadata {
             response_id: None,
             close_code: None,
             close_reason: None,
+            emitted_event: false,
         }
+    }
+
+    /// Whether the provider accepted the request, emitted output, or assigned a
+    /// response id, all of which mean the request left the client and should not
+    /// be retried on later failure.
+    #[must_use]
+    pub(crate) fn emitted_or_accepted(&self) -> bool {
+        self.emitted_event
+            || self.phase == RequestDeliveryPhase::Accepted
+            || self.response_id.is_some()
     }
 }
 
@@ -117,6 +129,33 @@ impl AgentError {
             | Self::CodingPlanAdmission { .. }
             | Self::HistoryReplayRequired { .. }
             | Self::RequestSent { .. } => false,
+        }
+    }
+
+    /// Converts failures that may have occurred after the provider accepted the
+    /// request or emitted output into [`AgentError::RequestSent`], which is not
+    /// retryable. Transport-level failures are treated as request-sent once the
+    /// request has left the client. API/server errors are only suppressed when
+    /// output has already been emitted or the request was accepted, preserving
+    /// retryability when no output has been accepted.
+    #[must_use]
+    pub fn suppress_retry_after_send(self, metadata: Option<RequestDeliveryMetadata>) -> Self {
+        let emitted_or_accepted = metadata
+            .as_ref()
+            .is_some_and(RequestDeliveryMetadata::emitted_or_accepted);
+        let sent = metadata
+            .as_ref()
+            .is_some_and(|m| m.phase != RequestDeliveryPhase::NotSent);
+
+        match self {
+            Self::Io(_) | Self::Http(_) | Self::Timeout { .. } if sent => Self::RequestSent {
+                message: self.to_string(),
+                metadata,
+            },
+            Self::Api { message, .. } if emitted_or_accepted => {
+                Self::RequestSent { message, metadata }
+            }
+            _ => self,
         }
     }
 

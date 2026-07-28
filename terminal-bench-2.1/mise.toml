@@ -1,0 +1,4 @@
+# Pin the Daytona CLI to the current API-aligned release from the new
+# daytona/clients repository (the old daytonaio/daytona repo stopped at v0.190.0).
+[tools]
+"github:daytona/clients" = { version = "0.200.1", bin = "daytona" }

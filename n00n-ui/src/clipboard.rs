@@ -1,3 +1,5 @@
+use std::thread;
+
 use crate::terminal;
 use arboard::Clipboard;
 #[cfg(target_os = "linux")]
@@ -10,12 +12,23 @@ pub(crate) enum CopyResult {
 
 pub(crate) struct ClipboardState {
     native: Option<Clipboard>,
+    /// `arboard::Clipboard::new()` may block indefinitely on Wayland when the
+    /// compositor socket is stale or unresponsive. Initialize it in a background
+    /// thread and pull the result lazily on the first copy so startup never hangs.
+    init: Option<flume::Receiver<Clipboard>>,
 }
 
 impl ClipboardState {
     pub(crate) fn new() -> Self {
+        let (tx, rx) = flume::bounded(1);
+        thread::spawn(move || {
+            if let Ok(clipboard) = Clipboard::new() {
+                let _ = tx.send(clipboard);
+            }
+        });
         Self {
-            native: Clipboard::new().ok(),
+            native: None,
+            init: Some(rx),
         }
     }
 
@@ -42,6 +55,12 @@ impl ClipboardState {
     }
 
     fn copy_native(&mut self, text: &str) -> Result<(), String> {
+        if self.native.is_none()
+            && let Some(rx) = self.init.as_ref()
+            && let Ok(clipboard) = rx.try_recv()
+        {
+            self.native = Some(clipboard);
+        }
         let Some(clipboard) = &mut self.native else {
             return Err("native clipboard unavailable".into());
         };
@@ -147,6 +166,29 @@ mod tests {
         assert!(
             native_called.get(),
             "whitespace-only text must still be copied"
+        );
+    }
+
+    #[test]
+    fn lazy_init_unavailable_falls_back_to_osc52() {
+        let mut state = ClipboardState {
+            native: None,
+            init: None,
+        };
+        let osc52_called = Cell::new(false);
+        let result = ClipboardState::copy_text_impl(
+            "hello",
+            |t| state.copy_native(t),
+            |t| {
+                assert_eq!(t, "hello");
+                osc52_called.set(true);
+                Ok(())
+            },
+        );
+        assert!(matches!(result, Ok(CopyResult::Copied)));
+        assert!(
+            osc52_called.get(),
+            "must fall back to osc52 when init exhausted"
         );
     }
 }
