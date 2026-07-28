@@ -1,8 +1,9 @@
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::fs::FileType;
 use std::io::ErrorKind;
 
-use futures_lite::io::AsyncReadExt;
+use futures_lite::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use futures_lite::stream::StreamExt;
 use std::path::{Component, Path, PathBuf};
 
 use mlua::{IntoLua, Lua, Result as LuaResult, Table, Value};
@@ -260,6 +261,117 @@ async fn read_bytes_limited(lua: Lua, path: String, max_bytes: usize) -> LuaResu
             Value::String(lua.create_string(error.to_string())?),
         )),
     }
+}
+
+/// Read lines from a file at {path} with offset and limit, streaming without loading the entire file.
+/// Returns a table with `lines` (array of strings), `total_lines` (integer), and `prefix` (string or nil).
+/// The `prefix` contains up to 256 lines immediately before the offset for context.
+/// Strips trailing `\r` from each line. Returns an error on non-UTF-8 content.
+///
+/// @param path string Absolute or relative file path. `~/` is expanded to the home directory.
+/// @param offset integer 1-based line number to start reading from (default 1).
+/// @param limit integer Maximum number of lines to return (default all remaining lines).
+/// @return (table?, string?) Result table with `lines`, `total_lines`, and `prefix`, or nil plus an error message.
+/// @example
+/// local res, err = n00n.fs.read_lines("file.txt", 10, 50)
+/// if err then return end
+/// for i, line in ipairs(res.lines) do print(line) end
+/// print("total:", res.total_lines)
+#[lua_fn(guard = FsRead)]
+async fn read_lines(
+    lua: Lua,
+    path: String,
+    offset: usize,
+    limit: usize,
+) -> LuaResult<(Value, Value)> {
+    const PREFIX_WINDOW_SIZE: usize = 256;
+
+    let abs = make_absolute(&path)?;
+
+    let file = match smol::fs::File::open(&abs).await {
+        Ok(f) => f,
+        Err(e) => {
+            return Ok((
+                Value::Nil,
+                Value::String(lua.create_string(format!("cannot open file: {e}"))?),
+            ));
+        }
+    };
+    let meta = match file.metadata().await {
+        Ok(m) => m,
+        Err(e) => {
+            return Ok((
+                Value::Nil,
+                Value::String(lua.create_string(format!("cannot inspect file: {e}"))?),
+            ));
+        }
+    };
+    if !meta.is_file() {
+        return Ok((
+            Value::Nil,
+            Value::String(lua.create_string("file is not a regular file")?),
+        ));
+    }
+
+    let reader = BufReader::new(file);
+    let mut lines_stream = reader.lines();
+    let skip = offset.saturating_sub(1);
+    let mut prefix_window: VecDeque<String> = VecDeque::with_capacity(PREFIX_WINDOW_SIZE);
+    let mut result_lines = Vec::new();
+    let mut total_lines = 0;
+
+    while let Some(line_result) = lines_stream.next().await {
+        let line = match line_result {
+            Ok(s) => s,
+            Err(e) if e.kind() == ErrorKind::InvalidData => {
+                return Ok((
+                    Value::Nil,
+                    Value::String(lua.create_string("non-utf8 content; use read_bytes")?),
+                ));
+            }
+            Err(e) => {
+                return Ok((
+                    Value::Nil,
+                    Value::String(lua.create_string(format!("cannot read file: {e}"))?),
+                ));
+            }
+        };
+        let line = if let Some(line) = line.strip_suffix('\r') {
+            line.to_string()
+        } else {
+            line
+        };
+        total_lines += 1;
+
+        if total_lines <= skip {
+            prefix_window.push_back(line);
+            if prefix_window.len() > PREFIX_WINDOW_SIZE {
+                prefix_window.pop_front();
+            }
+        } else if result_lines.len() < limit {
+            result_lines.push(line);
+        }
+    }
+
+    let prefix = if prefix_window.is_empty() {
+        None
+    } else {
+        Some(prefix_window.into_iter().collect::<Vec<_>>().join("\n"))
+    };
+
+    let tbl = lua.create_table()?;
+    let lines_tbl = lua.create_table()?;
+    for (i, line) in result_lines.iter().enumerate() {
+        lines_tbl.set(i + 1, line.as_str())?;
+    }
+    tbl.set("lines", lines_tbl)?;
+    tbl.set("total_lines", total_lines)?;
+    if let Some(prefix) = prefix {
+        tbl.set("prefix", prefix)?;
+    } else {
+        tbl.set("prefix", Value::Nil)?;
+    }
+    Ok((Value::Table(tbl), Value::Nil))
 }
 
 /// Get metadata for the file or directory at {path}.
@@ -845,7 +957,7 @@ lua_table! {
     /// if err then return end
     /// ```
     "n00n.fs" => pub(crate) fn create_fs_table(perms: &PluginPermissions), DOCS [
-        read(perms), read_bytes(perms), read_bytes_limited(perms), metadata(perms), dirname, basename,
+        read(perms), read_bytes(perms), read_bytes_limited(perms), read_lines(perms), metadata(perms), dirname, basename,
         joinpath, normalize, abspath, parents, root(perms), relpath, ext,
         dir(perms), write(perms), rm(perms), mkdir(perms), glob(perms), grep(perms),
     ]
@@ -1677,5 +1789,170 @@ mod tests {
         let (val, err) = grep_call(&tbl, "[invalid", opts);
         assert_eq!(val, mlua::Value::Nil);
         assert!(matches!(err, mlua::Value::String(_)));
+    }
+
+    #[test]
+    fn read_lines_normal_read() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("lines.txt");
+        std::fs::write(&file, "line1\nline2\nline3\n").unwrap();
+
+        let lua = Lua::new();
+        let tbl = create_fs_table(&lua, &PluginPermissions::trusted()).unwrap();
+        let read_lines: mlua::Function = tbl.get("read_lines").unwrap();
+        let (result, err): (Table, mlua::Value) =
+            smol::block_on(read_lines.call_async::<(Table, mlua::Value)>((
+                file.to_str().unwrap(),
+                1_usize,
+                10_usize,
+            )))
+            .unwrap();
+        assert!(matches!(err, mlua::Value::Nil));
+
+        let lines: Table = result.get("lines").unwrap();
+        assert_eq!(lines.len().unwrap(), 3);
+        assert_eq!(lines.get::<String>(1).unwrap(), "line1");
+        assert_eq!(lines.get::<String>(2).unwrap(), "line2");
+        assert_eq!(lines.get::<String>(3).unwrap(), "line3");
+
+        let total_lines: usize = result.get("total_lines").unwrap();
+        assert_eq!(total_lines, 3);
+
+        let prefix: mlua::Value = result.get("prefix").unwrap();
+        assert!(matches!(prefix, mlua::Value::Nil));
+    }
+
+    #[test]
+    fn read_lines_offset_and_limit() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("lines.txt");
+        std::fs::write(&file, "line1\nline2\nline3\nline4\nline5\n").unwrap();
+
+        let lua = Lua::new();
+        let tbl = create_fs_table(&lua, &PluginPermissions::trusted()).unwrap();
+        let read_lines: mlua::Function = tbl.get("read_lines").unwrap();
+        let (result, err): (Table, mlua::Value) =
+            smol::block_on(read_lines.call_async::<(Table, mlua::Value)>((
+                file.to_str().unwrap(),
+                3_usize,
+                2_usize,
+            )))
+            .unwrap();
+        assert!(matches!(err, mlua::Value::Nil));
+
+        let lines: Table = result.get("lines").unwrap();
+        assert_eq!(lines.len().unwrap(), 2);
+        assert_eq!(lines.get::<String>(1).unwrap(), "line3");
+        assert_eq!(lines.get::<String>(2).unwrap(), "line4");
+
+        let total_lines: usize = result.get("total_lines").unwrap();
+        assert_eq!(total_lines, 5);
+
+        let prefix: mlua::Value = result.get("prefix").unwrap();
+        let Value::String(prefix_str) = prefix else {
+            panic!("expected prefix string");
+        };
+        assert_eq!(prefix_str.to_str().unwrap(), "line1\nline2");
+    }
+
+    #[test]
+    fn read_lines_prefix_window() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("lines.txt");
+        let mut content = String::new();
+        for i in 1..=300 {
+            let _ = std::fmt::Write::write_fmt(&mut content, format_args!("line{i}\n"));
+        }
+        std::fs::write(&file, &content).unwrap();
+
+        let lua = Lua::new();
+        let tbl = create_fs_table(&lua, &PluginPermissions::trusted()).unwrap();
+        let read_lines: mlua::Function = tbl.get("read_lines").unwrap();
+        let (result, err): (Table, mlua::Value) =
+            smol::block_on(read_lines.call_async::<(Table, mlua::Value)>((
+                file.to_str().unwrap(),
+                300_usize,
+                1_usize,
+            )))
+            .unwrap();
+        assert!(matches!(err, mlua::Value::Nil));
+
+        let prefix: mlua::Value = result.get("prefix").unwrap();
+        let Value::String(prefix_str) = prefix else {
+            panic!("expected prefix string");
+        };
+        let prefix = prefix_str.to_str().unwrap();
+        let prefix_lines: Vec<&str> = prefix.split('\n').collect();
+        assert_eq!(prefix_lines.len(), 256);
+        assert!(prefix_lines[0].starts_with("line44"));
+        assert!(prefix_lines[255].starts_with("line299"));
+    }
+
+    #[test]
+    fn read_lines_missing_file() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("nonexistent.txt");
+
+        let lua = Lua::new();
+        let tbl = create_fs_table(&lua, &PluginPermissions::trusted()).unwrap();
+        let read_lines: mlua::Function = tbl.get("read_lines").unwrap();
+        let (val, err): (mlua::Value, mlua::Value) =
+            smol::block_on(read_lines.call_async::<(mlua::Value, mlua::Value)>((
+                file.to_str().unwrap(),
+                1_usize,
+                10_usize,
+            )))
+            .unwrap();
+        assert_eq!(val, mlua::Value::Nil);
+        assert!(matches!(err, mlua::Value::String(_)));
+    }
+
+    #[test]
+    fn read_lines_utf8_error() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("binary.bin");
+        std::fs::write(&file, vec![0xFF, 0xFE, 0xFD]).unwrap();
+
+        let lua = Lua::new();
+        let tbl = create_fs_table(&lua, &PluginPermissions::trusted()).unwrap();
+        let read_lines: mlua::Function = tbl.get("read_lines").unwrap();
+        let (val, err): (mlua::Value, mlua::Value) =
+            smol::block_on(read_lines.call_async::<(mlua::Value, mlua::Value)>((
+                file.to_str().unwrap(),
+                1_usize,
+                10_usize,
+            )))
+            .unwrap();
+        assert_eq!(val, mlua::Value::Nil);
+        let Value::String(err_str) = err else {
+            panic!("expected error string");
+        };
+        assert_eq!(
+            err_str.to_str().unwrap(),
+            "non-utf8 content; use read_bytes"
+        );
+    }
+
+    #[test]
+    fn read_lines_strips_trailing_cr() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("crlf.txt");
+        std::fs::write(&file, "line1\r\nline2\r\n").unwrap();
+
+        let lua = Lua::new();
+        let tbl = create_fs_table(&lua, &PluginPermissions::trusted()).unwrap();
+        let read_lines: mlua::Function = tbl.get("read_lines").unwrap();
+        let (result, err): (Table, mlua::Value) =
+            smol::block_on(read_lines.call_async::<(Table, mlua::Value)>((
+                file.to_str().unwrap(),
+                1_usize,
+                10_usize,
+            )))
+            .unwrap();
+        assert!(matches!(err, mlua::Value::Nil));
+
+        let lines: Table = result.get("lines").unwrap();
+        assert_eq!(lines.get::<String>(1).unwrap(), "line1");
+        assert_eq!(lines.get::<String>(2).unwrap(), "line2");
     }
 }

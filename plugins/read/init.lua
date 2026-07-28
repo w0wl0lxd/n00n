@@ -12,28 +12,18 @@ local opts = n00n.api.register_options({
 })
 
 local function line_nr_fmt(count)
-  local w = math.max(1, math.floor(math.log(count + 1, 10)) + 1)
-  return "%" .. w .. "d "
-end
-
-local function utf8_boundary(s, target)
-  local i = target
-  while i > 0 do
-    local next_b = s:byte(i + 1)
-    if not next_b or next_b < 0x80 or next_b >= 0xC0 then
-      break
-    end
-    i = i - 1
-  end
-  return i
+  return "%" .. math.max(1, #tostring(count)) .. "d "
 end
 
 local function truncate_bytes(line, max_bytes)
   if #line <= max_bytes then
     return line
   end
-  local i = utf8_boundary(line, max_bytes)
-  return line:sub(1, i) .. "..."
+  local cut = utf8.offset(line, 0, max_bytes + 1)
+  if not cut or cut <= 1 then
+    return "..."
+  end
+  return line:sub(1, cut - 1) .. "..."
 end
 
 local function read_view_opts(ctx)
@@ -105,28 +95,18 @@ local function build_dir_view(text, ctx)
 end
 
 local function read_file(path, offset, limit, ctx)
-  local content, err = n00n.fs.read(path)
-  if not content then
-    return { llm_output = "read error: " .. tostring(err), is_error = true }
-  end
-
-  local all_lines = {}
-  local pos = 1
-  while pos <= #content do
-    local nl = content:find("\n", pos, true)
-    local raw = nl and content:sub(pos, nl - 1) or content:sub(pos)
-    all_lines[#all_lines + 1] = raw:find("\r$") and raw:sub(1, -2) or raw
-    pos = nl and nl + 1 or #content + 1
-  end
-  local total_lines = #all_lines
-
   local start = math.max(offset or 1, 1)
   local max_lines = limit or opts.max_output_lines or ctx:config("max_output_lines", DEFAULT_MAX_OUTPUT_LINES)
   local max_line_bytes = opts.max_line_bytes
 
+  local res, err = n00n.fs.read_lines(path, start, max_lines)
+  if not res then
+    return { llm_output = "read error: " .. tostring(err), is_error = true }
+  end
+
   local lines = {}
-  for i = start, math.min(start + max_lines - 1, total_lines) do
-    lines[#lines + 1] = truncate_bytes(all_lines[i], max_line_bytes)
+  for _, line in ipairs(res.lines) do
+    lines[#lines + 1] = truncate_bytes(line, max_line_bytes)
   end
 
   ctx:record_read(path)
@@ -138,21 +118,19 @@ local function read_file(path, offset, limit, ctx)
   local llm_output = table.concat(parts, "\n")
 
   local trunc_start = start + #lines
-  if trunc_start <= total_lines then
+  if trunc_start <= res.total_lines then
     llm_output = llm_output
       .. string.format(
         "\n\n...\n\nTruncated lines: %d-%d. Use offset=%d to read further.",
         trunc_start,
-        total_lines,
+        res.total_lines,
         trunc_start
       )
   end
 
   local shown = #lines
-  local annotation = shown < total_lines and string.format("%d of %d lines", shown, total_lines)
+  local annotation = shown < res.total_lines and string.format("%d of %d lines", shown, res.total_lines)
     or string.format("%d lines", shown)
-
-  local prefix = start > 1 and table.concat(all_lines, "\n", 1, math.min(start - 1, total_lines)) or nil
 
   local basename = path:match("([^/]+)$")
   if not ctx:is_instruction_file(basename) then
@@ -162,7 +140,7 @@ local function read_file(path, offset, limit, ctx)
       if #instructions > 0 then
         return {
           llm_output = llm_output,
-          body = build_file_view(lines, start, total_lines, path, ctx, prefix),
+          body = build_file_view(lines, start, res.total_lines, path, ctx, res.prefix),
           annotation = annotation,
           instructions = instructions,
         }
@@ -172,7 +150,7 @@ local function read_file(path, offset, limit, ctx)
 
   return {
     llm_output = llm_output,
-    body = build_file_view(lines, start, total_lines, path, ctx, prefix),
+    body = build_file_view(lines, start, res.total_lines, path, ctx, res.prefix),
     annotation = annotation,
   }
 end
@@ -303,8 +281,6 @@ do
     local max_bytes = 4
     local result = truncate_bytes(s, max_bytes)
     -- Emoji is 4 bytes, so with max_bytes=4 we should get "abc..." (emoji doesn't fit)
-    -- The old buggy version would return "abc..." anyway, but the new version
-    -- correctly handles UTF-8 boundaries
     assert(result:sub(1, 3) == "abc", "should preserve ASCII prefix")
     assert(result:sub(-3) == "...", "should add ellipsis")
     -- Test with enough bytes for the emoji
