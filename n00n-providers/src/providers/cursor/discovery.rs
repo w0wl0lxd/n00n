@@ -1,3 +1,10 @@
+//! Cursor API2 discovery for native HTTP/2 Connect (Phase 1).
+//!
+//! This module is not yet wired into the Cursor provider; it's prepared for
+//! future native integration to replace the cursor-agent subprocess approach.
+
+#![allow(dead_code)]
+
 use std::time::Duration;
 
 use isahc::ReadResponseExt;
@@ -44,7 +51,6 @@ pub(crate) struct UsableModel {
     pub display_model_id: String,
     pub display_name: String,
     #[serde(default)]
-    #[allow(dead_code)] // catalog metadata for Phase 2 inventory
     pub aliases: Vec<String>,
 }
 
@@ -63,7 +69,6 @@ struct GetServerConfigResponse {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AgentUrlConfig {
-    #[allow(dead_code)] // api2 may return both; Run uses agentnUrl
     agent_url: String,
     agentn_url: String,
 }
