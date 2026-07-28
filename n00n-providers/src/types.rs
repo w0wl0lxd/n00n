@@ -405,6 +405,21 @@ impl TitleSource for Message {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheKind {
+    ResponseChain,
+    Prompt,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheHealth {
+    pub kind: CacheKind,
+    pub valid_until: u64,
+    pub ttl_seconds: u64,
+    pub hit: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub enum ProviderEvent {
     TextDelta {
@@ -421,6 +436,9 @@ pub enum ProviderEvent {
         processed: u32,
         total: u32,
         cache: u32,
+    },
+    CacheHealth {
+        cache: CacheHealth,
     },
 }
 
