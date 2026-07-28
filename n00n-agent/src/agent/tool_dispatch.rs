@@ -10,6 +10,7 @@ use tracing::{debug, error, warn};
 
 use crate::mcp::{McpSession, TOOL_SEARCH_TOOL_NAME, UNKNOWN_MCP};
 use crate::permissions::PermissionCheckContext;
+use crate::skill_policy::SKILL_POLICY_DENIED_PREFIX;
 use crate::task_set::TaskSet;
 use crate::tools::registry::{ToolInvocation, ToolRegistry, ToolSource};
 use crate::tools::{LocalToolFn, ToolContext};
@@ -240,7 +241,9 @@ fn skill_policy_denied(name: &str, ctx: &ToolContext) -> Option<String> {
     if decision.allowed {
         None
     } else {
-        decision.reason
+        Some(decision.reason.unwrap_or_else(|| {
+            format!("{SKILL_POLICY_DENIED_PREFIX}: tool {name} is blocked by the active skill")
+        }))
     }
 }
 
@@ -1880,6 +1883,11 @@ mod tests {
             )
             .await
             .expect("process batch");
+            assert_eq!(
+                results.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+                vec!["t-bash", "t-skill"],
+                "results must keep original tool-use order"
+            );
 
             let bash_result = results
                 .iter()
@@ -1903,7 +1911,10 @@ mod tests {
             let event_tx = crate::EventSender::new(tx, 0);
             let mut history = crate::agent::History::new(Vec::new());
             let mut recent_calls = RecentCalls::new();
-            let response = response_with_tool_uses(&[("t-read", "read", serde_json::json!({}))]);
+            let response = response_with_tool_uses(&[
+                ("t-read-1", "read", serde_json::json!({})),
+                ("t-read-2", "read", serde_json::json!({})),
+            ]);
             let results = process_tool_calls(
                 response,
                 &mut recent_calls,
@@ -1914,9 +1925,20 @@ mod tests {
             )
             .await
             .expect("process batch");
-            assert_eq!(results.len(), 1);
+            assert_eq!(
+                results.len(),
+                2,
+                "both parallel tool calls must produce results"
+            );
+            assert_eq!(
+                results.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+                vec!["t-read-1", "t-read-2"],
+                "results must keep original tool-use order"
+            );
             assert!(!results[0].is_error);
+            assert!(!results[1].is_error);
             assert_eq!(results[0].output.as_text(), "ok");
+            assert_eq!(results[1].output.as_text(), "ok");
         });
     }
 
