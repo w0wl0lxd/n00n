@@ -2,6 +2,11 @@
 //!
 //! Field layout reverse-engineered from `cursor-agent` 2026.07.26 and validated
 //! against the MIT-licensed shunt `agent.rs` frame builder.
+//!
+//! This module is not yet wired into the Cursor provider; it's prepared for
+//! future native integration to replace the cursor-agent subprocess approach.
+
+#![allow(dead_code)]
 
 use crate::providers::cursor::connect::encode_frame;
 
@@ -289,7 +294,6 @@ pub(crate) fn has_exec_server_message(payload: &[u8]) -> Result<bool, String> {
 }
 
 /// True when the server sent a KV get/set request (`kv_server_message` f4).
-#[allow(dead_code)] // used when Run wires checkpoint replies (Phase 1)
 pub(crate) fn has_kv_server_message(payload: &[u8]) -> Result<bool, String> {
     for field in iter_fields(payload) {
         let (num, wire, _) = field?;

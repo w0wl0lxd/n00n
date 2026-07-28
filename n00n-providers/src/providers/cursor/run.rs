@@ -1,4 +1,9 @@
 //! HTTP/2 Connect driver for `agent.v1.AgentService/Run`.
+//!
+//! This module is not yet wired into the Cursor provider; it's prepared for
+//! future native integration to replace the cursor-agent subprocess approach.
+
+#![allow(dead_code)]
 
 use std::pin::Pin;
 use std::task::{Context, Poll};

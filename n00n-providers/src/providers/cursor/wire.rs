@@ -1,9 +1,13 @@
 //! Cursor wire-level identifiers and header constants.
+//!
+//! This module is not yet wired into the Cursor provider; it's prepared for
+//! future native integration to replace the cursor-agent subprocess approach.
+
+#![allow(dead_code)]
 
 pub(crate) const CLIENT_TYPE: &str = "cli";
 pub(crate) const CLIENT_VERSION: &str = "cli-2026.07.26-77e48ba";
 pub(crate) const CONNECT_PROTOCOL_VERSION: &str = "1";
-#[allow(dead_code)] // used by Run client in Phase 1
 pub(crate) const CONNECT_CONTENT_TYPE: &str = "application/connect+proto";
 
 /// Map n00n/display model ids to `AgentService/Run` wire ids.

@@ -6,6 +6,11 @@
 //! - Client → server: `AgentClientMessage.kv_client_message` (f3)
 //!   - `GetBlobResult { blob_data? }` (f2) or `SetBlobResult { error? }` (f3)
 //! - Resume: `UserMessage.conversation_state_blob_id` (f10 bytes)
+//!
+//! This module is not yet wired into the Cursor provider; it's prepared for
+//! future native integration to replace the cursor-agent subprocess approach.
+
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -31,10 +36,8 @@ impl CheckpointStore {
     }
 }
 
-#[allow(dead_code)] // Phase 1 Run replies to set_blob_args
 pub(crate) type SharedCheckpointStore = Arc<Mutex<CheckpointStore>>;
 
-#[allow(dead_code)] // wired when Run handles kv_server_message (Phase 1)
 pub(crate) fn shared_store() -> SharedCheckpointStore {
     Arc::new(Mutex::new(CheckpointStore::new()))
 }
@@ -53,7 +56,6 @@ pub(crate) fn encode_get_blob_result(request_id: u32, blob_data: Option<&[u8]>) 
 
 /// Encode `AgentClientMessage.kv_client_message` for a set-blob ack.
 #[must_use]
-#[allow(dead_code)] // Phase 1 Run replies to set_blob_args
 pub(crate) fn encode_set_blob_result(request_id: u32) -> Vec<u8> {
     let mut kv = field_varint(1, u64::from(request_id));
     kv.extend(field_ld(3, &[]));
