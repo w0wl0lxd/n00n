@@ -11,10 +11,12 @@ use tracing::{debug, error, warn};
 use crate::mcp::{McpSession, TOOL_SEARCH_TOOL_NAME, UNKNOWN_MCP};
 use crate::permissions::PermissionCheckContext;
 use crate::task_set::TaskSet;
-use crate::tools::registry::{ToolInvocation, ToolRegistry};
+use crate::tools::registry::{ToolInvocation, ToolRegistry, ToolSource};
 use crate::tools::{LocalToolFn, ToolContext};
 use crate::{AgentError, AgentEvent, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use n00n_config::ToolKey;
+
+const SUBAGENT_PLUGINS: &[&str] = &["task", "workflow"];
 
 #[derive(Clone, Copy)]
 pub enum Emit {
@@ -222,6 +224,24 @@ fn is_authorized_plan_target(plan_path: &Path, target: &Path) -> bool {
         return false;
     };
     plan == target
+}
+
+fn is_subagent_failure(event: &ToolDoneEvent, ctx: &ToolContext) -> bool {
+    if !event.is_error {
+        return false;
+    }
+    // A local override (e.g. a test mock) should not be treated as a built-in
+    // subagent just because it shares a name with one.
+    if ctx.local_tools.contains_key(event.tool.as_ref()) {
+        return false;
+    }
+    let Some(entry) = ctx.registry.get(event.tool.as_ref()) else {
+        return false;
+    };
+    matches!(
+        entry.source,
+        ToolSource::Lua { plugin } if SUBAGENT_PLUGINS.contains(&plugin.as_ref())
+    )
 }
 
 pub(super) struct RecentCalls(VecDeque<(String, u64)>);
@@ -760,6 +780,14 @@ pub(super) async fn process_tool_calls(
         message: Box::new(tool_msg.clone()),
     })?;
     history.push(tool_msg);
+
+    if let Some(failed) = all_results.iter().find(|r| is_subagent_failure(r, ctx)) {
+        return Err(AgentError::Tool {
+            tool: failed.tool.to_string(),
+            message: failed.output.as_text(),
+        });
+    }
+
     Ok(all_results)
 }
 
@@ -1593,6 +1621,197 @@ mod tests {
             .await;
             assert!(done.is_error);
             assert_eq!(done.output.as_text(), ERROR_MSG);
+        });
+    }
+
+    struct FailingSubagentTool {
+        name: &'static str,
+        message: String,
+    }
+
+    struct FailingSubagentInvocation {
+        message: String,
+    }
+
+    impl FailingSubagentTool {
+        fn new(name: &'static str, message: impl Into<String>) -> Self {
+            Self {
+                name,
+                message: message.into(),
+            }
+        }
+    }
+
+    impl ToolInvocation for FailingSubagentInvocation {
+        fn start_header(&self) -> HeaderFuture {
+            HeaderFuture::Ready(HeaderResult::plain("subagent".into()))
+        }
+        fn execute(self: Box<Self>, _ctx: &ToolContext) -> ExecFuture<'_> {
+            let message = self.message;
+            Box::pin(async move { ToolExecResult::from(Err::<ToolOutput, String>(message)) })
+        }
+    }
+
+    impl Tool for FailingSubagentTool {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn description(&self, _ctx: &DescriptionContext) -> std::borrow::Cow<'_, str> {
+            "failing subagent".into()
+        }
+        fn schema(&self) -> Value {
+            serde_json::json!({"type": "object", "properties": {}, "additionalProperties": false})
+        }
+        fn audience(&self) -> crate::tools::ToolAudience {
+            crate::tools::ToolAudience::MAIN
+        }
+        fn parse(&self, _input: &Value) -> Result<Box<dyn ToolInvocation>, ParseError> {
+            Ok(Box::new(FailingSubagentInvocation {
+                message: self.message.clone(),
+            }))
+        }
+    }
+
+    #[test]
+    fn failed_subagent_tool_aborts_process_tool_calls() {
+        smol::block_on(async {
+            use n00n_providers::{ContentBlock, Message, Role, StreamResponse, TokenUsage};
+
+            const ERROR_MSG: &str = "sub-agent error: API 500";
+            let (tx, _rx) = flume::unbounded::<crate::Envelope>();
+            let event_tx = crate::EventSender::new(tx, 0);
+            let mut ctx = crate::tools::test_support::stub_ctx(&AgentMode::Build);
+            let registry = ToolRegistry::new();
+            let tool: Arc<dyn Tool> = Arc::new(FailingSubagentTool::new("task", ERROR_MSG));
+            registry
+                .register(
+                    &tool,
+                    &ToolSource::Lua {
+                        plugin: "task".into(),
+                    },
+                )
+                .unwrap();
+            ctx.registry = Arc::new(registry);
+            let mut history = crate::History::new(Vec::new());
+            let response = StreamResponse {
+                message: Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::ToolUse {
+                        id: "tu1".into(),
+                        name: "task".into(),
+                        input: serde_json::json!({}),
+                    }],
+                    ..Default::default()
+                },
+                usage: TokenUsage::default(),
+                stop_reason: None,
+            };
+
+            let err = process_tool_calls(
+                response,
+                &mut RecentCalls::new(),
+                None,
+                &mut history,
+                &event_tx,
+                &ctx,
+            )
+            .await
+            .expect_err("failed subagent must abort the turn");
+
+            assert!(matches!(err, AgentError::Tool { ref tool, .. } if tool == "task"));
+            assert!(err.to_string().contains(ERROR_MSG));
+        });
+    }
+
+    #[test]
+    fn failed_workflow_tool_aborts_process_tool_calls() {
+        smol::block_on(async {
+            use n00n_providers::{ContentBlock, Message, Role, StreamResponse, TokenUsage};
+
+            const ERROR_MSG: &str = "sub-agent error: workflow 500";
+            let (tx, _rx) = flume::unbounded::<crate::Envelope>();
+            let event_tx = crate::EventSender::new(tx, 0);
+            let mut ctx = crate::tools::test_support::stub_ctx(&AgentMode::Build);
+            let registry = ToolRegistry::new();
+            let tool: Arc<dyn Tool> = Arc::new(FailingSubagentTool::new("workflow", ERROR_MSG));
+            registry
+                .register(
+                    &tool,
+                    &ToolSource::Lua {
+                        plugin: "workflow".into(),
+                    },
+                )
+                .unwrap();
+            ctx.registry = Arc::new(registry);
+            let mut history = crate::History::new(Vec::new());
+            let response = StreamResponse {
+                message: Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::ToolUse {
+                        id: "tu1".into(),
+                        name: "workflow".into(),
+                        input: serde_json::json!({}),
+                    }],
+                    ..Default::default()
+                },
+                usage: TokenUsage::default(),
+                stop_reason: None,
+            };
+
+            let err = process_tool_calls(
+                response,
+                &mut RecentCalls::new(),
+                None,
+                &mut history,
+                &event_tx,
+                &ctx,
+            )
+            .await
+            .expect_err("failed workflow subagent must abort the turn");
+
+            assert!(matches!(err, AgentError::Tool { ref tool, .. } if tool == "workflow"));
+            assert!(err.to_string().contains(ERROR_MSG));
+        });
+    }
+
+    #[test]
+    fn failed_local_task_tool_does_not_abort_process_tool_calls() {
+        smol::block_on(async {
+            use n00n_providers::{ContentBlock, Message, Role, StreamResponse, TokenUsage};
+
+            const ERROR_MSG: &str = "local task failed";
+            let (tx, _rx) = flume::unbounded::<crate::Envelope>();
+            let event_tx = crate::EventSender::new(tx, 0);
+            let ctx = local_ctx("task", |_| Err::<String, String>(ERROR_MSG.into()));
+            let mut history = crate::History::new(Vec::new());
+            let response = StreamResponse {
+                message: Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::ToolUse {
+                        id: "tu1".into(),
+                        name: "task".into(),
+                        input: serde_json::json!({}),
+                    }],
+                    ..Default::default()
+                },
+                usage: TokenUsage::default(),
+                stop_reason: None,
+            };
+
+            let results = process_tool_calls(
+                response,
+                &mut RecentCalls::new(),
+                None,
+                &mut history,
+                &event_tx,
+                &ctx,
+            )
+            .await
+            .expect("local task failure must not abort the turn");
+
+            assert_eq!(results.len(), 1);
+            assert!(results[0].is_error);
+            assert_eq!(results[0].output.as_text(), ERROR_MSG);
         });
     }
 }

@@ -2,3 +2,4 @@
 channel = "stable"
 components = ["clippy", "rustfmt", "rust-src", "rust-analyzer"]
 profile = "minimal"
+targets = ["x86_64-pc-windows-msvc"]

@@ -134,7 +134,7 @@ impl CodexAttempt {
         store: bool,
         error: super::websocket::WebSocketAttemptError,
     ) -> Self {
-        let emitted_event = error.emitted_event;
+        let emitted_event = error.delivery.emitted_event;
         let definitive_rejection = error.definitive_rejection();
         let delivery = Some(error.delivery.clone());
         let provider_error = error.into_agent_error();
@@ -261,7 +261,7 @@ fn response_state_scope_hash(auth: &ResolvedAuth) -> String {
 
 fn should_fallback_to_http(error: &super::websocket::WebSocketAttemptError) -> bool {
     error.transport_failure
-        && !error.emitted_event
+        && !error.delivery.emitted_event
         && !error.error.is_auth_error()
         && !matches!(&error.error, AgentError::CodingPlanAdmission { .. })
         && error.delivery.phase == RequestDeliveryPhase::NotSent
@@ -288,15 +288,9 @@ fn not_sent_websocket_error(error: AgentError) -> super::websocket::WebSocketAtt
 }
 
 fn suppress_retry_after_send(error: AgentError) -> AgentError {
-    match error {
-        error @ AgentError::RequestSent { .. } => error,
-        error => AgentError::RequestSent {
-            message: error.to_string(),
-            metadata: Some(RequestDeliveryMetadata::new(
-                RequestDeliveryPhase::SentAwaitingAcceptance,
-            )),
-        },
-    }
+    error.suppress_retry_after_send(Some(RequestDeliveryMetadata::new(
+        RequestDeliveryPhase::SentAwaitingAcceptance,
+    )))
 }
 
 fn canonical_session_key(session_id: &SessionRef) -> n00nId {
@@ -3336,6 +3330,7 @@ mod tests {
         let attempt = |phase, response_id: Option<&str>, emitted_event, transport_failure| {
             let mut delivery = RequestDeliveryMetadata::new(phase);
             delivery.response_id = response_id.map(ToOwned::to_owned);
+            delivery.emitted_event = emitted_event;
             CodexAttempt::from_websocket_error(
                 None,
                 false,
@@ -3344,7 +3339,6 @@ mod tests {
                         status: 401,
                         message: "expired token".into(),
                     },
-                    emitted_event,
                     transport_failure,
                     delivery,
                 },
@@ -4231,17 +4225,19 @@ mod tests {
     fn http_fallback_requires_transport_failure_before_output() {
         let transport = super::super::websocket::WebSocketAttemptError {
             error: std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "closed").into(),
-            emitted_event: false,
             transport_failure: true,
             delivery: crate::RequestDeliveryMetadata::new(crate::RequestDeliveryPhase::NotSent),
         };
         assert!(should_fallback_to_http(&transport));
 
         let after_output = super::super::websocket::WebSocketAttemptError {
-            emitted_event: true,
-            delivery: crate::RequestDeliveryMetadata::new(
-                crate::RequestDeliveryPhase::SentAwaitingAcceptance,
-            ),
+            delivery: {
+                let mut d = crate::RequestDeliveryMetadata::new(
+                    crate::RequestDeliveryPhase::SentAwaitingAcceptance,
+                );
+                d.emitted_event = true;
+                d
+            },
             ..transport
         };
         assert!(!should_fallback_to_http(&after_output));
@@ -4251,7 +4247,6 @@ mod tests {
                 status: 401,
                 message: "expired".into(),
             },
-            emitted_event: false,
             transport_failure: true,
             delivery: crate::RequestDeliveryMetadata::new(crate::RequestDeliveryPhase::NotSent),
         };
@@ -4259,7 +4254,6 @@ mod tests {
 
         let admission = super::super::websocket::WebSocketAttemptError {
             error: AgentError::CodingPlanAdmission { retry_after: None },
-            emitted_event: false,
             transport_failure: true,
             delivery: crate::RequestDeliveryMetadata::new(crate::RequestDeliveryPhase::NotSent),
         };
@@ -4270,7 +4264,6 @@ mod tests {
                 status: 500,
                 message: "server".into(),
             },
-            emitted_event: false,
             transport_failure: false,
             delivery: crate::RequestDeliveryMetadata::new(
                 crate::RequestDeliveryPhase::SentAwaitingAcceptance,
@@ -4280,7 +4273,6 @@ mod tests {
 
         let after_send = super::super::websocket::WebSocketAttemptError {
             error: std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "closed").into(),
-            emitted_event: false,
             transport_failure: true,
             delivery: crate::RequestDeliveryMetadata::new(
                 crate::RequestDeliveryPhase::SentAwaitingAcceptance,
@@ -4289,28 +4281,23 @@ mod tests {
         assert!(!should_fallback_to_http(&after_send));
     }
 
-    #[test_case(400)]
-    #[test_case(401)]
-    #[test_case(429)]
-    #[test_case(500)]
-    fn provider_status_after_http_send_becomes_non_retryable(status: u16) {
+    #[test_case(400, false, false)]
+    #[test_case(401, false, true)]
+    #[test_case(429, true, false)]
+    #[test_case(500, true, false)]
+    fn provider_status_after_http_send_is_not_request_sent(
+        status: u16,
+        retryable: bool,
+        auth_error: bool,
+    ) {
         let error = suppress_retry_after_send(AgentError::Api {
             status,
             message: "provider rejected an already-written request".into(),
         });
 
-        assert!(matches!(
-            error,
-            AgentError::RequestSent {
-                metadata: Some(RequestDeliveryMetadata {
-                    phase: RequestDeliveryPhase::SentAwaitingAcceptance,
-                    ..
-                }),
-                ..
-            }
-        ));
-        assert!(!error.is_retryable());
-        assert!(!error.is_auth_error());
+        assert!(!matches!(error, AgentError::RequestSent { .. }));
+        assert_eq!(error.is_retryable(), retryable);
+        assert_eq!(error.is_auth_error(), auth_error);
     }
 
     #[test]

@@ -21,7 +21,7 @@ Out of #149 once the above lands: **ready for review** — run `./scripts/smoke-
 | Land PR #134 background agent server (`agents/<id>/control.sock`, `agent.json`) | Done on #149 |
 | Align CLI: keep thin control verbs as daemon-first client; `run --background` under same `n00n agent` | Done |
 | Verb×backend: worker pause/resume/stop/message via existing `ClientCommand` | Done; `WorkerBackend` proxies the same layout |
-| Identity: path-safe worker ids vs TUI `N00nId` strings | Keep `backend` discriminant |
+| Identity: path-safe worker ids vs TUI `n00nId` strings | Keep `backend` discriminant |
 
 **Do not** pretend a multiplexed worker plane exists before #134’s per-agent socks land.
 

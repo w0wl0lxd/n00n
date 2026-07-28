@@ -1,3 +1,10 @@
+// The `agent` subcommand is Unix-first; Windows builds contain stubs that
+// deliberately leave imports/variables unused, so silence those warnings.
+#![cfg_attr(
+    not(unix),
+    allow(dead_code, unused_imports, unused_variables, clippy::needless_return)
+)]
+
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -518,6 +525,8 @@ enum ServerEvent {
 const AGENTS_SUBDIR: &str = "agents";
 const STATE_FILE: &str = "agent.json";
 const SOCKET_FILE: &str = "control.sock";
+const DIR_PERMISSIONS: u32 = 0o700;
+const FILE_PERMISSIONS: u32 = 0o600;
 
 fn agent_dir(state_dir: &StateDir, agent_id: &str) -> Result<PathBuf> {
     validate_agent_id(agent_id)?;
@@ -533,7 +542,7 @@ fn socket_path(state_dir: &StateDir, agent_id: &str) -> Result<PathBuf> {
 fn restrict_dir_permissions(path: &std::path::Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+    fs::set_permissions(path, fs::Permissions::from_mode(DIR_PERMISSIONS))
         .wrap_err("failed to set agent directory permissions")
 }
 
@@ -541,7 +550,7 @@ fn restrict_dir_permissions(path: &std::path::Path) -> Result<()> {
 fn restrict_file_permissions(path: &std::path::Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+    fs::set_permissions(path, fs::Permissions::from_mode(FILE_PERMISSIONS))
         .wrap_err("failed to set socket permissions")
 }
 
@@ -985,37 +994,66 @@ pub fn message_client(
                 .wrap_err("failed to send command")?;
 
             let mut line = String::new();
+            let mut done_seen = false;
 
-            while let Ok(n) = reader.read_line(&mut line).await {
+            loop {
+                line.clear();
+                let n = reader
+                    .read_line(&mut line)
+                    .await
+                    .wrap_err("failed to read agent event stream")?;
                 if n == 0 {
-                    break;
+                    if done_seen {
+                        break;
+                    }
+                    return Err(eyre!("agent stream closed without a Done event"));
                 }
 
-                if json {
-                    print!("{line}");
-                } else if let Ok(event) = serde_json::from_str::<ServerEvent>(&line) {
+                if let Ok(event) = serde_json::from_str::<ServerEvent>(&line) {
+                    if json {
+                        print!("{line}");
+                    }
                     match event {
                         ServerEvent::TextDelta { text } => {
-                            print!("{text}");
+                            if !json {
+                                print!("{text}");
+                            }
                         }
                         ServerEvent::Done {
                             error: Some(message),
                             ..
                         } => {
                             eprintln!("\nError: {message}");
-                            return Err(color_eyre::eyre::eyre!(message));
+                            return Err(eyre!(message));
                         }
                         ServerEvent::Done { .. } => {
-                            println!();
+                            done_seen = true;
+                            if !json {
+                                println!();
+                            }
+                            break;
                         }
                         ServerEvent::Error { message } => {
                             eprintln!("Error: {message}");
-                            return Err(color_eyre::eyre::eyre!(message));
+                            return Err(eyre!(message));
                         }
                         ServerEvent::ToolOutput { .. } => {}
                     }
+                } else if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line)
+                    && value.get("ok").and_then(serde_json::Value::as_bool) == Some(false)
+                {
+                    let message = match value.get("error").and_then(serde_json::Value::as_str) {
+                        Some(message) => message.to_string(),
+                        None => "control request rejected".to_string(),
+                    };
+                    return Err(eyre!("{message}"));
+                } else {
+                    return Err(eyre!("malformed server event: {line}"));
                 }
-                line.clear();
+            }
+
+            if !done_seen {
+                return Err(eyre!("agent stream closed without a Done event"));
             }
 
             Ok(())
@@ -1076,7 +1114,14 @@ pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> 
 
             match response.get("ok").and_then(serde_json::Value::as_bool) {
                 Some(true) => println!("Agent {id} stopped"),
-                _ => eprintln!("Failed to stop agent {id}"),
+                Some(false) => {
+                    let message = match response.get("error").and_then(serde_json::Value::as_str) {
+                        Some(message) => message.to_string(),
+                        None => "control request rejected".to_string(),
+                    };
+                    return Err(eyre!("Failed to stop agent {id}: {message}"));
+                }
+                None => return Err(eyre!("control response missing ok field")),
             }
 
             Ok(())
@@ -1341,7 +1386,14 @@ fn control_command_client(
 
             match response.get("ok").and_then(serde_json::Value::as_bool) {
                 Some(true) => println!("Agent {id} {success_label}"),
-                _ => eprintln!("Failed to update agent {id}"),
+                Some(false) => {
+                    let message = match response.get("error").and_then(serde_json::Value::as_str) {
+                        Some(message) => message.to_string(),
+                        None => "control request rejected".to_string(),
+                    };
+                    return Err(eyre!("Failed to {success_label} agent {id}: {message}"));
+                }
+                None => return Err(eyre!("control response missing ok field")),
             }
 
             Ok(())
