@@ -1,5 +1,6 @@
 [package]
 name = "n00n-providers"
+description = "LLM provider integrations, model discovery, and streaming for n00n"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

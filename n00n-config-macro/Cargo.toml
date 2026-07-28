@@ -1,5 +1,6 @@
 [package]
 name = "n00n-config-macro"
+description = "Procedural macros for n00n-config"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
