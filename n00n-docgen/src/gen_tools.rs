@@ -49,6 +49,7 @@ const SECTIONS: &[(&str, &[&str])] = &[
             "skill",
             "tool_search",
             "load_namespace",
+            "fusion_delegate",
         ],
     ),
     ("Web", &["webfetch", "websearch"]),
