@@ -110,6 +110,13 @@ How many lines of output to show per tool in the UI. All values are `usize` with
 | `compaction_buffer` | u32 \| string | `20%` | - | Context reserved for compaction: token count or percent of the context window (e.g. "20%") |
 | `mcp_tool_desc_max_chars` | usize | `200` | 10 | Max MCP tool description length (characters) |
 
+### `agent.fusion`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable Fusion dual-lane routing (lead + sidekick) for this session |
+| `sidekick_tier` | string | - | Model tier for the sidekick lane (e.g. "haiku", "sonnet", "opus") |
+
 ### `provider`
 
 | Field | Type | Default | Min | Description |
