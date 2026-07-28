@@ -440,14 +440,16 @@ local function make_agent(ctx, progress, journal, logger, run_guard)
       end
 
       local out
-      if captured then
+      if type(captured) == "string" then
+        out = captured
+      elseif captured then
         local encoded, encode_err = n00n.json.encode(captured)
         if encode_err then
           error("failed to encode structured output: " .. tostring(encode_err), 0)
         end
         out = encoded
       else
-        out = captured or ""
+        out = ""
       end
 
       local gate = journal.lock:acquire()
