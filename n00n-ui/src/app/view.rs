@@ -326,6 +326,8 @@ impl App {
             fast: self.state.fast,
             workflow: self.state.workflow,
             restoring: self.restoring.load(Ordering::Relaxed),
+            cache_health: chat.cache_health.as_ref(),
+            cache_valid_until: chat.cache_valid_until,
         };
         self.status_bar.view(frame, status_area, &ctx);
     }
