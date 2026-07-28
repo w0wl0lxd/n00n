@@ -7,11 +7,14 @@ use tracing::{debug, warn};
 
 use crate::model::{FastPricing, Model, ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::{
-    AgentError, ContentBlock, Message, ProviderEvent, Role, StopReason, StreamResponse,
-    ThinkingConfig, TokenUsage,
+    AgentError, CacheHealth, CacheKind, ContentBlock, Message, ProviderEvent, Role, StopReason,
+    StreamResponse, ThinkingConfig, TokenUsage,
 };
 
 pub(super) const BETA_TOOL_EXAMPLES_BEDROCK: &str = "tool-examples-2025-10-29";
+
+/// Anthropic ephemeral cache TTL in seconds (5 minutes, refreshed on each hit).
+const ANTHROPIC_CACHE_TTL_SECONDS: u64 = 300;
 
 /// The messages API refuses requests without `max_tokens`. Anthropic-kind
 /// models always get a window from the fallback table, so this only fires if
@@ -288,7 +291,31 @@ impl EventParser {
                 if let Ok(ev) = serde_json::from_str::<MessageStartEvent>(data)
                     && let Some(u) = ev.message.usage
                 {
+                    let hit = u.cache_read_input_tokens > 0;
+                    let cached = u.cache_read_input_tokens > 0 || u.cache_creation_input_tokens > 0;
                     self.usage = TokenUsage::from(u);
+                    let valid_until = if cached {
+                        n00n_storage::now_epoch().saturating_add(ANTHROPIC_CACHE_TTL_SECONDS)
+                    } else {
+                        0
+                    };
+                    let ttl_seconds = if cached {
+                        ANTHROPIC_CACHE_TTL_SECONDS
+                    } else {
+                        0
+                    };
+                    let health = CacheHealth {
+                        kind: CacheKind::Prompt,
+                        valid_until,
+                        ttl_seconds,
+                        hit,
+                    };
+                    if let Err(error) = event_tx
+                        .send_async(ProviderEvent::CacheHealth { cache: health })
+                        .await
+                    {
+                        warn!(error = %error, "failed to send Anthropic cache health event");
+                    }
                 }
             }
             "content_block_start" => match serde_json::from_str::<ContentBlockStartEvent>(data) {

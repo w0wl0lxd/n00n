@@ -9,15 +9,22 @@ use crate::animation::{animation_elapsed_ms, spinner_frame};
 use crate::cast;
 use crate::theme;
 
-use n00n_providers::{ModelPricing, TokenUsage};
+use n00n_providers::{CacheHealth, ModelPricing, TokenUsage};
+use quanta::Instant as CacheInstant;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 const FAST_LABEL: &str = " [fast]";
 const WORKFLOW_LABEL: &str = " [workflow]";
+const CACHE_ICON: &str = "⧉";
+const SECONDS_PER_MINUTE: u64 = 60;
+const SECONDS_PER_HOUR: u64 = 60 * SECONDS_PER_MINUTE;
+const SECONDS_PER_DAY: u64 = 24 * SECONDS_PER_HOUR;
+const CACHE_GREEN_NUMERATOR: u64 = 2;
+const CACHE_YELLOW_NUMERATOR: u64 = 5;
 
 pub(crate) fn format_tokens(n: u32) -> String {
     match n {
@@ -48,6 +55,8 @@ pub struct StatusBarContext<'a> {
     pub fast: bool,
     pub workflow: bool,
     pub restoring: bool,
+    pub cache_health: Option<&'a CacheHealth>,
+    pub cache_valid_until: Option<CacheInstant>,
 }
 
 pub struct StatusBar {
@@ -183,6 +192,18 @@ impl StatusBar {
                 right_spans.push(Span::styled(WORKFLOW_LABEL, theme::current().status_dim));
             }
 
+            if let (Some(health), Some(valid_until)) = (ctx.cache_health, ctx.cache_valid_until) {
+                let remaining = valid_until.saturating_duration_since(CacheInstant::now());
+                if !remaining.is_zero() {
+                    let label = format_cache_remaining(remaining);
+                    let color = cache_color(remaining, health.ttl_seconds);
+                    right_spans.push(Span::styled(
+                        format!(" {CACHE_ICON} {label}"),
+                        Style::new().fg(color),
+                    ));
+                }
+            }
+
             usage_parts.push(format!(
                 "{}/{} ({}%)",
                 format_tokens(ctx.stats.context_size),
@@ -273,6 +294,34 @@ fn detect_branch(cwd: &str) -> Option<String> {
     head.strip_prefix("ref: refs/heads/")
         .map(str::to_string)
         .or_else(|| Some(head.get(..7)?.to_string()))
+}
+
+fn format_cache_remaining(remaining: Duration) -> String {
+    let secs = remaining.as_secs();
+    if secs >= SECONDS_PER_DAY {
+        return format!("{}d", secs / SECONDS_PER_DAY);
+    }
+    if secs >= SECONDS_PER_HOUR {
+        return format!("{}h", secs / SECONDS_PER_HOUR);
+    }
+    if secs >= SECONDS_PER_MINUTE {
+        return format!("{}m", secs / SECONDS_PER_MINUTE);
+    }
+    "<1m".to_string()
+}
+
+fn cache_color(remaining: Duration, ttl_seconds: u64) -> Color {
+    if ttl_seconds == 0 {
+        return Color::Green;
+    }
+    let secs = remaining.as_secs();
+    if secs.saturating_mul(CACHE_GREEN_NUMERATOR) > ttl_seconds {
+        return Color::Green;
+    }
+    if secs.saturating_mul(CACHE_YELLOW_NUMERATOR) > ttl_seconds {
+        return Color::Yellow;
+    }
+    Color::Red
 }
 
 fn find_git_dir(cwd: &Path) -> Option<std::path::PathBuf> {
@@ -398,6 +447,8 @@ mod tests {
                         fast: false,
                         workflow: false,
                         restoring: false,
+                        cache_health: None,
+                        cache_valid_until: None,
                     },
                 );
             })
@@ -465,6 +516,8 @@ mod tests {
                         fast: false,
                         workflow: false,
                         restoring: false,
+                        cache_health: None,
+                        cache_valid_until: None,
                     },
                 );
             })
@@ -500,5 +553,67 @@ mod tests {
         bar.flash("Copied".into());
         bar.clear_flash();
         assert!(bar.flash.is_none());
+    }
+
+    #[test]
+    fn cache_health_badge_renders_in_status_bar() {
+        use n00n_providers::{CacheHealth, CacheKind};
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let backend = TestBackend::new(80, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let bar = StatusBar::new(Duration::from_secs(1));
+        let usage = TokenUsage::default();
+        let pricing = ModelPricing::default();
+        let health = CacheHealth {
+            kind: CacheKind::ResponseChain,
+            valid_until: 0,
+            ttl_seconds: 7200,
+            hit: false,
+        };
+        let valid_until = CacheInstant::now() + Duration::from_hours(1);
+        terminal
+            .draw(|frame| {
+                bar.view(
+                    frame,
+                    frame.area(),
+                    &StatusBarContext {
+                        status: &Status::Idle,
+                        mode_label: Cow::Borrowed("NORMAL"),
+                        mode_style: Style::default(),
+                        model_id: "test/model",
+                        stats: UsageStats {
+                            usage: &usage,
+                            context_size: 0,
+                            pricing: &pricing,
+                            context_window: 1,
+                            global_costs: None,
+                        },
+                        auto_scroll: true,
+                        chat_name: None,
+                        retry_info: None,
+                        thinking_label: None,
+                        fast: false,
+                        workflow: false,
+                        restoring: false,
+                        cache_health: Some(&health),
+                        cache_valid_until: Some(valid_until),
+                    },
+                );
+            })
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        assert!(text.contains('⧉'), "status bar: {text:?}");
+        let after_icon = text.split('⧉').nth(1).expect("icon not found");
+        assert!(
+            after_icon.chars().any(|c| c.is_ascii_digit()),
+            "status bar: {text:?}"
+        );
     }
 }
