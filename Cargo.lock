@@ -2960,6 +2960,7 @@ dependencies = [
  "process_alive",
  "rustix 0.38.44",
  "serde",
+ "serde_json",
  "smol",
  "sonic-rs",
  "tempfile",

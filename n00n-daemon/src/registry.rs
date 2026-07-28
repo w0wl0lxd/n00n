@@ -11,7 +11,7 @@ use crate::protocol::{
 type ListCb = Box<dyn Fn() -> ControlResult<Vec<AgentRecord>> + Send + Sync>;
 type StatusCb = Box<dyn Fn(&str) -> ControlResult<AgentRecord> + Send + Sync>;
 type MessageCb =
-    Box<dyn Fn(&str, &str, &MessageOpts) -> ControlResult<sonic_rs::Value> + Send + Sync>;
+    Box<dyn Fn(&str, &str, &MessageOpts) -> ControlResult<serde_json::Value> + Send + Sync>;
 type StopCb = Box<dyn Fn(&str) -> ControlResult<()> + Send + Sync>;
 type ResumeCb = Box<dyn Fn(&str) -> ControlResult<()> + Send + Sync>;
 
@@ -70,7 +70,7 @@ impl ControlPlane {
                     agents: None,
                     agent: None,
                     version: None,
-                    state: Some(state),
+                    state: Some(Box::new(state)),
                 })
             }
             ControlRequest::Pause { id, backend } => {
@@ -79,7 +79,7 @@ impl ControlPlane {
                     agents: None,
                     agent: None,
                     version: None,
-                    state: Some(sonic_rs::json!({"paused": true, "id": id})),
+                    state: Some(Box::new(serde_json::json!({"paused": true, "id": id}))),
                 })
             }
             ControlRequest::Resume { id, backend } => {
@@ -88,7 +88,7 @@ impl ControlPlane {
                     agents: None,
                     agent: None,
                     version: None,
-                    state: Some(sonic_rs::json!({"resumed": true, "id": id})),
+                    state: Some(Box::new(serde_json::json!({"resumed": true, "id": id}))),
                 })
             }
             ControlRequest::Stop { id, backend } => {
@@ -97,7 +97,7 @@ impl ControlPlane {
                     agents: None,
                     agent: None,
                     version: None,
-                    state: Some(sonic_rs::json!({"stopped": true, "id": id})),
+                    state: Some(Box::new(serde_json::json!({"stopped": true, "id": id}))),
                 })
             }
         }
@@ -153,7 +153,7 @@ impl TuiCallbackBackend {
     pub fn new(
         list: impl Fn() -> ControlResult<Vec<AgentRecord>> + Send + Sync + 'static,
         status: impl Fn(&str) -> ControlResult<AgentRecord> + Send + Sync + 'static,
-        message: impl Fn(&str, &str, &MessageOpts) -> ControlResult<sonic_rs::Value>
+        message: impl Fn(&str, &str, &MessageOpts) -> ControlResult<serde_json::Value>
         + Send
         + Sync
         + 'static,
@@ -179,7 +179,12 @@ impl ControlBackend for TuiCallbackBackend {
         (self.status)(id)
     }
 
-    fn message(&self, id: &str, text: &str, opts: &MessageOpts) -> ControlResult<sonic_rs::Value> {
+    fn message(
+        &self,
+        id: &str,
+        text: &str,
+        opts: &MessageOpts,
+    ) -> ControlResult<serde_json::Value> {
         (self.message)(id, text, opts)
     }
 
@@ -236,7 +241,7 @@ mod tests {
                     .cloned()
                     .ok_or_else(|| ControlError::NotFound(id.to_owned()))
             },
-            |_id, _text, _opts| Ok(sonic_rs::json!({"queued": true})),
+            |_id, _text, _opts| Ok(serde_json::json!({"queued": true})),
             |_id| {
                 Err(ControlError::Unsupported {
                     backend: BackendKind::Tui,
@@ -435,7 +440,7 @@ mod tests {
         const STATE_FILE: &str = "agent.json";
         let agent_dir = dir.join(AGENTS_SUBDIR).join(id);
         fs::create_dir_all(&agent_dir).map_err(|e| e.to_string())?;
-        let state = sonic_rs::json!({
+        let state = serde_json::json!({
             "id": id,
             "session_id": "sess-1",
             "socket_path": socket_path.to_string_lossy(),

@@ -19,7 +19,8 @@ pub trait ControlBackend: Send + Sync {
 
     /// # Errors
     /// Returns when messaging fails or the agent is missing.
-    fn message(&self, id: &str, text: &str, opts: &MessageOpts) -> ControlResult<sonic_rs::Value>;
+    fn message(&self, id: &str, text: &str, opts: &MessageOpts)
+    -> ControlResult<serde_json::Value>;
 
     /// # Errors
     /// Returns [`crate::ControlError::Unsupported`] on TUI, or worker failures.
