@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use mlua::{Function, Lua, Result as LuaResult, Table, Value as LuaValue};
 use n00n_agent::types::InlineStyle;
-use n00n_agent::{SharedBuf, SnapshotLine, SnapshotSpan, SpanStyle};
+use n00n_agent::{BufferSnapshot, SharedBuf, SnapshotLine, SnapshotSpan, SpanStyle};
 use n00n_lua_macro::{lua_class, lua_fn};
 
 use super::blit;
@@ -109,6 +109,13 @@ impl BufferStore {
 
     pub fn live_buf(&self) -> Option<&Arc<SharedBuf>> {
         self.live_buf.as_ref()
+    }
+
+    /// Returns the plain text of the buffer with {id}, if it exists.
+    pub fn source(&self, id: u32) -> Option<String> {
+        self.buffers
+            .get(&id)
+            .map(|buf| BufferSnapshot::from_arc(buf.read()).text())
     }
 }
 

@@ -1,3 +1,10 @@
+// The `agent` subcommand is Unix-first; Windows builds contain stubs that
+// deliberately leave imports/variables unused, so silence those warnings.
+#![cfg_attr(
+    not(unix),
+    allow(dead_code, unused_imports, unused_variables, clippy::needless_return)
+)]
+
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -37,6 +44,9 @@ use n00n_providers::{Model, OpenAiOptions, Timeouts};
 use n00n_storage::StateDir;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+
+#[cfg(unix)]
+use smol::net::unix::{UnixListener, UnixStream};
 
 use crate::cli::AgentMode as CliAgentMode;
 use crate::setup;
@@ -525,6 +535,8 @@ const AGENTS_SUBDIR: &str = "agents";
 const STATE_FILE: &str = "agent.json";
 #[cfg(unix)]
 const SOCKET_FILE: &str = "control.sock";
+const DIR_PERMISSIONS: u32 = 0o700;
+const FILE_PERMISSIONS: u32 = 0o600;
 
 fn agent_dir(state_dir: &StateDir, agent_id: &str) -> Result<PathBuf> {
     validate_agent_id(agent_id)?;
@@ -535,6 +547,22 @@ fn agent_dir(state_dir: &StateDir, agent_id: &str) -> Result<PathBuf> {
 #[cfg(unix)]
 fn socket_path(state_dir: &StateDir, agent_id: &str) -> Result<PathBuf> {
     Ok(agent_dir(state_dir, agent_id)?.join(SOCKET_FILE))
+}
+
+#[cfg(unix)]
+fn restrict_dir_permissions(path: &std::path::Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(DIR_PERMISSIONS))
+        .wrap_err("failed to set agent directory permissions")
+}
+
+#[cfg(unix)]
+fn restrict_file_permissions(path: &std::path::Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(FILE_PERMISSIONS))
+        .wrap_err("failed to set socket permissions")
 }
 
 fn state_file_path(state_dir: &StateDir, agent_id: &str) -> Result<PathBuf> {
@@ -588,9 +616,18 @@ fn now_epoch() -> u64 {
 
 #[cfg(unix)]
 pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
+    server_unix(opts, agent_id)
+}
 
-    use smol::net::unix::UnixListener;
+#[cfg(not(unix))]
+pub fn server(_opts: &AgentRunOptions<'_>, _agent_id: Option<String>) -> Result<()> {
+    Err(eyre!(
+        "background agent mode requires Unix domain sockets; use `n00n agent daemon` on this platform"
+    ))
+}
+
+#[cfg(unix)]
+fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()> {
     let env = prepare_agent_env(opts.model, opts.yolo, opts.no_jit)?;
     let message = build_message(
         opts.mode,
@@ -630,8 +667,7 @@ pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()
 
     let agent_dir_path = agent_dir(&storage, &agent_id)?;
     fs::create_dir_all(&agent_dir_path).wrap_err("failed to create agent directory")?;
-    fs::set_permissions(&agent_dir_path, fs::Permissions::from_mode(0o700))
-        .wrap_err("failed to set agent directory permissions")?;
+    restrict_dir_permissions(&agent_dir_path)?;
 
     let socket_path_value = socket_path(&storage, &agent_id)?;
 
@@ -653,8 +689,7 @@ pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()
     write_agent_state(&storage, &state)?;
 
     let listener = UnixListener::bind(&socket_path_value).wrap_err("failed to bind socket")?;
-    fs::set_permissions(&socket_path_value, fs::Permissions::from_mode(0o600))
-        .wrap_err("failed to set socket permissions")?;
+    restrict_file_permissions(&socket_path_value)?;
 
     let message_lock = Arc::new(Mutex::new(()));
     let paused = Arc::new(AtomicBool::new(false));
@@ -962,8 +997,6 @@ pub fn message_client(
 
     #[cfg(unix)]
     {
-        use smol::net::unix::UnixStream;
-
         let storage = agent_storage(&state_dir);
         let state = read_agent_state(&storage, id).wrap_err("failed to read agent state")?;
 
@@ -984,43 +1017,66 @@ pub fn message_client(
                 .wrap_err("failed to send command")?;
 
             let mut line = String::new();
-
+            let mut done_seen = false;
             loop {
                 line.clear();
                 let n = reader
                     .read_line(&mut line)
                     .await
-                    .wrap_err("failed to read response")?;
+                    .wrap_err("failed to read agent event stream")?;
                 if n == 0 {
-                    break;
+                    if done_seen {
+                        break;
+                    }
+                    return Err(eyre!("agent stream closed without a Done event"));
                 }
 
-                if json {
-                    print!("{line}");
-                } else if let Ok(event) = serde_json::from_str::<ServerEvent>(&line) {
+                if let Ok(event) = serde_json::from_str::<ServerEvent>(&line) {
+                    if json {
+                        print!("{line}");
+                    }
                     match event {
                         ServerEvent::TextDelta { text } => {
-                            print!("{text}");
+                            if !json {
+                                print!("{text}");
+                            }
                         }
                         ServerEvent::Done {
                             error: Some(message),
                             ..
                         } => {
                             eprintln!("\nError: {message}");
-                            return Err(color_eyre::eyre::eyre!(message));
+                            return Err(eyre!(message));
                         }
                         ServerEvent::Done { .. } => {
-                            println!();
+                            done_seen = true;
+                            if !json {
+                                println!();
+                            }
+                            break;
                         }
                         ServerEvent::Error { message } => {
                             eprintln!("Error: {message}");
-                            return Err(color_eyre::eyre::eyre!(message));
+                            return Err(eyre!(message));
                         }
                         ServerEvent::ToolOutput { .. } => {}
                     }
+                } else if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line)
+                    && value.get("ok").and_then(serde_json::Value::as_bool) == Some(false)
+                {
+                    let message = match value.get("error").and_then(serde_json::Value::as_str) {
+                        Some(message) => message.to_string(),
+                        None => "control request rejected".to_string(),
+                    };
+                    return Err(eyre!("{message}"));
+                } else {
+                    return Err(eyre!("malformed server event: {line}"));
                 }
             }
 
+            if !done_seen {
+                return Err(eyre!("agent stream closed without a Done event"));
+            }
             Ok(())
         })
     }
@@ -1038,33 +1094,22 @@ pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> 
         return print_control_response(&result?, false);
     }
 
+    let storage = agent_storage(&state_dir);
+
+    let Ok(state) = read_agent_state(&storage, id) else {
+        let agent_dir_path = agent_dir(&storage, id)?;
+        let _ = fs::remove_dir_all(&agent_dir_path);
+        eprintln!("Agent {id} not found, cleaned up directory");
+        return Ok(());
+    };
+
     #[cfg(not(unix))]
     {
-        let storage = agent_storage(&state_dir);
-        if read_agent_state(&storage, id).is_err() {
-            let agent_dir_path = agent_dir(&storage, id)?;
-            let _ = fs::remove_dir_all(&agent_dir_path);
-            eprintln!("Agent {id} not found, cleaned up directory");
-            return Ok(());
-        }
-        return Err(eyre!(
-            "agent {id} has no daemon listener; direct worker sockets require Unix"
-        ));
+        return Err(eyre!("direct agent socket control requires unix"));
     }
 
     #[cfg(unix)]
     {
-        use smol::net::unix::UnixStream;
-
-        let storage = agent_storage(&state_dir);
-
-        let Ok(state) = read_agent_state(&storage, id) else {
-            let agent_dir_path = agent_dir(&storage, id)?;
-            let _ = fs::remove_dir_all(&agent_dir_path);
-            eprintln!("Agent {id} not found, cleaned up directory");
-            return Ok(());
-        };
-
         let stream = smol::block_on(UnixStream::connect(&state.socket_path))
             .wrap_err("failed to connect to agent socket")?;
 
@@ -1080,20 +1125,24 @@ pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> 
                 .wrap_err("failed to send command")?;
 
             let mut line = String::new();
-            let n = reader
+            let _ = reader
                 .read_line(&mut line)
                 .await
                 .wrap_err("failed to read response")?;
-            if n == 0 {
-                return Err(eyre!("agent {id} closed connection before responding"));
-            }
 
             let response: serde_json::Value =
                 serde_json::from_str(&line).wrap_err("failed to parse response")?;
 
             match response.get("ok").and_then(serde_json::Value::as_bool) {
                 Some(true) => println!("Agent {id} stopped"),
-                _ => eprintln!("Failed to stop agent {id}"),
+                Some(false) => {
+                    let message = match response.get("error").and_then(serde_json::Value::as_str) {
+                        Some(message) => message.to_string(),
+                        None => "control request rejected".to_string(),
+                    };
+                    return Err(eyre!("Failed to stop agent {id}: {message}"));
+                }
+                None => return Err(eyre!("control response missing ok field")),
             }
 
             Ok(())
@@ -1344,20 +1393,24 @@ fn control_command_client(
             .wrap_err("failed to send command")?;
 
         let mut line = String::new();
-        let n = reader
+        let _ = reader
             .read_line(&mut line)
             .await
             .wrap_err("failed to read response")?;
-        if n == 0 {
-            return Err(eyre!("agent {id} closed connection before responding"));
-        }
 
         let response: serde_json::Value =
             serde_json::from_str(&line).wrap_err("failed to parse response")?;
 
         match response.get("ok").and_then(serde_json::Value::as_bool) {
             Some(true) => println!("Agent {id} {success_label}"),
-            _ => eprintln!("Failed to update agent {id}"),
+            Some(false) => {
+                let message = match response.get("error").and_then(serde_json::Value::as_str) {
+                    Some(message) => message.to_string(),
+                    None => "control request rejected".to_string(),
+                };
+                return Err(eyre!("Failed to {success_label} agent {id}: {message}"));
+            }
+            None => return Err(eyre!("control response missing ok field")),
         }
 
         Ok(())
