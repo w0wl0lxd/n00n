@@ -90,3 +90,91 @@ pub fn lock_for_endpoint(role: DaemonRole, endpoint: &Endpoint) -> DaemonLock {
         endpoint: endpoint_str,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lock::{DaemonLock, DaemonRole, TransportKind};
+    use tempfile::TempDir;
+
+    #[test]
+    fn endpoint_from_uds_lock() {
+        let lock = DaemonLock {
+            pid: 1,
+            role: DaemonRole::Tui,
+            started_at: 0,
+            transport: TransportKind::Uds,
+            endpoint: "/tmp/daemon.sock".into(),
+        };
+        let ep = Endpoint::from_lock(&lock).expect("uds endpoint");
+        assert_eq!(ep, Endpoint::Uds(PathBuf::from("/tmp/daemon.sock")));
+    }
+
+    #[test]
+    fn endpoint_from_tcp_lock() {
+        let lock = DaemonLock {
+            pid: 1,
+            role: DaemonRole::Worker,
+            started_at: 0,
+            transport: TransportKind::Tcp,
+            endpoint: "127.0.0.1:1234".into(),
+        };
+        let ep = Endpoint::from_lock(&lock).expect("tcp endpoint");
+        assert_eq!(ep, Endpoint::Tcp("127.0.0.1:1234".parse().unwrap()));
+    }
+
+    #[test]
+    fn endpoint_from_malformed_tcp_lock_is_none() {
+        let lock = DaemonLock {
+            pid: 1,
+            role: DaemonRole::Headless,
+            started_at: 0,
+            transport: TransportKind::Tcp,
+            endpoint: "not-an-address".into(),
+        };
+        assert!(Endpoint::from_lock(&lock).is_none());
+    }
+
+    #[test]
+    fn lock_for_endpoint_roundtrips() {
+        let uds = Endpoint::Uds(PathBuf::from("/tmp/n00n.sock"));
+        let lock = lock_for_endpoint(DaemonRole::Tui, &uds);
+        assert_eq!(lock.role, DaemonRole::Tui);
+        assert_eq!(lock.transport, TransportKind::Uds);
+        assert_eq!(lock.endpoint, "/tmp/n00n.sock");
+        assert_eq!(Endpoint::from_lock(&lock), Some(uds));
+
+        let tcp = Endpoint::Tcp("127.0.0.1:5678".parse().unwrap());
+        let lock = lock_for_endpoint(DaemonRole::Worker, &tcp);
+        assert_eq!(lock.role, DaemonRole::Worker);
+        assert_eq!(lock.transport, TransportKind::Tcp);
+        assert_eq!(lock.endpoint, "127.0.0.1:5678");
+        assert_eq!(Endpoint::from_lock(&lock), Some(tcp));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn client_default_uses_state_dir_daemon_sock() -> Result<(), String> {
+        let tmp = TempDir::new().map_err(|e| e.to_string())?;
+        let ep = client_default(tmp.path()).map_err(|e| e.to_string())?;
+        assert_eq!(ep, Endpoint::Uds(tmp.path().join("daemon.sock")));
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_client_falls_back_to_default_when_lock_missing() -> Result<(), String> {
+        let tmp = TempDir::new().map_err(|e| e.to_string())?;
+        let ep = resolve_client(tmp.path()).map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        assert_eq!(ep, Endpoint::Uds(tmp.path().join("daemon.sock")));
+        Ok(())
+    }
+
+    #[test]
+    fn ensure_can_bind_when_lock_missing() -> Result<(), String> {
+        let tmp = TempDir::new().map_err(|e| e.to_string())?;
+        ensure_can_bind(tmp.path(), DaemonRole::Tui).map_err(|e| e.to_string())?;
+        ensure_can_bind(tmp.path(), DaemonRole::Worker).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
