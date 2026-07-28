@@ -150,10 +150,17 @@ impl Provider for LocalEndpoint {
                 let prefixed =
                     super::with_prefix(self.system_prefix.as_deref(), &system_text, &mut buf);
                 let system = System::from(prefixed);
-                let mut body =
-                    responses::build_body(model, messages, &system, tools, None, None, false);
+                let mut body = responses::build_body(
+                    model,
+                    messages,
+                    &system,
+                    tools,
+                    None,
+                    None,
+                    false,
+                    opts.thinking,
+                );
                 body["return_progress"] = serde_json::Value::Bool(true);
-                // TODO: wire thinking budget into responses API when llama.cpp supports it
                 return responses::do_stream(
                     self.compat.client(),
                     model,

@@ -125,7 +125,6 @@ impl WorkerBackend {
 
         use futures_lite::{AsyncBufReadExt, AsyncWriteExt, io::BufReader};
         use smol::net::unix::UnixStream;
-        use std::path::Path;
 
         let state = self.read_state(id)?;
         if state.socket_path.is_empty() {
@@ -167,6 +166,7 @@ impl WorkerBackend {
         reader: &mut futures_lite::io::BufReader<impl futures_lite::AsyncRead + Unpin>,
     ) -> ControlResult<()> {
         use futures_lite::AsyncBufReadExt;
+        use sonic_rs::JsonValueTrait;
 
         let mut line = String::new();
         loop {
