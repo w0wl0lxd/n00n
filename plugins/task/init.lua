@@ -131,7 +131,7 @@ local function handler(input, ctx)
     if output_err then
       return { llm_output = "failed to encode task status: " .. tostring(output_err), is_error = true }
     end
-    return output
+    return { llm_output = output }
   end
 
   local subagent_type = input.subagent_type or "research"
@@ -196,7 +196,7 @@ local function handler(input, ctx)
     local ok, out = pcall(function()
       if input.output_schema then
         -- Use subagent.launch for structured output
-        local captured, err, cost, usage_val = subagent.launch(ctx, {
+        local captured, err = subagent.launch(ctx, {
           description = input.description or "task",
           prompt = input.prompt,
           subagent_type = subagent_type,
@@ -212,13 +212,11 @@ local function handler(input, ctx)
           return { llm_output = "task failed: " .. err, is_error = true }
         end
         if type(captured) == "string" then
-          return { llm_output = captured, format = "markdown", usage = usage_val, cost = cost }
+          return { llm_output = captured, format = "markdown" }
         end
         return {
           llm_output = n00n.json.encode(captured),
           format = "markdown",
-          usage = usage_val,
-          cost = cost,
         }
       else
         -- Manual session for done tool (legacy path)
@@ -306,7 +304,7 @@ local function handler(input, ctx)
 
         local function do_poll()
           while true do
-            local progress, err = sess:get_progress()
+            local progress = sess:get_progress()
             if not progress then
               return
             end

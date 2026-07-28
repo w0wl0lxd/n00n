@@ -410,7 +410,7 @@ local function make_agent(ctx, progress, journal, logger, run_guard)
         logger.log("agent_started", { label = label, model_tier = aopts.model_tier, subagent_type = subagent_type })
       end
 
-      local captured, launch_err, cost, usage_val = subagent.launch(ctx, {
+      local captured, launch_err = subagent.launch(ctx, {
         description = label,
         prompt = aopts.prompt,
         subagent_type = subagent_type,
@@ -429,13 +429,14 @@ local function make_agent(ctx, progress, journal, logger, run_guard)
 
       aggregate_permit:release()
       aggregate_permit = nil
-      progress.agent_done(label)
-      if logger then
-        logger.log("agent_done", { label = label, model_tier = aopts.model_tier, subagent_type = subagent_type })
-      end
 
       if launch_err then
         error("sub-agent error: " .. launch_err, 0)
+      end
+
+      progress.agent_done(label)
+      if logger then
+        logger.log("agent_done", { label = label, model_tier = aopts.model_tier, subagent_type = subagent_type })
       end
 
       local out

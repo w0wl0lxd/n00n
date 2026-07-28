@@ -615,7 +615,25 @@ pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()
 }
 
 #[cfg(unix)]
+#[allow(unsafe_code)]
 fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()> {
+    // Fork to detach from terminal for background mode
+    match unsafe { libc::fork() } {
+        0 => {
+            // Child process: continue with server
+            // Detach from controlling terminal
+            if unsafe { libc::setsid() } < 0 {
+                return Err(eyre!("failed to create new session"));
+            }
+        }
+        pid if pid > 0 => {
+            // Parent process: exit after child is spawned
+            println!("Background agent started with PID {pid}");
+            return Ok(());
+        }
+        _ => return Err(eyre!("fork failed")),
+    }
+
     let env = prepare_agent_env(opts.model, opts.yolo, opts.no_jit)?;
     let message = build_message(
         opts.mode,
@@ -859,6 +877,7 @@ async fn handle_connection(
                         write_line(&mut writer, &json)
                             .await
                             .wrap_err("failed to write event")?;
+                        break;
                     }
                     AgentEvent::Done { usage, .. } => {
                         final_usage = Some(
@@ -918,8 +937,11 @@ async fn handle_connection(
             state.status = "stopping".to_string();
             write_agent_state(storage, &state)?;
 
+            // Cancel the current run and close the input channel
             let _ = cancel_tx.send(());
+            drop(input_tx);
 
+            // Await the outer interactive task to ensure cleanup
             if let Some(t) = task.lock().await.take() {
                 t.await;
             }
