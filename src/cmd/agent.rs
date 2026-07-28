@@ -1003,7 +1003,6 @@ pub fn message_client(
                 .wrap_err("failed to send command")?;
 
             let mut line = String::new();
-            let mut done_seen = false;
 
             loop {
                 line.clear();
@@ -1012,9 +1011,6 @@ pub fn message_client(
                     .await
                     .wrap_err("failed to read agent event stream")?;
                 if n == 0 {
-                    if done_seen {
-                        break;
-                    }
                     return Err(eyre!("agent stream closed without a Done event"));
                 }
 
@@ -1036,7 +1032,6 @@ pub fn message_client(
                             return Err(eyre!(message));
                         }
                         ServerEvent::Done { .. } => {
-                            done_seen = true;
                             if !json {
                                 println!();
                             }
@@ -1059,10 +1054,6 @@ pub fn message_client(
                 } else {
                     return Err(eyre!("malformed server event: {line}"));
                 }
-            }
-
-            if !done_seen {
-                return Err(eyre!("agent stream closed without a Done event"));
             }
 
             Ok(())
