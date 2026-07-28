@@ -4,7 +4,7 @@ version.workspace = true
 edition = "2024"
 authors = ["w0wl0lxd <w0wl0lxd@tuta.com>"]
 description = "AI coding agent. Native Rust TUI. Immediate startup, 60 FPS, low memory."
-license = "AGPL-3.0"
+license = "AGPL-3.0-only"
 repository = "https://github.com/w0wl0lxd/n00n"
 homepage = "https://github.com/w0wl0lxd/n00n"
 readme = "README.md"
@@ -80,10 +80,10 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.4.2"
+version = "0.5.0"
 edition = "2024"
 authors = ["w0wl0lxd <w0wl0lxd@tuta.com>"]
-license = "AGPL-3.0"
+license = "AGPL-3.0-only"
 repository = "https://github.com/w0wl0lxd/n00n"
 rust-version = "1.97"
 
@@ -106,7 +106,7 @@ n00n-token-profile = { path = "n00n-token-profile" }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 sonic-rs = "0.5.8"
-toon-format = "0.5"
+toon-format = { version = "0.5", default-features = false }
 tiktoken-rs = "0.9"
 bs58 = "0.5"
 uuid = { version = "1", default-features = false, features = ["std", "v7"] }

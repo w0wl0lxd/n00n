@@ -2,6 +2,7 @@
 name = "n00n-agent"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 n00n-providers = { workspace = true }
