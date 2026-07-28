@@ -21,6 +21,7 @@ local ToolView = require("n00n.tool_view")
 local telemetry = require("n00n.telemetry")
 local structured_output = require("n00n.structured_output")
 local guard = require("n00n.guard")
+local subagent = require("n00n.subagent")
 
 local SCRIPT_ERROR_PREFIX = "workflow script error: "
 local NO_META_ERROR = "workflow script must call meta({ name = ... }) before doing any work"
@@ -403,92 +404,29 @@ local function make_agent(ctx, progress, journal, logger, run_guard)
         error(guard_err, 0)
       end
 
-      local validator
-      if aopts.output_schema then
-        local compile_err
-        validator, compile_err = structured_output.compile_validator(aopts.output_schema)
-        if compile_err then
-          error(compile_err, 0)
-        end
-      end
-
-      local model, model_err = n00n.agent.resolve_model(ctx, { tier = aopts.model_tier })
-      if model_err then
-        error(model_err, 0)
-      end
-
-      local audience = subagent_type == "research" and RESEARCH_AUDIENCE or GENERAL_AUDIENCE
-      local prompt_id = subagent_type == "research" and RESEARCH_PROMPT or GENERAL_PROMPT
-      local system, system_err = n00n.agent.system_prompt(ctx, { prompt_id = prompt_id, instructions = true })
-      if system_err then
-        error(system_err, 0)
-      end
-
-      local tool_defs, tools_err = n00n.agent.tools(ctx, {
-        audience = audience,
-        spec = model.spec,
-        include_mcp = true,
-      })
-      if tools_err then
-        error(tools_err, 0)
-      end
-
-      local captured, last_errors
-      local local_tools
-      if validator then
-        local_tools = {
-          [structured_output.STRUCTURED_OUTPUT_NAME] = {
-            description = structured_output.STRUCTURED_OUTPUT_DESCRIPTION,
-            input_schema = aopts.output_schema,
-            handler = function(value)
-              local errs = validator:validate(value)
-              if errs then
-                last_errors = structured_output.bounded_errors(errs)
-                return nil, structured_output.INVALID_INPUT_PREFIX .. last_errors
-              end
-              captured = value
-              return structured_output.STRUCTURED_OUTPUT_ACK
-            end,
-          },
-        }
-      end
-
       aggregate_permit = aggregate_agent_semaphore:acquire()
       progress.agent_started(label)
       if logger then
         logger.log("agent_started", { label = label, model_tier = aopts.model_tier, subagent_type = subagent_type })
       end
-      local sess, sess_err = n00n.agent.session(ctx, {
-        model_spec = model.spec,
-        system = system,
-        tools = tool_defs,
-        local_tools = local_tools,
-        audience = audience,
-        name = label,
+
+      local captured, launch_err, cost, usage_val = subagent.launch(ctx, {
+        description = label,
+        prompt = aopts.prompt,
+        subagent_type = subagent_type,
+        model_tier = aopts.model_tier,
         thinking = aopts.thinking,
+        output_schema = aopts.output_schema,
+        include_mcp = true,
       })
-      if sess_err then
-        error(sess_err, 0)
-      end
 
-      local message = aopts.prompt
-      if validator then
-        message = message .. structured_output.STRUCTURED_OUTPUT_SUFFIX
-      end
-      local prompt_result, prompt_err = sess:prompt(message)
-      local retries = 0
-      while not prompt_err and validator and not captured and retries < structured_output.MAX_STRUCTURED_RETRIES do
-        retries = retries + 1
-        prompt_result, prompt_err = sess:prompt(structured_output.NUDGE_MISSING)
-      end
-
-      local record_ok, record_err = run_guard:record(aopts.prompt, prompt_err)
+      local record_ok, record_err = run_guard:record(aopts.prompt, launch_err)
       if not record_ok then
-        sess:close()
+        aggregate_permit:release()
+        aggregate_permit = nil
         error(record_err, 0)
       end
 
-      sess:close()
       aggregate_permit:release()
       aggregate_permit = nil
       progress.agent_done(label)
@@ -496,21 +434,19 @@ local function make_agent(ctx, progress, journal, logger, run_guard)
         logger.log("agent_done", { label = label, model_tier = aopts.model_tier, subagent_type = subagent_type })
       end
 
-      if prompt_err then
-        error("sub-agent error: " .. prompt_err, 0)
+      if launch_err then
+        error("sub-agent error: " .. launch_err, 0)
       end
-      if validator and not captured then
-        local msg = last_errors and (structured_output.STRUCTURED_INVALID_ERROR .. ":\n" .. last_errors)
-          or structured_output.STRUCTURED_MISSING_ERROR
-        error(msg, 0)
-      end
-      local out = prompt_result.text
+
+      local out
       if captured then
         local encoded, encode_err = n00n.json.encode(captured)
         if encode_err then
           error("failed to encode structured output: " .. tostring(encode_err), 0)
         end
         out = encoded
+      else
+        out = captured or ""
       end
 
       local gate = journal.lock:acquire()
