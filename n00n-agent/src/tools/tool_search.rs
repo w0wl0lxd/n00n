@@ -43,22 +43,17 @@ impl ToolInvocation for ToolSearchInvocation {
             } else {
                 results
             };
-            let output = format!(
-                "[{}]",
+            let output = json!(
                 filtered
                     .iter()
-                    .map(|r| format!(
-                        r#"{{"name":"{}","namespace":{},"description":"{}"}}"#,
-                        r.name,
-                        r.namespace
-                            .as_ref()
-                            .map_or("null".to_string(), |s| format!(r#""{s}""#)),
-                        r.description.replace('"', r#"\""#)
-                    ))
+                    .map(|r| json!({
+                        "name": r.name,
+                        "namespace": r.namespace,
+                        "description": r.description
+                    }))
                     .collect::<Vec<_>>()
-                    .join(",")
             );
-            ToolExecResult::from(Ok(ToolOutput::Plain(output.into())))
+            ToolExecResult::from(Ok(ToolOutput::Plain(output.to_string().into())))
         })
     }
 }
@@ -145,16 +140,11 @@ impl ToolInvocation for LoadNamespaceInvocation {
                 .filter(|t| t.namespace.as_deref() == Some(self.namespace.as_str()))
                 .map(|t| t.name().to_string())
                 .collect();
-            let output = format!(
-                r#"{{"namespace":"{}","tools":[{}]}}"#,
-                self.namespace,
-                tools
-                    .iter()
-                    .map(|t| format!(r#""{t}""#))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            );
-            ToolExecResult::from(Ok(ToolOutput::Plain(output.into())))
+            let output = json!({
+                "namespace": self.namespace,
+                "tools": tools
+            });
+            ToolExecResult::from(Ok(ToolOutput::Plain(output.to_string().into())))
         })
     }
 }
@@ -194,5 +184,33 @@ impl crate::tools::registry::Tool for LoadNamespace {
             })?
             .to_string();
         Ok(Box::new(LoadNamespaceInvocation { namespace }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value as JsonValue;
+
+    #[test]
+    fn tool_search_json_escaping() {
+        let description_with_special_chars = r#"Test with backslash \ and quote " and newline
+"#;
+        let result = json!([{
+            "name": "test_tool",
+            "namespace": "test_ns",
+            "description": description_with_special_chars
+        }]);
+        let output = result.to_string();
+
+        // Verify it's valid JSON
+        let parsed: JsonValue = serde_json::from_str(&output).expect("output should be valid JSON");
+
+        // Verify round-trip
+        let array = parsed.as_array().expect("should be an array");
+        let first = array.first().expect("should have one element");
+        assert_eq!(first["name"], "test_tool");
+        assert_eq!(first["namespace"], "test_ns");
+        assert_eq!(first["description"], description_with_special_chars);
     }
 }
