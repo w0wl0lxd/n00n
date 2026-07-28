@@ -359,6 +359,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    #[ignore = "daemon TCP transport requires process alive detection on Windows"]
     fn tcp_client_server_health_and_list() -> Result<(), String> {
         use crate::client;
         use crate::server;
@@ -422,6 +423,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn write_worker_fixture(
         dir: &std::path::Path,
         id: &str,

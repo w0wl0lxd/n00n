@@ -91,6 +91,10 @@ impl ImageSource {
 pub const IMAGE_OMITTED_NOTE: &str =
     "[image omitted: the current model does not support image input]";
 
+/// Prefix prepended to errored tool-result content so downstream providers can
+/// distinguish a failed tool execution from a successful one.
+pub(crate) const TOOL_RESULT_ERROR_PREFIX: &str = "[ERROR] ";
+
 /// For models without vision, image blocks become a text note instead of a
 /// wire block the API would reject. History keeps the pixels, so switching
 /// back to a vision-capable model restores them.
