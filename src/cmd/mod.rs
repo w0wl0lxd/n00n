@@ -1,4 +1,8 @@
 mod acp;
+#[cfg(unix)]
+pub mod agent;
+#[cfg(not(unix))]
+#[path = "agent_stub.rs"]
 pub mod agent;
 pub(crate) mod session_daemon;
 mod subcmd;
