@@ -126,7 +126,7 @@ impl AsyncRead for PacedBody {
         }
 
         if self.heartbeats {
-            self.pending_heartbeat = Some(heartbeat_frame());
+            self.pending_heartbeat = Some(heartbeat_frame().map_err(std::io::Error::other)?);
             return self.poll_read(cx, buf);
         }
 
@@ -144,7 +144,7 @@ fn client_version() -> String {
 fn http2_client() -> Result<HttpClient, AgentError> {
     HttpClient::builder()
         .version_negotiation(VersionNegotiation::http2())
-        .timeout(FIRST_BYTE_TIMEOUT + IDLE_TIMEOUT + Duration::from_secs(30))
+        .timeout(Duration::from_mins(2))
         .build()
         .map_err(|error| AgentError::Config {
             message: format!("cursor run http2 client: {error}"),
@@ -172,7 +172,11 @@ pub(crate) async fn run_text_turn(
         conversation_id: &conversation_id,
         message_id: &message_id,
         mode: AGENT_MODE_AGENT,
-    });
+    })
+    .map_err(|message| AgentError::Api {
+        status: 502,
+        message,
+    })?;
 
     let url = format!("{}{}", agent_base_url.trim_end_matches('/'), AGENT_PATH);
     let body = AsyncBody::from_reader(PacedBody::new(frames));
@@ -231,7 +235,10 @@ pub(crate) async fn run_text_turn(
             });
         }
         if got_frame && last_data.elapsed() > IDLE_TIMEOUT {
-            break;
+            return Err(AgentError::Api {
+                status: 504,
+                message: "cursor run idle timeout".into(),
+            });
         }
 
         let n = {

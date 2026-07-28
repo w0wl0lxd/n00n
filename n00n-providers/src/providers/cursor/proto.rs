@@ -8,6 +8,26 @@ use crate::providers::cursor::connect::encode_frame;
 /// `AgentMode`: `AGENT` = 1, `ASK` = 2, `PLAN` = 3.
 pub(crate) const AGENT_MODE_AGENT: u64 = 1;
 
+// Protobuf field numbers for AgentService messages
+pub(crate) const FIELD_USER_MESSAGE: u64 = 1;
+pub(crate) const FIELD_ACTION: u64 = 2;
+pub(crate) const FIELD_EMPTY_STRING: u64 = 3;
+pub(crate) const FIELD_MODE: u64 = 4;
+pub(crate) const FIELD_CONVERSATION_ID: u64 = 5;
+pub(crate) const FIELD_CLIENT_HEARTBEAT: u64 = 7;
+pub(crate) const FIELD_MODEL_META: u64 = 9;
+pub(crate) const FIELD_ENV_CONTEXT: u64 = 10;
+pub(crate) const FIELD_CWD: u64 = 11;
+pub(crate) const FIELD_REQUEST_ID: u64 = 12;
+pub(crate) const FIELD_DEFAULT_MODEL: u64 = 14;
+pub(crate) const FIELD_ENV_FLAGS: u64 = 16;
+pub(crate) const FIELD_INTERACTION_UPDATE: u64 = 1;
+pub(crate) const FIELD_TEXT_DELTA: u64 = 1;
+pub(crate) const FIELD_THINKING_DELTA: u64 = 4;
+pub(crate) const FIELD_EXEC_SERVER_MESSAGE: u64 = 2;
+pub(crate) const FIELD_KV_SERVER_MESSAGE: u64 = 4;
+pub(crate) const FIELD_MCP_TOOLS: u64 = 4;
+
 pub(crate) fn encode_varint(mut value: u64, out: &mut Vec<u8>) {
     loop {
         let mut byte = (value & 0x7f) as u8;
@@ -51,13 +71,13 @@ pub(crate) fn field_bytes(field: u64, value: &[u8]) -> Vec<u8> {
 
 #[must_use]
 pub(crate) fn encode_model_meta(model_id: &str) -> Vec<u8> {
-    field_str(1, model_id)
+    field_str(FIELD_USER_MESSAGE, model_id)
 }
 
-/// Empty `mcp_tools` encodes as an empty length-delimited field (same as `field_str(4, "")`).
+/// Empty `mcp_tools` encodes as an empty length-delimited field (same as `field_str(FIELD_MCP_TOOLS, "")`).
 #[must_use]
 pub(crate) fn encode_empty_mcp_tools_field() -> Vec<u8> {
-    field_str(4, "")
+    field_str(FIELD_MCP_TOOLS, "")
 }
 
 #[derive(Debug, Clone)]
@@ -71,57 +91,79 @@ pub(crate) struct RunFrameParams<'a> {
 }
 
 /// Build the paced Connect frames for one `AgentService/Run` turn (no heartbeats).
-#[must_use]
-pub(crate) fn build_run_frames(params: &RunFrameParams<'_>) -> Vec<Vec<u8>> {
-    let mut user = field_str(1, params.prompt);
+pub(crate) fn build_run_frames(params: &RunFrameParams<'_>) -> Result<Vec<Vec<u8>>, String> {
+    let mut user = field_str(FIELD_USER_MESSAGE, params.prompt);
     user.extend(field_str(2, params.message_id));
-    user.extend(field_str(3, ""));
-    user.extend(field_varint(4, params.mode));
-    let action = field_ld(2, &field_ld(1, &field_ld(1, &user)));
+    user.extend(field_str(FIELD_EMPTY_STRING, ""));
+    user.extend(field_varint(FIELD_MODE, params.mode));
+    let action = field_ld(
+        FIELD_ACTION,
+        &field_ld(FIELD_USER_MESSAGE, &field_ld(FIELD_USER_MESSAGE, &user)),
+    );
 
-    let mut req = field_str(1, "");
+    let mut req = field_str(FIELD_USER_MESSAGE, "");
     req.extend(action);
     req.extend(encode_empty_mcp_tools_field());
-    req.extend(field_str(5, params.conversation_id));
-    req.extend(field_ld(9, &encode_model_meta(params.model_id)));
-    req.extend(field_varint(12, 0));
-    req.extend(field_ld(14, &field_str(1, "default")));
-    req.extend(field_ld(14, &encode_model_meta(params.model_id)));
-    req.extend(field_str(16, params.conversation_id));
-    let run_frame = encode_frame(0, &field_ld(1, &req));
+    req.extend(field_str(FIELD_CONVERSATION_ID, params.conversation_id));
+    req.extend(field_ld(
+        FIELD_MODEL_META,
+        &encode_model_meta(params.model_id),
+    ));
+    req.extend(field_varint(FIELD_REQUEST_ID, 0));
+    req.extend(field_ld(
+        FIELD_DEFAULT_MODEL,
+        &field_str(FIELD_USER_MESSAGE, "default"),
+    ));
+    req.extend(field_ld(
+        FIELD_DEFAULT_MODEL,
+        &encode_model_meta(params.model_id),
+    ));
+    req.extend(field_str(FIELD_ENV_FLAGS, params.conversation_id));
+    let run_frame = encode_frame(0, &field_ld(FIELD_USER_MESSAGE, &req))?;
 
-    let mut env = field_str(1, "linux");
+    let mut env = field_str(FIELD_USER_MESSAGE, "linux");
     env.extend(field_str(2, params.cwd));
-    env.extend(field_str(3, "bash"));
-    env.extend(field_str(10, "UTC"));
-    env.extend(field_str(11, params.cwd));
-    env.extend(field_varint(14, 1));
-    env.extend(field_varint(16, 1));
+    env.extend(field_str(FIELD_EMPTY_STRING, "bash"));
+    env.extend(field_str(FIELD_ENV_CONTEXT, "UTC"));
+    env.extend(field_str(FIELD_CWD, params.cwd));
+    env.extend(field_varint(FIELD_DEFAULT_MODEL, 1));
+    env.extend(field_varint(FIELD_ENV_FLAGS, 1));
     env.extend(field_varint(19, 0));
     env.extend(field_varint(20, 0));
     env.extend(field_str(21, params.cwd));
     env.extend(field_varint(22, 0));
     let ctx = field_ld(
-        2,
-        &field_ld(10, &field_ld(1, &field_ld(1, &field_ld(4, &env)))),
+        FIELD_ACTION,
+        &field_ld(
+            FIELD_ENV_CONTEXT,
+            &field_ld(
+                FIELD_USER_MESSAGE,
+                &field_ld(FIELD_USER_MESSAGE, &field_ld(FIELD_MCP_TOOLS, &env)),
+            ),
+        ),
     );
-    let env_frame = encode_frame(0, &ctx);
+    let env_frame = encode_frame(0, &ctx)?;
 
     let mut out = vec![run_frame, env_frame];
-    out.push(encode_frame(0, &field_ld(5, &field_str(1, ""))));
-    out.push(encode_frame(0, &field_ld(3, &field_str(3, ""))));
+    out.push(encode_frame(
+        0,
+        &field_ld(FIELD_CONVERSATION_ID, &field_str(FIELD_USER_MESSAGE, "")),
+    )?);
+    out.push(encode_frame(
+        0,
+        &field_ld(FIELD_EMPTY_STRING, &field_str(FIELD_EMPTY_STRING, "")),
+    )?);
     for n in 1..=8u64 {
-        let mut marker = field_varint(1, n);
-        marker.extend(field_str(3, ""));
-        out.push(encode_frame(0, &field_ld(3, &marker)));
+        let mut marker = field_varint(FIELD_USER_MESSAGE, n);
+        marker.extend(field_str(FIELD_EMPTY_STRING, ""));
+        out.push(encode_frame(0, &field_ld(FIELD_EMPTY_STRING, &marker))?);
     }
-    out
+    Ok(out)
 }
 
 /// `AgentClientMessage.client_heartbeat` (field 7) empty message.
-#[must_use]
-pub(crate) fn heartbeat_frame() -> Vec<u8> {
-    encode_frame(0, &field_ld(7, &[]))
+pub(crate) fn heartbeat_frame() -> Result<Vec<u8>, String> {
+    encode_frame(0, &field_ld(FIELD_CLIENT_HEARTBEAT, &[]))
 }
 
 /// Decode length-delimited fields from a protobuf message body (skips varints).
@@ -189,13 +231,13 @@ pub(crate) fn extract_text_deltas(payload: &[u8]) -> Result<Vec<String>, String>
     let mut out = Vec::new();
     for field in iter_fields(payload) {
         let (num, wire, data) = field?;
-        if num == 1 && wire == 2 {
+        if num == FIELD_INTERACTION_UPDATE && wire == 2 {
             for update in iter_fields(data) {
                 let (unum, uwire, udata) = update?;
-                if unum == 1 && uwire == 2 {
+                if unum == FIELD_TEXT_DELTA && uwire == 2 {
                     for text_field in iter_fields(udata) {
                         let (tnum, twire, tdata) = text_field?;
-                        if tnum == 1 && twire == 2 {
+                        if tnum == FIELD_TEXT_DELTA && twire == 2 {
                             out.push(String::from_utf8_lossy(tdata).into_owned());
                         }
                     }
@@ -211,13 +253,13 @@ pub(crate) fn extract_thinking_deltas(payload: &[u8]) -> Result<Vec<String>, Str
     let mut out = Vec::new();
     for field in iter_fields(payload) {
         let (num, wire, data) = field?;
-        if num == 1 && wire == 2 {
+        if num == FIELD_INTERACTION_UPDATE && wire == 2 {
             for update in iter_fields(data) {
                 let (unum, uwire, udata) = update?;
-                if unum == 4 && uwire == 2 {
+                if unum == FIELD_THINKING_DELTA && uwire == 2 {
                     for text_field in iter_fields(udata) {
                         let (tnum, twire, tdata) = text_field?;
-                        if tnum == 1 && twire == 2 {
+                        if tnum == FIELD_TEXT_DELTA && twire == 2 {
                             out.push(String::from_utf8_lossy(tdata).into_owned());
                         }
                     }
@@ -232,7 +274,7 @@ pub(crate) fn extract_thinking_deltas(payload: &[u8]) -> Result<Vec<String>, Str
 pub(crate) fn has_exec_server_message(payload: &[u8]) -> Result<bool, String> {
     for field in iter_fields(payload) {
         let (num, wire, _) = field?;
-        if num == 2 && wire == 2 {
+        if num == FIELD_EXEC_SERVER_MESSAGE && wire == 2 {
             return Ok(true);
         }
     }
@@ -244,7 +286,7 @@ pub(crate) fn has_exec_server_message(payload: &[u8]) -> Result<bool, String> {
 pub(crate) fn has_kv_server_message(payload: &[u8]) -> Result<bool, String> {
     for field in iter_fields(payload) {
         let (num, wire, _) = field?;
-        if num == 4 && wire == 2 {
+        if num == FIELD_KV_SERVER_MESSAGE && wire == 2 {
             return Ok(true);
         }
     }
@@ -258,17 +300,20 @@ mod tests {
 
     #[test]
     fn empty_mcp_tools_matches_empty_string_field() {
-        assert_eq!(encode_empty_mcp_tools_field(), field_str(4, ""));
+        assert_eq!(
+            encode_empty_mcp_tools_field(),
+            field_str(FIELD_MCP_TOOLS, "")
+        );
     }
 
     #[test]
     fn heartbeat_is_single_connect_frame_with_field_7() {
-        let frame = heartbeat_frame();
+        let frame = heartbeat_frame().expect("encode");
         let mut buf = FrameBuffer::default();
         buf.push(&frame);
         let decoded = buf.next_frame().expect("frame").expect("ok");
         assert!(!decoded.end_stream);
-        assert_eq!(decoded.payload, field_ld(7, &[]));
+        assert_eq!(decoded.payload, field_ld(FIELD_CLIENT_HEARTBEAT, &[]));
     }
 
     #[test]
@@ -280,7 +325,8 @@ mod tests {
             conversation_id: "conv-1",
             message_id: "msg-1",
             mode: AGENT_MODE_AGENT,
-        });
+        })
+        .expect("encode");
         assert!(frames.len() >= 4);
         let joined: Vec<u8> = frames.iter().flat_map(|f| f.iter().copied()).collect();
         let hay = String::from_utf8_lossy(&joined);
@@ -293,9 +339,9 @@ mod tests {
     #[test]
     fn extract_text_deltas_from_nested_update() {
         // AgentServerMessage { interaction_update { text_delta { text: "hi" } } }
-        let text_delta = field_str(1, "hi");
-        let interaction = field_ld(1, &text_delta);
-        let msg = field_ld(1, &interaction);
+        let text_delta = field_str(FIELD_TEXT_DELTA, "hi");
+        let interaction = field_ld(FIELD_INTERACTION_UPDATE, &text_delta);
+        let msg = field_ld(FIELD_INTERACTION_UPDATE, &interaction);
         assert_eq!(
             extract_text_deltas(&msg).expect("ok"),
             vec!["hi".to_string()]
@@ -304,8 +350,8 @@ mod tests {
 
     #[test]
     fn has_exec_server_message_detects_field_2() {
-        let payload = field_ld(2, b"tool");
+        let payload = field_ld(FIELD_EXEC_SERVER_MESSAGE, b"tool");
         assert!(has_exec_server_message(&payload).expect("ok"));
-        assert!(!has_exec_server_message(&field_ld(1, b"x")).expect("ok"));
+        assert!(!has_exec_server_message(&field_ld(FIELD_INTERACTION_UPDATE, b"x")).expect("ok"));
     }
 }
