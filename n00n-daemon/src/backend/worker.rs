@@ -266,8 +266,6 @@ impl ControlBackend for WorkerBackend {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
     use tempfile::TempDir;
 
