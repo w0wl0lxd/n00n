@@ -113,9 +113,7 @@ fn string_array(value: &Value) -> Option<Vec<String>> {
     let array = value.as_array()?;
     let mut out = Vec::with_capacity(array.len());
     for entry in array {
-        let Some(text) = entry.as_str() else {
-            return None;
-        };
+        let text = entry.as_str()?;
         out.push(text.to_owned());
     }
     if out.is_empty() { None } else { Some(out) }

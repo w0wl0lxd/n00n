@@ -166,6 +166,7 @@ impl WorkerBackend {
         reader: &mut futures_lite::io::BufReader<impl futures_lite::AsyncRead + Unpin>,
     ) -> ControlResult<()> {
         use futures_lite::AsyncBufReadExt;
+        use sonic_rs::JsonValueTrait;
 
         let mut line = String::new();
         loop {
@@ -370,6 +371,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn write_fixture_with_socket(
         dir: &Path,
         id: &str,
