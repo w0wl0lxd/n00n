@@ -84,6 +84,7 @@ impl FusionState {
         }
     }
 
+    #[must_use]
     pub fn usage_stats(&self) -> FusionUsageStats {
         FusionUsageStats {
             lead_cost: self.lead_cost,
@@ -140,11 +141,6 @@ impl FusionState {
 /// ambiguity, and final review; sidekick handles exploration, broad edits, tests, lint.
 #[must_use]
 pub fn classify_delegation(prompt: &str) -> DelegationKind {
-    let p = prompt.to_ascii_lowercase();
-    if p.is_empty() {
-        return DelegationKind::LeadOnly;
-    }
-
     const LEAD: &[&str] = &[
         "ambiguous",
         "unclear",
@@ -191,6 +187,11 @@ pub fn classify_delegation(prompt: &str) -> DelegationKind {
         "mechanical",
         "apply patch",
     ];
+
+    let p = prompt.to_ascii_lowercase();
+    if p.is_empty() {
+        return DelegationKind::LeadOnly;
+    }
 
     let lead_hits = LEAD.iter().filter(|sig| p.contains(**sig)).count();
     let delegate_hits = DELEGATE.iter().filter(|sig| p.contains(**sig)).count();

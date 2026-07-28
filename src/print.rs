@@ -436,7 +436,7 @@ fn handle_print_event(
             *state.num_turns = *turns;
             *state.usage = *u;
             *state.stop_reason = *sr;
-            *state.fusion = fusion.clone();
+            state.fusion.clone_from(fusion);
             return Ok(true);
         }
         AgentEvent::Error { message } => {

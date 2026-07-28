@@ -650,6 +650,7 @@ fn classify_and_display(title: &str, first_message: Option<&str>) -> (String, St
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "t")]
+#[allow(clippy::large_enum_variant)]
 enum LogRecord<M, U, T> {
     #[serde(rename = "header")]
     Header {

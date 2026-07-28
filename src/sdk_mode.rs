@@ -1071,10 +1071,7 @@ impl EventPump {
                 self.handle_permission_request(id, tool)
             }
             AgentEvent::Done {
-                usage,
-                num_turns,
-                stop_reason: _,
-                ..
+                usage, num_turns, ..
             } => self.handle_done(usage, *num_turns),
             AgentEvent::Error { message } => self.handle_error(message),
         }
