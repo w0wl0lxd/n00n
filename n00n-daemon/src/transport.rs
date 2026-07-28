@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 use crate::error::{ControlError, ControlResult};
 use crate::lock::{self, DaemonLock, DaemonRole, TransportKind};
 
+#[cfg(unix)]
+use crate::paths::daemon_socket_in;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Endpoint {
     Uds(PathBuf),
@@ -44,8 +47,6 @@ pub fn resolve_client(state_dir: &Path) -> ControlResult<Endpoint> {
 pub fn client_default(state_dir: &Path) -> ControlResult<Endpoint> {
     #[cfg(unix)]
     {
-        use crate::paths::daemon_socket_in;
-
         Ok(Endpoint::Uds(daemon_socket_in(state_dir)))
     }
     #[cfg(not(unix))]

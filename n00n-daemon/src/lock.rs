@@ -97,27 +97,21 @@ pub fn pid_alive(pid: u32) -> bool {
     }
 }
 
-/// Returns whether `pid` still refers to a live process on this host.
+/// Windows fallback: ask the OS whether `pid` is still running.
+///
+/// Only an explicitly `Alive` result keeps a lock alive. `Dead` and `Unknown`
+/// are treated as not alive so stale locks (including unresolvable pids) are
+/// swept instead of blocking a new daemon instance.
 #[must_use]
 #[cfg(not(unix))]
 pub fn pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
-
-    let output = std::process::Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
-        .output();
-
-    match output {
-        Ok(output) if output.status.success() => {
-            let text = String::from_utf8_lossy(&output.stdout);
-            text.contains(&format!("\"{pid}\""))
-        }
-        // Cannot verify liveness without tasklist; assume alive to avoid
-        // deleting locks owned by live Windows processes.
-        _ => true,
-    }
+    matches!(
+        process_alive::state(process_alive::Pid::from(pid)),
+        process_alive::State::Alive
+    )
 }
 
 /// Remove a lock file whose owner pid is no longer alive.
@@ -184,6 +178,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
     #[test]
     fn tui_blocks_worker_while_alive() {
         let lock = sample_lock(DaemonRole::Tui);

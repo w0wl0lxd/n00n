@@ -3035,6 +3035,7 @@ dependencies = [
  "flume 0.11.1",
  "futures-lite",
  "n00n-storage",
+ "process_alive",
  "rustix 0.38.44",
  "serde",
  "smol",
@@ -4143,6 +4144,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "process_alive"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d882026f051f810bece627b431b5097f6c7aef71cfd1f2c35dd350085fe5157a"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
