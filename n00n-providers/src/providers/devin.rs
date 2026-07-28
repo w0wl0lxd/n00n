@@ -12,8 +12,8 @@ use serde_json::Value;
 use tracing::{debug, error, warn};
 
 use agent_client_protocol_schema::{
-    AgentCapabilities, ClientCapabilities, EmbeddedResourceResource, ImageContent,
-    InitializeRequest, InitializeResponse,
+    AgentCapabilities, AuthenticateRequest, AuthenticateResponse, ClientCapabilities,
+    EmbeddedResourceResource, ImageContent, InitializeRequest, InitializeResponse, Meta,
 };
 use agent_client_protocol_schema::{
     ContentBlock as AcpContentBlock, Error as AcpError, JsonRpcMessage, NewSessionRequest,
@@ -52,6 +52,8 @@ inventory::submit!(n00n_config::providers::BuiltInProvider {
 
 const DEFAULT_COMMAND: &str = "devin";
 const REQUEST_PERMISSION_METHOD: &str = "session/request_permission";
+const API_KEY_AUTH_METHOD: &str = "api-key";
+const META_API_KEY: &str = "api_key";
 
 pub(crate) const fn models() -> &'static [ModelEntry] {
     &[
@@ -285,13 +287,19 @@ impl DevinInner {
             agent_capabilities,
         };
 
-        inner.initialize().await?;
+        inner.initialize(api_key).await?;
         Ok(inner)
     }
 
-    async fn initialize(&self) -> Result<(), AgentError> {
-        let req = InitializeRequest::new(ProtocolVersion::V1)
+    async fn initialize(&self, api_key: Option<&str>) -> Result<(), AgentError> {
+        let mut req = InitializeRequest::new(ProtocolVersion::V1)
             .client_capabilities(ClientCapabilities::default());
+
+        if let Some(key) = api_key {
+            let mut meta = Meta::new();
+            meta.insert(META_API_KEY.to_string(), Value::String(key.to_string()));
+            req = req.meta(meta);
+        }
 
         let response: InitializeResponse =
             self.send_request("initialize", req)
@@ -307,6 +315,35 @@ impl DevinInner {
                     response.protocol_version
                 ),
             });
+        }
+
+        if let Some(key) = api_key {
+            match response
+                .auth_methods
+                .iter()
+                .find(|m| m.id().to_string() == API_KEY_AUTH_METHOD)
+            {
+                Some(method) => {
+                    let mut meta = Meta::new();
+                    meta.insert(META_API_KEY.to_string(), Value::String(key.to_string()));
+                    let auth_req = AuthenticateRequest::new(method.id().clone()).meta(meta);
+                    self.send_request::<AuthenticateRequest, AuthenticateResponse>(
+                        "authenticate",
+                        auth_req,
+                    )
+                    .await
+                    .map_err(|e| AgentError::Config {
+                        message: format!("authenticate failed: {e}"),
+                    })?;
+                }
+                None => {
+                    return Err(AgentError::Config {
+                        message:
+                            "api_key provided but agent did not advertise an api-key auth method"
+                                .into(),
+                    });
+                }
+            }
         }
 
         *self.agent_capabilities.lock().await = Some(response.agent_capabilities);
@@ -2056,5 +2093,20 @@ mod tests {
             headers: Vec::new(),
         };
         assert_eq!(Devin::command_from_auth(&auth), "devin");
+    }
+
+    #[test]
+    fn new_session_request_serializes_camel_case() {
+        let req = NewSessionRequest::new("/tmp");
+        let json = serde_json::to_value(req).expect("serialize");
+        let obj = json.as_object().expect("object");
+        assert!(
+            obj.contains_key("mcpServers"),
+            "expected camelCase mcpServers, got keys: {:?}",
+            obj.keys().collect::<Vec<_>>()
+        );
+        assert!(obj.contains_key("cwd"));
+        assert!(!obj.contains_key("mcp_servers"));
+        assert!(!obj.contains_key("additional_directories"));
     }
 }
