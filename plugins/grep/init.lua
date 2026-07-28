@@ -17,6 +17,13 @@ local opts = n00n.api.register_options(output_limits.extend({
   max_line_bytes = { default = 500, min = 80, desc = "Skip lines longer than this many bytes." },
 }))
 
+local function unquote(s)
+  if #s >= 2 and s:sub(1, 1) == '"' and s:sub(-1, -1) == '"' then
+    return s:sub(2, -2)
+  end
+  return s
+end
+
 local function has_context(groups)
   for _, group in ipairs(groups) do
     if #group.lines > 1 then
@@ -115,7 +122,7 @@ local function build_grep_view(entries, ctx)
       end
     end
   end
-  local nr_fmt = "%" .. math.max(1, math.floor(math.log(max_nr + 1, 10)) + 1) .. "d "
+  local nr_fmt = "%" .. math.max(1, #tostring(max_nr)) .. "d "
 
   local hl_tasks = {}
 
@@ -216,7 +223,7 @@ n00n.api.register_tool({
 
   header = function(input)
     local buf = n00n.ui.buf()
-    local pattern = (input.pattern or ""):gsub('"$', "")
+    local pattern = unquote(input.pattern or "")
     local spans = { { pattern, "tool" } }
     if input.include then
       spans[#spans + 1] = { " [" .. input.include .. "]", "dim" }
@@ -241,7 +248,7 @@ n00n.api.register_tool({
     if not pattern then
       return { llm_output = "error: pattern is required", is_error = true }
     end
-    pattern = pattern:gsub('"$', "")
+    pattern = unquote(pattern)
 
     local max_lines, max_bytes = output_limits.resolve(opts, ctx)
 
