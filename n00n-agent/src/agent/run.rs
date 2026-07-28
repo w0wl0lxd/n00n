@@ -543,10 +543,10 @@ impl<'h> Agent<'h> {
         if has_tools {
             let history_len_before = self.history.len();
             let tool_results = self.process_tool_calls(response).await?;
-            if self.config.fusion.enabled {
-                if let Some(state) = self.fusion_state.as_mut() {
-                    state.observe_tool_results(&tool_results);
-                }
+            if self.config.fusion.enabled
+                && let Some(state) = self.fusion_state.as_mut()
+            {
+                state.observe_tool_results(&tool_results);
             }
             if self.apply_tool_search_results(&tool_results) {
                 self.rebuild_tools();
@@ -666,10 +666,10 @@ impl<'h> Agent<'h> {
     }
 
     fn record_usage(&mut self, usage: TokenUsage, cost: f64) {
-        if self.config.fusion.enabled {
-            if let Some(state) = self.fusion_state.as_mut() {
-                state.record_lane_usage(state.lane, usage, cost);
-            }
+        if self.config.fusion.enabled
+            && let Some(state) = self.fusion_state.as_mut()
+        {
+            state.record_lane_usage(state.lane, usage, cost);
         }
         self.total_usage += usage;
         self.total_cost += cost;
@@ -888,7 +888,7 @@ impl<'h> Agent<'h> {
                         info!(model = %self.model.id, "fusion: switched to sidekick lane");
                     }
                     Err(e) => {
-                        warn!(error = %e, spec = %spec, "fusion: invalid sidekick model spec")
+                        warn!(error = %e, spec = %spec, "fusion: invalid sidekick model spec");
                     }
                 }
             }
