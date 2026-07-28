@@ -5,7 +5,7 @@
 -- primitives only (`n00n.agent.session`, `n00n.json.schema_validator`,
 -- `n00n.async.semaphore`).
 
-local ToolView = require("n00n.tool_view")
+local ActivityPreview = require("n00n.activity_preview")
 local output_limits = require("n00n.output_limits")
 local route_tier = require("n00n.route_tier").route_tier
 local structured_output = require("n00n.structured_output")
@@ -73,43 +73,6 @@ local opts = n00n.api.register_options({
 -- Process-wide cap on concurrent subagents.
 local semaphore = n00n.async.semaphore(math.min(opts.max_concurrent, 8))
 
-local function make_preview(ctx, description)
-  local tol = ctx:tool_output_lines()
-  local max_preview = (tol and tol.task) or DEFAULT_OUTPUT_LINES
-  local view = ToolView.new(n00n.ui.buf(), { max_lines = max_preview, keep = "tail" })
-  local last_completed = 0
-
-  local function update(progress)
-    if progress.completed_count > last_completed then
-      local new_count = progress.completed_count - last_completed
-      local recent = progress.recent_tools
-      local start = new_count <= #recent and (#recent - new_count + 1) or 1
-      for i = start, #recent do
-        view:append({ { "✓ " .. recent[i], "dim" } })
-      end
-      last_completed = progress.completed_count
-    end
-
-    local elapsed = math.floor(progress.elapsed_ms / 1000)
-    local elapsed_str = n00n.ui.humantime(elapsed)
-    local header = { { { description .. " · " .. elapsed_str, "bold" } } }
-    if progress.current_tool then
-      header[#header + 1] = { { "▸ " .. progress.current_tool, "bold" } }
-    elseif not progress.done then
-      header[#header + 1] = { { "Starting...", "dim" } }
-    end
-    view:set_header(header)
-  end
-
-  view.buf:on("click", function()
-    view:toggle()
-  end)
-
-  ctx:live_buf(view.buf)
-
-  return { buf = view.buf, update = update }
-end
-
 local function handler(input, ctx)
   if input.background then
     local forwarded = {}
@@ -154,7 +117,10 @@ local function handler(input, ctx)
     model_tier = route_tier(input.prompt)
   end
 
-  local preview = make_preview(ctx, input.description or "task")
+  local preview, preview_err = ActivityPreview.new(ctx, input.description or "task", {})
+  if not preview then
+    return { llm_output = "failed to create task preview: " .. tostring(preview_err), is_error = true }
+  end
 
   -- Build local tools: either structured_output (with schema) or done tool
   local local_tools
@@ -178,11 +144,11 @@ local function handler(input, ctx)
 
   local function on_finish(err, result)
     if err then
-      ctx:finish({ llm_output = "task failed: " .. tostring(err), is_error = true, body = preview.buf })
+      ctx:finish({ llm_output = "task failed: " .. tostring(err), is_error = true, body = preview.view.buf })
     else
       ctx:finish({
         llm_output = result.llm_output,
-        body = preview.buf,
+        body = preview.view.buf,
         is_error = result.is_error,
         format = result.format,
         usage = result.usage,
@@ -209,13 +175,17 @@ local function handler(input, ctx)
           activity_label = input.description or "task",
         })
         if err then
-          return { llm_output = "task failed: " .. err, is_error = true }
+          return { llm_output = err, is_error = true }
         end
         if type(captured) == "string" then
           return { llm_output = captured, format = "markdown" }
         end
+        local encoded, encode_err = n00n.json.encode(captured)
+        if encode_err then
+          return { llm_output = "failed to encode structured output: " .. tostring(encode_err), is_error = true }
+        end
         return {
-          llm_output = n00n.json.encode(captured),
+          llm_output = encoded,
           format = "markdown",
         }
       else
