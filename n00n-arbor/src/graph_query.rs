@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use crate::graph_json::{GraphIndex, SymbolQuery, SymbolRef};
-use crate::{ArborError, Client, Relation, index_health};
+use crate::{ArborError, Relation, index_health};
 
 fn line_number(line_start: usize) -> Option<u64> {
     // usize -> u64 cannot overflow on 64-bit targets; on other targets we
@@ -36,7 +36,8 @@ fn dedupe_relations(relations: Vec<Relation>) -> Vec<Relation> {
 }
 
 pub fn graph_callers(symbol: &str, project: &Path) -> Result<Vec<Relation>, ArborError> {
-    let index = Client::load_graph_index(project)?;
+    let graph_path = index_health::graph_json_path(project);
+    let index = GraphIndex::from_graph_json_path(&graph_path)?;
     let query = SymbolQuery {
         name: symbol.to_string(),
         ..SymbolQuery::default()
@@ -49,7 +50,8 @@ pub fn graph_callers(symbol: &str, project: &Path) -> Result<Vec<Relation>, Arbo
 }
 
 pub fn graph_callees(symbol: &str, project: &Path) -> Result<Vec<Relation>, ArborError> {
-    let index = Client::load_graph_index(project)?;
+    let graph_path = index_health::graph_json_path(project);
+    let index = GraphIndex::from_graph_json_path(&graph_path)?;
     let query = SymbolQuery {
         name: symbol.to_string(),
         ..SymbolQuery::default()
@@ -62,7 +64,8 @@ pub fn graph_callees(symbol: &str, project: &Path) -> Result<Vec<Relation>, Arbo
 }
 
 pub fn graph_trace_path(from: &str, to: &str, project: &Path) -> Result<Vec<Relation>, ArborError> {
-    let index = Client::load_graph_index(project)?;
+    let graph_path = index_health::graph_json_path(project);
+    let index = GraphIndex::from_graph_json_path(&graph_path)?;
     let from_query = SymbolQuery {
         name: from.to_string(),
         ..SymbolQuery::default()
