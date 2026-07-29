@@ -5884,3 +5884,135 @@ fn live_followup_schema_debloat_suite() {
             .is_none()
     );
 }
+
+#[test]
+fn memory_tool_search_ranks_keyword_match() {
+    let (reg, _host) = builtins_host();
+    exec_tool(
+        &reg,
+        "memory",
+        serde_json::json!({
+            "command": "write",
+            "path": "auth.md",
+            "content": "JWT refresh rotation required",
+            "tags": "auth,security",
+            "topic": "auth"
+        }),
+    )
+    .expect("seed auth memory");
+    exec_tool(
+        &reg,
+        "memory",
+        serde_json::json!({
+            "command": "write",
+            "path": "lua.md",
+            "content": "plugin host integration tests",
+            "topic": "lua"
+        }),
+    )
+    .expect("seed lua memory");
+    let out = exec_tool(
+        &reg,
+        "memory",
+        serde_json::json!({
+            "command": "search",
+            "query": "JWT refresh"
+        }),
+    )
+    .expect("search memories");
+    let auth_pos = out
+        .find("auth.md")
+        .expect("auth.md should be in search results");
+    if let Some(lua_pos) = out.find("lua.md") {
+        assert!(
+            auth_pos < lua_pos,
+            "auth.md should appear before lua.md in ranked results: {out}"
+        );
+    }
+    assert!(out.contains("score="), "search should include score: {out}");
+}
+
+#[test]
+fn memory_tool_append_preserves_frontmatter() {
+    let (reg, _host) = builtins_host();
+    exec_tool(
+        &reg,
+        "memory",
+        serde_json::json!({
+            "command": "write",
+            "path": "notes.md",
+            "content": "line one",
+            "topic": "notes",
+            "layer": "lite"
+        }),
+    )
+    .expect("seed memory");
+    let out = exec_tool(
+        &reg,
+        "memory",
+        serde_json::json!({
+            "command": "append",
+            "path": "notes.md",
+            "content": "line two"
+        }),
+    )
+    .expect("append memory");
+    assert!(out.contains("appended"), "append should succeed: {out}");
+    let view = exec_tool(
+        &reg,
+        "memory",
+        serde_json::json!({
+            "command": "view",
+            "path": "notes.md"
+        }),
+    )
+    .expect("view memory");
+    assert!(view.contains("line one"), "original body preserved: {view}");
+    assert!(view.contains("line two"), "appended body present: {view}");
+    let search = exec_tool(
+        &reg,
+        "memory",
+        serde_json::json!({
+            "command": "search",
+            "query": "line"
+        }),
+    )
+    .expect("search memory");
+    assert!(
+        search.contains("topic=notes"),
+        "append must preserve topic frontmatter: {search}"
+    );
+    assert!(
+        search.contains("notes.md"),
+        "search should still find appended memory: {search}"
+    );
+}
+
+#[test]
+fn memory_tool_search_omits_non_matching_query() {
+    let (reg, _host) = builtins_host();
+    exec_tool(
+        &reg,
+        "memory",
+        serde_json::json!({
+            "command": "write",
+            "path": "alpha.md",
+            "content": "architecture notes",
+            "importance": 5
+        }),
+    )
+    .expect("seed memory");
+    let out = exec_tool(
+        &reg,
+        "memory",
+        serde_json::json!({
+            "command": "search",
+            "query": "zzzznonexistent"
+        }),
+    )
+    .expect("search memories");
+    assert!(
+        out.contains("No matching memories"),
+        "search should omit importance-only matches: {out}"
+    );
+}
