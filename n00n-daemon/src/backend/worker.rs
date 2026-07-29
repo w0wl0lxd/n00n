@@ -14,22 +14,22 @@ const STATE_FILE: &str = "agent.json";
 const MAX_AGENT_ID_LEN: usize = 64;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct WorkerStateFile {
-    id: String,
+pub(crate) struct WorkerStateFile {
+    pub(crate) id: String,
     #[serde(default)]
-    session_id: String,
+    pub(crate) session_id: String,
     #[serde(default)]
-    socket_path: String,
+    pub(crate) socket_path: String,
     #[serde(default)]
-    status: String,
+    pub(crate) status: String,
     #[serde(default)]
-    model: String,
+    pub(crate) model: String,
     #[serde(default)]
-    prompt: String,
+    pub(crate) prompt: String,
     #[serde(default)]
-    updated_at: u64,
+    pub(crate) updated_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    cwd: Option<String>,
+    pub(crate) cwd: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

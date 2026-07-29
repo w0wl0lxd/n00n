@@ -2822,7 +2822,6 @@ dependencies = [
  "serde",
  "serde_json",
  "smol",
- "sonic-rs",
  "tempfile",
  "test-case",
  "thiserror 2.0.19",
