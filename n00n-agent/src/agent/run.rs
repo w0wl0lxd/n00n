@@ -62,7 +62,7 @@ fn tier_to_model_tier(tier: Tier) -> ModelTier {
 }
 
 fn filter_tools_for_mode(tools: &mut Value, mode: &AgentMode) {
-    if mode.plan_path().is_none() {
+    if !mode.is_readonly() {
         return;
     }
     if let Some(definitions) = tools.as_array_mut() {

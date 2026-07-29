@@ -157,6 +157,32 @@ fn workflow_from_mode(mode: CliAgentMode) -> bool {
     matches!(mode, CliAgentMode::Team | CliAgentMode::Workflow)
 }
 
+fn runtime_mode_from_cli(mode: CliAgentMode) -> RuntimeAgentMode {
+    if mode == CliAgentMode::Research {
+        RuntimeAgentMode::Research
+    } else {
+        RuntimeAgentMode::Build
+    }
+}
+
+fn agent_mode_str(mode: &RuntimeAgentMode) -> &'static str {
+    match mode {
+        RuntimeAgentMode::Research => "research",
+        _ => "build",
+    }
+}
+
+fn runtime_mode_from_str(mode: &str) -> RuntimeAgentMode {
+    if mode == "research" {
+        RuntimeAgentMode::Research
+    } else {
+        RuntimeAgentMode::Build
+    }
+}
+
+const RESEARCH_EXCLUDED_TOOLS: &[&str] =
+    &["write", "edit", "multiedit", "edit_lines", "insert_lines"];
+
 const MAX_AGENT_ID_LEN: usize = 64;
 
 fn validate_agent_id(id: &str) -> Result<()> {
@@ -429,6 +455,12 @@ pub fn run(opts: &AgentRunOptions<'_>, json: bool) -> Result<()> {
         opts.task_description,
     )?;
 
+    let mode = runtime_mode_from_cli(opts.mode);
+    let excluded_tools: Vec<&str> = if mode == RuntimeAgentMode::Research {
+        RESEARCH_EXCLUDED_TOOLS.to_vec()
+    } else {
+        Vec::new()
+    };
     let headless_params = headless::HeadlessParams {
         model: env.model,
         config: env.agent_config,
@@ -438,11 +470,12 @@ pub fn run(opts: &AgentRunOptions<'_>, json: bool) -> Result<()> {
         prompt: message,
         images: Vec::new(),
         prompt_slots: env.prompt_slots,
-        excluded_tools: Vec::new(),
+        excluded_tools,
         mcp_handle: env.mcp_handle,
         initial_wd: env.cwd,
         fast: false,
         workflow: workflow_from_mode(opts.mode),
+        mode,
     };
 
     let handle = headless::spawn(headless_params);
@@ -451,6 +484,7 @@ pub fn run(opts: &AgentRunOptions<'_>, json: bool) -> Result<()> {
     let mut final_output = String::new();
     let mut final_usage = None;
     let mut stop_reason = String::from("completed");
+    let mut error_message: Option<String> = None;
 
     while let Ok(event) = handle.event_rx.recv() {
         match event.event {
@@ -462,6 +496,7 @@ pub fn run(opts: &AgentRunOptions<'_>, json: bool) -> Result<()> {
             }
             n00n_agent::AgentEvent::Error { message } => {
                 stop_reason = format!("error: {message}");
+                error_message = Some(message.clone());
                 eprintln!("Error: {message}");
             }
             _ => {}
@@ -483,6 +518,10 @@ pub fn run(opts: &AgentRunOptions<'_>, json: bool) -> Result<()> {
         println!("{final_output}");
     }
 
+    if let Some(err) = error_message {
+        return Err(eyre!(err));
+    }
+
     Ok(())
 }
 
@@ -497,8 +536,18 @@ struct AgentState {
     model: String,
     created_at: u64,
     updated_at: u64,
+    #[serde(default = "default_mode", skip_serializing_if = "is_build_mode")]
+    mode: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cwd: Option<String>,
+}
+
+fn default_mode() -> String {
+    "build".to_string()
+}
+
+fn is_build_mode(mode: &str) -> bool {
+    mode == "build"
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -624,7 +673,24 @@ pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()
 }
 
 #[cfg(unix)]
+#[allow(unsafe_code)]
 fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()> {
+    // SAFETY: `fork` is the only way to detach a background server from the
+    // controlling terminal; we immediately `setsid` in the child and exit the parent.
+    match unsafe { libc::fork() } {
+        0 => {
+            // SAFETY: `setsid` creates a new session and detaches from the terminal.
+            if unsafe { libc::setsid() } < 0 {
+                return Err(eyre!("failed to create new session"));
+            }
+        }
+        pid if pid > 0 => {
+            println!("Background agent started with PID {pid}");
+            return Ok(());
+        }
+        _ => return Err(eyre!("fork failed")),
+    }
+
     let env = prepare_agent_env(opts.model, opts.yolo, opts.no_jit, opts.fusion)?;
     let message = build_message(
         opts.mode,
@@ -639,6 +705,12 @@ fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<(
     let storage = env.storage.clone();
     let model_spec = env.model_spec;
 
+    let mode = runtime_mode_from_cli(opts.mode);
+    let excluded_tools: Vec<&str> = if mode == RuntimeAgentMode::Research {
+        RESEARCH_EXCLUDED_TOOLS.to_vec()
+    } else {
+        Vec::new()
+    };
     let interactive_params = headless::InteractiveParams {
         model: env.model,
         config: env.agent_config,
@@ -646,7 +718,7 @@ fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<(
         timeouts: env.timeouts,
         openai_options: env.openai_options,
         prompt_slots: Arc::new(env.prompt_slots),
-        excluded_tools: Vec::new(),
+        excluded_tools,
         mcp_handle: env.mcp_handle,
         initial_wd: env.cwd,
         session_id: None,
@@ -655,6 +727,7 @@ fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<(
         system_prompt_override: None,
         append_system_prompt: None,
         workflow: workflow_from_mode(opts.mode),
+        mode: mode.clone(),
     };
 
     let handle = headless::spawn_interactive(interactive_params);
@@ -678,6 +751,7 @@ fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<(
         model: model_spec,
         created_at: now_epoch(),
         updated_at: now_epoch(),
+        mode: agent_mode_str(&mode).to_string(),
         cwd: std::env::current_dir()
             .ok()
             .map(|p| p.to_string_lossy().into_owned()),
@@ -698,7 +772,7 @@ fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<(
 
         let _ = handle.input_tx.send(AgentInput {
             message,
-            mode: RuntimeAgentMode::Build,
+            mode,
             images: Vec::new(),
             preamble: Vec::new(),
             thinking: ThinkingConfig::default(),
@@ -808,6 +882,7 @@ async fn handle_connection(
             }
 
             let mut state = read_agent_state(storage, agent_id)?;
+            let message_mode = runtime_mode_from_str(&state.mode);
             state.status = "working".to_string();
             state.updated_at = now_epoch();
             write_agent_state(storage, &state)?;
@@ -817,7 +892,7 @@ async fn handle_connection(
             input_tx
                 .send(AgentInput {
                     message: text.clone(),
-                    mode: RuntimeAgentMode::Build,
+                    mode: message_mode,
                     images: Vec::new(),
                     preamble: Vec::new(),
                     thinking: ThinkingConfig::default(),
@@ -868,6 +943,7 @@ async fn handle_connection(
                         write_line(&mut writer, &json)
                             .await
                             .wrap_err("failed to write event")?;
+                        break;
                     }
                     AgentEvent::Done { usage, .. } => {
                         final_usage = Some(
@@ -890,12 +966,17 @@ async fn handle_connection(
                 .wrap_err("failed to write event")?;
 
             let mut state = read_agent_state(storage, agent_id)?;
-            state.status = "running".to_string();
+            if paused.load(Ordering::Relaxed) {
+                state.status = "paused".to_string();
+            } else {
+                state.status = "running".to_string();
+            }
             state.updated_at = now_epoch();
             write_agent_state(storage, &state)?;
         }
         ClientCommand::Pause => {
             paused.store(true, Ordering::Relaxed);
+            let _ = cancel_tx.send(());
 
             let mut state = read_agent_state(storage, agent_id)?;
             state.status = "paused".to_string();
@@ -927,10 +1008,13 @@ async fn handle_connection(
             state.status = "stopping".to_string();
             write_agent_state(storage, &state)?;
 
+            // Cancel the current run and close the input channel
             let _ = cancel_tx.send(());
+            drop(input_tx);
 
+            // Cancel the outer interactive task to ensure cleanup
             if let Some(t) = task.lock().await.take() {
-                t.await;
+                t.cancel().await;
             }
 
             let response = serde_json::json!({ "ok": true });
@@ -1075,11 +1159,15 @@ pub fn stop_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()> 
 
     let storage = agent_storage(&state_dir);
 
-    let Ok(state) = read_agent_state(&storage, id) else {
-        let agent_dir_path = agent_dir(&storage, id)?;
-        let _ = fs::remove_dir_all(&agent_dir_path);
-        eprintln!("Agent {id} not found, cleaned up directory");
-        return Ok(());
+    let state = match read_agent_state(&storage, id) {
+        Ok(s) => s,
+        Err(e) if e.to_string().contains("not found") || e.to_string().contains("No such file") => {
+            let agent_dir_path = agent_dir(&storage, id)?;
+            let _ = fs::remove_dir_all(&agent_dir_path);
+            eprintln!("Agent {id} not found, cleaned up directory");
+            return Ok(());
+        }
+        Err(e) => return Err(e.wrap_err("failed to read agent state")),
     };
 
     #[cfg(not(unix))]
@@ -1418,6 +1506,7 @@ mod tests {
             model: "anthropic/claude-3-opus".to_string(),
             created_at: 1_234_567_890,
             updated_at: 1_234_567_900,
+            mode: "build".to_string(),
             cwd: Some("/tmp/proj".into()),
         };
 
@@ -1516,6 +1605,7 @@ mod tests {
             model: "model1".to_string(),
             created_at: 100,
             updated_at: 200,
+            mode: "build".to_string(),
             cwd: None,
         };
         let data1 = serde_json::to_vec_pretty(&first_state).unwrap();
@@ -1533,6 +1623,7 @@ mod tests {
             model: "model2".to_string(),
             created_at: 50,
             updated_at: 300,
+            mode: "build".to_string(),
             cwd: None,
         };
         let data2 = serde_json::to_vec_pretty(&second_state).unwrap();

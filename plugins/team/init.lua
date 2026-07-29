@@ -819,6 +819,10 @@ local function run_team(input, ctx)
     input.thinking = "adaptive"
   end
   input._agent_budget = new_agent_guard(input.max_agents, input.timeout_secs)
+
+  -- Enforce wall-clock timeout for in-flight subagent calls
+  ctx:set_deadline(input.timeout_secs)
+
   local goal = input.goal
 
   local slug = memory.slug(input.goal)

@@ -320,6 +320,7 @@ pub enum StoredEffect {
 pub enum StoredMode {
     Build,
     Plan,
+    Research,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
