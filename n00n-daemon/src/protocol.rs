@@ -1,4 +1,5 @@
-//! Control-plane wire types. Encoded with `sonic-rs` (not `serde_json`).
+//! Control-plane wire types. Encoded with `sonic-rs`; `state` uses `serde_json::Value`
+//! because `sonic_rs::Value` cannot round-trip through an internally-tagged enum.
 
 use serde::{Deserialize, Serialize};
 
@@ -91,7 +92,7 @@ pub enum ControlResponse {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         version: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        state: Option<sonic_rs::Value>,
+        state: Option<Box<serde_json::Value>>,
     },
     Err {
         error: String,

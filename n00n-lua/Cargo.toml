@@ -1,5 +1,6 @@
 [package]
 name = "n00n-lua"
+description = "Lua plugin runtime, built-in tools, and language bindings for n00n"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

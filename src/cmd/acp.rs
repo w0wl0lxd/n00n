@@ -62,7 +62,7 @@ pub fn run(model_arg: Option<&str>, yolo: bool, no_jit: bool) -> Result<()> {
 
     n00n_acp::run(n00n_acp::AcpParams {
         model,
-        config: config.agent,
+        config: Arc::new(config.agent),
         permissions_config: config.permissions,
         timeouts,
         openai_options: n00n_providers::OpenAiOptions::from(&config.provider),

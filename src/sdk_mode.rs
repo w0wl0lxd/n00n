@@ -440,7 +440,7 @@ impl SdkWriter {
 pub struct SdkParams {
     pub cli: Cli,
     pub model: Model,
-    pub config: AgentConfig,
+    pub config: Arc<AgentConfig>,
     pub permissions_config: PermissionsConfig,
     pub timeouts: Timeouts,
     pub openai_options: OpenAiOptions,
@@ -460,7 +460,7 @@ pub fn run(params: SdkParams) -> Result<()> {
     let SdkParams {
         cli,
         model,
-        mut config,
+        config,
         permissions_config,
         timeouts,
         openai_options,
@@ -469,9 +469,11 @@ pub fn run(params: SdkParams) -> Result<()> {
         workflow,
     } = params;
     cli.warn_ignored_flags();
+    let mut config = Arc::unwrap_or_clone(config);
     if let Some(max) = cli.max_turns {
         config.max_turns = Some(max);
     }
+    let config = Arc::new(config);
     let permission_mode =
         PermissionMode::resolve(cli.permission_mode.as_deref(), cli.permission_flags.yolo);
 
