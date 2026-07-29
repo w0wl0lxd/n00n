@@ -9,20 +9,24 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(unix)]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(unix)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(unix)]
 use async_lock::Mutex;
 use color_eyre::Result;
 use color_eyre::eyre::{Context, eyre};
+#[cfg(unix)]
 use flume::Sender;
+#[cfg(unix)]
 use futures_lite::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, split};
 use n00n_agent::headless;
 use n00n_agent::tools::ToolRegistry;
-use n00n_agent::{
-    AgentConfig, AgentEvent, AgentInput, AgentMode as RuntimeAgentMode, Envelope, McpHandle,
-    PermissionsConfig, prompt::ResolvedSlots,
-};
+use n00n_agent::{AgentConfig, McpHandle, PermissionsConfig, prompt::ResolvedSlots};
+#[cfg(unix)]
+use n00n_agent::{AgentEvent, AgentInput, AgentMode as RuntimeAgentMode, Envelope};
 use n00n_config::{load_env_files, load_permissions};
 use n00n_daemon::ControlError;
 use n00n_daemon::backend::WorkerBackend;
@@ -34,7 +38,9 @@ use n00n_daemon::server as daemon_server;
 use n00n_daemon::transport;
 use n00n_daemon::{AgentRecord, AgentScriptView, is_terminal_worker_status};
 use n00n_lua::PluginHost;
-use n00n_providers::{Model, OpenAiOptions, ThinkingConfig, Timeouts};
+#[cfg(unix)]
+use n00n_providers::ThinkingConfig;
+use n00n_providers::{Model, OpenAiOptions, Timeouts};
 use n00n_storage::StateDir;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -344,9 +350,11 @@ pub struct AgentRunOptions<'a> {
 }
 
 struct PreparedEnv {
+    #[cfg_attr(not(unix), allow(dead_code))]
     storage: StateDir,
     cwd: PathBuf,
     model: Model,
+    #[cfg_attr(not(unix), allow(dead_code))]
     model_spec: String,
     agent_config: Arc<AgentConfig>,
     permissions: PermissionsConfig,
@@ -420,6 +428,7 @@ fn prepare_agent_env(model_arg: Option<&str>, yolo: bool, no_jit: bool) -> Resul
     })
 }
 
+#[cfg(unix)]
 async fn write_line<W: AsyncWriteExt + Unpin>(writer: &mut W, line: &str) -> Result<()> {
     writer
         .write_all(line.as_bytes())
@@ -573,6 +582,7 @@ enum ServerEvent {
 
 const AGENTS_SUBDIR: &str = "agents";
 const STATE_FILE: &str = "agent.json";
+#[cfg(unix)]
 const SOCKET_FILE: &str = "control.sock";
 const DIR_PERMISSIONS: u32 = 0o700;
 const FILE_PERMISSIONS: u32 = 0o600;
@@ -583,6 +593,7 @@ fn agent_dir(state_dir: &StateDir, agent_id: &str) -> Result<PathBuf> {
     Ok(agents_dir.join(agent_id))
 }
 
+#[cfg(unix)]
 fn socket_path(state_dir: &StateDir, agent_id: &str) -> Result<PathBuf> {
     Ok(agent_dir(state_dir, agent_id)?.join(SOCKET_FILE))
 }
@@ -607,6 +618,7 @@ fn state_file_path(state_dir: &StateDir, agent_id: &str) -> Result<PathBuf> {
     Ok(agent_dir(state_dir, agent_id)?.join(STATE_FILE))
 }
 
+#[cfg(unix)]
 fn write_agent_state(state_dir: &StateDir, state: &AgentState) -> Result<()> {
     let path = state_file_path(state_dir, &state.id)?;
     let data = serde_json::to_vec_pretty(state).wrap_err("failed to serialize agent state")?;
@@ -644,23 +656,23 @@ fn list_agent_states(state_dir: &StateDir) -> Result<Vec<AgentState>> {
     Ok(states)
 }
 
+#[cfg(unix)]
 fn now_epoch() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
 }
 
+#[cfg(unix)]
 pub fn server(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<()> {
-    #[cfg(not(unix))]
-    {
-        let _ = (opts, agent_id);
-        return Err(eyre!("background agent server requires unix"));
-    }
+    server_unix(opts, agent_id)
+}
 
-    #[cfg(unix)]
-    {
-        server_unix(opts, agent_id)
-    }
+#[cfg(not(unix))]
+pub fn server(_opts: &AgentRunOptions<'_>, _agent_id: Option<String>) -> Result<()> {
+    Err(eyre!(
+        "background agent mode requires Unix domain sockets; use `n00n agent daemon` on this platform"
+    ))
 }
 
 #[cfg(unix)]
@@ -821,6 +833,14 @@ fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<(
     Ok(())
 }
 
+#[cfg(not(unix))]
+pub fn server(_opts: &AgentRunOptions<'_>, _agent_id: Option<String>) -> Result<()> {
+    Err(eyre!(
+        "background agent mode requires Unix domain sockets; use `n00n agent daemon` on this platform"
+    ))
+}
+
+#[cfg(unix)]
 fn wait_for_run_done(event_rx: &flume::Receiver<Envelope>) {
     while let Ok(envelope) = event_rx.recv() {
         if matches!(
@@ -834,7 +854,7 @@ fn wait_for_run_done(event_rx: &flume::Receiver<Envelope>) {
 
 #[cfg(unix)]
 async fn handle_connection(
-    stream: UnixStream,
+    stream: smol::net::unix::UnixStream,
     input_tx: Sender<AgentInput>,
     event_rx: flume::Receiver<Envelope>,
     cancel_tx: Sender<()>,
@@ -1051,16 +1071,19 @@ pub fn message_client(
         return print_control_response(&result?, json);
     }
 
-    let storage = agent_storage(&state_dir);
-    let state = read_agent_state(&storage, id).wrap_err("failed to read agent state")?;
-
     #[cfg(not(unix))]
     {
-        return Err(eyre!("direct agent socket control requires unix"));
+        let _ = (&state_dir, text, json);
+        return Err(eyre!(
+            "agent {id} has no daemon listener; direct worker sockets require Unix"
+        ));
     }
 
     #[cfg(unix)]
     {
+        let storage = agent_storage(&state_dir);
+        let state = read_agent_state(&storage, id).wrap_err("failed to read agent state")?;
+
         let stream = smol::block_on(UnixStream::connect(&state.socket_path))
             .wrap_err("failed to connect to agent socket")?;
 
@@ -1425,59 +1448,66 @@ pub fn resume_client(id: &str, state_dir_override: Option<PathBuf>) -> Result<()
     control_command_client(&state_dir, id, &ClientCommand::Resume, "resumed")
 }
 
+#[cfg(unix)]
 fn control_command_client(
     state_dir: &std::path::Path,
     id: &str,
     command: &ClientCommand,
     success_label: &str,
 ) -> Result<()> {
+    use smol::net::unix::UnixStream;
+
     let storage = agent_storage(state_dir);
     let state = read_agent_state(&storage, id).wrap_err("failed to read agent state")?;
 
-    #[cfg(not(unix))]
-    {
-        return Err(eyre!("direct agent socket control requires unix"));
-    }
+    let stream = smol::block_on(UnixStream::connect(&state.socket_path))
+        .wrap_err("failed to connect to agent socket")?;
 
-    #[cfg(unix)]
-    {
-        let stream = smol::block_on(UnixStream::connect(&state.socket_path))
-            .wrap_err("failed to connect to agent socket")?;
+    let cmd_json = serde_json::to_string(&command).wrap_err("failed to serialize command")?;
 
-        let cmd_json = serde_json::to_string(&command).wrap_err("failed to serialize command")?;
+    smol::block_on(async {
+        let (reader, mut writer) = split(stream);
+        let mut reader = BufReader::new(reader);
 
-        smol::block_on(async {
-            let (reader, mut writer) = split(stream);
-            let mut reader = BufReader::new(reader);
+        write_line(&mut writer, &cmd_json)
+            .await
+            .wrap_err("failed to send command")?;
 
-            write_line(&mut writer, &cmd_json)
-                .await
-                .wrap_err("failed to send command")?;
+        let mut line = String::new();
+        let _ = reader
+            .read_line(&mut line)
+            .await
+            .wrap_err("failed to read response")?;
 
-            let mut line = String::new();
-            let _ = reader
-                .read_line(&mut line)
-                .await
-                .wrap_err("failed to read response")?;
+        let response: serde_json::Value =
+            serde_json::from_str(&line).wrap_err("failed to parse response")?;
 
-            let response: serde_json::Value =
-                serde_json::from_str(&line).wrap_err("failed to parse response")?;
-
-            match response.get("ok").and_then(serde_json::Value::as_bool) {
-                Some(true) => println!("Agent {id} {success_label}"),
-                Some(false) => {
-                    let message = match response.get("error").and_then(serde_json::Value::as_str) {
-                        Some(message) => message.to_string(),
-                        None => "control request rejected".to_string(),
-                    };
-                    return Err(eyre!("Failed to {success_label} agent {id}: {message}"));
-                }
-                None => return Err(eyre!("control response missing ok field")),
+        match response.get("ok").and_then(serde_json::Value::as_bool) {
+            Some(true) => println!("Agent {id} {success_label}"),
+            Some(false) => {
+                let message = match response.get("error").and_then(serde_json::Value::as_str) {
+                    Some(message) => message.to_string(),
+                    None => "control request rejected".to_string(),
+                };
+                return Err(eyre!("Failed to {success_label} agent {id}: {message}"));
             }
+            None => return Err(eyre!("control response missing ok field")),
+        }
 
-            Ok(())
-        })
-    }
+        Ok(())
+    })
+}
+
+#[cfg(not(unix))]
+fn control_command_client(
+    _state_dir: &std::path::Path,
+    id: &str,
+    _command: &ClientCommand,
+    _success_label: &str,
+) -> Result<()> {
+    Err(eyre!(
+        "agent {id} has no daemon listener; direct worker sockets require Unix"
+    ))
 }
 
 #[cfg(test)]
