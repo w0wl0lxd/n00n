@@ -108,7 +108,7 @@ pub(crate) fn resolve_machine_id() -> Option<String> {
 ///
 /// Cursor's wire format hashes the token alone (no protocol pad). Implemented
 /// as a direct digest so we never pass an empty "salt" into a hasher API —
-/// that empty pad is an interop constant, not a secret, but it trips CodeQL's
+/// that empty pad is an interop constant, not a secret, but it trips `CodeQL`'s
 /// hard-coded cryptographic-value heuristic.
 #[must_use]
 pub(crate) fn client_key_from_token(token: &str) -> String {
