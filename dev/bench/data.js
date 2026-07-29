@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785298668695,
+  "lastUpdate": 1785299704014,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -9609,6 +9609,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 171613,
             "range": "± 15787",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "33401ff9cc68ebb28b15f12108ffe4d045557a9b",
+          "message": "Merge pull request #175 from w0wl0lxd/feat/memory-system-v2\n\nfeat(memory): memory system v2 with search, metadata, and lite recall",
+          "timestamp": "2026-07-29T04:28:51Z",
+          "tree_id": "4dcfdb5445d9aec6fc81c4a6efae8e49c1567b72",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/33401ff9cc68ebb28b15f12108ffe4d045557a9b"
+        },
+        "date": 1785299702967,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6457883,
+            "range": "± 184389",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2442780,
+            "range": "± 3353",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2445005,
+            "range": "± 48874",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7675261,
+            "range": "± 74422",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3856373,
+            "range": "± 9802",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3757828,
+            "range": "± 8990",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 554434,
+            "range": "± 4468",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 168114,
+            "range": "± 632",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 167918,
+            "range": "± 1988",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1047484,
+            "range": "± 4707",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 641479,
+            "range": "± 12105",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 639317,
+            "range": "± 3978",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 57621,
+            "range": "± 4763",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 178078,
+            "range": "± 4713",
             "unit": "ns/iter"
           }
         ]
