@@ -89,6 +89,13 @@ impl StatusBar {
         self.cwd_branch = cwd_branch_label();
     }
 
+    /// Override the cwd/branch label (tests only) so ambient path length cannot
+    /// clip other status-bar spans in a fixed-width `TestBackend`.
+    #[cfg(test)]
+    fn set_cwd_branch_for_test(&mut self, label: impl Into<String>) {
+        self.cwd_branch = label.into();
+    }
+
     pub fn poll_branch_update(&mut self) {
         let Some(rx) = &self.branch_update_rx else {
             return;
@@ -562,7 +569,10 @@ mod tests {
 
         let backend = TestBackend::new(80, 1);
         let mut terminal = Terminal::new(backend).unwrap();
-        let bar = StatusBar::new(Duration::from_secs(1));
+        // Pin a short cwd label: ambient / macOS TempDir paths can exceed the
+        // 80-col budget and clip the cache badge from the right pane.
+        let mut bar = StatusBar::new(Duration::from_secs(1));
+        bar.set_cwd_branch_for_test("cwd");
         let usage = TokenUsage::default();
         let pricing = ModelPricing::default();
         let health = CacheHealth {
