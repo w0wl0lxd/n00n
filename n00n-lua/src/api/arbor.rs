@@ -1,6 +1,7 @@
 use mlua::{Lua, LuaSerdeExt, Result as LuaResult, Table};
 use n00n_arbor::{
-    ArborError, Client, graph_callees, graph_callers, graph_index_available, graph_trace_path,
+    ArborError, Client, ensure_fresh_index, graph_callees, graph_callers, graph_index_available,
+    graph_trace_path,
 };
 
 use crate::docs::{DocKind, FnDoc, ModuleDoc, ParamDoc};
@@ -78,6 +79,12 @@ pub(crate) fn create_arbor_table(lua: &Lua) -> LuaResult<Table> {
         Ok(())
     })?;
     t.set("ensure_indexed", ensure_indexed)?;
+
+    let ensure_fresh_index_fn = lua.create_function(|_, project: String| {
+        ensure_fresh_index(std::path::Path::new(&project)).map_err(map_err)?;
+        Ok(())
+    })?;
+    t.set("ensure_fresh_index", ensure_fresh_index_fn)?;
 
     let graph_available = lua.create_function(|_, project: String| {
         Ok(graph_index_available(std::path::Path::new(&project)))
@@ -232,6 +239,18 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
             name: "ensure_indexed",
             args: "{project}",
             desc: "Run `arbor index` if the project is not yet indexed.",
+            params: &[ParamDoc {
+                name: "{project}",
+                ty: "string",
+                desc: "Path to the project root.",
+            }],
+            returns: "(nil) nil on success, or error on failure.",
+            example: "",
+        },
+        FnDoc {
+            name: "ensure_fresh_index",
+            args: "{project}",
+            desc: "Ensure the Arbor index is fresh, reindexing if stale.",
             params: &[ParamDoc {
                 name: "{project}",
                 ty: "string",
