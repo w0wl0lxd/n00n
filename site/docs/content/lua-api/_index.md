@@ -5086,6 +5086,22 @@ Run `arbor index` if the project is not yet indexed.
 
 ---
 
+### `n00n.arbor.ensure_fresh_index()` {#n00n-arbor-ensure_fresh_index}
+
+```lua
+n00n.arbor.ensure_fresh_index({project})
+```
+
+Ensure the Arbor index is fresh, reindexing if stale.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`nil`) nil on success, or error on failure.
+
+---
+
 ### `n00n.arbor.graph_index_available()` {#n00n-arbor-graph_index_available}
 
 ```lua
