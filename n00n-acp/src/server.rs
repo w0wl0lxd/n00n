@@ -178,7 +178,7 @@ fn spawn_session(
 ) -> InteractiveHandle {
     headless::spawn_interactive(InteractiveParams {
         model: params.model.clone(),
-        config: params.config.clone(),
+        config: Arc::clone(&params.config),
         permissions_config: params.permissions_config.clone(),
         timeouts: params.timeouts,
         openai_options: params.openai_options,
