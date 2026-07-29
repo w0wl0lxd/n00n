@@ -12,7 +12,7 @@
 | Persistent project memory | auto memory + CLAUDE.md | archival memory | SQLite + hooks | flat markdown files | flat files + metadata |
 | Semantic / keyword search | on-demand via tools | archival_memory_search | hybrid BM25+vector | none | heuristic keyword ranking (offline) |
 | Tags / organization | implicit | tags on insert | tags + graph | none | YAML frontmatter tags/topic |
-| Lite vs deep layers | auto memory summaries | memory blocks vs archival | lite pointers + deep fetch | none | `layer: lite|deep` + prompt injection |
+| Lite vs deep layers | auto memory summaries | memory blocks vs archival | lite pointers + deep fetch | none | `layer: lite\|deep` + prompt injection |
 | Session-start injection | CLAUDE.md + auto memory | core memory blocks | hooks auto-recall | file count hint only | lite memory summaries in prompt hint |
 | Telemetry | none built-in | API events | status commands | none | JSONL events.jsonl |
 | Append without rewrite | N/A | insert | append tools | full write only | `append` command |
@@ -47,11 +47,13 @@ As an agent, I want to append notes to an existing memory without re-sending ful
 1. **Given** existing memory, **When** `append` adds text, **Then** content is appended after body with newline separator.
 2. **Given** line limit exceeded, **When** `append` runs, **Then** error matches write limit contract.
 
-### User Story 4 — Discovery index and telemetry (Priority: P2)
+### User Story 4 — Discovery index and telemetry (Priority: P2, deferred to v2.1)
 
 As an operator, I want indexed discovery and JSONL telemetry for memory operations.
 
-**Acceptance Scenarios**:
+**Status**: Deferred — inline discovery is used in v2; per-project index cache and telemetry ship in v2.1 (see tasks.md T004/T009).
+
+**Acceptance Scenarios** (v2.1):
 1. **Given** unchanged memory dir, **When** list/search runs twice, **Then** index cache is reused.
 2. **Given** `include_telemetry=true`, **When** search completes, **Then** event is appended to `memories/events.jsonl`.
 
@@ -59,12 +61,12 @@ As an operator, I want indexed discovery and JSONL telemetry for memory operatio
 
 - **FR-001**: `memory` MUST support `search` command with required `query` and optional `tags`, `path` (focus), `limit`.
 - **FR-002**: `memory` MUST support `append` command with `path` and `content`.
-- **FR-003**: `parse_frontmatter` MUST extract tags, topic, importance (1-5), layer (lite|deep), synopsis, paths.
+- **FR-003**: `parse_frontmatter` MUST extract tags, topic, importance (1-5), layer (lite|deep), synopsis. (`paths` deferred — see contracts/memory_recall.md.)
 - **FR-004**: `write` MUST accept optional metadata fields and persist frontmatter.
 - **FR-005**: `view` without path MUST list entries with metadata; optional `query` ranks list.
 - **FR-006**: Prompt hint MUST inject lite-layer summaries (capped) instead of only file count.
-- **FR-007**: Discovery index MUST cache per-project metadata with mtime fingerprint invalidation.
-- **FR-008**: Telemetry MUST append to `projects/{id}/memories/events.jsonl` when `include_telemetry=true`.
+- **FR-007**: ~~Discovery index MUST cache per-project metadata with mtime fingerprint invalidation.~~ **Deferred to v2.1** — v2 uses inline discovery (tasks.md T004).
+- **FR-008**: ~~Telemetry MUST append to `projects/{id}/memories/events.jsonl` when `include_telemetry=true`.~~ **Deferred to v2.1** (tasks.md T009).
 
 ## Success Criteria
 

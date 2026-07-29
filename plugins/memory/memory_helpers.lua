@@ -7,7 +7,7 @@ M.MAX_SEARCH_LIMIT = 50
 M.LITE_HINT_LIMIT = 5
 M.MIN_TOKEN_LEN = 2
 
-local function normalize_string_list(values)
+function M.normalize_string_list(values)
   if values == nil then
     return nil
   end
@@ -158,11 +158,16 @@ function M.parse_frontmatter(content)
   end
   local yaml_str = rest:sub(1, end_pos)
   local body = rest:sub(end_pos + 4):match("^%s*(.-)%s*$")
-  local fm, _ = n00n.yaml.decode(yaml_str)
-  if type(fm) ~= "table" then
-    fm = {}
+  local fm, decode_err = n00n.yaml.decode(yaml_str)
+  if decode_err then
+    return nil, "invalid frontmatter YAML: " .. tostring(decode_err)
   end
-  fm.tags = normalize_string_list(fm.tags)
+  if fm == nil then
+    fm = {}
+  elseif type(fm) ~= "table" then
+    return nil, "invalid frontmatter: expected a YAML mapping"
+  end
+  fm.tags = M.normalize_string_list(fm.tags)
   fm.importance = clamp_importance(fm.importance)
   fm.layer = normalize_layer(fm.layer)
   if type(fm.topic) == "string" then
@@ -192,7 +197,7 @@ function M.normalize_metadata(input)
     synopsis = (#trimmed > 0) and trimmed or nil
   end
   return {
-    tags = normalize_string_list(input and input.tags),
+    tags = M.normalize_string_list(input and input.tags),
     topic = topic,
     importance = clamp_importance(input and input.importance),
     layer = normalize_layer(input and input.layer),
@@ -255,6 +260,9 @@ end
 
 function M.parse_memory_file(relative_path, raw)
   local fm, body = M.parse_frontmatter(raw)
+  if not fm then
+    return nil, body
+  end
   return {
     path = relative_path,
     meta = fm,
@@ -444,7 +452,6 @@ function M.format_list(entries, ranked)
   local lines = {}
   local total = 0
   for _, entry in ipairs(files) do
-    local meta = entry.meta or {}
     local size = entry.size or 0
     lines[#lines + 1] = M.format_search_result(entry, nil) .. " (" .. size .. " bytes)"
     total = total + size
@@ -462,16 +469,29 @@ function M.load_entries(dir)
     local raw = n00n.fs.read(file_path)
     if raw then
       local entry = M.parse_memory_file(rel, raw)
-      entry.size = f[2]
-      entry.mtime = f[3]
-      entries[#entries + 1] = entry
+      if entry then
+        entry.size = f[2]
+        entry.mtime = f[3]
+        entries[#entries + 1] = entry
+      end
     end
   end
   return entries
 end
 
-local function role_prefix_pattern(first, rest)
-  return "[" .. first:upper() .. first:lower() .. "]" .. rest .. "%s*:"
+local function strip_ci(text, lower_pattern)
+  local lowered = text:lower()
+  local out, pos = {}, 1
+  while true do
+    local s, e = lowered:find(lower_pattern, pos)
+    if not s then
+      out[#out + 1] = text:sub(pos)
+      break
+    end
+    out[#out + 1] = text:sub(pos, s - 1)
+    pos = e + 1
+  end
+  return table.concat(out)
 end
 
 function M.sanitize_hint_text(text, max_len)
@@ -485,14 +505,14 @@ function M.sanitize_hint_text(text, max_len)
   trimmed = trimmed:gsub("---+", " ")
   trimmed = trimmed:gsub("<[^>]->", " ")
   trimmed = trimmed:gsub("%s+", " ")
-  trimmed = trimmed:gsub("[Ii]gnore%s+[Aa]ll%s+[Pp]revious", "")
-  trimmed = trimmed:gsub("[Ii]gnore%s+[Pp]revious", "")
-  trimmed = trimmed:gsub("[Yy]ou%s+[Mm]ust", "")
-  trimmed = trimmed:gsub("[Dd]eveloper%s+[Mm]ode", "")
-  trimmed = trimmed:gsub("[Ss]ystem%s*:", "")
-  trimmed = trimmed:gsub(role_prefix_pattern(string.char(117), string.char(115, 101, 114)), "")
-  trimmed = trimmed:gsub("[Aa]ssistant%s*:", "")
-  trimmed = trimmed:gsub(role_prefix_pattern(string.char(104), string.char(117, 109, 97, 110)), "")
+  trimmed = strip_ci(trimmed, "ignore%s+all%s+previous")
+  trimmed = strip_ci(trimmed, "ignore%s+previous")
+  trimmed = strip_ci(trimmed, "you%s+must")
+  trimmed = strip_ci(trimmed, "developer%s+mode")
+  trimmed = strip_ci(trimmed, "system%s*:")
+  trimmed = strip_ci(trimmed, "user%s*:")
+  trimmed = strip_ci(trimmed, "assistant%s*:")
+  trimmed = strip_ci(trimmed, "human%s*:")
   trimmed = trimmed:match("^%s*(.-)%s*$")
   if #trimmed > max_len then
     trimmed = trimmed:sub(1, max_len) .. "..."
@@ -561,6 +581,9 @@ end
 
 function M.append_body(existing_raw, addition)
   local fm, body = M.parse_frontmatter(existing_raw)
+  if not fm then
+    return nil, body
+  end
   local separator = (#body > 0 and not body:match("%s$")) and "\n" or ""
   local next_body = body .. separator .. addition
   return M.build_frontmatter(fm, next_body)
