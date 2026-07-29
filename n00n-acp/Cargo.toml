@@ -4,6 +4,9 @@ description = "Agent Client Protocol stdio server and ACP schema bindings for n0
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 n00n-agent = { workspace = true }

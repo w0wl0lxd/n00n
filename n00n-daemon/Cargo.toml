@@ -4,7 +4,9 @@ version.workspace = true
 edition.workspace = true
 description = "On-device agent control plane: registry, UDS NDJSON protocol, worker sock proxy"
 license.workspace = true
+authors.workspace = true
 repository.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 n00n-storage = { workspace = true }
