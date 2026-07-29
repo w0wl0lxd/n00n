@@ -20,6 +20,7 @@ pub struct AgentRunOptions<'a> {
     pub task_description: Option<&'a str>,
     pub yolo: bool,
     pub no_jit: bool,
+    pub fusion: bool,
 }
 
 fn unsupported() -> Result<()> {
