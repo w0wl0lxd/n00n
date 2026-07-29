@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785297231968,
+  "lastUpdate": 1785298668695,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -9501,6 +9501,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 129118,
             "range": "± 10787",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "274f7b984f8d91d5641532d52ef1fc07b1a5e87a",
+          "message": "Merge pull request #176 from w0wl0lxd/fix/nix-binary-rpath\n\nfix(test): start cursor pace timer before first frame read",
+          "timestamp": "2026-07-29T04:02:41Z",
+          "tree_id": "095b5004349da1d5241faeff5452e6e8745f4fb8",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/274f7b984f8d91d5641532d52ef1fc07b1a5e87a"
+        },
+        "date": 1785298668166,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6636085,
+            "range": "± 300398",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2222048,
+            "range": "± 11328",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2216012,
+            "range": "± 9993",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8041469,
+            "range": "± 53633",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4327155,
+            "range": "± 11771",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4327197,
+            "range": "± 18243",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 582174,
+            "range": "± 1422",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191710,
+            "range": "± 1243",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191744,
+            "range": "± 3548",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1044166,
+            "range": "± 4328",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 583772,
+            "range": "± 1794",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 583674,
+            "range": "± 1472",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 54614,
+            "range": "± 5086",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 171613,
+            "range": "± 15787",
             "unit": "ns/iter"
           }
         ]
