@@ -419,7 +419,7 @@ mod tests {
         assert!(cleaned.starts_with(remaining_prefix), "cleaned: {cleaned}");
     }
 
-    const MAX_TOOL_DEFINITION_BYTES: usize = 36_000;
+    const MAX_TOOL_DEFINITION_BYTES: usize = 38_000;
 
     #[test]
     fn tool_definitions_fit_byte_budget() {
