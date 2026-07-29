@@ -157,10 +157,6 @@ local function cmd_search(query, tags, focus_path, limit, dir)
 end
 
 local function cmd_write(path, content, metadata, dir, ctx, input)
-  local lc = helpers.count_lines(content)
-  if lc > helpers.MAX_LINES_PER_FILE then
-    return nil, "content exceeds " .. helpers.MAX_LINES_PER_FILE .. " lines (" .. lc .. " lines); reduce content size"
-  end
   local file_path, err = helpers.safe_resolve(dir, path)
   if not file_path then
     return nil, err
@@ -178,6 +174,10 @@ local function cmd_write(path, content, metadata, dir, ctx, input)
   local payload, fm_err = build_frontmatter(metadata, content)
   if not payload then
     return nil, fm_err or "failed to build frontmatter"
+  end
+  local lc = helpers.count_lines(payload)
+  if lc > helpers.MAX_LINES_PER_FILE then
+    return nil, "content exceeds " .. helpers.MAX_LINES_PER_FILE .. " lines (" .. lc .. " lines); reduce content size"
   end
   if helpers.dir_total_bytes(dir) - existing_size + #payload > helpers.MAX_DIR_BYTES then
     return nil, "memory directory would exceed " .. helpers.MAX_DIR_BYTES .. " byte limit; delete stale entries first"
