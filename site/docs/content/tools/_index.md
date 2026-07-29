@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-n00n ships with 31 built-in tools. This is the full reference.
+n00n ships with 32 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -308,13 +308,21 @@ Create or update a structured todo list to track tasks. Use after EACH completed
 
 ### `memory` *(lua plugin)*
 
-Persistent, project-scoped scratchpad for learnings, patterns, decisions, and gotchas across sessions. Save important context before compaction or to build project knowledge. Keep entries concise and current. Delete outdated information.
+Persistent, project-scoped scratchpad for learnings, patterns, decisions, and gotchas across sessions. Save important context before compaction or to build project knowledge. Use `search` for keyword/tag recall (not semantic paraphrase). Keep entries concise and current. Delete outdated information.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `command` | string | yes | Command: view, write, delete |
-| `path` | string | no | Relative path (e.g. 'architecture.md'). Omit to list all. |
-| `content` | string | no | File content for 'write' |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `path` | string | no |  | Relative path (e.g. 'architecture.md'). Omit to list all. |
+| `focus_path` | string | no |  | Optional file path context to boost ranking |
+| `tags` | string | no |  | Comma-separated tags metadata for 'write' and filter for 'search' |
+| `layer` | string | no | deep | Memory layer: lite or deep. Lite entries surface in session hints. |
+| `synopsis` | string | no |  | One-line summary for lite layer injection |
+| `limit` | integer | no | 10, max 50 | Max search results |
+| `query` | string | no |  | Keyword query for 'search' or optional ranking when listing via 'view' |
+| `command` | string | yes |  | Command: view, write, delete, search, append |
+| `importance` | integer | no | 1 | Importance 1-5 for 'write' |
+| `content` | string | no |  | File content for 'write' or text to add for 'append' |
+| `topic` | string | no |  | Topic metadata for 'write' |
 
 ### `skill` *(lua plugin)*
 
@@ -354,6 +362,22 @@ Load all tools from a namespace. Returns the list of tools that were loaded.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `namespace` | string | yes | Namespace to load |
+
+### `fusion_delegate` *(lua plugin)*
+
+Delegate to a Fusion sidekick. Pass goal, constraints, and definition_of_done — not file dumps.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `description` | string | yes |  | Short label (3-5 words). |
+| `model_tier` | string | no |  | weak/medium/strong override. |
+| `model` | string | no |  | Exact model override. |
+| `goal` | string | yes |  | What to accomplish. |
+| `constraints` | string | no |  | Scope and patterns. |
+| `definition_of_done` | string | yes |  | Success checks (tests, artifacts). |
+| `auto_tier` | boolean | no | true | Tier from brief. |
+| `escalation_triggers` | string | no |  | When to escalate to the lead. |
+| `subagent_type` | string | no |  | research (read-only) or general (edit). Default: general. |
 
 ## Web
 
