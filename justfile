@@ -10,6 +10,22 @@ run *ARGS:
 test *ARGS:
     cargo nextest run --workspace {{ARGS}}
 
+# Cursor Phase 0 capture / visibility
+cursor-mitm-setup:
+    mise run mitm-setup
+
+cursor-capture *ARGS:
+    scripts/cursor_capture.sh {{ARGS}}
+
+cursor-capture-e2e:
+    scripts/cursor_capture_e2e.sh
+
+cursor-export DUMP:
+    scripts/cursor_export_flows.sh {{DUMP}}
+
+cursor-fuzz-frames:
+    cargo test -p n00n-providers --lib connect::tests::fuzz_ -- --nocapture
+
 lint:
     cargo clippy --all --tests -- -D warnings
 
