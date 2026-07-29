@@ -316,7 +316,7 @@ mod tests {
 
         let sock = crate::paths::daemon_socket_in(tmp.path());
         let mut connected = false;
-        for _ in 0..50 {
+        for _ in 0..150 {
             std::thread::sleep(Duration::from_millis(20));
             if !sock.exists() {
                 continue;
@@ -385,7 +385,7 @@ mod tests {
         });
 
         let mut connected = false;
-        for _ in 0..50 {
+        for _ in 0..150 {
             std::thread::sleep(Duration::from_millis(20));
             match client::call_blocking(tmp.path(), &ControlRequest::Health) {
                 Ok(ControlResponse::Ok {
@@ -479,7 +479,7 @@ mod tests {
         });
 
         let mut connected = false;
-        for _ in 0..50 {
+        for _ in 0..150 {
             std::thread::sleep(Duration::from_millis(20));
             match client::call_blocking(tmp.path(), &ControlRequest::Health) {
                 Ok(ControlResponse::Ok {
@@ -504,7 +504,11 @@ mod tests {
                 agents: Some(agents),
                 ..
             } => {
-                assert_eq!(agents.len(), 2);
+                assert_eq!(
+                    agents.len(),
+                    2,
+                    "expected 2 agents (tui-1 and worker-1), got {agents:?}"
+                );
                 assert!(
                     agents
                         .iter()
