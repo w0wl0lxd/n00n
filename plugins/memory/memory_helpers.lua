@@ -534,8 +534,10 @@ function M.build_lite_hint(entries)
   local max_line = 120
   -- Reserve header + trailing newline; each added line also costs its separator.
   local total_bytes = #header + 1
-  for i = 1, math.min(#lite, M.LITE_HINT_LIMIT) do
-    local entry = lite[i]
+  for _, entry in ipairs(lite) do
+    if #lines >= M.LITE_HINT_LIMIT then
+      break
+    end
     local summary = M.sanitize_hint_text(M.lite_summary(entry), max_line)
     if summary ~= "" then
       local line = "- " .. sanitize_hint_path(entry.path) .. ": " .. summary
