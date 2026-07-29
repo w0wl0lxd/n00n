@@ -132,7 +132,7 @@ enum TurnOutcome {
 pub struct AgentParams {
     pub provider: Arc<dyn Provider>,
     pub model: Model,
-    pub config: AgentConfig,
+    pub config: Arc<AgentConfig>,
     pub tool_output_lines: ToolOutputLines,
     pub permissions: Arc<PermissionManager>,
     pub session_id: Option<SessionRef>,
@@ -160,7 +160,7 @@ pub struct Agent<'h> {
     system: System,
     event_tx: EventSender,
     tools: Value,
-    mode: AgentMode,
+    mode: Arc<AgentMode>,
     user_response_rx: Option<Arc<async_lock::Mutex<flume::Receiver<String>>>>,
     interrupt_source: Option<Arc<dyn InterruptSource>>,
     cancel: CancelToken,
@@ -175,7 +175,7 @@ pub struct Agent<'h> {
     rollback_len: Option<usize>,
     pre_dispatch_gate: Option<Arc<PreDispatchGate>>,
     mcp: Option<McpSession>,
-    config: AgentConfig,
+    config: Arc<AgentConfig>,
     tool_output_lines: ToolOutputLines,
     reauth_attempts: u32,
     post_tool_empty_retried: bool,
@@ -213,7 +213,7 @@ impl<'h> Agent<'h> {
             system: run.system,
             event_tx: run.event_tx,
             tools: run.tools,
-            mode: AgentMode::default(),
+            mode: Arc::new(AgentMode::default()),
             user_response_rx: None,
             interrupt_source: None,
             cancel: CancelToken::none(),
@@ -324,7 +324,7 @@ impl<'h> Agent<'h> {
         let mut msg = Message::user_with_images(input.message.clone(), input.images);
         msg.control = input.control;
         self.history.push(msg);
-        self.mode = input.mode;
+        self.mode = Arc::new(input.mode);
         self.workflow = input.workflow;
         // Filter the caller-supplied tool list in place. Rebuilding from the
         // global registry would replace curated/session-local definitions
@@ -681,14 +681,14 @@ impl<'h> Agent<'h> {
             provider: Arc::clone(&self.provider),
             model: Arc::clone(&self.model),
             event_tx: self.event_tx.clone(),
-            mode: self.mode.clone(),
+            mode: Arc::clone(&self.mode),
             tool_use_id: None,
             user_response_rx: self.user_response_rx.clone(),
             loaded_instructions: self.loaded_instructions.clone(),
             cancel: self.cancel.clone(),
             mcp: self.mcp.clone(),
             deadline: Deadline::None,
-            config: self.config.clone(),
+            config: Arc::clone(&self.config),
             tool_output_lines: self.tool_output_lines,
             permissions: Arc::clone(&self.permissions),
             timeouts: self.timeouts,
@@ -842,8 +842,8 @@ impl<'h> Agent<'h> {
                     for msg in std::mem::take(&mut input.preamble) {
                         self.history.push(msg);
                     }
-                    self.mode = input.mode.clone();
-                    let display = input.message.clone();
+                    self.mode = Arc::new(input.mode);
+                    let display = input.message;
                     if input.control {
                         let wrapped = format!(
                             "<control-interrupt>\nA control message was sent to this session. Address it and continue.\n\n{display}\n</control-interrupt>"
@@ -1273,7 +1273,7 @@ mod tests {
             AgentParams {
                 provider: Arc::new(provider),
                 model: default_model(),
-                config: AgentConfig::default(),
+                config: Arc::new(AgentConfig::default()),
                 tool_output_lines: ToolOutputLines::default(),
                 permissions: Arc::new(PermissionManager::new(
                     n00n_config::PermissionsConfig {
@@ -1690,7 +1690,7 @@ mod tests {
                 AgentParams {
                     provider: Arc::new(HangingProvider),
                     model: default_model(),
-                    config: AgentConfig::default(),
+                    config: Arc::new(AgentConfig::default()),
                     tool_output_lines: ToolOutputLines::default(),
                     permissions: Arc::new(PermissionManager::new(
                         n00n_config::PermissionsConfig {

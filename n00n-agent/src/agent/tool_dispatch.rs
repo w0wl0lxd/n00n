@@ -848,7 +848,7 @@ mod tests {
         name: &str,
         f: impl Fn(&Value) -> Result<String, String> + Send + Sync + 'static,
     ) -> ToolContext {
-        let mut ctx = crate::tools::test_support::stub_ctx(&AgentMode::Build);
+        let mut ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
         let mut map = std::collections::HashMap::new();
         map.insert(name.to_owned(), Arc::new(f) as LocalToolFn);
         ctx.local_tools = Arc::new(map);
@@ -893,8 +893,11 @@ mod tests {
         smol::block_on(async {
             let (tx, rx) = flume::unbounded::<crate::Envelope>();
             let event_tx = crate::EventSender::new(tx, 0);
-            let mut ctx =
-                crate::tools::test_support::stub_ctx_with(&AgentMode::Build, Some(&event_tx), None);
+            let mut ctx = crate::tools::test_support::stub_ctx_with(
+                &Arc::new(AgentMode::Build),
+                Some(&event_tx),
+                None,
+            );
             let mut map = std::collections::HashMap::new();
             map.insert(
                 "local_echo".to_owned(),
@@ -931,7 +934,7 @@ mod tests {
     fn tool_search_routes_and_loads_matches() {
         smol::block_on(async {
             let mcp = crate::mcp::stub_session(&[("srv.fetch_issue", "Fetch a GitHub issue")]);
-            let ctx = crate::tools::test_support::stub_ctx(&AgentMode::Build);
+            let ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
             let done = run(
                 ToolRegistry::global(),
                 Some(&mcp),
@@ -961,7 +964,7 @@ mod tests {
     fn tool_search_bad_query_is_error_event(input: Value) {
         smol::block_on(async {
             let mcp = crate::mcp::stub_session(&[("srv.tool", "")]);
-            let ctx = crate::tools::test_support::stub_ctx(&AgentMode::Build);
+            let ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
             let done = run(
                 ToolRegistry::global(),
                 Some(&mcp),
@@ -981,7 +984,7 @@ mod tests {
     fn calling_deferred_mcp_tool_marks_it_loaded() {
         smol::block_on(async {
             let mcp = crate::mcp::stub_session(&[("srv.fetch_issue", "")]);
-            let mut ctx = crate::tools::test_support::stub_ctx(&AgentMode::Build);
+            let mut ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
             ctx.mcp = Some(mcp.clone());
             let done = run(
                 ToolRegistry::global(),
@@ -1020,7 +1023,7 @@ mod tests {
             let dir = TempDir::new().unwrap();
             let permissions = Arc::new(PermissionManager::new(deny_cfg, dir.path().to_path_buf()));
             let mut ctx = crate::tools::test_support::stub_ctx_with_permissions(
-                &AgentMode::Build,
+                &Arc::new(AgentMode::Build),
                 permissions,
             );
             ctx.mcp = Some(mcp.clone());
@@ -1073,7 +1076,7 @@ mod tests {
     #[test]
     fn unknown_tool_returns_error_event() {
         smol::block_on(async {
-            let ctx = crate::tools::test_support::stub_ctx(&AgentMode::Build);
+            let ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
             let done = run(
                 &ctx.registry,
                 None,
@@ -1205,8 +1208,8 @@ mod tests {
     #[test]
     fn mutating_bash_blocked_in_plan_mode_before_lookup() {
         smol::block_on(async {
-            let ctx = crate::tools::test_support::stub_ctx(&AgentMode::Plan(PathBuf::from(
-                "/tmp/plan.md",
+            let ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Plan(
+                PathBuf::from("/tmp/plan.md"),
             )));
             let result = run(
                 ToolRegistry::global(),
@@ -1227,8 +1230,8 @@ mod tests {
     #[test]
     fn code_execution_blocked_in_plan_mode_before_lookup() {
         smol::block_on(async {
-            let ctx = crate::tools::test_support::stub_ctx(&AgentMode::Plan(PathBuf::from(
-                "/tmp/plan.md",
+            let ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Plan(
+                PathBuf::from("/tmp/plan.md"),
             )));
             let result = run(
                 ToolRegistry::global(),
@@ -1249,9 +1252,9 @@ mod tests {
     fn mcp_unannotated_tool_blocked_in_plan_mode() {
         smol::block_on(async {
             let result = dispatch_mcp(
-                &crate::tools::test_support::stub_ctx(&AgentMode::Plan(PathBuf::from(
+                &crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Plan(PathBuf::from(
                     "/tmp/plan.md",
-                ))),
+                )))),
                 "t1",
                 "myserver.mytool",
                 &serde_json::json!({}),
@@ -1267,8 +1270,8 @@ mod tests {
         smol::block_on(async {
             let session =
                 crate::mcp::stub_session_with_read_only(&[("myserver.mytool", "read-only")], true);
-            let mut ctx = crate::tools::test_support::stub_ctx(&AgentMode::Plan(PathBuf::from(
-                "/tmp/plan.md",
+            let mut ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Plan(
+                PathBuf::from("/tmp/plan.md"),
             )));
             ctx.mcp = Some(session);
 
@@ -1296,7 +1299,7 @@ mod tests {
             let dir = TempDir::new().unwrap();
             let permissions = Arc::new(PermissionManager::new(deny_cfg, dir.path().to_path_buf()));
             let mut ctx = crate::tools::test_support::stub_ctx_with_permissions(
-                &AgentMode::Plan(PathBuf::from("/tmp/plan.md")),
+                &Arc::new(AgentMode::Plan(PathBuf::from("/tmp/plan.md"))),
                 permissions,
             );
             ctx.mcp = Some(session);
@@ -1319,7 +1322,7 @@ mod tests {
     fn mcp_tool_errors_without_mcp_manager() {
         smol::block_on(async {
             let result = dispatch_mcp(
-                &crate::tools::test_support::stub_ctx(&AgentMode::Build),
+                &crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build)),
                 "t1",
                 "myserver.mytool",
                 &serde_json::json!({}),
@@ -1344,7 +1347,7 @@ mod tests {
             let dir = TempDir::new().unwrap();
             let permissions = Arc::new(PermissionManager::new(deny_cfg, dir.path().to_path_buf()));
             let ctx = crate::tools::test_support::stub_ctx_with_permissions(
-                &AgentMode::Build,
+                &Arc::new(AgentMode::Build),
                 permissions,
             );
 
@@ -1440,7 +1443,7 @@ mod tests {
     #[test]
     fn hidden_audience_tool_is_not_dispatched() {
         smol::block_on(async {
-            let mut ctx = crate::tools::test_support::stub_ctx(&AgentMode::Build);
+            let mut ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
             ctx.audience = crate::tools::ToolAudience::GENERAL_SUB;
             let probe = StartProbe::default();
             let started = Arc::clone(&probe.started);
@@ -1483,7 +1486,7 @@ mod tests {
             let dir = TempDir::new().unwrap();
             let permissions = Arc::new(PermissionManager::new(deny_cfg, dir.path().to_path_buf()));
             let ctx = crate::tools::test_support::stub_ctx_with_permissions(
-                &AgentMode::Build,
+                &Arc::new(AgentMode::Build),
                 permissions,
             );
 
@@ -1558,8 +1561,8 @@ mod tests {
     #[test]
     fn renamed_execute_tool_blocked_in_plan_mode() {
         smol::block_on(async {
-            let ctx = crate::tools::test_support::stub_ctx(&AgentMode::Plan(PathBuf::from(
-                "/tmp/plan.md",
+            let ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Plan(
+                PathBuf::from("/tmp/plan.md"),
             )));
             let registry = ToolRegistry::new();
             let tool: Arc<dyn Tool> = Arc::new(RenamedExecuteTool);
@@ -1680,7 +1683,7 @@ mod tests {
             const ERROR_MSG: &str = "sub-agent error: API 500";
             let (tx, _rx) = flume::unbounded::<crate::Envelope>();
             let event_tx = crate::EventSender::new(tx, 0);
-            let mut ctx = crate::tools::test_support::stub_ctx(&AgentMode::Build);
+            let mut ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
             let registry = ToolRegistry::new();
             let tool: Arc<dyn Tool> = Arc::new(FailingSubagentTool::new("task", ERROR_MSG));
             registry
@@ -1731,7 +1734,7 @@ mod tests {
             const ERROR_MSG: &str = "sub-agent error: workflow 500";
             let (tx, _rx) = flume::unbounded::<crate::Envelope>();
             let event_tx = crate::EventSender::new(tx, 0);
-            let mut ctx = crate::tools::test_support::stub_ctx(&AgentMode::Build);
+            let mut ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
             let registry = ToolRegistry::new();
             let tool: Arc<dyn Tool> = Arc::new(FailingSubagentTool::new("workflow", ERROR_MSG));
             registry
