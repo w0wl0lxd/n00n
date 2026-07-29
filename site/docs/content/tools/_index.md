@@ -314,7 +314,7 @@ Persistent, project-scoped scratchpad for learnings, patterns, decisions, and go
 |-----------|------|----------|---------|-------------|
 | `path` | string | no |  | Relative path (e.g. 'architecture.md'). Omit to list all. |
 | `focus_path` | string | no |  | Optional file path context to boost ranking |
-| `tags` | string | no |  | Comma-separated tags filter for 'search' |
+| `tags` | string | no |  | Comma-separated tags metadata for 'write' and filter for 'search' |
 | `layer` | string | no | deep | Memory layer: lite or deep. Lite entries surface in session hints. |
 | `synopsis` | string | no |  | One-line summary for lite layer injection |
 | `limit` | integer | no | 10, max 50 | Max search results |
