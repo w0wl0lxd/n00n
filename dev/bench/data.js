@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785293869324,
+  "lastUpdate": 1785295680483,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -9285,6 +9285,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 119966,
             "range": "± 8677",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5a53c7f55bc82a25b121341337a9198e1a184cc8",
+          "message": "Merge pull request #180 from w0wl0lxd/feat/n00n-fusion\n\nfeat(agent): native Fusion dual-lane routing",
+          "timestamp": "2026-07-29T03:14:31Z",
+          "tree_id": "51ff1294f3eb6dcc5e366fee2901b2ead1b0eb48",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/5a53c7f55bc82a25b121341337a9198e1a184cc8"
+        },
+        "date": 1785295679896,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 5049914,
+            "range": "± 123134",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1901128,
+            "range": "± 17718",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1900050,
+            "range": "± 19876",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 5864913,
+            "range": "± 59855",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 2979457,
+            "range": "± 11099",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 2909465,
+            "range": "± 10555",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 429784,
+            "range": "± 813",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 130235,
+            "range": "± 175",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 130228,
+            "range": "± 768",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 805644,
+            "range": "± 1638",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 480863,
+            "range": "± 4865",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 481691,
+            "range": "± 7768",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 53742,
+            "range": "± 4469",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 138336,
+            "range": "± 4355",
             "unit": "ns/iter"
           }
         ]
