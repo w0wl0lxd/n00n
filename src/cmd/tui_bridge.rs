@@ -122,7 +122,7 @@ fn message_one(
     id: &str,
     text: &str,
     opts: &MessageOpts,
-) -> ControlResult<sonic_rs::Value> {
+) -> ControlResult<Value> {
     session_call(
         tx,
         SessionRequest::Prompt {
@@ -133,7 +133,7 @@ fn message_one(
         },
     )
     .map_err(|e| map_not_found(id, e))?;
-    Ok(sonic_rs::json!({"queued": true, "id": id}))
+    Ok(serde_json::json!({"queued": true, "id": id}))
 }
 
 fn resume_one(tx: &flume::Sender<UiAction>, id: &str) -> ControlResult<()> {

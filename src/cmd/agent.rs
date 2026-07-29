@@ -357,7 +357,7 @@ struct PreparedEnv {
     model: Model,
     #[cfg_attr(not(unix), allow(dead_code))]
     model_spec: String,
-    agent_config: AgentConfig,
+    agent_config: Arc<AgentConfig>,
     permissions: PermissionsConfig,
     timeouts: Timeouts,
     openai_options: OpenAiOptions,
@@ -428,7 +428,7 @@ fn prepare_agent_env(
         cwd,
         model,
         model_spec,
-        agent_config: config.agent,
+        agent_config: Arc::new(config.agent),
         permissions: config.permissions,
         timeouts,
         openai_options: OpenAiOptions::from(&config.provider),

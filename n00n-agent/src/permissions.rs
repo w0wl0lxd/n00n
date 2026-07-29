@@ -168,18 +168,18 @@ impl PermissionAnswer {
 
 pub struct PermissionManager {
     session_rules: Mutex<Vec<PermissionRule>>,
-    config_rules: Vec<PermissionRule>,
-    builtin_rules: Vec<PermissionRule>,
+    config_rules: Arc<Vec<PermissionRule>>,
+    builtin_rules: Arc<Vec<PermissionRule>>,
     yolo: AtomicBool,
     default: DefaultEffect,
-    tool_defaults: HashMap<ToolKey, DefaultEffect>,
+    tool_defaults: Arc<HashMap<ToolKey, DefaultEffect>>,
     cwd: PathBuf,
 }
 
 impl PermissionManager {
     pub fn new(config: PermissionsConfig, cwd: PathBuf) -> Self {
-        let config_rules = config.rules;
-        let builtin_rules = builtin_rules(&cwd);
+        let config_rules = Arc::new(config.rules);
+        let builtin_rules = Arc::new(builtin_rules(&cwd));
 
         // Warn if wildcard deny is present — it blocks ALL tools including builtins.
         let has_wildcard_deny = config_rules
@@ -210,7 +210,7 @@ impl PermissionManager {
             config_rules,
             yolo: AtomicBool::new(config.yolo),
             default: config.default,
-            tool_defaults: config.tool_defaults,
+            tool_defaults: Arc::new(config.tool_defaults),
             cwd,
         }
     }
@@ -222,11 +222,11 @@ impl PermissionManager {
     pub fn fork(&self) -> Self {
         Self {
             session_rules: Mutex::new(Vec::new()),
-            config_rules: self.config_rules.clone(),
-            builtin_rules: self.builtin_rules.clone(),
+            config_rules: Arc::clone(&self.config_rules),
+            builtin_rules: Arc::clone(&self.builtin_rules),
             yolo: AtomicBool::new(self.is_yolo()),
             default: self.default,
-            tool_defaults: self.tool_defaults.clone(),
+            tool_defaults: Arc::clone(&self.tool_defaults),
             cwd: self.cwd.clone(),
         }
     }
@@ -259,8 +259,8 @@ impl PermissionManager {
             let mut has_allow = false;
             for r in session
                 .iter()
-                .chain(&self.config_rules)
-                .chain(&self.builtin_rules)
+                .chain(self.config_rules.iter())
+                .chain(self.builtin_rules.iter())
             {
                 if !matches_rule(&r.tool, tool) || !rule_matches_scope(r, scope) {
                     continue;

@@ -98,6 +98,13 @@ impl Provider for TensorX {
                 self.system_prefix.as_deref(),
             );
 
+            // TensorX rejects requests whose `max_tokens` would cause
+            // input+output to exceed the context window, so we rely on the
+            // API's default output limit rather than send our own.
+            if let Some(obj) = body.as_object_mut() {
+                let _ = obj.remove("max_tokens");
+            }
+
             let (has_thinking, has_reasoning_effort) = {
                 // Discovery keys by the builtin slug; a dynamic wrap's model
                 // carries its own slug, so don't key by model.provider.
@@ -173,12 +180,14 @@ impl Provider for TensorX {
                                     .or_else(|| info["max_input_tokens"].as_u64())
                                     .and_then(|v| u32::try_from(v).ok());
 
-                                // FIXME: API rejects requests if we request the maximum number of
-                                // output tokens. It checks input+max_output<=context_window
-                                // let max_output_tokens = info["max_output_tokens"]
-                                //     .as_u64()
-                                //     .and_then(|v| u32::try_from(v).ok());
-                                let max_output_tokens = None;
+                                // TensorX rejects explicit `max_tokens` when the requested
+                                // output would push input+output past the context window. We
+                                // still record the advertised output limit so the UI and
+                                // thinking-budget clamping are accurate, but drop `max_tokens`
+                                // from the request body before sending.
+                                let max_output_tokens = info["max_output_tokens"]
+                                    .as_u64()
+                                    .and_then(|v| u32::try_from(v).ok());
 
                                 // Convert per-token costs to per-million costs
                                 let input_cost = info["input_cost_per_token"].as_f64();
