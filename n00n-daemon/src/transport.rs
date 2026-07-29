@@ -162,6 +162,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
     #[test]
     fn resolve_client_falls_back_to_default_when_lock_missing() -> Result<(), String> {
         let tmp = TempDir::new().map_err(|e| e.to_string())?;
