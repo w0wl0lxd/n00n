@@ -2,7 +2,14 @@
 
 ## Scope
 
-Implement parity-focused skill runtime improvements:
+This document is the **initial-phase** plan (discovery/filtering). Later phases
+expanded the delivered scope; see:
+
+- `phase5.md` — progressive loading, validation, ranking, plans
+- `phase6-plan.md` / `phase6-spec.md` — agent policy enforcement, graph rank,
+  telemetry, structured `steps`
+
+Initial phase deliverables:
 
 - Recursive nested discovery.
 - Frontmatter normalization for `paths` and `disable-model-invocation`.

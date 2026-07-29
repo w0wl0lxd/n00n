@@ -50,9 +50,20 @@ function M.append(event, skill_name, data)
     return nil, encode_err or "failed to encode telemetry event"
   end
 
-  local event_path = n00n.fs.joinpath(dir, "events.jsonl")
-  local existing, _ = n00n.fs.read(event_path)
-  local _, write_err = n00n.fs.write(event_path, (existing or "") .. encoded .. "\n")
+  -- One file per event avoids read-modify-write races across concurrent writers.
+  local digest = "0"
+  local ok_hash, hash = pcall(function()
+    return n00n.workflow.hash(encoded)
+  end)
+  if ok_hash and hash then
+    digest = tostring(hash)
+  else
+    digest = string.format("%d-%d", #encoded, math.floor((os.clock() or 0) * 1e6))
+  end
+  local safe_skill = tostring(skill_name or "none"):gsub("[^%w%._-]", "_")
+  local event_name = string.format("event-%d-%s-%s.jsonl", row.timestamp, safe_skill, digest)
+  local event_path = n00n.fs.joinpath(dir, event_name)
+  local _, write_err = n00n.fs.write(event_path, encoded .. "\n")
   if write_err then
     return nil, write_err
   end

@@ -2,7 +2,7 @@
 
 **Feature Branch**: `feat/skill-system-v2`  
 **Created**: 2026-07-27  
-**Status**: Draft  
+**Status**: Implemented (PR #172)  
 **Input**: User request to review current n00n skill implementation, match competitor capabilities, and one-up with stronger loading/efficiency behavior.
 
 ## User Scenarios & Testing

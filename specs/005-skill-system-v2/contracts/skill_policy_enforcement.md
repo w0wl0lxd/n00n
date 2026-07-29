@@ -12,13 +12,20 @@
 - If `allowed_tools` non-empty and tool not in list → reject with `tool {name} is not allowed by active skill policy`.
 - `skill` tool itself is always allowed (agent must load/clear skills).
 
-**Tool name normalization**: lowercase; `-` → `_`.
+**Tool name normalization**: lowercase; `-` → `_`. MCP wire (`server__tool`)
+and internal (`server.tool`) names also match the bare tool suffix so allow/deny
+lists written as `read` still apply to `codegraph__read`.
 
 ## Policy lifecycle
 
-**Set**: `ToolDoneEvent` where `tool == "skill"`, `!is_error`, `state.active_skill` is object.
+**Set**: `ToolDoneEvent` where `tool == "skill"`, `!is_error`, `state.active_skill`
+is an object with `allowed_tools` and/or `disallowed_tools`.
 
-**Clear**: `ToolDoneEvent` where `tool == "skill"`, `!is_error`, `state.active_skill` absent or null.
+**Clear**: `ToolDoneEvent` where `tool == "skill"`, `!is_error`, and
+`state.active_skill` is JSON null **or** an object that does not define a tool
+policy (e.g. name-only after loading a skill without allowed/disallowed tools).
+
+**Preserve**: `active_skill` key absent (discovery-only `list`/`validate` results).
 
 **Batch semantics**:
 
