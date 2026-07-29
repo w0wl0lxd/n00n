@@ -91,6 +91,7 @@ fn stored_message(input: AgentInput, delivery: Delivery) -> StoredQueuedMessage 
             Some(StoredMode::Plan),
             Some(path.to_string_lossy().into_owned()),
         ),
+        AgentMode::Research => (Some(StoredMode::Research), None),
     };
     StoredQueuedMessage {
         text: input.message,
@@ -126,6 +127,7 @@ fn restored_submission(
             StoredMode::Plan => message
                 .plan_path
                 .map_or(input.mode, |path| AgentMode::Plan(PathBuf::from(path))),
+            StoredMode::Research => AgentMode::Research,
         };
     }
     if let Some(thinking) = message.thinking {
