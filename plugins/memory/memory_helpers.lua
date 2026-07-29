@@ -190,6 +190,31 @@ function M.normalize_metadata(input)
   }
 end
 
+--- Merge write metadata with existing frontmatter.
+--- Only fields present on `provided` (raw tool input) overlay `existing`.
+function M.merge_metadata(existing, incoming, provided)
+  local base = existing or {}
+  local overlay = incoming or {}
+  local src = provided or {}
+  local function pick(key, default_val)
+    if src[key] ~= nil then
+      return overlay[key]
+    end
+    local val = base[key]
+    if val ~= nil then
+      return val
+    end
+    return default_val
+  end
+  return {
+    tags = pick("tags", nil),
+    topic = pick("topic", nil),
+    importance = pick("importance", 1),
+    layer = pick("layer", "deep"),
+    synopsis = pick("synopsis", nil),
+  }
+end
+
 function M.build_frontmatter(meta, body)
   local fm = {}
   if meta.tags then

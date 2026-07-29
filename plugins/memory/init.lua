@@ -7,6 +7,7 @@ local rank_memories = helpers.rank_memories
 local format_list = helpers.format_list
 local build_frontmatter = helpers.build_frontmatter
 local normalize_metadata = helpers.normalize_metadata
+local merge_metadata = helpers.merge_metadata
 local append_body = helpers.append_body
 local build_lite_hint = helpers.build_lite_hint
 local tags_match = helpers.tags_match
@@ -155,7 +156,7 @@ local function cmd_search(query, tags, focus_path, limit, dir)
   return { llm_output = table.concat(lines, "\n") }
 end
 
-local function cmd_write(path, content, metadata, dir, ctx)
+local function cmd_write(path, content, metadata, dir, ctx, input)
   local lc = helpers.count_lines(content)
   if lc > helpers.MAX_LINES_PER_FILE then
     return nil, "content exceeds " .. helpers.MAX_LINES_PER_FILE .. " lines (" .. lc .. " lines); reduce content size"
@@ -164,12 +165,20 @@ local function cmd_write(path, content, metadata, dir, ctx)
   if not file_path then
     return nil, err
   end
+  local meta = n00n.fs.metadata(file_path)
+  local existing_size = meta and meta.size or 0
+  if meta then
+    local text, read_err = n00n.fs.read(file_path)
+    if not text then
+      return nil, "read error: " .. tostring(read_err)
+    end
+    local existing_fm = helpers.parse_frontmatter(text)
+    metadata = merge_metadata(existing_fm, metadata, input)
+  end
   local payload, fm_err = build_frontmatter(metadata, content)
   if not payload then
     return nil, fm_err or "failed to build frontmatter"
   end
-  local meta = n00n.fs.metadata(file_path)
-  local existing_size = meta and meta.size or 0
   if helpers.dir_total_bytes(dir) - existing_size + #payload > helpers.MAX_DIR_BYTES then
     return nil, "memory directory would exceed " .. helpers.MAX_DIR_BYTES .. " byte limit; delete stale entries first"
   end
@@ -327,7 +336,7 @@ n00n.api.register_tool({
         return { llm_output = "error: 'content' is required for write", is_error = true }
       end
       local metadata = normalize_metadata(input)
-      result, err = cmd_write(input.path, input.content, metadata, dir, ctx)
+      result, err = cmd_write(input.path, input.content, metadata, dir, ctx, input)
     elseif cmd == "append" then
       result, err = cmd_append(input.path, input.content, dir, ctx)
     elseif cmd == "delete" then
