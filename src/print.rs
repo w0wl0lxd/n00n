@@ -17,7 +17,9 @@ use color_eyre::Result;
 use color_eyre::eyre::{Context, eyre};
 use n00n_agent::headless::{HeadlessHandle, HeadlessParams};
 use n00n_agent::tools::QUESTION_TOOL_NAME;
-use n00n_agent::{AgentConfig, AgentEvent, AgentMode, Envelope, ImageSource, PermissionsConfig};
+use n00n_agent::{
+    AgentConfig, AgentEvent, AgentMode, Envelope, FusionUsageStats, ImageSource, PermissionsConfig,
+};
 use n00n_lua::EventHandle;
 use n00n_providers::model::Model;
 use n00n_providers::{OpenAiOptions, StopReason, TokenUsage};
@@ -160,6 +162,7 @@ struct PrintState<'a> {
     usage: &'a mut TokenUsage,
     stop_reason: &'a mut Option<StopReason>,
     session_id: &'a SessionRef,
+    fusion: &'a mut Option<FusionUsageStats>,
 }
 
 struct ResultSummary {
@@ -170,6 +173,7 @@ struct ResultSummary {
     session_id: SessionRef,
     usage: TokenUsage,
     total_cost_usd: f64,
+    fusion: Option<FusionUsageStats>,
 }
 
 fn load_inputs(
@@ -285,6 +289,7 @@ pub fn run(model: &Model, args: PrintArgs<'_>) -> Result<()> {
     let mut num_turns: u32 = 0;
     let mut usage = TokenUsage::default();
     let mut stop_reason: Option<StopReason> = None;
+    let mut fusion: Option<FusionUsageStats> = None;
 
     let mut state = PrintState {
         verbose_out: &mut verbose_out,
@@ -295,6 +300,7 @@ pub fn run(model: &Model, args: PrintArgs<'_>) -> Result<()> {
         usage: &mut usage,
         stop_reason: &mut stop_reason,
         session_id: &session_id,
+        fusion: &mut fusion,
     };
 
     while let Ok(envelope) = smol::block_on(event_rx.recv_async()) {
@@ -320,7 +326,10 @@ pub fn run(model: &Model, args: PrintArgs<'_>) -> Result<()> {
     }
 
     let duration_ms = start.elapsed().as_millis();
-    let total_cost_usd = usage.cost(&model.pricing, fast);
+    let total_cost_usd = fusion.as_ref().map_or_else(
+        || usage.cost(&model.pricing, fast),
+        |stats| stats.lead_cost + stats.sidekick_cost,
+    );
     output_result(
         format,
         std::mem::take(&mut verbose_out),
@@ -333,6 +342,7 @@ pub fn run(model: &Model, args: PrintArgs<'_>) -> Result<()> {
             session_id,
             usage,
             total_cost_usd,
+            fusion,
         },
     )
 }
@@ -422,10 +432,12 @@ fn handle_print_event(
             usage: u,
             num_turns: turns,
             stop_reason: sr,
+            fusion,
         } => {
             *state.num_turns = *turns;
             *state.usage = *u;
             *state.stop_reason = *sr;
+            state.fusion.clone_from(fusion);
             return Ok(true);
         }
         AgentEvent::Error { message } => {
@@ -451,11 +463,34 @@ fn output_result(
         session_id,
         usage,
         total_cost_usd,
+        fusion,
     } = summary;
 
     match format {
         OutputFormat::Text => {
             print!("{result_text}");
+            if let Some(stats) = fusion {
+                eprintln!(
+                    "fusion: lead=${:.4} sidekick=${:.4} total=${:.4} \
+                     lead_tokens={{in:{} out:{} cache_r:{} cache_w:{}}} \
+                     sidekick_tokens={{in:{} out:{} cache_r:{} cache_w:{}}} \
+                     final_lane={} delegations={} compacts={}",
+                    stats.lead_cost,
+                    stats.sidekick_cost,
+                    stats.lead_cost + stats.sidekick_cost,
+                    stats.lead_usage.input,
+                    stats.lead_usage.output,
+                    stats.lead_usage.cache_read,
+                    stats.lead_usage.cache_creation,
+                    stats.sidekick_usage.input,
+                    stats.sidekick_usage.output,
+                    stats.sidekick_usage.cache_read,
+                    stats.sidekick_usage.cache_creation,
+                    stats.final_lane.as_str(),
+                    stats.delegation_count,
+                    stats.compact_count,
+                );
+            }
         }
         OutputFormat::Json | OutputFormat::StreamJson => {
             let result = PrintResult {
@@ -477,6 +512,29 @@ fn output_result(
                     println!("{}", serde_json::to_string(&events)?);
                 }
                 _ => println!("{}", serde_json::to_string(&result)?),
+            }
+            // Keep Claude Code wire format intact; emit Fusion on stderr.
+            if let Some(stats) = fusion {
+                eprintln!(
+                    "fusion: lead=${:.4} sidekick=${:.4} total=${:.4} \
+                     lead_tokens={{in:{} out:{} cache_r:{} cache_w:{}}} \
+                     sidekick_tokens={{in:{} out:{} cache_r:{} cache_w:{}}} \
+                     final_lane={} delegations={} compacts={}",
+                    stats.lead_cost,
+                    stats.sidekick_cost,
+                    stats.lead_cost + stats.sidekick_cost,
+                    stats.lead_usage.input,
+                    stats.lead_usage.output,
+                    stats.lead_usage.cache_read,
+                    stats.lead_usage.cache_creation,
+                    stats.sidekick_usage.input,
+                    stats.sidekick_usage.output,
+                    stats.sidekick_usage.cache_read,
+                    stats.sidekick_usage.cache_creation,
+                    stats.final_lane.as_str(),
+                    stats.delegation_count,
+                    stats.compact_count,
+                );
             }
         }
     }
