@@ -194,7 +194,7 @@ pub struct Cli {
     pub thinking_display: Option<String>,
 
     /// Enable Fusion dual-lane routing (frontier lead + cost-aware sidekick)
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub fusion: bool,
 
     /// Initial prompt (reads stdin if piped)
@@ -585,6 +585,25 @@ mod tests {
                     ..
                 }
             }) if g == "cleanup" && d == "refactor"
+        ));
+    }
+
+    #[test]
+    fn agent_run_accepts_fusion_flag_after_subcommand() {
+        let cli = Cli::parse_from([
+            "n00n",
+            "agent",
+            "run",
+            "--prompt",
+            "delegate mechanical work",
+            "--fusion",
+        ]);
+        assert!(cli.fusion);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Agent {
+                action: AgentCommand::Run { .. }
+            })
         ));
     }
 
