@@ -71,8 +71,11 @@ pub fn build_system_prompt(
     );
     let env = format!("{env}\n- Model: {}", model.spec());
     let instructions = format!("{env}{instructions}");
-    let mut system =
-        crate::prompt::assemble_system(crate::prompt::PromptId::System, slots, &instructions);
+    let prompt_id = match mode {
+        crate::AgentMode::Research => crate::prompt::PromptId::Research,
+        _ => crate::prompt::PromptId::System,
+    };
+    let mut system = crate::prompt::assemble_system(prompt_id, slots, &instructions);
 
     if let Some(plan_path) = mode.plan_path() {
         let plan_vars = Vars::new().set("{plan_path}", plan_path.display().to_string());
