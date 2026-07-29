@@ -181,12 +181,22 @@ function M.parse_frontmatter(content)
 end
 
 function M.normalize_metadata(input)
+  local topic = nil
+  if type(input and input.topic) == "string" then
+    local trimmed = input.topic:match("^%s*(.-)%s*$")
+    topic = (#trimmed > 0) and trimmed or nil
+  end
+  local synopsis = nil
+  if type(input and input.synopsis) == "string" then
+    local trimmed = input.synopsis:match("^%s*(.-)%s*$")
+    synopsis = (#trimmed > 0) and trimmed or nil
+  end
   return {
     tags = normalize_string_list(input and input.tags),
-    topic = type(input and input.topic) == "string" and input.topic:match("^%s*(.-)%s*$") or nil,
+    topic = topic,
     importance = clamp_importance(input and input.importance),
     layer = normalize_layer(input and input.layer),
-    synopsis = type(input and input.synopsis) == "string" and input.synopsis:match("^%s*(.-)%s*$") or nil,
+    synopsis = synopsis,
   }
 end
 
@@ -518,26 +528,29 @@ function M.build_lite_hint(entries)
     return (a.path or "") < (b.path or "")
   end)
 
+  local header = "\n\nProject memory (lite):\n"
   local lines = {}
-  local total_bytes = 0
   local max_total = 800
   local max_line = 120
+  -- Reserve header + trailing newline; each added line also costs its separator.
+  local total_bytes = #header + 1
   for i = 1, math.min(#lite, M.LITE_HINT_LIMIT) do
     local entry = lite[i]
     local summary = M.sanitize_hint_text(M.lite_summary(entry), max_line)
     if summary ~= "" then
       local line = "- " .. sanitize_hint_path(entry.path) .. ": " .. summary
-      if total_bytes + #line > max_total then
+      local sep = (#lines > 0) and 1 or 0
+      if total_bytes + sep + #line > max_total then
         break
       end
       lines[#lines + 1] = line
-      total_bytes = total_bytes + #line
+      total_bytes = total_bytes + sep + #line
     end
   end
   if #lines == 0 then
     return nil
   end
-  return "\n\nProject memory (lite):\n" .. table.concat(lines, "\n") .. "\n"
+  return header .. table.concat(lines, "\n") .. "\n"
 end
 
 function M.list_memories(dir)
