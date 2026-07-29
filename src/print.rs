@@ -243,7 +243,7 @@ pub fn run(model: &Model, args: PrintArgs<'_>) -> Result<()> {
 
     let handle = n00n_agent::headless::spawn(HeadlessParams {
         model: model.clone(),
-        config,
+        config: Arc::new(config),
         permissions_config,
         timeouts,
         openai_options,

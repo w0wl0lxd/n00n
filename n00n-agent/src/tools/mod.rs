@@ -90,7 +90,7 @@ impl ToolFilter {
     }
 
     #[must_use]
-    pub fn from_config(config: &Arc<AgentConfig>, model: &Model, extra_exclude: &[&str]) -> Self {
+    pub fn from_config(config: &AgentConfig, model: &Model, extra_exclude: &[&str]) -> Self {
         let base = if config.allowed_tools.is_empty() {
             Self::All
         } else {
@@ -460,7 +460,7 @@ fn fallback_model() -> Model {
 
 /// Context for code execution tools.
 pub fn interpreter_ctx(
-    mode: &Arc<AgentMode>,
+    mode: &AgentMode,
     event_tx: &EventSender,
     cancel: CancelToken,
     permissions: Arc<PermissionManager>,
@@ -479,7 +479,7 @@ pub fn interpreter_ctx(
         provider: Arc::clone(&PROVIDER),
         model,
         event_tx: event_tx.clone(),
-        mode: Arc::clone(mode),
+        mode: Arc::new(mode.clone()),
         tool_use_id: None,
         user_response_rx,
         loaded_instructions: LoadedInstructions::new(),
@@ -510,7 +510,7 @@ pub fn cli_tool_ctx() -> ToolContext {
     let (tx, _rx) = flume::unbounded::<crate::Envelope>();
     let event_tx = crate::EventSender::new(tx, 0);
     interpreter_ctx(
-        &Arc::new(AgentMode::Build),
+        &AgentMode::Build,
         &event_tx,
         CancelToken::none(),
         Arc::new(PermissionManager::new(
@@ -589,7 +589,7 @@ pub mod test_support {
     });
 
     pub fn stub_ctx_with(
-        mode: &Arc<AgentMode>,
+        mode: &AgentMode,
         event_tx: Option<&EventSender>,
         tool_use_id: Option<&str>,
     ) -> ToolContext {
@@ -614,13 +614,13 @@ pub mod test_support {
     }
 
     #[must_use]
-    pub fn stub_ctx(mode: &Arc<AgentMode>) -> ToolContext {
+    pub fn stub_ctx(mode: &AgentMode) -> ToolContext {
         stub_ctx_with(mode, None, None)
     }
 
     #[cfg(test)]
     pub(crate) fn stub_ctx_with_permissions(
-        mode: &Arc<AgentMode>,
+        mode: &AgentMode,
         permissions: Arc<PermissionManager>,
     ) -> ToolContext {
         let (tx, _rx) = flume::unbounded::<crate::Envelope>();
@@ -655,7 +655,7 @@ mod tests {
     fn from_config_gates_view_image_on_vision(vision: bool) {
         let mut model = Model::from_spec("anthropic/claude-opus-4-8").unwrap();
         model.supports_vision_override = Some(vision);
-        let filter = ToolFilter::from_config(&Arc::new(AgentConfig::default()), &model, &[]);
+        let filter = ToolFilter::from_config(&AgentConfig::default(), &model, &[]);
         assert_eq!(filter.matches(VIEW_IMAGE_TOOL_NAME), vision);
         assert!(
             filter.matches(READ_TOOL_NAME),
