@@ -175,8 +175,11 @@ mod tests {
     #[test]
     fn resolve_client_returns_error_when_no_lock_and_no_default() -> Result<(), String> {
         let tmp = TempDir::new().map_err(|e| e.to_string())?;
-        assert!(resolve_client(tmp.path()).is_err());
-        Ok(())
+        match resolve_client(tmp.path()) {
+            Err(crate::error::ControlError::Unavailable(_)) => Ok(()),
+            Err(e) => Err(format!("expected Unavailable, got: {e}")),
+            Ok(_) => Err("expected error".into()),
+        }
     }
 
     #[test]

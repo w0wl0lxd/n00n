@@ -964,7 +964,8 @@ impl<'h> Agent<'h> {
             self.system.push_dynamic(append);
         }
         self.supports_tool_examples = self.model.supports_tool_examples();
-        self.tool_filter = ToolFilter::from_config(&self.config, &self.model, &[]);
+        let model_filter = ToolFilter::from_config(&self.config, &self.model, &[]);
+        self.tool_filter = std::mem::take(&mut self.tool_filter).intersect(&model_filter);
         self.rebuild_tools();
     }
 
