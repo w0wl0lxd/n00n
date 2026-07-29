@@ -90,7 +90,7 @@ impl ToolFilter {
     }
 
     #[must_use]
-    pub fn from_config(config: &AgentConfig, model: &Model, extra_exclude: &[&str]) -> Self {
+    pub fn from_config(config: &Arc<AgentConfig>, model: &Model, extra_exclude: &[&str]) -> Self {
         let base = if config.allowed_tools.is_empty() {
             Self::All
         } else {
@@ -215,14 +215,14 @@ pub struct ToolContext {
     pub provider: Arc<dyn Provider>,
     pub model: Arc<Model>,
     pub event_tx: EventSender,
-    pub mode: AgentMode,
+    pub mode: Arc<AgentMode>,
     pub tool_use_id: Option<String>,
     pub user_response_rx: Option<Arc<async_lock::Mutex<flume::Receiver<String>>>>,
     pub loaded_instructions: LoadedInstructions,
     pub cancel: CancelToken,
     pub mcp: Option<McpSession>,
     pub deadline: Deadline,
-    pub config: AgentConfig,
+    pub config: Arc<AgentConfig>,
     pub tool_output_lines: ToolOutputLines,
     pub permissions: Arc<PermissionManager>,
     pub timeouts: n00n_providers::Timeouts,
@@ -460,7 +460,7 @@ fn fallback_model() -> Model {
 
 /// Context for code execution tools.
 pub fn interpreter_ctx(
-    mode: &AgentMode,
+    mode: &Arc<AgentMode>,
     event_tx: &EventSender,
     cancel: CancelToken,
     permissions: Arc<PermissionManager>,
@@ -479,14 +479,14 @@ pub fn interpreter_ctx(
         provider: Arc::clone(&PROVIDER),
         model,
         event_tx: event_tx.clone(),
-        mode: mode.clone(),
+        mode: Arc::clone(mode),
         tool_use_id: None,
         user_response_rx,
         loaded_instructions: LoadedInstructions::new(),
         cancel,
         mcp: None,
         deadline: Deadline::None,
-        config: AgentConfig::default(),
+        config: Arc::new(AgentConfig::default()),
         tool_output_lines: ToolOutputLines::default(),
         permissions,
         timeouts: n00n_providers::Timeouts::default(),
@@ -510,7 +510,7 @@ pub fn cli_tool_ctx() -> ToolContext {
     let (tx, _rx) = flume::unbounded::<crate::Envelope>();
     let event_tx = crate::EventSender::new(tx, 0);
     interpreter_ctx(
-        &AgentMode::Build,
+        &Arc::new(AgentMode::Build),
         &event_tx,
         CancelToken::none(),
         Arc::new(PermissionManager::new(
@@ -589,7 +589,7 @@ pub mod test_support {
     });
 
     pub fn stub_ctx_with(
-        mode: &AgentMode,
+        mode: &Arc<AgentMode>,
         event_tx: Option<&EventSender>,
         tool_use_id: Option<&str>,
     ) -> ToolContext {
@@ -614,13 +614,13 @@ pub mod test_support {
     }
 
     #[must_use]
-    pub fn stub_ctx(mode: &AgentMode) -> ToolContext {
+    pub fn stub_ctx(mode: &Arc<AgentMode>) -> ToolContext {
         stub_ctx_with(mode, None, None)
     }
 
     #[cfg(test)]
     pub(crate) fn stub_ctx_with_permissions(
-        mode: &AgentMode,
+        mode: &Arc<AgentMode>,
         permissions: Arc<PermissionManager>,
     ) -> ToolContext {
         let (tx, _rx) = flume::unbounded::<crate::Envelope>();
@@ -655,7 +655,7 @@ mod tests {
     fn from_config_gates_view_image_on_vision(vision: bool) {
         let mut model = Model::from_spec("anthropic/claude-opus-4-8").unwrap();
         model.supports_vision_override = Some(vision);
-        let filter = ToolFilter::from_config(&AgentConfig::default(), &model, &[]);
+        let filter = ToolFilter::from_config(&Arc::new(AgentConfig::default()), &model, &[]);
         assert_eq!(filter.matches(VIEW_IMAGE_TOOL_NAME), vision);
         assert!(
             filter.matches(READ_TOOL_NAME),
