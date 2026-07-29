@@ -222,6 +222,13 @@ n00n.setup({
 | `max_line_bytes` | integer | `500` | 80 | Truncate lines longer than this many bytes. |
 | `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
 
+### `plugins.semblem`
+
+| Field | Type | Default | Min | Description |
+|-------|------|---------|-----|-------------|
+| `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool. |
+| `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
+
 ### `plugins.skill`
 
 | Field | Type | Default | Min | Description |

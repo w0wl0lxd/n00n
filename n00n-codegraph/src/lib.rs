@@ -2,6 +2,8 @@
 #![allow(clippy::new_without_default)]
 #![allow(clippy::must_use_candidate)]
 
+mod db;
+
 use std::io::{Error, Read};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -42,6 +44,10 @@ impl Client {
         project.join(".codegraph").is_dir()
     }
 
+    pub fn has_database(project: &Path) -> bool {
+        db::has_database(project)
+    }
+
     pub fn explore(
         query: &str,
         project: &Path,
@@ -58,6 +64,18 @@ impl Client {
             });
         }
 
+        if Self::has_database(project) {
+            return db::explore_database(query, project);
+        }
+
+        Self::explore_cli(query, project, timeout_secs)
+    }
+
+    fn explore_cli(
+        query: &str,
+        project: &Path,
+        timeout_secs: Option<u64>,
+    ) -> Result<String, CodegraphError> {
         let timeout_secs = match timeout_secs {
             Some(value) => value,
             None => DEFAULT_TIMEOUT_SECS,
@@ -152,6 +170,9 @@ pub enum CodegraphError {
 
     #[error("codegraph CLI error: {message}")]
     Cli { message: String },
+
+    #[error("codegraph database error: {source}")]
+    Sqlite { source: rusqlite::Error },
 }
 
 #[cfg(test)]

@@ -28,6 +28,7 @@ const BATCH_SRC: &str = include_str!("../../plugins/batch/init.lua");
 const CODEGRAPH_SRC: &str = include_str!("../../plugins/codegraph/init.lua");
 const EXPLORE_SRC: &str = include_str!("../../plugins/explore/init.lua");
 const GREP_SRC: &str = include_str!("../../plugins/grep/init.lua");
+const SEMBLEM_SRC: &str = include_str!("../../plugins/semblem/init.lua");
 const WORKFLOW_SRC: &str = include_str!("../../plugins/workflow/init.lua");
 
 /// Only the real `ToolView` emits this when collapsed.
@@ -83,6 +84,7 @@ fn load_host() -> PluginHost {
     host.load_source("codegraph", CODEGRAPH_SRC).unwrap();
     host.load_source("explore", EXPLORE_SRC).unwrap();
     host.load_source("grep", GREP_SRC).unwrap();
+    host.load_source("semblem", SEMBLEM_SRC).unwrap();
     host
 }
 
@@ -228,6 +230,13 @@ fn restore(
     "callers restore_item",
     "/tmp/project";
     "arbor"
+)]
+#[test_case::test_case(
+    "semblem",
+    json!({ "command": "search", "query": "session restore", "repo": "/tmp/project" }),
+    "session restore",
+    "/tmp/project";
+    "semblem"
 )]
 fn explore_restore_uses_shared_three_line_clickable_card(
     tool: &str,
