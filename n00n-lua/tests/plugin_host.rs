@@ -5164,16 +5164,6 @@ fn skill_tool_applies_paths_filter_for_list_and_load() {
     );
 }
 
-struct SkillDirGuard {
-    path: std::path::PathBuf,
-}
-
-impl Drop for SkillDirGuard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
 fn write_skill(dir: &std::path::Path, name: &str, body: &str) {
     std::fs::create_dir_all(dir).expect("create skill dir");
     std::fs::write(
@@ -5195,11 +5185,11 @@ fn skill_tool_reports_duplicate_name_conflicts() {
         .join(".agents")
         .join("skills")
         .join("conflict-test-agents");
-    let _n00n_guard = SkillDirGuard {
-        path: n00n_root.clone(),
+    let _n00n_guard = SkillFixtureGuard {
+        root: n00n_root.clone(),
     };
-    let _agents_guard = SkillDirGuard {
-        path: agents_root.clone(),
+    let _agents_guard = SkillFixtureGuard {
+        root: agents_root.clone(),
     };
 
     write_skill(&n00n_root.join("dup-skill"), "dup-skill", "from n00n");
@@ -5266,7 +5256,7 @@ fn skill_tool_discovery_cache_hits_until_skill_changes() {
 
     std::fs::write(
         skill_dir.join("SKILL.md"),
-        "---\nname: cache-skill-test\ndescription: test\n---\nversion two is much longer content",
+        "---\nname: cache-skill-test\ndescription: test\n---\nversion two changed content",
     )
     .expect("rewrite skill");
 

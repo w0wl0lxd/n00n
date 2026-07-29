@@ -44,7 +44,7 @@ local function infer_skill_name(skill_dir, root_dir)
       relative = skill_dir:sub(offset)
     end
   end
-  return relative:gsub("[/\\]", ":")
+  return (relative:gsub("[/\\]", ":"))
 end
 
 local discovery_cache = {
@@ -54,7 +54,26 @@ local discovery_cache = {
   stats = nil,
 }
 
-local function scan_skill_dir(dir, root_dir, scope_root, skills, conflicts)
+local function scan_skill_dir(dir, root_dir, scope_root, skills, conflicts, visited, depth)
+  visited = visited or {}
+  depth = depth or 0
+  local max_depth = 32
+
+  if depth > max_depth then
+    return
+  end
+
+  local meta = n00n.fs.metadata(dir)
+  if not meta then
+    return
+  end
+
+  local canonical = dir
+  if visited[canonical] then
+    return
+  end
+  visited[canonical] = true
+
   local entries = n00n.fs.dir(dir)
   if not entries then
     return
@@ -90,7 +109,7 @@ local function scan_skill_dir(dir, root_dir, scope_root, skills, conflicts)
   for _, entry in ipairs(entries) do
     if entry[2] == "directory" then
       local child = n00n.fs.joinpath(dir, entry[1])
-      scan_skill_dir(child, root_dir, scope_root, skills, conflicts)
+      scan_skill_dir(child, root_dir, scope_root, skills, conflicts, visited, depth + 1)
     end
   end
 end
@@ -148,28 +167,29 @@ local function collect_skill_roots()
 
   local config = n00n.env.config_dir()
   if config then
-    roots[#roots + 1] = n00n.fs.joinpath(config, "skills")
+    roots[#roots + 1] = { root = n00n.fs.joinpath(config, "skills"), scope_root = config }
   end
 
   local home = n00n.uv.os_homedir()
   if home then
     for _, rel in ipairs(GLOBAL_SKILL_DIRS) do
-      roots[#roots + 1] = n00n.fs.joinpath(home, rel)
+      roots[#roots + 1] = { root = n00n.fs.joinpath(home, rel), scope_root = home }
     end
   end
 
   for _, ancestor in ipairs(find_project_ancestors()) do
     for _, rel in ipairs(PROJECT_SKILL_DIRS) do
-      roots[#roots + 1] = n00n.fs.joinpath(ancestor, rel)
+      roots[#roots + 1] = { root = n00n.fs.joinpath(ancestor, rel), scope_root = ancestor }
     end
   end
 
   return roots
 end
 
-local function discover_skills_uncached()
+local function discover_skills_uncached(roots)
   local skills = {}
   local conflicts = {}
+  local visited = {}
 
   if builtin and opts.plugin_dev then
     skills[builtin.name] = {
@@ -184,25 +204,8 @@ local function discover_skills_uncached()
     }
   end
 
-  local config = n00n.env.config_dir()
-  if config then
-    local root = n00n.fs.joinpath(config, "skills")
-    scan_skill_dir(root, root, config, skills, conflicts)
-  end
-
-  local home = n00n.uv.os_homedir()
-  if home then
-    for _, rel in ipairs(GLOBAL_SKILL_DIRS) do
-      local root = n00n.fs.joinpath(home, rel)
-      scan_skill_dir(root, root, home, skills, conflicts)
-    end
-  end
-
-  for _, ancestor in ipairs(find_project_ancestors()) do
-    for _, rel in ipairs(PROJECT_SKILL_DIRS) do
-      local root = n00n.fs.joinpath(ancestor, rel)
-      scan_skill_dir(root, root, ancestor, skills, conflicts)
-    end
+  for _, entry in ipairs(roots) do
+    scan_skill_dir(entry.root, entry.root, entry.scope_root, skills, conflicts, visited, 0)
   end
 
   return skills, conflicts
@@ -228,7 +231,7 @@ local function discover_skills()
     return discovery_cache.skills, discovery_cache.conflicts or {}, discovery_cache.stats
   end
 
-  local skills, conflicts = discover_skills_uncached()
+  local skills, conflicts = discover_skills_uncached(roots)
   local skill_count = 0
   for _ in pairs(skills) do
     skill_count = skill_count + 1
@@ -249,12 +252,12 @@ local function normalize_path(path)
   if not path or #path == 0 then
     return nil
   end
-  local p = path:gsub("\\", "/")
+  local p = (path:gsub("\\", "/"))
   if p:match("^/") or p:match("^%a:[/]") then
     return p
   end
-  local cwd = (n00n.uv.cwd() or "."):gsub("\\", "/")
-  return n00n.fs.joinpath(cwd, p):gsub("\\", "/")
+  local cwd = ((n00n.uv.cwd() or "."):gsub("\\", "/"))
+  return (n00n.fs.joinpath(cwd, p):gsub("\\", "/"))
 end
 
 local function path_in_scope(skill, focus_path)
@@ -434,9 +437,8 @@ n00n.api.register_tool({
       if input.include_stats then
         output = output .. build_skill_stats(stats)
       end
-      local telemetry_path = nil
       if input.include_telemetry == true then
-        telemetry_path = skill_telemetry.append("list", nil, {
+        local telemetry_path = skill_telemetry.append("list", nil, {
           skill_count = stats.skill_count,
           ranked = ranked ~= nil,
           graph_rank = input.graph_rank == true,

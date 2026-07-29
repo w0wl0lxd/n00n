@@ -395,11 +395,28 @@ async fn metadata(lua: Lua, path: String) -> LuaResult<(Value, Value)> {
             tbl.set("size", meta.len())?;
             tbl.set("is_file", meta.is_file())?;
             tbl.set("is_dir", meta.is_dir())?;
-            if let Ok(modified) = meta.modified()
-                && let Ok(duration) = modified.duration_since(UNIX_EPOCH)
-            {
-                tbl.set("mtime", duration.as_secs())?;
-            }
+            let mtime = match meta.modified() {
+                Ok(modified) => match modified.duration_since(UNIX_EPOCH) {
+                    Ok(duration) => duration.as_nanos(),
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %abs.display(),
+                            error = %e,
+                            "Failed to compute mtime duration since epoch, using fallback"
+                        );
+                        0u128
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        path = %abs.display(),
+                        error = %e,
+                        "Failed to get mtime, using fallback"
+                    );
+                    0u128
+                }
+            };
+            tbl.set("mtime", mtime)?;
             Ok((Value::Table(tbl), Value::Nil))
         }
         Err(e) if e.kind() == ErrorKind::NotFound => Ok((Value::Nil, Value::Nil)),

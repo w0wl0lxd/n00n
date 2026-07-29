@@ -1883,10 +1883,10 @@ mod tests {
             )
             .await
             .expect("process batch");
+            assert_eq!(results[0].id, "t-bash", "first result must be for t-bash");
             assert_eq!(
-                results.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
-                vec!["t-bash", "t-skill"],
-                "results must keep original tool-use order"
+                results[1].id, "t-skill",
+                "second result must be for t-skill"
             );
 
             let bash_result = results
