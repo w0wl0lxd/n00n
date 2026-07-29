@@ -452,7 +452,11 @@ async fn run_text_turn_mode_tokio(
         conversation_id: &conversation_id,
         message_id: &message_id,
         mode,
-    });
+    })
+    .map_err(|message| AgentError::Api {
+        status: 500,
+        message,
+    })?;
 
     if let Ok(mut dumps) = STALL_DUMP.lock() {
         dumps.clear();
@@ -786,6 +790,7 @@ fn queue_checkpoint_reply(
                 status: 500,
                 message,
             })?
+        }
     };
     let mut queue = outbound.lock().map_err(|_| AgentError::Api {
         status: 500,
@@ -866,7 +871,7 @@ mod tests {
     #[test]
     fn paced_body_flushes_outbound_during_pace_wait() {
         smol::block_on(async {
-            let frame = encode_frame(0, b"a");
+            let frame = encode_frame(0, b"a").expect("frame");
             let (outbound, notify_rx) = new_outbound_queue();
             let (mut body, _enqueued, _sent) =
                 spawn_paced_body(vec![frame.clone()], Arc::clone(&outbound), notify_rx);
@@ -875,7 +880,7 @@ mod tests {
                 .await
                 .expect("frame");
             assert_eq!(got, frame);
-            let reply = encode_frame(0, b"kv");
+            let reply = encode_frame(0, b"kv").expect("reply");
             outbound.lock().expect("lock").push(reply.clone());
             let mut got_reply = vec![0u8; reply.len()];
             AsyncReadExt::read_exact(&mut body, &mut got_reply)
@@ -888,7 +893,7 @@ mod tests {
     #[test]
     fn paced_body_paces_heartbeats() {
         smol::block_on(async {
-            let frame = encode_frame(0, b"a");
+            let frame = encode_frame(0, b"a").expect("frame");
             let (outbound, notify_rx) = new_outbound_queue();
             let (mut body, _enqueued, _sent) =
                 spawn_paced_body(vec![frame.clone()], Arc::clone(&outbound), notify_rx);
