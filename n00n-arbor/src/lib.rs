@@ -2,10 +2,21 @@
 #![allow(clippy::new_without_default)]
 #![allow(clippy::must_use_candidate)]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde::{Deserialize, Serialize};
+
+mod graph_json;
+mod graph_query;
+mod index_health;
+
+pub use graph_json::{GraphIndex, GraphNode, SymbolQuery, SymbolRef};
+pub use graph_query::{graph_callees, graph_callers, graph_index_available, graph_trace_path};
+pub use index_health::{
+    ensure_fresh_index, graph_index_available as graph_file_available, graph_json_path,
+    graph_modified_at, status_is_stale, status_needs_index,
+};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Relation {
@@ -211,23 +222,73 @@ impl Client {
 
     pub fn ensure_indexed(project: &Path) -> Result<(), ArborError> {
         let output = Command::new("arbor")
-            .arg("index")
+            .arg("status")
             .arg(project.as_os_str())
             .output()
             .map_err(|e| ArborError::Exec { source: e })?;
 
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(ArborError::Cli {
-                message: format!("index failed: {}", String::from_utf8_lossy(&output.stderr)),
-            })
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(ArborError::Cli {
+                message: format!("status failed: {stderr}"),
+            });
         }
+
+        let status = String::from_utf8_lossy(&output.stdout);
+        if index_health::status_needs_index(&status) {
+            let output = Command::new("arbor")
+                .arg("index")
+                .arg(project.as_os_str())
+                .output()
+                .map_err(|e| ArborError::Exec { source: e })?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(ArborError::Cli {
+                    message: format!("index failed: {stderr}"),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    pub fn graph_json_path(project: &Path) -> PathBuf {
+        index_health::graph_json_path(project)
+    }
+
+    pub fn reindex(project: &Path) -> Result<(), ArborError> {
+        let output = Command::new("arbor")
+            .arg("index")
+            .arg(project.as_os_str())
+            .output()
+            .map_err(|source| ArborError::Exec { source })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(ArborError::Cli {
+                message: format!("index failed: {stderr}"),
+            });
+        }
+        Ok(())
+    }
+
+    pub fn load_graph_index(project: &Path) -> Result<GraphIndex, ArborError> {
+        index_health::ensure_fresh_index(project)?;
+        let graph_path = Self::graph_json_path(project);
+        if !graph_path.is_file() {
+            return Err(ArborError::Cli {
+                message: format!("missing Arbor graph file: {}", graph_path.display()),
+            });
+        }
+        GraphIndex::from_graph_json_path(&graph_path)
     }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum ArborError {
+    #[error("I/O error: {source}")]
+    Io { source: std::io::Error },
+
     #[error("I/O error executing arbor: {source}")]
     Exec { source: std::io::Error },
 
