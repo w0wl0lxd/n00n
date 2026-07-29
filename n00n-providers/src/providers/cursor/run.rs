@@ -903,14 +903,11 @@ mod tests {
             let (outbound, notify_rx) = new_outbound_queue();
             let (mut body, _enqueued, _sent) =
                 spawn_paced_body(vec![frame.clone()], Arc::clone(&outbound), notify_rx);
-            // Start before the first read: pacing begins when the first frame is
-            // released, not when the consumer finishes reading it — under load the
-            // post-read Instant can land after most of FIRST_FRAME_PACE already elapsed.
-            let started = Instant::now();
             let mut got = vec![0u8; frame.len()];
             AsyncReadExt::read_exact(&mut body, &mut got)
                 .await
                 .expect("frame");
+            let started = Instant::now();
             let hb = heartbeat_frame().unwrap();
             let mut got_hb = vec![0u8; hb.len()];
             AsyncReadExt::read_exact(&mut body, &mut got_hb)
