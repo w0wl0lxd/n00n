@@ -6,10 +6,8 @@ import csv
 import json
 import subprocess
 import sys
-
 from datetime import datetime, timezone
 from pathlib import Path
-
 
 AGENTS = ("n00n", "claude-code", "opencode")
 
