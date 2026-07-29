@@ -217,6 +217,23 @@ impl System {
         self.push(SystemBlock::new(text, CacheControl::Dynamic));
     }
 
+    /// Replace the text of the most recently pushed dynamic block, if any.
+    ///
+    /// Returns `true` when a dynamic block was updated.
+    pub fn replace_last_dynamic(&mut self, text: impl Into<String>) -> bool {
+        if let Some(block) = self
+            .blocks
+            .iter_mut()
+            .rev()
+            .find(|block| block.cache == CacheControl::Dynamic)
+        {
+            block.text = text.into();
+            true
+        } else {
+            false
+        }
+    }
+
     /// Mark the static prefix as cacheable when no dynamic content has been
     /// added. This is a no-op after a dynamic block because caching a later
     /// static block would also cache the dynamic prefix.
