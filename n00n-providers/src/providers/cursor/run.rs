@@ -45,6 +45,7 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const FIRST_FRAME_PACE: Duration = Duration::from_millis(1500);
 const SECOND_FRAME_PACE: Duration = Duration::from_millis(800);
 const MARKER_FRAME_PACE: Duration = Duration::from_millis(400);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const FIRST_BYTE_TIMEOUT: Duration = Duration::from_mins(1);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(4);
 const CLIENT_VERSION_ENV: &str = "N00N_CURSOR_CLIENT_VERSION";
@@ -294,7 +295,7 @@ fn cursor_wire_id() -> String {
 
 fn http2_client() -> Result<reqwest::Client, AgentError> {
     reqwest::Client::builder()
-        .timeout(FIRST_BYTE_TIMEOUT + IDLE_TIMEOUT + Duration::from_mins(2))
+        .connect_timeout(CONNECT_TIMEOUT)
         .build()
         .map_err(|error| AgentError::Config {
             message: format!("cursor run http2 client: {error}"),
@@ -520,7 +521,12 @@ async fn run_text_turn_mode_tokio(
     let mut bytes = response.bytes_stream();
 
     loop {
-        if !got_output && started.elapsed() > FIRST_BYTE_TIMEOUT {
+        let pre_output_elapsed = if got_any_data {
+            last_data.elapsed()
+        } else {
+            started.elapsed()
+        };
+        if !got_output && pre_output_elapsed > FIRST_BYTE_TIMEOUT {
             if let Ok(dumps) = STALL_DUMP.lock() {
                 let mut blob = Vec::new();
                 for payload in dumps.iter() {
@@ -556,7 +562,7 @@ async fn run_text_turn_mode_tokio(
                 Some(_) | None => MIN_READ_BUDGET,
             }
         } else {
-            match FIRST_BYTE_TIMEOUT.checked_sub(started.elapsed()) {
+            match FIRST_BYTE_TIMEOUT.checked_sub(pre_output_elapsed) {
                 Some(remaining) if !remaining.is_zero() => remaining,
                 Some(_) | None => MIN_READ_BUDGET,
             }
