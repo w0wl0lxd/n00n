@@ -4,20 +4,20 @@
   "surfaces": {
     "cache_prefix": {
       "name": "cache_prefix",
-      "bytes": 14677,
-      "tokens": 3601
+      "bytes": 16181,
+      "tokens": 3977
     },
     "main_tools_payload": {
       "name": "main_tools_payload",
       "tool_count": 28,
-      "bytes": 21067,
-      "tokens": 5266
+      "bytes": 22804,
+      "tokens": 5701
     },
     "main_tools_schemas": {
       "name": "main_tools_schemas",
       "tool_count": 28,
-      "bytes": 12158,
-      "tokens": 3039
+      "bytes": 13662,
+      "tokens": 3415
     },
     "system_prompt": {
       "name": "system_prompt",
