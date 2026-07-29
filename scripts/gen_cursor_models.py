@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Generate n00n-providers/src/providers/cursor_models.rs from cursor-agent --list-models.
 
 Usage:
@@ -102,7 +101,7 @@ def main():
         # Skip the tip/header line if it ever matches.
         if not model_id.replace("-", "").replace(".", "").replace("_", "").isalnum():
             continue
-        base, (inp, out, tier, ctx, max_out) = classify(model_id)
+        _base, (inp, out, tier, ctx, max_out) = classify(model_id)
         is_default = any(model_id == v for v in DEFAULTS.values())
         entries.append((model_id, inp, out, tier, ctx, max_out, is_default))
 
