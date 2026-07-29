@@ -221,6 +221,14 @@ All fields are optional. Typos in field names cause an error right away.
     write_theme_section(&mut out);
     write_tool_output_section(&mut out);
     write_section(&mut out, "[agent]", AgentConfig::FIELDS);
+
+    out.push_str("### `agent.fusion`\n\n");
+    out.push_str("| Field | Type | Default | Description |\n");
+    out.push_str("|-------|------|---------|-------------|\n");
+    out.push_str("| `enabled` | bool | `false` | Enable Fusion dual-lane routing (lead + sidekick) for this session |\n");
+    out.push_str("| `sidekick_tier` | string | - | Model tier for the sidekick lane (e.g. \"haiku\", \"sonnet\", \"opus\") |\n");
+    out.push('\n');
+
     write_section(&mut out, "[provider]", ProviderConfig::FIELDS);
     write_section(&mut out, "[storage]", StorageConfig::FIELDS);
 
