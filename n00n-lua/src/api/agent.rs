@@ -672,7 +672,7 @@ async fn session(
         params: AgentParams {
             provider,
             model,
-            config: agent_ctx.config.clone(),
+            config: Arc::clone(&agent_ctx.config),
             tool_output_lines: n00n_config::ToolOutputLines::default(),
             permissions: Arc::clone(&agent_ctx.permissions),
             session_id: Some(session_id.into()),
@@ -689,7 +689,7 @@ async fn session(
         tool_filter,
         thinking,
         fast,
-        mode: agent_ctx.mode.clone(),
+        mode: (*agent_ctx.mode).clone(),
         mcp: agent_ctx.mcp.clone(),
         history: History::new(Vec::new()),
         sub_event_tx,
