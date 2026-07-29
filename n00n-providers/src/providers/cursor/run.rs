@@ -47,7 +47,7 @@ const SECOND_FRAME_PACE: Duration = Duration::from_millis(800);
 const MARKER_FRAME_PACE: Duration = Duration::from_millis(400);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const FIRST_BYTE_TIMEOUT: Duration = Duration::from_mins(1);
-const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const IDLE_TIMEOUT: Duration = Duration::from_mins(1);
 const CLIENT_VERSION_ENV: &str = "N00N_CURSOR_CLIENT_VERSION";
 const CHECKPOINT_LOCK_POISONED: &str = "cursor checkpoint store lock poisoned";
 const OUTBOUND_LOCK_POISONED: &str = "cursor run outbound lock poisoned";
@@ -182,7 +182,10 @@ fn spawn_paced_body(
             if flush_outbound(&tx, &outbound, &enqueued).await.is_err() {
                 return;
             }
-            if tx.send_async(heartbeat_frame()).await.is_err() {
+            let Ok(hb) = heartbeat_frame() else {
+                return;
+            };
+            if tx.send_async(hb).await.is_err() {
                 return;
             }
             enqueued.fetch_add(1, Ordering::Relaxed);
@@ -365,7 +368,10 @@ fn spawn_paced_reqwest_body(
             }
             tokio::select! {
                 _ = ticker.tick() => {
-                    if tx.send(Ok(Bytes::from(heartbeat_frame()))).await.is_err() {
+                    let Ok(hb) = heartbeat_frame() else {
+                        return;
+                    };
+                    if tx.send(Ok(Bytes::from(hb))).await.is_err() {
                         return;
                     }
                     enqueued.fetch_add(1, Ordering::Relaxed);
@@ -902,7 +908,7 @@ mod tests {
                 .await
                 .expect("frame");
             let started = Instant::now();
-            let hb = heartbeat_frame();
+            let hb = heartbeat_frame().unwrap();
             let mut got_hb = vec![0u8; hb.len()];
             AsyncReadExt::read_exact(&mut body, &mut got_hb)
                 .await

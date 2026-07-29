@@ -61,7 +61,6 @@ impl FrameBuffer {
     }
 }
 
-#[must_use]
 pub(crate) fn encode_frame(flags: u8, payload: &[u8]) -> Result<Vec<u8>, String> {
     if payload.len() > MAX_CONNECT_FRAME_LEN {
         return Err(format!(
