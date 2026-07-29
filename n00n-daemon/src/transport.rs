@@ -167,8 +167,15 @@ mod tests {
     fn resolve_client_falls_back_to_default_when_lock_missing() -> Result<(), String> {
         let tmp = TempDir::new().map_err(|e| e.to_string())?;
         let ep = resolve_client(tmp.path()).map_err(|e| e.to_string())?;
-        #[cfg(unix)]
         assert_eq!(ep, Endpoint::Uds(tmp.path().join("daemon.sock")));
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn resolve_client_returns_error_when_no_lock_and_no_default() -> Result<(), String> {
+        let tmp = TempDir::new().map_err(|e| e.to_string())?;
+        assert!(resolve_client(tmp.path()).is_err());
         Ok(())
     }
 
