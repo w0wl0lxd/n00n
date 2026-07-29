@@ -1,1 +1,0 @@
-Reduced the `skill` tool definition size by moving skill enumeration behind a `list` parameter, and added tiktoken-based token accounting for messages and tool definitions to the agent context window.

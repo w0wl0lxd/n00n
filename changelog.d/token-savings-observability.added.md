@@ -1,1 +1,0 @@
-Added privacy-safe task and team telemetry with conserved cache-aware token usage and per-model cost accumulation across supervisors, roles, quorum validators, swarms, compaction, and charged failures.
