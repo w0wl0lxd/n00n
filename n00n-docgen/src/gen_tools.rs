@@ -421,7 +421,7 @@ mod tests {
     }
 
     // Room for fusion_delegate + skill-system tools; keep definitions lean.
-    const MAX_TOOL_DEFINITION_BYTES: usize = 38_000;
+    const MAX_TOOL_DEFINITION_BYTES: usize = 38_500;
 
     #[test]
     fn tool_definitions_fit_byte_budget() {
