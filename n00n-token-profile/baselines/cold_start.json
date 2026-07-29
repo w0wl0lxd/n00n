@@ -10,8 +10,8 @@
     "main_tools_payload": {
       "name": "main_tools_payload",
       "tool_count": 29,
-      "bytes": 24903,
-      "tokens": 6225
+      "bytes": 24865,
+      "tokens": 6216
     },
     "main_tools_schemas": {
       "name": "main_tools_schemas",
