@@ -73,7 +73,7 @@ impl SessionStore {
 
 pub struct HeadlessParams {
     pub model: Model,
-    pub config: AgentConfig,
+    pub config: Arc<AgentConfig>,
     pub permissions_config: PermissionsConfig,
     pub timeouts: Timeouts,
     pub openai_options: OpenAiOptions,
@@ -104,7 +104,7 @@ struct AgentSetup {
 
 fn setup(
     model: &Model,
-    config: &AgentConfig,
+    config: &Arc<AgentConfig>,
     excluded_tools: &[&'static str],
     workflow: bool,
 ) -> AgentSetup {
@@ -130,7 +130,7 @@ fn setup(
 fn tool_definitions(
     vars: &template::Vars,
     model: &Model,
-    config: &AgentConfig,
+    config: &Arc<AgentConfig>,
     excluded_tools: &[&'static str],
     workflow: bool,
     registry: &ToolRegistry,
@@ -275,7 +275,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
 
 pub struct InteractiveParams {
     pub model: Model,
-    pub config: AgentConfig,
+    pub config: Arc<AgentConfig>,
     pub permissions_config: PermissionsConfig,
     pub timeouts: Timeouts,
     pub openai_options: OpenAiOptions,
@@ -417,7 +417,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                     AgentParams {
                         provider: Arc::clone(&provider),
                         model: model.clone(),
-                        config: params.config.clone(),
+                        config: Arc::clone(&params.config),
                         tool_output_lines: ToolOutputLines::default(),
                         permissions: Arc::clone(&permissions),
                         session_id: Some(session_ref_clone.clone()),
