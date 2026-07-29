@@ -16,5 +16,5 @@
 
 - JSONL telemetry
 - Compaction hooks / auto-recall
-- Optional semblem/embedding search adapter
+- Optional semantic/embedding search adapter
 - Append file locking for multi-agent races

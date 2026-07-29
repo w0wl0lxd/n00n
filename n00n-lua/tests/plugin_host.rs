@@ -5115,6 +5115,23 @@ fn memory_tool_append_preserves_frontmatter() {
     .expect("view memory");
     assert!(view.contains("line one"), "original body preserved: {view}");
     assert!(view.contains("line two"), "appended body present: {view}");
+    let search = exec_tool(
+        &reg,
+        "memory",
+        serde_json::json!({
+            "command": "search",
+            "query": "line"
+        }),
+    )
+    .expect("search memory");
+    assert!(
+        search.contains("topic=notes"),
+        "append must preserve topic frontmatter: {search}"
+    );
+    assert!(
+        search.contains("notes.md"),
+        "search should still find appended memory: {search}"
+    );
 }
 
 #[test]

@@ -30,14 +30,7 @@ local function parse_tag_filter(tags)
   if type(tags) ~= "string" or tags == "" then
     return nil
   end
-  local normalized = {}
-  for token in tags:gmatch("([^,]+)") do
-    local trimmed = token:match("^%s*(.-)%s*$")
-    if trimmed ~= "" then
-      normalized[#normalized + 1] = trimmed
-    end
-  end
-  return (#normalized > 0) and normalized or nil
+  return helpers.normalize_string_list(tags)
 end
 
 local function filter_entries(entries, tag_filter)
@@ -126,9 +119,12 @@ local function cmd_view(path, query, focus_path, dir, ctx)
   end
   local content, read_err = n00n.fs.read(file_path)
   if not content then
-    return nil, "read error: " .. read_err
+    return nil, "read error: " .. tostring(read_err)
   end
-  local entry = helpers.parse_memory_file(path, content)
+  local entry, parse_err = helpers.parse_memory_file(path, content)
+  if not entry then
+    return nil, parse_err
+  end
   return {
     llm_output = entry.body,
     body = render_content(entry.body, path, ctx),
@@ -168,7 +164,10 @@ local function cmd_write(path, content, metadata, dir, ctx, input)
     if not text then
       return nil, "read error: " .. tostring(read_err)
     end
-    local existing_fm = helpers.parse_frontmatter(text)
+    local existing_fm, parse_err = helpers.parse_frontmatter(text)
+    if not existing_fm then
+      return nil, parse_err
+    end
     metadata = merge_metadata(existing_fm, metadata, input)
   end
   local payload, fm_err = build_frontmatter(metadata, content)
@@ -231,6 +230,9 @@ local function cmd_append(path, content, dir, ctx)
     return nil, "write error: " .. tostring(write_err)
   end
   local entry = helpers.parse_memory_file(path, payload)
+  if not entry then
+    return nil, "append wrote file but failed to parse result"
+  end
   return {
     llm_output = "appended to " .. path .. " (" .. helpers.count_lines(content) .. " lines added)",
     body = render_content(entry.body, path, ctx),
@@ -247,7 +249,7 @@ local function cmd_delete(path, dir)
   end
   local ok, rm_err = n00n.fs.rm(file_path)
   if not ok then
-    return nil, "delete error: " .. rm_err
+    return nil, "delete error: " .. tostring(rm_err)
   end
   return "deleted " .. path
 end
@@ -369,19 +371,19 @@ n00n.api.register_command({
       return
     end
 
-    local entries = load_entries(dir)
+    local entries = helpers.collect_file_entries(dir)
     if #entries == 0 then
       n00n.ui.flash("No memory files yet")
       return
     end
     table.sort(entries, function(a, b)
-      return a.path < b.path
+      return a[1] < b[1]
     end)
 
     local function build_items()
       local items = {}
       for _, e in ipairs(entries) do
-        items[#items + 1] = { label = e.path, detail = "(" .. (e.size or 0) .. " bytes)" }
+        items[#items + 1] = { label = e[1], detail = "(" .. (e[2] or 0) .. " bytes)" }
       end
       return items
     end
@@ -407,20 +409,20 @@ n00n.api.register_command({
       if event.type == "choice" then
         local item = entries[event.index]
         if item then
-          local path = n00n.fs.joinpath(dir, item.path)
+          local path = n00n.fs.joinpath(dir, item[1])
           local code = n00n.ui.open_editor(path)
           if code == 0 then
             local meta = n00n.fs.metadata(path)
             if meta then
-              item.size = meta.size
+              item[2] = meta.size
             end
           end
         end
       elseif event.type == "delete" then
         local item = entries[event.index]
-        local ok, err = n00n.fs.rm(n00n.fs.joinpath(dir, item.path))
+        local ok, err = n00n.fs.rm(n00n.fs.joinpath(dir, item[1]))
         if ok then
-          n00n.ui.flash("Deleted " .. item.path)
+          n00n.ui.flash("Deleted " .. item[1])
           table.remove(entries, event.index)
           if #entries == 0 then
             break
