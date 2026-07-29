@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785292922488,
+  "lastUpdate": 1785293869324,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -9177,6 +9177,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 197199,
             "range": "± 3932",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c5ffb54458214493ebf8ab708fdf65a44bdb8ee8",
+          "message": "Merge pull request #172 from w0wl0lxd/feat/skill-system-v2\n\nfeat(skill): skill system v2 with agent policy enforcement",
+          "timestamp": "2026-07-29T02:51:37Z",
+          "tree_id": "f4369c22bc86d8743b193f9c5ed363c6a7d7e63d",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/c5ffb54458214493ebf8ab708fdf65a44bdb8ee8"
+        },
+        "date": 1785293868590,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 13537489,
+            "range": "± 113823",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2391653,
+            "range": "± 85615",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2480470,
+            "range": "± 59112",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 10726266,
+            "range": "± 34794",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4397759,
+            "range": "± 153339",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4339951,
+            "range": "± 132998",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 1229792,
+            "range": "± 4955",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191361,
+            "range": "± 2861",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191631,
+            "range": "± 3267",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1591909,
+            "range": "± 10648",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 582572,
+            "range": "± 9478",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 581875,
+            "range": "± 9246",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 80560,
+            "range": "± 269",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 119966,
+            "range": "± 8677",
             "unit": "ns/iter"
           }
         ]
