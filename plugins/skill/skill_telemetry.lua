@@ -18,7 +18,7 @@ function M.telemetry_dir()
   if not state then
     return nil, "state dir unavailable"
   end
-  return n00n.fs.joinpath(state, "projects", project_id(), "skills", "events")
+  return n00n.fs.joinpath(state, "projects", project_id(), "skills")
 end
 
 function M.telemetry_path()
@@ -46,16 +46,17 @@ function M.append(event, skill_name, data)
     data = data or {},
   }
   local encoded, encode_err = n00n.json.encode(row)
-  if not encode_err and encoded then
-    local name = string.format("%010d-%06x.json", os.time(), math.random(0, 0xffffff))
-    local event_path = n00n.fs.joinpath(dir, name)
-    local _, write_err = n00n.fs.write(event_path, encoded .. "\n")
-    if write_err then
-      return nil, write_err
-    end
-    return event_path
+  if not encoded then
+    return nil, encode_err or "failed to encode telemetry event"
   end
-  return nil, encode_err or "failed to encode telemetry event"
+
+  local event_path = n00n.fs.joinpath(dir, "events.jsonl")
+  local existing, _ = n00n.fs.read(event_path)
+  local _, write_err = n00n.fs.write(event_path, (existing or "") .. encoded .. "\n")
+  if write_err then
+    return nil, write_err
+  end
+  return event_path
 end
 
 function M.build_summary(path)

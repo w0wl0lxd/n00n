@@ -8,7 +8,7 @@
 | `allowed_tools` | string[] | no | Allowlist mode |
 | `disallowed_tools` | string[] | no | Denylist mode |
 
-**Rules**: `allowed_tools` and `disallowed_tools` are mutually exclusive in skill frontmatter validation; runtime uses whichever is set on the loaded skill.
+**Rules**: `allowed_tools` and `disallowed_tools` are mutually exclusive in skill frontmatter validation. If both are present at runtime, `disallowed_tools` is evaluated first (denylist-before-allowlist precedence).
 
 ## SkillStep (frontmatter `steps`)
 

@@ -32,6 +32,10 @@ function M.evaluate(envelope, tool_name)
     return { allowed = false, reason = "tool name is required" }
   end
 
+  if normalized == "skill" then
+    return { allowed = true }
+  end
+
   if envelope.disallowed_tools then
     for _, denied in ipairs(envelope.disallowed_tools) do
       if normalize_tool_name(denied) == normalized then

@@ -93,7 +93,7 @@ function M.skill_fingerprint(path)
       digest = string.format("%08x", h)
     end
   end
-  return path .. ":" .. digest
+  return string.format("%s:%s:%s:%s", path, tostring(meta.mtime or 0), tostring(meta.size or 0), digest)
 end
 
 function M.glob_pattern_to_lua(pattern)
@@ -163,9 +163,9 @@ end
 
 function M.build_discovery_fingerprint(roots)
   local entries = {}
-  for _, root in ipairs(roots) do
-    if n00n.fs.metadata(root) then
-      M.collect_skill_fingerprints(root, entries)
+  for _, entry in ipairs(roots) do
+    if n00n.fs.metadata(entry.root) then
+      M.collect_skill_fingerprints(entry.root, entries)
     end
   end
   table.sort(entries)
@@ -252,7 +252,11 @@ end
 
 function M.read_skill_body(skill)
   if skill.resolve then
-    return skill.resolve(), nil
+    local resolved = skill.resolve()
+    if not resolved then
+      return nil, "skill resolve returned nil"
+    end
+    return resolved, nil
   end
   if skill.content then
     return skill.content, nil
@@ -427,8 +431,8 @@ function M.graph_rank_signals(project)
     signals.codegraph_indexed = true
   end
   if n00n.arbor and n00n.arbor.available and n00n.arbor.available() then
-    local ok = pcall(n00n.arbor.status, root)
-    signals.arbor_indexed = ok
+    local ok, indexed = pcall(n00n.arbor.status, root)
+    signals.arbor_indexed = ok and indexed
   end
   return signals
 end
@@ -565,33 +569,29 @@ function M.build_skill_list(skills, ranked)
     return "\n\n<available_skills>\nNo skills available.\n</available_skills>"
   end
 
+  local function format_entry(s, score)
+    local desc = s.description
+    if s.manual_only then
+      desc = "[manual-only] " .. desc
+    end
+    if #desc > 120 then
+      desc = desc:sub(1, 117) .. "..."
+    end
+    local prefix = ""
+    if score and score > 0 then
+      prefix = string.format("(%d) ", score)
+    end
+    return "- " .. prefix .. s.name .. ": " .. desc .. M.tool_policy_hint(s)
+  end
+
   local lines = {}
   if ranked then
     for _, entry in ipairs(ranked) do
-      local s = entry.skill
-      local desc = s.description
-      if s.manual_only then
-        desc = "[manual-only] " .. desc
-      end
-      if #desc > 120 then
-        desc = desc:sub(1, 117) .. "..."
-      end
-      local prefix = ""
-      if entry.score and entry.score > 0 then
-        prefix = string.format("(%d) ", entry.score)
-      end
-      lines[#lines + 1] = "- " .. prefix .. s.name .. ": " .. desc .. M.tool_policy_hint(s)
+      lines[#lines + 1] = format_entry(entry.skill, entry.score)
     end
   else
     for _, s in ipairs(sorted) do
-      local desc = s.description
-      if s.manual_only then
-        desc = "[manual-only] " .. desc
-      end
-      if #desc > 120 then
-        desc = desc:sub(1, 117) .. "..."
-      end
-      lines[#lines + 1] = "- " .. s.name .. ": " .. desc .. M.tool_policy_hint(s)
+      lines[#lines + 1] = format_entry(s, nil)
     end
   end
   return "\n\n<available_skills>\n" .. table.concat(lines, "\n") .. "\n</available_skills>"

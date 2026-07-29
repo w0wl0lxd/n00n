@@ -14,8 +14,8 @@ allowed-tools: read, grep, index
 Use read and grep only.
 ```
 
-2. In an agent session, load the skill: `skill(name="safe-review")`.
-3. Subsequent `bash` calls are rejected by the agent with a skill-policy error.
+1. In an agent session, load the skill: `skill(name="safe-review")`.
+2. Subsequent `bash` calls are rejected by the agent with a skill-policy error.
 
 ## Graph-informed ranking
 
