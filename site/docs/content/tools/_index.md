@@ -328,10 +328,23 @@ Persistent, project-scoped scratchpad for learnings, patterns, decisions, and go
 
 Load a skill that provides instructions and workflows for specific tasks. Use `list=true` to enumerate available skills; then call with the exact skill `name`.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `name` | string | no | Name of the skill to load. |
-| `list` | boolean | no | Return the list of available skills with their descriptions instead of loading one. |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `include_manual` | boolean | no |  | Include skills with disable-model-invocation=true. |
+| `path` | string | no |  | Optional path in focus; when set, only skills whose frontmatter `paths` match this path are returned. |
+| `validate` | boolean | no |  | With list=true, run skill lint checks and return a validation report. |
+| `preview_lines` | integer | no |  | Maximum lines for preview mode when no synopsis frontmatter is set. |
+| `include_conflicts` | boolean | no |  | Append duplicate-name conflict diagnostics to list output. |
+| `full` | boolean | no | when preview and section are unset | Load the full skill body. |
+| `section` | string | no |  | Load only the markdown section under the given ## heading. |
+| `plan` | boolean | no |  | Return a lightweight section/step plan instead of the full skill body. |
+| `include_stats` | boolean | no |  | Append discovery cache and count stats to list output. |
+| `name` | string | no |  | Name of the skill to load. |
+| `list` | boolean | no |  | Return the list of available skills with their descriptions instead of loading one. |
+| `include_telemetry` | boolean | no |  | Append skill telemetry summary and log list/load/plan events. |
+| `preview` | boolean | no |  | Return a short synopsis or first lines instead of the full skill body. |
+| `graph_rank` | boolean | no |  | With list=true and rank=true, add graph-index bonuses for path-scoped skills. |
+| `rank` | boolean | no |  | With list=true and path set, sort skills by relevance to the focus path. |
 
 ### `tool_search` *(lua plugin)*
 

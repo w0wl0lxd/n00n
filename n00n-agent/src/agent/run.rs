@@ -192,6 +192,7 @@ pub struct Agent<'h> {
     audience: ToolAudience,
     workflow: bool,
     local_tools: LocalTools,
+    active_skill_policy: Option<crate::skill_policy::ActiveSkillPolicy>,
     tool_filter: ToolFilter,
     active_tools: ActiveTools,
     supports_tool_examples: bool,
@@ -240,6 +241,7 @@ impl<'h> Agent<'h> {
             audience: params.audience,
             workflow: false,
             local_tools: LocalTools::default(),
+            active_skill_policy: None,
             tool_filter: run.tool_filter,
             active_tools: ActiveTools::default(),
             supports_tool_examples,
@@ -512,6 +514,7 @@ impl<'h> Agent<'h> {
         if has_tools {
             let history_len_before = self.history.len();
             let tool_results = self.process_tool_calls(response).await?;
+            self.apply_skill_policy_from_results(&tool_results);
             if self.apply_tool_search_results(&tool_results) {
                 self.rebuild_tools();
             }
@@ -701,7 +704,19 @@ impl<'h> Agent<'h> {
             workflow: self.workflow,
             audience: self.audience,
             local_tools: Arc::clone(&self.local_tools),
+            active_skill_policy: self.active_skill_policy.clone(),
             live_sink: None,
+        }
+    }
+
+    fn apply_skill_policy_from_results(&mut self, results: &[ToolDoneEvent]) {
+        for done in results {
+            crate::skill_policy::ActiveSkillPolicy::apply_from_skill_tool_result(
+                &mut self.active_skill_policy,
+                &done.tool,
+                done.is_error,
+                done.output.state(),
+            );
         }
     }
 
