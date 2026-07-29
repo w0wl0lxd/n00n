@@ -10,6 +10,19 @@ local function lower(text)
   return trim(text):lower()
 end
 
+-- Treat as a file path only when the whole string looks path-like.
+-- Reject NL queries that merely mention a file ("how does X work in main.rs").
+local function looks_like_file_path(text, allow_whitespace)
+  local value = trim(text)
+  if value == "" then
+    return false
+  end
+  if not allow_whitespace and value:find("%s") then
+    return false
+  end
+  return value:match(FILE_EXT_PATTERN) ~= nil
+end
+
 function M.normalize_intent(input)
   local intent = input.intent
   if intent and intent ~= "auto" then
@@ -17,7 +30,7 @@ function M.normalize_intent(input)
   end
 
   local path = trim(input.path)
-  if path ~= "" and path:match(FILE_EXT_PATTERN) then
+  if path ~= "" and looks_like_file_path(path, true) then
     return "file"
   end
 
@@ -25,8 +38,7 @@ function M.normalize_intent(input)
     return "relations"
   end
 
-  local query_path = trim(input.query)
-  if query_path ~= "" and query_path:match(FILE_EXT_PATTERN) then
+  if looks_like_file_path(input.query, false) then
     return "file"
   end
 

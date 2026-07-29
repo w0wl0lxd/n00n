@@ -70,6 +70,11 @@ case("query_path_selects_index", function()
   eq(router.normalize_intent({ query = "src/main.rs" }), "file")
 end)
 
+case("nl_query_mentioning_file_stays_cross_file", function()
+  eq(router.normalize_intent({ query = "how does auth work in main.rs" }), "cross_file")
+  eq(router.normalize_intent({ query = "impact of changing parse_config.py" }), "cross_file")
+end)
+
 case("what_calls_routes_to_callers", function()
   eq(router.parse_arbor_command({ query = "what calls restore_item" }), "callers")
   eq(router.extract_symbol("what calls restore_item", "callers"), "restore_item")
