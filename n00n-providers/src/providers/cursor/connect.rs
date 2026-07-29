@@ -62,17 +62,21 @@ impl FrameBuffer {
 }
 
 #[must_use]
-pub(crate) fn encode_frame(flags: u8, payload: &[u8]) -> Vec<u8> {
-    let capped = payload.len().min(MAX_CONNECT_FRAME_LEN);
+pub(crate) fn encode_frame(flags: u8, payload: &[u8]) -> Result<Vec<u8>, String> {
+    if payload.len() > MAX_CONNECT_FRAME_LEN {
+        return Err(format!(
+            "connect frame payload length {} exceeds maximum {MAX_CONNECT_FRAME_LEN}",
+            payload.len()
+        ));
+    }
     // MAX_CONNECT_FRAME_LEN is 16 MiB, so this always fits in u32.
     #[allow(clippy::cast_possible_truncation)]
-    let len = capped as u32;
-    let payload = &payload[..capped];
+    let len = payload.len() as u32;
     let mut frame = Vec::with_capacity(5 + payload.len());
     frame.push(flags);
     frame.extend_from_slice(&len.to_be_bytes());
     frame.extend_from_slice(payload);
-    frame
+    Ok(frame)
 }
 
 /// Expand a Connect frame payload when the compressed flag is set (gzip).

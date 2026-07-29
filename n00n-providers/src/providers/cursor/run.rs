@@ -47,7 +47,7 @@ const SECOND_FRAME_PACE: Duration = Duration::from_millis(800);
 const MARKER_FRAME_PACE: Duration = Duration::from_millis(400);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const FIRST_BYTE_TIMEOUT: Duration = Duration::from_mins(1);
-const IDLE_TIMEOUT: Duration = Duration::from_secs(4);
+const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const CLIENT_VERSION_ENV: &str = "N00N_CURSOR_CLIENT_VERSION";
 const CHECKPOINT_LOCK_POISONED: &str = "cursor checkpoint store lock poisoned";
 const OUTBOUND_LOCK_POISONED: &str = "cursor run outbound lock poisoned";
@@ -294,6 +294,9 @@ fn cursor_wire_id() -> String {
 }
 
 fn http2_client() -> Result<reqwest::Client, AgentError> {
+    // No overall request timeout: AgentService/Run can stream for longer than a
+    // few minutes while active. First-byte / idle stalls are enforced in the
+    // read loop instead.
     reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .build()
@@ -522,6 +525,8 @@ async fn run_text_turn_mode_tokio(
     let mut bytes = response.bytes_stream();
 
     loop {
+        // Once any Connect bytes/frames arrive, stall on idle-since-last-data —
+        // KV/checkpoint traffic is progress even before text/thinking deltas.
         let pre_output_elapsed = if got_any_data {
             last_data.elapsed()
         } else {
@@ -531,7 +536,9 @@ async fn run_text_turn_mode_tokio(
             if let Ok(dumps) = STALL_DUMP.lock() {
                 let mut blob = Vec::new();
                 for payload in dumps.iter() {
-                    blob.extend(encode_frame(0, payload));
+                    if let Ok(frame) = encode_frame(0, payload) {
+                        blob.extend(frame);
+                    }
                 }
                 if std::fs::write(STALL_DUMP_PATH, &blob).is_err() {
                     // Best-effort diagnostic artifact for live spike debugging.
@@ -574,22 +581,24 @@ async fn run_text_turn_mode_tokio(
                 got_any_data = true;
                 last_data = Instant::now();
                 frame_buf.push(&chunk);
+                let mut stream_ended = false;
                 while let Some(frame) = frame_buf.next_frame() {
                     let frame = frame.map_err(|message| AgentError::Api {
                         status: 502,
                         message,
                     })?;
-                    if frame.end_stream {
-                        if let Ok(err) = serde_json::from_slice::<serde_json::Value>(&frame.payload)
-                            && err.get("error").is_some()
-                        {
-                            return Err(AgentError::Api {
-                                status: 502,
-                                message: String::from_utf8_lossy(&frame.payload).into_owned(),
-                            });
-                        }
-                        break;
+                    let end_stream = frame.end_stream;
+                    if end_stream
+                        && let Ok(err) = serde_json::from_slice::<serde_json::Value>(&frame.payload)
+                        && err.get("error").is_some()
+                    {
+                        return Err(AgentError::Api {
+                            status: 502,
+                            message: String::from_utf8_lossy(&frame.payload).into_owned(),
+                        });
                     }
+                    // End-stream frames can still carry a final protobuf payload
+                    // (text/thinking/KV); handle before exiting the read loop.
                     frames_seen = frames_seen.saturating_add(1);
                     if let Ok(payload) = decode_frame_payload(&frame) {
                         if let Ok(mut dumps) = STALL_DUMP.lock() {
@@ -650,6 +659,13 @@ async fn run_text_turn_mode_tokio(
                     if outcome.text_deltas > 0 || !thinking.is_empty() {
                         got_output = true;
                     }
+                    if end_stream {
+                        stream_ended = true;
+                        break;
+                    }
+                }
+                if stream_ended {
+                    break;
                 }
             }
             Ok(Some(Err(error))) => {
@@ -753,7 +769,12 @@ fn queue_checkpoint_reply(
                 message: CHECKPOINT_LOCK_POISONED.into(),
             })?;
             let data = store.get(&blob_id).map(<[u8]>::to_vec);
-            encode_frame(0, &encode_get_blob_result(id, data.as_deref()))
+            encode_frame(0, &encode_get_blob_result(id, data.as_deref())).map_err(|message| {
+                AgentError::Api {
+                    status: 500,
+                    message,
+                }
+            })?
         }
         KvServerOp::Set { id, blob_id, data } => {
             let mut store = checkpoints.lock().map_err(|_| AgentError::Api {
@@ -761,8 +782,10 @@ fn queue_checkpoint_reply(
                 message: CHECKPOINT_LOCK_POISONED.into(),
             })?;
             store.set(blob_id, data);
-            encode_frame(0, &encode_set_blob_result(id))
-        }
+            encode_frame(0, &encode_set_blob_result(id)).map_err(|message| AgentError::Api {
+                status: 500,
+                message,
+            })?
     };
     let mut queue = outbound.lock().map_err(|_| AgentError::Api {
         status: 500,
@@ -902,10 +925,11 @@ mod tests {
         let mut thinking = String::new();
         while let Some(frame) = buf.next_frame() {
             let frame = frame.expect("frame");
-            if frame.end_stream {
+            let end_stream = frame.end_stream;
+            handle_data_frame(&frame, &mut text, &mut thinking, &store, &outbound).expect("handle");
+            if end_stream {
                 break;
             }
-            handle_data_frame(&frame, &mut text, &mut thinking, &store, &outbound).expect("handle");
         }
         assert!(
             text.to_lowercase().contains("pong"),

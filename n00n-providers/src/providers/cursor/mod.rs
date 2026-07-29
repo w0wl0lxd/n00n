@@ -93,6 +93,9 @@ impl Cursor {
     }
 
     fn is_safe_command_name(s: &str) -> bool {
+        // Bare allowlisted names only — path/URL suffixes like
+        // `/tmp/evil/cursor-agent` or `https://evil/cursor-agent` must not spawn.
+        // Full paths go through `CURSOR_AGENT_PATH`.
         const ALLOWLIST: &[&str] = &["cursor-agent", "cursor-agent.exe"];
         ALLOWLIST.contains(&s)
     }
@@ -538,10 +541,10 @@ async fn parse_stream(
     let mut cursor_session_id = None;
     let mut result = None;
     let mut is_error = false;
-    let mut deadline = Instant::now() + stream_timeout;
+    let deadline = Instant::now() + stream_timeout;
 
     loop {
-        let Some(line) = next_stdout_line(&mut lines, &mut deadline, stream_timeout).await? else {
+        let Some(line) = next_stdout_line(&mut lines, deadline, stream_timeout).await? else {
             break;
         };
         let line = line.trim();
@@ -604,11 +607,18 @@ async fn parse_stream(
 
 async fn next_stdout_line(
     lines: &mut futures_lite::io::Lines<BufReader<async_process::ChildStdout>>,
-    deadline: &mut Instant,
+    deadline: Instant,
     stream_timeout: Duration,
 ) -> Result<Option<String>, AgentError> {
+    // Absolute deadline from parse_stream start — do not reset per line, or a
+    // slowly dribbled stream can exceed `timeouts.stream` indefinitely.
     let remaining = deadline.saturating_duration_since(Instant::now());
-    let result = futures_lite::future::or(
+    if remaining.is_zero() {
+        return Err(AgentError::Timeout {
+            secs: stream_timeout.as_secs(),
+        });
+    }
+    futures_lite::future::or(
         async {
             match lines.next().await {
                 Some(Ok(line)) => Ok(Some(line)),
@@ -623,11 +633,7 @@ async fn next_stdout_line(
             })
         },
     )
-    .await;
-    if let Ok(Some(_)) = &result {
-        *deadline = Instant::now() + stream_timeout;
-    }
-    result
+    .await
 }
 
 async fn handle_assistant_event(
@@ -968,6 +974,18 @@ mod tests {
     }
 
     #[test]
+    fn is_safe_command_name_accepts_allowlist_only() {
+        assert!(Cursor::is_safe_command_name("cursor-agent"));
+        assert!(Cursor::is_safe_command_name("cursor-agent.exe"));
+        assert!(!Cursor::is_safe_command_name("/usr/bin/cursor-agent"));
+        assert!(!Cursor::is_safe_command_name("/tmp/attacker/cursor-agent"));
+        assert!(!Cursor::is_safe_command_name(
+            "https://evil.example/cursor-agent"
+        ));
+        assert!(!Cursor::is_safe_command_name("cursor-agent;rm"));
+    }
+
+    #[test]
     fn tier_defaults_resolve() {
         for tier in [ModelTier::Weak, ModelTier::Medium, ModelTier::Strong] {
             let model = Model::from_tier("cursor", tier).unwrap();
@@ -1082,24 +1100,5 @@ mod tests {
     fn map_stderr_error_detects_auth_failure() {
         let err = map_stderr_error("Error: not logged in");
         assert!(matches!(err, AgentError::Api { status: 401, .. }));
-    }
-
-    #[test]
-    fn is_safe_command_name_accepts_allowlisted() {
-        assert!(Cursor::is_safe_command_name("cursor-agent"));
-        assert!(Cursor::is_safe_command_name("cursor-agent.exe"));
-    }
-
-    #[test]
-    fn is_safe_command_name_rejects_path_and_url_overrides() {
-        assert!(!Cursor::is_safe_command_name(
-            "https://evil.example/cursor-agent"
-        ));
-        assert!(!Cursor::is_safe_command_name("/tmp/attacker/cursor-agent"));
-        assert!(!Cursor::is_safe_command_name(
-            "/tmp/attacker/cursor-agent.exe"
-        ));
-        assert!(!Cursor::is_safe_command_name("../cursor-agent"));
-        assert!(!Cursor::is_safe_command_name("cursor-agent/../evil"));
     }
 }
