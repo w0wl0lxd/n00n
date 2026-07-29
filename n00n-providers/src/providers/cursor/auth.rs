@@ -6,7 +6,7 @@ use thiserror::Error;
 use crate::AgentError;
 
 const ACCESS_TOKEN_KEY: &str = "cursorAuth/accessToken";
-const VSCDB_RELATIVE: &str = ".config/Cursor/User/globalStorage/state.vscdb";
+const VSCDB_SUFFIX: &str = "Cursor/User/globalStorage/state.vscdb";
 
 #[derive(Debug, Error)]
 pub(crate) enum AuthError {
@@ -19,7 +19,21 @@ pub(crate) enum AuthError {
 }
 
 pub(crate) fn ide_vscdb_path() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(VSCDB_RELATIVE))
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var_os("HOME").map(|home| {
+            PathBuf::from(home)
+                .join("Library/Application Support")
+                .join(VSCDB_SUFFIX)
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+            .map(|config| config.join(VSCDB_SUFFIX))
+    }
 }
 
 pub(crate) fn read_ide_access_token_from(path: &Path) -> Result<String, AuthError> {
@@ -52,7 +66,7 @@ pub(crate) fn read_ide_access_token_from(path: &Path) -> Result<String, AuthErro
 
 pub(crate) fn read_ide_access_token() -> Result<String, AuthError> {
     let path = ide_vscdb_path().ok_or_else(|| AuthError::DbNotFound {
-        path: PathBuf::from(VSCDB_RELATIVE),
+        path: PathBuf::from(VSCDB_SUFFIX),
     })?;
     read_ide_access_token_from(&path)
 }
@@ -72,11 +86,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ide_vscdb_path_uses_home() {
-        let path = ide_vscdb_path();
-        if std::env::var_os("HOME").is_some() {
-            assert!(path.is_some());
-            assert!(path.expect("home set").ends_with("state.vscdb"));
+    fn ide_vscdb_path_uses_platform_layout() {
+        let Some(path) = ide_vscdb_path() else {
+            return;
+        };
+        assert!(path.ends_with("state.vscdb"));
+        #[cfg(target_os = "macos")]
+        {
+            let rendered = path.to_string_lossy();
+            assert!(
+                rendered.contains("Library/Application Support/Cursor"),
+                "macOS IDE db path should use Application Support, got {path:?}"
+            );
+            assert!(
+                !rendered.contains("/.config/Cursor/"),
+                "macOS IDE db path must not use Linux .config layout, got {path:?}"
+            );
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert!(
+                path.to_string_lossy().contains("Cursor/User/globalStorage"),
+                "Linux/Windows IDE db path unexpected: {path:?}"
+            );
         }
     }
 }
