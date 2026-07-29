@@ -1413,17 +1413,6 @@ dependencies = [
 
 [[package]]
 name = "flume"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da0e4dd2a88388a1f4ccc7c9ce104604dab68d9f408dc34cd45823d5a9069095"
-dependencies = [
- "futures-core",
- "futures-sink",
- "spin",
-]
-
-[[package]]
-name = "flume"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e139bc46ca777eb5efaf62df0ab8cc5fd400866427e56c68b22e414e53bd3be"
@@ -2828,7 +2817,7 @@ dependencies = [
  "async-lock",
  "clap",
  "color-eyre",
- "flume 0.11.1",
+ "flume",
  "futures-lite",
  "isahc",
  "libc",
@@ -2859,7 +2848,7 @@ version = "0.5.0"
 dependencies = [
  "agent-client-protocol-schema",
  "color-eyre",
- "flume 0.11.1",
+ "flume",
  "n00n-agent",
  "n00n-providers",
  "n00n-storage",
@@ -2882,7 +2871,7 @@ dependencies = [
  "base64",
  "bitflags 2.13.1",
  "event-listener",
- "flume 0.11.1",
+ "flume",
  "futures-lite",
  "getrandom 0.3.4",
  "grep-regex",
@@ -2954,7 +2943,7 @@ dependencies = [
 name = "n00n-daemon"
 version = "0.5.0"
 dependencies = [
- "flume 0.11.1",
+ "flume",
  "futures-lite",
  "n00n-storage",
  "process_alive",
@@ -3016,7 +3005,7 @@ dependencies = [
  "criterion",
  "crossterm",
  "event-listener",
- "flume 0.11.1",
+ "flume",
  "futures",
  "futures-lite",
  "htmd",
@@ -3118,7 +3107,7 @@ dependencies = [
  "async-tungstenite",
  "base64",
  "fastrand",
- "flume 0.11.1",
+ "flume",
  "futures",
  "futures-lite",
  "getrandom 0.3.4",
@@ -3190,7 +3179,7 @@ dependencies = [
  "color-eyre",
  "criterion",
  "crossterm",
- "flume 0.11.1",
+ "flume",
  "futures-lite",
  "getrandom 0.3.4",
  "ignore",
@@ -3271,7 +3260,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b44b771d4dd781ef14c84078693e67495da6b47f609f72e8a4da8420a861240e"
 dependencies = [
  "bitflags 2.13.1",
- "flume 0.12.0",
+ "flume",
  "inotify",
  "kqueue",
  "libc",
