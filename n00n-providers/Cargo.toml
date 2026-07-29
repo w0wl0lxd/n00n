@@ -17,7 +17,11 @@ async-lock = { workspace = true }
 flume = { workspace = true }
 futures-lite = { workspace = true }
 futures = { workspace = true }
+bytes = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
 isahc = { workspace = true }
+rusqlite = { workspace = true }
 async-tungstenite = { workspace = true }
 base64 = { workspace = true }
 sha2 = { workspace = true }
@@ -30,9 +34,12 @@ inventory = { workspace = true }
 jiff = { workspace = true }
 libc = { workspace = true }
 getrandom = { workspace = true }
+uuid = { workspace = true }
+flate2 = { workspace = true }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 async-process = { workspace = true }
 agent-client-protocol-schema = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 test-case = { workspace = true }
