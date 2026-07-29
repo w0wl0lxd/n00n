@@ -14,6 +14,7 @@ use n00n_daemon::registry::{ControlPlane, TuiCallbackBackend};
 use n00n_daemon::server;
 use n00n_providers::ThinkingConfig;
 use n00n_storage::id::SessionRef;
+use serde_json::Value;
 
 const STATUS_WORKING: &str = "working";
 const PRINT_TITLE: &str = "print";
@@ -122,7 +123,7 @@ fn try_spawn(
     _seed: AgentRecord,
     list: impl Fn() -> ControlResult<Vec<AgentRecord>> + Send + Sync + 'static,
     status: impl Fn(&str) -> ControlResult<AgentRecord> + Send + Sync + 'static,
-    message: impl Fn(&str, &str, &MessageOpts) -> ControlResult<sonic_rs::Value> + Send + Sync + 'static,
+    message: impl Fn(&str, &str, &MessageOpts) -> ControlResult<Value> + Send + Sync + 'static,
     stop: impl Fn(&str) -> ControlResult<()> + Send + Sync + 'static,
 ) -> Option<SessionDaemonHandle> {
     match spawn(state_dir, list, status, message, stop) {
@@ -138,7 +139,7 @@ fn spawn(
     state_dir: &Path,
     list: impl Fn() -> ControlResult<Vec<AgentRecord>> + Send + Sync + 'static,
     status: impl Fn(&str) -> ControlResult<AgentRecord> + Send + Sync + 'static,
-    message: impl Fn(&str, &str, &MessageOpts) -> ControlResult<sonic_rs::Value> + Send + Sync + 'static,
+    message: impl Fn(&str, &str, &MessageOpts) -> ControlResult<Value> + Send + Sync + 'static,
     stop: impl Fn(&str) -> ControlResult<()> + Send + Sync + 'static,
 ) -> ControlResult<SessionDaemonHandle> {
     let plane = Arc::new(ControlPlane::new(
@@ -226,7 +227,7 @@ fn message_interactive(
     session_id: &str,
     text: &str,
     opts: &MessageOpts,
-) -> ControlResult<sonic_rs::Value> {
+) -> ControlResult<Value> {
     if id != session_id {
         return Err(ControlError::NotFound(id.to_owned()));
     }
@@ -243,7 +244,7 @@ fn message_interactive(
             control: opts.control,
         })
         .map_err(|_| ControlError::Unavailable(NO_SESSION_ERR.into()))?;
-    Ok(sonic_rs::json!({"queued": true, "steer": opts.steer, "control": opts.control}))
+    Ok(serde_json::json!({"queued": true, "steer": opts.steer, "control": opts.control}))
 }
 
 fn stop_interactive(

@@ -117,7 +117,7 @@ impl WorkerBackend {
     }
 
     #[cfg(unix)]
-    fn send_command(&self, id: &str, command: &WorkerCommand) -> ControlResult<sonic_rs::Value> {
+    fn send_command(&self, id: &str, command: &WorkerCommand) -> ControlResult<serde_json::Value> {
         use std::path::Path;
 
         use futures_lite::{AsyncBufReadExt, AsyncWriteExt, io::BufReader};
@@ -144,7 +144,7 @@ impl WorkerBackend {
             let mut reader = BufReader::new(reader);
             if matches!(command, WorkerCommand::Message { .. }) {
                 Self::drain_worker_events(&mut reader).await?;
-                return Ok(sonic_rs::json!({"queued": true, "id": id}));
+                return Ok(serde_json::json!({"queued": true, "id": id}));
             }
             let mut line = String::new();
             reader
@@ -152,7 +152,7 @@ impl WorkerBackend {
                 .await
                 .map_err(ControlError::io)?;
             if line.trim().is_empty() {
-                return Ok(sonic_rs::json!({"ok": true}));
+                return Ok(serde_json::json!({"ok": true}));
             }
             sonic_rs::from_str(line.trim()).map_err(ControlError::protocol)
         })
@@ -163,8 +163,6 @@ impl WorkerBackend {
         reader: &mut futures_lite::io::BufReader<impl futures_lite::AsyncRead + Unpin>,
     ) -> ControlResult<()> {
         use futures_lite::AsyncBufReadExt;
-        use sonic_rs::JsonValueTrait;
-
         let mut line = String::new();
         loop {
             line.clear();
@@ -179,15 +177,15 @@ impl WorkerBackend {
             if trimmed.is_empty() {
                 continue;
             }
-            let Ok(value) = sonic_rs::from_str::<sonic_rs::Value>(trimmed) else {
+            let Ok(value) = sonic_rs::from_str::<serde_json::Value>(trimmed) else {
                 continue;
             };
-            match value.get("type").and_then(sonic_rs::Value::as_str) {
+            match value.get("type").and_then(serde_json::Value::as_str) {
                 Some("done") => return Ok(()),
                 Some("error") => {
                     let message = value
                         .get("message")
-                        .and_then(sonic_rs::Value::as_str)
+                        .and_then(serde_json::Value::as_str)
                         .map_or_else(|| "worker message failed".to_owned(), str::to_owned);
                     return Err(ControlError::Unavailable(message));
                 }
@@ -197,7 +195,7 @@ impl WorkerBackend {
     }
 
     #[cfg(not(unix))]
-    fn send_command(&self, id: &str, _command: &WorkerCommand) -> ControlResult<sonic_rs::Value> {
+    fn send_command(&self, id: &str, _command: &WorkerCommand) -> ControlResult<serde_json::Value> {
         let _ = self.read_state(id)?;
         Err(ControlError::Unavailable(
             "worker control sockets require unix".into(),
@@ -239,7 +237,12 @@ impl ControlBackend for WorkerBackend {
         Ok(Self::to_record(&self.read_state(id)?))
     }
 
-    fn message(&self, id: &str, text: &str, _opts: &MessageOpts) -> ControlResult<sonic_rs::Value> {
+    fn message(
+        &self,
+        id: &str,
+        text: &str,
+        _opts: &MessageOpts,
+    ) -> ControlResult<serde_json::Value> {
         self.send_command(
             id,
             &WorkerCommand::Message {
@@ -360,6 +363,150 @@ mod tests {
 
         let backend = WorkerBackend::new(tmp.path());
         backend.pause("worker-1").map_err(|e| e.to_string())?;
+
+        match server.join() {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err("mock worker server panicked".into()),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resume_roundtrips_over_control_sock() -> Result<(), String> {
+        use futures_lite::{AsyncBufReadExt, AsyncWriteExt, io::BufReader};
+        use smol::net::unix::UnixListener;
+        use std::time::Duration;
+
+        let tmp = TempDir::new().map_err(|e| e.to_string())?;
+        let sock_path = tmp.path().join("control.sock");
+        let sock_serve = sock_path.clone();
+        let server = std::thread::spawn(move || {
+            smol::block_on(async {
+                let listener = UnixListener::bind(&sock_serve).map_err(|e| e.to_string())?;
+                let (stream, _) = listener.accept().await.map_err(|e| e.to_string())?;
+                let (reader, mut writer) = futures_lite::io::split(stream);
+                let mut reader = BufReader::new(reader);
+                let mut line = String::new();
+                reader
+                    .read_line(&mut line)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if !line.contains("\"cmd\":\"resume\"") {
+                    return Err(format!("unexpected command line: {line}"));
+                }
+                writer
+                    .write_all(b"{\"ok\":true}\n")
+                    .await
+                    .map_err(|e| e.to_string())?;
+                writer.flush().await.map_err(|e| e.to_string())?;
+                Ok::<(), String>(())
+            })
+        });
+
+        std::thread::sleep(Duration::from_millis(20));
+        write_fixture_with_socket(tmp.path(), "worker-1", "running", &sock_path)?;
+
+        let backend = WorkerBackend::new(tmp.path());
+        backend.resume("worker-1").map_err(|e| e.to_string())?;
+
+        match server.join() {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err("mock worker server panicked".into()),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_roundtrips_over_control_sock() -> Result<(), String> {
+        use futures_lite::{AsyncBufReadExt, AsyncWriteExt, io::BufReader};
+        use smol::net::unix::UnixListener;
+        use std::time::Duration;
+
+        let tmp = TempDir::new().map_err(|e| e.to_string())?;
+        let sock_path = tmp.path().join("control.sock");
+        let sock_serve = sock_path.clone();
+        let server = std::thread::spawn(move || {
+            smol::block_on(async {
+                let listener = UnixListener::bind(&sock_serve).map_err(|e| e.to_string())?;
+                let (stream, _) = listener.accept().await.map_err(|e| e.to_string())?;
+                let (reader, mut writer) = futures_lite::io::split(stream);
+                let mut reader = BufReader::new(reader);
+                let mut line = String::new();
+                reader
+                    .read_line(&mut line)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if !line.contains("\"cmd\":\"stop\"") {
+                    return Err(format!("unexpected command line: {line}"));
+                }
+                writer
+                    .write_all(b"{\"ok\":true}\n")
+                    .await
+                    .map_err(|e| e.to_string())?;
+                writer.flush().await.map_err(|e| e.to_string())?;
+                Ok::<(), String>(())
+            })
+        });
+
+        std::thread::sleep(Duration::from_millis(20));
+        write_fixture_with_socket(tmp.path(), "worker-1", "running", &sock_path)?;
+
+        let backend = WorkerBackend::new(tmp.path());
+        backend.stop("worker-1").map_err(|e| e.to_string())?;
+
+        match server.join() {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err("mock worker server panicked".into()),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn message_roundtrips_over_control_sock() -> Result<(), String> {
+        use futures_lite::{AsyncBufReadExt, AsyncWriteExt, io::BufReader};
+        use smol::net::unix::UnixListener;
+        use std::time::Duration;
+
+        let tmp = TempDir::new().map_err(|e| e.to_string())?;
+        let sock_path = tmp.path().join("control.sock");
+        let sock_serve = sock_path.clone();
+        let server = std::thread::spawn(move || {
+            smol::block_on(async {
+                let listener = UnixListener::bind(&sock_serve).map_err(|e| e.to_string())?;
+                let (stream, _) = listener.accept().await.map_err(|e| e.to_string())?;
+                let (reader, mut writer) = futures_lite::io::split(stream);
+                let mut reader = BufReader::new(reader);
+                let mut line = String::new();
+                reader
+                    .read_line(&mut line)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if !line.contains("\"cmd\":\"message\"") {
+                    return Err(format!("unexpected command line: {line}"));
+                }
+                writer
+                    .write_all(b"{\"type\":\"done\"}\n")
+                    .await
+                    .map_err(|e| e.to_string())?;
+                writer.flush().await.map_err(|e| e.to_string())?;
+                Ok::<(), String>(())
+            })
+        });
+
+        std::thread::sleep(Duration::from_millis(20));
+        write_fixture_with_socket(tmp.path(), "worker-1", "running", &sock_path)?;
+
+        let backend = WorkerBackend::new(tmp.path());
+        let result = backend
+            .message("worker-1", "continue", &MessageOpts::default())
+            .map_err(|e| e.to_string())?;
+        assert_eq!(
+            result,
+            serde_json::json!({"queued": true, "id": "worker-1"})
+        );
 
         match server.join() {
             Ok(Ok(())) => Ok(()),
