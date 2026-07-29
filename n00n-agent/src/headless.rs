@@ -85,6 +85,7 @@ pub struct HeadlessParams {
     pub initial_wd: PathBuf,
     pub fast: bool,
     pub workflow: bool,
+    pub mode: AgentMode,
 }
 
 pub struct HeadlessHandle {
@@ -154,7 +155,7 @@ fn tool_definitions(
 #[must_use]
 pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
     let working_dir = params.initial_wd.to_string_lossy().into_owned();
-    let mode = AgentMode::Build;
+    let mode = params.mode.clone();
     let AgentSetup {
         vars,
         instructions,
@@ -289,6 +290,7 @@ pub struct InteractiveParams {
     pub system_prompt_override: Option<String>,
     pub append_system_prompt: Option<String>,
     pub workflow: bool,
+    pub mode: AgentMode,
 }
 
 pub struct InteractiveHandle {
