@@ -174,11 +174,18 @@ impl Cursor {
             Err(e) => e.into_inner(),
         };
 
-        Self::with_api_key(
-            Self::api_key_from_auth(&resolved),
-            Self::command_from_auth(&resolved),
-            timeouts,
-        )
+        let api_key = match Self::api_key_from_auth(&resolved) {
+            Some(key) => Some(key),
+            None => match super::KeyPool::resolve("cursor", API_KEY_ENV) {
+                Ok(pool) => Some(pool.current().to_string()),
+                Err(e) => {
+                    debug!(error = %e, "no Cursor API key configured; cursor-agent will use stored credentials");
+                    None
+                }
+            },
+        };
+
+        Self::with_api_key(api_key, Self::command_from_auth(&resolved), timeouts)
     }
 
     async fn do_stream(
