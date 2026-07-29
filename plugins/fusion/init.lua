@@ -123,6 +123,6 @@ end
 n00n.api.register_tool({
   name = "fusion_delegate",
   description = description,
-  input_schema = schema,
+  schema = schema,
   handler = handler,
 })

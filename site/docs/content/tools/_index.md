@@ -322,17 +322,17 @@ Load all tools from a namespace. Returns the list of tools that were loaded.
 
 Delegate mechanical work to a Fusion sidekick subagent. Provide goal, constraints, and definition of done — not full file contents. Sidekick returns concise evidence and test results.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `description` | string | yes | Short label (3-5 words). |
-| `goal` | string | yes | What the sidekick should accomplish. |
-| `constraints` | string | no | Boundaries, files in scope, patterns to follow. |
-| `definition_of_done` | string | yes | How you will verify success (tests, checks, artifacts). |
-| `escalation_triggers` | string | no | When the sidekick should stop and ask the lead to take over. |
-| `subagent_type` | string | no | research (read-only) or general (can edit). Default: general. |
-| `model_tier` | string | no | weak/medium/strong override for sidekick. |
-| `model` | string | no | Exact model spec override. |
-| `auto_tier` | boolean | no | Route tier from brief text (default: true). |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `description` | string | yes |  | Short label (3-5 words). |
+| `model_tier` | string | no |  | weak/medium/strong override for sidekick. |
+| `model` | string | no |  | Exact model spec override. |
+| `goal` | string | yes |  | What the sidekick should accomplish. |
+| `constraints` | string | no |  | Boundaries, files in scope, patterns to follow. |
+| `definition_of_done` | string | yes |  | How you will verify success (tests, checks, artifacts). |
+| `auto_tier` | boolean | no | true | Route tier from brief text. |
+| `escalation_triggers` | string | no |  | When the sidekick should stop and ask the lead to take over. |
+| `subagent_type` | string | no |  | research (read-only) or general (can edit). Default: general. |
 
 ## Web
 
