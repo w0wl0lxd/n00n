@@ -204,6 +204,55 @@ case("append_body_preserves_frontmatter", function()
   assert(body:find("line two"), "appended body present")
 end)
 
+case("merge_metadata_preserves_omitted_fields", function()
+  local existing = {
+    tags = { "auth" },
+    topic = "security",
+    importance = 4,
+    layer = "lite",
+    synopsis = "Use refresh tokens",
+  }
+  local input = { content = "new body" }
+  local incoming = h.normalize_metadata(input)
+  local merged = h.merge_metadata(existing, incoming, input)
+  eq(merged.topic, "security")
+  eq(merged.importance, 4)
+  eq(merged.layer, "lite")
+  eq(merged.synopsis, "Use refresh tokens")
+  eq(#merged.tags, 1)
+  eq(merged.tags[1], "auth")
+  local payload, err = h.build_frontmatter(merged, "new body")
+  assert(payload, err)
+  local fm, body = h.parse_frontmatter(payload)
+  eq(body, "new body")
+  eq(fm.layer, "lite")
+  eq(fm.topic, "security")
+  eq(fm.importance, 4)
+  eq(fm.synopsis, "Use refresh tokens")
+  eq(#fm.tags, 1)
+end)
+
+case("merge_metadata_overlays_provided_fields", function()
+  local existing = { topic = "old", layer = "lite", importance = 4, synopsis = "keep" }
+  local input = { topic = "new", importance = 2 }
+  local incoming = h.normalize_metadata(input)
+  local merged = h.merge_metadata(existing, incoming, input)
+  eq(merged.topic, "new")
+  eq(merged.importance, 2)
+  eq(merged.layer, "lite")
+  eq(merged.synopsis, "keep")
+end)
+
+case("merge_metadata_clears_explicit_empty_tags", function()
+  local existing = { tags = { "auth" }, topic = "security", layer = "lite" }
+  local input = { tags = "" }
+  local incoming = h.normalize_metadata(input)
+  local merged = h.merge_metadata(existing, incoming, input)
+  eq(merged.tags, nil)
+  eq(merged.topic, "security")
+  eq(merged.layer, "lite")
+end)
+
 case("build_frontmatter_escapes_yaml_scalars", function()
   local meta = { synopsis = "line1\nlayer: lite", topic = "safe: topic" }
   local payload, err = h.build_frontmatter(meta, "body")
