@@ -58,6 +58,7 @@ All fields are optional. Typos in field names cause an error right away.
 | `always_yolo` | bool | `false` | Start every session with YOLO mode (skip permission prompts, deny rules still apply) |
 | `always_fast` | bool | `false` | Start every session with Anthropic fast mode (Opus only; ignored otherwise) |
 | `always_workflow` | bool | `false` | Start every session with workflow mode (task callable inside code_execution) |
+| `always_fusion` | bool | `false` | Start every session with Fusion dual-lane routing (lead + sidekick) |
 | `always_thinking` | bool \| string | `false` | Start every session with extended thinking (true/"adaptive", "off", an effort level ("minimal" to "max"), or a token budget) |
 
 ### `ui`
@@ -108,6 +109,13 @@ How many lines of output to show per tool in the UI. All values are `usize` with
 | `max_continuation_turns` | u32 | `3` | 1 | Max automatic continuation turns |
 | `compaction_buffer` | u32 \| string | `20%` | - | Context reserved for compaction: token count or percent of the context window (e.g. "20%") |
 | `mcp_tool_desc_max_chars` | usize | `200` | 10 | Max MCP tool description length (characters) |
+
+### `agent.fusion`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable Fusion dual-lane routing (lead + sidekick) for this session |
+| `sidekick_tier` | string | - | Model tier for the sidekick lane (e.g. "haiku", "sonnet", "opus") |
 
 ### `provider`
 
@@ -176,6 +184,13 @@ n00n.setup({
 | `edit_lines` | boolean | `true` | - | Provide the line-based `edit_lines` tool. |
 | `insert_lines` | boolean | `true` | - | Provide the line-based `insert_lines` tool. |
 | `multiedit` | boolean | `true` | - | Provide the `multiedit` tool. |
+
+### `plugins.fusion`
+
+| Field | Type | Default | Min | Description |
+|-------|------|---------|-----|-------------|
+| `auto_tier` | boolean | `true` | - | Route sidekick tier from the brief. |
+| `default_subagent_type` | string | `"general"` | - | Default subagent_type when omitted. |
 
 ### `plugins.glob`
 

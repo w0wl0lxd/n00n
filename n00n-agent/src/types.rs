@@ -879,6 +879,8 @@ pub enum AgentEvent {
         usage: TokenUsage,
         num_turns: u32,
         stop_reason: Option<StopReason>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fusion: Option<crate::fusion::FusionUsageStats>,
     },
     AutoCompacting,
     CompactionDone,
