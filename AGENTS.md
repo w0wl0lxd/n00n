@@ -90,7 +90,8 @@ The workspace lint configuration is the law. It lives in the root `Cargo.toml` `
 
 Every tool result spends context tokens. Prefer structural, pre-indexed tools over broad searches and unfiltered file reads.
 
-- **Cross-file structure first:** use `codegraph` for end-to-end system questions, call paths, and blast-radius impact checks (requires a `.codegraph/` index). Use `arbor` for caller/callee relationships, project map, and diff blast-radius (requires the Arbor CLI).
+- **Explore first:** use `explore` for codebase questions; it routes to `index` (single-file skeleton), `arbor` (callers/callees/blast radius), or `codegraph` (cross-file structure).
+- **Cross-file structure:** use `codegraph` for end-to-end system questions, call paths, and blast-radius impact checks (requires a `.codegraph/` index). Use `arbor` for caller/callee relationships, project map, and diff blast-radius (requires the Arbor CLI).
 - **Single-file structure next:** use `index` to get a compact skeleton and exact line ranges before reading any source file.
 - **Then targeted reads:** use `read` with `offset`/`limit` for the specific section you need.
 - **Use `grep` as a fallback:** for literal string matching or when no index is available, not as the default exploration tool.
@@ -125,7 +126,7 @@ Do **not** use `bash` for file writes, moves, deletes, or broad destructive oper
 
 ## Research and Verification
 
-- Before fixing an unfamiliar failure mode, third-party CLI or tool behavior, library or API behavior, or infra/CI/deployment issue, research the documented behavior first. Use `context7` for current docs, `exa` and web search for known issues, `codegraph`/`arbor`/`index` for codebase evidence, and `thoughtbox` to synthesize findings.
+- Before fixing an unfamiliar failure mode, third-party CLI or tool behavior, library or API behavior, or infra/CI/deployment issue, research the documented behavior first. Use `context7` for current docs, `exa` and web search for known issues, `explore`/`codegraph`/`arbor`/`index` for codebase evidence, and `thoughtbox` to synthesize findings.
 - Report real command results and separate unrelated red-baseline failures from touched-surface regressions.
 
 ## Architecture
@@ -141,7 +142,7 @@ Rust workspace, key crates in root dir:
 - n00n-lua: Lua plugin system with built-in plugins in ./plugins
 - n00n-acp: ACP ndjson stdio server
 
-Built-in Lua plugins in ./plugins: index, bash, glob, question, skill, memory, webfetch, websearch, todo_write, read, write, edit, task, workflow, code_execution, batch, team.
+Built-in Lua plugins in ./plugins: explore, index, bash, glob, question, skill, memory, webfetch, websearch, todo_write, read, write, edit, task, workflow, code_execution, batch, team, arbor, codegraph.
 
 ## Docs
 

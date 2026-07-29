@@ -26,6 +26,7 @@ const ARBOR_SRC: &str = include_str!("../../plugins/arbor/init.lua");
 const BASH_SRC: &str = include_str!("../../plugins/bash/init.lua");
 const BATCH_SRC: &str = include_str!("../../plugins/batch/init.lua");
 const CODEGRAPH_SRC: &str = include_str!("../../plugins/codegraph/init.lua");
+const EXPLORE_SRC: &str = include_str!("../../plugins/explore/init.lua");
 const GREP_SRC: &str = include_str!("../../plugins/grep/init.lua");
 const WORKFLOW_SRC: &str = include_str!("../../plugins/workflow/init.lua");
 
@@ -80,6 +81,7 @@ fn load_host() -> PluginHost {
     host.load_source("bash", BASH_SRC).unwrap();
     host.load_source("batch", BATCH_SRC).unwrap();
     host.load_source("codegraph", CODEGRAPH_SRC).unwrap();
+    host.load_source("explore", EXPLORE_SRC).unwrap();
     host.load_source("grep", GREP_SRC).unwrap();
     host
 }
@@ -206,6 +208,13 @@ fn restore(
     out
 }
 
+#[test_case::test_case(
+    "explore",
+    json!({ "query": "how does session restore work", "project": "/tmp/project" }),
+    "how does session restore work",
+    "/tmp/project";
+    "explore"
+)]
 #[test_case::test_case(
     "codegraph",
     json!({ "query": "where is session restore", "projectPath": "/tmp/project" }),
