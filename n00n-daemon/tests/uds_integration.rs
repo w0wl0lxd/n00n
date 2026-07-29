@@ -1,7 +1,7 @@
 #![cfg(unix)]
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
@@ -49,7 +49,7 @@ impl MockBackend {
     fn events(&self) -> Vec<String> {
         self.events
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .clone()
     }
 }
@@ -59,14 +59,14 @@ impl ControlBackend for MockBackend {
         Ok(self
             .records
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .clone())
     }
 
     fn status(&self, id: &str) -> ControlResult<AgentRecord> {
         self.records
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .iter()
             .find(|r| r.id == id)
             .cloned()
@@ -81,7 +81,7 @@ impl ControlBackend for MockBackend {
     ) -> ControlResult<serde_json::Value> {
         self.events
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .push(format!("message:{id}:{text}"));
         Ok(serde_json::json!({"queued": true}))
     }
@@ -89,7 +89,7 @@ impl ControlBackend for MockBackend {
     fn pause(&self, id: &str) -> ControlResult<()> {
         self.events
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .push(format!("pause:{id}"));
         Ok(())
     }
@@ -97,7 +97,7 @@ impl ControlBackend for MockBackend {
     fn resume(&self, id: &str) -> ControlResult<()> {
         self.events
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .push(format!("resume:{id}"));
         Ok(())
     }
@@ -105,7 +105,7 @@ impl ControlBackend for MockBackend {
     fn stop(&self, id: &str) -> ControlResult<()> {
         self.events
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .push(format!("stop:{id}"));
         Ok(())
     }
