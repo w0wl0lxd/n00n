@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785291367274,
+  "lastUpdate": 1785292922488,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -9069,6 +9069,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 106009,
             "range": "± 8372",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7e25dd699612d934d4f8f5928b3e0fd9b602436d",
+          "message": "Merge pull request #192 from w0wl0lxd/feat/cursor-native-work\n\nfeat(providers): native Cursor AgentService/Run via reqwest HTTP/2 duplex",
+          "timestamp": "2026-07-29T02:25:03Z",
+          "tree_id": "a15ee1b88c8a2d4ee8c616632c56ed8757be0026",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/7e25dd699612d934d4f8f5928b3e0fd9b602436d"
+        },
+        "date": 1785292921430,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6811450,
+            "range": "± 416866",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2227381,
+            "range": "± 9025",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2219307,
+            "range": "± 61639",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8066830,
+            "range": "± 27734",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4291302,
+            "range": "± 18697",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4266745,
+            "range": "± 14531",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 585816,
+            "range": "± 18315",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 192293,
+            "range": "± 3817",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 192290,
+            "range": "± 285",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1047274,
+            "range": "± 4346",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 582677,
+            "range": "± 1525",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 582737,
+            "range": "± 11606",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 57727,
+            "range": "± 10897",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 197199,
+            "range": "± 3932",
             "unit": "ns/iter"
           }
         ]
