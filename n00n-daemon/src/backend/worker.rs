@@ -372,6 +372,150 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn resume_roundtrips_over_control_sock() -> Result<(), String> {
+        use futures_lite::{AsyncBufReadExt, AsyncWriteExt, io::BufReader};
+        use smol::net::unix::UnixListener;
+        use std::time::Duration;
+
+        let tmp = TempDir::new().map_err(|e| e.to_string())?;
+        let sock_path = tmp.path().join("control.sock");
+        let sock_serve = sock_path.clone();
+        let server = std::thread::spawn(move || {
+            smol::block_on(async {
+                let listener = UnixListener::bind(&sock_serve).map_err(|e| e.to_string())?;
+                let (stream, _) = listener.accept().await.map_err(|e| e.to_string())?;
+                let (reader, mut writer) = futures_lite::io::split(stream);
+                let mut reader = BufReader::new(reader);
+                let mut line = String::new();
+                reader
+                    .read_line(&mut line)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if !line.contains("\"cmd\":\"resume\"") {
+                    return Err(format!("unexpected command line: {line}"));
+                }
+                writer
+                    .write_all(b"{\"ok\":true}\n")
+                    .await
+                    .map_err(|e| e.to_string())?;
+                writer.flush().await.map_err(|e| e.to_string())?;
+                Ok::<(), String>(())
+            })
+        });
+
+        std::thread::sleep(Duration::from_millis(20));
+        write_fixture_with_socket(tmp.path(), "worker-1", "running", &sock_path)?;
+
+        let backend = WorkerBackend::new(tmp.path());
+        backend.resume("worker-1").map_err(|e| e.to_string())?;
+
+        match server.join() {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err("mock worker server panicked".into()),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_roundtrips_over_control_sock() -> Result<(), String> {
+        use futures_lite::{AsyncBufReadExt, AsyncWriteExt, io::BufReader};
+        use smol::net::unix::UnixListener;
+        use std::time::Duration;
+
+        let tmp = TempDir::new().map_err(|e| e.to_string())?;
+        let sock_path = tmp.path().join("control.sock");
+        let sock_serve = sock_path.clone();
+        let server = std::thread::spawn(move || {
+            smol::block_on(async {
+                let listener = UnixListener::bind(&sock_serve).map_err(|e| e.to_string())?;
+                let (stream, _) = listener.accept().await.map_err(|e| e.to_string())?;
+                let (reader, mut writer) = futures_lite::io::split(stream);
+                let mut reader = BufReader::new(reader);
+                let mut line = String::new();
+                reader
+                    .read_line(&mut line)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if !line.contains("\"cmd\":\"stop\"") {
+                    return Err(format!("unexpected command line: {line}"));
+                }
+                writer
+                    .write_all(b"{\"ok\":true}\n")
+                    .await
+                    .map_err(|e| e.to_string())?;
+                writer.flush().await.map_err(|e| e.to_string())?;
+                Ok::<(), String>(())
+            })
+        });
+
+        std::thread::sleep(Duration::from_millis(20));
+        write_fixture_with_socket(tmp.path(), "worker-1", "running", &sock_path)?;
+
+        let backend = WorkerBackend::new(tmp.path());
+        backend.stop("worker-1").map_err(|e| e.to_string())?;
+
+        match server.join() {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err("mock worker server panicked".into()),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn message_roundtrips_over_control_sock() -> Result<(), String> {
+        use futures_lite::{AsyncBufReadExt, AsyncWriteExt, io::BufReader};
+        use smol::net::unix::UnixListener;
+        use std::time::Duration;
+
+        let tmp = TempDir::new().map_err(|e| e.to_string())?;
+        let sock_path = tmp.path().join("control.sock");
+        let sock_serve = sock_path.clone();
+        let server = std::thread::spawn(move || {
+            smol::block_on(async {
+                let listener = UnixListener::bind(&sock_serve).map_err(|e| e.to_string())?;
+                let (stream, _) = listener.accept().await.map_err(|e| e.to_string())?;
+                let (reader, mut writer) = futures_lite::io::split(stream);
+                let mut reader = BufReader::new(reader);
+                let mut line = String::new();
+                reader
+                    .read_line(&mut line)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if !line.contains("\"cmd\":\"message\"") {
+                    return Err(format!("unexpected command line: {line}"));
+                }
+                writer
+                    .write_all(b"{\"type\":\"done\"}\n")
+                    .await
+                    .map_err(|e| e.to_string())?;
+                writer.flush().await.map_err(|e| e.to_string())?;
+                Ok::<(), String>(())
+            })
+        });
+
+        std::thread::sleep(Duration::from_millis(20));
+        write_fixture_with_socket(tmp.path(), "worker-1", "running", &sock_path)?;
+
+        let backend = WorkerBackend::new(tmp.path());
+        let result = backend
+            .message("worker-1", "continue", &MessageOpts::default())
+            .map_err(|e| e.to_string())?;
+        assert_eq!(
+            result,
+            serde_json::json!({"queued": true, "id": "worker-1"})
+        );
+
+        match server.join() {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err("mock worker server panicked".into()),
+        }
+    }
+
+    #[cfg(unix)]
     fn write_fixture_with_socket(
         dir: &Path,
         id: &str,
