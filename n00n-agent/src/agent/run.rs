@@ -866,24 +866,23 @@ impl<'h> Agent<'h> {
                             return;
                         }
                     };
-                    match n00n_providers::provider::from_model_with_openai_options(
+                    let provider = match n00n_providers::provider::from_model_with_openai_options(
                         &mut model,
                         self.timeouts,
                         self.openai_options,
                     ) {
-                        Ok(provider) => {
-                            self.provider = Arc::from(provider);
-                            self.model = Arc::new(model);
-                        }
+                        Ok(provider) => provider,
                         Err(e) => {
                             warn!(
                                 error = %e,
-                                model = %model.id,
+                                spec = %spec,
                                 "fusion: failed to build provider for lead model, keeping current provider/model"
                             );
                             return;
                         }
-                    }
+                    };
+                    self.provider = Arc::from(provider);
+                    self.model = Arc::new(model);
                 }
                 if let Some(state) = self.fusion_state.as_mut() {
                     state.lane = FusionLane::Lead;
@@ -924,7 +923,7 @@ impl<'h> Agent<'h> {
                     Err(e) => {
                         warn!(
                             error = %e,
-                            model = %model.id,
+                            spec = %spec,
                             "fusion: failed to build provider for sidekick model, keeping current provider/model"
                         );
                         return;
