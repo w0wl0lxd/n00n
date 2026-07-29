@@ -6,7 +6,7 @@ use crate::error::ControlResult;
 use crate::protocol::{AgentRecord, MessageOpts};
 
 pub use worker::WorkerBackend;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) use worker::WorkerStateFile;
 
 /// Backend that can list/inspect/control agents of one kind.
