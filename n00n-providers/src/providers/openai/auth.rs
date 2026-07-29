@@ -474,12 +474,7 @@ fn http_client(timeout: Duration) -> Result<isahc::HttpClient, AgentError> {
 }
 
 fn extract_account_id(token: &str) -> Option<String> {
-    let parts: Vec<&str> = token.split('.').collect();
-    if parts.len() != 3 {
-        return None;
-    }
-    let payload = URL_SAFE_NO_PAD.decode(parts[1]).ok()?;
-    let claims: serde_json::Value = serde_json::from_slice(&payload).ok()?;
+    let claims = decode_jwt_claims(token)?;
 
     claims
         .get("chatgpt_account_id")
@@ -498,6 +493,31 @@ fn extract_account_id(token: &str) -> Option<String> {
                 .and_then(|v| v.as_str())
         })
         .map(String::from)
+}
+
+fn token_exp(token: &str) -> Option<u64> {
+    let claims = decode_jwt_claims(token)?;
+    claims.get("exp").and_then(serde_json::Value::as_u64)
+}
+
+fn decode_jwt_claims(token: &str) -> Option<serde_json::Value> {
+    let mut parts = token.split('.');
+    let _header = parts.next()?;
+    let payload = parts.next()?;
+    let _signature = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+
+    let Ok(decoded) = URL_SAFE_NO_PAD.decode(payload) else {
+        return None;
+    };
+
+    let Ok(claims) = serde_json::from_slice::<serde_json::Value>(&decoded) else {
+        return None;
+    };
+
+    Some(claims)
 }
 
 fn extract_account_id_from_tokens(resp: &TokenResponse) -> Option<String> {
@@ -772,13 +792,83 @@ pub fn is_oauth(dir: &StateDir) -> bool {
     load_tokens(dir, PROVIDER).is_some()
 }
 
+fn ensure_tokens(dir: &StateDir) -> Result<Option<OAuthTokens>, AgentError> {
+    if let Some(tokens) = load_tokens(dir, PROVIDER) {
+        return Ok(Some(tokens));
+    }
+    import_codex_tokens(dir)?;
+    Ok(load_tokens(dir, PROVIDER))
+}
+
+fn import_codex_tokens(dir: &StateDir) -> Result<Option<OAuthTokens>, AgentError> {
+    // Only migrate into the user's real state directory, never a test temp dir.
+    let user = StateDir::resolve()?;
+    if dir.path() != user.path() {
+        return Ok(None);
+    }
+
+    let Some(home) = n00n_storage::paths::home() else {
+        return Ok(None);
+    };
+    let codex_path = home.join(".codex").join("auth.json");
+
+    let Ok(data) = fs::read_to_string(&codex_path) else {
+        debug!(path = %codex_path.display(), "no Codex auth file to migrate");
+        return Ok(None);
+    };
+
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&data) else {
+        debug!(path = %codex_path.display(), "malformed Codex auth file");
+        return Ok(None);
+    };
+
+    let Some(tokens) = value.get("tokens").and_then(serde_json::Value::as_object) else {
+        return Ok(None);
+    };
+    let Some(access) = tokens
+        .get("access_token")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return Ok(None);
+    };
+    let Some(refresh) = tokens
+        .get("refresh_token")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return Ok(None);
+    };
+    let account_id = tokens
+        .get("account_id")
+        .and_then(serde_json::Value::as_str)
+        .map(String::from);
+
+    let Some(exp) = token_exp(access) else {
+        return Ok(None);
+    };
+    let access = access.to_string();
+    let refresh = refresh.to_string();
+    let expires = exp.checked_mul(1000).ok_or_else(|| AgentError::Config {
+        message: "OpenAI token expiry overflow".into(),
+    })?;
+
+    let n00n_tokens = OAuthTokens {
+        access,
+        refresh,
+        expires,
+        account_id,
+    };
+    save_tokens(dir, PROVIDER, &n00n_tokens)?;
+    debug!("migrated Codex OpenAI tokens");
+    Ok(Some(n00n_tokens))
+}
+
 /// Resolve cached `OpenAI` authentication without network access.
 ///
 /// # Errors
 ///
 /// Returns an `AgentError` if no API key or valid OAuth tokens are available.
 pub fn resolve_cached(dir: &StateDir) -> Result<ResolvedAuth, AgentError> {
-    if let Some(tokens) = load_tokens(dir, PROVIDER) {
+    if let Some(tokens) = ensure_tokens(dir)? {
         debug!(
             expired = tokens.is_expired(),
             "using cached OpenAI OAuth authentication"
@@ -824,13 +914,21 @@ pub(crate) fn resolve_api_key(dir: &StateDir) -> Result<ResolvedAuth, AgentError
         });
     }
 
+    if let Some(tokens) = ensure_tokens(dir)? {
+        debug!(
+            expired = tokens.is_expired(),
+            "using cached OpenAI OAuth authentication"
+        );
+        return Ok(build_oauth_resolved(&tokens));
+    }
+
     Err(AgentError::Config {
         message: "not authenticated, set OPENAI_API_KEY or run `n00n auth login openai`".into(),
     })
 }
 
 pub(crate) fn resolve_coding_plan(dir: &StateDir) -> Result<ResolvedAuth, AgentError> {
-    let tokens = load_tokens(dir, PROVIDER).ok_or_else(|| AgentError::Config {
+    let tokens = ensure_tokens(dir)?.ok_or_else(|| AgentError::Config {
         message: "not authenticated, run `n00n auth login codex`".into(),
     })?;
 
