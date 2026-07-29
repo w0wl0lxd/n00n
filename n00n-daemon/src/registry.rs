@@ -508,8 +508,7 @@ mod tests {
                 assert_eq!(
                     agents.len(),
                     2,
-                    "expected 2 agents, got {}: {agents:?}",
-                    agents.len()
+                    "expected 2 agents (tui-1 and worker-1), got {agents:?}"
                 );
                 assert!(
                     agents
