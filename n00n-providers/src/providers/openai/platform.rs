@@ -573,7 +573,7 @@ impl OpenAi {
     }
 
     fn is_oauth(&self) -> bool {
-        self.auth_managed && self.codex && self.storage.as_ref().is_some_and(auth::is_oauth)
+        self.auth_managed && self.storage.as_ref().is_some_and(auth::is_oauth)
     }
 
     async fn lock_response_chain(

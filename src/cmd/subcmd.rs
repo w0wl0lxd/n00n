@@ -501,6 +501,8 @@ pub fn auth_status(storage: &StateDir) {
                 "  \x1b[32m✓\x1b[0m {:<14} {} (key: {}){}",
                 b.slug, display, masked, plan_info
             );
+        } else if b.slug == "openai" && openai_auth::is_oauth(storage) {
+            println!("  \x1b[32m✓\x1b[0m {:<14} {} (OAuth)", b.slug, display);
         } else if let Some(env_key) = builtin_env_key(b) {
             println!(
                 "  \x1b[33m~\x1b[0m {:<14} {} (via {})",
