@@ -5,10 +5,11 @@
 -- primitives only (`n00n.agent.session`, `n00n.json.schema_validator`,
 -- `n00n.async.semaphore`).
 
-local ToolView = require("n00n.tool_view")
+local ActivityPreview = require("n00n.activity_preview")
 local output_limits = require("n00n.output_limits")
 local route_tier = require("n00n.route_tier").route_tier
 local structured_output = require("n00n.structured_output")
+local subagent = require("n00n.subagent")
 
 local DONE_NAME = "done"
 local DONE_DESCRIPTION = "Call when the task is complete with your final answer."
@@ -72,43 +73,6 @@ local opts = n00n.api.register_options({
 -- Process-wide cap on concurrent subagents.
 local semaphore = n00n.async.semaphore(math.min(opts.max_concurrent, 8))
 
-local function make_preview(ctx, description)
-  local tol = ctx:tool_output_lines()
-  local max_preview = (tol and tol.task) or DEFAULT_OUTPUT_LINES
-  local view = ToolView.new(n00n.ui.buf(), { max_lines = max_preview, keep = "tail" })
-  local last_completed = 0
-
-  local function update(progress)
-    if progress.completed_count > last_completed then
-      local new_count = progress.completed_count - last_completed
-      local recent = progress.recent_tools
-      local start = new_count <= #recent and (#recent - new_count + 1) or 1
-      for i = start, #recent do
-        view:append({ { "✓ " .. recent[i], "dim" } })
-      end
-      last_completed = progress.completed_count
-    end
-
-    local elapsed = math.floor(progress.elapsed_ms / 1000)
-    local elapsed_str = n00n.ui.humantime(elapsed)
-    local header = { { { description .. " · " .. elapsed_str, "bold" } } }
-    if progress.current_tool then
-      header[#header + 1] = { { "▸ " .. progress.current_tool, "bold" } }
-    elseif not progress.done then
-      header[#header + 1] = { { "Starting...", "dim" } }
-    end
-    view:set_header(header)
-  end
-
-  view.buf:on("click", function()
-    view:toggle()
-  end)
-
-  ctx:live_buf(view.buf)
-
-  return { buf = view.buf, update = update }
-end
-
 local function handler(input, ctx)
   if input.background then
     local forwarded = {}
@@ -130,7 +94,7 @@ local function handler(input, ctx)
     if output_err then
       return { llm_output = "failed to encode task status: " .. tostring(output_err), is_error = true }
     end
-    return output
+    return { llm_output = output }
   end
 
   local subagent_type = input.subagent_type or "research"
@@ -153,51 +117,14 @@ local function handler(input, ctx)
     model_tier = route_tier(input.prompt)
   end
 
-  local model, model_err = n00n.agent.resolve_model(ctx, {
-    spec = input.model,
-    tier = not input.model and model_tier or nil,
-  })
-  if model_err then
-    return { llm_output = model_err, is_error = true }
+  local preview, preview_err = ActivityPreview.new(ctx, input.description or "task", {})
+  if not preview then
+    return { llm_output = "failed to create task preview: " .. tostring(preview_err), is_error = true }
   end
 
-  local audience = subagent_type == "research" and "research_sub" or "general_sub"
-  local prompt_id = subagent_type == "research" and "research" or "general"
-  local system, system_err = n00n.agent.system_prompt(ctx, {
-    prompt_id = prompt_id,
-    instructions = true,
-  })
-  if system_err then
-    return { llm_output = system_err, is_error = true }
-  end
-
-  local tool_defs, tools_err = n00n.agent.tools(ctx, {
-    audience = audience,
-    spec = model.spec,
-  })
-  if tools_err then
-    return { llm_output = tools_err, is_error = true }
-  end
-
-  local captured, last_errors
+  -- Build local tools: either structured_output (with schema) or done tool
   local local_tools
-  if validator then
-    local_tools = {
-      [structured_output.STRUCTURED_OUTPUT_NAME] = {
-        description = structured_output.STRUCTURED_OUTPUT_DESCRIPTION,
-        input_schema = input.output_schema,
-        handler = function(value)
-          local errs = validator:validate(value)
-          if errs then
-            last_errors = structured_output.bounded_errors(errs)
-            return nil, structured_output.INVALID_INPUT_PREFIX .. last_errors
-          end
-          captured = value
-          return structured_output.STRUCTURED_OUTPUT_ACK
-        end,
-      },
-    }
-  else
+  if not input.output_schema then
     local_tools = {
       [DONE_NAME] = {
         description = DONE_DESCRIPTION,
@@ -209,22 +136,19 @@ local function handler(input, ctx)
           required = { "answer" },
         },
         handler = function(value)
-          captured = value.answer
           return "Done."
         end,
       },
     }
   end
 
-  local preview = make_preview(ctx, input.description or "task")
-
   local function on_finish(err, result)
     if err then
-      ctx:finish({ llm_output = "task failed: " .. tostring(err), is_error = true, body = preview.buf })
+      ctx:finish({ llm_output = "task failed: " .. tostring(err), is_error = true, body = preview.view.buf })
     else
       ctx:finish({
         llm_output = result.llm_output,
-        body = preview.buf,
+        body = preview.view.buf,
         is_error = result.is_error,
         format = result.format,
         usage = result.usage,
@@ -236,88 +160,139 @@ local function handler(input, ctx)
   n00n.async.run(function()
     local permit = semaphore:acquire()
     local ok, out = pcall(function()
-      local sess, sess_err = n00n.agent.session(ctx, {
-        model_spec = model.spec,
-        system = system,
-        tools = tool_defs,
-        local_tools = local_tools,
-        audience = audience,
-        name = input.description,
-        thinking = input.thinking,
-      })
-      if sess_err then
-        return { llm_output = sess_err, is_error = true }
-      end
-
-      local function attach_cost(r)
-        if r and not r.cost and r.input_tokens and r.output_tokens then
-          local cost, _ = n00n.agent.usage_cost(model.spec, r.input_tokens, r.output_tokens, r)
-          r.cost = cost
-        end
-      end
-
-      local function do_prompt()
-        local message = input.prompt
-        if validator then
-          message = message .. structured_output.STRUCTURED_OUTPUT_SUFFIX
-        else
-          message = message .. DONE_PROMPT_SUFFIX
-        end
-        local result, err = sess:prompt(message)
-        attach_cost(result)
-        local retries = 0
-        while not err and validator and not captured and retries < structured_output.MAX_STRUCTURED_RETRIES do
-          retries = retries + 1
-          result, err = sess:prompt(structured_output.NUDGE_MISSING)
-          attach_cost(result)
-        end
+      if input.output_schema then
+        -- Use subagent.launch for structured output
+        local captured, err = subagent.launch(ctx, {
+          description = input.description or "task",
+          prompt = input.prompt,
+          subagent_type = subagent_type,
+          model_spec = input.model,
+          model_tier = model_tier,
+          auto_tier = input.auto_tier,
+          thinking = input.thinking,
+          output_schema = input.output_schema,
+          preview = preview,
+          activity_label = input.description or "task",
+        })
         if err then
-          return {
-            llm_output = "sub-agent error: " .. err,
-            is_error = true,
-            usage = result,
-            cost = result and result.cost,
-          }
+          return { llm_output = err, is_error = true }
         end
-        if validator and not captured then
-          local msg = last_errors and (structured_output.STRUCTURED_INVALID_ERROR .. ":\n" .. last_errors)
-            or structured_output.STRUCTURED_MISSING_ERROR
-          return { llm_output = msg, is_error = true, usage = result, cost = result and result.cost }
+        if type(captured) == "string" then
+          return { llm_output = captured, format = "markdown" }
         end
-        if captured then
-          if type(captured) == "string" then
+        local encoded, encode_err = n00n.json.encode(captured)
+        if encode_err then
+          return { llm_output = "failed to encode structured output: " .. tostring(encode_err), is_error = true }
+        end
+        return {
+          llm_output = encoded,
+          format = "markdown",
+        }
+      else
+        -- Manual session for done tool (legacy path)
+        local model, model_err = n00n.agent.resolve_model(ctx, {
+          spec = input.model,
+          tier = not input.model and model_tier or nil,
+        })
+        if model_err then
+          return { llm_output = model_err, is_error = true }
+        end
+
+        local audience = subagent_type == "research" and "research_sub" or "general_sub"
+        local prompt_id = subagent_type == "research" and "research" or "general"
+        local system, system_err = n00n.agent.system_prompt(ctx, {
+          prompt_id = prompt_id,
+          instructions = true,
+        })
+        if system_err then
+          return { llm_output = system_err, is_error = true }
+        end
+
+        local tool_defs, tools_err = n00n.agent.tools(ctx, {
+          audience = audience,
+          spec = model.spec,
+        })
+        if tools_err then
+          return { llm_output = tools_err, is_error = true }
+        end
+
+        local captured
+        local done_tool = {
+          [DONE_NAME] = {
+            description = DONE_DESCRIPTION,
+            input_schema = {
+              type = "object",
+              properties = {
+                answer = { type = "string", description = "Final answer to return to the parent agent." },
+              },
+              required = { "answer" },
+            },
+            handler = function(value)
+              captured = value.answer
+              return "Done."
+            end,
+          },
+        }
+
+        local sess, sess_err = n00n.agent.session(ctx, {
+          model_spec = model.spec,
+          system = system,
+          tools = tool_defs,
+          local_tools = done_tool,
+          audience = audience,
+          name = input.description,
+          thinking = input.thinking,
+        })
+        if sess_err then
+          return { llm_output = sess_err, is_error = true }
+        end
+
+        local function attach_cost(r)
+          if r and not r.cost and r.input_tokens and r.output_tokens then
+            local cost, _ = n00n.agent.usage_cost(model.spec, r.input_tokens, r.output_tokens, r)
+            r.cost = cost
+          end
+        end
+
+        local function do_prompt()
+          local message = input.prompt .. DONE_PROMPT_SUFFIX
+          local result, err = sess:prompt(message)
+          attach_cost(result)
+          if err then
+            return {
+              llm_output = "sub-agent error: " .. err,
+              is_error = true,
+              usage = result,
+              cost = result and result.cost,
+            }
+          end
+          if captured then
             return { llm_output = captured, format = "markdown", usage = result, cost = result and result.cost }
           end
-          return {
-            llm_output = n00n.json.encode(captured),
-            format = "markdown",
-            usage = result,
-            cost = result and result.cost,
-          }
+          return { llm_output = result.text, format = "markdown", usage = result, cost = result and result.cost }
         end
-        return { llm_output = result.text, format = "markdown", usage = result, cost = result and result.cost }
-      end
 
-      local function do_poll()
-        while true do
-          local progress, err = sess:get_progress()
-          if not progress then
-            return
-          end
-          preview:update(progress)
-          if progress.done then
-            return
+        local function do_poll()
+          while true do
+            local progress = sess:get_progress()
+            if not progress then
+              return
+            end
+            preview:update(progress)
+            if progress.done then
+              return
+            end
           end
         end
-      end
 
-      local results = n00n.async.gather({ do_prompt, do_poll })
-      sess:close()
-      local prompt_res = results[1]
-      if not prompt_res.ok then
-        error(prompt_res.err, 0)
+        local results = n00n.async.gather({ do_prompt, do_poll })
+        sess:close()
+        local prompt_res = results[1]
+        if not prompt_res.ok then
+          error(prompt_res.err, 0)
+        end
+        return prompt_res.value
       end
-      return prompt_res.value
     end)
     permit:release()
     if not ok then
