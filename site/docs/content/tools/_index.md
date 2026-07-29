@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-n00n ships with 31 built-in tools. This is the full reference.
+n00n ships with 32 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -344,19 +344,19 @@ Load all tools from a namespace. Returns the list of tools that were loaded.
 
 ### `fusion_delegate` *(lua plugin)*
 
-Delegate mechanical work to a Fusion sidekick subagent. Provide goal, constraints, and definition of done — not full file contents. Sidekick returns concise evidence and test results.
+Delegate to a Fusion sidekick. Pass goal, constraints, and definition_of_done — not file dumps.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `description` | string | yes |  | Short label (3-5 words). |
-| `model_tier` | string | no |  | weak/medium/strong override for sidekick. |
-| `model` | string | no |  | Exact model spec override. |
-| `goal` | string | yes |  | What the sidekick should accomplish. |
-| `constraints` | string | no |  | Boundaries, files in scope, patterns to follow. |
-| `definition_of_done` | string | yes |  | How you will verify success (tests, checks, artifacts). |
-| `auto_tier` | boolean | no | true | Route tier from brief text. |
-| `escalation_triggers` | string | no |  | When the sidekick should stop and ask the lead to take over. |
-| `subagent_type` | string | no |  | research (read-only) or general (can edit). Default: general. |
+| `model_tier` | string | no |  | weak/medium/strong override. |
+| `model` | string | no |  | Exact model override. |
+| `goal` | string | yes |  | What to accomplish. |
+| `constraints` | string | no |  | Scope and patterns. |
+| `definition_of_done` | string | yes |  | Success checks (tests, artifacts). |
+| `auto_tier` | boolean | no | true | Tier from brief. |
+| `escalation_triggers` | string | no |  | When to escalate to the lead. |
+| `subagent_type` | string | no |  | research (read-only) or general (edit). Default: general. |
 
 ## Web
 

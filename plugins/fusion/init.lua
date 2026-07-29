@@ -5,7 +5,7 @@
 local subagent = require("n00n.subagent")
 
 local description =
-  [[Delegate mechanical work to a Fusion sidekick subagent. Provide goal, constraints, and definition of done — not full file contents. Sidekick returns concise evidence and test results.]]
+  [[Delegate to a Fusion sidekick. Pass goal, constraints, and definition_of_done — not file dumps.]]
 
 local schema = {
   type = "object",
@@ -18,41 +18,41 @@ local schema = {
     },
     goal = {
       type = "string",
-      description = "What the sidekick should accomplish.",
+      description = "What to accomplish.",
     },
     constraints = {
       type = "string",
-      description = "Boundaries, files in scope, patterns to follow.",
+      description = "Scope and patterns.",
     },
     definition_of_done = {
       type = "string",
-      description = "How you will verify success (tests, checks, artifacts).",
+      description = "Success checks (tests, artifacts).",
     },
     escalation_triggers = {
       type = "string",
-      description = "When the sidekick should stop and ask the lead to take over.",
+      description = "When to escalate to the lead.",
     },
     subagent_type = {
       type = "string",
-      description = "research (read-only) or general (can edit). Default: general.",
+      description = "research (read-only) or general (edit). Default: general.",
     },
     model_tier = {
       type = "string",
-      description = "weak/medium/strong override for sidekick.",
+      description = "weak/medium/strong override.",
     },
     model = {
       type = "string",
-      description = "Exact model spec override.",
+      description = "Exact model override.",
     },
     auto_tier = {
       type = "boolean",
-      description = "Route tier from brief text (default: true).",
+      description = "Tier from brief (default: true).",
     },
   },
 }
 
 local opts = n00n.api.register_options({
-  auto_tier = { default = true, desc = "Route sidekick model tier from the brief (on by default in Fusion)." },
+  auto_tier = { default = true, desc = "Route sidekick tier from the brief." },
   default_subagent_type = { default = "general", desc = "Default subagent_type when omitted." },
 })
 

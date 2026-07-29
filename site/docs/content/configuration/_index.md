@@ -189,7 +189,7 @@ n00n.setup({
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
-| `auto_tier` | boolean | `true` | - | Route sidekick model tier from the brief (on by default in Fusion). |
+| `auto_tier` | boolean | `true` | - | Route sidekick tier from the brief. |
 | `default_subagent_type` | string | `"general"` | - | Default subagent_type when omitted. |
 
 ### `plugins.glob`

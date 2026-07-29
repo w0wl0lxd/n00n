@@ -420,7 +420,8 @@ mod tests {
         assert!(cleaned.starts_with(remaining_prefix), "cleaned: {cleaned}");
     }
 
-    const MAX_TOOL_DEFINITION_BYTES: usize = 36_000;
+    // Room for fusion_delegate alongside explore; keep definitions lean.
+    const MAX_TOOL_DEFINITION_BYTES: usize = 36_500;
 
     #[test]
     fn tool_definitions_fit_byte_budget() {
