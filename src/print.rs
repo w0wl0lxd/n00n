@@ -17,7 +17,7 @@ use color_eyre::Result;
 use color_eyre::eyre::{Context, eyre};
 use n00n_agent::headless::{HeadlessHandle, HeadlessParams};
 use n00n_agent::tools::QUESTION_TOOL_NAME;
-use n00n_agent::{AgentConfig, AgentEvent, Envelope, ImageSource, PermissionsConfig};
+use n00n_agent::{AgentConfig, AgentEvent, AgentMode, Envelope, ImageSource, PermissionsConfig};
 use n00n_lua::EventHandle;
 use n00n_providers::model::Model;
 use n00n_providers::{OpenAiOptions, StopReason, TokenUsage};
@@ -255,6 +255,7 @@ pub fn run(model: &Model, args: PrintArgs<'_>) -> Result<()> {
         initial_wd: cwd,
         fast,
         workflow,
+        mode: AgentMode::Build,
     });
 
     let print_status = Arc::new(Mutex::new("working".to_owned()));

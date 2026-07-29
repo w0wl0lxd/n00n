@@ -47,6 +47,7 @@ pub enum AgentMode {
     #[default]
     Build,
     Plan(PathBuf),
+    Research,
 }
 
 impl AgentMode {
@@ -54,8 +55,13 @@ impl AgentMode {
     pub fn plan_path(&self) -> Option<&Path> {
         match self {
             Self::Plan(p) => Some(p),
-            Self::Build => None,
+            Self::Build | Self::Research => None,
         }
+    }
+
+    #[must_use]
+    pub fn is_readonly(&self) -> bool {
+        matches!(self, Self::Plan(_) | Self::Research)
     }
 }
 
