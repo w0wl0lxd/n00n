@@ -1,5 +1,6 @@
 [package]
 name = "n00n-ui"
+description = "Terminal user interface and ratatui frontend for n00n"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
