@@ -440,15 +440,16 @@ mod tests {
         const STATE_FILE: &str = "agent.json";
         let agent_dir = dir.join(AGENTS_SUBDIR).join(id);
         fs::create_dir_all(&agent_dir).map_err(|e| e.to_string())?;
-        let state = serde_json::json!({
-            "id": id,
-            "session_id": "sess-1",
-            "socket_path": socket_path.to_string_lossy(),
-            "status": "running",
-            "model": "test/model",
-            "prompt": "smoke",
-            "updated_at": 1,
-        });
+        let state = crate::backend::WorkerStateFile {
+            id: id.to_owned(),
+            session_id: "sess-1".into(),
+            socket_path: socket_path.to_string_lossy().into_owned(),
+            status: "running".into(),
+            model: "test/model".into(),
+            prompt: "smoke".into(),
+            updated_at: 1,
+            cwd: None,
+        };
         let encoded = sonic_rs::to_string_pretty(&state).map_err(|e| e.to_string())?;
         fs::write(agent_dir.join(STATE_FILE), encoded).map_err(|e| e.to_string())?;
         Ok(())
