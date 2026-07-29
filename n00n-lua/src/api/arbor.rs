@@ -1,7 +1,7 @@
 use mlua::{Lua, LuaSerdeExt, Result as LuaResult, Table};
 use n00n_arbor::{
-    ArborError, Client, graph_callees, graph_callers, graph_index_available, graph_trace_path,
-    index_health,
+    ArborError, Client, ensure_fresh_index, graph_callees, graph_callers, graph_index_available,
+    graph_trace_path,
 };
 
 use crate::docs::{DocKind, FnDoc, ModuleDoc, ParamDoc};
@@ -80,11 +80,11 @@ pub(crate) fn create_arbor_table(lua: &Lua) -> LuaResult<Table> {
     })?;
     t.set("ensure_indexed", ensure_indexed)?;
 
-    let ensure_fresh_index = lua.create_function(|_, project: String| {
-        index_health::ensure_fresh_index(std::path::Path::new(&project)).map_err(map_err)?;
+    let ensure_fresh_index_fn = lua.create_function(|_, project: String| {
+        ensure_fresh_index(std::path::Path::new(&project)).map_err(map_err)?;
         Ok(())
     })?;
-    t.set("ensure_fresh_index", ensure_fresh_index)?;
+    t.set("ensure_fresh_index", ensure_fresh_index_fn)?;
 
     let graph_available = lua.create_function(|_, project: String| {
         Ok(graph_index_available(std::path::Path::new(&project)))
