@@ -360,12 +360,13 @@ fn spawn_paced_reqwest_body(
             {
                 return;
             }
-            if tx.send(Ok(Bytes::from(heartbeat_frame()))).await.is_err() {
-                return;
-            }
-            enqueued.fetch_add(1, Ordering::Relaxed);
             tokio::select! {
-                _ = ticker.tick() => {}
+                _ = ticker.tick() => {
+                    if tx.send(Ok(Bytes::from(heartbeat_frame()))).await.is_err() {
+                        return;
+                    }
+                    enqueued.fetch_add(1, Ordering::Relaxed);
+                }
                 result = notify_rx.recv_async() => {
                     match result {
                         Ok(()) | Err(_) => {}
