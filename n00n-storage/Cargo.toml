@@ -1,5 +1,6 @@
 [package]
 name = "n00n-storage"
+description = "Persistent state, IDs, atomic writes, and session storage for n00n"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
