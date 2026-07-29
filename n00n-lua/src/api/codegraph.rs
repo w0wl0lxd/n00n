@@ -21,6 +21,11 @@ pub(crate) fn create_codegraph_table(lua: &Lua) -> LuaResult<Table> {
         lua.create_function(|_, project: String| Ok(Client::has_index(Path::new(&project))))?;
     table.set("has_index", has_index)?;
 
+    let has_database = lua.create_function(|_, project: String| {
+        Ok(Client::has_database(std::path::Path::new(&project)))
+    })?;
+    table.set("has_database", has_database)?;
+
     let explore = lua.create_function(
         |_, (query, project, timeout_secs): (String, String, Option<u64>)| match Client::explore(
             &query,
@@ -39,7 +44,7 @@ pub(crate) fn create_codegraph_table(lua: &Lua) -> LuaResult<Table> {
 pub(crate) const DOCS: ModuleDoc = ModuleDoc {
     name: "n00n.codegraph",
     kind: DocKind::Table,
-    desc: "Cross-file structural exploration via the codegraph CLI. Wraps `codegraph explore` with timeout and index checks.",
+    desc: "Cross-file structural exploration via native `.codegraph/codegraph.db` queries with CLI fallback.",
     fns: &[
         FnDoc {
             name: "check_binary",
@@ -70,9 +75,21 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
             example: "",
         },
         FnDoc {
+            name: "has_database",
+            args: "{project}",
+            desc: "Returns true when `.codegraph/codegraph.db` exists in the project root.",
+            params: &[ParamDoc {
+                name: "{project}",
+                ty: "string",
+                desc: "Path to the project root.",
+            }],
+            returns: "(boolean) true when the native SQLite index is present.",
+            example: "",
+        },
+        FnDoc {
             name: "explore",
             args: "{query}, {project}, {timeout_secs?}",
-            desc: "Run `codegraph explore` for a natural-language or symbol query.",
+            desc: "Run an explore query using the native SQLite index when available, otherwise `codegraph explore`.",
             params: &[
                 ParamDoc {
                     name: "{query}",

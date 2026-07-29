@@ -20,6 +20,7 @@ pub(crate) mod keymap;
 pub(crate) mod log;
 pub(crate) mod net;
 pub(crate) mod options;
+pub(crate) mod semblem;
 pub(crate) mod session;
 pub(crate) mod slot;
 pub(crate) mod split;
@@ -85,6 +86,7 @@ pub(crate) fn create_n00n_global(
     n00n.set("workflow", workflow::create_workflow_table(lua)?)?;
     n00n.set("arbor", arbor::create_arbor_table(lua)?)?;
     n00n.set("codegraph", codegraph::create_codegraph_table(lua)?)?;
+    n00n.set("semblem", semblem::create_semblem_table(lua)?)?;
     n00n.set(
         "keymap",
         keymap::create_keymap_table(lua, Arc::clone(&plugin))?,
