@@ -103,7 +103,7 @@ mod tests {
     #[test]
     fn encode_frame_roundtrip() {
         let payload = b"hello";
-        let encoded = encode_frame(0, payload);
+        let encoded = encode_frame(0, payload).expect("encode");
         let mut buf = FrameBuffer::default();
         buf.push(&encoded);
         let frame = buf.next_frame().expect("frame").expect("ok");
@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn end_stream_flag_preserved() {
-        let encoded = encode_frame(CONNECT_END_STREAM_FLAG, b"");
+        let encoded = encode_frame(CONNECT_END_STREAM_FLAG, b"").expect("encode");
         let mut buf = FrameBuffer::default();
         buf.push(&encoded);
         let frame = buf.next_frame().expect("frame").expect("ok");
@@ -123,13 +123,20 @@ mod tests {
 
     #[test]
     fn chunked_input_reassembles() {
-        let encoded = encode_frame(0, b"chunked");
+        let encoded = encode_frame(0, b"chunked").expect("encode");
         let mut buf = FrameBuffer::default();
         for byte in encoded {
             buf.push(&[byte]);
         }
         let frame = buf.next_frame().expect("frame").expect("ok");
         assert_eq!(frame.payload, b"chunked");
+    }
+
+    #[test]
+    fn encode_frame_rejects_oversized_payload() {
+        let payload = vec![0u8; MAX_CONNECT_FRAME_LEN + 1];
+        let err = encode_frame(0, &payload).expect_err("oversize");
+        assert!(err.contains("exceeds maximum"));
     }
 
     #[test_case(16 * 1024 * 1024 + 1, "exceeds maximum")]
@@ -173,7 +180,7 @@ mod tests {
                 *byte = fastrand::u8(..);
             }
             let flags = fastrand::u8(..) & 0b11;
-            let encoded = encode_frame(flags, &payload);
+            let encoded = encode_frame(flags, &payload).expect("encode");
             let mut buf = FrameBuffer::default();
             let mut offset = 0;
             while offset < encoded.len() {

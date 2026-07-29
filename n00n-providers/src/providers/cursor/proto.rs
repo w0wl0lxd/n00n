@@ -80,7 +80,7 @@ pub(crate) struct RunFrameParams<'a> {
 
 /// Build the paced Connect frames for one `AgentService/Run` turn (no heartbeats).
 #[must_use]
-pub(crate) fn build_run_frames(params: &RunFrameParams<'_>) -> Vec<Vec<u8>> {
+pub(crate) fn build_run_frames(params: &RunFrameParams<'_>) -> Result<Vec<Vec<u8>>, String> {
     let mut user = field_str(1, params.prompt);
     user.extend(field_str(2, params.message_id));
     user.extend(field_str(3, ""));
@@ -96,7 +96,7 @@ pub(crate) fn build_run_frames(params: &RunFrameParams<'_>) -> Vec<Vec<u8>> {
     req.extend(field_ld(14, &field_str(1, "default")));
     req.extend(field_ld(14, &encode_model_meta(params.model_id)));
     req.extend(field_str(16, params.conversation_id));
-    let run_frame = encode_frame(0, &field_ld(1, &req));
+    let run_frame = encode_frame(0, &field_ld(1, &req))?;
 
     let mut env = field_str(1, "linux");
     env.extend(field_str(2, params.cwd));
@@ -113,23 +113,23 @@ pub(crate) fn build_run_frames(params: &RunFrameParams<'_>) -> Vec<Vec<u8>> {
         2,
         &field_ld(10, &field_ld(1, &field_ld(1, &field_ld(4, &env)))),
     );
-    let env_frame = encode_frame(0, &ctx);
+    let env_frame = encode_frame(0, &ctx)?;
 
     let mut out = vec![run_frame, env_frame];
-    out.push(encode_frame(0, &field_ld(5, &field_str(1, ""))));
-    out.push(encode_frame(0, &field_ld(3, &field_str(3, ""))));
+    out.push(encode_frame(0, &field_ld(5, &field_str(1, "")))?);
+    out.push(encode_frame(0, &field_ld(3, &field_str(3, "")))?);
     for n in 1..=8u64 {
         let mut marker = field_varint(1, n);
         marker.extend(field_str(3, ""));
-        out.push(encode_frame(0, &field_ld(3, &marker)));
+        out.push(encode_frame(0, &field_ld(3, &marker))?);
     }
-    out
+    Ok(out)
 }
 
 /// `AgentClientMessage.client_heartbeat` (field 7) empty message.
 #[must_use]
 pub(crate) fn heartbeat_frame() -> Vec<u8> {
-    encode_frame(0, &field_ld(7, &[]))
+    encode_frame(0, &field_ld(7, &[])).expect("heartbeat frame is tiny")
 }
 
 /// Decode length-delimited fields from a protobuf message body (skips varints).
@@ -345,7 +345,8 @@ mod tests {
             conversation_id: "conv-1",
             message_id: "msg-1",
             mode: AGENT_MODE_AGENT,
-        });
+        })
+        .expect("frames");
         assert!(frames.len() >= 4);
         let joined: Vec<u8> = frames.iter().flat_map(|f| f.iter().copied()).collect();
         let hay = String::from_utf8_lossy(&joined);
