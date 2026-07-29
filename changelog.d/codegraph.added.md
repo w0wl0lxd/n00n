@@ -1,1 +1,0 @@
-Built-in `codegraph` tool for cross-file structural exploration, call-path analysis, and blast-radius impact checks using a pre-indexed semantic codegraph (powered by [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph)). Use `codegraph explore <query>` at the CLI or the built-in `codegraph` tool in agent sessions.

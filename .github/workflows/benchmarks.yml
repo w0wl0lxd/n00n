@@ -36,6 +36,8 @@ jobs:
           components: rustfmt
       - name: Run benchmarks
         run: cargo bench --workspace --bench luau_perf --bench splash -- --output-format bencher | tee criterion.txt
+      - name: Reset Cargo.lock changes
+        run: git checkout -- Cargo.lock
       - name: Store / report results
         uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba  # v1
         with:

@@ -1,5 +1,6 @@
 [package]
 name = "n00n-highlight"
+description = "Syntax highlighting queries and theme-free rendering for n00n"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

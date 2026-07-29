@@ -47,7 +47,7 @@ pub struct DescriptionContext<'a> {
     pub workflow: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum ToolFilter {
     #[default]
     All,
@@ -86,6 +86,47 @@ impl ToolFilter {
                 }
                 Self::AllExcept(blocked)
             }
+        }
+    }
+
+    #[must_use]
+    pub fn intersect(self, other: &Self) -> Self {
+        match (self, other) {
+            (Self::All, other) => other.clone(),
+            (current, Self::All) => current,
+            (Self::Only(current_allowed), Self::Only(other_allowed)) => {
+                let intersection: Vec<String> = current_allowed
+                    .into_iter()
+                    .filter(|n| other_allowed.iter().any(|o| o == n.as_str()))
+                    .collect();
+                if intersection.is_empty() {
+                    Self::Only(vec![]) // No tools allowed
+                } else {
+                    Self::Only(intersection)
+                }
+            }
+            (Self::AllExcept(current_blocked), Self::AllExcept(other_blocked)) => {
+                let union: Vec<String> = current_blocked
+                    .into_iter()
+                    .chain(other_blocked.iter().cloned())
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect();
+                Self::AllExcept(union)
+            }
+            (Self::Only(allowed), Self::AllExcept(blocked)) => Self::Only(
+                allowed
+                    .into_iter()
+                    .filter(|n| !blocked.iter().any(|b| b == n.as_str()))
+                    .collect(),
+            ),
+            (Self::AllExcept(blocked), Self::Only(allowed)) => Self::Only(
+                allowed
+                    .iter()
+                    .filter(|n| !blocked.iter().any(|b| b == n.as_str()))
+                    .cloned()
+                    .collect(),
+            ),
         }
     }
 
@@ -215,14 +256,14 @@ pub struct ToolContext {
     pub provider: Arc<dyn Provider>,
     pub model: Arc<Model>,
     pub event_tx: EventSender,
-    pub mode: AgentMode,
+    pub mode: Arc<AgentMode>,
     pub tool_use_id: Option<String>,
     pub user_response_rx: Option<Arc<async_lock::Mutex<flume::Receiver<String>>>>,
     pub loaded_instructions: LoadedInstructions,
     pub cancel: CancelToken,
     pub mcp: Option<McpSession>,
     pub deadline: Deadline,
-    pub config: AgentConfig,
+    pub config: Arc<AgentConfig>,
     pub tool_output_lines: ToolOutputLines,
     pub permissions: Arc<PermissionManager>,
     pub timeouts: n00n_providers::Timeouts,
@@ -480,14 +521,14 @@ pub fn interpreter_ctx(
         provider: Arc::clone(&PROVIDER),
         model,
         event_tx: event_tx.clone(),
-        mode: mode.clone(),
+        mode: Arc::new(mode.clone()),
         tool_use_id: None,
         user_response_rx,
         loaded_instructions: LoadedInstructions::new(),
         cancel,
         mcp: None,
         deadline: Deadline::None,
-        config: AgentConfig::default(),
+        config: Arc::new(AgentConfig::default()),
         tool_output_lines: ToolOutputLines::default(),
         permissions,
         timeouts: n00n_providers::Timeouts::default(),
@@ -745,6 +786,66 @@ mod tests {
         params.path = Some(dir_str);
         let (_, entries) = grep::grep_search(&params).unwrap();
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn tool_filter_intersect_preserves_restrictions() {
+        // Test that caller restrictions are preserved during Fusion lane switches
+        let caller_filter = ToolFilter::Only(vec!["read".to_string(), "grep".to_string()]);
+        let model_filter = ToolFilter::All;
+        let result = caller_filter.intersect(&model_filter);
+        assert_eq!(
+            result,
+            ToolFilter::Only(vec!["read".to_string(), "grep".to_string()])
+        );
+
+        // Test intersection of two Only filters
+        let filter1 = ToolFilter::Only(vec![
+            "read".to_string(),
+            "grep".to_string(),
+            "write".to_string(),
+        ]);
+        let filter2 = ToolFilter::Only(vec!["read".to_string(), "bash".to_string()]);
+        let result = filter1.intersect(&filter2);
+        assert_eq!(result, ToolFilter::Only(vec!["read".to_string()]));
+
+        // Test Only intersected with AllExcept
+        let only_filter = ToolFilter::Only(vec![
+            "read".to_string(),
+            "grep".to_string(),
+            "bash".to_string(),
+        ]);
+        let except_filter = ToolFilter::AllExcept(vec!["bash".to_string()]);
+        let result = only_filter.intersect(&except_filter);
+        assert_eq!(
+            result,
+            ToolFilter::Only(vec!["read".to_string(), "grep".to_string()])
+        );
+
+        // Test AllExcept intersected with Only
+        let except_filter = ToolFilter::AllExcept(vec!["bash".to_string()]);
+        let only_filter = ToolFilter::Only(vec![
+            "read".to_string(),
+            "grep".to_string(),
+            "bash".to_string(),
+        ]);
+        let result = except_filter.intersect(&only_filter);
+        assert_eq!(
+            result,
+            ToolFilter::Only(vec!["read".to_string(), "grep".to_string()])
+        );
+
+        // Test AllExcept intersected with AllExcept (union of blocked)
+        let except1 = ToolFilter::AllExcept(vec!["bash".to_string()]);
+        let except2 = ToolFilter::AllExcept(vec!["write".to_string()]);
+        let result = except1.intersect(&except2);
+        assert!(matches!(result, ToolFilter::AllExcept(blocked) if blocked.len() == 2));
+
+        // Test empty intersection
+        let only1 = ToolFilter::Only(vec!["read".to_string()]);
+        let only2 = ToolFilter::Only(vec!["bash".to_string()]);
+        let result = only1.intersect(&only2);
+        assert_eq!(result, ToolFilter::Only(vec![]));
     }
 
     #[test]

@@ -275,7 +275,7 @@ fn run_sdk_mode(
     crate::sdk_mode::run(crate::sdk_mode::SdkParams {
         cli,
         model: stack.model,
-        config: stack.config.agent,
+        config: Arc::new(stack.config.agent),
         permissions_config: stack.config.permissions,
         timeouts,
         openai_options,
