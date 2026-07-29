@@ -269,12 +269,10 @@ impl ControlBackend for WorkerBackend {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
     use tempfile::TempDir;
 
-    fn write_fixture(dir: &Path, id: &str, status: &str) -> Result<(), String> {
+    fn write_fixture(dir: &std::path::Path, id: &str, status: &str) -> Result<(), String> {
         let agent_dir = dir.join(AGENTS_SUBDIR).join(id);
         fs::create_dir_all(&agent_dir).map_err(|e| e.to_string())?;
         let state = WorkerStateFile {
@@ -517,10 +515,10 @@ mod tests {
 
     #[cfg(unix)]
     fn write_fixture_with_socket(
-        dir: &Path,
+        dir: &std::path::Path,
         id: &str,
         status: &str,
-        socket_path: &Path,
+        socket_path: &std::path::Path,
     ) -> Result<(), String> {
         let agent_dir = dir.join(AGENTS_SUBDIR).join(id);
         fs::create_dir_all(&agent_dir).map_err(|e| e.to_string())?;
