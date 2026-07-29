@@ -1004,6 +1004,7 @@ impl EventPump {
         result: String,
         num_turns: u32,
         usage: TokenUsage,
+        fusion: Option<&n00n_agent::FusionUsageStats>,
     ) -> Result<()> {
         let (duration_ms, total_cost_usd) = {
             let shared = self
@@ -1012,7 +1013,7 @@ impl EventPump {
                 .map_err(|e| eyre!("mutex poisoned: {e}"))?;
             (
                 shared.turn_start.elapsed().as_millis(),
-                usage.cost(&shared.model.pricing, self.fast),
+                result_cost_usd(&usage, &shared.model, self.fast, fusion),
             )
         };
         self.writer.emit(WireInner::Result(ResultPayload {
@@ -1074,8 +1075,9 @@ impl EventPump {
             AgentEvent::Done {
                 usage,
                 num_turns,
-                stop_reason: _,
-            } => self.handle_done(usage, *num_turns),
+                fusion,
+                ..
+            } => self.handle_done(usage, *num_turns, fusion.as_ref()),
             AgentEvent::Error { message } => self.handle_error(message),
         }
     }
@@ -1204,13 +1206,18 @@ impl EventPump {
             }))
     }
 
-    fn handle_done(&mut self, usage: &TokenUsage, num_turns: u32) -> Result<()> {
+    fn handle_done(
+        &mut self,
+        usage: &TokenUsage,
+        num_turns: u32,
+        fusion: Option<&n00n_agent::FusionUsageStats>,
+    ) -> Result<()> {
         let result = mem::take(&mut self.result_text);
-        self.emit_turn_result(false, result, num_turns, *usage)
+        self.emit_turn_result(false, result, num_turns, *usage, fusion)
     }
 
     fn handle_error(&mut self, message: &str) -> Result<()> {
-        self.emit_turn_result(true, message.to_string(), 0, TokenUsage::default())
+        self.emit_turn_result(true, message.to_string(), 0, TokenUsage::default(), None)
     }
 }
 
@@ -1234,6 +1241,18 @@ fn map_tool_names_in_content(content: &Value) -> Value {
         }
         other => other.clone(),
     }
+}
+
+fn result_cost_usd(
+    usage: &TokenUsage,
+    model: &Model,
+    fast: bool,
+    fusion: Option<&n00n_agent::FusionUsageStats>,
+) -> f64 {
+    fusion.map_or_else(
+        || usage.cost(&model.pricing, fast),
+        |stats| stats.lead_cost + stats.sidekick_cost,
+    )
 }
 
 #[cfg(test)]
@@ -1598,5 +1617,43 @@ mod tests {
         assert_eq!(mapped[0]["type"], "text");
         assert_eq!(mapped[1]["name"], "Read");
         assert_eq!(mapped[2]["name"], "unknown_native");
+    }
+
+    #[test]
+    fn mixed_lane_fusion_cost_uses_per_lane_totals() {
+        let model = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
+        let usage = TokenUsage {
+            input: 1_000,
+            output: 200,
+            cache_creation: 0,
+            cache_read: 0,
+        };
+        let stats = n00n_agent::FusionUsageStats {
+            lead_cost: 0.10,
+            sidekick_cost: 0.02,
+            lead_usage: TokenUsage {
+                input: 800,
+                output: 100,
+                ..TokenUsage::default()
+            },
+            sidekick_usage: TokenUsage {
+                input: 200,
+                output: 100,
+                ..TokenUsage::default()
+            },
+            delegation_count: 1,
+            compact_count: 0,
+            final_lane: n00n_agent::FusionLane::Sidekick,
+        };
+        let fusion_cost = result_cost_usd(&usage, &model, false, Some(&stats));
+        let lead_only_reprice = usage.cost(&model.pricing, false);
+        assert!((fusion_cost - 0.12).abs() < f64::EPSILON);
+        assert!(
+            (fusion_cost - lead_only_reprice).abs() > f64::EPSILON,
+            "mixed-lane cost must not collapse to lead-model reprice of total usage"
+        );
+        assert!(
+            (result_cost_usd(&usage, &model, false, None) - lead_only_reprice).abs() < f64::EPSILON
+        );
     }
 }
