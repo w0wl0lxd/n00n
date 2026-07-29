@@ -109,7 +109,11 @@ sonic-rs = "0.5.8"
 toon-format = "0.5"
 tiktoken-rs = "0.9"
 bs58 = "0.5"
-uuid = { version = "1", default-features = false, features = ["std", "v7"] }
+uuid = { version = "1", default-features = false, features = [
+  "std",
+  "v5",
+  "v7",
+] }
 zstd = { version = "0.13", default-features = false }
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 crossterm = { version = "0.29", features = ["osc52"] }
@@ -188,6 +192,18 @@ event-listener = "5"
 futures-lite = "2"
 futures = "0.3"
 pin-project-lite = "0.2"
+bytes = "1"
+tokio = { version = "1", default-features = false, features = [
+  "rt",
+  "time",
+  "macros",
+  "sync",
+] }
+reqwest = { version = "0.12", default-features = false, features = [
+  "rustls-tls",
+  "http2",
+  "stream",
+] }
 process_alive = "0.2.0"
 isahc = { version = "1.7", default-features = false, features = [
   "text-decoding",
@@ -197,6 +213,9 @@ isahc = { version = "1.7", default-features = false, features = [
 ] }
 rusqlite = { version = "0.37", default-features = false, features = [
   "bundled",
+] }
+flate2 = { version = "1.1", default-features = false, features = [
+  "rust_backend",
 ] }
 libc = "0.2"
 rustix = { version = "0.38", default-features = false, features = [
