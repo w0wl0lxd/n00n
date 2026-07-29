@@ -108,6 +108,9 @@ fn load_config(plugin_host: &PluginHost, cli: &Cli, cwd: &Path) -> Result<Config
                 .filter_map(|t| normalize_tool_name(t).ok()),
         );
     }
+    if cli.fusion || config.always_fusion {
+        config.agent.fusion.enabled = true;
+    }
     config.validate()?;
     Ok(config)
 }

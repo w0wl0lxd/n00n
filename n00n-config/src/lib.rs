@@ -65,6 +65,7 @@ pub const DEFAULT_BUILTINS: &[&str] = &[
     "codegraph",
     "edit",
     "explore",
+    "fusion",
     "glob",
     "grep",
     "index",
@@ -138,6 +139,13 @@ pub const TOP_LEVEL_FIELDS: &[ConfigField] = &[
         default: ConfigValue::Bool(false),
         min: None,
         description: "Start every session with workflow mode (task callable inside code_execution)",
+    },
+    ConfigField {
+        name: "always_fusion",
+        ty: "bool",
+        default: ConfigValue::Bool(false),
+        min: None,
+        description: "Start every session with Fusion dual-lane routing (lead + sidekick)",
     },
     ConfigField {
         name: "always_thinking",
@@ -226,6 +234,7 @@ pub struct RawConfig {
     pub always_yolo: Option<bool>,
     pub always_fast: Option<bool>,
     pub always_workflow: Option<bool>,
+    pub always_fusion: Option<bool>,
     pub always_thinking: Option<AlwaysThinking>,
     #[serde(default)]
     pub ui: UiFileConfig,
@@ -243,6 +252,7 @@ impl RawConfig {
             always_yolo,
             always_fast,
             always_workflow,
+            always_fusion,
             always_thinking
         );
         self.ui.merge(overlay.ui);
@@ -277,6 +287,7 @@ impl RawConfig {
             always_yolo: self.always_yolo.is_some_and(|v| v),
             always_fast: self.always_fast.is_some_and(|v| v),
             always_workflow: self.always_workflow.is_some_and(|v| v),
+            always_fusion: self.always_fusion.is_some_and(|v| v),
             always_thinking: self
                 .always_thinking
                 .map(AlwaysThinking::resolve)
@@ -477,6 +488,14 @@ pub struct AgentFileConfig {
     pub compaction_buffer: Option<CompactionBuffer>,
     pub mcp_tool_desc_max_chars: Option<usize>,
     pub dynamic_tools: Option<DynamicToolFileConfig>,
+    pub fusion: Option<FusionFileConfig>,
+}
+
+#[derive(Deserialize, Default, Debug, Clone)]
+#[serde(default, deny_unknown_fields)]
+pub struct FusionFileConfig {
+    pub enabled: Option<bool>,
+    pub sidekick_tier: Option<crate::providers::Tier>,
 }
 
 #[derive(Deserialize, Default, Debug, Clone)]
@@ -507,6 +526,18 @@ impl AgentFileConfig {
                 }
             }
             (None, Some(over)) => self.dynamic_tools = Some(over),
+            _ => {}
+        }
+        match (self.fusion.as_mut(), overlay.fusion.clone()) {
+            (Some(base), Some(over)) => {
+                if over.enabled.is_some() {
+                    base.enabled = over.enabled;
+                }
+                if over.sidekick_tier.is_some() {
+                    base.sidekick_tier = over.sidekick_tier;
+                }
+            }
+            (None, Some(over)) => self.fusion = Some(over),
             _ => {}
         }
     }
@@ -835,6 +866,7 @@ pub struct Config {
     pub always_yolo: bool,
     pub always_fast: bool,
     pub always_workflow: bool,
+    pub always_fusion: bool,
     pub always_thinking: Option<StoredThinking>,
     pub ui: UiConfig,
     pub agent: AgentConfig,
@@ -1076,6 +1108,24 @@ pub struct AgentConfig {
 
     #[config(skip, default = "DynamicToolConfig::default()")]
     pub dynamic_tools: DynamicToolConfig,
+
+    #[config(skip, default = "FusionConfig::default()")]
+    pub fusion: FusionConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FusionConfig {
+    pub enabled: bool,
+    pub sidekick_tier: crate::providers::Tier,
+}
+
+impl Default for FusionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            sidekick_tier: crate::providers::Tier::Weak,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ConfigSection)]
@@ -1116,6 +1166,17 @@ impl AgentConfig {
             DynamicToolConfig::default()
         };
 
+        let fusion = if let Some(ff) = file.fusion {
+            FusionConfig {
+                enabled: ff.enabled.map_or(false, |enabled| enabled),
+                sidekick_tier: ff
+                    .sidekick_tier
+                    .map_or(crate::providers::Tier::Weak, |tier| tier),
+            }
+        } else {
+            FusionConfig::default()
+        };
+
         Self {
             no_rtk,
             max_output_bytes: file
@@ -1137,6 +1198,7 @@ impl AgentConfig {
             allowed_tools: Vec::new(),
             disabled_tools,
             dynamic_tools,
+            fusion,
         }
     }
 }
@@ -2345,6 +2407,7 @@ mod tests {
             always_yolo: false,
             always_fast: false,
             always_workflow: false,
+            always_fusion: false,
             always_thinking: None,
             ui: UiConfig::default(),
             agent: AgentConfig::default(),
