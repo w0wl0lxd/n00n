@@ -72,6 +72,8 @@ members = [
   "n00n-lua",
   "n00n-markdown",
   "n00n-providers",
+  "n00n-search",
+  "n00n-semble",
   "n00n-storage",
   "n00n-config-macro",
   "n00n-lua-macro",
@@ -102,6 +104,8 @@ n00n-lua-macro = { path = "n00n-lua-macro" }
 n00n-highlight = { path = "n00n-highlight" }
 n00n-arbor = { path = "n00n-arbor" }
 n00n-codegraph = { path = "n00n-codegraph" }
+n00n-search = { path = "n00n-search" }
+n00n-semble = { path = "n00n-semble" }
 n00n-markdown = { path = "n00n-markdown" }
 n00n-daemon = { path = "n00n-daemon" }
 n00n-token-profile = { path = "n00n-token-profile" }
@@ -213,9 +217,6 @@ isahc = { version = "1.7", default-features = false, features = [
   "static-ssl",
   "http2",
 ] }
-rusqlite = { version = "0.37", default-features = false, features = [
-  "bundled",
-] }
 flate2 = { version = "1.1", default-features = false, features = [
   "rust_backend",
 ] }
@@ -287,6 +288,12 @@ agent-client-protocol-schema = "0.13"
 termini = "1"
 
 wait-timeout = "0.2"
+rusqlite = { version = "0.40.1", default-features = false, features = [
+  "bundled",
+  "modern_sqlite",
+] }
+tantivy = "0.26.1"
+fs2 = "0.4.3"
 inventory = "0.3"
 url = "2"
 quanta = { version = "0.12.6", default-features = false }
