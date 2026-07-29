@@ -5920,10 +5920,15 @@ fn memory_tool_search_ranks_keyword_match() {
         }),
     )
     .expect("search memories");
-    assert!(
-        out.contains("auth.md"),
-        "search should rank auth memory first: {out}"
-    );
+    let auth_pos = out
+        .find("auth.md")
+        .expect("auth.md should be in search results");
+    if let Some(lua_pos) = out.find("lua.md") {
+        assert!(
+            auth_pos < lua_pos,
+            "auth.md should appear before lua.md in ranked results: {out}"
+        );
+    }
     assert!(out.contains("score="), "search should include score: {out}");
 }
 
