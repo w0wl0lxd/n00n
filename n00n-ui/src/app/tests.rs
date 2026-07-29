@@ -529,7 +529,7 @@ fn ctrl_c_quits_when_input_empty() {
     assert!(actions.is_empty());
 }
 
-#[test_case(AgentEvent::Done { usage: TokenUsage::default(), num_turns: 1, stop_reason: None }, ExitRequest::Success ; "done_exits_success")]
+#[test_case(AgentEvent::Done { usage: TokenUsage::default(), num_turns: 1, stop_reason: None, fusion: None }, ExitRequest::Success ; "done_exits_success")]
 #[test_case(AgentEvent::Error { message: "boom".into() }, ExitRequest::Error ; "error_exits_error")]
 fn exit_on_done_flag_triggers_exit(event: AgentEvent, expected: ExitRequest) {
     let mut app = test_app();
@@ -1893,6 +1893,7 @@ fn streaming_status_keeps_app_animating() {
         usage: TokenUsage::default(),
         num_turns: 1,
         stop_reason: None,
+        fusion: None,
     }));
     assert!(!app.is_animating());
 
@@ -1910,6 +1911,7 @@ fn edge_scroll_makes_app_animating() {
         usage: TokenUsage::default(),
         num_turns: 1,
         stop_reason: None,
+        fusion: None,
     }));
     assert!(!app.is_animating());
     let zone = Rect::new(0, 2, 80, 20);
@@ -2023,6 +2025,7 @@ fn pending_copy_not_animating() {
         usage: TokenUsage::default(),
         num_turns: 1,
         stop_reason: None,
+        fusion: None,
     }));
     make_pending_copy(&mut app);
     assert!(!app.is_animating());
@@ -2221,6 +2224,7 @@ fn stale_done_does_not_drain_queue() {
             usage: TokenUsage::default(),
             num_turns: 1,
             stop_reason: None,
+            fusion: None,
         },
         1,
     ));
@@ -3442,7 +3446,7 @@ fn streaming_app_with_history() -> App {
 }
 
 #[test_case(
-    AgentEvent::Done { usage: TokenUsage::default(), num_turns: 1, stop_reason: None } ; "stale_done_saves_session"
+    AgentEvent::Done { usage: TokenUsage::default(), num_turns: 1, stop_reason: None, fusion: None } ; "stale_done_saves_session"
 )]
 #[test_case(
     AgentEvent::Error { message: "timeout".into() } ; "stale_error_saves_session"
@@ -3492,6 +3496,7 @@ fn done_event() -> Msg {
         usage: TokenUsage::default(),
         num_turns: 1,
         stop_reason: None,
+        fusion: None,
     })
 }
 

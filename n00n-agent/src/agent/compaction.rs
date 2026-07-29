@@ -79,7 +79,7 @@ pub(super) async fn compact_history(
     session_id: Option<&n00n_storage::id::SessionRef>,
     cwd: &std::path::Path,
     transcript_path: Option<&std::path::Path>,
-) -> Result<TokenUsage, AgentError> {
+) -> Result<(TokenUsage, String), AgentError> {
     run_precompact_hooks(trigger, session_id, cwd, transcript_path).await?;
 
     let compact_start = std::time::Instant::now();
@@ -135,13 +135,8 @@ pub(super) async fn compact_history(
 
     run_postcompact_hooks(trigger, session_id, cwd, transcript_path, &summary).await;
 
-    Ok(finish_compact(
-        response,
-        history,
-        event_tx,
-        compact_start,
-        model,
-    ))
+    let usage = finish_compact(response, history, event_tx, compact_start, model);
+    Ok((usage, summary))
 }
 
 fn finish_compact(
@@ -185,7 +180,7 @@ pub async fn compact(
 ) -> Result<(), AgentError> {
     let cancel = CancelToken::none();
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
-    let usage = compact_history(
+    let (usage, _summary) = compact_history(
         provider,
         model,
         history,
@@ -203,6 +198,7 @@ pub async fn compact(
         usage,
         num_turns: 1,
         stop_reason: None,
+        fusion: None,
     })?;
 
     Ok(())
