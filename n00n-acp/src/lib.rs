@@ -20,7 +20,7 @@ pub type SessionDaemonRegister =
 
 pub struct AcpParams {
     pub model: Model,
-    pub config: AgentConfig,
+    pub config: Arc<AgentConfig>,
     pub permissions_config: PermissionsConfig,
     pub timeouts: Timeouts,
     pub openai_options: OpenAiOptions,

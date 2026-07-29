@@ -240,7 +240,10 @@ fn kill_job(meta: &mut JobMeta) {
             return;
         };
         if let Some(pid) = Pid::from_raw(raw) {
-            let _ = kill_process_group(pid, Signal::Kill);
+            let Some(sig) = Signal::from_named_raw(libc::SIGKILL) else {
+                return;
+            };
+            let _ = kill_process_group(pid, sig);
         }
     }
     #[cfg(windows)]

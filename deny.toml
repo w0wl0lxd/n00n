@@ -1,5 +1,10 @@
 [advisories]
 yanked = "warn"
+ignore = [
+  { id = "RUSTSEC-2024-0320", reason = "transitive via syntect; no safe upgrade until syntect migrates to yaml-rust2" },
+  { id = "RUSTSEC-2025-0141", reason = "transitive via syntect; bincode 1.x is the final release and not a vulnerability" },
+  { id = "RUSTSEC-2023-0089", reason = "transitive via monty -> postcard -> heapless 0.7; upstream is not yet on heapless 0.8+" },
+]
 
 [licenses]
 allow = [
@@ -22,7 +27,6 @@ allow = [
   "BSL-1.0",
   "OpenSSL",
   "Artistic-2.0",
-  "AGPL-3.0",
   "AGPL-3.0-only",
   "GPL-2.0-only",
   "GPL-3.0-only",
@@ -40,4 +44,7 @@ highlight = "all"
 unknown-registry = "warn"
 unknown-git = "warn"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = ["https://github.com/pydantic/monty.git"]
+allow-git = [
+  "https://github.com/pydantic/monty.git",
+  "https://github.com/samuelcolvin/ruff.git",
+]

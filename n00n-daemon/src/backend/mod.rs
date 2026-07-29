@@ -6,6 +6,8 @@ use crate::error::ControlResult;
 use crate::protocol::{AgentRecord, MessageOpts};
 
 pub use worker::WorkerBackend;
+#[cfg(all(test, unix))]
+pub(crate) use worker::WorkerStateFile;
 
 /// Backend that can list/inspect/control agents of one kind.
 pub trait ControlBackend: Send + Sync {
@@ -19,7 +21,8 @@ pub trait ControlBackend: Send + Sync {
 
     /// # Errors
     /// Returns when messaging fails or the agent is missing.
-    fn message(&self, id: &str, text: &str, opts: &MessageOpts) -> ControlResult<sonic_rs::Value>;
+    fn message(&self, id: &str, text: &str, opts: &MessageOpts)
+    -> ControlResult<serde_json::Value>;
 
     /// # Errors
     /// Returns [`crate::ControlError::Unsupported`] on TUI, or worker failures.
