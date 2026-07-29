@@ -192,6 +192,7 @@ fn spawn_session(
         system_prompt_override: None,
         append_system_prompt: None,
         workflow: false,
+        mode: AgentMode::Build,
     })
 }
 
