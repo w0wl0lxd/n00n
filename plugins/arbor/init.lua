@@ -60,8 +60,9 @@ local function dispatch(input)
     if not symbol then
       return { llm_output = "error: symbol required for " .. command, is_error = true }
     end
-    local ok = pcall(n00n_arbor.ensure_fresh_index, project)
-    local native_results = native_relations(command, symbol, project)
+    -- Skip native lookup when refresh fails; fall back to the Arbor CLI path.
+    local fresh_ok = pcall(n00n_arbor.ensure_fresh_index, project)
+    local native_results = fresh_ok and native_relations(command, symbol, project) or nil
     local results = native_results
     if not results or #results == 0 then
       if command == "callers" then
@@ -83,7 +84,13 @@ local function dispatch(input)
         is_error = true,
       }
     end
-    local ok = pcall(n00n_arbor.ensure_fresh_index, project)
+    local fresh_ok, fresh_err = pcall(n00n_arbor.ensure_fresh_index, project)
+    if not fresh_ok then
+      return {
+        llm_output = "error: failed to refresh graph index: " .. tostring(fresh_err),
+        is_error = true,
+      }
+    end
     local results, err = native_trace_path(input.from_symbol, input.to_symbol, project)
     if not results then
       return {
@@ -103,7 +110,13 @@ local function dispatch(input)
 
   if command == "map" then
     local token_budget = input.token_budget or 1024
-    local ok = pcall(n00n_arbor.ensure_fresh_index, project)
+    local fresh_ok, fresh_err = pcall(n00n_arbor.ensure_fresh_index, project)
+    if not fresh_ok then
+      return {
+        llm_output = "error: failed to refresh graph index: " .. tostring(fresh_err),
+        is_error = true,
+      }
+    end
     local entries = n00n_arbor.map(project, token_budget)
     local lines = {}
     for _, entry in ipairs(entries) do
@@ -117,7 +130,13 @@ local function dispatch(input)
   end
 
   if command == "diff" then
-    local ok = pcall(n00n_arbor.ensure_fresh_index, project)
+    local fresh_ok, fresh_err = pcall(n00n_arbor.ensure_fresh_index, project)
+    if not fresh_ok then
+      return {
+        llm_output = "error: failed to refresh graph index: " .. tostring(fresh_err),
+        is_error = true,
+      }
+    end
     local impact = n00n_arbor.diff(project)
     local lines = {
       "Blast Radius Impact",
@@ -134,7 +153,13 @@ local function dispatch(input)
     if not symbol then
       return { llm_output = "error: query string required (use 'symbol' field)", is_error = true }
     end
-    local ok = pcall(n00n_arbor.ensure_fresh_index, project)
+    local fresh_ok, fresh_err = pcall(n00n_arbor.ensure_fresh_index, project)
+    if not fresh_ok then
+      return {
+        llm_output = "error: failed to refresh graph index: " .. tostring(fresh_err),
+        is_error = true,
+      }
+    end
     return { llm_output = n00n_arbor.query(symbol, project) }
   end
 
