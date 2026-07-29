@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785229078314,
+  "lastUpdate": 1785286347525,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -8853,6 +8853,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 154383,
             "range": "± 12329",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6ebcd455f002aa8b2defd5dc1a456fa9e0833e8e",
+          "message": "feat(agent): background server, management CLI, and mode-aware goal prompts (#134)\n\n* feat(agent): add structured output helper and agent CLI command\n\nPhase 2 implementation:\n\n- Create plugins/lib/n00n/structured_output.lua with constants and helper functions for schema validation\n- Create plugins/lib/n00n/subagent.lua with unified subagent launch API\n- Migrate plugins/task/init.lua to use n00n.structured_output helper\n- Migrate plugins/workflow/init.lua to use n00n.structured_output helper\n- Add n00n agent run CLI command with stubs for future daemon commands\n- Add tests for structured_output helper in plugins/lib/tests/spec.lua\n- Keep team/roles.lua unchanged due to custom patterns (hardcoded audience, budget handling, preview support)\n\nAll tests pass. Lua syntax validated with luac.\n\n* fix(agent-orchestration): repair route_tier and structured_output helpers\n\n* feat(agent): add background agent server and management CLI\n\nImplement `n00n agent run --background` Unix-socket server plus\n`message`, `stop`, and `list` client commands. Background agents keep\nstate in `state_dir/agents/<id>/agent.json` and a `control.sock`.\n\nServer streams `TextDelta`/`ToolOutput`/`Done` events as NDJSON, and\nsupports an initial `--prompt` before entering the command loop. The\n`--mode` flag selects the same workflow/team/etc modes used by the\none-shot runner.\n\n- Add `AgentMode` CLI enum (General, Research, Task, Team, Workflow)\n- Add `async-lock` for per-agent message serialization\n- Add unit tests for CLI parsing, state serde, and state listing\n\nPhase 3 stubs (status, pause, resume, policy) remain unimplemented.\n\n* feat(agent): implement status, pause, and resume commands\n\nAdd `ClientCommand::Pause` and `Resume` to the background agent\nprotocol. The server stores a shared `paused` flag and rejects new\nmessages while paused, updating `agent.json` status accordingly.\n\nImplement `n00n agent status`, `pause`, and `resume` client commands.\n`status` reads the persisted agent state; `pause`/`resume` send a\ncontrol command over the Unix socket. The `policy` subcommand remains\na stub.\n\n* fix(agent): avoid duplicate text when message run ends with error\n\nThe text-mode client was streaming TextDelta chunks and then printing\nthe full Done.text again when the run ended with an error. Only print\nthe error in that case; the streamed text is already on the terminal.\n\n* refactor(team): migrate roles and supervisor to n00n.subagent\n\nExtend `plugins/lib/n00n/subagent.lua` with options the team plugin needs:\n- `system` override for role-specific prompts\n- `preview` and `activity_label` for ActivityPreview integration\n- `budget` with `:consume()` for agent-call budgets\n- `fail_on_pricing_error` to keep the existing team semantics\n- return the resolved `model_spec` as a fifth value\n\nMigrate `plugins/team/roles.lua` to launch subagents through the shared\nhelper, preserving its `{ok, text, cost, model, usage, error}` return\nshape and all existing tests.\n\nSimplify `plugins/team/init.lua` `run_supervisor` by delegating the\nstructured-output plan generation to `n00n.subagent.launch` with\n`output_schema = PLANNER_OUTPUT`.\n\n* fix(agent): log cleanup warnings in stop handler\n\nSurface failed socket/directory removals in the background agent stop\nhandler instead of silently ignoring them. The process still exits, but\nthe warning gives operators a signal that stale state may remain.\n\n* fix(agent): validate agent ids and lock down socket permissions\n\nPrevent path traversal from user-supplied agent ids by validating them\nbefore any filesystem operation, and reject ids that contain path\nseparators, control characters, or other unsafe content. Limit ids to\n64 ASCII alphanumeric/hyphen/underscore characters.\n\nSet the agent state directory to 0o700 and the Unix control socket to\n0o600 so only the owning user can read or connect to background agent\nstate.\n\n* refactor(agent): share one-shot and background agent setup\n\nExtract `prepare_agent_env` and `PreparedEnv` to remove the duplicated\nplugin/model/MCP initialization between `run` and `server`. Both paths now\nbuild their `HeadlessParams`/`InteractiveParams` from the same prepared\nenvironment, making the two entry points easier to keep in sync.\n\n* docs(changelog): add fragments for agent CLI and team refactor\n\nRecord the user-facing additions, refactor, and security hardening from\nPR #134 in changelog.d.\n\n* fix(agent): await task completion before stop exits\n\nThe background agent Stop command now waits for the agent task to finish\nafter sending the cancel signal, instead of exiting immediately. This\nprevents dropping active tool calls and unfinished MCP sessions and\nensures state is persisted before cleanup.\n\n* refactor(cli): remove unused goal arg and stub policy commands\n\nThe `goal` flag on `n00n agent run` was parsed but never used, and the\n`policy` subcommands were stubs. Remove both until they are wired to\nactual behavior.\n\n* fix(task,workflow): pass thinking config to subagent sessions\n\nThread the `thinking` option through `n00n.agent.session` in both the\ntask and workflow plugins, and include it in the workflow journal key so\ncached results honor the thinking setting.\n\n* fix(n00n-agent): make yolo enable rather than toggle in spawn_interactive\n\n`headless::spawn_interactive` was calling `permissions.toggle_yolo()` when\n`params.yolo` was true, which flipped an already-true yolo state back to\nfalse. This broke `--yolo` in background agent mode (and TUI/ACP when\nalways_yolo was set). Add `PermissionManager::set_yolo` and use it to\nreliably enable yolo when requested, leaving the config-derived default\notherwise.\n\n* feat(agent): add --goal and mode-aware team/workflow/task prompts\n\nRe-add --goal to n00n agent run and wire it into mode-specific prompts.\nTeam mode now emits a team tool call with goal, mode, max_agents,\nwaves, and auto-tier flags. Workflow mode emits a workflow tool call\nwith the prompt as the script and goal merged into inputs. Task mode\nemits a task tool call with description/prompt. General/Research\nmodes prepend the goal to the prompt.\n\nAlso introduce AgentRunOptions to keep run/server signatures tidy and\navoid excessive boolean parameters.\n\n* feat(agent): configurable agent-call limits and runaway guard\n\nRemove the hard-coded 24/32 agent-call ceilings in team and workflow.\n- team `max_agents` is now configurable with no hard maximum and an\n  optional `timeout_secs`.\n- workflow `max_agents_per_run` is configurable with no hard maximum.\n- Add `plugins/lib/n00n/guard.lua` to enforce call budgets, wall-clock\n  timeouts, repeated-prompt loops, and consecutive subagent errors.\n- Wire the guard through `n00n.subagent.launch`, `team`, and `workflow`.\n\n* fix(guard): reserve call budget atomically in check and guard consecutive errors\n\n- Move the used counter increment from record() into check() so the\n  budget is reserved before any async yield; this prevents concurrent\n  subagent calls from overshooting max_calls.\n- Check consecutive_errors in check() and use > in record() so the\n  guard blocks the next call after the threshold instead of wasting\n  a token on the failing call.\n- Add lib spec coverage for budget, repeated-prompt, consecutive-error,\n  and legacy consume() behavior.\n\n* fix(agent): gate background agent IPC behind Unix-only cfg\n\nBackground agents use Unix domain sockets and permission modes that are\nnot available on Windows. Return a clear error on unsupported platforms\nso the crate builds on all CI targets.\n\n* fix(nix): use platform-correct loader env var in wrappers\n\nUse DYLD_LIBRARY_PATH on Darwin and LD_LIBRARY_PATH elsewhere, and wrap the computed package binary path to avoid runtime loader failures on non-Linux builds.\n\n* refactor(plugins): migrate task and workflow to n00n.subagent.launch for structured output\n\n* fix(agent): resolve P1 issues in background server and error handling\n\n- Fix background detach: fork and setsid to daemonize server process\n- Fix stop command: close input_tx and await outer task for proper cleanup\n- Fix error handling: break event loop on Error to prevent state hang\n- Fix task plugin: remove unused error from get_progress, fix encode error handling\n- Fix workflow plugin: emit agent_done only on success, remove unused cost/usage returns\n\n* fix(agent): address P2 review feedback in agent.rs\n\n- Return error on AgentEvent::Error in one-shot run for proper exit code\n- Preserve agent state on read failures (only delete on not found)\n- Avoid overwriting paused status when active run completes\n- UTF-8 truncation already uses character-aware .chars().take()\n\n* fix(team): enforce wall-clock timeout during subagent calls\n\n* feat(agent): wire research mode through system prompt and tool restrictions\n\n- Add AgentMode::Research and is_readonly() so build_system_prompt picks\nthe research prompt and filter_tools_for_mode strips execute-kind tools.\n- Plumb runtime AgentMode through HeadlessParams/InteractiveParams and\npersist it in background AgentState so follow-up messages keep research\nmode.\n- Exclude write/edit/multiedit/edit_lines/insert_lines for research runs.\n- Fix task plugin preview to use ActivityPreview (required by n00n.subagent)\nand return raw structured-output validation errors for tests.\n\n* fix(workflow): preserve string subagent output and encode structured tables\n\nSubagent.launch may return either a plain string or a structured table.\nStore strings unchanged, JSON-encode tables with error handling, and use an\nempty string for nil output instead of encoding nil.",
+          "timestamp": "2026-07-29T00:40:28Z",
+          "tree_id": "79dfe888aaf17d2a659628cf64067956738f41e4",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/6ebcd455f002aa8b2defd5dc1a456fa9e0833e8e"
+        },
+        "date": 1785286346832,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 4975907,
+            "range": "± 37572",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1906010,
+            "range": "± 35706",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1898928,
+            "range": "± 10780",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 6011884,
+            "range": "± 31834",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3028569,
+            "range": "± 37750",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3037961,
+            "range": "± 12514",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 430362,
+            "range": "± 738",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 130221,
+            "range": "± 277",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 130286,
+            "range": "± 183",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 803270,
+            "range": "± 9506",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 478183,
+            "range": "± 4654",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 478374,
+            "range": "± 6840",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 35941,
+            "range": "± 1163",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 122703,
+            "range": "± 11046",
             "unit": "ns/iter"
           }
         ]
