@@ -18,7 +18,6 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use futures::StreamExt;
-use futures_lite::AsyncReadExt;
 use futures_lite::io::AsyncRead;
 use n00n_storage::id::n00nId;
 use uuid::Uuid;
@@ -34,7 +33,7 @@ use super::checksum::{
 };
 use super::connect::{ConnectFrame, FrameBuffer, decode_frame_payload, encode_frame};
 use super::proto::{
-    AGENT_MODE_AGENT, AGENT_MODE_ASK, RunFrameParams, build_run_frames, extract_text_deltas,
+    AGENT_MODE_AGENT, RunFrameParams, build_run_frames, extract_text_deltas,
     extract_thinking_deltas, has_exec_server_message, heartbeat_frame, iter_fields,
 };
 use super::wire::{
@@ -769,9 +768,10 @@ fn queue_checkpoint_reply(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::cursor::proto::{field_bytes, field_ld, field_varint};
+    use crate::providers::cursor::proto::{AGENT_MODE_ASK, field_bytes, field_ld, field_varint};
     use flate2::Compression;
     use flate2::write::GzEncoder;
+    use futures_lite::AsyncReadExt;
     use std::io::Write;
     use std::path::PathBuf;
 
