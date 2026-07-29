@@ -64,6 +64,7 @@ pub const DEFAULT_BUILTINS: &[&str] = &[
     "code_execution",
     "codegraph",
     "edit",
+    "explore",
     "glob",
     "grep",
     "index",

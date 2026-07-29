@@ -87,6 +87,7 @@ a string belongs.
 | [`n00n.ui.Buf`](#n00n-ui-Buf) | A content buffer that holds styled lines of text. |
 | [`n00n.uv`](#n00n-uv) | System and environment utilities, modelled after `vim.uv`. |
 | [`n00n.arbor`](#n00n-arbor) | Graph-based code analysis via Arbor CLI. |
+| [`n00n.codegraph`](#n00n-codegraph) | Cross-file structural exploration via the codegraph CLI. |
 | [`n00n.workflow`](#n00n-workflow) | Sandboxed workflow script compilation. |
 | [`n00n.yaml`](#n00n-yaml) | YAML encoding and decoding. |
 
@@ -5082,6 +5083,137 @@ Run `arbor index` if the project is not yet indexed.
 - `{project}` (`string`) Path to the project root.
 
 **Returns:** (`nil`) nil on success, or error on failure.
+
+---
+
+### `n00n.arbor.graph_index_available()` {#n00n-arbor-graph_index_available}
+
+```lua
+n00n.arbor.graph_index_available({project})
+```
+
+Returns true when a native `.arbor/graph.json` index is present.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`boolean`) true when graph.json exists and is loadable.
+
+---
+
+### `n00n.arbor.graph_callers()` {#n00n-arbor-graph_callers}
+
+```lua
+n00n.arbor.graph_callers({symbol}, {project})
+```
+
+Show callers via the in-memory graph index (no CLI subprocess).
+
+**Parameters:**
+
+- `{symbol}` (`string`) Symbol name (function, class, etc.).
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`table`) Array of caller objects with `name`, `path`, `kind`, `line` fields.
+
+---
+
+### `n00n.arbor.graph_callees()` {#n00n-arbor-graph_callees}
+
+```lua
+n00n.arbor.graph_callees({symbol}, {project})
+```
+
+Show callees via the in-memory graph index (no CLI subprocess).
+
+**Parameters:**
+
+- `{symbol}` (`string`) Symbol name.
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`table`) Array of callee objects with `name`, `path`, `kind`, `line` fields.
+
+---
+
+### `n00n.arbor.graph_trace_path()` {#n00n-arbor-graph_trace_path}
+
+```lua
+n00n.arbor.graph_trace_path({from_symbol}, {to_symbol}, {project})
+```
+
+Shortest call path between two symbols in the graph index.
+
+**Parameters:**
+
+- `{from_symbol}` (`string`) Start symbol name.
+- `{to_symbol}` (`string`) End symbol name.
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`table`) Path nodes or error when no path exists.
+
+
+## n00n.codegraph {#n00n-codegraph}
+
+Cross-file structural exploration via the codegraph CLI. Wraps `codegraph explore` with timeout and index checks.
+
+---
+
+### `n00n.codegraph.check_binary()` {#n00n-codegraph-check_binary}
+
+```lua
+n00n.codegraph.check_binary()
+```
+
+Check that the `codegraph` CLI is installed and working.
+
+**Returns:** (`boolean`, `string?`) ok and optional error message.
+
+---
+
+### `n00n.codegraph.available()` {#n00n-codegraph-available}
+
+```lua
+n00n.codegraph.available()
+```
+
+Returns true if the `codegraph` CLI is on PATH.
+
+**Returns:** (`boolean`) true when codegraph is available.
+
+---
+
+### `n00n.codegraph.has_index()` {#n00n-codegraph-has_index}
+
+```lua
+n00n.codegraph.has_index({project})
+```
+
+Returns true when `.codegraph/` exists in the project root.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`boolean`) true when a codegraph index is present.
+
+---
+
+### `n00n.codegraph.explore()` {#n00n-codegraph-explore}
+
+```lua
+n00n.codegraph.explore({query}, {project}, {timeout_secs?})
+```
+
+Run `codegraph explore` for a natural-language or symbol query.
+
+**Parameters:**
+
+- `{query}` (`string`) Natural language question or symbol names to explore.
+- `{project}` (`string`) Path to the project root.
+- `{timeout_secs}` (`integer`) Optional timeout in seconds (default 30).
+
+**Returns:** (`string?`, `string?`) output and optional error message.
 
 
 ## n00n.workflow {#n00n-workflow}
