@@ -272,7 +272,10 @@ n00n.api.register_tool({
         type = "string",
         description = "Keyword query for 'search' or optional ranking when listing via 'view'",
       },
-      tags = { type = "string", description = "Comma-separated tags filter for 'search'" },
+      tags = {
+        type = "string",
+        description = "Comma-separated tags metadata for 'write' and filter for 'search'",
+      },
       focus_path = { type = "string", description = "Optional file path context to boost ranking" },
       limit = { type = "integer", description = "Max search results (default 10, max 50)" },
       topic = { type = "string", description = "Topic metadata for 'write'" },
