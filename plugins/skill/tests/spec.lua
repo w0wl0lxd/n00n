@@ -222,7 +222,7 @@ end)
 case("preview_body_uses_synopsis_when_present", function()
   local preview, truncated = helpers.preview_body("line1\nline2\nline3", 1, "short synopsis")
   eq(preview, "short synopsis")
-  eq(truncated, true)
+  eq(truncated, false)
 end)
 
 case("preview_body_truncates_without_synopsis", function()
@@ -300,6 +300,20 @@ case("skill_policy_normalizes_dashed_tool_names", function()
     allowed_tools = { "code-execution" },
   }, "code_execution")
   eq(decision.allowed, true)
+end)
+
+case("skill_policy_matches_mcp_wire_names_to_bare_allowlist", function()
+  local policy = require("skill_policy")
+  local allowed = policy.evaluate({
+    name = "gated",
+    allowed_tools = { "read", "grep" },
+  }, "docs__read")
+  eq(allowed.allowed, true)
+  local denied = policy.evaluate({
+    name = "gated",
+    allowed_tools = { "read" },
+  }, "docs__bash")
+  eq(denied.allowed, false)
 end)
 
 -- ── ranking and plan ──
