@@ -51,7 +51,7 @@ const CACHE_BREAKPOINTS_SHORT: usize = 2;
 const CACHE_BREAKPOINTS_MIN: usize = 1;
 
 fn filter_tools_for_mode(tools: &mut Value, mode: &AgentMode) {
-    if mode.plan_path().is_none() {
+    if !mode.is_readonly() {
         return;
     }
     if let Some(definitions) = tools.as_array_mut() {
