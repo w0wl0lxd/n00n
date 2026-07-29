@@ -110,7 +110,11 @@ sonic-rs = "0.5.8"
 toon-format = { version = "0.5", default-features = false }
 tiktoken-rs = "0.12"
 bs58 = "0.5"
-uuid = { version = "1", default-features = false, features = ["std", "v7"] }
+uuid = { version = "1", default-features = false, features = [
+  "std",
+  "v5",
+  "v7",
+] }
 zstd = { version = "0.13", default-features = false }
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 crossterm = { version = "0.29", features = ["osc52"] }
@@ -189,11 +193,30 @@ event-listener = "5"
 futures-lite = "2"
 futures = "0.3"
 pin-project-lite = "0.2"
+bytes = "1"
+tokio = { version = "1", default-features = false, features = [
+  "rt",
+  "time",
+  "macros",
+  "sync",
+] }
+reqwest = { version = "0.12", default-features = false, features = [
+  "rustls-tls",
+  "http2",
+  "stream",
+] }
 process_alive = "0.2.0"
 isahc = { version = "1.7", default-features = false, features = [
   "text-decoding",
   "static-curl",
   "static-ssl",
+  "http2",
+] }
+rusqlite = { version = "0.37", default-features = false, features = [
+  "bundled",
+] }
+flate2 = { version = "1.1", default-features = false, features = [
+  "rust_backend",
 ] }
 libc = "0.2"
 rustix = { version = "1", default-features = false, features = [
@@ -265,6 +288,7 @@ termini = "1"
 
 wait-timeout = "0.2"
 inventory = "0.3"
+url = "2"
 quanta = { version = "0.12.6", default-features = false }
 
 [workspace.lints.rust]

@@ -235,6 +235,7 @@ pub struct ToolContext {
     pub workflow: bool,
     pub audience: ToolAudience,
     pub local_tools: LocalTools,
+    pub active_skill_policy: Option<crate::skill_policy::ActiveSkillPolicy>,
     /// Streams a dispatched child's live bufs and annotations back to the
     /// caller (`n00n.agent.call_tool` with `on_live_buf`/`on_annotation`).
     /// Never inherited: `to_tool_context` clears it, and each caller sets
@@ -499,6 +500,7 @@ pub fn interpreter_ctx(
         workflow: false,
         audience: ToolAudience::MAIN,
         local_tools: LocalTools::default(),
+        active_skill_policy: None,
         live_sink: None,
     }
 }

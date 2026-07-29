@@ -5036,6 +5036,605 @@ fn skill_tool_unknown_name_returns_available_names() {
     );
 }
 
+struct SkillFixtureGuard {
+    root: std::path::PathBuf,
+}
+
+impl Drop for SkillFixtureGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+fn create_skill_fixture_dir() -> (std::path::PathBuf, SkillFixtureGuard) {
+    let unique = format!(
+        "skill-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("unix epoch")
+            .as_nanos()
+    );
+    let root = std::env::current_dir()
+        .expect("cwd")
+        .join(".agents")
+        .join("skills")
+        .join(unique);
+    std::fs::create_dir_all(&root).expect("create fixture root");
+    (root.clone(), SkillFixtureGuard { root })
+}
+
+#[test]
+fn skill_tool_discovers_nested_skills_recursively() {
+    let _lock = SKILL_FS_TEST_LOCK.lock().expect("skill fs test lock");
+    let (reg, _host) = builtins_host();
+    let (fixture_root, _guard) = create_skill_fixture_dir();
+    let root = fixture_root.join("nested-skill");
+    std::fs::create_dir_all(&root).expect("create nested skill dir");
+    let skill_file = root.join("SKILL.md");
+    std::fs::write(
+        &skill_file,
+        "---\nname: nested-skill-test\ndescription: nested skill test\n---\n# Nested\nBody",
+    )
+    .expect("write nested skill");
+
+    let out = exec_tool(&reg, "skill", serde_json::json!({"list": true})).expect("list skills");
+    assert!(
+        out.contains("nested-skill-test"),
+        "recursive scan should include nested skill names"
+    );
+}
+
+#[test]
+fn skill_tool_hides_manual_only_unless_include_manual() {
+    let _lock = SKILL_FS_TEST_LOCK.lock().expect("skill fs test lock");
+    let (reg, _host) = builtins_host();
+    let (fixture_root, _guard) = create_skill_fixture_dir();
+    let root = fixture_root.join("manual-skill");
+    std::fs::create_dir_all(&root).expect("create manual skill dir");
+    let skill_file = root.join("SKILL.md");
+    std::fs::write(
+        &skill_file,
+        "---\nname: manual-skill-test\ndescription: hidden unless explicitly requested\ndisable-model-invocation: true\n---\n# Manual\nBody",
+    )
+    .expect("write manual skill");
+
+    let out = exec_tool(&reg, "skill", serde_json::json!({"list": true})).expect("list skills");
+    assert!(
+        !out.contains("manual-skill-test"),
+        "manual-only skills must be hidden by default"
+    );
+
+    let out = exec_tool(
+        &reg,
+        "skill",
+        serde_json::json!({"list": true, "include_manual": true}),
+    )
+    .expect("list with include_manual");
+    assert!(
+        out.contains("manual-skill-test"),
+        "manual-only skills should be visible when requested"
+    );
+}
+
+#[test]
+fn skill_tool_applies_paths_filter_for_list_and_load() {
+    let _lock = SKILL_FS_TEST_LOCK.lock().expect("skill fs test lock");
+    let (reg, _host) = builtins_host();
+    let (fixture_root, _guard) = create_skill_fixture_dir();
+    let skill_root = fixture_root.join("scoped-skill");
+    std::fs::create_dir_all(&skill_root).expect("create scoped skill dir");
+    std::fs::write(
+        skill_root.join("SKILL.md"),
+        "---\nname: scoped-skill-test\ndescription: scoped by paths\npaths:\n  - src/api/agent.rs\n---\n# Scoped\nBody",
+    )
+    .expect("write scoped skill");
+
+    let out = exec_tool(
+        &reg,
+        "skill",
+        serde_json::json!({"list": true, "path": "src/api/agent.rs"}),
+    )
+    .expect("list in-scope");
+    assert!(
+        out.contains("scoped-skill-test"),
+        "skill should be listed for matching path"
+    );
+
+    let out = exec_tool(
+        &reg,
+        "skill",
+        serde_json::json!({"list": true, "path": "Cargo.toml"}),
+    )
+    .expect("list out-of-scope");
+    assert!(
+        !out.contains("scoped-skill-test"),
+        "skill should be hidden for non-matching path"
+    );
+
+    let err = exec_tool(
+        &reg,
+        "skill",
+        serde_json::json!({"name": "scoped-skill-test", "path": "Cargo.toml"}),
+    )
+    .expect_err("out-of-scope load must fail");
+    assert!(
+        err.contains("skill not found"),
+        "error should stay consistent"
+    );
+}
+
+fn write_skill(dir: &std::path::Path, name: &str, body: &str) {
+    std::fs::create_dir_all(dir).expect("create skill dir");
+    std::fs::write(
+        dir.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: test\n---\n{body}"),
+    )
+    .expect("write skill");
+}
+
+static SKILL_FS_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+#[test]
+fn skill_tool_reports_duplicate_name_conflicts() {
+    let _lock = SKILL_FS_TEST_LOCK.lock().expect("skill fs test lock");
+    let (reg, _host) = builtins_host();
+    let cwd = std::env::current_dir().expect("cwd");
+    let n00n_root = cwd.join(".n00n").join("skills").join("conflict-test-n00n");
+    let agents_root = cwd
+        .join(".agents")
+        .join("skills")
+        .join("conflict-test-agents");
+    let _n00n_guard = SkillFixtureGuard {
+        root: n00n_root.clone(),
+    };
+    let _agents_guard = SkillFixtureGuard {
+        root: agents_root.clone(),
+    };
+
+    write_skill(&n00n_root.join("dup-skill"), "dup-skill", "from n00n");
+    write_skill(&agents_root.join("dup-skill"), "dup-skill", "from agents");
+
+    let loaded = exec_tool(&reg, "skill", serde_json::json!({"name": "dup-skill"}))
+        .expect("load duplicate skill");
+    assert!(
+        loaded.contains("from agents"),
+        "later project root (.agents) should win precedence"
+    );
+
+    let out = exec_tool(
+        &reg,
+        "skill",
+        serde_json::json!({"list": true, "include_conflicts": true}),
+    )
+    .expect("list with conflicts");
+    assert!(
+        out.contains("<skill_conflicts>"),
+        "conflict report should be present"
+    );
+    assert!(
+        out.contains("dup-skill"),
+        "conflict report should name skill"
+    );
+    assert!(
+        out.contains("shadowed"),
+        "conflict report should list shadowed locations"
+    );
+}
+
+#[test]
+fn skill_tool_discovery_cache_hits_until_skill_changes() {
+    let _lock = SKILL_FS_TEST_LOCK.lock().expect("skill fs test lock");
+    let (reg, _host) = builtins_host();
+    let (fixture_root, _guard) = create_skill_fixture_dir();
+    let skill_dir = fixture_root.join("cache-skill");
+    write_skill(
+        &skill_dir,
+        "cache-skill-test",
+        "version one with extra padding",
+    );
+
+    let first =
+        exec_tool_output(&reg, "skill", serde_json::json!({"list": true})).expect("first list");
+    assert_eq!(
+        first
+            .state()
+            .and_then(|state| state.get("discovery_cache_hit")),
+        Some(&serde_json::Value::Bool(false)),
+        "first discovery should miss cache"
+    );
+
+    let second =
+        exec_tool_output(&reg, "skill", serde_json::json!({"list": true})).expect("second list");
+    assert_eq!(
+        second
+            .state()
+            .and_then(|state| state.get("discovery_cache_hit")),
+        Some(&serde_json::Value::Bool(true)),
+        "unchanged skills should hit cache"
+    );
+
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: cache-skill-test\ndescription: test\n---\nversion two CHANGED CONTENT!!!",
+    )
+    .expect("rewrite skill");
+
+    let third = exec_tool_output(&reg, "skill", serde_json::json!({"list": true}))
+        .expect("third list after change");
+    assert_eq!(
+        third
+            .state()
+            .and_then(|state| state.get("discovery_cache_hit")),
+        Some(&serde_json::Value::Bool(false)),
+        "equal-length content change should invalidate cache"
+    );
+}
+
+#[test]
+fn skill_tool_loads_preview_instead_of_full_body() {
+    let _lock = SKILL_FS_TEST_LOCK.lock().expect("skill fs test lock");
+    let (reg, _host) = builtins_host();
+    let (fixture_root, _guard) = create_skill_fixture_dir();
+    let skill_dir = fixture_root.join("preview-skill");
+    std::fs::create_dir_all(&skill_dir).expect("create preview skill dir");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: preview-skill-test\ndescription: preview test\nsynopsis: short preview text\n---\n# Full\nline1\nline2\nline3",
+    )
+    .expect("write preview skill");
+
+    let preview = exec_tool(
+        &reg,
+        "skill",
+        serde_json::json!({"name": "preview-skill-test", "preview": true}),
+    )
+    .expect("preview load");
+    assert!(
+        preview.contains("short preview text"),
+        "preview should return synopsis frontmatter"
+    );
+    assert!(
+        !preview.contains("preview truncated"),
+        "synopsis preview is complete and must not claim truncation"
+    );
+    assert!(
+        !preview.contains("line3"),
+        "preview should not include full body tail"
+    );
+
+    let full = exec_tool(
+        &reg,
+        "skill",
+        serde_json::json!({"name": "preview-skill-test", "full": true}),
+    )
+    .expect("full load");
+    assert!(
+        full.contains("line3"),
+        "full load should include entire body"
+    );
+}
+
+#[test]
+fn skill_tool_loads_markdown_section() {
+    let _lock = SKILL_FS_TEST_LOCK.lock().expect("skill fs test lock");
+    let (reg, _host) = builtins_host();
+    let (fixture_root, _guard) = create_skill_fixture_dir();
+    let skill_dir = fixture_root.join("section-skill");
+    std::fs::create_dir_all(&skill_dir).expect("create section skill dir");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: section-skill-test\ndescription: section test\n---\n# Title\n\n## Setup\ninstall deps\n\n## Run\nexecute",
+    )
+    .expect("write section skill");
+
+    let out = exec_tool(
+        &reg,
+        "skill",
+        serde_json::json!({"name": "section-skill-test", "section": "Setup"}),
+    )
+    .expect("section load");
+    assert!(
+        out.contains("install deps"),
+        "section load should return setup body"
+    );
+    assert!(
+        !out.contains("execute"),
+        "section load should not include other sections"
+    );
+}
+
+#[test]
+fn skill_tool_surfaces_allowed_tools_on_load() {
+    let _lock = SKILL_FS_TEST_LOCK.lock().expect("skill fs test lock");
+    let (reg, _host) = builtins_host();
+    let (fixture_root, _guard) = create_skill_fixture_dir();
+    let skill_dir = fixture_root.join("policy-skill");
+    std::fs::create_dir_all(&skill_dir).expect("create policy skill dir");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: policy-skill-test\ndescription: policy test\nallowed-tools: read, grep\n---\n# Policy\nBody",
+    )
+    .expect("write policy skill");
+
+    let out = exec_tool(
+        &reg,
+        "skill",
+        serde_json::json!({"name": "policy-skill-test"}),
+    )
+    .expect("policy load");
+    assert!(
+        out.contains("allowed-tools: read, grep"),
+        "load output should surface tool policy"
+    );
+}
+
+#[test]
+fn skill_tool_validate_lists_skill_issues() {
+    let _lock = SKILL_FS_TEST_LOCK.lock().expect("skill fs test lock");
+    let (reg, _host) = builtins_host();
+    let (fixture_root, _guard) = create_skill_fixture_dir();
+    let skill_dir = fixture_root.join("invalid-skill");
+    std::fs::create_dir_all(&skill_dir).expect("create invalid skill dir");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: invalid-skill-test\nallowed-tools: read\ndisallowed-tools: bash\n---\n# Invalid\nBody",
+    )
+    .expect("write invalid skill");
+
+    let out = exec_tool(
+        &reg,
+        "skill",
+        serde_json::json!({"list": true, "validate": true}),
+    )
+    .expect("validate list");
+    assert!(
+        out.contains("<skill_validation>"),
+        "should return validation block"
+    );
+    assert!(
+        out.contains("invalid-skill-test"),
+        "validation should name the skill"
+    );
+    assert!(
+        out.contains("mutually exclusive"),
+        "validation should report conflicting tool policy"
+    );
+}
+
+#[test]
+fn skill_tool_ranks_skills_by_focus_path_relevance() {
+    let _lock = SKILL_FS_TEST_LOCK.lock().expect("skill fs test lock");
+    let (reg, _host) = builtins_host();
+    let (fixture_root, _guard) = create_skill_fixture_dir();
+    write_skill(
+        &fixture_root.join("generic-skill"),
+        "generic-skill-test",
+        "generic helper",
+    );
+    let agent_dir = fixture_root.join("agent-skill");
+    std::fs::create_dir_all(&agent_dir).expect("create agent skill dir");
+    std::fs::write(
+        agent_dir.join("SKILL.md"),
+        "---\nname: agent-skill-test\ndescription: agent workflows\ntags: agent, api\n---\n# Agent\nBody",
+    )
+    .expect("write ranked skill");
+
+    let out = exec_tool(
+        &reg,
+        "skill",
+        serde_json::json!({"list": true, "rank": true, "path": "src/api/agent.rs"}),
+    )
+    .expect("ranked list");
+    let agent_pos = out.find("agent-skill-test").expect("agent skill listed");
+    let generic_pos = out
+        .find("generic-skill-test")
+        .expect("generic skill listed");
+    assert!(
+        agent_pos < generic_pos,
+        "higher relevance skill should appear first"
+    );
+    assert!(
+        out.contains("- ("),
+        "ranked list should include score prefix"
+    );
+}
+
+#[test]
+fn skill_tool_plan_mode_returns_outline_without_full_body() {
+    let _lock = SKILL_FS_TEST_LOCK.lock().expect("skill fs test lock");
+    let (reg, _host) = builtins_host();
+    let (fixture_root, _guard) = create_skill_fixture_dir();
+    let skill_dir = fixture_root.join("plan-skill");
+    std::fs::create_dir_all(&skill_dir).expect("create plan skill dir");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: plan-skill-test\ndescription: plan test\n---\n# Title\n\n## Setup\ninstall deps\n\n## Run\nexecute\n\nsecret tail content",
+    )
+    .expect("write plan skill");
+
+    let out = exec_tool(
+        &reg,
+        "skill",
+        serde_json::json!({"name": "plan-skill-test", "plan": true}),
+    )
+    .expect("plan load");
+    assert!(out.contains("<skill_plan>"), "plan output should be tagged");
+    assert!(out.contains("Setup"), "plan should include section");
+    assert!(
+        !out.contains("secret tail content"),
+        "plan should omit full body tail"
+    );
+}
+
+#[test]
+fn skill_tool_structured_plan_from_steps_frontmatter() {
+    let _lock = SKILL_FS_TEST_LOCK.lock().expect("skill fs test lock");
+    let (reg, _host) = builtins_host();
+    let (fixture_root, _guard) = create_skill_fixture_dir();
+    let skill_dir = fixture_root.join("steps-skill");
+    std::fs::create_dir_all(&skill_dir).expect("create steps skill dir");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: steps-skill-test\ndescription: steps test\nsteps:\n  - name: Setup\n    section: Setup\n    tools: read, bash\n---\n# Hidden body tail",
+    )
+    .expect("write steps skill");
+
+    let out = exec_tool(
+        &reg,
+        "skill",
+        serde_json::json!({"name": "steps-skill-test", "plan": true}),
+    )
+    .expect("structured plan load");
+    assert!(out.contains("<skill_plan>"), "plan output should be tagged");
+    assert!(
+        out.contains("1. Setup"),
+        "structured plan should number steps"
+    );
+    assert!(
+        out.contains("tools: read, bash"),
+        "structured plan should list tools"
+    );
+    assert!(
+        !out.contains("Hidden body tail"),
+        "structured plan should skip body"
+    );
+}
+
+#[test]
+fn skill_tool_graph_rank_boosts_path_scoped_skill() {
+    let _lock = SKILL_FS_TEST_LOCK.lock().expect("skill fs test lock");
+    let (reg, _host) = builtins_host();
+    let (fixture_root, _guard) = create_skill_fixture_dir();
+    std::fs::create_dir_all(fixture_root.join(".codegraph")).expect("create codegraph index dir");
+    write_skill(
+        &fixture_root.join("generic-skill"),
+        "generic-graph-test",
+        "generic helper",
+    );
+    let scoped_dir = fixture_root.join("scoped-skill");
+    std::fs::create_dir_all(&scoped_dir).expect("create scoped skill dir");
+    std::fs::write(
+        scoped_dir.join("SKILL.md"),
+        "---\nname: scoped-graph-test\ndescription: scoped helper\npaths: src/**\ntags: src\n---\n# Scoped\nBody",
+    )
+    .expect("write scoped skill");
+
+    let out = exec_tool(
+        &reg,
+        "skill",
+        serde_json::json!({
+            "list": true,
+            "rank": true,
+            "graph_rank": true,
+            "path": "src/api/agent.rs"
+        }),
+    )
+    .expect("graph ranked list");
+    let scoped_pos = out.find("scoped-graph-test").expect("scoped skill listed");
+    let generic_pos = out
+        .find("generic-graph-test")
+        .expect("generic skill listed");
+    assert!(
+        scoped_pos < generic_pos,
+        "path-scoped skill with graph bonus should rank first"
+    );
+}
+
+#[test]
+fn skill_tool_include_telemetry_appends_summary() {
+    let _lock = SKILL_FS_TEST_LOCK.lock().expect("skill fs test lock");
+    let (reg, _host) = builtins_host();
+    let (fixture_root, _guard) = create_skill_fixture_dir();
+    write_skill(
+        &fixture_root.join("telemetry-skill"),
+        "telemetry-skill-test",
+        "telemetry helper",
+    );
+
+    let out = exec_tool(
+        &reg,
+        "skill",
+        serde_json::json!({"list": true, "include_telemetry": true}),
+    )
+    .expect("telemetry list");
+    assert!(
+        out.contains("<skill_telemetry>"),
+        "telemetry summary should be appended"
+    );
+    assert!(
+        out.contains("event-"),
+        "telemetry summary should mention per-event log path"
+    );
+}
+
+#[test]
+fn skill_tool_load_returns_active_skill_policy_state() {
+    let _lock = SKILL_FS_TEST_LOCK.lock().expect("skill fs test lock");
+    let (reg, _host) = builtins_host();
+    let (fixture_root, _guard) = create_skill_fixture_dir();
+    let skill_dir = fixture_root.join("state-skill");
+    std::fs::create_dir_all(&skill_dir).expect("create state skill dir");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: state-skill-test\ndescription: state test\nallowed-tools: read, grep\n---\n# State\nBody",
+    )
+    .expect("write state skill");
+
+    let out = exec_tool_output(
+        &reg,
+        "skill",
+        serde_json::json!({"name": "state-skill-test"}),
+    )
+    .expect("policy load output");
+    let state = out.state().expect("skill load should return state");
+    let active = state.get("active_skill").expect("active_skill missing");
+    assert_eq!(
+        active.get("name"),
+        Some(&serde_json::json!("state-skill-test"))
+    );
+    let allowed = active
+        .get("allowed_tools")
+        .and_then(|value| value.as_array())
+        .expect("allowed_tools array");
+    assert!(allowed.iter().any(|tool| tool == "read"));
+}
+
+#[test]
+fn skill_tool_unrestricted_load_emits_name_only_active_skill() {
+    let _lock = SKILL_FS_TEST_LOCK.lock().expect("skill fs test lock");
+    let (reg, _host) = builtins_host();
+    let (fixture_root, _guard) = create_skill_fixture_dir();
+    let skill_dir = fixture_root.join("ungated-skill");
+    std::fs::create_dir_all(&skill_dir).expect("create ungated skill dir");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: ungated-skill-test\ndescription: no tool policy\n---\n# Body\nDo things",
+    )
+    .expect("write ungated skill");
+
+    let out = exec_tool_output(
+        &reg,
+        "skill",
+        serde_json::json!({"name": "ungated-skill-test"}),
+    )
+    .expect("ungated load output");
+    let state = out.state().expect("skill load should return state");
+    let active = state.get("active_skill").expect("active_skill missing");
+    assert_eq!(
+        active.get("name"),
+        Some(&serde_json::json!("ungated-skill-test"))
+    );
+    assert!(
+        active.get("allowed_tools").is_none(),
+        "unrestricted load must not invent allowed_tools"
+    );
+    assert!(
+        active.get("disallowed_tools").is_none(),
+        "unrestricted load must not invent disallowed_tools"
+    );
+}
+
 /// List mode runs the program directly without shell interpretation.
 /// This preserves argument quoting (the core fix for #602).
 #[test]
