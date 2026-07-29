@@ -81,6 +81,7 @@ fn should_skip(path: &Path) -> bool {
 mod tests {
     use super::collect_chunks;
     use std::fs;
+    use std::path::Path;
     use tempfile::tempdir;
 
     #[test]
@@ -88,10 +89,14 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
         fs::create_dir_all(root.join("src")).expect("mkdir");
-        fs::write(root.join("src/a.rs"), "fn alpha() {}\n\nfn beta() {}").expect("write");
+        fs::write(
+            root.join("src").join("a.rs"),
+            "fn alpha() {}\n\nfn beta() {}",
+        )
+        .expect("write");
 
         let chunks = collect_chunks(root).expect("collect");
         assert_eq!(chunks.len(), 2);
-        assert!(chunks[0].file_path.ends_with("src/a.rs"));
+        assert!(Path::new(&chunks[0].file_path).ends_with(Path::new("src/a.rs")));
     }
 }
