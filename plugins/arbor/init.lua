@@ -31,6 +31,9 @@ local function native_relations(command, symbol, project)
   if not ok or type(results) ~= "table" then
     return nil
   end
+  if #results == 0 then
+    return nil
+  end
   return results
 end
 
@@ -57,6 +60,7 @@ local function dispatch(input)
     if not symbol then
       return { llm_output = "error: symbol required for " .. command, is_error = true }
     end
+    local ok = pcall(n00n_arbor.ensure_fresh_index, project)
     local native_results = native_relations(command, symbol, project)
     local results = native_results
     if not results or #results == 0 then
@@ -79,6 +83,7 @@ local function dispatch(input)
         is_error = true,
       }
     end
+    local ok = pcall(n00n_arbor.ensure_fresh_index, project)
     local results, err = native_trace_path(input.from_symbol, input.to_symbol, project)
     if not results then
       return {
@@ -98,6 +103,7 @@ local function dispatch(input)
 
   if command == "map" then
     local token_budget = input.token_budget or 1024
+    local ok = pcall(n00n_arbor.ensure_fresh_index, project)
     local entries = n00n_arbor.map(project, token_budget)
     local lines = {}
     for _, entry in ipairs(entries) do
@@ -111,6 +117,7 @@ local function dispatch(input)
   end
 
   if command == "diff" then
+    local ok = pcall(n00n_arbor.ensure_fresh_index, project)
     local impact = n00n_arbor.diff(project)
     local lines = {
       "Blast Radius Impact",
@@ -127,6 +134,7 @@ local function dispatch(input)
     if not symbol then
       return { llm_output = "error: query string required (use 'symbol' field)", is_error = true }
     end
+    local ok = pcall(n00n_arbor.ensure_fresh_index, project)
     return { llm_output = n00n_arbor.query(symbol, project) }
   end
 
