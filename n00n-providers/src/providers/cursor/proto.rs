@@ -79,7 +79,6 @@ pub(crate) struct RunFrameParams<'a> {
 }
 
 /// Build the paced Connect frames for one `AgentService/Run` turn (no heartbeats).
-#[must_use]
 pub(crate) fn build_run_frames(params: &RunFrameParams<'_>) -> Result<Vec<Vec<u8>>, String> {
     let mut user = field_str(1, params.prompt);
     user.extend(field_str(2, params.message_id));
@@ -127,9 +126,8 @@ pub(crate) fn build_run_frames(params: &RunFrameParams<'_>) -> Result<Vec<Vec<u8
 }
 
 /// `AgentClientMessage.client_heartbeat` (field 7) empty message.
-#[must_use]
-pub(crate) fn heartbeat_frame() -> Vec<u8> {
-    encode_frame(0, &field_ld(7, &[])).expect("heartbeat frame is tiny")
+pub(crate) fn heartbeat_frame() -> Result<Vec<u8>, String> {
+    encode_frame(0, &field_ld(7, &[]))
 }
 
 /// Decode length-delimited fields from a protobuf message body (skips varints).
@@ -319,7 +317,7 @@ mod tests {
 
     #[test]
     fn heartbeat_is_single_connect_frame_with_field_7() {
-        let frame = heartbeat_frame();
+        let frame = heartbeat_frame().unwrap();
         let mut buf = FrameBuffer::default();
         buf.push(&frame);
         let decoded = buf.next_frame().expect("frame").expect("ok");

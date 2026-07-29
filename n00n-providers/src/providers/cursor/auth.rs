@@ -24,30 +24,42 @@ pub(crate) enum AuthError {
 /// Linux layout inside a macOS remote/dev container).
 pub(crate) fn ide_vscdb_candidates() -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if cfg!(target_os = "macos") {
-        if let Some(home) = std::env::var_os("HOME") {
-            out.push(
-                PathBuf::from(home)
-                    .join("Library/Application Support/Cursor")
-                    .join(VSCDB_SUFFIX),
-            );
-        }
+    if cfg!(target_os = "macos")
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        out.push(
+            PathBuf::from(home)
+                .join("Library/Application Support/Cursor")
+                .join(VSCDB_SUFFIX),
+        );
     }
-    if cfg!(target_os = "windows") {
-        if let Some(appdata) = std::env::var_os("APPDATA") {
-            out.push(PathBuf::from(appdata).join("Cursor").join(VSCDB_SUFFIX));
-        }
-        if let Some(local_appdata) = std::env::var_os("LOCALAPPDATA") {
-            out.push(PathBuf::from(local_appdata).join("Cursor").join(VSCDB_SUFFIX));
-        }
+    if cfg!(target_os = "windows")
+        && let Some(appdata) = std::env::var_os("APPDATA")
+    {
+        out.push(PathBuf::from(appdata).join("Cursor").join(VSCDB_SUFFIX));
     }
-    if cfg!(not(target_os = "macos")) {
-        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-            out.push(PathBuf::from(xdg).join(VSCDB_SUFFIX));
-        }
-        if let Some(home) = std::env::var_os("HOME") {
-            out.push(PathBuf::from(home).join(".config/Cursor").join(VSCDB_SUFFIX));
-        }
+    if cfg!(target_os = "windows")
+        && let Some(local_appdata) = std::env::var_os("LOCALAPPDATA")
+    {
+        out.push(
+            PathBuf::from(local_appdata)
+                .join("Cursor")
+                .join(VSCDB_SUFFIX),
+        );
+    }
+    if cfg!(not(target_os = "macos"))
+        && let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME")
+    {
+        out.push(PathBuf::from(xdg).join(VSCDB_SUFFIX));
+    }
+    if cfg!(not(target_os = "macos"))
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        out.push(
+            PathBuf::from(home)
+                .join(".config/Cursor")
+                .join(VSCDB_SUFFIX),
+        );
     }
     out
 }
