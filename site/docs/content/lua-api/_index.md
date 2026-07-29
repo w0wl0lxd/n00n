@@ -87,7 +87,8 @@ a string belongs.
 | [`n00n.ui.Buf`](#n00n-ui-Buf) | A content buffer that holds styled lines of text. |
 | [`n00n.uv`](#n00n-uv) | System and environment utilities, modelled after `vim.uv`. |
 | [`n00n.arbor`](#n00n-arbor) | Graph-based code analysis via Arbor CLI. |
-| [`n00n.codegraph`](#n00n-codegraph) | Cross-file structural exploration via the codegraph CLI. |
+| [`n00n.codegraph`](#n00n-codegraph) | Cross-file structural exploration via native `.codegraph/codegraph.db` queries with CLI fallback. |
+| [`n00n.semblem`](#n00n-semblem) | BM25 code search and related-chunk lookup via the native `.n00n/search/` index. |
 | [`n00n.workflow`](#n00n-workflow) | Sandboxed workflow script compilation. |
 | [`n00n.yaml`](#n00n-yaml) | YAML encoding and decoding. |
 
@@ -5155,7 +5156,7 @@ Shortest call path between two symbols in the graph index.
 
 ## n00n.codegraph {#n00n-codegraph}
 
-Cross-file structural exploration via the codegraph CLI. Wraps `codegraph explore` with timeout and index checks.
+Cross-file structural exploration via native `.codegraph/codegraph.db` queries with CLI fallback.
 
 ---
 
@@ -5199,13 +5200,29 @@ Returns true when `.codegraph/` exists in the project root.
 
 ---
 
+### `n00n.codegraph.has_database()` {#n00n-codegraph-has_database}
+
+```lua
+n00n.codegraph.has_database({project})
+```
+
+Returns true when `.codegraph/codegraph.db` exists in the project root.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`boolean`) true when the native SQLite index is present.
+
+---
+
 ### `n00n.codegraph.explore()` {#n00n-codegraph-explore}
 
 ```lua
 n00n.codegraph.explore({query}, {project}, {timeout_secs?})
 ```
 
-Run `codegraph explore` for a natural-language or symbol query.
+Run an explore query using the native SQLite index when available, otherwise `codegraph explore`.
 
 **Parameters:**
 
@@ -5214,6 +5231,65 @@ Run `codegraph explore` for a natural-language or symbol query.
 - `{timeout_secs}` (`integer`) Optional timeout in seconds (default 30).
 
 **Returns:** (`string?`, `string?`) output and optional error message.
+
+
+## n00n.semblem {#n00n-semblem}
+
+BM25 code search and related-chunk lookup via the native `.n00n/search/` index.
+
+---
+
+### `n00n.semblem.has_index()` {#n00n-semblem-has_index}
+
+```lua
+n00n.semblem.has_index({project})
+```
+
+Returns true when `.n00n/search/metadata.json` exists in the project root.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`boolean`) true when a search index is present.
+
+---
+
+### `n00n.semblem.search()` {#n00n-semblem-search}
+
+```lua
+n00n.semblem.search({repo}, {query}, {mode?}, {top_k?})
+```
+
+Search indexed source chunks. Defaults to BM25; hybrid/semantic modes nag when no embedder is configured.
+
+**Parameters:**
+
+- `{repo}` (`string`) Path to the project root.
+- `{query}` (`string`) Natural-language or keyword query.
+- `{mode}` (`string`) One of bm25, hybrid, or semantic.
+- `{top_k}` (`integer`) Maximum number of results.
+
+**Returns:** (`string`) Ranked snippet output.
+
+---
+
+### `n00n.semblem.find_related()` {#n00n-semblem-find_related}
+
+```lua
+n00n.semblem.find_related({repo}, {file_path}, {line}, {top_k?})
+```
+
+Find chunks related to a file location using BM25 over the anchor chunk.
+
+**Parameters:**
+
+- `{repo}` (`string`) Path to the project root.
+- `{file_path}` (`string`) Relative or absolute file path.
+- `{line}` (`integer`) 1-based line number inside the file.
+- `{top_k}` (`integer`) Maximum number of results.
+
+**Returns:** (`string`) Ranked snippet output.
 
 
 ## n00n.workflow {#n00n-workflow}

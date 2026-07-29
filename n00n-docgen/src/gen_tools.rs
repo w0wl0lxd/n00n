@@ -28,6 +28,7 @@ const SECTIONS: &[(&str, &[&str])] = &[
             "index",
             "view_image",
             "codegraph",
+            "semblem",
             "arbor",
         ],
     ),

@@ -157,6 +157,20 @@ Query a pre-indexed semantic codegraph for cross-file structural analysis. Retur
 | `projectPath` | string | no | Absolute path to the project (defaults to current workspace) |
 | `query` | string | yes | Natural language question or symbol/file names to explore (e.g. 'AuthService login', 'GraphTraverser BFS impact') |
 
+### `semblem` *(lua plugin)*
+
+Search indexed source code with BM25 keyword ranking. Builds a `.n00n/search/` index on first use.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `repo` | string | no | Project root (defaults to cwd) |
+| `line` | integer | no |  |
+| `query` | string | no |  |
+| `command` | string | yes |  |
+| `mode` | string | no |  |
+| `file_path` | string | no |  |
+| `top_k` | integer | no |  |
+
 ### `arbor` *(lua plugin)*
 
 Graph-based code analysis using Arbor. Returns structured, compact

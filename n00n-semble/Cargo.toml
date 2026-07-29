@@ -1,5 +1,5 @@
 [package]
-name = "n00n-codegraph"
+name = "n00n-semble"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -11,9 +11,8 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+n00n-search = { workspace = true }
 thiserror = { workspace = true }
-wait-timeout = { workspace = true }
-rusqlite = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
