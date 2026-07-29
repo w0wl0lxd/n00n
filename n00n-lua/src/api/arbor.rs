@@ -1,5 +1,7 @@
 use mlua::{Lua, LuaSerdeExt, Result as LuaResult, Table};
-use n00n_arbor::{ArborError, Client};
+use n00n_arbor::{
+    ArborError, Client, graph_callees, graph_callers, graph_index_available, graph_trace_path,
+};
 
 use crate::docs::{DocKind, FnDoc, ModuleDoc, ParamDoc};
 
@@ -76,6 +78,31 @@ pub(crate) fn create_arbor_table(lua: &Lua) -> LuaResult<Table> {
         Ok(())
     })?;
     t.set("ensure_indexed", ensure_indexed)?;
+
+    let graph_available = lua.create_function(|_, project: String| {
+        Ok(graph_index_available(std::path::Path::new(&project)))
+    })?;
+    t.set("graph_index_available", graph_available)?;
+
+    let graph_callers_fn = lua.create_function(|lua, (symbol, project): (String, String)| {
+        value_or_err(lua, graph_callers(&symbol, std::path::Path::new(&project)))
+    })?;
+    t.set("graph_callers", graph_callers_fn)?;
+
+    let graph_callees_fn = lua.create_function(|lua, (symbol, project): (String, String)| {
+        value_or_err(lua, graph_callees(&symbol, std::path::Path::new(&project)))
+    })?;
+    t.set("graph_callees", graph_callees_fn)?;
+
+    let graph_trace = lua.create_function(
+        |lua, (from_symbol, to_symbol, project): (String, String, String)| {
+            value_or_err(
+                lua,
+                graph_trace_path(&from_symbol, &to_symbol, std::path::Path::new(&project)),
+            )
+        },
+    )?;
+    t.set("graph_trace_path", graph_trace)?;
 
     Ok(t)
 }
@@ -211,6 +238,80 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
                 desc: "Path to the project root.",
             }],
             returns: "(nil) nil on success, or error on failure.",
+            example: "",
+        },
+        FnDoc {
+            name: "graph_index_available",
+            args: "{project}",
+            desc: "Returns true when a native `.arbor/graph.json` index is present.",
+            params: &[ParamDoc {
+                name: "{project}",
+                ty: "string",
+                desc: "Path to the project root.",
+            }],
+            returns: "(boolean) true when graph.json exists and is loadable.",
+            example: "",
+        },
+        FnDoc {
+            name: "graph_callers",
+            args: "{symbol}, {project}",
+            desc: "Show callers via the in-memory graph index (no CLI subprocess).",
+            params: &[
+                ParamDoc {
+                    name: "{symbol}",
+                    ty: "string",
+                    desc: "Symbol name (function, class, etc.).",
+                },
+                ParamDoc {
+                    name: "{project}",
+                    ty: "string",
+                    desc: "Path to the project root.",
+                },
+            ],
+            returns: "(table) Array of caller objects with `name`, `path`, `kind`, `line` fields.",
+            example: "",
+        },
+        FnDoc {
+            name: "graph_callees",
+            args: "{symbol}, {project}",
+            desc: "Show callees via the in-memory graph index (no CLI subprocess).",
+            params: &[
+                ParamDoc {
+                    name: "{symbol}",
+                    ty: "string",
+                    desc: "Symbol name.",
+                },
+                ParamDoc {
+                    name: "{project}",
+                    ty: "string",
+                    desc: "Path to the project root.",
+                },
+            ],
+            returns: "(table) Array of callee objects with `name`, `path`, `kind`, `line` fields.",
+            example: "",
+        },
+        FnDoc {
+            name: "graph_trace_path",
+            args: "{from_symbol}, {to_symbol}, {project}",
+            desc: "Shortest call path between two symbols in the graph index.",
+            params: &[
+                ParamDoc {
+                    name: "{from_symbol}",
+                    ty: "string",
+                    desc: "Start symbol name.",
+                },
+                ParamDoc {
+                    name: "{to_symbol}",
+                    ty: "string",
+                    desc: "End symbol name.",
+                },
+                ParamDoc {
+                    name: "{project}",
+                    ty: "string",
+                    desc: "Path to the project root.",
+                },
+            ],
+            returns: "(table) Path nodes or error when no path exists.",
             example: "",
         },
     ],
