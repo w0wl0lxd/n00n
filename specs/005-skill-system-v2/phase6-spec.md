@@ -60,7 +60,7 @@ As an agent, I want frontmatter `steps` with per-step tool intents so I can foll
 
 ## Functional Requirements
 
-- **FR-101**: Agent MUST enforce active skill tool policy in `tool_dispatch` before native tool execution.
+- **FR-101**: Agent MUST enforce active skill tool policy in `tool_dispatch` before any tool execution.
 - **FR-102**: Successful `skill` tool results MUST update or clear `active_skill_policy` on the agent session.
 - **FR-103**: `graph_rank=true` MUST add bounded graph-index bonuses to relevance scoring when indexes exist.
 - **FR-104**: Skill telemetry MUST append JSONL events under project state when enabled.

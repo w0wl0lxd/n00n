@@ -5256,7 +5256,7 @@ fn skill_tool_discovery_cache_hits_until_skill_changes() {
 
     std::fs::write(
         skill_dir.join("SKILL.md"),
-        "---\nname: cache-skill-test\ndescription: test\n---\nversion two changed content",
+        "---\nname: cache-skill-test\ndescription: test\n---\nversion two CHANGED CONTENT!!!",
     )
     .expect("rewrite skill");
 
@@ -5267,7 +5267,7 @@ fn skill_tool_discovery_cache_hits_until_skill_changes() {
             .state()
             .and_then(|state| state.get("discovery_cache_hit")),
         Some(&serde_json::Value::Bool(false)),
-        "content change should invalidate cache"
+        "equal-length content change should invalidate cache"
     );
 }
 
@@ -5563,8 +5563,8 @@ fn skill_tool_include_telemetry_appends_summary() {
         "telemetry summary should be appended"
     );
     assert!(
-        out.contains("events.jsonl"),
-        "telemetry summary should mention log path"
+        out.contains("event-"),
+        "telemetry summary should mention per-event log path"
     );
 }
 
