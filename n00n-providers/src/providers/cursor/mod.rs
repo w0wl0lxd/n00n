@@ -94,7 +94,7 @@ impl Cursor {
 
     fn is_safe_command_name(s: &str) -> bool {
         const ALLOWLIST: &[&str] = &["cursor-agent", "cursor-agent.exe"];
-        ALLOWLIST.contains(&s) || s.ends_with("/cursor-agent") || s.ends_with("/cursor-agent.exe")
+        ALLOWLIST.contains(&s)
     }
 
     fn command_from_auth(auth: &ResolvedAuth) -> PathBuf {
@@ -1075,5 +1075,24 @@ mod tests {
     fn map_stderr_error_detects_auth_failure() {
         let err = map_stderr_error("Error: not logged in");
         assert!(matches!(err, AgentError::Api { status: 401, .. }));
+    }
+
+    #[test]
+    fn is_safe_command_name_accepts_allowlisted() {
+        assert!(Cursor::is_safe_command_name("cursor-agent"));
+        assert!(Cursor::is_safe_command_name("cursor-agent.exe"));
+    }
+
+    #[test]
+    fn is_safe_command_name_rejects_path_and_url_overrides() {
+        assert!(!Cursor::is_safe_command_name(
+            "https://evil.example/cursor-agent"
+        ));
+        assert!(!Cursor::is_safe_command_name("/tmp/attacker/cursor-agent"));
+        assert!(!Cursor::is_safe_command_name(
+            "/tmp/attacker/cursor-agent.exe"
+        ));
+        assert!(!Cursor::is_safe_command_name("../cursor-agent"));
+        assert!(!Cursor::is_safe_command_name("cursor-agent/../evil"));
     }
 }
