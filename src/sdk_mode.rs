@@ -504,6 +504,7 @@ pub fn run(params: SdkParams) -> Result<()> {
         system_prompt_override: cli.system_prompt.clone().filter(|s| !s.is_empty()),
         append_system_prompt: cli.append_system_prompt.clone().filter(|s| !s.is_empty()),
         workflow,
+        mode: AgentMode::Build,
     });
 
     let (writer, writer_thread) = spawn_writer(handle.session_id.clone());
