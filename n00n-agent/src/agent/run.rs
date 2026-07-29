@@ -207,6 +207,7 @@ pub struct Agent<'h> {
     active_tools: ActiveTools,
     supports_tool_examples: bool,
     lead_model: Option<Arc<Model>>,
+    lead_provider: Option<Arc<dyn Provider>>,
     fusion_state: Option<FusionState>,
 }
 
@@ -217,6 +218,11 @@ impl<'h> Agent<'h> {
         let fusion_enabled = params.config.fusion.enabled;
         let lead_model = if fusion_enabled {
             Some(Arc::new(params.model.clone()))
+        } else {
+            None
+        };
+        let lead_provider = if fusion_enabled {
+            Some(Arc::clone(&params.provider))
         } else {
             None
         };
@@ -268,6 +274,7 @@ impl<'h> Agent<'h> {
             active_tools: ActiveTools::default(),
             supports_tool_examples,
             lead_model,
+            lead_provider,
             fusion_state,
         };
         if fusion_enabled {
@@ -843,56 +850,108 @@ impl<'h> Agent<'h> {
         match route {
             FusionRoute::Stay(_) => {}
             FusionRoute::EscalateToLead | FusionRoute::Switch(FusionLane::Lead) => {
-                if let Ok(mut model) = Model::from_spec(&lead.id) {
-                    if let Ok(provider) = n00n_providers::provider::from_model_with_openai_options(
+                if let Some(provider) = self.lead_provider.as_ref() {
+                    self.provider = Arc::clone(provider);
+                    self.model = Arc::clone(lead);
+                } else {
+                    let spec = lead.spec();
+                    let mut model = match Model::from_spec(&spec) {
+                        Ok(model) => model,
+                        Err(e) => {
+                            warn!(
+                                error = %e,
+                                spec = %spec,
+                                "fusion: failed to resolve lead model spec, keeping current provider/model"
+                            );
+                            return;
+                        }
+                    };
+                    match n00n_providers::provider::from_model_with_openai_options(
                         &mut model,
                         self.timeouts,
                         self.openai_options,
                     ) {
-                        self.provider = Arc::from(provider);
+                        Ok(provider) => {
+                            self.provider = Arc::from(provider);
+                            self.model = Arc::new(model);
+                        }
+                        Err(e) => {
+                            warn!(
+                                error = %e,
+                                model = %model.id,
+                                "fusion: failed to build provider for lead model, keeping current provider/model"
+                            );
+                            return;
+                        }
                     }
-                    self.model = Arc::new(model);
-                } else {
-                    self.model = Arc::clone(lead);
                 }
                 if let Some(state) = self.fusion_state.as_mut() {
                     state.lane = FusionLane::Lead;
                 }
+                self.apply_fusion_lane_context(FusionLane::Lead);
                 info!(model = %self.model.id, "fusion: escalated to lead lane");
             }
             FusionRoute::Switch(FusionLane::Sidekick) => {
                 let tier = tier_to_model_tier(self.config.fusion.sidekick_tier);
-                let spec = n00n_providers::model_registry::model_registry()
-                    .read()
-                    .ok()
-                    .and_then(|registry| registry.spec_for_tier_any(tier));
+                let spec = match n00n_providers::model_registry::model_registry().read() {
+                    Ok(registry) => registry.spec_for_tier_any(tier),
+                    Err(e) => {
+                        warn!(
+                            error = ?e,
+                            ?tier,
+                            "fusion: model registry lock poisoned, cannot resolve sidekick"
+                        );
+                        return;
+                    }
+                };
                 let Some(spec) = spec else {
                     warn!(?tier, "fusion: no model for sidekick tier");
                     return;
                 };
-                match Model::from_spec(&spec) {
-                    Ok(mut model) => {
-                        if let Ok(provider) =
-                            n00n_providers::provider::from_model_with_openai_options(
-                                &mut model,
-                                self.timeouts,
-                                self.openai_options,
-                            )
-                        {
-                            self.provider = Arc::from(provider);
-                        }
-                        self.model = Arc::new(model);
-                        if let Some(state) = self.fusion_state.as_mut() {
-                            state.record_delegation();
-                        }
-                        info!(model = %self.model.id, "fusion: switched to sidekick lane");
-                    }
+                let mut model = match Model::from_spec(&spec) {
+                    Ok(model) => model,
                     Err(e) => {
                         warn!(error = %e, spec = %spec, "fusion: invalid sidekick model spec");
+                        return;
                     }
+                };
+                let provider = match n00n_providers::provider::from_model_with_openai_options(
+                    &mut model,
+                    self.timeouts,
+                    self.openai_options,
+                ) {
+                    Ok(provider) => provider,
+                    Err(e) => {
+                        warn!(
+                            error = %e,
+                            model = %model.id,
+                            "fusion: failed to build provider for sidekick model, keeping current provider/model"
+                        );
+                        return;
+                    }
+                };
+                self.provider = Arc::from(provider);
+                self.model = Arc::new(model);
+                if let Some(state) = self.fusion_state.as_mut() {
+                    state.record_delegation();
                 }
+                self.apply_fusion_lane_context(FusionLane::Sidekick);
+                info!(model = %self.model.id, "fusion: switched to sidekick lane");
             }
         }
+    }
+
+    fn apply_fusion_lane_context(&mut self, lane: FusionLane) {
+        let append = match lane {
+            FusionLane::Lead => crate::fusion::fusion_lead_system_append(),
+            FusionLane::Sidekick => crate::fusion::fusion_sidekick_system_append(),
+        };
+        if !self.system.replace_last_dynamic(append) {
+            self.system.push_dynamic(append);
+        }
+        self.supports_tool_examples = self.model.supports_tool_examples();
+        self.tool_filter = ToolFilter::from_config(&self.config, &self.model, &[]);
+        self.rebuild_tools();
     }
 
     async fn do_compact(&mut self) -> Result<(), AgentError> {
@@ -918,6 +977,9 @@ impl<'h> Agent<'h> {
             None,
         )
         .await?;
+        // Charge compaction to the pre-route lane before any Fusion switch.
+        let cost = usage.cost(&compact_model.pricing, false);
+        self.record_usage(usage, cost);
         if self.config.fusion.enabled {
             let route = self.fusion_state.as_mut().map(|state| {
                 let recent_errors = state.recent_tool_errors();
@@ -929,8 +991,6 @@ impl<'h> Agent<'h> {
                 self.apply_fusion_route(route);
             }
         }
-        let cost = usage.cost(&compact_model.pricing, false);
-        self.record_usage(usage, cost);
         self.rollback_len = Some(self.history.len());
         self.event_tx.send(AgentEvent::CompactionDone)?;
         self.history

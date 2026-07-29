@@ -54,6 +54,12 @@ const DEFAULT_COMMAND: &str = "devin";
 const REQUEST_PERMISSION_METHOD: &str = "session/request_permission";
 const API_KEY_AUTH_METHOD: &str = "api-key";
 const META_API_KEY: &str = "api_key";
+const META_SUPPORTS_IMAGES: &str = "cognition.ai/supportsImages";
+const META_CONTEXT_WINDOW: &str = "cognition.ai/contextWindow";
+const META_MAX_OUTPUT_TOKENS: &str = "cognition.ai/maxOutputTokens";
+const META_PRICING: &str = "cognition.ai/pricing";
+const META_FREE: &str = "cognition.ai/free";
+const META_PROMO: &str = "cognition.ai/promo";
 
 pub(crate) const fn models() -> &'static [ModelEntry] {
     &[
@@ -1152,34 +1158,38 @@ fn models_from_config_options(opts: &[SessionConfigOption]) -> Vec<crate::model:
         };
         for option in options {
             let value_str = option.value.to_string();
+            if value_str.trim().is_empty() {
+                warn!("devin: skipping empty model id from session config options");
+                continue;
+            }
             let mut info = crate::model::ModelInfo::id_only(value_str.clone());
             info.name = Some(option.name.clone()).filter(|n| !n.trim().is_empty());
             info.supports_vision = option
                 .meta
                 .as_ref()
-                .and_then(|m| m.get("cognition.ai/supportsImages"))
+                .and_then(|m| m.get(META_SUPPORTS_IMAGES))
                 .and_then(Value::as_bool);
             if let Some(meta) = &option.meta {
                 info.context_window = meta
-                    .get("cognition.ai/contextWindow")
+                    .get(META_CONTEXT_WINDOW)
                     .and_then(Value::as_u64)
                     .map(clamped_u32)
                     .or_else(|| infer_context_window(&value_str));
                 info.max_output_tokens = meta
-                    .get("cognition.ai/maxOutputTokens")
+                    .get(META_MAX_OUTPUT_TOKENS)
                     .and_then(Value::as_u64)
                     .map(clamped_u32)
                     .or_else(|| infer_max_output_tokens(&value_str));
                 info.pricing = meta
-                    .get("cognition.ai/pricing")
+                    .get(META_PRICING)
                     .and_then(parse_pricing)
                     .or_else(|| infer_pricing(&value_str));
                 info.is_free = meta
-                    .get("cognition.ai/free")
+                    .get(META_FREE)
                     .and_then(Value::as_bool)
                     .or_else(|| infer_is_free(&value_str));
                 info.is_promo = meta
-                    .get("cognition.ai/promo")
+                    .get(META_PROMO)
                     .and_then(Value::as_bool)
                     .or_else(|| infer_is_promo(&value_str));
             } else {

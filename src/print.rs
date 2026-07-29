@@ -470,10 +470,22 @@ fn output_result(
             print!("{result_text}");
             if let Some(stats) = fusion {
                 eprintln!(
-                    "fusion: lead=${:.4} sidekick=${:.4} total=${:.4} delegations={} compacts={}",
+                    "fusion: lead=${:.4} sidekick=${:.4} total=${:.4} \
+                     lead_tokens={{in:{} out:{} cache_r:{} cache_w:{}}} \
+                     sidekick_tokens={{in:{} out:{} cache_r:{} cache_w:{}}} \
+                     final_lane={} delegations={} compacts={}",
                     stats.lead_cost,
                     stats.sidekick_cost,
                     stats.lead_cost + stats.sidekick_cost,
+                    stats.lead_usage.input,
+                    stats.lead_usage.output,
+                    stats.lead_usage.cache_read,
+                    stats.lead_usage.cache_creation,
+                    stats.sidekick_usage.input,
+                    stats.sidekick_usage.output,
+                    stats.sidekick_usage.cache_read,
+                    stats.sidekick_usage.cache_creation,
+                    stats.final_lane.as_str(),
                     stats.delegation_count,
                     stats.compact_count,
                 );
@@ -503,10 +515,22 @@ fn output_result(
             // Keep Claude Code wire format intact; emit Fusion on stderr.
             if let Some(stats) = fusion {
                 eprintln!(
-                    "fusion: lead=${:.4} sidekick=${:.4} total=${:.4} delegations={} compacts={}",
+                    "fusion: lead=${:.4} sidekick=${:.4} total=${:.4} \
+                     lead_tokens={{in:{} out:{} cache_r:{} cache_w:{}}} \
+                     sidekick_tokens={{in:{} out:{} cache_r:{} cache_w:{}}} \
+                     final_lane={} delegations={} compacts={}",
                     stats.lead_cost,
                     stats.sidekick_cost,
                     stats.lead_cost + stats.sidekick_cost,
+                    stats.lead_usage.input,
+                    stats.lead_usage.output,
+                    stats.lead_usage.cache_read,
+                    stats.lead_usage.cache_creation,
+                    stats.sidekick_usage.input,
+                    stats.sidekick_usage.output,
+                    stats.sidekick_usage.cache_read,
+                    stats.sidekick_usage.cache_creation,
+                    stats.final_lane.as_str(),
                     stats.delegation_count,
                     stats.compact_count,
                 );

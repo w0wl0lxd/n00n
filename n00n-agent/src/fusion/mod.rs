@@ -7,6 +7,8 @@ use serde::Serialize;
 
 const FUSION_DELEGATE_TOOL: &str = "fusion_delegate";
 const RECENT_ERROR_ESCALATE_THRESHOLD: u32 = 2;
+const SIDEKICK_FAILURE_ESCALATE_THRESHOLD: u32 = 2;
+const MAX_DELEGATIONS_BEFORE_LEAD_LOCK: u32 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -14,6 +16,16 @@ pub enum FusionLane {
     #[default]
     Lead,
     Sidekick,
+}
+
+impl FusionLane {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Lead => "lead",
+            Self::Sidekick => "sidekick",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,12 +111,26 @@ impl FusionState {
 
     pub fn observe_tool_results(&mut self, results: &[crate::ToolDoneEvent]) {
         for done in results {
-            if !done.is_error {
+            if done.tool.as_ref() == FUSION_DELEGATE_TOOL {
+                if done.is_error {
+                    self.recent_tool_errors = self.recent_tool_errors.saturating_add(1);
+                    self.record_sidekick_failure();
+                } else {
+                    // fusion_delegate runs as an isolated subagent; main lane stays Lead.
+                    self.delegation_count = self.delegation_count.saturating_add(1);
+                    if let Some(tel) = done.output.telemetry() {
+                        let cost = tel.cost.unwrap_or_else(|| 0.0);
+                        let usage = match tel.usage.as_ref() {
+                            Some(usage) => tool_usage_to_token_usage(usage),
+                            None => TokenUsage::default(),
+                        };
+                        self.record_lane_usage(FusionLane::Sidekick, usage, cost);
+                    }
+                }
                 continue;
             }
-            self.recent_tool_errors = self.recent_tool_errors.saturating_add(1);
-            if done.tool.as_ref() == FUSION_DELEGATE_TOOL {
-                self.record_sidekick_failure();
+            if done.is_error {
+                self.recent_tool_errors = self.recent_tool_errors.saturating_add(1);
             }
         }
     }
@@ -217,19 +243,36 @@ pub fn route_after_compact(
 ) -> FusionRoute {
     state.record_compact();
 
-    if state.sidekick_failures >= 2 || recent_tool_errors >= RECENT_ERROR_ESCALATE_THRESHOLD {
+    if state.sidekick_failures >= SIDEKICK_FAILURE_ESCALATE_THRESHOLD
+        || recent_tool_errors >= RECENT_ERROR_ESCALATE_THRESHOLD
+    {
         return FusionRoute::EscalateToLead;
     }
 
     let summary_kind = classify_delegation(compact_summary);
 
     match (state.lane, summary_kind) {
-        (FusionLane::Lead, DelegationKind::Delegate) if state.delegation_count < 8 => {
+        (FusionLane::Lead, DelegationKind::Delegate)
+            if state.delegation_count < MAX_DELEGATIONS_BEFORE_LEAD_LOCK =>
+        {
             FusionRoute::Switch(FusionLane::Sidekick)
         }
         (FusionLane::Sidekick, DelegationKind::LeadOnly) => FusionRoute::Switch(FusionLane::Lead),
         (lane, _) => FusionRoute::Stay(lane),
     }
+}
+
+fn tool_usage_to_token_usage(usage: &crate::ToolUsage) -> TokenUsage {
+    TokenUsage {
+        input: u64_to_u32_saturating(usage.fresh_input_tokens),
+        output: u64_to_u32_saturating(usage.output_tokens),
+        cache_creation: u64_to_u32_saturating(usage.cache_write_tokens),
+        cache_read: u64_to_u32_saturating(usage.cache_read_tokens),
+    }
+}
+
+fn u64_to_u32_saturating(value: u64) -> u32 {
+    u32::try_from(value).unwrap_or_else(|_| u32::MAX)
 }
 
 /// System prompt appendix for lead lane when Fusion is enabled.
@@ -298,5 +341,37 @@ mod tests {
         assert_eq!(state.recent_tool_errors(), 2);
         assert_eq!(state.sidekick_failures, 1);
         assert!(state.should_escalate_for_tool_errors());
+    }
+
+    #[test]
+    fn observe_successful_fusion_delegate_updates_sidekick_stats() {
+        let mut state = FusionState::new_lead();
+        let telemetry = crate::ToolTelemetry::try_new(
+            Some(0.12),
+            Some(crate::ToolUsage::try_new(10, 2, 1, 13, 5).expect("conserving tool usage")),
+        )
+        .expect("valid telemetry")
+        .expect("some telemetry");
+        state.observe_tool_results(&[crate::ToolDoneEvent {
+            id: "1".into(),
+            tool: Arc::from(FUSION_DELEGATE_TOOL),
+            output: crate::ToolOutput::Plain("ok".into()).with_telemetry(Some(telemetry)),
+            is_error: false,
+            annotation: None,
+            written_path: None,
+        }]);
+        assert_eq!(state.delegation_count, 1);
+        assert_eq!(state.lane, FusionLane::Lead);
+        assert!((state.sidekick_cost - 0.12).abs() < f64::EPSILON);
+        assert_eq!(state.sidekick_usage.input, 10);
+        assert_eq!(state.sidekick_usage.output, 5);
+        assert_eq!(state.sidekick_usage.cache_read, 2);
+        assert_eq!(state.sidekick_usage.cache_creation, 1);
+    }
+
+    #[test]
+    fn lane_as_str_matches_storage_labels() {
+        assert_eq!(FusionLane::Lead.as_str(), "lead");
+        assert_eq!(FusionLane::Sidekick.as_str(), "sidekick");
     }
 }
