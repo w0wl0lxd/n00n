@@ -1385,6 +1385,7 @@ async fn prompt(
                 usage: TokenUsage::default(),
                 num_turns: 0,
                 stop_reason: None,
+                fusion: None,
             })
         {
             s.failed = true;
