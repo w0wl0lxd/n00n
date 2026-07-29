@@ -94,7 +94,7 @@ enum Caps {
     /// `start` runs before permission checks: it reads config and publishes
     /// previews, but dispatching tools is structurally impossible.
     Start {
-        config: AgentConfig,
+        config: Arc<AgentConfig>,
         workflow: bool,
         audience: ToolAudience,
     },
@@ -127,7 +127,7 @@ impl LuaCtx {
         Self::new(
             ctx,
             Caps::Start {
-                config: ctx.config.clone(),
+                config: Arc::clone(&ctx.config),
                 workflow: ctx.workflow,
                 audience: ctx.audience,
             },
@@ -157,7 +157,7 @@ impl LuaCtx {
     fn config(&self) -> Option<&AgentConfig> {
         match &self.caps {
             Caps::Handler { agent, .. } => Some(&agent.config),
-            Caps::Start { config, .. } => Some(config),
+            Caps::Start { config, .. } => Some(config.as_ref()),
             Caps::Restore { .. } => None,
         }
     }

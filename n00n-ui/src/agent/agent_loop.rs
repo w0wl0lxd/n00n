@@ -306,7 +306,7 @@ impl AgentLoop {
             AgentParams {
                 provider: Arc::clone(&slot.provider),
                 model: slot.model.clone(),
-                config: self.config.clone(),
+                config: Arc::new(self.config.clone()),
                 tool_output_lines: self.tool_output_lines,
                 permissions: Arc::clone(&self.permissions),
                 session_id: self.session_id.clone(),
