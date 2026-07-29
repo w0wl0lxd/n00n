@@ -560,6 +560,10 @@ mod tests {
         use n00n_providers::{CacheHealth, CacheKind};
         use ratatui::{Terminal, backend::TestBackend};
 
+        let original = std::env::current_dir().unwrap();
+        let tmpdir = TempDir::new().unwrap();
+        std::env::set_current_dir(tmpdir.path()).unwrap();
+
         let backend = TestBackend::new(80, 1);
         let mut terminal = Terminal::new(backend).unwrap();
         let bar = StatusBar::new(Duration::from_secs(1));
@@ -615,5 +619,7 @@ mod tests {
             after_icon.chars().any(|c| c.is_ascii_digit()),
             "status bar: {text:?}"
         );
+
+        std::env::set_current_dir(original).unwrap();
     }
 }

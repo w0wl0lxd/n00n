@@ -18,22 +18,47 @@ pub(crate) enum AuthError {
     DbRead { message: String },
 }
 
+/// Candidate `state.vscdb` locations across Cursor install layouts.
+///
+/// Order: platform-primary first, then common fallbacks (e.g. XDG config or a
+/// Linux layout inside a macOS remote/dev container).
+pub(crate) fn ide_vscdb_candidates() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if cfg!(target_os = "macos") {
+        if let Some(home) = std::env::var_os("HOME") {
+            out.push(
+                PathBuf::from(home)
+                    .join("Library/Application Support/Cursor")
+                    .join(VSCDB_SUFFIX),
+            );
+        }
+    }
+    if cfg!(target_os = "windows") {
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            out.push(PathBuf::from(appdata).join("Cursor").join(VSCDB_SUFFIX));
+        }
+        if let Some(local_appdata) = std::env::var_os("LOCALAPPDATA") {
+            out.push(PathBuf::from(local_appdata).join("Cursor").join(VSCDB_SUFFIX));
+        }
+    }
+    if cfg!(not(target_os = "macos")) {
+        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+            out.push(PathBuf::from(xdg).join(VSCDB_SUFFIX));
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            out.push(PathBuf::from(home).join(".config/Cursor").join(VSCDB_SUFFIX));
+        }
+    }
+    out
+}
+
 pub(crate) fn ide_vscdb_path() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        std::env::var_os("HOME").map(|home| {
-            PathBuf::from(home)
-                .join("Library/Application Support")
-                .join(VSCDB_SUFFIX)
-        })
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-            .map(|config| config.join(VSCDB_SUFFIX))
-    }
+    let candidates = ide_vscdb_candidates();
+    candidates
+        .iter()
+        .find(|path| path.is_file())
+        .cloned()
+        .or_else(|| candidates.into_iter().next())
 }
 
 pub(crate) fn read_ide_access_token_from(path: &Path) -> Result<String, AuthError> {
@@ -110,5 +135,33 @@ mod tests {
                 "Linux/Windows IDE db path unexpected: {path:?}"
             );
         }
+    }
+
+    #[test]
+    fn ide_vscdb_candidates_include_linux_layout() {
+        if std::env::var_os("HOME").is_none() && std::env::var_os("XDG_CONFIG_HOME").is_none() {
+            return;
+        }
+        let candidates = ide_vscdb_candidates();
+        assert!(
+            candidates.iter().any(|p| p.ends_with(VSCDB_SUFFIX)),
+            "candidates={candidates:?}"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ide_vscdb_candidates_include_macos_layout() {
+        if std::env::var_os("HOME").is_none() {
+            return;
+        }
+        let candidates = ide_vscdb_candidates();
+        assert!(
+            candidates.iter().any(|p| {
+                p.to_string_lossy()
+                    .contains("Library/Application Support/Cursor")
+            }),
+            "candidates={candidates:?}"
+        );
     }
 }
