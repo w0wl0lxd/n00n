@@ -53,6 +53,7 @@ include!("models_data.rs");
 
 mod auth;
 mod checkpoint;
+mod checksum;
 mod connect;
 mod discovery;
 mod proto;

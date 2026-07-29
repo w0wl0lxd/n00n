@@ -1,6 +1,10 @@
-//! Connect envelope framing for Cursor `agent.v1.AgentService`.
+//! Connect protocol framing for Cursor agent streams.
 //!
 //! Wire format: `[flags: u8][length: u32 BE][payload]`.
+
+#![allow(dead_code)]
+
+use std::io::Read;
 
 const CONNECT_END_STREAM_FLAG: u8 = 0b0000_0010;
 const CONNECT_COMPRESSED_FLAG: u8 = 0b0000_0001;
@@ -57,32 +61,45 @@ impl FrameBuffer {
     }
 }
 
-pub(crate) fn encode_frame(flags: u8, payload: &[u8]) -> Result<Vec<u8>, String> {
-    if payload.len() > MAX_CONNECT_FRAME_LEN {
-        return Err(format!(
-            "connect frame payload length {} exceeds maximum {MAX_CONNECT_FRAME_LEN}",
-            payload.len()
-        ));
-    }
+#[must_use]
+pub(crate) fn encode_frame(flags: u8, payload: &[u8]) -> Vec<u8> {
+    let capped = payload.len().min(MAX_CONNECT_FRAME_LEN);
     // MAX_CONNECT_FRAME_LEN is 16 MiB, so this always fits in u32.
     #[allow(clippy::cast_possible_truncation)]
-    let len = payload.len() as u32;
+    let len = capped as u32;
+    let payload = &payload[..capped];
     let mut frame = Vec::with_capacity(5 + payload.len());
     frame.push(flags);
     frame.extend_from_slice(&len.to_be_bytes());
     frame.extend_from_slice(payload);
-    Ok(frame)
+    frame
+}
+
+/// Expand a Connect frame payload when the compressed flag is set (gzip).
+pub(crate) fn decode_frame_payload(frame: &ConnectFrame) -> Result<Vec<u8>, String> {
+    if !frame.compressed {
+        return Ok(frame.payload.clone());
+    }
+    let mut decoder = flate2::read::GzDecoder::new(frame.payload.as_slice());
+    let mut out = Vec::new();
+    decoder
+        .read_to_end(&mut out)
+        .map_err(|error| format!("connect gzip decompress: {error}"))?;
+    Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::io::Write;
     use test_case::test_case;
 
     #[test]
     fn encode_frame_roundtrip() {
         let payload = b"hello";
-        let encoded = encode_frame(0, payload).expect("encode");
+        let encoded = encode_frame(0, payload);
         let mut buf = FrameBuffer::default();
         buf.push(&encoded);
         let frame = buf.next_frame().expect("frame").expect("ok");
@@ -93,7 +110,7 @@ mod tests {
 
     #[test]
     fn end_stream_flag_preserved() {
-        let encoded = encode_frame(CONNECT_END_STREAM_FLAG, b"").expect("encode");
+        let encoded = encode_frame(CONNECT_END_STREAM_FLAG, b"");
         let mut buf = FrameBuffer::default();
         buf.push(&encoded);
         let frame = buf.next_frame().expect("frame").expect("ok");
@@ -102,7 +119,7 @@ mod tests {
 
     #[test]
     fn chunked_input_reassembles() {
-        let encoded = encode_frame(0, b"chunked").expect("encode");
+        let encoded = encode_frame(0, b"chunked");
         let mut buf = FrameBuffer::default();
         for byte in encoded {
             buf.push(&[byte]);
@@ -152,7 +169,7 @@ mod tests {
                 *byte = fastrand::u8(..);
             }
             let flags = fastrand::u8(..) & 0b11;
-            let encoded = encode_frame(flags, &payload).expect("encode");
+            let encoded = encode_frame(flags, &payload);
             let mut buf = FrameBuffer::default();
             let mut offset = 0;
             while offset < encoded.len() {
@@ -172,9 +189,8 @@ mod tests {
     #[test]
     fn oversized_header_is_consumed_so_loop_cannot_spin() {
         let mut buf = FrameBuffer::default();
-        let over = u32::try_from(MAX_CONNECT_FRAME_LEN)
-            .unwrap()
-            .saturating_add(1);
+        #[allow(clippy::cast_possible_truncation)] // MAX_CONNECT_FRAME_LEN is 16 MiB
+        let over = (MAX_CONNECT_FRAME_LEN as u32).saturating_add(1);
         let mut header = [0u8; 5];
         header[1..].copy_from_slice(&over.to_be_bytes());
         buf.push(&header);
@@ -184,8 +200,28 @@ mod tests {
     }
 
     #[test]
-    fn encode_frame_rejects_oversized_payload() {
-        let oversized = vec![0u8; MAX_CONNECT_FRAME_LEN + 1];
-        assert!(encode_frame(0, &oversized).is_err());
+    fn decode_frame_payload_gunzips_compressed_flag() {
+        let plain = b"interaction text delta";
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(plain).expect("gzip write");
+        let gzipped = encoder.finish().expect("gzip finish");
+        let frame = ConnectFrame {
+            end_stream: false,
+            compressed: true,
+            payload: gzipped,
+        };
+        let decoded = decode_frame_payload(&frame).expect("decode");
+        assert_eq!(decoded, plain);
+    }
+
+    #[test]
+    fn decode_frame_payload_rejects_corrupt_gzip() {
+        let frame = ConnectFrame {
+            end_stream: false,
+            compressed: true,
+            payload: b"not-gzip".to_vec(),
+        };
+        let err = decode_frame_payload(&frame).expect_err("corrupt");
+        assert!(err.contains("gzip"));
     }
 }

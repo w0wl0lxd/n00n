@@ -17,9 +17,10 @@
   - `scripts/cursor_export_flows.sh` (FAIL if Run empty)
   - `scripts/cursor_capture_e2e.sh`
   - `just cursor-capture` / `cursor-capture-e2e` / `cursor-export` / `cursor-fuzz-frames`
-- [ ] Live capture PASS (`VALIDATION.txt` result=PASS)
-- [ ] Live `AgentService/Run` spike (`N00N_CURSOR_LIVE_TESTS=1`)
-- [ ] Two-turn checkpoint replay
+- [x] Live capture PASS (`VALIDATION.txt` result=PASS)
+- [x] Live `AgentService/Run` spike (`N00N_CURSOR_LIVE_TESTS=1`) — green via reqwest HTTP/2 streaming body (isahc `AsyncBody` stalled at `enqueued≫sent=1`). Also: gzip frames, checkpoint outbound+waker, model meta `fast=false`, ASK mode, checksum/session fingerprint headers, GetUsableModels warm, capture golden `pong` decode.
+- [x] Checkpoint get/set wired into Run outbound queue (unit-tested; two-turn live capture still open)
+- [ ] Two-turn checkpoint replay (needs stable agentn through mitm or SSLKEYLOG)
 - [ ] Auto entitlement matrix
 
 ## Phase 1+ — see plan.md
