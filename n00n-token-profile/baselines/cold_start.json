@@ -4,25 +4,25 @@
   "surfaces": {
     "cache_prefix": {
       "name": "cache_prefix",
-      "bytes": 13838,
-      "tokens": 3392
+      "bytes": 15643,
+      "tokens": 3843
     },
     "main_tools_payload": {
       "name": "main_tools_payload",
-      "tool_count": 28,
-      "bytes": 18900,
-      "tokens": 4725
+      "tool_count": 29,
+      "bytes": 22412,
+      "tokens": 5603
     },
     "main_tools_schemas": {
       "name": "main_tools_schemas",
-      "tool_count": 28,
-      "bytes": 11328,
-      "tokens": 2832
+      "tool_count": 29,
+      "bytes": 13124,
+      "tokens": 3281
     },
     "system_prompt": {
       "name": "system_prompt",
-      "bytes": 2510,
-      "tokens": 560
+      "bytes": 2519,
+      "tokens": 562
     }
   },
   "limits": {
