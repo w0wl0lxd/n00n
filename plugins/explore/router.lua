@@ -29,13 +29,13 @@ function M.normalize_intent(input)
     return intent
   end
 
+  if input.command then
+    return "relations"
+  end
+
   local path = trim(input.path)
   if path ~= "" and looks_like_file_path(path, true) then
     return "file"
-  end
-
-  if input.command then
-    return "relations"
   end
 
   if looks_like_file_path(input.query, false) then

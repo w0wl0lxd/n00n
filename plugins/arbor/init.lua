@@ -36,11 +36,14 @@ end
 
 local function native_trace_path(from_symbol, to_symbol, project)
   if not n00n_arbor.graph_index_available(project) then
-    return nil
+    return nil, "error: native graph index unavailable for trace_path; ensure .arbor/graph.json exists"
   end
   local ok, results = pcall(n00n_arbor.graph_trace_path, from_symbol, to_symbol, project)
-  if not ok or type(results) ~= "table" then
-    return nil
+  if not ok then
+    return nil, "error: " .. tostring(results)
+  end
+  if type(results) ~= "table" then
+    return nil, "error: native graph index unavailable for trace_path; ensure .arbor/graph.json exists"
   end
   return results
 end
@@ -56,7 +59,7 @@ local function dispatch(input)
     end
     local native_results = native_relations(command, symbol, project)
     local results = native_results
-    if not results then
+    if not results or #results == 0 then
       if command == "callers" then
         results = n00n_arbor.callers(symbol, project)
       else
@@ -76,11 +79,10 @@ local function dispatch(input)
         is_error = true,
       }
     end
-    local native_results = native_trace_path(input.from_symbol, input.to_symbol, project)
-    local results = native_results
+    local results, err = native_trace_path(input.from_symbol, input.to_symbol, project)
     if not results then
       return {
-        llm_output = "error: native graph index unavailable for trace_path; ensure .arbor/graph.json exists",
+        llm_output = err,
         is_error = true,
       }
     end
@@ -95,12 +97,6 @@ local function dispatch(input)
   end
 
   if command == "map" then
-    if not n00n_arbor.graph_index_available(project) then
-      return {
-        llm_output = "error: Arbor index not found in " .. project .. ". Run `arbor index` first.",
-        is_error = true,
-      }
-    end
     local token_budget = input.token_budget or 1024
     local entries = n00n_arbor.map(project, token_budget)
     local lines = {}
@@ -115,12 +111,6 @@ local function dispatch(input)
   end
 
   if command == "diff" then
-    if not n00n_arbor.graph_index_available(project) then
-      return {
-        llm_output = "error: Arbor index not found in " .. project .. ". Run `arbor index` first.",
-        is_error = true,
-      }
-    end
     local impact = n00n_arbor.diff(project)
     local lines = {
       "Blast Radius Impact",
@@ -136,12 +126,6 @@ local function dispatch(input)
   if command == "query" then
     if not symbol then
       return { llm_output = "error: query string required (use 'symbol' field)", is_error = true }
-    end
-    if not n00n_arbor.graph_index_available(project) then
-      return {
-        llm_output = "error: Arbor index not found in " .. project .. ". Run `arbor index` first.",
-        is_error = true,
-      }
     end
     return { llm_output = n00n_arbor.query(symbol, project) }
   end

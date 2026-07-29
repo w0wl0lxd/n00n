@@ -31,6 +31,10 @@ case("explicit_command_selects_relations", function()
   eq(router.normalize_intent({ query = "foo", command = "map" }), "relations")
 end)
 
+case("explicit_command_beats_path_heuristic", function()
+  eq(router.normalize_intent({ path = "src/lib.rs", command = "callers" }), "relations")
+end)
+
 case("build_index_input", function()
   local backend, input = router.build_backend_input({ query = "src/lib.rs", intent = "file" }, "file")
   eq(backend, "index")

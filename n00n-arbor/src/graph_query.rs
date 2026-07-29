@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use crate::graph_json::{GraphIndex, SymbolQuery, SymbolRef};
-use crate::{ArborError, Relation, index_health};
+use crate::{ArborError, Client, Relation, index_health};
 
 fn line_number(line_start: usize) -> Option<u64> {
     // usize -> u64 cannot overflow on 64-bit targets; on other targets we
@@ -35,9 +35,24 @@ fn dedupe_relations(relations: Vec<Relation>) -> Vec<Relation> {
     out
 }
 
+/// Load a graph index, refreshing via Arbor CLI when available.
+///
+/// When the Arbor binary cannot be spawned (`ArborError::Exec`), fall back to
+/// reading `.arbor/graph.json` directly so in-memory queries remain usable in
+/// CLI-free environments and unit tests.
+fn load_query_index(project: &Path) -> Result<GraphIndex, ArborError> {
+    match Client::load_graph_index(project) {
+        Ok(index) => Ok(index),
+        Err(ArborError::Exec { .. }) => {
+            let graph_path = index_health::graph_json_path(project);
+            GraphIndex::from_graph_json_path(&graph_path)
+        }
+        Err(err) => Err(err),
+    }
+}
+
 pub fn graph_callers(symbol: &str, project: &Path) -> Result<Vec<Relation>, ArborError> {
-    let graph_path = index_health::graph_json_path(project);
-    let index = GraphIndex::from_graph_json_path(&graph_path)?;
+    let index = load_query_index(project)?;
     let query = SymbolQuery {
         name: symbol.to_string(),
         ..SymbolQuery::default()
@@ -50,8 +65,7 @@ pub fn graph_callers(symbol: &str, project: &Path) -> Result<Vec<Relation>, Arbo
 }
 
 pub fn graph_callees(symbol: &str, project: &Path) -> Result<Vec<Relation>, ArborError> {
-    let graph_path = index_health::graph_json_path(project);
-    let index = GraphIndex::from_graph_json_path(&graph_path)?;
+    let index = load_query_index(project)?;
     let query = SymbolQuery {
         name: symbol.to_string(),
         ..SymbolQuery::default()
@@ -64,8 +78,7 @@ pub fn graph_callees(symbol: &str, project: &Path) -> Result<Vec<Relation>, Arbo
 }
 
 pub fn graph_trace_path(from: &str, to: &str, project: &Path) -> Result<Vec<Relation>, ArborError> {
-    let graph_path = index_health::graph_json_path(project);
-    let index = GraphIndex::from_graph_json_path(&graph_path)?;
+    let index = load_query_index(project)?;
     let from_query = SymbolQuery {
         name: from.to_string(),
         ..SymbolQuery::default()
