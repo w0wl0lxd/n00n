@@ -391,6 +391,9 @@ n00n.api.register_tool({
     local all_skills, conflicts, stats = discover_skills()
     local skills = select_skills(all_skills, input)
 
+    -- List/discovery omit active_skill so an existing agent policy is preserved.
+    -- Successful name/plan/full loads always set active_skill: either the policy
+    -- envelope, or a name-only object that clears the previous policy.
     local function discovery_state(active_skill)
       local state = {
         discovery_cache_hit = stats.cache_hit,
@@ -473,6 +476,8 @@ n00n.api.register_tool({
     end
 
     local envelope = build_envelope(skill)
+    -- Name-only marker when the skill has no tool policy: agent clears any prior gate.
+    local active_skill = envelope or { name = skill.name }
 
     if input.plan == true then
       local body, body_err = helpers.read_skill_body(skill)
@@ -480,7 +485,7 @@ n00n.api.register_tool({
         return {
           llm_output = "error: " .. tostring(body_err),
           is_error = true,
-          state = discovery_state(envelope),
+          state = discovery_state(active_skill),
         }
       end
       local plan, plan_err = build_plan(skill, body)
@@ -488,7 +493,7 @@ n00n.api.register_tool({
         return {
           llm_output = "error: " .. tostring(plan_err),
           is_error = true,
-          state = discovery_state(envelope),
+          state = discovery_state(active_skill),
         }
       end
       local output = skill.location .. "\n\n<skill_plan>\n" .. plan .. "\n</skill_plan>"
@@ -500,7 +505,7 @@ n00n.api.register_tool({
       end
       return {
         llm_output = output,
-        state = discovery_state(envelope),
+        state = discovery_state(active_skill),
         usage = {
           output_tokens = math.floor(#output / 4),
         },
@@ -512,7 +517,7 @@ n00n.api.register_tool({
       return {
         llm_output = "error: " .. tostring(load_err),
         is_error = true,
-        state = discovery_state(envelope),
+        state = discovery_state(active_skill),
       }
     end
 
@@ -549,7 +554,7 @@ n00n.api.register_tool({
       llm_output = formatted,
       body = buf,
       header = header_buf,
-      state = discovery_state(envelope),
+      state = discovery_state(active_skill),
       usage = {
         output_tokens = math.floor(#formatted / 4),
       },

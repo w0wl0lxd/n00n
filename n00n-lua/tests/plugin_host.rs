@@ -5295,6 +5295,10 @@ fn skill_tool_loads_preview_instead_of_full_body() {
         "preview should return synopsis frontmatter"
     );
     assert!(
+        !preview.contains("preview truncated"),
+        "synopsis preview is complete and must not claim truncation"
+    );
+    assert!(
         !preview.contains("line3"),
         "preview should not include full body tail"
     );
@@ -5594,6 +5598,41 @@ fn skill_tool_load_returns_active_skill_policy_state() {
         .and_then(|value| value.as_array())
         .expect("allowed_tools array");
     assert!(allowed.iter().any(|tool| tool == "read"));
+}
+
+#[test]
+fn skill_tool_unrestricted_load_emits_name_only_active_skill() {
+    let _lock = SKILL_FS_TEST_LOCK.lock().expect("skill fs test lock");
+    let (reg, _host) = builtins_host();
+    let (fixture_root, _guard) = create_skill_fixture_dir();
+    let skill_dir = fixture_root.join("ungated-skill");
+    std::fs::create_dir_all(&skill_dir).expect("create ungated skill dir");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: ungated-skill-test\ndescription: no tool policy\n---\n# Body\nDo things",
+    )
+    .expect("write ungated skill");
+
+    let out = exec_tool_output(
+        &reg,
+        "skill",
+        serde_json::json!({"name": "ungated-skill-test"}),
+    )
+    .expect("ungated load output");
+    let state = out.state().expect("skill load should return state");
+    let active = state.get("active_skill").expect("active_skill missing");
+    assert_eq!(
+        active.get("name"),
+        Some(&serde_json::json!("ungated-skill-test"))
+    );
+    assert!(
+        active.get("allowed_tools").is_none(),
+        "unrestricted load must not invent allowed_tools"
+    );
+    assert!(
+        active.get("disallowed_tools").is_none(),
+        "unrestricted load must not invent disallowed_tools"
+    );
 }
 
 /// List mode runs the program directly without shell interpretation.

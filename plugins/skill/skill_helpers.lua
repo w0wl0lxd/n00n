@@ -307,7 +307,7 @@ end
 
 function M.preview_body(body, max_lines, synopsis)
   if synopsis and #synopsis > 0 then
-    return synopsis, true
+    return synopsis, false
   end
   local limit = max_lines or DEFAULT_PREVIEW_LINES
   local lines = {}

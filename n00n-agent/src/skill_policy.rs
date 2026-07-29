@@ -28,10 +28,9 @@ impl ActiveSkillPolicy {
             };
         }
 
-        let normalized = normalize_tool_name(tool_name);
         if let Some(disallowed) = &self.disallowed_tools {
             for denied in disallowed {
-                if normalize_tool_name(denied) == normalized {
+                if tool_names_match(denied, tool_name) {
                     return SkillPolicyDecision {
                         allowed: false,
                         reason: Some(format!(
@@ -48,7 +47,7 @@ impl ActiveSkillPolicy {
         {
             let permitted = allowed
                 .iter()
-                .any(|entry| normalize_tool_name(entry) == normalized);
+                .any(|entry| tool_names_match(entry, tool_name));
             if !permitted {
                 return SkillPolicyDecision {
                     allowed: false,
@@ -100,12 +99,12 @@ impl ActiveSkillPolicy {
             return;
         };
         match state.get("active_skill") {
+            // List/discovery omit the key and must not clear an existing policy.
             None => {}
+            // Explicit null, or a present object without tool lists (unrestricted load).
             Some(serde_json::Value::Null) => *policy = None,
             Some(active) => {
-                if let Some(new_policy) = Self::from_value(active) {
-                    *policy = Some(new_policy);
-                }
+                *policy = Self::from_value(active);
             }
         }
     }
@@ -113,7 +112,26 @@ impl ActiveSkillPolicy {
 
 #[must_use]
 pub fn normalize_tool_name(tool_name: &str) -> String {
-    tool_name.replace('-', "_").to_ascii_lowercase()
+    // MCP providers send `server__tool`; skills author native / bare names.
+    let as_internal = if tool_name.contains("__") {
+        crate::mcp::internal_tool_name(tool_name)
+    } else {
+        tool_name.to_owned()
+    };
+    as_internal.replace('-', "_").to_ascii_lowercase()
+}
+
+fn bare_tool_name(normalized: &str) -> Option<&str> {
+    normalized
+        .split_once('.')
+        .map(|(_, rest)| rest)
+        .filter(|rest| !rest.is_empty())
+}
+
+fn tool_names_match(policy_entry: &str, tool_name: &str) -> bool {
+    let entry = normalize_tool_name(policy_entry);
+    let tool = normalize_tool_name(tool_name);
+    entry == tool || bare_tool_name(&tool).is_some_and(|bare| bare == entry)
 }
 
 fn string_array(value: &Value) -> Option<Vec<String>> {
@@ -224,7 +242,7 @@ mod tests {
         );
         assert!(policy.is_some());
 
-        // Explicit null active_skill is the only signal that clears the policy.
+        // Explicit null active_skill clears the policy.
         ActiveSkillPolicy::apply_from_skill_tool_result(
             &mut policy,
             "skill",
@@ -232,5 +250,46 @@ mod tests {
             Some(&json!({ "active_skill": null })),
         );
         assert!(policy.is_none());
+    }
+
+    #[test]
+    fn apply_from_skill_tool_result_clears_on_name_only_active_skill() {
+        let mut policy = Some(ActiveSkillPolicy {
+            name: "safe".into(),
+            allowed_tools: Some(vec!["read".into()]),
+            disallowed_tools: None,
+        });
+        // Successful load without tool policy emits name-only active_skill.
+        ActiveSkillPolicy::apply_from_skill_tool_result(
+            &mut policy,
+            "skill",
+            false,
+            Some(&json!({
+                "active_skill": { "name": "ungated" }
+            })),
+        );
+        assert!(policy.is_none());
+    }
+
+    #[test]
+    fn evaluate_matches_mcp_wire_name_to_bare_allowlist_entry() {
+        let policy = ActiveSkillPolicy {
+            name: "safe".into(),
+            allowed_tools: Some(vec!["read".into(), "grep".into()]),
+            disallowed_tools: None,
+        };
+        assert!(policy.evaluate("docs__read").allowed);
+        assert!(!policy.evaluate("docs__bash").allowed);
+    }
+
+    #[test]
+    fn evaluate_matches_mcp_wire_name_on_denylist() {
+        let policy = ActiveSkillPolicy {
+            name: "safe".into(),
+            allowed_tools: None,
+            disallowed_tools: Some(vec!["bash".into()]),
+        };
+        assert!(!policy.evaluate("shell__bash").allowed);
+        assert!(policy.evaluate("shell__read").allowed);
     }
 }

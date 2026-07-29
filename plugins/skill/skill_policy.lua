@@ -4,7 +4,26 @@ local function normalize_tool_name(tool_name)
   if not tool_name or #tool_name == 0 then
     return nil
   end
-  return tool_name:gsub("-", "_"):lower()
+  -- MCP wire names use server__tool; map to server.tool before comparing.
+  local as_internal = tool_name
+  local sep_start, sep_end = tool_name:find("__", 1, true)
+  if sep_start then
+    as_internal = tool_name:sub(1, sep_start - 1) .. "." .. tool_name:sub(sep_end + 1)
+  end
+  return as_internal:gsub("-", "_"):lower()
+end
+
+local function tool_names_match(policy_entry, tool_name)
+  local entry = normalize_tool_name(policy_entry)
+  local tool = normalize_tool_name(tool_name)
+  if not entry or not tool then
+    return false
+  end
+  if entry == tool then
+    return true
+  end
+  local bare = tool:match("%.(.+)$")
+  return bare ~= nil and bare == entry
 end
 
 function M.build_envelope(skill)
@@ -38,7 +57,7 @@ function M.evaluate(envelope, tool_name)
 
   if envelope.disallowed_tools then
     for _, denied in ipairs(envelope.disallowed_tools) do
-      if normalize_tool_name(denied) == normalized then
+      if tool_names_match(denied, tool_name) then
         return {
           allowed = false,
           reason = "tool " .. tool_name .. " is disallowed by active skill policy",
@@ -49,7 +68,7 @@ function M.evaluate(envelope, tool_name)
 
   if envelope.allowed_tools and #envelope.allowed_tools > 0 then
     for _, allowed in ipairs(envelope.allowed_tools) do
-      if normalize_tool_name(allowed) == normalized then
+      if tool_names_match(allowed, tool_name) then
         return { allowed = true }
       end
     end
