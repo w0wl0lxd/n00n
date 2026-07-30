@@ -876,8 +876,19 @@ fn build_loaded_tool(
     tool_output_lines: &ToolOutputLines,
 ) -> (String, usize, Option<Arc<ToolOutput>>, Option<String>) {
     if let Some(output) = reconstructed {
+        let text = match &output {
+            n00n_agent::ToolOutput::Plain(t)
+            | n00n_agent::ToolOutput::Markdown(t)
+            | n00n_agent::ToolOutput::ReadDir(t)
+                if !t.text.is_empty() =>
+            {
+                let tr = truncate_output(&t.text, tool_output_lines.get(tool));
+                format!("{}\n{}", summary, tr.kept)
+            }
+            _ => summary.to_owned(),
+        };
         let annotation = output.annotation();
-        (summary.to_owned(), 0, Some(Arc::new(output)), annotation)
+        (text, 0, Some(Arc::new(output)), annotation)
     } else {
         let result = result_text.unwrap_or_else(|| "");
         let annotation = if result.is_empty() {
