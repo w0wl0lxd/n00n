@@ -6,7 +6,7 @@ pub(crate) mod websocket;
 pub(crate) use platform::CODING_PLAN_CONTEXT_WINDOW;
 pub use platform::{OpenAi, OpenAiOptions};
 
-use crate::model::{ModelEntry, ModelFamily, ModelPricing, ModelTier};
+use crate::model::{ModelEntry, ModelFamily, ModelInfo, ModelPricing, ModelTier, lookup_entry};
 
 const GPT_5_6_MAX_OUTPUT_TOKENS: u32 = 128_000;
 const GPT_5_6_CONTEXT_WINDOW: u32 = 372_000;
@@ -484,6 +484,76 @@ pub(crate) const fn codex_models() -> &'static [ModelEntry] {
     ];
 
     CODEX_MODELS
+}
+
+fn tier_strength(tier: Option<ModelTier>) -> u8 {
+    match tier {
+        Some(ModelTier::Strong) => 3,
+        Some(ModelTier::Medium) => 2,
+        Some(ModelTier::Weak) => 1,
+        Some(ModelTier::Compaction) | None => 0,
+    }
+}
+
+fn parse_model_version(id: &str) -> (u32, u32) {
+    let mut chars = id.char_indices();
+    let Some((start, _)) = chars.find(|(_, c)| c.is_ascii_digit()) else {
+        return (0, 0);
+    };
+
+    let mut dot: Option<usize> = None;
+    let mut end = start;
+    for (i, c) in chars {
+        if c == '.' && dot.is_none() {
+            dot = Some(i);
+        } else if !c.is_ascii_digit() {
+            break;
+        }
+        end = i;
+    }
+
+    if let Some(dot) = dot {
+        let Ok(major) = id[start..dot].parse() else {
+            return (0, 0);
+        };
+        let minor_end = dot
+            + 1
+            + id[dot + 1..]
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .count();
+        let Ok(minor) = id[dot + 1..minor_end].parse() else {
+            return (0, 0);
+        };
+        return (major, minor);
+    }
+
+    let Ok(major) = id[start..=end].parse() else {
+        return (0, 0);
+    };
+    (major, 0)
+}
+
+pub(crate) fn sort_models(models: &mut [ModelInfo], entries: &[ModelEntry]) {
+    models.sort_by(|a, b| {
+        let a_tier = match lookup_entry(entries, &a.id) {
+            Ok(entry) => Some(entry.tier),
+            Err(_) => None,
+        };
+        let b_tier = match lookup_entry(entries, &b.id) {
+            Ok(entry) => Some(entry.tier),
+            Err(_) => None,
+        };
+
+        let (a_major, a_minor) = parse_model_version(&a.id);
+        let (b_major, b_minor) = parse_model_version(&b.id);
+
+        b_major
+            .cmp(&a_major)
+            .then_with(|| b_minor.cmp(&a_minor))
+            .then_with(|| tier_strength(b_tier).cmp(&tier_strength(a_tier)))
+            .then_with(|| a.id.cmp(&b.id))
+    });
 }
 
 #[cfg(test)]
