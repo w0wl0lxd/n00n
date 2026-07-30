@@ -6,8 +6,6 @@
 //! - exa/chat_pb/chat.proto
 //! - exa/codeium_common_pb/codeium_common.proto
 
-use std::io::Read;
-
 pub fn encode_varint(mut value: u64, out: &mut Vec<u8>) {
     loop {
         let mut byte = (value & 0x7f) as u8;
