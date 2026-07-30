@@ -12,7 +12,7 @@ use super::ResolvedAuth;
 use super::openai::responses;
 use super::openai_compat::OpenAiCompatProvider;
 use crate::manifest::ManifestRegistry;
-use crate::model::{FastPricing, Model, ModelPricing, ModelTier};
+use crate::model::{FastPricing, Model, ModelPricing, ModelTier, lookup_entry};
 use crate::provider::{BoxFuture, Provider, ProviderKind};
 use crate::providers::Timeouts;
 use crate::types::{System, ThinkingConfig};
@@ -133,23 +133,38 @@ pub fn lookup_model(slug: &str, model_id: &str) -> Option<Model> {
 
 /// Build a model from an already-loaded provider definition so tier resolution
 /// and id lookup can share one `providers.toml` read instead of loading twice.
+///
+/// When the definition does not declare a model, metadata is inherited from the
+/// base protocol's manifest so custom providers (e.g. a second Devin account)
+/// share the canonical model registry instead of duplicating it.
 fn model_from_def(def: &ProviderDef, kind: ProviderKind, slug: &str, model_id: &str) -> Model {
     let declared = def.models.iter().find(|m| m.id == model_id);
-    let tier = declared.map_or(ModelTier::Medium, |m| ModelTier::from(m.tier));
+    let base_manifest = ManifestRegistry::get(&kind.to_string());
+    let base_entry = base_manifest.and_then(|m| lookup_entry(m.models, model_id).ok());
+
+    let tier = declared
+        .map(|m| ModelTier::from(m.tier))
+        .or(base_entry.map(|e| e.tier))
+        .unwrap_or_else(|| ModelTier::Medium);
     let max_output_tokens = declared
         .and_then(|m| m.max_output_tokens)
+        .or(base_entry.map(|e| e.max_output_tokens))
         .or_else(|| kind.fallback_max_output());
     let context_window = declared
         .and_then(|m| m.context_window)
+        .or(base_entry.map(|e| e.context_window))
         .unwrap_or_else(|| kind.fallback_context_window());
-    let supports_tool_examples_override = declared.and_then(|m| m.supports_tool_examples);
+    let supports_tool_examples_override = declared
+        .and_then(|m| m.supports_tool_examples)
+        .or(base_entry.map(|e| e.family.supports_tool_examples()));
     let supports_thinking_override = declared
         .and_then(|m| m.supports_thinking)
-        .or_else(|| ManifestRegistry::get(&kind.to_string()).map(|m| m.supports_thinking));
-    let supports_vision_override = declared.and_then(|m| m.supports_vision);
-    let pricing = declared
-        .filter(|m| m.has_pricing())
-        .map_or_else(Default::default, |m| ModelPricing {
+        .or_else(|| base_manifest.map(|m| m.supports_thinking));
+    let supports_vision_override = declared
+        .and_then(|m| m.supports_vision)
+        .or(base_entry.map(|e| e.vision));
+    let pricing = if let Some(m) = declared.filter(|m| m.has_pricing()) {
+        ModelPricing {
             input: m.pricing_input.unwrap_or_else(|| 0.0),
             output: m.pricing_output.unwrap_or_else(|| 0.0),
             cache_write: m.pricing_cache_write.unwrap_or_else(|| 0.0),
@@ -160,12 +175,15 @@ fn model_from_def(def: &ProviderDef, kind: ProviderKind, slug: &str, model_id: &
                     input: d.pricing_fast_input.unwrap_or_else(|| 0.0),
                     output: d.pricing_fast_output.unwrap_or_else(|| 0.0),
                 }),
-        });
+        }
+    } else {
+        base_entry.map_or_else(ModelPricing::default, |e| e.pricing)
+    };
     Model {
         id: model_id.to_string(),
         provider: Arc::from(slug),
         tier,
-        family: kind.family(),
+        family: base_entry.map_or_else(|| kind.family(), |e| e.family),
         supports_tool_examples_override,
         supports_thinking_override,
         supports_vision_override,
@@ -186,9 +204,25 @@ fn declared_specs_from(config: &ProvidersConfig) -> Vec<String> {
         if is_builtin_slug(slug) {
             continue;
         }
-        if resolve_protocol(slug, Some(def)).is_none() {
+        let Some(protocol) = resolve_protocol(slug, Some(def)) else {
             continue;
+        };
+        let kind = protocol_kind(protocol);
+
+        // When a custom provider doesn't declare any models and isn't doing
+        // live discovery, share the base protocol's static registry instead of
+        // leaving the provider empty.
+        if def.models.is_empty() && !def.discover_models {
+            let Some(manifest) = ManifestRegistry::get(&kind.to_string()) else {
+                continue;
+            };
+            for entry in manifest.models {
+                for prefix in entry.prefixes {
+                    specs.push(format!("{slug}/{prefix}"));
+                }
+            }
         }
+
         for m in &def.models {
             specs.push(format!("{slug}/{}", m.id));
         }

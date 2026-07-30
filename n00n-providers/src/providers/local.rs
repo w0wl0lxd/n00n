@@ -45,6 +45,10 @@ pub(crate) struct LocalEndpoint {
     thinking_budget_field: bool,
     discovery_mode: DiscoveryMode,
     protocol: Option<Protocol>,
+    /// `true` when the endpoint has an explicit host, `base_url`, or cloud key.
+    /// Unconfigured local providers are still usable for explicit model specs,
+    /// but discovery returns empty instead of warning about a missing server.
+    configured: bool,
 }
 
 impl LocalEndpoint {
@@ -79,6 +83,7 @@ impl LocalEndpoint {
             thinking_budget_field: cfg.thinking_budget_field,
             discovery_mode: cfg.discovery_mode,
             protocol: resolve_protocol_for_local(cfg.slug),
+            configured: true,
         })
     }
 
@@ -95,6 +100,7 @@ impl LocalEndpoint {
         protocol: Option<Protocol>,
     ) -> Result<Self, AgentError> {
         let api_key = key_pool.as_ref().map(|p| p.current().to_string());
+        let host_is_set = host.is_some();
         let base_url = match host {
             Some(h) => format!("{h}/v1"),
             None if api_key.is_some() && cfg.cloud_fallback_url.is_some() => cfg
@@ -106,6 +112,7 @@ impl LocalEndpoint {
                 .to_string(),
             None => format!("{}/v1", cfg.default_host.trim_end_matches('/')),
         };
+        let configured = host_is_set || (api_key.is_some() && cfg.cloud_fallback_url.is_some());
         let headers = match api_key {
             Some(key) => vec![("authorization".into(), format!("Bearer {key}"))],
             None => Vec::new(),
@@ -122,6 +129,7 @@ impl LocalEndpoint {
             thinking_budget_field: cfg.thinking_budget_field,
             discovery_mode: cfg.discovery_mode,
             protocol,
+            configured,
         })
     }
 }
@@ -194,6 +202,9 @@ impl Provider for LocalEndpoint {
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<crate::model::ModelInfo>, AgentError>> {
         Box::pin(async move {
+            if !self.configured {
+                return Ok(Vec::new());
+            }
             let auth = self
                 .auth
                 .lock()
