@@ -364,6 +364,11 @@ impl<'h> Agent<'h> {
         let mut msg = Message::user_with_images(input.message.clone(), input.images);
         msg.control = input.control;
         self.history.push(msg);
+        if self.history.len() == 1 && self.history.as_slice()[0].content.is_empty() {
+            return Err(AgentError::Config {
+                message: "message is empty".into(),
+            });
+        }
         self.mode = Arc::new(input.mode);
         self.workflow = input.workflow;
         // Filter the caller-supplied tool list in place. Rebuilding from the

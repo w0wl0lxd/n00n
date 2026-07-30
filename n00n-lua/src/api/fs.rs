@@ -827,7 +827,7 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
                 let entry = match entry {
                     Ok(e) => e,
                     Err(e) => {
-                        tracing::warn!(error = %e, "glob: walk error");
+                        tracing::debug!(error = %e, "glob: walk error");
                         continue;
                     }
                 };
@@ -836,7 +836,7 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
                 }
                 let p = entry.into_path();
                 let Some(s) = p.to_str() else {
-                    tracing::warn!(path = %p.display(), "glob: skipping non-UTF-8 path");
+                    tracing::debug!(path = %p.display(), "glob: skipping non-UTF-8 path");
                     continue;
                 };
                 let mt = n00n_agent::tools::mtime(&p);
@@ -857,7 +857,7 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
                 let entry = match entry {
                     Ok(e) => e,
                     Err(e) => {
-                        tracing::warn!(error = %e, "glob: walk error");
+                        tracing::debug!(error = %e, "glob: walk error");
                         continue;
                     }
                 };
@@ -866,7 +866,7 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
                 }
                 let p = entry.into_path();
                 let Some(s) = p.to_str() else {
-                    tracing::warn!(path = %p.display(), "glob: skipping non-UTF-8 path");
+                    tracing::debug!(path = %p.display(), "glob: skipping non-UTF-8 path");
                     continue;
                 };
                 if let Some(lim) = limit
