@@ -242,6 +242,7 @@ fn message_interactive(
             workflow: false,
             prompt: None,
             control: opts.control,
+            plan_path: None,
         })
         .map_err(|_| ControlError::Unavailable(NO_SESSION_ERR.into()))?;
     Ok(serde_json::json!({"queued": true, "steer": opts.steer, "control": opts.control}))

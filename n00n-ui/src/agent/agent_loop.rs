@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -52,6 +53,7 @@ pub(super) struct AgentLoop {
     lua_handle: Option<EventHandle>,
     subagent_cancels: Arc<CancelMap<String>>,
     tools_cache: Option<ToolsCache>,
+    plan_path: Option<PathBuf>,
 }
 
 struct ToolsCache {
@@ -138,6 +140,7 @@ impl AgentLoop {
             lua_handle,
             subagent_cancels,
             tools_cache: None,
+            plan_path: None,
         }
     }
 
@@ -291,13 +294,19 @@ impl AgentLoop {
             Some(h) => h.collect_prompt_slots_async().await,
             None => n00n_agent::prompt::ResolvedSlots::default(),
         };
-        let system = agent::build_system_prompt(
+        let mut system = agent::build_system_prompt(
             &self.vars,
             &input.mode,
             &self.instructions.text,
             &prompt_slots,
             &slot.model,
         );
+        if matches!(input.mode, n00n_agent::AgentMode::Build)
+            && let Some(plan_path) = input.plan_path.as_deref()
+        {
+            agent::append_build_plan_prompt(&mut system, plan_path);
+        }
+        self.plan_path.clone_from(&input.plan_path);
         self.publish_btw_system(&prompt_slots);
 
         while self.answer_rx.lock().await.try_recv().is_ok() {}
@@ -405,13 +414,16 @@ impl AgentLoop {
     /// the model. Everything else matches the live prompt.
     fn publish_btw_system(&self, prompt_slots: &n00n_agent::prompt::ResolvedSlots) {
         let slot = self.model_slot.load();
-        let system = agent::build_system_prompt(
+        let mut system = agent::build_system_prompt(
             &self.vars,
             &n00n_agent::AgentMode::Build,
             &self.instructions.text,
             prompt_slots,
             &slot.model,
         );
+        if let Some(plan_path) = self.plan_path.as_deref() {
+            agent::append_build_plan_prompt(&mut system, plan_path);
+        }
         self.btw_system.store(Arc::new(system));
     }
 

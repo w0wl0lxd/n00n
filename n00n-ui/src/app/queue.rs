@@ -482,6 +482,7 @@ mod tests {
                 workflow: false,
                 control: false,
                 prompt: None,
+                plan_path: None,
             },
             run_id: 0,
             submission_id: 0,

@@ -51,7 +51,7 @@ impl SessionState {
 
         let mut plan = match &session.meta.plan_path {
             Some(p) if Path::new(p).exists() => {
-                if session.meta.plan_written {
+                if session.meta.plan_written || mode == Mode::Build {
                     PlanState::Ready(PathBuf::from(p))
                 } else {
                     PlanState::Drafting(PathBuf::from(p))

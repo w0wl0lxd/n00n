@@ -1289,7 +1289,10 @@ impl<'t> EventLoop<'t> {
                     let actions = {
                         let app = &mut self.sessions[idx].app;
                         if let Some((content, path)) = pending.plan {
-                            app.main_chat().push(DisplayMessage::plan(content, path));
+                            app.main_chat()
+                                .push(DisplayMessage::plan(content, path.clone()));
+                            app.state.plan =
+                                crate::app::PlanState::Ready(std::path::PathBuf::from(path));
                         }
                         app.run_id += 1;
                         app.start_from_queue(&pending.message)

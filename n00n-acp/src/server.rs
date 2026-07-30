@@ -258,6 +258,10 @@ fn handle_prompt(srv: &mut Server, raw: &Value, id: &RequestId) -> Result<(), Ac
         workflow: false,
         control: false,
         prompt: None,
+        plan_path: session
+            .current_mode
+            .plan_path()
+            .map(std::path::PathBuf::from),
     };
 
     let mut pending = session
