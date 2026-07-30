@@ -2104,8 +2104,14 @@ impl Provider for OpenAi {
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<crate::model::ModelInfo>, AgentError>> {
         Box::pin(async {
-            let mut models = if self.codex {
+            let entries = if self.codex {
                 super::codex_models()
+            } else {
+                super::models()
+            };
+
+            let mut models = if self.codex {
+                entries
                     .iter()
                     .flat_map(|e| e.prefixes.iter())
                     .map(|&s| crate::model::ModelInfo::id_only(s.to_string()))
@@ -2118,14 +2124,7 @@ impl Provider for OpenAi {
                 .await?
             };
 
-            super::sort_models(
-                &mut models,
-                if self.codex {
-                    super::codex_models()
-                } else {
-                    super::models()
-                },
-            );
+            super::sort_models(&mut models, entries);
             Ok(models)
         })
     }
