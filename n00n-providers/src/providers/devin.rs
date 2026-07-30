@@ -61,6 +61,102 @@ const META_PRICING: &str = "cognition.ai/pricing";
 const META_FREE: &str = "cognition.ai/free";
 const META_PROMO: &str = "cognition.ai/promo";
 
+const SWE_1_7_PRICING: ModelPricing = ModelPricing {
+    input: 0.0,
+    output: 0.0,
+    cache_write: 0.0,
+    cache_read: 0.0,
+    fast: None,
+};
+
+const SWE_1_7_LIGHTNING_PRICING: ModelPricing = ModelPricing {
+    input: 2.5,
+    output: 12.5,
+    cache_write: 0.0,
+    cache_read: 1.0,
+    fast: None,
+};
+
+const CLAUDE_SONNET_4_6_PRICING: ModelPricing = ModelPricing {
+    input: 3.0,
+    output: 15.0,
+    cache_write: 3.75,
+    cache_read: 0.3,
+    fast: None,
+};
+
+const CLAUDE_HAIKU_PRICING: ModelPricing = ModelPricing {
+    input: 1.0,
+    output: 5.0,
+    cache_write: 1.25,
+    cache_read: 0.1,
+    fast: None,
+};
+
+const CLAUDE_OPUS_PRICING: ModelPricing = ModelPricing {
+    input: 15.0,
+    output: 75.0,
+    cache_write: 18.75,
+    cache_read: 1.5,
+    fast: None,
+};
+
+const CLAUDE_4_5_OPUS_PRICING: ModelPricing = ModelPricing {
+    input: 5.0,
+    output: 25.0,
+    cache_write: 6.25,
+    cache_read: 0.5,
+    fast: None,
+};
+
+const GPT_5_4_PRICING: ModelPricing = ModelPricing {
+    input: 2.5,
+    output: 15.0,
+    cache_write: 0.0,
+    cache_read: 0.25,
+    fast: None,
+};
+
+const GEMINI_3_1_PRO_LOW_PRICING: ModelPricing = ModelPricing {
+    input: 2.0,
+    output: 12.0,
+    cache_write: 0.0,
+    cache_read: 0.2,
+    fast: None,
+};
+
+const GPT_5_1_CODEX_MEDIUM_PRICING: ModelPricing = ModelPricing {
+    input: 0.25,
+    output: 2.0,
+    cache_write: 0.0,
+    cache_read: 0.025,
+    fast: None,
+};
+
+const GPT_5_1_FAST_PRICING: ModelPricing = ModelPricing {
+    input: 2.5,
+    output: 20.0,
+    cache_write: 0.0,
+    cache_read: 0.25,
+    fast: None,
+};
+
+const GPT_5_STANDARD_PRICING: ModelPricing = ModelPricing {
+    input: 1.25,
+    output: 10.0,
+    cache_write: 0.0,
+    cache_read: 0.125,
+    fast: None,
+};
+
+const GROK_PRICING: ModelPricing = ModelPricing {
+    input: 0.2,
+    output: 1.5,
+    cache_write: 0.0,
+    cache_read: 0.02,
+    fast: None,
+};
+
 pub(crate) const fn models() -> &'static [ModelEntry] {
     &[
         ModelEntry {
@@ -69,13 +165,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             family: ModelFamily::Generic,
             vision: true,
             default: false,
-            pricing: ModelPricing {
-                input: 0.00,
-                output: 0.00,
-                cache_write: 0.00,
-                cache_read: 0.00,
-                fast: None,
-            },
+            pricing: SWE_1_7_PRICING,
             max_output_tokens: 128_000,
             context_window: 262_144,
         },
@@ -85,13 +175,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             family: ModelFamily::Generic,
             vision: true,
             default: true,
-            pricing: ModelPricing {
-                input: 0.00,
-                output: 0.00,
-                cache_write: 0.00,
-                cache_read: 0.00,
-                fast: None,
-            },
+            pricing: SWE_1_7_PRICING,
             max_output_tokens: 128_000,
             context_window: 262_144,
         },
@@ -101,13 +185,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             family: ModelFamily::Generic,
             vision: true,
             default: false,
-            pricing: ModelPricing {
-                input: 2.50,
-                output: 12.50,
-                cache_write: 0.00,
-                cache_read: 1.00,
-                fast: None,
-            },
+            pricing: SWE_1_7_LIGHTNING_PRICING,
             max_output_tokens: 128_000,
             context_window: 262_144,
         },
@@ -117,13 +195,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             family: ModelFamily::Generic,
             vision: true,
             default: false,
-            pricing: ModelPricing {
-                input: 3.00,
-                output: 15.00,
-                cache_write: 3.75,
-                cache_read: 0.30,
-                fast: None,
-            },
+            pricing: CLAUDE_SONNET_4_6_PRICING,
             max_output_tokens: 128_000,
             context_window: 200_000,
         },
@@ -133,13 +205,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             family: ModelFamily::Generic,
             vision: true,
             default: false,
-            pricing: ModelPricing {
-                input: 2.50,
-                output: 15.00,
-                cache_write: 0.00,
-                cache_read: 0.25,
-                fast: None,
-            },
+            pricing: GPT_5_4_PRICING,
             max_output_tokens: 128_000,
             context_window: 200_000,
         },
@@ -149,13 +215,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             family: ModelFamily::Generic,
             vision: true,
             default: false,
-            pricing: ModelPricing {
-                input: 2.00,
-                output: 12.00,
-                cache_write: 0.00,
-                cache_read: 0.20,
-                fast: None,
-            },
+            pricing: GEMINI_3_1_PRO_LOW_PRICING,
             max_output_tokens: 128_000,
             context_window: 1_000_000,
         },
@@ -1219,222 +1279,114 @@ const DEVIN_PRIVATE_MODELS: &[DevinModelMeta] = &[
         id: "MODEL_PRIVATE_2",
         context_window: Some(200_000),
         max_output_tokens: Some(64_000),
-        pricing: Some(ModelPricing {
-            input: 3.0,
-            output: 15.0,
-            cache_write: 3.75,
-            cache_read: 0.30,
-            fast: None,
-        }),
+        pricing: Some(CLAUDE_SONNET_4_6_PRICING),
     },
     DevinModelMeta {
         id: "MODEL_PRIVATE_3",
         context_window: Some(200_000),
         max_output_tokens: Some(64_000),
-        pricing: Some(ModelPricing {
-            input: 3.0,
-            output: 15.0,
-            cache_write: 3.75,
-            cache_read: 0.30,
-            fast: None,
-        }),
+        pricing: Some(CLAUDE_SONNET_4_6_PRICING),
     },
     DevinModelMeta {
         id: "MODEL_PRIVATE_11",
         context_window: Some(200_000),
         max_output_tokens: Some(64_000),
-        pricing: Some(ModelPricing {
-            input: 1.0,
-            output: 5.0,
-            cache_write: 1.25,
-            cache_read: 0.10,
-            fast: None,
-        }),
+        pricing: Some(CLAUDE_HAIKU_PRICING),
     },
     // GPT-5.1 family
     DevinModelMeta {
         id: "MODEL_PRIVATE_12",
         context_window: Some(400_000),
         max_output_tokens: Some(128_000),
-        pricing: Some(ModelPricing {
-            input: 1.25,
-            output: 10.0,
-            cache_write: 0.0,
-            cache_read: 0.125,
-            fast: None,
-        }),
+        pricing: Some(GPT_5_STANDARD_PRICING),
     },
     DevinModelMeta {
         id: "MODEL_PRIVATE_13",
         context_window: Some(400_000),
         max_output_tokens: Some(128_000),
-        pricing: Some(ModelPricing {
-            input: 1.25,
-            output: 10.0,
-            cache_write: 0.0,
-            cache_read: 0.125,
-            fast: None,
-        }),
+        pricing: Some(GPT_5_STANDARD_PRICING),
     },
     DevinModelMeta {
         id: "MODEL_PRIVATE_14",
         context_window: Some(400_000),
         max_output_tokens: Some(128_000),
-        pricing: Some(ModelPricing {
-            input: 1.25,
-            output: 10.0,
-            cache_write: 0.0,
-            cache_read: 0.125,
-            fast: None,
-        }),
+        pricing: Some(GPT_5_STANDARD_PRICING),
     },
     DevinModelMeta {
         id: "MODEL_PRIVATE_15",
         context_window: Some(400_000),
         max_output_tokens: Some(128_000),
-        pricing: Some(ModelPricing {
-            input: 1.25,
-            output: 10.0,
-            cache_write: 0.0,
-            cache_read: 0.125,
-            fast: None,
-        }),
+        pricing: Some(GPT_5_STANDARD_PRICING),
     },
     DevinModelMeta {
         id: "MODEL_PRIVATE_19",
         context_window: Some(400_000),
         max_output_tokens: Some(128_000),
-        pricing: Some(ModelPricing {
-            input: 1.25,
-            output: 10.0,
-            cache_write: 0.0,
-            cache_read: 0.125,
-            fast: None,
-        }),
+        pricing: Some(GPT_5_STANDARD_PRICING),
     },
     // GPT-5.1 Fast family (2x standard GPT-5.1 pricing)
     DevinModelMeta {
         id: "MODEL_PRIVATE_20",
         context_window: Some(400_000),
         max_output_tokens: Some(128_000),
-        pricing: Some(ModelPricing {
-            input: 2.5,
-            output: 20.0,
-            cache_write: 0.0,
-            cache_read: 0.25,
-            fast: None,
-        }),
+        pricing: Some(GPT_5_1_FAST_PRICING),
     },
     DevinModelMeta {
         id: "MODEL_PRIVATE_21",
         context_window: Some(400_000),
         max_output_tokens: Some(128_000),
-        pricing: Some(ModelPricing {
-            input: 2.5,
-            output: 20.0,
-            cache_write: 0.0,
-            cache_read: 0.25,
-            fast: None,
-        }),
+        pricing: Some(GPT_5_1_FAST_PRICING),
     },
     DevinModelMeta {
         id: "MODEL_PRIVATE_22",
         context_window: Some(400_000),
         max_output_tokens: Some(128_000),
-        pricing: Some(ModelPricing {
-            input: 2.5,
-            output: 20.0,
-            cache_write: 0.0,
-            cache_read: 0.25,
-            fast: None,
-        }),
+        pricing: Some(GPT_5_1_FAST_PRICING),
     },
     DevinModelMeta {
         id: "MODEL_PRIVATE_23",
         context_window: Some(400_000),
         max_output_tokens: Some(128_000),
-        pricing: Some(ModelPricing {
-            input: 2.5,
-            output: 20.0,
-            cache_write: 0.0,
-            cache_read: 0.25,
-            fast: None,
-        }),
+        pricing: Some(GPT_5_1_FAST_PRICING),
     },
     // xAI Grok
     DevinModelMeta {
         id: "MODEL_PRIVATE_4",
         context_window: None,
         max_output_tokens: None,
-        pricing: Some(ModelPricing {
-            input: 0.2,
-            output: 1.5,
-            cache_write: 0.0,
-            cache_read: 0.02,
-            fast: None,
-        }),
+        pricing: Some(GROK_PRICING),
     },
     // GPT-5 family (context/output sizes not yet documented)
     DevinModelMeta {
         id: "MODEL_PRIVATE_5",
         context_window: None,
         max_output_tokens: None,
-        pricing: Some(ModelPricing {
-            input: 1.25,
-            output: 10.0,
-            cache_write: 0.0,
-            cache_read: 0.125,
-            fast: None,
-        }),
+        pricing: Some(GPT_5_STANDARD_PRICING),
     },
     DevinModelMeta {
         id: "MODEL_PRIVATE_6",
         context_window: None,
         max_output_tokens: None,
-        pricing: Some(ModelPricing {
-            input: 1.25,
-            output: 10.0,
-            cache_write: 0.0,
-            cache_read: 0.125,
-            fast: None,
-        }),
+        pricing: Some(GPT_5_STANDARD_PRICING),
     },
     DevinModelMeta {
         id: "MODEL_PRIVATE_7",
         context_window: None,
         max_output_tokens: None,
-        pricing: Some(ModelPricing {
-            input: 1.25,
-            output: 10.0,
-            cache_write: 0.0,
-            cache_read: 0.125,
-            fast: None,
-        }),
+        pricing: Some(GPT_5_STANDARD_PRICING),
     },
     DevinModelMeta {
         id: "MODEL_PRIVATE_8",
         context_window: None,
         max_output_tokens: None,
-        pricing: Some(ModelPricing {
-            input: 1.25,
-            output: 10.0,
-            cache_write: 0.0,
-            cache_read: 0.125,
-            fast: None,
-        }),
+        pricing: Some(GPT_5_STANDARD_PRICING),
     },
     // GPT-5.1-Codex Medium
     DevinModelMeta {
         id: "MODEL_PRIVATE_9",
         context_window: Some(400_000),
         max_output_tokens: Some(128_000),
-        pricing: Some(ModelPricing {
-            input: 0.25,
-            output: 2.0,
-            cache_write: 0.0,
-            cache_read: 0.025,
-            fast: None,
-        }),
+        pricing: Some(GPT_5_1_CODEX_MEDIUM_PRICING),
     },
 ];
 
@@ -1466,9 +1418,11 @@ fn infer_context_window(model_id: &str) -> Option<u32> {
     }
 
     let lower = model_id.to_lowercase();
-    if lower.contains("swe-1-7") {
-        Some(262_144)
-    } else if lower.contains("-1m") {
+    if let Ok(entry) = crate::model::lookup_entry(models(), &lower) {
+        return Some(entry.context_window);
+    }
+
+    if lower.contains("-1m") {
         Some(1_000_000)
     } else if is_claude_4(&lower) {
         Some(200_000)
@@ -1485,9 +1439,13 @@ fn infer_max_output_tokens(model_id: &str) -> Option<u32> {
     }
 
     let lower = model_id.to_lowercase();
+    if let Ok(entry) = crate::model::lookup_entry(models(), &lower) {
+        return Some(entry.max_output_tokens);
+    }
+
     if is_claude_4(&lower) {
         Some(64_000)
-    } else if is_gpt_5_1(&lower) || lower.contains("swe-1-7") {
+    } else if is_gpt_5_1(&lower) {
         Some(128_000)
     } else {
         None
@@ -1524,121 +1482,40 @@ fn infer_pricing(model_id: &str) -> Option<ModelPricing> {
     }
 
     let lower = model_id.to_lowercase();
-    if lower.starts_with("swe-1-7") {
-        if lower.contains("lightning") {
-            return Some(ModelPricing {
-                input: 2.5,
-                output: 12.5,
-                cache_write: 0.0,
-                cache_read: 1.0,
-                fast: None,
-            });
-        }
-        return Some(ModelPricing {
-            input: 0.0,
-            output: 0.0,
-            cache_write: 0.0,
-            cache_read: 0.0,
-            fast: None,
-        });
+    if let Ok(entry) = crate::model::lookup_entry(models(), &lower) {
+        return Some(entry.pricing);
     }
+
     if lower.contains("gemini") {
-        return Some(ModelPricing {
-            input: 2.0,
-            output: 12.0,
-            cache_write: 0.0,
-            cache_read: 0.2,
-            fast: None,
-        });
-    }
-    if is_gpt_5_1(&lower) {
+        Some(GEMINI_3_1_PRO_LOW_PRICING)
+    } else if is_gpt_5_1(&lower) {
         if lower.contains("codex") && lower.contains("medium") {
-            Some(ModelPricing {
-                input: 0.25,
-                output: 2.0,
-                cache_write: 0.0,
-                cache_read: 0.025,
-                fast: None,
-            })
+            Some(GPT_5_1_CODEX_MEDIUM_PRICING)
         } else if lower.contains("fast") {
-            Some(ModelPricing {
-                input: 2.5,
-                output: 20.0,
-                cache_write: 0.0,
-                cache_read: 0.25,
-                fast: None,
-            })
+            Some(GPT_5_1_FAST_PRICING)
         } else {
-            Some(ModelPricing {
-                input: 1.25,
-                output: 10.0,
-                cache_write: 0.0,
-                cache_read: 0.125,
-                fast: None,
-            })
+            Some(GPT_5_STANDARD_PRICING)
         }
     } else if is_gpt_5_4(&lower) {
-        Some(ModelPricing {
-            input: 2.5,
-            output: 15.0,
-            cache_write: 0.0,
-            cache_read: 0.25,
-            fast: None,
-        })
+        Some(GPT_5_4_PRICING)
     } else if is_gpt_5(&lower) {
-        Some(ModelPricing {
-            input: 1.25,
-            output: 10.0,
-            cache_write: 0.0,
-            cache_read: 0.125,
-            fast: None,
-        })
+        Some(GPT_5_STANDARD_PRICING)
     } else if lower.contains("claude") {
         if lower.contains("opus") {
             if is_claude_4_5(&lower) {
-                Some(ModelPricing {
-                    input: 5.0,
-                    output: 25.0,
-                    cache_write: 6.25,
-                    cache_read: 0.5,
-                    fast: None,
-                })
+                Some(CLAUDE_4_5_OPUS_PRICING)
             } else {
-                Some(ModelPricing {
-                    input: 15.0,
-                    output: 75.0,
-                    cache_write: 18.75,
-                    cache_read: 1.5,
-                    fast: None,
-                })
+                Some(CLAUDE_OPUS_PRICING)
             }
         } else if lower.contains("haiku") {
-            Some(ModelPricing {
-                input: 1.0,
-                output: 5.0,
-                cache_write: 1.25,
-                cache_read: 0.1,
-                fast: None,
-            })
+            Some(CLAUDE_HAIKU_PRICING)
         } else if lower.contains("sonnet") {
-            Some(ModelPricing {
-                input: 3.0,
-                output: 15.0,
-                cache_write: 3.75,
-                cache_read: 0.3,
-                fast: None,
-            })
+            Some(CLAUDE_SONNET_4_6_PRICING)
         } else {
             None
         }
     } else if lower.contains("grok") {
-        Some(ModelPricing {
-            input: 0.2,
-            output: 1.5,
-            cache_write: 0.0,
-            cache_read: 0.02,
-            fast: None,
-        })
+        Some(GROK_PRICING)
     } else {
         None
     }
