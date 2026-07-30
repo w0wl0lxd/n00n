@@ -2172,9 +2172,9 @@ impl App {
     fn implement_plan(&mut self, clear_context: bool) -> Vec<Action> {
         let parallel = self.plan_form.parallel();
         self.plan_form.reset();
-        let plan_snapshot = match std::mem::take(&mut self.state.plan) {
+        let plan_snapshot = match &self.state.plan {
             PlanState::Ready(p) => Some((
-                std::fs::read_to_string(&p).unwrap_or_else(|_| String::default()),
+                std::fs::read_to_string(p).unwrap_or_else(|_| String::default()),
                 p.display().to_string(),
             )),
             _ => None,

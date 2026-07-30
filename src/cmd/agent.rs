@@ -782,6 +782,7 @@ fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<(
         state.status = "working".to_string();
         write_agent_state(&storage, &state)?;
 
+        let plan_path = mode.plan_path().map(PathBuf::from);
         let _ = handle.input_tx.send(AgentInput {
             message,
             mode,
@@ -792,6 +793,7 @@ fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<(
             workflow: workflow_from_mode(opts.mode),
             prompt: None,
             control: false,
+            plan_path,
         });
 
         // Wait for the initial run to complete.
@@ -909,6 +911,7 @@ async fn handle_connection(
 
             while event_rx.try_recv().is_ok() {}
 
+            let plan_path = message_mode.plan_path().map(PathBuf::from);
             input_tx
                 .send(AgentInput {
                     message: text.clone(),
@@ -920,6 +923,7 @@ async fn handle_connection(
                     workflow: workflow_from_mode(mode),
                     prompt: None,
                     control: true,
+                    plan_path,
                 })
                 .wrap_err("failed to send input")?;
 

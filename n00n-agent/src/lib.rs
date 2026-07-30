@@ -100,4 +100,5 @@ pub struct AgentInput {
     pub workflow: bool,
     pub control: bool,
     pub prompt: Option<Box<McpPromptRef>>,
+    pub plan_path: Option<PathBuf>,
 }

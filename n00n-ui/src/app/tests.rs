@@ -3594,7 +3594,11 @@ fn plan_form_menu_options(
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(!app.plan_form.is_visible());
     assert_eq!(app.state.mode, expected_mode);
-    assert_eq!(app.state.plan, PlanState::None);
+    if has_new_session {
+        assert_eq!(app.state.plan, PlanState::None);
+    } else {
+        assert!(matches!(app.state.plan, PlanState::Ready(_)));
+    }
     assert_eq!(
         actions.iter().any(|a| matches!(a, Action::NewSession)),
         has_new_session

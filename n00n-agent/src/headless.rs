@@ -233,6 +233,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
             .with_loaded_instructions(instructions.loaded)
             .with_mcp(params.mcp_handle.clone().map(|h| McpSession::new(h, &[])));
 
+            let plan_path = mode.plan_path().map(std::path::PathBuf::from);
             let result = agent
                 .run(AgentInput {
                     message: params.prompt,
@@ -244,6 +245,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                     workflow,
                     control: false,
                     prompt: None,
+                    plan_path,
                 })
                 .await;
             drop(agent);
