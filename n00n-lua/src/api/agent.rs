@@ -1264,6 +1264,7 @@ impl n00n_agent::InterruptSource for PromptInterruptSource {
                     workflow: false,
                     control: false,
                     prompt: None,
+                    plan_path: self.mode.plan_path().map(std::path::PathBuf::from),
                 },
                 0,
             )
@@ -1374,6 +1375,7 @@ async fn prompt(
             workflow: false,
             control: false,
             prompt: None,
+            plan_path: s.mode.plan_path().map(std::path::PathBuf::from),
         };
         let barrier_target = s.progress.next_forwarder_barrier();
         let result = agent.run(input).await;

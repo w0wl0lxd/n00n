@@ -851,9 +851,13 @@ impl OpenAi {
     }
 
     fn stores_responses(&self, auth: &ResolvedAuth) -> bool {
+        let base_url = match auth.base_url.as_deref() {
+            Some(url) => url,
+            None => CONFIG.base_url,
+        };
         self.storage.is_some()
             && self.response_state_storage.is_some()
-            && auth.base_url.as_deref() == Some(CONFIG.base_url)
+            && base_url == CONFIG.base_url
     }
 
     #[allow(clippy::large_futures)]
@@ -1294,6 +1298,10 @@ impl OpenAi {
         let state_scope_hash = response_state_scope_hash(auth);
         let socket_credential_hash = credential_hash(auth);
         let store = self.stores_responses(auth);
+        let mut opts = opts;
+        if !store {
+            opts.allow_history_replay = true;
+        }
         let admission = match self
             .acquire_coding_plan_admission(auth, attempt_nonce)
             .await

@@ -686,6 +686,8 @@ enum LogRecord<M, U, T> {
         #[serde(flatten)]
         meta: SessionMeta,
     },
+    #[serde(other)]
+    Unknown,
 }
 
 // -- SessionLog: append-only persistence --
@@ -1356,6 +1358,7 @@ where
             }
             builder.meta = m_meta;
         }
+        LogRecord::Unknown => {}
     }
     Ok(())
 }
@@ -2022,6 +2025,26 @@ where
     parse_records(path).map(|(session, _, _, _)| session)
 }
 
+fn tool_ids_in_transcript<M, F>(entries: &[TranscriptEntry<M>], f: &F) -> Vec<String>
+where
+    F: Fn(&M) -> Vec<String>,
+{
+    let mut out = Vec::new();
+    for entry in entries {
+        match entry {
+            TranscriptEntry::Message(m) | TranscriptEntry::GeneratedMessage(m) => {
+                out.extend(f(m));
+            }
+            TranscriptEntry::Compaction {
+                entries: children, ..
+            } => {
+                out.extend(tool_ids_in_transcript(children, f));
+            }
+        }
+    }
+    out
+}
+
 // -- Session impl --
 
 impl<M, U, T> Session<M, U, T>
@@ -2061,11 +2084,14 @@ where
     /// After `messages` is truncated (rewind), state keyed by `tool_use_id` can
     /// point at calls that no longer exist. On restore that shows up as ghost
     /// subagent tabs and leaked tool outputs, so this drops everything not
-    /// reachable from `messages`.
+    /// reachable from `messages` or the saved `transcript` (the latter keeps
+    /// compacted history and historical subagent tabs intact).
     ///
     /// If you add another field keyed by `tool_use_id`, prune it here too.
     pub fn prune_orphans(&mut self, tool_ids: impl Fn(&M) -> Vec<String>) {
-        let main_ids: HashSet<String> = self.messages.iter().flat_map(&tool_ids).collect();
+        let mut main_ids: Vec<String> = self.messages.iter().flat_map(&tool_ids).collect();
+        main_ids.extend(tool_ids_in_transcript(&self.transcript, &tool_ids));
+        let main_ids: HashSet<String> = main_ids.into_iter().collect();
         self.subagent_messages.retain(|id, _| main_ids.contains(id));
         self.meta
             .subagents
@@ -2321,6 +2347,54 @@ mod tests {
         let mut outputs: Vec<_> = session.tool_outputs.keys().cloned().collect();
         outputs.sort();
         assert_eq!(outputs, ["sub-tool", "task-live"]);
+    }
+
+    #[test]
+    fn prune_orphans_keeps_state_reachable_from_transcript() {
+        fn ids(m: &Value) -> Vec<String> {
+            vec![m.as_str().unwrap().to_owned()]
+        }
+        fn subagent(id: &str) -> StoredSubagent {
+            StoredSubagent {
+                tool_use_id: id.into(),
+                name: "sub".into(),
+                prompt: None,
+                model: None,
+            }
+        }
+
+        let mut session: TestSession = Session::new("model", "/p");
+        session.messages.push("summary".into());
+        session.transcript.push(TranscriptEntry::Compaction {
+            entries: vec![
+                TranscriptEntry::Message("tool-a".into()),
+                TranscriptEntry::Message("tool-b".into()),
+            ],
+            generated_summary: None,
+        });
+        session
+            .subagent_messages
+            .insert("tool-a".into(), vec!["tool-c".into()]);
+        session.subagent_messages.insert("stale".into(), vec![]);
+        session.meta.subagents = vec![subagent("tool-a"), subagent("stale")];
+        for id in ["tool-a", "tool-b", "tool-c", "stale", "orphan"] {
+            session.tool_outputs.insert(id.into(), Value::Null);
+        }
+
+        session.prune_orphans(ids);
+
+        let mut outputs: Vec<_> = session.tool_outputs.keys().cloned().collect();
+        outputs.sort();
+        assert_eq!(outputs, ["tool-a", "tool-b", "tool-c"]);
+        assert!(session.subagent_messages.contains_key("tool-a"));
+        assert!(!session.subagent_messages.contains_key("stale"));
+        let subagent_ids: Vec<_> = session
+            .meta
+            .subagents
+            .iter()
+            .map(|sa| sa.tool_use_id.as_str())
+            .collect();
+        assert_eq!(subagent_ids, ["tool-a"]);
     }
 
     #[test]

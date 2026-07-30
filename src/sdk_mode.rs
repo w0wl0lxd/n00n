@@ -747,6 +747,7 @@ fn handle_user_message(
         workflow,
         control: false,
         prompt: None,
+        plan_path: None,
     };
     handle.input_tx.send(input).is_ok()
 }

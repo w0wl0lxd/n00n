@@ -17,9 +17,11 @@ use n00n_agent::headless::{self, InteractiveHandle, InteractiveParams};
 use n00n_agent::types::AgentEvent;
 use n00n_agent::{AgentInput, AgentMode, Envelope, ImageMediaType, ImageSource};
 use n00n_providers::Message;
+use n00n_providers::TokenUsage;
 use n00n_providers::model::Model;
 use n00n_providers::provider::available_model_specs;
 use n00n_storage::id::{SessionRef, n00nId};
+use n00n_storage::sessions::{Session, StoredMode};
 use serde::Serialize;
 use serde_json::Value;
 use smol::io::AsyncBufReadExt;
@@ -40,6 +42,7 @@ struct PendingPromptState {
 struct SessionState {
     handle: InteractiveHandle,
     current_mode: AgentMode,
+    plan_path: Option<PathBuf>,
     current_model: String,
     pending_prompt: PendingPrompt,
     _daemon: Option<crate::SessionDaemonGuard>,
@@ -139,7 +142,7 @@ fn handle_request(srv: &mut Server, method: &str, id: RequestId, raw: &Value, pa
             let spec = params.model.spec();
             let resp = methods::new_session_response(handle.session_id.as_str())
                 .config_options(vec![methods::model_config_option(&spec, &srv.model_specs)]);
-            install_session(srv, handle, spec, params);
+            install_session(srv, handle, spec, AgentMode::Build, None, params);
             AgentResponse::NewSessionResponse(resp)
         }),
         "session/load" => parse_params::<LoadSessionRequest>(raw).and_then(|req| {
@@ -147,7 +150,9 @@ fn handle_request(srv: &mut Server, method: &str, id: RequestId, raw: &Value, pa
                 req.session_id.0.parse().map_err(|_| {
                     AcpError::resource_not_found(Some(req.session_id.0.to_string()))
                 })?;
-            let history = load_history(session_ref.id())?;
+            let stored = load_session(session_ref.id())?;
+            let (current_mode, plan_path) = stored_mode_to_agent_mode(&stored);
+            let history = stored.messages;
             let sid = SessionId::from(session_ref.to_string());
             for update in translate::replay_history(&history) {
                 session_update(&srv.out_tx, &sid, update);
@@ -156,7 +161,7 @@ fn handle_request(srv: &mut Server, method: &str, id: RequestId, raw: &Value, pa
             let spec = params.model.spec();
             let resp = methods::load_session_response()
                 .config_options(vec![methods::model_config_option(&spec, &srv.model_specs)]);
-            install_session(srv, handle, spec, params);
+            install_session(srv, handle, spec, current_mode, plan_path, params);
             Ok(AgentResponse::LoadSessionResponse(resp))
         }),
         "session/prompt" => match handle_prompt(srv, raw, &id) {
@@ -200,6 +205,8 @@ fn install_session(
     srv: &mut Server,
     handle: InteractiveHandle,
     current_model: String,
+    current_mode: AgentMode,
+    plan_path: Option<PathBuf>,
     params: &AcpParams,
 ) {
     let pending = Arc::new(Mutex::new(PendingPromptState::default()));
@@ -216,31 +223,53 @@ fn install_session(
     });
     srv.session = Some(SessionState {
         handle,
-        current_mode: AgentMode::Build,
+        current_mode,
+        plan_path,
         current_model,
         pending_prompt: pending,
         _daemon: daemon,
     });
 }
 
-fn load_history(session_id: n00nId) -> Result<Vec<Message>, AcpError> {
-    let storage = n00n_storage::StateDir::resolve()
-        .map_err(|e| AcpError::internal_error().data(json_str(&e)))?;
-    load_history_from(&storage, session_id)
+type StoredSession = Session<Message, TokenUsage, n00n_agent::ToolOutput>;
+
+fn stored_mode_to_agent_mode(stored: &StoredSession) -> (AgentMode, Option<PathBuf>) {
+    let plan_path = stored.meta.plan_path.as_ref().map(PathBuf::from);
+    match stored.meta.mode {
+        Some(StoredMode::Build) | None => (AgentMode::Build, plan_path),
+        Some(StoredMode::Plan) => {
+            let path = plan_path.unwrap_or_else(|| {
+                n00n_storage::StateDir::resolve()
+                    .and_then(|dir| n00n_storage::plans::new_plan_path(&dir))
+                    .unwrap_or_else(|_| PathBuf::from("plan.md"))
+            });
+            (AgentMode::Plan(path.clone()), Some(path))
+        }
+        Some(StoredMode::Research) => (AgentMode::Research, plan_path),
+    }
 }
 
+fn load_session(session_id: n00nId) -> Result<StoredSession, AcpError> {
+    let storage = n00n_storage::StateDir::resolve()
+        .map_err(|e| AcpError::internal_error().data(json_str(&e)))?;
+    load_session_from(&storage, session_id)
+}
+
+fn load_session_from(
+    storage: &n00n_storage::StateDir,
+    session_id: n00nId,
+) -> Result<StoredSession, AcpError> {
+    Session::load(session_id, storage).map_err(|e| {
+        AcpError::resource_not_found(Some(format!("session/{session_id}"))).data(json_str(&e))
+    })
+}
+
+#[cfg(test)]
 fn load_history_from(
     storage: &n00n_storage::StateDir,
     session_id: n00nId,
 ) -> Result<Vec<Message>, AcpError> {
-    let session: n00n_storage::sessions::Session<
-        Message,
-        n00n_providers::TokenUsage,
-        n00n_agent::ToolOutput,
-    > = n00n_storage::sessions::Session::load(session_id, storage).map_err(|e| {
-        AcpError::resource_not_found(Some(format!("session/{session_id}"))).data(json_str(&e))
-    })?;
-    Ok(session.messages)
+    Ok(load_session_from(storage, session_id)?.messages)
 }
 
 fn handle_prompt(srv: &mut Server, raw: &Value, id: &RequestId) -> Result<(), AcpError> {
@@ -258,6 +287,7 @@ fn handle_prompt(srv: &mut Server, raw: &Value, id: &RequestId) -> Result<(), Ac
         workflow: false,
         control: false,
         prompt: None,
+        plan_path: session.plan_path.clone(),
     };
 
     let mut pending = session
@@ -284,6 +314,9 @@ fn handle_set_mode(srv: &mut Server, raw: &Value) -> Result<AgentResponse, AcpEr
 
     let session = srv.session.as_mut().ok_or_else(no_session)?;
     session.current_mode = new_mode;
+    if let AgentMode::Plan(path) = &session.current_mode {
+        session.plan_path = Some(path.clone());
+    }
 
     let sid = SessionId::from(session.handle.session_id.to_string());
     session_update(

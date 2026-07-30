@@ -465,6 +465,10 @@ local schema = {
         content = { type = "string", description = "Content." },
         tags = { type = "array", items = { type = "string" }, description = "Tags." },
         task_id = { type = "string", description = "Task id." },
+        extra = {
+          type = "any",
+          description = "Optional additional key/value payload.",
+        },
       },
       required = { "type", "content" },
     },
