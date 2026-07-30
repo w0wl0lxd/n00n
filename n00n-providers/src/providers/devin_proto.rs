@@ -678,6 +678,7 @@ pub fn decode_cli_model_configs(
         let mut label = String::new();
         let mut model_uid_22 = String::new();
         let mut wire_uid = String::new();
+        let mut chat_model_name = String::new();
         for inner in iter_fields(data) {
             let (inner_num, _inner_wire, inner_data) = inner?;
             match inner_num {
@@ -692,6 +693,15 @@ pub fn decode_cli_model_configs(
                     }
                 }
                 22 => model_uid_22 = String::from_utf8_lossy(inner_data).into_owned(),
+                23 => {
+                    // model_info is a ModelInfo message
+                    for info_field in iter_fields(inner_data) {
+                        let (info_num, _info_wire, info_data) = info_field?;
+                        if info_num == 12 {
+                            chat_model_name = String::from_utf8_lossy(info_data).into_owned();
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -700,16 +710,20 @@ pub fn decode_cli_model_configs(
         } else {
             model_uid_22.clone()
         };
-        let wire = if wire_uid.is_empty() {
+        // The wire id is the actual model the backend serves; prefer
+        // chat_model_name from ModelInfo, then model_or_alias.model_uid.
+        let wire = if !chat_model_name.is_empty() {
+            chat_model_name
+        } else if wire_uid.is_empty() {
             display.clone()
         } else {
             wire_uid
         };
         if !display.is_empty() {
-            map.insert(display, wire.clone());
+            map.insert(display.clone(), wire.clone());
         }
         // also map by label if different
-        if !label.is_empty() && !model_uid_22.is_empty() && label != model_uid_22 {
+        if !label.is_empty() && label != display {
             map.insert(label, wire);
         }
     }
