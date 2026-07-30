@@ -18,6 +18,8 @@ pub(crate) mod cursor;
 pub mod custom;
 pub(crate) mod deepseek;
 pub(crate) mod devin;
+pub(crate) mod devin_connect;
+pub(crate) mod devin_proto;
 pub mod dynamic;
 pub(crate) mod google;
 pub(crate) mod llama_cpp;
