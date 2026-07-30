@@ -172,7 +172,14 @@ fn spawn(
             if let Err(e) =
                 smol::block_on(server::serve(&dir, plane, cancel_rx, DaemonRole::Headless))
             {
-                tracing::warn!(error = %e, "session daemon listener stopped");
+                match e {
+                    ControlError::Unavailable(_) => {
+                        tracing::debug!(error = %e, "session daemon listener stopped");
+                    }
+                    _ => {
+                        tracing::warn!(error = %e, "session daemon listener stopped");
+                    }
+                }
             }
         })
         .map_err(ControlError::io)?;

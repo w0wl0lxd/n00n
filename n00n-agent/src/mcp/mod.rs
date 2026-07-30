@@ -30,7 +30,7 @@ use std::time::Duration;
 use arc_swap::{ArcSwap, Guard};
 use n00n_providers::{ContentBlock, Message};
 use serde_json::{Value, json};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::tools::schema::{sanitize_tool_input_schema, truncate_on_word_boundary};
 
@@ -894,6 +894,10 @@ fn parse_entries(config: McpConfig) -> McpManagerInner {
         let (config, status) = match parse_server(name.clone(), raw) {
             Ok(sc) if disabled => (Some(sc), McpServerStatus::Disabled),
             Ok(sc) => (Some(sc), McpServerStatus::Connecting),
+            Err(McpError::BuiltInConflict { server }) => {
+                debug!(server = %server, "MCP server conflicts with built-in tool; disabling");
+                (None, McpServerStatus::Disabled)
+            }
             Err(e) => {
                 warn!(server = %name, error = %e, "invalid MCP server config");
                 (None, McpServerStatus::Failed(e.to_string()))
