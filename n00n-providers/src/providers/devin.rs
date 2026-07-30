@@ -5,11 +5,13 @@
 //! 2. Call `POST /exa.auth_pb.AuthService/GetUserJwt` (application/proto) to get user JWT
 //! 3. Call `POST /exa.api_server_pb.ApiServerService/GetChatMessage` (application/connect+proto)
 //!    with gzip-framed request, stream of gzip-framed responses
-//! 4. Parse Connect frames, gunzip, decode protobuf, emit ProviderEvents
+//! 4. Parse Connect frames, gunzip, decode protobuf, emit `ProviderEvents`
 
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+
+use futures_lite::io::{AsyncReadExt, BufReader};
 
 use flate2::Compression;
 use flate2::write::GzEncoder;
@@ -19,9 +21,9 @@ use isahc::RequestExt;
 use serde::Deserialize;
 use tracing::debug;
 
-use crate::model::{ModelEntry, ModelFamily, ModelPricing, ModelTier};
+use crate::model::ModelEntry;
 use crate::provider::{BoxFuture, Provider};
-use crate::types::{Role, System};
+use crate::types::{ContentBlock, Role, System};
 use crate::{
     AgentError, Message, ProviderEvent, RequestOptions, StopReason, StreamResponse, TokenUsage,
 };
@@ -30,12 +32,24 @@ use super::ResolvedAuth;
 use super::devin_connect::{
     CONNECT_COMPRESSED_FLAG, FrameBuffer, decode_frame_payload, encode_frame,
 };
-use super::devin_proto::*;
+use super::devin_proto::{
+    CHAT_MESSAGE_SOURCE_SYSTEM, CHAT_MESSAGE_SOURCE_TOOL, CHAT_MESSAGE_SOURCE_USER,
+    ChatMessagePromptInput, ChatToolCall, ChatToolDefinition, ImageData, decode_cli_model_configs,
+    decode_get_chat_message_response, decode_get_user_jwt_response, encode_chat_message_prompt,
+    encode_chat_tool_definition, encode_get_chat_message_request,
+    encode_get_cli_model_configs_request, encode_get_user_jwt_request,
+};
+
+use n00n_storage::id::n00nId;
 
 const DEVIN_API_URL: &str = "https://server.codeium.com";
 const DEVIN_AUTH_PATH: &str = "/exa.auth_pb.AuthService/GetUserJwt";
 const DEVIN_CHAT_PATH: &str = "/exa.api_server_pb.ApiServerService/GetChatMessage";
+const DEVIN_CLI_MODEL_CONFIGS_PATH: &str = "/exa.api_server_pb.ApiServerService/GetCliModelConfigs";
 const DEVIN_SESSION_TOKEN_PREFIX: &str = "devin-session-token$";
+const DEFAULT_TEMPERATURE: f64 = 0.4;
+const DEFAULT_TOP_P: f64 = 1.0;
+const DEFAULT_MAX_TOKENS: u32 = 64_000;
 
 inventory::submit!(n00n_config::providers::BuiltInProvider {
     slug: "devin",
@@ -43,111 +57,14 @@ inventory::submit!(n00n_config::providers::BuiltInProvider {
     protocol: n00n_config::providers::Protocol::Devin,
     default_base_url: DEVIN_API_URL,
     default_api_key_env: "DEVIN_API_KEY",
-    default_model: "devin/swe-1-7-max",
+    default_model: "devin/swe-1-7",
     plans: None,
     login_url: None,
     needs_url: false,
 });
 
 pub(crate) const fn models() -> &'static [ModelEntry] {
-    &[
-        ModelEntry {
-            prefixes: &["swe-1-7"],
-            tier: ModelTier::Strong,
-            family: ModelFamily::Generic,
-            vision: true,
-            default: false,
-            pricing: ModelPricing {
-                input: 0.00,
-                output: 0.00,
-                cache_write: 0.00,
-                cache_read: 0.00,
-                fast: None,
-            },
-            max_output_tokens: 128_000,
-            context_window: 262_144,
-        },
-        ModelEntry {
-            prefixes: &["swe-1-7-max"],
-            tier: ModelTier::Strong,
-            family: ModelFamily::Generic,
-            vision: true,
-            default: true,
-            pricing: ModelPricing {
-                input: 0.00,
-                output: 0.00,
-                cache_write: 0.00,
-                cache_read: 0.00,
-                fast: None,
-            },
-            max_output_tokens: 128_000,
-            context_window: 262_144,
-        },
-        ModelEntry {
-            prefixes: &["swe-1-7-lightning"],
-            tier: ModelTier::Strong,
-            family: ModelFamily::Generic,
-            vision: true,
-            default: false,
-            pricing: ModelPricing {
-                input: 0.00,
-                output: 0.00,
-                cache_write: 0.00,
-                cache_read: 0.00,
-                fast: None,
-            },
-            max_output_tokens: 128_000,
-            context_window: 262_144,
-        },
-        ModelEntry {
-            prefixes: &["claude-sonnet-4-6"],
-            tier: ModelTier::Strong,
-            family: ModelFamily::Generic,
-            vision: true,
-            default: false,
-            pricing: ModelPricing {
-                input: 0.00,
-                output: 0.00,
-                cache_write: 0.00,
-                cache_read: 0.00,
-                fast: None,
-            },
-            max_output_tokens: 128_000,
-            context_window: 200_000,
-        },
-        ModelEntry {
-            prefixes: &["gpt-5-4-none"],
-            tier: ModelTier::Strong,
-            family: ModelFamily::Generic,
-            vision: true,
-            default: false,
-            pricing: ModelPricing {
-                input: 0.00,
-                output: 0.00,
-                cache_write: 0.00,
-                cache_read: 0.00,
-                fast: None,
-            },
-            max_output_tokens: 128_000,
-            context_window: 200_000,
-        },
-        ModelEntry {
-            prefixes: &["gemini-3-1-pro-low"],
-            tier: ModelTier::Strong,
-            family: ModelFamily::Generic,
-            vision: true,
-            default: false,
-            pricing: ModelPricing {
-                input: 0.00,
-                output: 0.00,
-                cache_write: 0.00,
-                cache_read: 0.00,
-                fast: None,
-            },
-            max_output_tokens: 128_000,
-            context_window: 1_000_000,
-        },
-    ]
+    crate::providers::devin_models::models()
 }
 
 #[derive(Debug, Clone)]
@@ -156,11 +73,17 @@ struct DevinCredentials {
     api_server_url: String,
 }
 
+#[derive(Deserialize)]
+struct TomlCredentials {
+    windsurf_api_key: Option<String>,
+    api_server_url: Option<String>,
+}
+
 impl DevinCredentials {
     fn from_env() -> Option<Self> {
         let session_token = std::env::var("WINDSURF_API_KEY")
-            .or_else(|_| std::env::var("DEVIN_API_KEY"))
-            .ok()?;
+            .ok()
+            .or_else(|| std::env::var("DEVIN_API_KEY").ok())?;
         Some(Self {
             session_token: normalize_session_token(&session_token),
             api_server_url: DEVIN_API_URL.to_string(),
@@ -168,22 +91,17 @@ impl DevinCredentials {
     }
 
     fn from_file() -> Option<Self> {
-        let creds_path =
-            PathBuf::from(std::env::var("HOME").ok()?).join(".local/share/devin/credentials.toml");
+        let home = std::env::var("HOME").ok()?;
+        let creds_path = PathBuf::from(home).join(".local/share/devin/credentials.toml");
 
         let content = std::fs::read_to_string(&creds_path).ok()?;
 
-        #[derive(Deserialize)]
-        struct TomlCredentials {
-            windsurf_api_key: Option<String>,
-            api_server_url: Option<String>,
-        }
-
         let creds: TomlCredentials = toml::from_str(&content).ok()?;
         let session_token = creds.windsurf_api_key?;
-        let api_server_url = creds
-            .api_server_url
-            .unwrap_or_else(|| DEVIN_API_URL.to_string());
+        let api_server_url = match creds.api_server_url {
+            Some(url) => url,
+            None => DEVIN_API_URL.to_string(),
+        };
 
         Some(Self {
             session_token: normalize_session_token(&session_token),
@@ -196,29 +114,179 @@ fn normalize_session_token(token: &str) -> String {
     if token.starts_with(DEVIN_SESSION_TOKEN_PREFIX) {
         token.to_string()
     } else {
-        format!("{}{}", DEVIN_SESSION_TOKEN_PREFIX, token)
+        format!("{DEVIN_SESSION_TOKEN_PREFIX}{token}")
     }
+}
+
+fn chat_message_id(_cascade_id: &str, _message_index: usize, suffix: &str) -> String {
+    if suffix == "assistant" {
+        format!("bot-{}", n00nId::generate())
+    } else {
+        n00nId::generate().to_string()
+    }
+}
+
+fn encode_devin_tools(tools: &serde_json::Value) -> Result<Vec<Vec<u8>>, AgentError> {
+    let arr = tools
+        .as_array()
+        .map_or_else(|| &[][..], std::vec::Vec::as_slice);
+    let mut encoded = Vec::with_capacity(arr.len());
+    for tool in arr {
+        let function = match tool.get("function") {
+            Some(v) => v,
+            None => tool,
+        };
+        let name = function
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| AgentError::Config {
+                message: "tool missing name".to_string(),
+            })?;
+        let description = function
+            .get("description")
+            .and_then(serde_json::Value::as_str);
+        let schema_string = match function.get("parameters") {
+            Some(v) => serde_json::to_string(v).map_err(|e| AgentError::Config {
+                message: format!("failed to serialize tool schema: {e}"),
+            })?,
+            None => "{}".to_string(),
+        };
+        let strict = tool
+            .get("strict")
+            .or_else(|| function.get("strict"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or_else(|| false);
+        encoded.push(encode_chat_tool_definition(&ChatToolDefinition {
+            name,
+            description: description.unwrap_or_else(|| ""),
+            json_schema_string: &schema_string,
+            strict,
+        }));
+    }
+    Ok(encoded)
+}
+
+fn encode_devin_chat_message_prompts(messages: &[Message], cascade_id: &str) -> Vec<Vec<u8>> {
+    let mut prompts = Vec::new();
+    for (index, message) in messages.iter().enumerate() {
+        match message.role {
+            Role::User => {
+                let mut prompt_text = String::new();
+                let mut images = Vec::new();
+                for block in &message.content {
+                    match block {
+                        ContentBlock::Text { text } => prompt_text.push_str(text),
+                        ContentBlock::Image { source } => images.push(ImageData {
+                            base64_data: source.data.as_ref(),
+                            mime_type: source.media_type.mime(),
+                            caption: "",
+                        }),
+                        ContentBlock::ToolResult {
+                            tool_use_id,
+                            content,
+                            is_error,
+                        } => {
+                            if !prompt_text.is_empty() || !images.is_empty() {
+                                prompts.push(encode_chat_message_prompt(&ChatMessagePromptInput {
+                                    message_id: &chat_message_id(cascade_id, index, "user"),
+                                    source: CHAT_MESSAGE_SOURCE_USER,
+                                    prompt: &prompt_text,
+                                    images: &images,
+                                    ..ChatMessagePromptInput::default()
+                                }));
+                                prompt_text.clear();
+                                images.clear();
+                            }
+                            prompts.push(encode_chat_message_prompt(&ChatMessagePromptInput {
+                                message_id: &chat_message_id(
+                                    cascade_id,
+                                    index,
+                                    &format!("tool\0{tool_use_id}"),
+                                ),
+                                source: CHAT_MESSAGE_SOURCE_TOOL,
+                                prompt: content,
+                                tool_call_id: tool_use_id,
+                                tool_result_is_error: *is_error,
+                                ..ChatMessagePromptInput::default()
+                            }));
+                        }
+                        _ => {}
+                    }
+                }
+                if !prompt_text.is_empty() || !images.is_empty() {
+                    prompts.push(encode_chat_message_prompt(&ChatMessagePromptInput {
+                        message_id: &chat_message_id(cascade_id, index, "user"),
+                        source: CHAT_MESSAGE_SOURCE_USER,
+                        prompt: &prompt_text,
+                        images: &images,
+                        ..ChatMessagePromptInput::default()
+                    }));
+                }
+            }
+            Role::Assistant => {
+                let mut prompt_text = String::new();
+                let mut thinking = String::new();
+                let mut signature = String::new();
+                let mut tool_calls = Vec::new();
+                for block in &message.content {
+                    match block {
+                        ContentBlock::Text { text } => prompt_text.push_str(text),
+                        ContentBlock::Thinking {
+                            thinking: t,
+                            signature: sig,
+                        } => {
+                            thinking.push_str(t);
+                            if signature.is_empty()
+                                && let Some(s) = sig
+                            {
+                                signature.clone_from(s);
+                            }
+                        }
+                        ContentBlock::ToolUse { id, name, input } => {
+                            let arguments_json =
+                                serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string());
+                            tool_calls.push(ChatToolCall {
+                                id: id.clone(),
+                                name: name.clone(),
+                                arguments_json,
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+                if !prompt_text.is_empty()
+                    || !thinking.is_empty()
+                    || !signature.is_empty()
+                    || !tool_calls.is_empty()
+                {
+                    prompts.push(encode_chat_message_prompt(&ChatMessagePromptInput {
+                        message_id: &chat_message_id(cascade_id, index, "assistant"),
+                        source: CHAT_MESSAGE_SOURCE_SYSTEM,
+                        prompt: &prompt_text,
+                        thinking: &thinking,
+                        signature: &signature,
+                        tool_calls: &tool_calls,
+                        ..ChatMessagePromptInput::default()
+                    }));
+                }
+            }
+        }
+    }
+    prompts
 }
 
 pub struct Devin {
     credentials: Option<DevinCredentials>,
-    base_url: String,
+    client_model_configs: Mutex<Option<std::collections::HashMap<String, String>>>,
 }
 
 impl Devin {
     pub fn new(timeouts: super::Timeouts) -> Self {
         let _ = timeouts; // Not used in native implementation
 
-        let credentials = DevinCredentials::from_env().or_else(|| DevinCredentials::from_file());
-
-        let base_url = credentials
-            .as_ref()
-            .map(|c| c.api_server_url.clone())
-            .unwrap_or_else(|| DEVIN_API_URL.to_string());
-
         Self {
-            credentials,
-            base_url,
+            credentials: DevinCredentials::from_env().or_else(DevinCredentials::from_file),
+            client_model_configs: Mutex::new(None),
         }
     }
 
@@ -232,10 +300,10 @@ impl Devin {
             Err(e) => e.into_inner(),
         };
 
-        let base_url = resolved
-            .base_url
-            .clone()
-            .unwrap_or_else(|| DEVIN_API_URL.to_string());
+        let api_server_url = match resolved.base_url.clone() {
+            Some(url) => url,
+            None => DEVIN_API_URL.to_string(),
+        };
 
         let session_token = resolved
             .headers
@@ -248,12 +316,12 @@ impl Devin {
 
         let credentials = session_token.map(|token| DevinCredentials {
             session_token: token,
-            api_server_url: base_url.clone(),
+            api_server_url,
         });
 
         Ok(Self {
             credentials,
-            base_url,
+            client_model_configs: Mutex::new(None),
         })
     }
 
@@ -269,7 +337,7 @@ impl Devin {
 
         let url = format!("{}{}", creds.api_server_url, DEVIN_AUTH_PATH);
 
-        let response = isahc::Request::post(&url)
+        let mut response = isahc::Request::post(&url)
             .header("content-type", "application/proto")
             .header("connect-protocol-version", "1")
             .body(request_bytes)
@@ -285,10 +353,10 @@ impl Devin {
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "unable to read error body".to_string());
+            let body = match response.text().await {
+                Ok(b) => b,
+                Err(_) => "unable to read error body".to_string(),
+            };
             return Err(AgentError::Api {
                 status,
                 message: format!("auth failed: {body}"),
@@ -325,15 +393,79 @@ impl Devin {
         Ok((auth_response.user_jwt, base_url))
     }
 
+    async fn get_cli_model_configs(
+        &self,
+        base_url: &str,
+    ) -> Result<std::collections::HashMap<String, String>, AgentError> {
+        if let Ok(guard) = self.client_model_configs.lock()
+            && let Some(cache) = guard.as_ref()
+        {
+            return Ok(cache.clone());
+        }
+
+        let creds = self
+            .credentials
+            .as_ref()
+            .ok_or_else(|| AgentError::Config {
+                message: "no Devin credentials found".to_string(),
+            })?;
+
+        let request_bytes = encode_get_cli_model_configs_request(&creds.session_token);
+
+        let url = format!("{base_url}{DEVIN_CLI_MODEL_CONFIGS_PATH}");
+        let mut response = isahc::Request::post(&url)
+            .header("content-type", "application/proto")
+            .header("connect-protocol-version", "1")
+            .body(request_bytes)
+            .map_err(|e| AgentError::Config {
+                message: format!("failed to build model configs request: {e}"),
+            })?
+            .send_async()
+            .await
+            .map_err(|e| AgentError::Api {
+                status: 0,
+                message: format!("model configs request failed: {e}"),
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body = match response.text().await {
+                Ok(b) => b,
+                Err(_) => "unable to read error body".to_string(),
+            };
+            return Err(AgentError::Api {
+                status,
+                message: format!("model configs failed: {body}"),
+            });
+        }
+
+        let response_bytes = response.bytes().await.map_err(|e| AgentError::Api {
+            status: 0,
+            message: format!("failed to read model configs response: {e}"),
+        })?;
+
+        let configs = decode_cli_model_configs(&response_bytes).map_err(|e| AgentError::Api {
+            status: 0,
+            message: format!("failed to decode model configs response: {e}"),
+        })?;
+
+        if let Ok(mut guard) = self.client_model_configs.lock() {
+            *guard = Some(configs.clone());
+        }
+
+        Ok(configs)
+    }
+
     async fn stream_chat_message<'a>(
         &'a self,
         model: &'a crate::model::Model,
         messages: &'a [Message],
         system: &'a System,
-        _tools: &'a serde_json::Value,
+        tools: &'a serde_json::Value,
         event_tx: &'a Sender<ProviderEvent>,
-        _opts: RequestOptions,
+        opts: RequestOptions,
     ) -> Result<StreamResponse, AgentError> {
+        let _ = opts;
         let (user_jwt, base_url) = self.get_user_jwt().await?;
         let creds = self
             .credentials
@@ -342,7 +474,18 @@ impl Devin {
                 message: "no Devin credentials found".to_string(),
             })?;
 
-        let model_uid = model.id.split('/').last().unwrap_or(&model.id);
+        let model_router_uid = model
+            .id
+            .split('/')
+            .next_back()
+            .unwrap_or_else(|| model.id.as_str());
+        let cli_configs = self.get_cli_model_configs(&base_url).await?;
+        let chat_model_uid = cli_configs
+            .get(model_router_uid)
+            .map_or(model_router_uid, |wire| wire.as_str());
+
+        let cascade_id = n00nId::generate().to_string();
+        let execution_id = n00nId::generate().to_string();
 
         let prompt = system
             .blocks()
@@ -351,14 +494,26 @@ impl Devin {
             .collect::<Vec<_>>()
             .join("\n\n");
 
-        let cascade_id = uuid::Uuid::now_v7().to_string();
+        let chat_message_prompts = encode_devin_chat_message_prompts(messages, &cascade_id);
+        let chat_tools = encode_devin_tools(tools)?;
 
+        let max_tokens = u64::from(
+            model
+                .max_output_tokens
+                .map_or(DEFAULT_MAX_TOKENS, |m| m.min(DEFAULT_MAX_TOKENS)),
+        );
         let request_bytes = encode_get_chat_message_request(
             &creds.session_token,
             &user_jwt,
             &prompt,
-            model_uid,
+            chat_model_uid,
             &cascade_id,
+            &execution_id,
+            &chat_message_prompts,
+            &chat_tools,
+            max_tokens,
+            DEFAULT_TEMPERATURE,
+            DEFAULT_TOP_P,
         );
 
         let gzipped = {
@@ -378,9 +533,9 @@ impl Devin {
                 message: format!("failed to encode connect frame: {e}"),
             })?;
 
-        let url = format!("{}{}", base_url, DEVIN_CHAT_PATH);
+        let url = format!("{base_url}{DEVIN_CHAT_PATH}");
 
-        let response = isahc::Request::post(&url)
+        let mut response = isahc::Request::post(&url)
             .header("content-type", "application/connect+proto")
             .header("connect-protocol-version", "1")
             .header("connect-content-encoding", "gzip")
@@ -400,20 +555,17 @@ impl Devin {
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "unable to read error body".to_string());
+            let body = match response.text().await {
+                Ok(b) => b,
+                Err(_) => "unable to read error body".to_string(),
+            };
             return Err(AgentError::Api {
                 status,
                 message: format!("chat failed: {body}"),
             });
         }
 
-        let mut reader = response.body().map_err(|e| AgentError::Api {
-            status: 0,
-            message: format!("failed to get response body: {e}"),
-        })?;
+        let mut reader = BufReader::new(response.into_body());
 
         let mut frame_buffer = FrameBuffer::default();
         let mut text = String::new();
@@ -426,10 +578,13 @@ impl Devin {
         let mut buffer = vec![0u8; 8192];
 
         loop {
-            let n = reader.read(&mut buffer).map_err(|e| AgentError::Api {
-                status: 0,
-                message: format!("failed to read response: {e}"),
-            })?;
+            let n = reader
+                .read(&mut buffer)
+                .await
+                .map_err(|e| AgentError::Api {
+                    status: 0,
+                    message: format!("failed to read response: {e}"),
+                })?;
 
             if n == 0 {
                 break;
@@ -451,6 +606,21 @@ impl Devin {
                     })?;
                     let trailer = String::from_utf8_lossy(&payload);
                     if !trailer.trim().is_empty() {
+                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&trailer)
+                            && let Some(code) =
+                                value.get("code").and_then(serde_json::Value::as_str)
+                            && !code.is_empty()
+                            && code != "ok"
+                        {
+                            let msg = value
+                                .get("message")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or_else(|| code);
+                            return Err(AgentError::Api {
+                                status: 0,
+                                message: format!("devin stream failed: {code}: {msg}"),
+                            });
+                        }
                         debug!("devin trailer: {}", trailer);
                     }
                     continue;
@@ -496,14 +666,19 @@ impl Devin {
                 }
 
                 if response.stop_reason != 0 {
-                    stop_reason = StopReason::MaxTokens;
+                    stop_reason = match response.stop_reason {
+                        3 => StopReason::MaxTokens,
+                        10 => StopReason::ToolUse,
+                        _ => StopReason::EndTurn,
+                    };
                 }
 
                 if let Some(u) = response.usage {
-                    usage.input = u.input_tokens as u32;
-                    usage.output = u.output_tokens as u32;
-                    usage.cache_read = u.cache_read_tokens as u32;
-                    usage.cache_creation = u.cache_write_tokens as u32;
+                    usage.input = u32::try_from(u.input_tokens).unwrap_or_else(|_| 0);
+                    usage.output = u32::try_from(u.output_tokens).unwrap_or_else(|_| 0);
+                    usage.cache_read = u32::try_from(u.cache_read_tokens).unwrap_or_else(|_| 0);
+                    usage.cache_creation =
+                        u32::try_from(u.cache_write_tokens).unwrap_or_else(|_| 0);
                 }
             }
         }
@@ -517,6 +692,11 @@ impl Devin {
         }
         if !text.is_empty() {
             content_blocks.push(crate::types::ContentBlock::Text { text });
+        }
+        for (id, (name, arguments_json)) in tool_calls {
+            let input =
+                serde_json::from_str(&arguments_json).unwrap_or_else(|_| serde_json::Value::Null);
+            content_blocks.push(crate::types::ContentBlock::ToolUse { id, name, input });
         }
         if content_blocks.is_empty() {
             content_blocks.push(crate::types::ContentBlock::Text {

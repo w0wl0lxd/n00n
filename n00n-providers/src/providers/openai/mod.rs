@@ -53,7 +53,7 @@ inventory::submit!(n00n_config::providers::BuiltInProvider {
     protocol: n00n_config::providers::Protocol::Openai,
     default_base_url: "https://chatgpt.com/backend-api/codex",
     default_api_key_env: "",
-    default_model: "codex/gpt-5.6-luna",
+    default_model: "gpt-5.6-luna",
     plans: None,
     login_url: None,
     needs_url: false,

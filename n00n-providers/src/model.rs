@@ -405,7 +405,18 @@ impl Model {
     ///
     /// Returns a `ModelError` if the spec is malformed or the provider is unsupported.
     pub fn from_spec(spec: &str) -> Result<Self, ModelError> {
-        let (slug, model_id) = spec.split_once('/').ok_or(ModelError::InvalidFormat)?;
+        let Some((slug, model_id)) = spec.split_once('/') else {
+            // Provider-only spec: resolve the provider's default model.
+            if let Some(manifest) = ManifestRegistry::get(spec) {
+                let entry = manifest
+                    .models
+                    .iter()
+                    .find(|e| e.default)
+                    .ok_or(ModelError::NoDefault(spec.to_string(), ModelTier::Weak))?;
+                return Self::from_spec(&format!("{spec}/{}", entry.prefixes[0]));
+            }
+            return Err(ModelError::InvalidFormat);
+        };
 
         // Precedence: builtin, then dynamic script, then providers.toml custom.
         // Discovery drops any script slug a builtin or custom entry already owns,

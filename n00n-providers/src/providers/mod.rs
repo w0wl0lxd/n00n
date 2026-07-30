@@ -19,6 +19,7 @@ pub mod custom;
 pub(crate) mod deepseek;
 pub(crate) mod devin;
 pub(crate) mod devin_connect;
+pub(crate) mod devin_models;
 pub(crate) mod devin_proto;
 pub mod dynamic;
 pub(crate) mod google;
