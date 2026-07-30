@@ -592,7 +592,7 @@ impl<'h> Agent<'h> {
                 if !response.message.content.is_empty() {
                     self.history.push(response.message);
                 }
-                warn!(
+                info!(
                     "empty or reasoning-only response after tool calls, nudging model to continue"
                 );
                 self.event_tx.send(AgentEvent::Nudge)?;
@@ -602,7 +602,7 @@ impl<'h> Agent<'h> {
 
             if !has_text && has_thinking && !after_tool_results && !self.thinking_empty_retried {
                 self.thinking_empty_retried = true;
-                warn!("assistant produced only reasoning, nudging for final answer");
+                info!("assistant produced only reasoning, nudging for final answer");
                 self.history.push(response.message);
                 self.event_tx.send(AgentEvent::Nudge)?;
                 self.history
