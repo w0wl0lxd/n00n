@@ -868,7 +868,7 @@ fn import_codex_tokens(dir: &StateDir) -> Result<Option<OAuthTokens>, AgentError
 ///
 /// Returns an `AgentError` if no API key or valid OAuth tokens are available.
 pub fn resolve_cached(dir: &StateDir) -> Result<ResolvedAuth, AgentError> {
-    if let Some(tokens) = ensure_tokens(dir)? {
+    if let Some(tokens) = load_tokens(dir, PROVIDER) {
         debug!(
             expired = tokens.is_expired(),
             "using cached OpenAI OAuth authentication"
@@ -912,14 +912,6 @@ pub(crate) fn resolve_api_key(dir: &StateDir) -> Result<ResolvedAuth, AgentError
             base_url: None,
             headers: vec![("authorization".into(), format!("Bearer {}", creds.api_key))],
         });
-    }
-
-    if let Some(tokens) = ensure_tokens(dir)? {
-        debug!(
-            expired = tokens.is_expired(),
-            "using cached OpenAI OAuth authentication"
-        );
-        return Ok(build_oauth_resolved(&tokens));
     }
 
     Err(AgentError::Config {
