@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785363376110,
+  "lastUpdate": 1785450401583,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -10149,6 +10149,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 89441,
             "range": "± 6439",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d87b2bc90ac67153c74f4b707b1deb901f981fb7",
+          "message": "Merge pull request #199 from w0wl0lxd/fix/openai-codex-auth\n\nfix(providers): OpenAI token reuse, Devin pricing, local discovery, and custom manifest inheritance",
+          "timestamp": "2026-07-30T22:09:46Z",
+          "tree_id": "5c13ad120ed7942fc0fea4d96c21c3ec72e7a97c",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/d87b2bc90ac67153c74f4b707b1deb901f981fb7"
+        },
+        "date": 1785450400582,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6699093,
+            "range": "± 63225",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2362607,
+            "range": "± 7861",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2208386,
+            "range": "± 29558",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8002689,
+            "range": "± 49979",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4405695,
+            "range": "± 32990",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4567497,
+            "range": "± 19360",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 588901,
+            "range": "± 2633",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191565,
+            "range": "± 532",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 192079,
+            "range": "± 795",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1041320,
+            "range": "± 9159",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 591498,
+            "range": "± 5556",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 591061,
+            "range": "± 1671",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 80587,
+            "range": "± 1262",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 110080,
+            "range": "± 10547",
             "unit": "ns/iter"
           }
         ]
