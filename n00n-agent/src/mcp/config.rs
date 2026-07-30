@@ -242,9 +242,7 @@ pub fn parse_server(name: String, server: RawServerConfig) -> Result<ServerConfi
         )));
     }
     if is_builtin_tool(&name) {
-        return Err(McpError::Config(format!(
-            "server name '{name}' conflicts with built-in tool"
-        )));
+        return Err(McpError::BuiltInConflict { server: name });
     }
     if server.timeout == 0 || server.timeout > MAX_TIMEOUT_MS {
         return Err(McpError::Config(format!(
