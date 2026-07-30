@@ -2104,19 +2104,28 @@ impl Provider for OpenAi {
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<crate::model::ModelInfo>, AgentError>> {
         Box::pin(async {
-            if self.codex {
-                let models = super::codex_models()
+            let entries = if self.codex {
+                super::codex_models()
+            } else {
+                super::models()
+            };
+
+            let mut models = if self.codex {
+                entries
                     .iter()
                     .flat_map(|e| e.prefixes.iter())
                     .map(|&s| crate::model::ModelInfo::id_only(s.to_string()))
-                    .collect();
-                return Ok(models);
-            }
-            self.with_oauth_retry(|| async {
-                let auth = self.current_auth();
-                self.compat.do_list_models(&auth).await
-            })
-            .await
+                    .collect()
+            } else {
+                self.with_oauth_retry(|| async {
+                    let auth = self.current_auth();
+                    self.compat.do_list_models(&auth).await
+                })
+                .await?
+            };
+
+            super::sort_models(&mut models, entries);
+            Ok(models)
         })
     }
 
