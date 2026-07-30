@@ -7,6 +7,8 @@ The new implementation:
 - Implements streaming response parser for Connect frames with gzip decompression
 - Emits ProviderEvents: `TextDelta`, `ThinkingDelta`, `ToolUseStart`/`ToolUseDelta`/`ToolUseEnd`, `Done`/`Error`
 - Supports tool definitions in requests and tool-call streaming in responses
-- Maintains existing model catalog and pricing from the ACP-based provider
+- Adds a full Devin model catalog from the live CLI model list
+- Resolves display model ids to wire uids via `GetCliModelConfigs`
+- Allows provider-only model specs like `n00n -m devin` by selecting the provider default
 
 Replaces the ACP-based `devin` provider with a native HTTP implementation that calls Devin's gRPC-Web API directly.
