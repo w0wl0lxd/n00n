@@ -686,6 +686,8 @@ enum LogRecord<M, U, T> {
         #[serde(flatten)]
         meta: SessionMeta,
     },
+    #[serde(other)]
+    Unknown,
 }
 
 // -- SessionLog: append-only persistence --
@@ -1356,6 +1358,7 @@ where
             }
             builder.meta = m_meta;
         }
+        LogRecord::Unknown => {}
     }
     Ok(())
 }
