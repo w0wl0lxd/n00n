@@ -7,32 +7,28 @@
 //!    with gzip-framed request, stream of gzip-framed responses
 //! 4. Parse Connect frames, gunzip, decode protobuf, emit ProviderEvents
 
-use std::io::Read;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 use flate2::Compression;
-use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flume::Sender;
-use futures_lite::StreamExt;
 use isahc::AsyncReadResponseExt;
+use isahc::RequestExt;
 use serde::Deserialize;
-use tracing::{debug, error, info, warn};
+use tracing::debug;
 
 use crate::model::{ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider};
 use crate::types::{Role, System};
 use crate::{
-    AgentError, Effort, Message, ProviderEvent, RequestOptions, StopReason, StreamResponse,
-    ThinkingConfig, TokenUsage,
+    AgentError, Message, ProviderEvent, RequestOptions, StopReason, StreamResponse, TokenUsage,
 };
 
 use super::ResolvedAuth;
 use super::devin_connect::{
-    CONNECT_COMPRESSED_FLAG, CONNECT_END_STREAM_FLAG, ConnectFrame, FrameBuffer,
-    decode_frame_payload, encode_frame,
+    CONNECT_COMPRESSED_FLAG, FrameBuffer, decode_frame_payload, encode_frame,
 };
 use super::devin_proto::*;
 
@@ -210,7 +206,7 @@ pub struct Devin {
 }
 
 impl Devin {
-    fn new(timeouts: super::Timeouts) -> Self {
+    pub fn new(timeouts: super::Timeouts) -> Self {
         let _ = timeouts; // Not used in native implementation
 
         let credentials = DevinCredentials::from_env().or_else(|| DevinCredentials::from_file());
@@ -227,7 +223,7 @@ impl Devin {
     }
 
     #[allow(clippy::unnecessary_wraps)]
-    fn with_auth(
+    pub fn with_auth(
         auth: &Arc<Mutex<ResolvedAuth>>,
         _timeouts: super::Timeouts,
     ) -> Result<Self, AgentError> {
@@ -355,7 +351,7 @@ impl Devin {
             .collect::<Vec<_>>()
             .join("\n\n");
 
-        let cascade_id = uuid::Uuid::new_v4().to_string();
+        let cascade_id = uuid::Uuid::now_v7().to_string();
 
         let request_bytes = encode_get_chat_message_request(
             &creds.session_token,
@@ -488,22 +484,15 @@ impl Devin {
                 }
 
                 for tc in response.delta_tool_calls {
-                    let entry = tool_calls.entry(tc.id.clone()).or_insert_with(|| {
+                    if !tool_calls.contains_key(&tc.id) {
                         let _ = event_tx
                             .send_async(ProviderEvent::ToolUseStart {
                                 id: tc.id.clone(),
                                 name: tc.name.clone(),
                             })
                             .await;
-                        (tc.name.clone(), String::new())
-                    });
-                    entry.1 = tc.arguments_json;
-                    let _ = event_tx
-                        .send_async(ProviderEvent::ToolUseDelta {
-                            id: tc.id.clone(),
-                            delta: tc.arguments_json,
-                        })
-                        .await;
+                        tool_calls.insert(tc.id.clone(), (tc.name.clone(), tc.arguments_json));
+                    }
                 }
 
                 if response.stop_reason != 0 {
@@ -517,16 +506,6 @@ impl Devin {
                     usage.cache_creation = u.cache_write_tokens as u32;
                 }
             }
-        }
-
-        // Send tool use end events
-        for (id, (name, _args)) in &tool_calls {
-            let _ = event_tx
-                .send_async(ProviderEvent::ToolUseEnd {
-                    id: id.clone(),
-                    name: name.clone(),
-                })
-                .await;
         }
 
         let mut content_blocks = Vec::new();
