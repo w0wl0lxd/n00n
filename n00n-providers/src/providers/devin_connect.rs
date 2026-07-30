@@ -65,8 +65,12 @@ pub fn encode_frame(flags: u8, payload: &[u8]) -> Result<Vec<u8>, String> {
             payload.len()
         ));
     }
-    #[allow(clippy::cast_possible_truncation)]
-    let len = payload.len() as u32;
+    let len = u32::try_from(payload.len()).map_err(|_| {
+        format!(
+            "connect frame payload length {} does not fit in u32",
+            payload.len()
+        )
+    })?;
     let mut frame = Vec::with_capacity(5 + payload.len());
     frame.push(flags);
     frame.extend_from_slice(&len.to_be_bytes());
