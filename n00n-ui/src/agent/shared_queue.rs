@@ -51,6 +51,7 @@ impl From<Submission> for QueuedMessage {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum QueueItem {
     Message {
         text: String,
@@ -381,6 +382,7 @@ mod tests {
                 workflow: false,
                 control: false,
                 prompt: None,
+                plan_path: None,
             },
             run_id: 0,
             submission_id: 0,
@@ -417,6 +419,7 @@ mod tests {
                 workflow: false,
                 control: false,
                 prompt: None,
+                plan_path: None,
             },
             run_id: 0,
             submission_id: 0,

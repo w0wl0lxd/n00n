@@ -48,10 +48,8 @@ local function post_blackboard_status(ctx, event_type, step, run_id, extra)
     task_id = run_id,
   }
 
-  if extra then
-    for k, v in pairs(extra) do
-      post[k] = v
-    end
+  if extra and next(extra) then
+    post.extra = extra
   end
 
   pcall(function()

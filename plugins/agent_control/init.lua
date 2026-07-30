@@ -194,18 +194,26 @@ n00n.api.register_tool({
     if not agents then
       return { llm_output = err, is_error = true }
     end
-    local lines = {}
+    local current, _ = n00n.session.current()
+    current = tostring(current or "")
+    local filtered = {}
     for _, agent in ipairs(agents) do
+      if tostring(agent.id or "") ~= current and not agent.focused then
+        filtered[#filtered + 1] = agent
+      end
+    end
+    local lines = {}
+    for _, agent in ipairs(filtered) do
       lines[#lines + 1] = agent_line(agent)
     end
     if #lines == 0 then
       lines[1] = "(no live agents)"
     end
-    local encoded, fmt = encode_structured({ agents = agents, count = #agents })
+    local encoded, fmt = encode_structured({ agents = filtered, count = #filtered })
     if not encoded then
       return { llm_output = "encode failed", is_error = true }
     end
-    local body, annotation = card(string.format("list · %d agents", #agents), lines, tostring(#agents))
+    local body, annotation = card(string.format("list · %d agents", #filtered), lines, tostring(#filtered))
     return {
       llm_output = encoded,
       format = "plain",
@@ -238,6 +246,10 @@ n00n.api.register_tool({
   handler = function(input)
     if not input.agent_id or input.agent_id == "" then
       return { llm_output = "agent_id is required", is_error = true }
+    end
+    local current, _ = n00n.session.current()
+    if input.agent_id == tostring(current or "") then
+      return { llm_output = "cannot query the focused session", is_error = true }
     end
     local agent, err = n00n.session.status(input.agent_id)
     if not agent then

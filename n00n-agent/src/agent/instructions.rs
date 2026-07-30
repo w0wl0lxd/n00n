@@ -85,6 +85,27 @@ pub fn build_system_prompt(
     system
 }
 
+const BUILD_PLAN_HEADER: &str = "<system-reminder>\n# Approved Plan\n\nThe user has approved a plan. Follow it to implement the request.\n\n";
+const BUILD_PLAN_FOOTER: &str = "\n</system-reminder>";
+
+/// Append a Build-mode reminder containing the approved plan file to `system`.
+pub fn append_build_plan_prompt(system: &mut System, plan_path: &Path) {
+    let content = match fs::read_to_string(plan_path) {
+        Ok(content) => content,
+        Err(error) => {
+            system.push_dynamic(format!(
+                "{BUILD_PLAN_HEADER}Plan file at `{path}` could not be read: {error}.{BUILD_PLAN_FOOTER}",
+                path = plan_path.display(),
+            ));
+            return;
+        }
+    };
+    system.push_dynamic(format!(
+        "{BUILD_PLAN_HEADER}Plan file: `{path}`\n\n{content}{BUILD_PLAN_FOOTER}",
+        path = plan_path.display(),
+    ));
+}
+
 fn read_instruction(path: &Path, loaded: &LoadedInstructions) -> Option<(PathBuf, String)> {
     let canonical = path.canonicalize().ok()?;
     if loaded.contains_or_insert(canonical.clone()) {
