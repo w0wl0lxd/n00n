@@ -877,9 +877,7 @@ fn build_loaded_tool(
 ) -> (String, usize, Option<Arc<ToolOutput>>, Option<String>) {
     if let Some(output) = reconstructed {
         let text = match &output {
-            n00n_agent::ToolOutput::Plain(t)
-            | n00n_agent::ToolOutput::Markdown(t)
-            | n00n_agent::ToolOutput::ReadDir(t)
+            ToolOutput::Plain(t) | ToolOutput::Markdown(t) | ToolOutput::ReadDir(t)
                 if !t.text.is_empty() =>
             {
                 let tr = truncate_output(&t.text, tool_output_lines.get(tool));
