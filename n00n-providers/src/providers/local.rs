@@ -100,19 +100,22 @@ impl LocalEndpoint {
         protocol: Option<Protocol>,
     ) -> Result<Self, AgentError> {
         let api_key = key_pool.as_ref().map(|p| p.current().to_string());
-        let host_is_set = host.is_some();
-        let base_url = match host {
-            Some(h) => format!("{h}/v1"),
-            None if api_key.is_some() && cfg.cloud_fallback_url.is_some() => cfg
-                .cloud_fallback_url
-                .as_ref()
-                .ok_or_else(|| AgentError::Config {
-                    message: "missing cloud fallback url".into(),
-                })?
-                .to_string(),
-            None => format!("{}/v1", cfg.default_host.trim_end_matches('/')),
+        let (base_url, configured) = match host {
+            Some(h) => (format!("{h}/v1"), true),
+            None if api_key.is_some() && cfg.cloud_fallback_url.is_some() => {
+                let url = cfg
+                    .cloud_fallback_url
+                    .as_ref()
+                    .ok_or_else(|| AgentError::Config {
+                        message: "missing cloud fallback url".into(),
+                    })?;
+                (url.to_string(), true)
+            }
+            None => (
+                format!("{}/v1", cfg.default_host.trim_end_matches('/')),
+                false,
+            ),
         };
-        let configured = host_is_set || (api_key.is_some() && cfg.cloud_fallback_url.is_some());
         let headers = match api_key {
             Some(key) => vec![("authorization".into(), format!("Bearer {key}"))],
             None => Vec::new(),
