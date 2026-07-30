@@ -479,10 +479,15 @@ impl Devin {
             .split('/')
             .next_back()
             .unwrap_or_else(|| model.id.as_str());
+        // Resolve aliases (e.g. "opus") to the canonical model uid before
+        // looking up the server-side wire id.
+        let canonical_id =
+            crate::model::lookup_entry(crate::providers::devin::models(), model_router_uid)
+                .map_or(model_router_uid, |entry| entry.prefixes[0]);
         let cli_configs = self.get_cli_model_configs(&base_url).await?;
         let chat_model_uid = cli_configs
-            .get(model_router_uid)
-            .map_or(model_router_uid, |wire| wire.as_str());
+            .get(canonical_id)
+            .map_or(canonical_id, |wire| wire.as_str());
 
         let cascade_id = n00nId::generate().to_string();
         let execution_id = n00nId::generate().to_string();
