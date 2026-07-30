@@ -6,7 +6,9 @@ pub(crate) mod websocket;
 pub(crate) use platform::CODING_PLAN_CONTEXT_WINDOW;
 pub use platform::{OpenAi, OpenAiOptions};
 
-use crate::model::{ModelEntry, ModelFamily, ModelPricing, ModelTier};
+use std::cmp::Reverse;
+
+use crate::model::{ModelEntry, ModelFamily, ModelInfo, ModelPricing, ModelTier, lookup_entry};
 
 const GPT_5_6_MAX_OUTPUT_TOKENS: u32 = 128_000;
 const GPT_5_6_CONTEXT_WINDOW: u32 = 372_000;
@@ -466,14 +468,6 @@ pub(crate) const fn codex_models() -> &'static [ModelEntry] {
             false,
         ),
         with_coding_plan(
-            OPENAI_GPT_5_6_SOL,
-            &["gpt-5.6"],
-            GPT_5_6_MAX_OUTPUT_TOKENS,
-            CODING_PLAN_CONTEXT_WINDOW,
-            true,
-            false,
-        ),
-        with_coding_plan(
             OPENAI_GPT_5_4_MINI,
             &["gpt-5.2"],
             128_000,
@@ -484,6 +478,60 @@ pub(crate) const fn codex_models() -> &'static [ModelEntry] {
     ];
 
     CODEX_MODELS
+}
+
+fn tier_strength(tier: Option<ModelTier>) -> u8 {
+    tier.map_or(0, |t| match t {
+        ModelTier::Strong => 3,
+        ModelTier::Medium => 2,
+        ModelTier::Weak => 1,
+        ModelTier::Compaction => 0,
+    })
+}
+
+fn parse_model_version(id: &str) -> (u32, u32) {
+    fn take_digits(s: &str) -> Option<(u32, &str)> {
+        let end = s
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or_else(|| s.len());
+        if end == 0 {
+            return None;
+        }
+        let n = s[..end].parse::<u32>().ok()?;
+        Some((n, &s[end..]))
+    }
+
+    let start = id
+        .find(|c: char| c.is_ascii_digit())
+        .unwrap_or_else(|| id.len());
+    let (major, tail) = take_digits(&id[start..]).unwrap_or_else(|| (0, ""));
+    if let Some(tail) = tail.strip_prefix('.') {
+        let (minor, _) = take_digits(tail).unwrap_or_else(|| (0, ""));
+        (major, minor)
+    } else {
+        (major, 0)
+    }
+}
+
+pub(crate) fn sort_models(models: &mut [ModelInfo], entries: &[ModelEntry]) {
+    fn key<'a>(
+        info: &'a ModelInfo,
+        entries: &[ModelEntry],
+    ) -> (Reverse<u32>, Reverse<u32>, Reverse<u8>, &'a str) {
+        let tier = match lookup_entry(entries, &info.id) {
+            Ok(entry) => Some(entry.tier),
+            Err(_) => None,
+        };
+        let (major, minor) = parse_model_version(&info.id);
+        (
+            Reverse(major),
+            Reverse(minor),
+            Reverse(tier_strength(tier)),
+            info.id.as_str(),
+        )
+    }
+
+    models.sort_by(|a, b| key(a, entries).cmp(&key(b, entries)));
 }
 
 #[cfg(test)]
