@@ -102,10 +102,10 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             vision: true,
             default: false,
             pricing: ModelPricing {
-                input: 0.00,
-                output: 0.00,
+                input: 2.50,
+                output: 12.50,
                 cache_write: 0.00,
-                cache_read: 0.00,
+                cache_read: 1.00,
                 fast: None,
             },
             max_output_tokens: 128_000,
@@ -118,10 +118,10 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             vision: true,
             default: false,
             pricing: ModelPricing {
-                input: 0.00,
-                output: 0.00,
-                cache_write: 0.00,
-                cache_read: 0.00,
+                input: 3.00,
+                output: 15.00,
+                cache_write: 3.75,
+                cache_read: 0.30,
                 fast: None,
             },
             max_output_tokens: 128_000,
@@ -134,10 +134,10 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             vision: true,
             default: false,
             pricing: ModelPricing {
-                input: 0.00,
-                output: 0.00,
+                input: 2.50,
+                output: 15.00,
                 cache_write: 0.00,
-                cache_read: 0.00,
+                cache_read: 0.25,
                 fast: None,
             },
             max_output_tokens: 128_000,
@@ -150,10 +150,10 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             vision: true,
             default: false,
             pricing: ModelPricing {
-                input: 0.00,
-                output: 0.00,
+                input: 2.00,
+                output: 12.00,
                 cache_write: 0.00,
-                cache_read: 0.00,
+                cache_read: 0.20,
                 fast: None,
             },
             max_output_tokens: 128_000,
@@ -1442,8 +1442,13 @@ fn is_gpt_5_1(lower: &str) -> bool {
     lower.contains("gpt") && (lower.contains("5_1") || lower.contains("5.1"))
 }
 
+fn is_gpt_5_4(lower: &str) -> bool {
+    lower.contains("gpt")
+        && (lower.contains("5_4") || lower.contains("5.4") || lower.contains("5-4"))
+}
+
 fn is_gpt_5(lower: &str) -> bool {
-    lower.contains("gpt") && lower.contains('5') && !is_gpt_5_1(lower)
+    lower.contains("gpt") && lower.contains('5') && !is_gpt_5_1(lower) && !is_gpt_5_4(lower)
 }
 
 fn is_claude_4(lower: &str) -> bool {
@@ -1519,6 +1524,33 @@ fn infer_pricing(model_id: &str) -> Option<ModelPricing> {
     }
 
     let lower = model_id.to_lowercase();
+    if lower.starts_with("swe-1-7") {
+        if lower.contains("lightning") {
+            return Some(ModelPricing {
+                input: 2.5,
+                output: 12.5,
+                cache_write: 0.0,
+                cache_read: 1.0,
+                fast: None,
+            });
+        }
+        return Some(ModelPricing {
+            input: 0.0,
+            output: 0.0,
+            cache_write: 0.0,
+            cache_read: 0.0,
+            fast: None,
+        });
+    }
+    if lower.contains("gemini") {
+        return Some(ModelPricing {
+            input: 2.0,
+            output: 12.0,
+            cache_write: 0.0,
+            cache_read: 0.2,
+            fast: None,
+        });
+    }
     if is_gpt_5_1(&lower) {
         if lower.contains("codex") && lower.contains("medium") {
             Some(ModelPricing {
@@ -1545,6 +1577,14 @@ fn infer_pricing(model_id: &str) -> Option<ModelPricing> {
                 fast: None,
             })
         }
+    } else if is_gpt_5_4(&lower) {
+        Some(ModelPricing {
+            input: 2.5,
+            output: 15.0,
+            cache_write: 0.0,
+            cache_read: 0.25,
+            fast: None,
+        })
     } else if is_gpt_5(&lower) {
         Some(ModelPricing {
             input: 1.25,
