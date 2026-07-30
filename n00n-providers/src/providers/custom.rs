@@ -149,7 +149,7 @@ fn model_from_def(def: &ProviderDef, kind: ProviderKind, slug: &str, model_id: &
     let max_output_tokens = declared
         .and_then(|m| m.max_output_tokens)
         .or(base_entry.map(|e| e.max_output_tokens))
-        .or(kind.fallback_max_output());
+        .or_else(|| kind.fallback_max_output());
     let context_window = declared
         .and_then(|m| m.context_window)
         .or(base_entry.map(|e| e.context_window))
@@ -159,7 +159,7 @@ fn model_from_def(def: &ProviderDef, kind: ProviderKind, slug: &str, model_id: &
         .or(base_entry.map(|e| e.family.supports_tool_examples()));
     let supports_thinking_override = declared
         .and_then(|m| m.supports_thinking)
-        .or(base_manifest.map(|m| m.supports_thinking));
+        .or_else(|| base_manifest.map(|m| m.supports_thinking));
     let supports_vision_override = declared
         .and_then(|m| m.supports_vision)
         .or(base_entry.map(|e| e.vision));

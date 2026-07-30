@@ -497,7 +497,7 @@ fn parse_model_version(id: &str) -> (u32, u32) {
         if end == 0 {
             return None;
         }
-        let n = s[..end].parse().ok()?;
+        let n = s[..end].parse::<u32>().ok()?;
         Some((n, &s[end..]))
     }
 

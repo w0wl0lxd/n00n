@@ -1416,11 +1416,12 @@ fn infer_context_window(model_id: &str) -> Option<u32> {
     if let Some(meta) = DEVIN_PRIVATE_MODELS.iter().find(|m| m.id == model_id) {
         return meta.context_window;
     }
-    if let Ok(entry) = crate::model::lookup_entry(models(), model_id) {
+
+    let lower = model_id.to_lowercase();
+    if let Ok(entry) = crate::model::lookup_entry(models(), &lower) {
         return Some(entry.context_window);
     }
 
-    let lower = model_id.to_lowercase();
     if lower.contains("-1m") {
         Some(1_000_000)
     } else if is_claude_4(&lower) {
@@ -1436,11 +1437,12 @@ fn infer_max_output_tokens(model_id: &str) -> Option<u32> {
     if let Some(meta) = DEVIN_PRIVATE_MODELS.iter().find(|m| m.id == model_id) {
         return meta.max_output_tokens;
     }
-    if let Ok(entry) = crate::model::lookup_entry(models(), model_id) {
+
+    let lower = model_id.to_lowercase();
+    if let Ok(entry) = crate::model::lookup_entry(models(), &lower) {
         return Some(entry.max_output_tokens);
     }
 
-    let lower = model_id.to_lowercase();
     if is_claude_4(&lower) {
         Some(64_000)
     } else if is_gpt_5_1(&lower) {
@@ -1479,11 +1481,11 @@ fn infer_pricing(model_id: &str) -> Option<ModelPricing> {
         return None;
     }
 
-    if let Ok(entry) = crate::model::lookup_entry(models(), model_id) {
+    let lower = model_id.to_lowercase();
+    if let Ok(entry) = crate::model::lookup_entry(models(), &lower) {
         return Some(entry.pricing);
     }
 
-    let lower = model_id.to_lowercase();
     if lower.contains("gemini") {
         Some(GEMINI_3_1_PRO_LOW_PRICING)
     } else if is_gpt_5_1(&lower) {
