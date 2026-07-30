@@ -388,7 +388,7 @@ impl<'h> Agent<'h> {
             fast: input.fast,
             message_cache_breakpoints: adaptive_cache_breakpoints(user_message_count),
             protect_history_replay,
-            allow_history_replay: false,
+            allow_history_replay: self.permissions.is_yolo(),
         };
 
         info!(
@@ -460,6 +460,9 @@ impl<'h> Agent<'h> {
     }
 
     async fn approve_history_replay(&self, reason: HistoryReplayReason) -> Result<(), AgentError> {
+        if self.permissions.is_yolo() {
+            return Ok(());
+        }
         let scope = history_replay_scope(
             reason,
             self.history.as_slice(),
@@ -1505,6 +1508,7 @@ mod tests {
             workflow: false,
             control: false,
             prompt: None,
+            plan_path: None,
         }
     }
 
