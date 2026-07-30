@@ -862,7 +862,13 @@ impl<'h> Agent<'h> {
         }
         info!(context_size = self.context_size, "auto-compacting");
         self.event_tx.send(AgentEvent::AutoCompacting)?;
-        self.do_compact().await?;
+        if let Err(e) = self.do_compact().await {
+            warn!(
+                error = %e,
+                "auto-compaction failed; continuing without compacting"
+            );
+            return Ok(false);
+        }
         Ok(true)
     }
 
