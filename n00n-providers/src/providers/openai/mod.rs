@@ -466,14 +466,6 @@ pub(crate) const fn codex_models() -> &'static [ModelEntry] {
             false,
         ),
         with_coding_plan(
-            OPENAI_GPT_5_6_SOL,
-            &["gpt-5.6"],
-            GPT_5_6_MAX_OUTPUT_TOKENS,
-            CODING_PLAN_CONTEXT_WINDOW,
-            true,
-            false,
-        ),
-        with_coding_plan(
             OPENAI_GPT_5_4_MINI,
             &["gpt-5.2"],
             128_000,
