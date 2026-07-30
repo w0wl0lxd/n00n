@@ -76,6 +76,19 @@ struct TokenResponse {
     expires_in: Option<u64>,
 }
 
+#[derive(Deserialize)]
+struct CodexAuthFile {
+    tokens: CodexTokens,
+}
+
+#[derive(Deserialize)]
+struct CodexTokens {
+    access_token: String,
+    refresh_token: String,
+    #[serde(default)]
+    account_id: Option<String>,
+}
+
 struct CredentialsLock {
     _file: File,
 }
@@ -502,9 +515,9 @@ fn token_exp(token: &str) -> Option<u64> {
 
 fn decode_jwt_claims(token: &str) -> Option<serde_json::Value> {
     let mut parts = token.split('.');
-    let _header = parts.next()?;
+    parts.next()?;
     let payload = parts.next()?;
-    let _signature = parts.next()?;
+    parts.next()?;
     if parts.next().is_some() {
         return None;
     }
@@ -512,11 +525,9 @@ fn decode_jwt_claims(token: &str) -> Option<serde_json::Value> {
     let Ok(decoded) = URL_SAFE_NO_PAD.decode(payload) else {
         return None;
     };
-
     let Ok(claims) = serde_json::from_slice::<serde_json::Value>(&decoded) else {
         return None;
     };
-
     Some(claims)
 }
 
@@ -817,45 +828,23 @@ fn import_codex_tokens(dir: &StateDir) -> Result<Option<OAuthTokens>, AgentError
         return Ok(None);
     };
 
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&data) else {
+    let Ok(file) = serde_json::from_str::<CodexAuthFile>(&data) else {
         debug!(path = %codex_path.display(), "malformed Codex auth file");
         return Ok(None);
     };
 
-    let Some(tokens) = value.get("tokens").and_then(serde_json::Value::as_object) else {
+    let Some(exp) = token_exp(&file.tokens.access_token) else {
         return Ok(None);
     };
-    let Some(access) = tokens
-        .get("access_token")
-        .and_then(serde_json::Value::as_str)
-    else {
-        return Ok(None);
-    };
-    let Some(refresh) = tokens
-        .get("refresh_token")
-        .and_then(serde_json::Value::as_str)
-    else {
-        return Ok(None);
-    };
-    let account_id = tokens
-        .get("account_id")
-        .and_then(serde_json::Value::as_str)
-        .map(String::from);
-
-    let Some(exp) = token_exp(access) else {
-        return Ok(None);
-    };
-    let access = access.to_string();
-    let refresh = refresh.to_string();
     let expires = exp.checked_mul(1000).ok_or_else(|| AgentError::Config {
         message: "OpenAI token expiry overflow".into(),
     })?;
 
     let n00n_tokens = OAuthTokens {
-        access,
-        refresh,
+        access: file.tokens.access_token,
+        refresh: file.tokens.refresh_token,
         expires,
-        account_id,
+        account_id: file.tokens.account_id,
     };
     save_tokens(dir, PROVIDER, &n00n_tokens)?;
     debug!("migrated Codex OpenAI tokens");
