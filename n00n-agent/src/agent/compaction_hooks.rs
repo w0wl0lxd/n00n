@@ -306,7 +306,11 @@ async fn run_command_hook(
         .stderr(async_process::Stdio::piped())
         .spawn()
         .map_err(|e| AgentError::Config {
-            message: format!("failed to spawn hook command: {e}"),
+            message: if e.kind() == std::io::ErrorKind::NotFound {
+                format!("compaction hook command not found: {expanded_cmd}")
+            } else {
+                format!("failed to spawn hook command: {e}")
+            },
         })?;
 
     let mut stdin = child.stdin.take().ok_or_else(|| AgentError::Config {
@@ -447,7 +451,11 @@ pub async fn run_precompact_hooks(
                     }
                 }
                 Err(e) => {
-                    warn!(hook = %handler.command, error = %e, "PreCompact hook failed");
+                    if e.to_string().contains("compaction hook command not found:") {
+                        debug!(hook = %handler.command, "PreCompact hook command not found; skipping");
+                    } else {
+                        warn!(hook = %handler.command, error = %e, "PreCompact hook failed");
+                    }
                 }
             }
         }
@@ -507,7 +515,11 @@ pub async fn run_postcompact_hooks(
                     }
                 }
                 Err(e) => {
-                    warn!(hook = %handler.command, error = %e, "PostCompact hook failed");
+                    if e.to_string().contains("compaction hook command not found:") {
+                        debug!(hook = %handler.command, "PostCompact hook command not found; skipping");
+                    } else {
+                        warn!(hook = %handler.command, error = %e, "PostCompact hook failed");
+                    }
                 }
             }
         }
