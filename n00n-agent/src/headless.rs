@@ -404,6 +404,11 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                 if let Some(append) = &params.append_system_prompt {
                     system.push_static(format!("\n{append}"));
                 }
+                if matches!(input.mode, AgentMode::Build)
+                    && let Some(plan_path) = input.plan_path.as_deref()
+                {
+                    agent::append_build_plan_prompt(&mut system, plan_path);
+                }
 
                 let (trigger, cancel) = CancelToken::new();
                 let cancel_task = smol::spawn({

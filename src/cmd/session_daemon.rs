@@ -1,6 +1,6 @@
 //! In-process session registration for headless modes (print, ACP).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
@@ -12,8 +12,12 @@ use n00n_daemon::lock::DaemonRole;
 use n00n_daemon::protocol::{AgentRecord, BackendKind, MessageOpts};
 use n00n_daemon::registry::{ControlPlane, TuiCallbackBackend};
 use n00n_daemon::server;
+use n00n_providers::Message;
 use n00n_providers::ThinkingConfig;
+use n00n_providers::TokenUsage;
+use n00n_storage::StateDir;
 use n00n_storage::id::SessionRef;
+use n00n_storage::sessions::{Session, StoredMode};
 use serde_json::Value;
 
 const STATUS_WORKING: &str = "working";
@@ -56,7 +60,10 @@ pub fn register_acp_session(
         {
             let input_tx = handle.input_tx.clone();
             let session_id = session_id.clone();
-            move |id, text, opts| message_interactive(&input_tx, id, &session_id, text, opts)
+            let state_dir = state_dir.to_path_buf();
+            move |id, text, opts| {
+                message_interactive(&input_tx, id, &session_id, text, opts, &state_dir)
+            }
         },
         {
             let cancel_tx = handle.cancel_tx.clone();
@@ -227,14 +234,38 @@ fn message_interactive(
     session_id: &str,
     text: &str,
     opts: &MessageOpts,
+    state_dir: &Path,
 ) -> ControlResult<Value> {
     if id != session_id {
         return Err(ControlError::NotFound(id.to_owned()));
     }
+    let (mode, plan_path) = session_id
+        .parse::<SessionRef>()
+        .ok()
+        .and_then(|session_ref| {
+            let storage = StateDir::from_path(state_dir.to_path_buf());
+            Session::<Message, TokenUsage, n00n_agent::ToolOutput>::load(session_ref.id(), &storage)
+                .ok()
+                .map(|session| match session.meta.mode {
+                    Some(StoredMode::Build) => {
+                        (AgentMode::Build, session.meta.plan_path.map(PathBuf::from))
+                    }
+                    Some(StoredMode::Plan) => {
+                        let path = session
+                            .meta
+                            .plan_path
+                            .map_or_else(|| PathBuf::from("plan.md"), PathBuf::from);
+                        (AgentMode::Plan(path.clone()), Some(path))
+                    }
+                    Some(StoredMode::Research) => (AgentMode::Research, None),
+                    None => (AgentMode::Build, session.meta.plan_path.map(PathBuf::from)),
+                })
+        })
+        .unwrap_or_else(|| (AgentMode::Build, None));
     input_tx
         .try_send(AgentInput {
             message: text.to_owned(),
-            mode: AgentMode::Build,
+            mode,
             images: Vec::new(),
             preamble: Vec::new(),
             thinking: ThinkingConfig::default(),
@@ -242,7 +273,7 @@ fn message_interactive(
             workflow: false,
             prompt: None,
             control: opts.control,
-            plan_path: None,
+            plan_path,
         })
         .map_err(|_| ControlError::Unavailable(NO_SESSION_ERR.into()))?;
     Ok(serde_json::json!({"queued": true, "steer": opts.steer, "control": opts.control}))

@@ -51,7 +51,8 @@ impl SessionState {
 
         let mut plan = match &session.meta.plan_path {
             Some(p) if Path::new(p).exists() => {
-                if session.meta.plan_written || mode == Mode::Build {
+                let nonempty = std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.len() > 0);
+                if session.meta.plan_written || (mode == Mode::Build && nonempty) {
                     PlanState::Ready(PathBuf::from(p))
                 } else {
                     PlanState::Drafting(PathBuf::from(p))
