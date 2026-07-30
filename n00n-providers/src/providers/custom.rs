@@ -163,22 +163,19 @@ fn model_from_def(def: &ProviderDef, kind: ProviderKind, slug: &str, model_id: &
     let supports_vision_override = declared
         .and_then(|m| m.supports_vision)
         .or(base_entry.map(|e| e.vision));
-    let pricing = if let Some(m) = declared.filter(|m| m.has_pricing()) {
-        ModelPricing {
+    let pricing = declared.filter(|m| m.has_pricing()).map_or_else(
+        || base_entry.map_or_else(ModelPricing::default, |e| e.pricing),
+        |m| ModelPricing {
             input: m.pricing_input.unwrap_or_else(|| 0.0),
             output: m.pricing_output.unwrap_or_else(|| 0.0),
             cache_write: m.pricing_cache_write.unwrap_or_else(|| 0.0),
             cache_read: m.pricing_cache_read.unwrap_or_else(|| 0.0),
-            fast: declared
-                .filter(|d| d.has_fast_pricing())
-                .map(|d| FastPricing {
-                    input: d.pricing_fast_input.unwrap_or_else(|| 0.0),
-                    output: d.pricing_fast_output.unwrap_or_else(|| 0.0),
-                }),
-        }
-    } else {
-        base_entry.map_or_else(ModelPricing::default, |e| e.pricing)
-    };
+            fast: m.has_fast_pricing().then(|| FastPricing {
+                input: m.pricing_fast_input.unwrap_or_else(|| 0.0),
+                output: m.pricing_fast_output.unwrap_or_else(|| 0.0),
+            }),
+        },
+    );
     Model {
         id: model_id.to_string(),
         provider: Arc::from(slug),
@@ -212,15 +209,16 @@ fn declared_specs_from(config: &ProvidersConfig) -> Vec<String> {
         // When a custom provider doesn't declare any models and isn't doing
         // live discovery, share the base protocol's static registry instead of
         // leaving the provider empty.
-        if def.models.is_empty() && !def.discover_models {
-            let Some(manifest) = ManifestRegistry::get(&kind.to_string()) else {
-                continue;
-            };
-            for entry in manifest.models {
-                for prefix in entry.prefixes {
-                    specs.push(format!("{slug}/{prefix}"));
-                }
-            }
+        if def.models.is_empty()
+            && !def.discover_models
+            && let Some(manifest) = ManifestRegistry::get(&kind.to_string())
+        {
+            specs.extend(manifest.models.iter().flat_map(|entry| {
+                entry
+                    .prefixes
+                    .iter()
+                    .map(|&prefix| format!("{slug}/{prefix}"))
+            }));
         }
 
         for m in &def.models {
