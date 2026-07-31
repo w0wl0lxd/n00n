@@ -61,6 +61,7 @@ pub(crate) struct OpenAiCompatConfig {
     pub supports_prompt_cache_key: bool,
     pub supports_prompt_cache_breakpoint: bool,
     pub emit_reasoning_content: bool,
+    pub supports_parallel_tool_calls: bool,
 }
 
 pub(crate) struct OpenAiCompatProvider {
@@ -194,6 +195,9 @@ impl OpenAiCompatProvider {
         }
         if wire_tools.as_array().is_some_and(|a| !a.is_empty()) {
             body["tools"] = wire_tools;
+            if self.config.supports_parallel_tool_calls {
+                body["parallel_tool_calls"] = json!(true);
+            }
         }
         if let Some(sid) = session_id
             && self.config.supports_prompt_cache_key
@@ -1409,6 +1413,7 @@ data: [DONE]\n";
             supports_prompt_cache_key: true,
             supports_prompt_cache_breakpoint: false,
             emit_reasoning_content: false,
+            supports_parallel_tool_calls: false,
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
@@ -1440,6 +1445,7 @@ data: [DONE]\n";
             supports_prompt_cache_key: true,
             supports_prompt_cache_breakpoint: false,
             emit_reasoning_content: false,
+            supports_parallel_tool_calls: false,
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
@@ -1471,6 +1477,7 @@ data: [DONE]\n";
             supports_prompt_cache_key: false,
             supports_prompt_cache_breakpoint: true,
             emit_reasoning_content: false,
+            supports_parallel_tool_calls: false,
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
@@ -1498,5 +1505,75 @@ data: [DONE]\n";
             content_array[0]["prompt_cache_breakpoint"]["mode"],
             "explicit"
         );
+    }
+
+    #[test]
+    fn build_body_with_tools_adds_parallel_tool_calls_when_supported() {
+        static TEST_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
+            slug: "test",
+            api_key_env: "TEST_KEY",
+            base_url: "https://test.com",
+            max_tokens_field: "max_tokens",
+            include_stream_usage: false,
+            provider_name: "Test",
+            supports_prompt_cache_key: false,
+            supports_prompt_cache_breakpoint: false,
+            emit_reasoning_content: false,
+            supports_parallel_tool_calls: true,
+        };
+        let provider =
+            OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
+        let model = crate::model::Model::from_spec("openai/gpt-4o").unwrap();
+        let messages = vec![Message::user("hello".to_string())];
+        let tools = json!([{
+            "name": "bash",
+            "description": "run shell commands",
+            "input_schema": {"type": "object"}
+        }]);
+
+        let body = provider.build_body_with_session(
+            &model,
+            &messages,
+            &System::from("system"),
+            &tools,
+            None,
+            None,
+        );
+        assert_eq!(body["parallel_tool_calls"], true);
+    }
+
+    #[test]
+    fn build_body_with_tools_skips_parallel_tool_calls_when_unsupported() {
+        static TEST_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
+            slug: "test",
+            api_key_env: "TEST_KEY",
+            base_url: "https://test.com",
+            max_tokens_field: "max_tokens",
+            include_stream_usage: false,
+            provider_name: "Test",
+            supports_prompt_cache_key: false,
+            supports_prompt_cache_breakpoint: false,
+            emit_reasoning_content: false,
+            supports_parallel_tool_calls: false,
+        };
+        let provider =
+            OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
+        let model = crate::model::Model::from_spec("openai/gpt-4o").unwrap();
+        let messages = vec![Message::user("hello".to_string())];
+        let tools = json!([{
+            "name": "bash",
+            "description": "run shell commands",
+            "input_schema": {"type": "object"}
+        }]);
+
+        let body = provider.build_body_with_session(
+            &model,
+            &messages,
+            &System::from("system"),
+            &tools,
+            None,
+            None,
+        );
+        assert!(body.get("parallel_tool_calls").is_none());
     }
 }

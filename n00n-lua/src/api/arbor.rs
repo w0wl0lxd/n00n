@@ -1,10 +1,13 @@
-use mlua::{Lua, LuaSerdeExt, Result as LuaResult, Table};
+use mlua::{Lua, Result as LuaResult, Table};
 use n00n_arbor::{
     ArborError, Client, ensure_fresh_index, graph_callees, graph_callers, graph_index_available,
     graph_trace_path,
 };
 
-use crate::docs::{DocKind, FnDoc, ModuleDoc, ParamDoc};
+use crate::{
+    api::util::convert::json_to_lua,
+    docs::{DocKind, FnDoc, ModuleDoc, ParamDoc},
+};
 
 fn map_err(e: ArborError) -> mlua::Error {
     mlua::Error::external(format!("{e:#}"))
@@ -16,7 +19,7 @@ fn value_or_err<T: serde::Serialize>(
 ) -> LuaResult<mlua::Value> {
     let val = result.map_err(map_err)?;
     let json = serde_json::to_value(&val).map_err(|e| mlua::Error::external(format!("{e:#}")))?;
-    lua.to_value(&json)
+    json_to_lua(lua, &json)
 }
 
 #[allow(clippy::similar_names)]
@@ -335,3 +338,27 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
         },
     ],
 };
+
+#[cfg(test)]
+mod tests {
+    use mlua::{Lua, Value};
+    use n00n_arbor::ArborError;
+
+    use super::value_or_err;
+
+    #[test]
+    fn serialized_numbers_are_lua_scalars() {
+        let lua = Lua::new();
+        let value = value_or_err(
+            &lua,
+            Ok::<_, ArborError>(serde_json::json!({ "count": 3, "ratio": 0.5 })),
+        )
+        .unwrap();
+        let Value::Table(table) = value else {
+            panic!("expected table");
+        };
+
+        assert_eq!(table.get::<i64>("count").unwrap(), 3);
+        assert!((table.get::<f64>("ratio").unwrap() - 0.5).abs() < f64::EPSILON);
+    }
+}
