@@ -723,10 +723,7 @@ fn handle_data_frame(
         status: 502,
         message,
     })?;
-    if let Some(op) = parse_kv_server_message(&payload).map_err(|message| AgentError::Api {
-        status: 502,
-        message,
-    })? {
+    if let Ok(Some(op)) = parse_kv_server_message(&payload) {
         queue_checkpoint_reply(op, checkpoints, outbound)?;
         return Ok(FrameHandleOutcome {
             exec_skipped: false,
@@ -734,10 +731,7 @@ fn handle_data_frame(
             kv_op: true,
         });
     }
-    if has_exec_server_message(&payload).map_err(|message| AgentError::Api {
-        status: 502,
-        message,
-    })? {
+    if let Ok(true) = has_exec_server_message(&payload) {
         // Phase 0: n00n owns tools; ignore Cursor-side exec until Phase 1 maps them.
         // Aborting the whole turn drops text deltas that often follow.
         return Ok(FrameHandleOutcome {
@@ -747,18 +741,16 @@ fn handle_data_frame(
         });
     }
     let mut deltas = 0u32;
-    for delta in extract_text_deltas(&payload).map_err(|message| AgentError::Api {
-        status: 502,
-        message,
-    })? {
-        text.push_str(&delta);
-        deltas = deltas.saturating_add(1);
+    if let Ok(text_deltas) = extract_text_deltas(&payload) {
+        for delta in text_deltas {
+            text.push_str(&delta);
+            deltas = deltas.saturating_add(1);
+        }
     }
-    for delta in extract_thinking_deltas(&payload).map_err(|message| AgentError::Api {
-        status: 502,
-        message,
-    })? {
-        thinking.push_str(&delta);
+    if let Ok(thinking_deltas) = extract_thinking_deltas(&payload) {
+        for delta in thinking_deltas {
+            thinking.push_str(&delta);
+        }
     }
     Ok(FrameHandleOutcome {
         exec_skipped: false,
@@ -872,6 +864,45 @@ mod tests {
             Some(b"blob-data".as_slice())
         );
         assert_eq!(outbound.lock().expect("lock").queue.len(), 1);
+    }
+
+    #[test]
+    fn handle_data_frame_ignores_non_protobuf_end_stream() {
+        let frame = ConnectFrame {
+            end_stream: true,
+            compressed: false,
+            payload: b"{}".to_vec(),
+        };
+        let store = shared_store();
+        let (outbound, _notify) = new_outbound_queue();
+        let mut text = String::new();
+        let mut thinking = String::new();
+        let outcome =
+            handle_data_frame(&frame, &mut text, &mut thinking, &store, &outbound).expect("handle");
+        assert!(!outcome.exec_skipped);
+        assert_eq!(outcome.text_deltas, 0);
+        assert!(text.is_empty());
+        assert!(thinking.is_empty());
+    }
+
+    #[test]
+    fn handle_data_frame_rejects_corrupt_compression() {
+        let frame = ConnectFrame {
+            end_stream: false,
+            compressed: true,
+            payload: b"not-gzip".to_vec(),
+        };
+        let store = shared_store();
+        let (outbound, _notify) = new_outbound_queue();
+        let mut text = String::new();
+        let mut thinking = String::new();
+
+        let Err(error) = handle_data_frame(&frame, &mut text, &mut thinking, &store, &outbound)
+        else {
+            panic!("corrupt compression must fail");
+        };
+
+        assert!(matches!(error, AgentError::Api { status: 502, .. }));
     }
 
     #[test]
