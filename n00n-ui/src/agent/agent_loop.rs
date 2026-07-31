@@ -21,7 +21,7 @@ use n00n_providers::{AgentError, Message, Model, OpenAiOptions, System, TokenUsa
 use n00n_storage::id::SessionRef;
 use n00n_storage::sessions::TranscriptEntry;
 use serde_json::Value;
-use tracing::error;
+use tracing::{error, warn};
 
 use super::ModelSlot;
 use super::cancel_map::RunCancelMap;
@@ -198,11 +198,8 @@ impl AgentLoop {
         if self.init_cancel.is_cancelled() {
             return false;
         }
-        if self
-            .publish_btw_system(&n00n_agent::prompt::ResolvedSlots::default())
-            .is_err()
-        {
-            return false;
+        if let Err(e) = self.publish_btw_system(&n00n_agent::prompt::ResolvedSlots::default()) {
+            warn!(error = %e, "failed to pre-build between-turn system prompt; will retry on first run");
         }
 
         let slot = self.model_slot.load();
@@ -309,11 +306,16 @@ impl AgentLoop {
         );
         if matches!(input.mode, n00n_agent::AgentMode::Build)
             && let Some(plan_path) = input.plan_path.as_deref()
+            && let Err(e) = agent::append_build_plan_prompt(&mut system, plan_path)
         {
-            agent::append_build_plan_prompt(&mut system, plan_path)?;
+            self.clear_cancel_trigger(run_id);
+            return Err(e);
         }
         self.plan_path.clone_from(&input.plan_path);
-        self.publish_btw_system(&prompt_slots)?;
+        if let Err(e) = self.publish_btw_system(&prompt_slots) {
+            self.clear_cancel_trigger(run_id);
+            return Err(e);
+        }
 
         while self.answer_rx.lock().await.try_recv().is_ok() {}
 
