@@ -179,7 +179,7 @@ impl OpenAiCompatProvider {
             && model_supports_breakpoint(model)
             && message_cache_breakpoints > 0;
 
-        let mut wire_messages = convert_messages(
+        let mut wire_messages = convert_messages_with_breakpoints(
             messages,
             None,
             self.config.emit_reasoning_content,
@@ -403,6 +403,14 @@ pub fn convert_messages(
     messages: &[Message],
     system: Option<&str>,
     emit_reasoning_content: bool,
+) -> Vec<Value> {
+    convert_messages_with_breakpoints(messages, system, emit_reasoning_content, None)
+}
+
+pub fn convert_messages_with_breakpoints(
+    messages: &[Message],
+    system: Option<&str>,
+    emit_reasoning_content: bool,
     message_cache_breakpoints: Option<usize>,
 ) -> Vec<Value> {
     let mut out = Vec::new();
@@ -455,9 +463,8 @@ pub fn convert_messages(
                 let mut tool_results = Vec::new();
                 let mut text_parts: Vec<&str> = Vec::new();
                 let mut image_parts = Vec::new();
-                let mut block_idx = 0;
 
-                for block in &msg.content {
+                for (block_idx, block) in msg.content.iter().enumerate() {
                     match block {
                         ContentBlock::Text { text } => text_parts.push(text.as_str()),
                         ContentBlock::Image { source } => {
@@ -483,17 +490,15 @@ pub fn convert_messages(
                                 "content": output,
                             });
 
-                            // Add breakpoint to this tool result if it's the marked one
-                            if let Some(ref bp_set) = breakpoints {
-                                if bp_set.contains(&(msg_idx, block_idx)) {
-                                    // Convert content to array form with breakpoint
-                                    let content_array = json!([{
-                                        "type": "text",
-                                        "text": output,
-                                        "prompt_cache_breakpoint": {"mode": "explicit"}
-                                    }]);
-                                    tool_msg["content"] = content_array;
-                                }
+                            if breakpoints
+                                .as_ref()
+                                .is_some_and(|bp| bp.contains(&(msg_idx, block_idx)))
+                            {
+                                tool_msg["content"] = json!([{
+                                    "type": "text",
+                                    "text": output,
+                                    "prompt_cache_breakpoint": {"mode": "explicit"}
+                                }]);
                             }
 
                             tool_results.push(tool_msg);
@@ -502,14 +507,18 @@ pub fn convert_messages(
                         | ContentBlock::Thinking { .. }
                         | ContentBlock::RedactedThinking { .. } => {}
                     }
-                    block_idx += 1;
                 }
 
                 // Tool messages must directly follow the assistant's
                 // tool_calls, before any user content.
                 out.extend(tool_results);
 
-                let has_breakpoint = breakpoints
+                // Only mark user-level content if the message's last block is
+                // text or image. A trailing tool result gets its breakpoint on
+                // the generated tool message above.
+                let mark_user_breakpoint = msg.content.last().is_some_and(|last| {
+                    matches!(last, ContentBlock::Text { .. } | ContentBlock::Image { .. })
+                }) && breakpoints
                     .as_ref()
                     .is_some_and(|bp| bp.contains(&(msg_idx, msg.content.len().saturating_sub(1))));
 
@@ -517,11 +526,11 @@ pub fn convert_messages(
                     let mut parts = image_parts;
                     if !text_parts.is_empty() {
                         let mut text_block = json!({"type": "text", "text": text_parts.join("\n")});
-                        if has_breakpoint {
+                        if mark_user_breakpoint {
                             text_block["prompt_cache_breakpoint"] = json!({"mode": "explicit"});
                         }
                         parts.push(text_block);
-                    } else if has_breakpoint {
+                    } else if mark_user_breakpoint {
                         // Add breakpoint to last image if no text
                         if let Some(last) = parts.last_mut() {
                             last["prompt_cache_breakpoint"] = json!({"mode": "explicit"});
@@ -529,7 +538,7 @@ pub fn convert_messages(
                     }
                     out.push(json!({"role": "user", "content": parts}));
                 } else if !text_parts.is_empty() {
-                    if has_breakpoint {
+                    if mark_user_breakpoint {
                         let content_array = json!([{
                             "type": "text",
                             "text": text_parts.join("\n"),
@@ -1798,7 +1807,7 @@ data: [DONE]\n";
     #[test]
     fn convert_messages_with_breakpoints_none() {
         let messages = vec![Message::user("hello".into())];
-        let result = convert_messages(&messages, Some("system"), false, None);
+        let result = convert_messages_with_breakpoints(&messages, Some("system"), false, None);
         assert!(result[1]["content"].is_string());
     }
 
@@ -1808,7 +1817,7 @@ data: [DONE]\n";
             Message::user("first".into()),
             Message::user("second".into()),
         ];
-        let result = convert_messages(&messages, Some("system"), false, Some(1));
+        let result = convert_messages_with_breakpoints(&messages, Some("system"), false, Some(1));
         // Last user message should have breakpoint
         assert!(result[2]["content"].is_array());
         let content = result[2]["content"].as_array().unwrap();
