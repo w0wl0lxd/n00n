@@ -170,6 +170,7 @@ impl Provider for LocalEndpoint {
                     None,
                     false,
                     opts.thinking,
+                    self.compat.config().supports_parallel_tool_calls,
                 );
                 body["return_progress"] = serde_json::Value::Bool(true);
                 return responses::do_stream(
