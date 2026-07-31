@@ -1,6 +1,6 @@
 //! In-process session registration for headless modes (print, ACP).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
@@ -278,8 +278,9 @@ fn message_interactive(
 fn mode_and_plan_for_daemon(
     storage: &StateDir,
     session: &mut Session<Message, TokenUsage, n00n_agent::ToolOutput>,
-) -> ControlResult<(n00n_agent::AgentMode, Option<std::path::PathBuf>)> {
-    let (mode, plan_path) = mode_and_plan_from_stored(storage, &session.meta);
+) -> ControlResult<(n00n_agent::AgentMode, Option<PathBuf>)> {
+    let (mode, plan_path) = mode_and_plan_from_stored(storage, &session.meta)
+        .map_err(|e| ControlError::Unavailable(e.to_string()))?;
     if session.meta.mode == Some(StoredMode::Plan) && session.meta.plan_path.is_none() {
         let plan_path = plan_path
             .as_ref()

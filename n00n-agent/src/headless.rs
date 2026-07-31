@@ -407,9 +407,16 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                     && let Err(e) = agent::append_build_plan_prompt(&mut system, plan_path)
                 {
                     error!(error = %e, "failed to append build plan prompt");
-                    let _ = event_tx.send(AgentEvent::Error {
-                        message: e.user_message(),
-                    });
+                    run_id += 1;
+                    if event_tx
+                        .send(AgentEvent::Error {
+                            message: e.user_message(),
+                        })
+                        .is_err()
+                    {
+                        error!("event receiver closed while reporting plan prompt error");
+                        break;
+                    }
                     continue;
                 }
 

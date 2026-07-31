@@ -207,10 +207,11 @@ impl AgentLoop {
         if self.init_cancel.is_cancelled() {
             return false;
         }
-        if let Err(e) = self.publish_btw_system(
-            &n00n_agent::prompt::ResolvedSlots::default(),
-            self.plan_path.as_deref(),
-        ) {
+        // The restored path has no mode context. Do not read it until a Build
+        // input explicitly supplies it, otherwise reopening a Plan session
+        // reads its draft as an approved implementation plan.
+        if let Err(e) = self.publish_btw_system(&n00n_agent::prompt::ResolvedSlots::default(), None)
+        {
             warn!(error = %e, "failed to pre-build between-turn system prompt; will retry on first run");
         }
 
