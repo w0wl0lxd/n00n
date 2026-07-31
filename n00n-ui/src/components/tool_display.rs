@@ -464,13 +464,8 @@ impl ToolLineBuilder {
         self.lines[0].spans.insert(0, Span::styled(text, style));
     }
 
-    fn push_code_content(
-        &mut self,
-        input: Option<&ToolInput>,
-        raw_input: Option<&serde_json::Value>,
-        output: Option<&ToolOutput>,
-    ) {
-        let content = code_view::render_tool_content(input, raw_input, output, false, self.limits);
+    fn push_code_content(&mut self, input: Option<&ToolInput>, output: Option<&ToolOutput>) {
+        let content = code_view::render_tool_content(input, output, false, self.limits);
         self.truncation.script |= content.truncation.script;
         self.truncation.output |= content.truncation.output;
         self.truncation.details |= content.truncation.details;
@@ -708,7 +703,6 @@ pub fn build_tool_lines(
     let has_snapshot = msg.render_snapshot.is_some();
     b.push_code_content(
         msg.tool_input.as_deref(),
-        msg.tool_raw_input.as_deref(),
         if has_snapshot {
             None
         } else {
@@ -963,6 +957,28 @@ mod tests {
         let text = lines_text(&tl);
         assert!(text.contains("line1"));
         assert!(text.contains("line2"));
+    }
+
+    #[test]
+    fn raw_tool_input_is_not_rendered() {
+        let mut msg = bash_msg("Search src\n2 matches", ToolStatus::Success, None, None);
+        msg.tool_raw_input = Some(Arc::new(serde_json::json!({
+            "query": "secret needle",
+            "path": "src"
+        })));
+
+        let lines = build_tool_lines(
+            &msg,
+            ToolStatus::Success,
+            &test_rctx(80),
+            SectionFlags::default(),
+        );
+        let text = lines_text(&lines);
+
+        assert!(text.contains("Search src"));
+        assert!(text.contains("2 matches"));
+        assert!(!text.contains("secret needle"));
+        assert!(!text.contains("\"query\""));
     }
 
     fn line_has_styled(tl: &ToolLines, text: &str, style: Style) -> bool {
