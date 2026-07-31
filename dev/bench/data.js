@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785485242398,
+  "lastUpdate": 1785486858924,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -10689,6 +10689,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 134620,
             "range": "± 6420",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "aadf02418ebe53dc415541a98a31dda859120320",
+          "message": "Merge pull request #201 from w0wl0lxd/feat/devin-native\n\nfeat(providers): native Devin provider over gRPC-Web",
+          "timestamp": "2026-07-31T08:21:25Z",
+          "tree_id": "4b43dfeadb7834f99e8553d221fd843acc4f4686",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/aadf02418ebe53dc415541a98a31dda859120320"
+        },
+        "date": 1785486858416,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 5236340,
+            "range": "± 145216",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1892588,
+            "range": "± 12326",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1895908,
+            "range": "± 4623",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 5862715,
+            "range": "± 47115",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 2978725,
+            "range": "± 13732",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 2916004,
+            "range": "± 5639",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 431636,
+            "range": "± 635",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 130373,
+            "range": "± 106",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 130359,
+            "range": "± 168",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 825388,
+            "range": "± 2968",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 498288,
+            "range": "± 4536",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 498532,
+            "range": "± 5137",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 37194,
+            "range": "± 3532",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 143538,
+            "range": "± 8139",
             "unit": "ns/iter"
           }
         ]
