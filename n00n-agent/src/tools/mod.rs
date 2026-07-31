@@ -167,6 +167,17 @@ pub fn capability_exclusions(model: &Model) -> &'static [&'static str] {
     }
 }
 
+/// Deferred tools that should be active by default so new features are not
+/// silently disabled. `view_image` is still filtered out for non-vision models.
+#[must_use]
+pub fn default_active_tools() -> ActiveTools {
+    let mut active = ActiveTools::default();
+    active.names.insert(AGENT_CONTROL_TOOL_NAME.to_owned());
+    active.names.insert(BATCH_TOOL_NAME.to_owned());
+    active.names.insert(VIEW_IMAGE_TOOL_NAME.to_owned());
+    active
+}
+
 /// A tool is enabled unless named in `disabled_tools` (config, or the raw
 /// list a Lua caller holds, e.g. `n00n.api.get_tools`).
 #[must_use]
@@ -174,6 +185,8 @@ pub fn is_tool_enabled(disabled_tools: &[String], name: &str) -> bool {
     !disabled_tools.iter().any(|s| s == name)
 }
 
+pub const AGENT_CONTROL_TOOL_NAME: &str = "agent_control";
+pub const BATCH_TOOL_NAME: &str = "batch";
 pub const BASH_TOOL_NAME: &str = "bash";
 pub const CODE_EXECUTION_TOOL_NAME: &str = "code_execution";
 pub const EDIT_TOOL_NAME: &str = "edit";
@@ -1122,6 +1135,18 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for name in &names {
             assert!(seen.insert(name), "duplicate builtin tool name: {name}");
+        }
+    }
+
+    #[test]
+    fn default_active_tools_include_deferred_tools() {
+        let active = default_active_tools();
+        for name in [
+            AGENT_CONTROL_TOOL_NAME,
+            BATCH_TOOL_NAME,
+            VIEW_IMAGE_TOOL_NAME,
+        ] {
+            assert!(active.names.contains(name), "missing default tool: {name}");
         }
     }
 }
