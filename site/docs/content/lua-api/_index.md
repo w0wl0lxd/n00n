@@ -804,6 +804,9 @@ and tool set.
     `(string)` or `(nil, err)`.
   - `name` (`string?`) display name for logs and UI.
   - `audience` (`string?`) tool audience for capability gating. Default: `"general_sub"`.
+  - `mode` (`string?`) agent operating mode: `"build"` (default), `"research"`, `"plan"`, or the
+    aliases `"general"` (build) and `"research"`. Plan mode requires `plan_path`.
+  - `plan_path` (`string?`) required when `mode` is `"plan"`; path to the approved plan file.
   - `thinking` (`string|integer?`) thinking mode: `"off"`, `"adaptive"`, an
     effort level (`"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`,
     `"max"`), or a budget integer (token count). Inherits parent setting

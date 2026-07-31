@@ -17,7 +17,7 @@ use n00n_providers::ThinkingConfig;
 use n00n_providers::TokenUsage;
 use n00n_storage::StateDir;
 use n00n_storage::id::SessionRef;
-use n00n_storage::sessions::Session;
+use n00n_storage::sessions::{Session, StoredMode};
 use serde_json::Value;
 
 const STATUS_WORKING: &str = "working";
@@ -251,12 +251,12 @@ fn message_interactive(
             .parse::<SessionRef>()
             .map_err(|_| ControlError::InvalidId(session_id.to_owned()))?;
         let storage = StateDir::from_path(state_dir.to_path_buf());
-        let session = Session::<Message, TokenUsage, n00n_agent::ToolOutput>::load(
+        let mut session = Session::<Message, TokenUsage, n00n_agent::ToolOutput>::load(
             session_ref.id(),
             &storage,
         )
         .map_err(|e| ControlError::Unavailable(e.to_string()))?;
-        mode_and_plan_from_stored(&storage, &session.meta)
+        mode_and_plan_for_daemon(&storage, &mut session)?
     };
     input_tx
         .try_send(AgentInput {
@@ -275,6 +275,23 @@ fn message_interactive(
     Ok(serde_json::json!({"queued": true, "steer": opts.steer, "control": opts.control}))
 }
 
+fn mode_and_plan_for_daemon(
+    storage: &StateDir,
+    session: &mut Session<Message, TokenUsage, n00n_agent::ToolOutput>,
+) -> ControlResult<(n00n_agent::AgentMode, Option<std::path::PathBuf>)> {
+    let (mode, plan_path) = mode_and_plan_from_stored(storage, &session.meta);
+    if session.meta.mode == Some(StoredMode::Plan) && session.meta.plan_path.is_none() {
+        let plan_path = plan_path
+            .as_ref()
+            .ok_or_else(|| ControlError::Unavailable("missing generated plan path".into()))?;
+        session.meta.plan_path = Some(plan_path.display().to_string());
+        session
+            .save(storage)
+            .map_err(|e| ControlError::Unavailable(e.to_string()))?;
+    }
+    Ok((mode, plan_path))
+}
+
 fn stop_interactive(
     cancel_tx: &flume::Sender<()>,
     id: &str,
@@ -287,4 +304,36 @@ fn stop_interactive(
         .try_send(())
         .map_err(|_| ControlError::Unavailable(NO_SESSION_ERR.into()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use n00n_agent::AgentMode;
+
+    use super::*;
+
+    #[test]
+    fn legacy_plan_session_persists_generated_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = StateDir::from_path(temp.path().to_path_buf());
+        let mut session =
+            Session::<Message, TokenUsage, n00n_agent::ToolOutput>::new("model", "/tmp");
+        session.meta.mode = Some(StoredMode::Plan);
+        session.save(&storage).unwrap();
+
+        let (mode, plan_path) = mode_and_plan_for_daemon(&storage, &mut session).unwrap();
+        let plan_path = plan_path.unwrap();
+        assert!(matches!(mode, AgentMode::Plan(_)));
+
+        let mut persisted =
+            Session::<Message, TokenUsage, n00n_agent::ToolOutput>::load(session.id, &storage)
+                .unwrap();
+        assert_eq!(persisted.meta.plan_path.as_deref(), plan_path.to_str());
+        assert_eq!(
+            mode_and_plan_for_daemon(&storage, &mut persisted)
+                .unwrap()
+                .1,
+            Some(plan_path)
+        );
+    }
 }
