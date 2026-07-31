@@ -1333,8 +1333,8 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn atomic_write_preserves_permissions_and_rejects_symlinks() {
+    #[test_case::test_case(())]
+    fn atomic_write_preserves_permissions_and_rejects_symlinks(_case: ()) {
         use std::os::unix::fs::PermissionsExt as _;
 
         let tmp = TempDir::new().unwrap();

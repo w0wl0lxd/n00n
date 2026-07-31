@@ -608,6 +608,7 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
   local results = {}
   local total_cost = 0.0
   local total_usage = roles.usage()
+  local failures = 0
   local start_wave_index = 1
   local start_step_index = 1
   local pause = nil
@@ -616,6 +617,7 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
     results = resume_state.results or results
     total_cost = resume_state.total_cost or total_cost
     total_usage = resume_state.total_usage or total_usage
+    failures = resume_state.failures or failures
     start_wave_index = resume_state.wave_index or start_wave_index
     start_step_index = resume_state.step_index or start_step_index
   end
@@ -684,6 +686,7 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
         wave_usage = roles.add_usage(wave_usage, wave_result.usage)
 
         if wave_result.failures > 0 then
+          failures = failures + wave_result.failures
           if logger then
             logger.log("wave_error", { wave = wave_name, failures = wave_result.failures })
           end
@@ -746,6 +749,7 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
               max_retries,
               validation_err or "unknown"
             )
+            failures = failures + 1
             if logger then
               logger.log("wave_failed", { wave = wave_name, retry_count = retry_count, cost = wave_cost })
             end
@@ -759,6 +763,7 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
           results = results,
           total_cost = total_cost,
           total_usage = total_usage,
+          failures = failures,
           mode = input.mode,
           wave_index = wave_passed and wave_idx + 1 or wave_idx,
           step_index = wave_passed and 1 or (failed_step_index or wave_start_step),
@@ -775,26 +780,13 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
             logger.log("checkpoint_save_failed", { checkpoint_id = ckpt_id, error = save_err })
           end
           results[#results + 1] = "[checkpoint] ERROR failed to save " .. ckpt_id .. ": " .. tostring(save_err)
-          local failures = 0
-          for _, result in ipairs(results) do
-            if result:find("ERROR", 1, true) then
-              failures = failures + 1
-            end
-          end
-          return results, total_cost, failures, total_usage, false
+          return results, total_cost, failures + 1, total_usage, false
         end
       end
 
       if pause then
         break
       end
-    end
-  end
-
-  local failures = 0
-  for _, r in ipairs(results) do
-    if r:find("ERROR") then
-      failures = failures + 1
     end
   end
 
