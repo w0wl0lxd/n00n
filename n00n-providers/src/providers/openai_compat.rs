@@ -173,9 +173,22 @@ impl OpenAiCompatProvider {
         tools: &Value,
         session_id: Option<&str>,
         system_prefix: Option<&str>,
+        message_cache_breakpoints: usize,
     ) -> Value {
-        let mut wire_messages =
-            convert_messages(messages, None, self.config.emit_reasoning_content);
+        let supports_breakpoints = self.config.supports_prompt_cache_breakpoint
+            && model_supports_breakpoint(model)
+            && message_cache_breakpoints > 0;
+
+        let mut wire_messages = convert_messages(
+            messages,
+            None,
+            self.config.emit_reasoning_content,
+            if supports_breakpoints {
+                Some(message_cache_breakpoints)
+            } else {
+                None
+            },
+        );
         if let Some(system_message) = self.build_system_message(system, system_prefix, model) {
             wire_messages.insert(0, system_message);
         }
@@ -199,6 +212,9 @@ impl OpenAiCompatProvider {
             && self.config.supports_prompt_cache_key
         {
             body["prompt_cache_key"] = json!(sid);
+        }
+        if supports_breakpoints {
+            body["prompt_cache_options"] = json!({"mode": "explicit"});
         }
         body
     }
@@ -387,18 +403,59 @@ pub fn convert_messages(
     messages: &[Message],
     system: Option<&str>,
     emit_reasoning_content: bool,
+    message_cache_breakpoints: Option<usize>,
 ) -> Vec<Value> {
     let mut out = Vec::new();
     if let Some(system) = system {
         out.push(json!({"role": "system", "content": system}));
     }
 
-    for msg in messages {
+    // Compute breakpoint indices if requested
+    let breakpoints = if let Some(num_breakpoints) = message_cache_breakpoints {
+        let mut bp_set = std::collections::HashSet::new();
+
+        // Find user message indices (in reverse order for last N)
+        let user_message_indices: Vec<usize> = messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| matches!(m.role, Role::User))
+            .map(|(i, _)| i)
+            .collect();
+
+        for idx in user_message_indices.iter().rev().take(num_breakpoints) {
+            bp_set.insert((*idx, messages[*idx].content.len().saturating_sub(1)));
+        }
+
+        // Find last tool result block index
+        let mut last_tool_result_idx = None;
+        for (msg_idx, msg) in messages.iter().enumerate().rev() {
+            for (block_idx, block) in msg.content.iter().enumerate().rev() {
+                if matches!(block, ContentBlock::ToolResult { .. }) {
+                    last_tool_result_idx = Some((msg_idx, block_idx));
+                    break;
+                }
+            }
+            if last_tool_result_idx.is_some() {
+                break;
+            }
+        }
+
+        if let Some((msg_idx, block_idx)) = last_tool_result_idx {
+            bp_set.insert((msg_idx, block_idx));
+        }
+
+        Some(bp_set)
+    } else {
+        None
+    };
+
+    for (msg_idx, msg) in messages.iter().enumerate() {
         match msg.role {
             Role::User => {
                 let mut tool_results = Vec::new();
                 let mut text_parts: Vec<&str> = Vec::new();
                 let mut image_parts = Vec::new();
+                let mut block_idx = 0;
 
                 for block in &msg.content {
                     match block {
@@ -420,29 +477,68 @@ pub fn convert_messages(
                                 } else {
                                     content.clone()
                                 };
-                            tool_results.push(json!({
+                            let mut tool_msg = json!({
                                 "role": "tool",
                                 "tool_call_id": tool_use_id,
                                 "content": output,
-                            }));
+                            });
+
+                            // Add breakpoint to this tool result if it's the marked one
+                            if let Some(ref bp_set) = breakpoints {
+                                if bp_set.contains(&(msg_idx, block_idx)) {
+                                    // Convert content to array form with breakpoint
+                                    let content_array = json!([{
+                                        "type": "text",
+                                        "text": output,
+                                        "prompt_cache_breakpoint": {"mode": "explicit"}
+                                    }]);
+                                    tool_msg["content"] = content_array;
+                                }
+                            }
+
+                            tool_results.push(tool_msg);
                         }
                         ContentBlock::ToolUse { .. }
                         | ContentBlock::Thinking { .. }
                         | ContentBlock::RedactedThinking { .. } => {}
                     }
+                    block_idx += 1;
                 }
 
                 // Tool messages must directly follow the assistant's
                 // tool_calls, before any user content.
                 out.extend(tool_results);
+
+                let has_breakpoint = breakpoints
+                    .as_ref()
+                    .is_some_and(|bp| bp.contains(&(msg_idx, msg.content.len().saturating_sub(1))));
+
                 if !image_parts.is_empty() {
                     let mut parts = image_parts;
                     if !text_parts.is_empty() {
-                        parts.push(json!({"type": "text", "text": text_parts.join("\n")}));
+                        let mut text_block = json!({"type": "text", "text": text_parts.join("\n")});
+                        if has_breakpoint {
+                            text_block["prompt_cache_breakpoint"] = json!({"mode": "explicit"});
+                        }
+                        parts.push(text_block);
+                    } else if has_breakpoint {
+                        // Add breakpoint to last image if no text
+                        if let Some(last) = parts.last_mut() {
+                            last["prompt_cache_breakpoint"] = json!({"mode": "explicit"});
+                        }
                     }
                     out.push(json!({"role": "user", "content": parts}));
                 } else if !text_parts.is_empty() {
-                    out.push(json!({"role": "user", "content": text_parts.join("\n")}));
+                    if has_breakpoint {
+                        let content_array = json!([{
+                            "type": "text",
+                            "text": text_parts.join("\n"),
+                            "prompt_cache_breakpoint": {"mode": "explicit"}
+                        }]);
+                        out.push(json!({"role": "user", "content": content_array}));
+                    } else {
+                        out.push(json!({"role": "user", "content": text_parts.join("\n")}));
+                    }
                 }
             }
             Role::Assistant => {
@@ -1423,6 +1519,7 @@ data: [DONE]\n";
             &tools,
             Some("session-123"),
             None,
+            0,
         );
 
         assert_eq!(body["prompt_cache_key"], "session-123");
@@ -1454,6 +1551,7 @@ data: [DONE]\n";
             &tools,
             None,
             None,
+            0,
         );
 
         assert!(body.get("prompt_cache_key").is_none());
@@ -1485,6 +1583,7 @@ data: [DONE]\n";
             &tools,
             Some("session-123"),
             None,
+            0,
         );
 
         let system_msg = &body["messages"][0];
@@ -1498,5 +1597,221 @@ data: [DONE]\n";
             content_array[0]["prompt_cache_breakpoint"]["mode"],
             "explicit"
         );
+    }
+
+    #[test]
+    fn build_body_with_session_adds_message_cache_breakpoints() {
+        static TEST_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
+            slug: "test",
+            api_key_env: "TEST_KEY",
+            base_url: "https://test.com",
+            max_tokens_field: "max_tokens",
+            include_stream_usage: false,
+            provider_name: "Test",
+            supports_prompt_cache_key: false,
+            supports_prompt_cache_breakpoint: true,
+            emit_reasoning_content: false,
+        };
+        let provider =
+            OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
+        let model = crate::model::Model::from_spec("openai/gpt-5.6-luna").unwrap();
+        let messages = vec![
+            Message::user("first message".to_string()),
+            Message::user("second message".to_string()),
+            Message::user("third message".to_string()),
+        ];
+        let tools = json!([]);
+
+        let body = provider.build_body_with_session(
+            &model,
+            &messages,
+            &System::from("be helpful"),
+            &tools,
+            None,
+            None,
+            2,
+        );
+
+        // Check that prompt_cache_options is set to explicit mode
+        assert_eq!(body["prompt_cache_options"]["mode"], "explicit");
+
+        // Check that the last 2 user messages have breakpoints
+        let msgs = body["messages"].as_array().unwrap();
+        // Skip system message (index 0)
+        let user_msg_1 = &msgs[1];
+        let user_msg_2 = &msgs[2];
+        let user_msg_3 = &msgs[3];
+
+        // First user message should NOT have a breakpoint (only last 2)
+        assert!(user_msg_1["content"].is_string());
+
+        // Second user message should have a breakpoint
+        assert!(user_msg_2["content"].is_array());
+        let content_array = user_msg_2["content"].as_array().unwrap();
+        assert_eq!(
+            content_array[0]["prompt_cache_breakpoint"]["mode"],
+            "explicit"
+        );
+
+        // Third user message should have a breakpoint
+        assert!(user_msg_3["content"].is_array());
+        let content_array = user_msg_3["content"].as_array().unwrap();
+        assert_eq!(
+            content_array[0]["prompt_cache_breakpoint"]["mode"],
+            "explicit"
+        );
+    }
+
+    #[test]
+    fn build_body_with_session_no_breakpoints_when_zero() {
+        static TEST_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
+            slug: "test",
+            api_key_env: "TEST_KEY",
+            base_url: "https://test.com",
+            max_tokens_field: "max_tokens",
+            include_stream_usage: false,
+            provider_name: "Test",
+            supports_prompt_cache_key: false,
+            supports_prompt_cache_breakpoint: true,
+            emit_reasoning_content: false,
+        };
+        let provider =
+            OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
+        let model = crate::model::Model::from_spec("openai/gpt-5.6-luna").unwrap();
+        let messages = vec![Message::user("hello".to_string())];
+        let tools = json!([]);
+
+        let body = provider.build_body_with_session(
+            &model,
+            &messages,
+            &System::from("be helpful"),
+            &tools,
+            None,
+            None,
+            0,
+        );
+
+        // No prompt_cache_options when message_cache_breakpoints == 0
+        assert!(body.get("prompt_cache_options").is_none());
+    }
+
+    #[test]
+    fn build_body_with_session_no_breakpoints_for_unsupported_model() {
+        static TEST_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
+            slug: "test",
+            api_key_env: "TEST_KEY",
+            base_url: "https://test.com",
+            max_tokens_field: "max_tokens",
+            include_stream_usage: false,
+            provider_name: "Test",
+            supports_prompt_cache_key: false,
+            supports_prompt_cache_breakpoint: true,
+            emit_reasoning_content: false,
+        };
+        let provider =
+            OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
+        let model = crate::model::Model::from_spec("openai/gpt-4o").unwrap();
+        let messages = vec![Message::user("hello".to_string())];
+        let tools = json!([]);
+
+        let body = provider.build_body_with_session(
+            &model,
+            &messages,
+            &System::from("be helpful"),
+            &tools,
+            None,
+            None,
+            2,
+        );
+
+        // No prompt_cache_options for unsupported model
+        assert!(body.get("prompt_cache_options").is_none());
+    }
+
+    #[test]
+    fn build_body_with_session_adds_tool_result_breakpoint() {
+        static TEST_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
+            slug: "test",
+            api_key_env: "TEST_KEY",
+            base_url: "https://test.com",
+            max_tokens_field: "max_tokens",
+            include_stream_usage: false,
+            provider_name: "Test",
+            supports_prompt_cache_key: false,
+            supports_prompt_cache_breakpoint: true,
+            emit_reasoning_content: false,
+        };
+        let provider =
+            OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
+        let model = crate::model::Model::from_spec("openai/gpt-5.6-luna").unwrap();
+        let messages = vec![
+            Message::user("use a tool".to_string()),
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "call_123".to_string(),
+                    name: "test_tool".to_string(),
+                    input: json!({"arg": "value"}),
+                }],
+                ..Default::default()
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_123".to_string(),
+                    content: "tool output".to_string(),
+                    is_error: false,
+                }],
+                ..Default::default()
+            },
+        ];
+        let tools = json!([{
+            "name": "test_tool",
+            "description": "A test tool",
+            "input_schema": {"type": "object"}
+        }]);
+
+        let body = provider.build_body_with_session(
+            &model,
+            &messages,
+            &System::from("be helpful"),
+            &tools,
+            None,
+            None,
+            1,
+        );
+
+        // Check that prompt_cache_options is set
+        assert_eq!(body["prompt_cache_options"]["mode"], "explicit");
+
+        // Find the tool result message and check it has a breakpoint
+        let msgs = body["messages"].as_array().unwrap();
+        let tool_msg = msgs.iter().find(|m| m["role"] == "tool").unwrap();
+        assert!(tool_msg["content"].is_array());
+        let content_array = tool_msg["content"].as_array().unwrap();
+        assert_eq!(
+            content_array[0]["prompt_cache_breakpoint"]["mode"],
+            "explicit"
+        );
+    }
+
+    #[test]
+    fn convert_messages_with_breakpoints_none() {
+        let messages = vec![Message::user("hello".into())];
+        let result = convert_messages(&messages, Some("system"), false, None);
+        assert!(result[1]["content"].is_string());
+    }
+
+    #[test]
+    fn convert_messages_with_breakpoints_some() {
+        let messages = vec![
+            Message::user("first".into()),
+            Message::user("second".into()),
+        ];
+        let result = convert_messages(&messages, Some("system"), false, Some(1));
+        // Last user message should have breakpoint
+        assert!(result[2]["content"].is_array());
+        let content = result[2]["content"].as_array().unwrap();
+        assert_eq!(content[0]["prompt_cache_breakpoint"]["mode"], "explicit");
     }
 }
