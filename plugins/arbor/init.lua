@@ -3,7 +3,7 @@ local n00n_arbor = n00n.arbor
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Use **arbor** for caller/callee relationships, project map, and blast-radius diff before broad grep or read (requires the Arbor CLI).",
+  content = "- Use **arbor** for caller/callee relationships, project map, and blast-radius diff before broad grep or read (native graph queries use .arbor/graph.json; other commands require the Arbor CLI).",
 })
 
 local function format_list(items)
@@ -23,18 +23,36 @@ local function native_relations(command, symbol, project)
     if command == "callers" then
       return n00n_arbor.graph_callers(symbol, project)
     end
-    if command == "callees" then
-      return n00n_arbor.graph_callees(symbol, project)
-    end
-    return nil
+    return n00n_arbor.graph_callees(symbol, project)
   end)
-  if not ok or type(results) ~= "table" then
-    return nil
+  if not ok then
+    return nil, tostring(results)
   end
-  if #results == 0 then
-    return nil
+  if type(results) ~= "table" then
+    return nil, "native graph query returned an invalid result"
   end
   return results
+end
+
+local function missing_cli(command)
+  return {
+    llm_output = "error: Arbor CLI not found on PATH; install it to use '" .. command .. "'",
+    is_error = true,
+  }
+end
+
+local function native_index_ready(project)
+  if not n00n_arbor.graph_index_available(project) then
+    return false, nil
+  end
+  if not n00n_arbor.available() then
+    return true, nil
+  end
+  local ok, err = pcall(n00n_arbor.ensure_fresh_index, project)
+  if not ok then
+    return false, "failed to refresh graph index: " .. tostring(err)
+  end
+  return true, nil
 end
 
 local function native_trace_path(from_symbol, to_symbol, project)
@@ -60,11 +78,21 @@ local function dispatch(input)
     if not symbol then
       return { llm_output = "error: symbol required for " .. command, is_error = true }
     end
-    -- Skip native lookup when refresh fails; fall back to the Arbor CLI path.
-    local fresh_ok = pcall(n00n_arbor.ensure_fresh_index, project)
-    local native_results = fresh_ok and native_relations(command, symbol, project) or nil
+    local native_results, native_err
+    local ready, ready_err = native_index_ready(project)
+    if ready then
+      native_results, native_err = native_relations(command, symbol, project)
+    else
+      native_err = ready_err
+    end
+    if native_err then
+      return { llm_output = "error: native graph query failed: " .. native_err, is_error = true }
+    end
     local results = native_results
-    if not results or #results == 0 then
+    if not results then
+      if not n00n_arbor.available() then
+        return missing_cli(command)
+      end
       if command == "callers" then
         results = n00n_arbor.callers(symbol, project)
       else
@@ -84,12 +112,14 @@ local function dispatch(input)
         is_error = true,
       }
     end
-    local fresh_ok, fresh_err = pcall(n00n_arbor.ensure_fresh_index, project)
-    if not fresh_ok then
-      return {
-        llm_output = "error: failed to refresh graph index: " .. tostring(fresh_err),
-        is_error = true,
-      }
+    if n00n_arbor.available() then
+      local fresh_ok, fresh_err = pcall(n00n_arbor.ensure_fresh_index, project)
+      if not fresh_ok then
+        return {
+          llm_output = "error: failed to refresh graph index: " .. tostring(fresh_err),
+          is_error = true,
+        }
+      end
     end
     local results, err = native_trace_path(input.from_symbol, input.to_symbol, project)
     if not results then
@@ -109,6 +139,9 @@ local function dispatch(input)
   end
 
   if command == "map" then
+    if not n00n_arbor.available() then
+      return missing_cli(command)
+    end
     local token_budget = input.token_budget or 1024
     local fresh_ok, fresh_err = pcall(n00n_arbor.ensure_fresh_index, project)
     if not fresh_ok then
@@ -130,6 +163,9 @@ local function dispatch(input)
   end
 
   if command == "diff" then
+    if not n00n_arbor.available() then
+      return missing_cli(command)
+    end
     local fresh_ok, fresh_err = pcall(n00n_arbor.ensure_fresh_index, project)
     if not fresh_ok then
       return {
@@ -153,6 +189,9 @@ local function dispatch(input)
     if not symbol then
       return { llm_output = "error: query string required (use 'symbol' field)", is_error = true }
     end
+    if not n00n_arbor.available() then
+      return missing_cli(command)
+    end
     local fresh_ok, fresh_err = pcall(n00n_arbor.ensure_fresh_index, project)
     if not fresh_ok then
       return {
@@ -164,6 +203,9 @@ local function dispatch(input)
   end
 
   if command == "status" then
+    if not n00n_arbor.available() then
+      return missing_cli(command)
+    end
     return { llm_output = n00n_arbor.status(project) }
   end
 
@@ -186,6 +228,9 @@ Commands:
 - diff: Blast radius of unpushed git changes — shows direct/indirect callers, entry points affected.
 - query <text>: Free-text search of the code graph.
 - status: Index status (node count, edge count, file count).
+
+Callers, callees, and trace_path can query .arbor/graph.json natively. Map,
+diff, query, and status require the Arbor CLI.
 
 Use this to understand call relationships, find affected code, and get a
 structured overview of a codebase. Complements codegraph — Arbor shows the
@@ -221,13 +266,6 @@ two symbols.]],
     return ExploreResult.restore(output, ctx)
   end,
   handler = function(input, ctx)
-    local ok, err = pcall(n00n_arbor.check_binary)
-    if not ok then
-      return {
-        llm_output = "Arbor CLI not found. Install it with: cargo install arbor-graph-cli: " .. tostring(err),
-        is_error = true,
-      }
-    end
     local card, live_err = ExploreResult.live(ctx)
     if not card then
       return { llm_output = "error: failed to publish Arbor results: " .. tostring(live_err), is_error = true }

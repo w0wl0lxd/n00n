@@ -5456,7 +5456,7 @@ function ActivityPreview:prompt(sess, message, label)
 
 ```lua
 -- Checkpoint: save/load JSON snapshots for run lifecycle.
-function M.save(run_id, checkpoint_id, state)
+function M.save(run_id, checkpoint_id, state, sequence)
 function M.load(run_id, checkpoint_id)
 function M.list(run_id)
 function M.latest(run_id)

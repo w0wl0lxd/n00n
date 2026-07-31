@@ -67,13 +67,21 @@ function M.save(path, text)
   end
   local dir = n00n.fs.dirname(p)
   if dir then
-    n00n.fs.mkdir(dir, { parents = true })
+    local mkdir_ok, mkdir_err = n00n.fs.mkdir(dir, { parents = true })
+    if not mkdir_ok then
+      return nil, "mkdir error: " .. tostring(mkdir_err)
+    end
   end
-  local ok, werr = pcall(function()
-    return n00n.fs.write(p, n00n.json.encode({ path = path, text = text }))
-  end)
+  local content, encode_err = n00n.json.encode({ path = path, text = text })
+  if not content then
+    return nil, "encode error: " .. tostring(encode_err)
+  end
+  local ok, write_ok, write_err = pcall(n00n.fs.write, p, content)
   if not ok then
-    return nil, tostring(werr)
+    return nil, "write error: " .. tostring(write_ok)
+  end
+  if not write_ok then
+    return nil, "write error: " .. tostring(write_err)
   end
   return true
 end

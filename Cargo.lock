@@ -3217,8 +3217,10 @@ name = "n00n-codegraph"
 version = "0.5.0"
 dependencies = [
  "rusqlite",
+ "rustix 1.1.4",
  "tempfile",
  "thiserror 2.0.19",
+ "tracing",
  "wait-timeout",
 ]
 
