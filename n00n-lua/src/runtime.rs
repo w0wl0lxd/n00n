@@ -2136,7 +2136,18 @@ async fn run_tool_call(
                 }
                 ToolCallReply::from_lua_value(&lua, &val)
             }
-            Err(e) => ToolCallReply::err(strip_traceback(&e)),
+            Err(e) => {
+                let deadline_expired = {
+                    let cell = lock_cell(&handle);
+                    !cell.cancel.is_cancelled()
+                        && cell.deadline.get().is_some_and(|d| Instant::now() >= d)
+                };
+                if deadline_expired {
+                    timeout_reply(&handle, &plugin, &tool)
+                } else {
+                    ToolCallReply::err(strip_traceback(&e))
+                }
+            }
         }
     });
 

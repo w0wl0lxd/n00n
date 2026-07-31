@@ -173,6 +173,17 @@ pub enum CodegraphError {
 
     #[error("codegraph database error: {source}")]
     Sqlite { source: rusqlite::Error },
+
+    #[error("codegraph source path rejected: {reason}")]
+    SourcePath { reason: &'static str },
+
+    #[error(
+        "codegraph source snippet reads are disabled on this target because race-free file opening is unsupported"
+    )]
+    SourceSnippetsUnsupported,
+
+    #[error("codegraph source file is too large ({size} bytes, maximum {max} bytes)")]
+    SourceTooLarge { size: u64, max: u64 },
 }
 
 #[cfg(test)]
