@@ -89,21 +89,19 @@ const BUILD_PLAN_HEADER: &str = "<system-reminder>\n# Approved Plan\n\nThe user 
 const BUILD_PLAN_FOOTER: &str = "\n</system-reminder>";
 
 /// Append a Build-mode reminder containing the approved plan file to `system`.
-pub fn append_build_plan_prompt(system: &mut System, plan_path: &Path) {
-    let content = match fs::read_to_string(plan_path) {
-        Ok(content) => content,
-        Err(error) => {
-            system.push_dynamic(format!(
-                "{BUILD_PLAN_HEADER}Plan file at `{path}` could not be read: {error}.{BUILD_PLAN_FOOTER}",
-                path = plan_path.display(),
-            ));
-            return;
-        }
-    };
+///
+/// # Errors
+/// Returns `AgentError::Io` when the plan file cannot be read.
+pub fn append_build_plan_prompt(
+    system: &mut System,
+    plan_path: &Path,
+) -> Result<(), crate::AgentError> {
+    let content = fs::read_to_string(plan_path)?;
     system.push_dynamic(format!(
         "{BUILD_PLAN_HEADER}Plan file: `{path}`\n\n{content}{BUILD_PLAN_FOOTER}",
         path = plan_path.display(),
     ));
+    Ok(())
 }
 
 fn read_instruction(path: &Path, loaded: &LoadedInstructions) -> Option<(PathBuf, String)> {

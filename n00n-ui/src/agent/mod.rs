@@ -5,6 +5,7 @@ pub(crate) mod shared_queue;
 
 use std::collections::HashMap;
 use std::mem;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -60,10 +61,12 @@ pub(crate) struct AgentHandles {
 impl AgentHandles {
     /// MCP is shared across sessions and agent respawns; the event loop starts it
     /// once and shuts it down at exit. Only the agent loop task lives here.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn spawn(
         model_slot: &Arc<ArcSwap<ModelSlot>>,
         initial_history: Vec<Message>,
         initial_transcript: Vec<TranscriptEntry<Message>>,
+        initial_plan_path: Option<PathBuf>,
         config: AgentConfig,
         tool_output_lines: ToolOutputLines,
         permissions: &Arc<PermissionManager>,
@@ -78,6 +81,7 @@ impl AgentHandles {
             model_slot,
             initial_history,
             initial_transcript,
+            initial_plan_path,
             config,
             tool_output_lines,
             permissions,
@@ -137,10 +141,12 @@ impl AgentHandles {
         if let Err(e) = smol::block_on(slot.provider.reload_auth()) {
             warn!(error = %e, "failed to reload auth, continuing with existing credentials");
         }
+        let initial_plan_path = app.state.session.meta.plan_path.as_ref().map(PathBuf::from);
         let new = spawn_agent_internal(
             model_slot,
             history,
             transcript,
+            initial_plan_path,
             config,
             tool_output_lines,
             permissions,
@@ -199,10 +205,12 @@ pub(crate) fn join_all(tasks: Vec<smol::Task<()>>, timeout: Duration) {
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_agent_internal(
     model_slot: &Arc<ArcSwap<ModelSlot>>,
     initial_history: Vec<Message>,
     initial_transcript: Vec<TranscriptEntry<Message>>,
+    initial_plan_path: Option<PathBuf>,
     config: AgentConfig,
     tool_output_lines: ToolOutputLines,
     permissions: &Arc<PermissionManager>,
@@ -251,6 +259,7 @@ fn spawn_agent_internal(
         tool_output_lines,
         initial_history,
         initial_transcript,
+        initial_plan_path,
         shared_history: Arc::clone(&shared_history),
         shared_transcript: Arc::clone(&shared_transcript),
         btw_system: Arc::clone(&btw_system),
