@@ -35,6 +35,7 @@ pub(crate) fn build_body(
     prompt_cache_key: Option<&str>,
     store: bool,
     thinking: ThinkingConfig,
+    parallel_tool_calls: bool,
 ) -> Value {
     let input = convert_input(messages);
     let wire_tools = convert_tools(tools);
@@ -56,6 +57,9 @@ pub(crate) fn build_body(
     }
     if wire_tools.as_array().is_some_and(|a| !a.is_empty()) {
         body["tools"] = wire_tools;
+        if parallel_tool_calls {
+            body["parallel_tool_calls"] = json!(true);
+        }
     }
     if let Some(effort) = thinking.effort_str(&dialect::STANDARD, model) {
         body["reasoning"]["effort"] = json!(effort);
@@ -1575,6 +1579,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             Some("session_1"),
             true,
             ThinkingConfig::default(),
+            true,
         );
         assert_eq!(body["previous_response_id"], "resp_1");
         assert_eq!(body["prompt_cache_key"], "session_1");
@@ -1595,6 +1600,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             None,
             false,
             ThinkingConfig::Off,
+            true,
         );
         assert_eq!(body["reasoning"], json!({"summary":"auto"}));
     }
@@ -1611,6 +1617,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             None,
             false,
             ThinkingConfig::Adaptive,
+            true,
         );
         assert_eq!(body["reasoning"]["summary"], "auto");
         assert_eq!(body["reasoning"]["effort"], "medium");
@@ -1628,6 +1635,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             None,
             false,
             ThinkingConfig::Effort(crate::Effort::High),
+            true,
         );
         assert_eq!(body["reasoning"]["summary"], "auto");
         assert_eq!(body["reasoning"]["effort"], "high");
@@ -1645,6 +1653,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             None,
             false,
             ThinkingConfig::Budget(1024),
+            true,
         );
         assert_eq!(body["reasoning"]["summary"], "auto");
         assert_eq!(body["reasoning"]["effort"], "minimal");
@@ -1903,5 +1912,49 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
         assert_eq!(usage.output, 20);
         assert_eq!(usage.cache_read, 40);
         assert_eq!(usage.cache_creation, 50);
+    }
+
+    #[test]
+    fn build_body_with_tools_adds_parallel_tool_calls_when_enabled() {
+        let model = crate::model::Model::from_spec("openai/gpt-5.6").unwrap();
+        let tools = json!([{
+            "name": "bash",
+            "description": "run shell commands",
+            "input_schema": {"type": "object"}
+        }]);
+        let body = build_body(
+            &model,
+            &[],
+            &System::from("system"),
+            &tools,
+            None,
+            None,
+            false,
+            ThinkingConfig::default(),
+            true,
+        );
+        assert_eq!(body["parallel_tool_calls"], true);
+    }
+
+    #[test]
+    fn build_body_with_tools_omits_parallel_tool_calls_when_disabled() {
+        let model = crate::model::Model::from_spec("openai/gpt-5.6").unwrap();
+        let tools = json!([{
+            "name": "bash",
+            "description": "run shell commands",
+            "input_schema": {"type": "object"}
+        }]);
+        let body = build_body(
+            &model,
+            &[],
+            &System::from("system"),
+            &tools,
+            None,
+            None,
+            false,
+            ThinkingConfig::default(),
+            false,
+        );
+        assert!(body.get("parallel_tool_calls").is_none());
     }
 }
