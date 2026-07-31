@@ -333,6 +333,7 @@ impl Provider for CustomOpenAiProvider {
                     None,
                     false,
                     opts.thinking,
+                    self.compat.config().supports_parallel_tool_calls,
                 );
                 return responses::do_stream(
                     self.compat.client(),

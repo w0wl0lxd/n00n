@@ -128,6 +128,7 @@ pub(crate) fn build_request_body(
     previous_response_id: Option<&str>,
     prompt_cache_key: Option<&str>,
     store: bool,
+    parallel_tool_calls: bool,
 ) -> Value {
     build_body(
         model,
@@ -138,6 +139,7 @@ pub(crate) fn build_request_body(
         prompt_cache_key,
         store,
         opts.thinking,
+        parallel_tool_calls,
     )
 }
 
@@ -890,6 +892,7 @@ mod tests {
             None,
             None,
             true,
+            true,
         );
         let event = build_create_event(&body);
         assert_eq!(
@@ -1471,5 +1474,54 @@ mod tests {
             }
         });
         assert!(error_from_event(&event).is_retryable());
+    }
+
+    #[test]
+    fn build_request_body_with_tools_adds_parallel_tool_calls() {
+        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let opts = RequestOptions::default();
+        let tools = json!([{
+            "name": "bash",
+            "description": "run shell commands",
+            "input_schema": {"type": "object"}
+        }]);
+        let body = build_request_body(
+            &model,
+            &[],
+            &System::from("system"),
+            &tools,
+            opts,
+            None,
+            None,
+            true,
+            true,
+        );
+        assert_eq!(body["parallel_tool_calls"], true);
+
+        let event = build_create_event(&body);
+        assert_eq!(event["parallel_tool_calls"], true);
+    }
+
+    #[test]
+    fn build_request_body_with_tools_omits_parallel_tool_calls_when_disabled() {
+        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let opts = RequestOptions::default();
+        let tools = json!([{
+            "name": "bash",
+            "description": "run shell commands",
+            "input_schema": {"type": "object"}
+        }]);
+        let body = build_request_body(
+            &model,
+            &[],
+            &System::from("system"),
+            &tools,
+            opts,
+            None,
+            None,
+            true,
+            false,
+        );
+        assert!(body.get("parallel_tool_calls").is_none());
     }
 }
