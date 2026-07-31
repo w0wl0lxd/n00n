@@ -7,4 +7,5 @@ provider_name = "OpenRouter"
 supports_prompt_cache_key = true
 supports_prompt_cache_breakpoint = true
 emit_reasoning_content = false
+supports_parallel_tool_calls = true
 const_name = "CONFIG"
