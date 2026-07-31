@@ -9,8 +9,7 @@ use n00n_agent::permissions::PermissionManager;
 use n00n_agent::template;
 use n00n_agent::template::Vars;
 use n00n_agent::tools::{
-    ActiveTools, DescriptionContext, FileReadTracker, ToolAudience, ToolFilter, ToolRegistry,
-    ToolsSnapshot,
+    DescriptionContext, FileReadTracker, ToolAudience, ToolFilter, ToolRegistry, ToolsSnapshot,
 };
 use n00n_agent::{
     Agent, AgentConfig, AgentEvent, AgentInput, AgentParams, AgentRunParams, CancelMap,
@@ -408,7 +407,7 @@ impl AgentLoop {
             &self.vars,
             &ctx,
             examples,
-            &ActiveTools::default(),
+            &n00n_agent::tools::default_active_tools(),
         )
     }
 
