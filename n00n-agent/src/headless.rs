@@ -406,8 +406,13 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                 }
                 if matches!(input.mode, AgentMode::Build)
                     && let Some(plan_path) = input.plan_path.as_deref()
+                    && let Err(e) = agent::append_build_plan_prompt(&mut system, plan_path)
                 {
-                    agent::append_build_plan_prompt(&mut system, plan_path);
+                    error!(error = %e, "failed to append build plan prompt");
+                    let _ = event_tx.send(AgentEvent::Error {
+                        message: e.user_message(),
+                    });
+                    continue;
                 }
 
                 let (trigger, cancel) = CancelToken::new();

@@ -197,7 +197,12 @@ impl AgentLoop {
         if self.init_cancel.is_cancelled() {
             return false;
         }
-        self.publish_btw_system(&n00n_agent::prompt::ResolvedSlots::default());
+        if self
+            .publish_btw_system(&n00n_agent::prompt::ResolvedSlots::default())
+            .is_err()
+        {
+            return false;
+        }
 
         let slot = self.model_slot.load();
         self.rebuild_tools(&slot.model, false);
@@ -304,10 +309,10 @@ impl AgentLoop {
         if matches!(input.mode, n00n_agent::AgentMode::Build)
             && let Some(plan_path) = input.plan_path.as_deref()
         {
-            agent::append_build_plan_prompt(&mut system, plan_path);
+            agent::append_build_plan_prompt(&mut system, plan_path)?;
         }
         self.plan_path.clone_from(&input.plan_path);
-        self.publish_btw_system(&prompt_slots);
+        self.publish_btw_system(&prompt_slots)?;
 
         while self.answer_rx.lock().await.try_recv().is_ok() {}
 
@@ -412,7 +417,10 @@ impl AgentLoop {
 
     /// Always pins `Build` mode: btw runs no tools, so Plan-mode constraints would only confuse
     /// the model. Everything else matches the live prompt.
-    fn publish_btw_system(&self, prompt_slots: &n00n_agent::prompt::ResolvedSlots) {
+    fn publish_btw_system(
+        &self,
+        prompt_slots: &n00n_agent::prompt::ResolvedSlots,
+    ) -> Result<(), n00n_providers::AgentError> {
         let slot = self.model_slot.load();
         let mut system = agent::build_system_prompt(
             &self.vars,
@@ -422,9 +430,10 @@ impl AgentLoop {
             &slot.model,
         );
         if let Some(plan_path) = self.plan_path.as_deref() {
-            agent::append_build_plan_prompt(&mut system, plan_path);
+            agent::append_build_plan_prompt(&mut system, plan_path)?;
         }
         self.btw_system.store(Arc::new(system));
+        Ok(())
     }
 
     fn set_cancel_trigger(&self, run_id: u64, trigger: CancelTrigger) {
