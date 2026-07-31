@@ -773,6 +773,58 @@ case("swarm_sums_rejected_and_accepted_round_validator_usage", function()
   }, "two-round swarm usage")
 end)
 
+case("team_summary_rejects_tuple_write_errors", function()
+  local summary = require("summary")
+  local old_mkdir = n00n.fs.mkdir
+  local old_write = n00n.fs.write
+  n00n.fs.mkdir = function()
+    return true
+  end
+  n00n.fs.write = function()
+    return nil, "disk full"
+  end
+
+  local ok, err = summary.save("src/lib.rs", "summary")
+
+  n00n.fs.mkdir = old_mkdir
+  n00n.fs.write = old_write
+  assert(ok == nil, "tuple write failure must not report a saved summary")
+  assert(err and err:find("disk full", 1, true), "summary write error must be preserved")
+end)
+
+case("team_memory_rejects_tuple_write_errors", function()
+  local memory = require("mem")
+  local old_mkdir = n00n.fs.mkdir
+  local old_write = n00n.fs.write
+  n00n.fs.mkdir = function()
+    return true
+  end
+  n00n.fs.write = function()
+    return nil, "disk full"
+  end
+
+  local ok, err = memory.save_state({}, "tuple-write-error", { goal = "test" })
+
+  n00n.fs.mkdir = old_mkdir
+  n00n.fs.write = old_write
+  assert(ok == nil, "tuple write failure must not report saved state")
+  assert(err and err:find("disk full", 1, true), "tuple write error must be preserved")
+end)
+
+case("team_memory_reports_invalid_resume_json", function()
+  local memory = require("mem")
+  local old_read = n00n.fs.read
+  n00n.fs.read = function()
+    return "{not valid json"
+  end
+
+  local state, err = memory.load_state({}, "invalid-resume-json")
+
+  n00n.fs.read = old_read
+  assert(state == nil, "invalid resume JSON must not produce state")
+  assert(err and err:find("decode", 1, true), "invalid resume JSON must return an explicit decode error")
+end)
+
 if #failures > 0 then
   error(#failures .. " case(s) failed:\n\n" .. table.concat(failures, "\n\n"))
 end
