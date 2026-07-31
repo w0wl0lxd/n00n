@@ -851,9 +851,13 @@ impl OpenAi {
     }
 
     fn stores_responses(&self, auth: &ResolvedAuth) -> bool {
+        let base_url = match auth.base_url.as_deref() {
+            Some(url) => url,
+            None => CONFIG.base_url,
+        };
         self.storage.is_some()
             && self.response_state_storage.is_some()
-            && auth.base_url.as_deref() == Some(CONFIG.base_url)
+            && base_url == CONFIG.base_url
     }
 
     #[allow(clippy::large_futures)]
@@ -1294,6 +1298,10 @@ impl OpenAi {
         let state_scope_hash = response_state_scope_hash(auth);
         let socket_credential_hash = credential_hash(auth);
         let store = self.stores_responses(auth);
+        let mut opts = opts;
+        if !store {
+            opts.allow_history_replay = true;
+        }
         let admission = match self
             .acquire_coding_plan_admission(auth, attempt_nonce)
             .await
@@ -2104,19 +2112,28 @@ impl Provider for OpenAi {
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<crate::model::ModelInfo>, AgentError>> {
         Box::pin(async {
-            if self.codex {
-                let models = super::codex_models()
+            let entries = if self.codex {
+                super::codex_models()
+            } else {
+                super::models()
+            };
+
+            let mut models = if self.codex {
+                entries
                     .iter()
                     .flat_map(|e| e.prefixes.iter())
                     .map(|&s| crate::model::ModelInfo::id_only(s.to_string()))
-                    .collect();
-                return Ok(models);
-            }
-            self.with_oauth_retry(|| async {
-                let auth = self.current_auth();
-                self.compat.do_list_models(&auth).await
-            })
-            .await
+                    .collect()
+            } else {
+                self.with_oauth_retry(|| async {
+                    let auth = self.current_auth();
+                    self.compat.do_list_models(&auth).await
+                })
+                .await?
+            };
+
+            super::sort_models(&mut models, entries);
+            Ok(models)
         })
     }
 

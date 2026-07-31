@@ -3414,7 +3414,6 @@ dependencies = [
 name = "n00n-providers"
 version = "0.5.0"
 dependencies = [
- "agent-client-protocol-schema",
  "async-lock",
  "async-process",
  "async-tungstenite",

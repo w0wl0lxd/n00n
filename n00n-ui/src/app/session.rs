@@ -393,6 +393,9 @@ impl App {
         self.permissions
             .load_session_rules(stored_to_rules(&session.meta.session_rules));
         self.state = SessionState::from_session(session, fallback_model, &self.storage);
+        self.state
+            .session
+            .prune_orphans(|m| m.tool_uses().map(|(id, _, _)| id.to_owned()).collect());
         for w in self.state.warnings.drain(..) {
             self.status_bar.flash(w);
         }

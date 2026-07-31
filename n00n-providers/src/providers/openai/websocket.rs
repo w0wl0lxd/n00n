@@ -109,7 +109,7 @@ impl WebSocketAttemptError {
 ///
 /// A binary can enable both `ring` and `aws-lc-rs` through its dependency
 /// graph. Rustls intentionally refuses to choose between them.
-fn ensure_rustls_crypto_provider() {
+pub fn ensure_rustls_crypto_provider() {
     if rustls::crypto::CryptoProvider::get_default().is_none()
         && rustls::crypto::ring::default_provider()
             .install_default()

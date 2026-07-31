@@ -7,6 +7,7 @@ use std::io::Read;
 pub const CONNECT_END_STREAM_FLAG: u8 = 0b0000_0010;
 pub const CONNECT_COMPRESSED_FLAG: u8 = 0b0000_0001;
 const MAX_CONNECT_FRAME_LEN: usize = 16 * 1024 * 1024;
+const MAX_DECOMPRESSED_FRAME_LEN: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectFrame {
@@ -23,6 +24,10 @@ pub struct FrameBuffer {
 impl FrameBuffer {
     pub fn push(&mut self, chunk: &[u8]) {
         self.buf.extend_from_slice(chunk);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
     }
 
     /// Returns `None` while waiting for more bytes, `Some(Ok(frame))` when complete,
@@ -85,10 +90,26 @@ pub fn decode_frame_payload(frame: &ConnectFrame) -> Result<Vec<u8>, String> {
     }
     let mut decoder = flate2::read::GzDecoder::new(frame.payload.as_slice());
     let mut out = Vec::new();
-    decoder
-        .read_to_end(&mut out)
-        .map_err(|error| format!("connect gzip decompress: {error}"))?;
-    Ok(out)
+    let mut chunk = [0_u8; 8192];
+    loop {
+        let read = decoder
+            .read(&mut chunk)
+            .map_err(|error| format!("connect gzip decompress: {error}"))?;
+        if read == 0 {
+            return Ok(out);
+        }
+        let new_len = out.len().checked_add(read).ok_or_else(|| {
+            format!(
+                "connect gzip decompressed payload exceeds maximum {MAX_DECOMPRESSED_FRAME_LEN}"
+            )
+        })?;
+        if new_len > MAX_DECOMPRESSED_FRAME_LEN {
+            return Err(format!(
+                "connect gzip decompressed payload exceeds maximum {MAX_DECOMPRESSED_FRAME_LEN}"
+            ));
+        }
+        out.extend_from_slice(&chunk[..read]);
+    }
 }
 
 #[cfg(test)]
@@ -143,5 +164,20 @@ mod tests {
         };
         let decoded = decode_frame_payload(&frame).expect("decode");
         assert_eq!(decoded, plain);
+    }
+
+    #[test]
+    fn decode_frame_payload_rejects_oversized_gzip_expansion() {
+        let plain = vec![b'x'; MAX_DECOMPRESSED_FRAME_LEN + 1];
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(&plain).expect("gzip write");
+        let frame = ConnectFrame {
+            end_stream: false,
+            compressed: true,
+            payload: encoder.finish().expect("gzip finish"),
+        };
+
+        let error = decode_frame_payload(&frame).expect_err("must reject expansion");
+        assert!(error.contains("decompressed payload exceeds maximum"));
     }
 }

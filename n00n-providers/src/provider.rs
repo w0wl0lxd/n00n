@@ -6,7 +6,7 @@ use std::sync::Arc;
 use flume::Sender;
 use serde_json::Value;
 use strum::{Display, EnumIter, EnumString};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use n00n_storage::id::SessionRef;
 
@@ -483,9 +483,16 @@ pub async fn fetch_all_models(
 
     for manifest in crate::manifest::ManifestRegistry::builtins() {
         let slug = manifest.slug;
-        let Ok(provider) = smol::unblock(move || provider_for_slug(slug, timeouts)).await else {
-            warn!(provider = slug, "failed to create provider, skipping");
-            continue;
+        let provider = match smol::unblock(move || provider_for_slug(slug, timeouts)).await {
+            Ok(provider) => provider,
+            Err(crate::AgentError::Config { message }) => {
+                debug!(provider = slug, %message, "provider not configured, skipping");
+                continue;
+            }
+            Err(error) => {
+                warn!(provider = slug, %error, "failed to create provider, skipping");
+                continue;
+            }
         };
         let display_name = manifest.display_name;
         let tx = tx.clone();
@@ -515,7 +522,7 @@ pub async fn fetch_all_models(
                     }
                 }
                 Err(e) => {
-                    warn!(provider = slug, error = %e, "failed to list models, using static fallback");
+                    info!(provider = slug, error = %e, "failed to list models, using static fallback");
                     let fallback: Vec<String> = manifest
                         .models
                         .iter()
