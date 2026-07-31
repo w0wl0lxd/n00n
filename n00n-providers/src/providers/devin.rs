@@ -7,8 +7,9 @@
 //!    with gzip-framed request, stream of gzip-framed responses
 //! 4. Parse Connect frames, gunzip, decode protobuf, emit `ProviderEvents`
 
-use std::io::Write;
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::io::{ErrorKind, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -19,7 +20,7 @@ use flate2::write::GzEncoder;
 use flume::Sender;
 use isahc::{AsyncReadResponseExt, HttpClient};
 use serde::Deserialize;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::model::ModelEntry;
 use crate::provider::{BoxFuture, Provider};
@@ -34,7 +35,8 @@ use super::devin_connect::{
 };
 use super::devin_proto::{
     CHAT_MESSAGE_SOURCE_SYSTEM, CHAT_MESSAGE_SOURCE_TOOL, CHAT_MESSAGE_SOURCE_USER,
-    ChatMessagePromptInput, ChatToolCall, ChatToolDefinition, ImageData, decode_cli_model_configs,
+    ChatMessagePromptInput, ChatToolCall, ChatToolDefinition, ImageData, STOP_REASON_MAX_TOKENS,
+    STOP_REASON_TOOL_USE, STOP_REASON_UNSPECIFIED, decode_cli_model_configs,
     decode_get_chat_message_response, decode_get_user_jwt_response, encode_chat_message_prompt,
     encode_chat_tool_definition, encode_get_chat_message_request,
     encode_get_cli_model_configs_request, encode_get_user_jwt_request,
@@ -50,6 +52,7 @@ const DEVIN_SESSION_TOKEN_PREFIX: &str = "devin-session-token$";
 const DEFAULT_TEMPERATURE: f64 = 0.4;
 const DEFAULT_TOP_P: f64 = 1.0;
 const DEFAULT_MAX_TOKENS: u32 = 64_000;
+const MAX_TRAILER_CODE_LEN: usize = 64;
 
 inventory::submit!(n00n_config::providers::BuiltInProvider {
     slug: "devin",
@@ -80,33 +83,86 @@ struct TomlCredentials {
 }
 
 impl DevinCredentials {
-    fn from_env() -> Option<Self> {
-        let session_token = std::env::var("WINDSURF_API_KEY")
-            .ok()
-            .or_else(|| std::env::var("DEVIN_API_KEY").ok())?;
-        Some(Self {
-            session_token: normalize_session_token(&session_token),
+    fn from_env() -> Result<Option<Self>, AgentError> {
+        let session_token = match optional_env("WINDSURF_API_KEY")? {
+            Some(token) => Some(token),
+            None => optional_env("DEVIN_API_KEY")?,
+        };
+        Ok(session_token.map(|token| Self {
+            session_token: normalize_session_token(&token),
             api_server_url: DEVIN_API_URL.to_string(),
-        })
+        }))
     }
 
-    fn from_file() -> Option<Self> {
-        let home = std::env::var("HOME").ok()?;
-        let creds_path = PathBuf::from(home).join(".local/share/devin/credentials.toml");
-
-        let content = std::fs::read_to_string(&creds_path).ok()?;
-
-        let creds: TomlCredentials = toml::from_str(&content).ok()?;
-        let session_token = creds.windsurf_api_key?;
-        let api_server_url = match creds.api_server_url {
-            Some(url) => url,
-            None => DEVIN_API_URL.to_string(),
+    fn from_file() -> Result<Option<Self>, AgentError> {
+        let Some(home) = optional_env("HOME")? else {
+            return Ok(None);
         };
+        Self::from_path(&PathBuf::from(home).join(".local/share/devin/credentials.toml"))
+    }
 
-        Some(Self {
+    fn from_path(creds_path: &Path) -> Result<Option<Self>, AgentError> {
+        let content = match std::fs::read_to_string(creds_path) {
+            Ok(content) => content,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(AgentError::Config {
+                    message: format!(
+                        "failed to read Devin credentials at {}: {error}",
+                        creds_path.display()
+                    ),
+                });
+            }
+        };
+        let creds: TomlCredentials =
+            toml::from_str(&content).map_err(|error| AgentError::Config {
+                message: format!(
+                    "failed to parse Devin credentials at {}: {error}",
+                    creds_path.display()
+                ),
+            })?;
+        let session_token = creds.windsurf_api_key.ok_or_else(|| AgentError::Config {
+            message: format!(
+                "Devin credentials at {} are missing windsurf_api_key",
+                creds_path.display()
+            ),
+        })?;
+        if session_token.trim().is_empty() {
+            return Err(AgentError::Config {
+                message: format!(
+                    "Devin credentials at {} contain an empty windsurf_api_key",
+                    creds_path.display()
+                ),
+            });
+        }
+        Ok(Some(Self {
             session_token: normalize_session_token(&session_token),
-            api_server_url,
-        })
+            api_server_url: match creds.api_server_url {
+                Some(url) => url,
+                None => DEVIN_API_URL.to_string(),
+            },
+        }))
+    }
+}
+
+fn optional_env(name: &'static str) -> Result<Option<String>, AgentError> {
+    match std::env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(error @ std::env::VarError::NotUnicode(_)) => Err(AgentError::Config {
+            message: format!("environment variable {name} is not valid Unicode: {error}"),
+        }),
+    }
+}
+
+fn resolve_api_server_url(configured: String, explicit: Option<&str>) -> String {
+    explicit.map_or(configured, str::to_string)
+}
+
+fn discover_credentials() -> Result<Option<DevinCredentials>, AgentError> {
+    match DevinCredentials::from_env()? {
+        Some(credentials) => Ok(Some(credentials)),
+        None => DevinCredentials::from_file(),
     }
 }
 
@@ -118,18 +174,75 @@ fn normalize_session_token(token: &str) -> String {
     }
 }
 
-fn chat_message_id(_cascade_id: &str, _message_index: usize, suffix: &str) -> String {
-    if suffix == "assistant" {
-        format!("bot-{}", n00nId::generate())
+fn chat_message_id(cascade_id: &str, message_index: usize, role: &str) -> String {
+    if role == "assistant" {
+        format!("bot-{cascade_id}-{message_index}-{role}")
     } else {
-        n00nId::generate().to_string()
+        format!("{cascade_id}-{message_index}-{role}")
+    }
+}
+
+fn max_tokens_for_model(max_output_tokens: Option<u32>) -> u64 {
+    u64::from(match max_output_tokens {
+        Some(max_output_tokens) => max_output_tokens,
+        None => DEFAULT_MAX_TOKENS,
+    })
+}
+
+fn clamp_tokens(field: &'static str, value: u64) -> u32 {
+    if let Ok(value) = u32::try_from(value) {
+        value
+    } else {
+        warn!(
+            field,
+            value, "Devin usage token count out of range; clamping"
+        );
+        u32::MAX
+    }
+}
+
+fn sanitize_trailer_code(code: &str) -> &str {
+    if !code.is_empty()
+        && code.len() <= MAX_TRAILER_CODE_LEN
+        && code
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    {
+        code
+    } else {
+        "invalid"
+    }
+}
+
+fn parse_devin_trailer(payload: &[u8]) -> Result<Option<String>, AgentError> {
+    if payload.iter().all(u8::is_ascii_whitespace) {
+        return Ok(None);
+    }
+    let trailer = std::str::from_utf8(payload).map_err(|_| AgentError::Api {
+        status: 0,
+        message: "invalid Devin end-stream trailer encoding".to_string(),
+    })?;
+    let value: serde_json::Value = serde_json::from_str(trailer).map_err(|_| AgentError::Api {
+        status: 0,
+        message: "invalid Devin end-stream trailer JSON".to_string(),
+    })?;
+    let code = value
+        .get("code")
+        .and_then(serde_json::Value::as_str)
+        .map(sanitize_trailer_code);
+    match code {
+        Some("ok") | None => Ok(code.map(str::to_string)),
+        Some(code) => Err(AgentError::Api {
+            status: 0,
+            message: format!("Devin stream failed with trailer code {code}"),
+        }),
     }
 }
 
 fn encode_devin_tools(tools: &serde_json::Value) -> Result<Vec<Vec<u8>>, AgentError> {
-    let arr = tools
-        .as_array()
-        .map_or_else(|| &[][..], std::vec::Vec::as_slice);
+    let arr = tools.as_array().ok_or_else(|| AgentError::Config {
+        message: "Devin tools must be an array".to_string(),
+    })?;
     let mut encoded = Vec::with_capacity(arr.len());
     for tool in arr {
         let function = match tool.get("function") {
@@ -155,10 +268,10 @@ fn encode_devin_tools(tools: &serde_json::Value) -> Result<Vec<Vec<u8>>, AgentEr
             .get("strict")
             .or_else(|| function.get("strict"))
             .and_then(serde_json::Value::as_bool)
-            .unwrap_or_else(|| false);
+            .map_or(false, std::convert::identity);
         encoded.push(encode_chat_tool_definition(&ChatToolDefinition {
             name,
-            description: description.unwrap_or_else(|| ""),
+            description: description.map_or("", std::convert::identity),
             json_schema_string: &schema_string,
             strict,
         }));
@@ -167,7 +280,7 @@ fn encode_devin_tools(tools: &serde_json::Value) -> Result<Vec<Vec<u8>>, AgentEr
 }
 
 fn merge_tool_call(
-    tool_calls: &mut std::collections::HashMap<String, (String, String)>,
+    tool_calls: &mut HashMap<String, (String, String)>,
     tool_call: ChatToolCall,
 ) -> bool {
     if let Some((name, arguments_json)) = tool_calls.get_mut(&tool_call.id) {
@@ -182,13 +295,36 @@ fn merge_tool_call(
     }
 }
 
-fn encode_devin_chat_message_prompts(messages: &[Message], cascade_id: &str) -> Vec<Vec<u8>> {
+fn ordered_tool_call_blocks(
+    mut tool_calls: HashMap<String, (String, String)>,
+    tool_call_order: Vec<String>,
+) -> Result<Vec<ContentBlock>, AgentError> {
+    let mut blocks = Vec::with_capacity(tool_call_order.len());
+    for id in tool_call_order {
+        let (name, arguments_json) = tool_calls.remove(&id).ok_or_else(|| AgentError::Api {
+            status: 0,
+            message: "Devin tool-call ordering state is inconsistent".to_string(),
+        })?;
+        let input = serde_json::from_str(&arguments_json).map_err(|error| AgentError::Api {
+            status: 0,
+            message: format!("invalid Devin tool arguments for {name}: {error}"),
+        })?;
+        blocks.push(ContentBlock::ToolUse { id, name, input });
+    }
+    Ok(blocks)
+}
+
+fn encode_devin_chat_message_prompts(
+    messages: &[Message],
+    cascade_id: &str,
+) -> Result<Vec<Vec<u8>>, AgentError> {
     let mut prompts = Vec::new();
     for (index, message) in messages.iter().enumerate() {
         match message.role {
             Role::User => {
                 let mut prompt_text = String::new();
                 let mut images = Vec::new();
+                let mut user_part = 0usize;
                 for block in &message.content {
                     match block {
                         ContentBlock::Text { text } => prompt_text.push_str(text),
@@ -204,7 +340,11 @@ fn encode_devin_chat_message_prompts(messages: &[Message], cascade_id: &str) -> 
                         } => {
                             if !prompt_text.is_empty() || !images.is_empty() {
                                 prompts.push(encode_chat_message_prompt(&ChatMessagePromptInput {
-                                    message_id: &chat_message_id(cascade_id, index, "user"),
+                                    message_id: &chat_message_id(
+                                        cascade_id,
+                                        index,
+                                        &format!("user-{user_part}"),
+                                    ),
                                     source: CHAT_MESSAGE_SOURCE_USER,
                                     prompt: &prompt_text,
                                     images: &images,
@@ -212,12 +352,13 @@ fn encode_devin_chat_message_prompts(messages: &[Message], cascade_id: &str) -> 
                                 }));
                                 prompt_text.clear();
                                 images.clear();
+                                user_part += 1;
                             }
                             prompts.push(encode_chat_message_prompt(&ChatMessagePromptInput {
                                 message_id: &chat_message_id(
                                     cascade_id,
                                     index,
-                                    &format!("tool\0{tool_use_id}"),
+                                    &format!("tool-{tool_use_id}"),
                                 ),
                                 source: CHAT_MESSAGE_SOURCE_TOOL,
                                 prompt: content,
@@ -231,7 +372,11 @@ fn encode_devin_chat_message_prompts(messages: &[Message], cascade_id: &str) -> 
                 }
                 if !prompt_text.is_empty() || !images.is_empty() {
                     prompts.push(encode_chat_message_prompt(&ChatMessagePromptInput {
-                        message_id: &chat_message_id(cascade_id, index, "user"),
+                        message_id: &chat_message_id(
+                            cascade_id,
+                            index,
+                            &format!("user-{user_part}"),
+                        ),
                         source: CHAT_MESSAGE_SOURCE_USER,
                         prompt: &prompt_text,
                         images: &images,
@@ -259,8 +404,13 @@ fn encode_devin_chat_message_prompts(messages: &[Message], cascade_id: &str) -> 
                             }
                         }
                         ContentBlock::ToolUse { id, name, input } => {
-                            let arguments_json =
-                                serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string());
+                            let arguments_json = serde_json::to_string(input).map_err(|error| {
+                                AgentError::Config {
+                                    message: format!(
+                                        "failed to serialize Devin tool arguments: {error}"
+                                    ),
+                                }
+                            })?;
                             tool_calls.push(ChatToolCall {
                                 id: id.clone(),
                                 name: name.clone(),
@@ -288,22 +438,24 @@ fn encode_devin_chat_message_prompts(messages: &[Message], cascade_id: &str) -> 
             }
         }
     }
-    prompts
+    Ok(prompts)
 }
 
 pub struct Devin {
     credentials: Option<DevinCredentials>,
-    client_model_configs: Mutex<Option<std::collections::HashMap<String, String>>>,
+    client: HttpClient,
+    client_model_configs: Mutex<Option<HashMap<String, String>>>,
     timeouts: super::Timeouts,
 }
 
 impl Devin {
-    pub fn new(timeouts: super::Timeouts) -> Self {
-        Self {
-            credentials: DevinCredentials::from_env().or_else(DevinCredentials::from_file),
+    pub fn new(timeouts: super::Timeouts) -> Result<Self, AgentError> {
+        Ok(Self {
+            credentials: discover_credentials()?,
+            client: super::http_client(timeouts)?,
             client_model_configs: Mutex::new(None),
             timeouts,
-        }
+        })
     }
 
     #[allow(clippy::unnecessary_wraps)]
@@ -316,10 +468,7 @@ impl Devin {
             Err(e) => e.into_inner(),
         };
 
-        let api_server_url = match resolved.base_url.clone() {
-            Some(url) => url,
-            None => DEVIN_API_URL.to_string(),
-        };
+        let resolved_base_url = resolved.base_url.clone();
 
         let session_token = resolved
             .headers
@@ -330,27 +479,29 @@ impl Devin {
             .filter(|s| !s.is_empty())
             .map(normalize_session_token);
 
-        let credentials = session_token
-            .map(|token| DevinCredentials {
+        let credentials = match session_token {
+            Some(token) => Some(DevinCredentials {
                 session_token: token,
-                api_server_url: api_server_url.clone(),
-            })
-            .or_else(DevinCredentials::from_env)
-            .or_else(DevinCredentials::from_file)
-            .map(|mut credentials| {
-                credentials.api_server_url = api_server_url;
-                credentials
-            });
+                api_server_url: DEVIN_API_URL.to_string(),
+            }),
+            None => discover_credentials()?,
+        }
+        .map(|mut credentials| {
+            credentials.api_server_url =
+                resolve_api_server_url(credentials.api_server_url, resolved_base_url.as_deref());
+            credentials
+        });
 
         Ok(Self {
             credentials,
+            client: super::http_client(timeouts)?,
             client_model_configs: Mutex::new(None),
             timeouts,
         })
     }
 
-    fn http_client(&self) -> Result<HttpClient, AgentError> {
-        super::http_client(self.timeouts)
+    fn http_client(&self) -> &HttpClient {
+        &self.client
     }
 
     async fn get_user_jwt(&self) -> Result<(String, String), AgentError> {
@@ -373,7 +524,7 @@ impl Devin {
                 message: format!("failed to build auth request: {e}"),
             })?;
         let mut response =
-            self.http_client()?
+            self.http_client()
                 .send_async(request)
                 .await
                 .map_err(|e| AgentError::Api {
@@ -426,7 +577,7 @@ impl Devin {
     async fn get_cli_model_configs(
         &self,
         base_url: &str,
-    ) -> Result<std::collections::HashMap<String, String>, AgentError> {
+    ) -> Result<HashMap<String, String>, AgentError> {
         if let Ok(guard) = self.client_model_configs.lock()
             && let Some(cache) = guard.as_ref()
         {
@@ -451,7 +602,7 @@ impl Devin {
                 message: format!("failed to build model configs request: {e}"),
             })?;
         let mut response =
-            self.http_client()?
+            self.http_client()
                 .send_async(request)
                 .await
                 .map_err(|e| AgentError::Api {
@@ -497,6 +648,7 @@ impl Devin {
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
     ) -> Result<StreamResponse, AgentError> {
+        // Devin cannot express thinking, fast-mode, or cache/history replay options.
         let _ = opts;
         let (user_jwt, base_url) = self.get_user_jwt().await?;
         let creds = self
@@ -531,14 +683,10 @@ impl Devin {
             .collect::<Vec<_>>()
             .join("\n\n");
 
-        let chat_message_prompts = encode_devin_chat_message_prompts(messages, &cascade_id);
+        let chat_message_prompts = encode_devin_chat_message_prompts(messages, &cascade_id)?;
         let chat_tools = encode_devin_tools(tools)?;
 
-        let max_tokens = u64::from(
-            model
-                .max_output_tokens
-                .map_or(DEFAULT_MAX_TOKENS, |m| m.min(DEFAULT_MAX_TOKENS)),
-        );
+        let max_tokens = max_tokens_for_model(model.max_output_tokens);
         let request_bytes = encode_get_chat_message_request(
             &creds.session_token,
             &user_jwt,
@@ -584,7 +732,7 @@ impl Devin {
                 message: format!("failed to build chat request: {e}"),
             })?;
         let mut response =
-            self.http_client()?
+            self.http_client()
                 .send_async(request)
                 .await
                 .map_err(|e| AgentError::Api {
@@ -613,8 +761,8 @@ impl Devin {
         let mut usage = TokenUsage::default();
         let mut stream_deadline = Instant::now() + self.timeouts.stream;
         let mut stop_reason = StopReason::EndTurn;
-        let mut tool_calls: std::collections::HashMap<String, (String, String)> =
-            std::collections::HashMap::new();
+        let mut tool_calls: HashMap<String, (String, String)> = HashMap::new();
+        let mut tool_call_order = Vec::new();
 
         let mut buffer = vec![0u8; 8192];
 
@@ -658,29 +806,21 @@ impl Devin {
                 })?;
 
                 if frame.end_stream {
-                    // Parse trailer JSON for errors
                     let payload = decode_frame_payload(&frame).map_err(|e| AgentError::Api {
                         status: 0,
                         message: format!("failed to decode trailer: {e}"),
                     })?;
-                    let trailer = String::from_utf8_lossy(&payload);
-                    if !trailer.trim().is_empty() {
-                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&trailer)
-                            && let Some(code) =
-                                value.get("code").and_then(serde_json::Value::as_str)
-                            && !code.is_empty()
-                            && code != "ok"
-                        {
-                            let msg = value
-                                .get("message")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or_else(|| code);
-                            return Err(AgentError::Api {
-                                status: 0,
-                                message: format!("devin stream failed: {code}: {msg}"),
-                            });
-                        }
-                        debug!("devin trailer: {}", trailer);
+                    if let Some(code) = parse_devin_trailer(&payload)? {
+                        debug!(
+                            trailer_code = code,
+                            trailer_bytes = payload.len(),
+                            "Devin end-stream trailer received"
+                        );
+                    } else {
+                        debug!(
+                            trailer_bytes = payload.len(),
+                            "Devin end-stream trailer received"
+                        );
                     }
                     break 'stream;
                 }
@@ -699,17 +839,25 @@ impl Devin {
                 if !response.delta_text.is_empty() {
                     let delta = response.delta_text;
                     text.push_str(&delta);
-                    let _ = event_tx
+                    event_tx
                         .send_async(ProviderEvent::TextDelta { text: delta })
-                        .await;
+                        .await
+                        .map_err(|_| {
+                            debug!("Devin event receiver closed; ending stream");
+                            AgentError::Channel
+                        })?;
                 }
 
                 if !response.delta_thinking.is_empty() {
                     let delta = response.delta_thinking;
                     thinking.push_str(&delta);
-                    let _ = event_tx
+                    event_tx
                         .send_async(ProviderEvent::ThinkingDelta { text: delta })
-                        .await;
+                        .await
+                        .map_err(|_| {
+                            debug!("Devin event receiver closed; ending stream");
+                            AgentError::Channel
+                        })?;
                 }
                 signature.push_str(&response.delta_signature);
 
@@ -717,26 +865,33 @@ impl Devin {
                     let id = tc.id.clone();
                     let name = tc.name.clone();
                     if merge_tool_call(&mut tool_calls, tc) {
-                        let _ = event_tx
+                        tool_call_order.push(id.clone());
+                        event_tx
                             .send_async(ProviderEvent::ToolUseStart { id, name })
-                            .await;
+                            .await
+                            .map_err(|_| {
+                                debug!("Devin event receiver closed; ending stream");
+                                AgentError::Channel
+                            })?;
                     }
                 }
 
-                if response.stop_reason != 0 {
+                if response.stop_reason != STOP_REASON_UNSPECIFIED {
                     stop_reason = match response.stop_reason {
-                        3 => StopReason::MaxTokens,
-                        10 => StopReason::ToolUse,
-                        _ => StopReason::EndTurn,
+                        STOP_REASON_MAX_TOKENS => StopReason::MaxTokens,
+                        STOP_REASON_TOOL_USE => StopReason::ToolUse,
+                        unknown => {
+                            debug!(stop_reason = unknown, "unknown Devin stop reason");
+                            StopReason::EndTurn
+                        }
                     };
                 }
 
                 if let Some(u) = response.usage {
-                    usage.input = u32::try_from(u.input_tokens).unwrap_or_else(|_| 0);
-                    usage.output = u32::try_from(u.output_tokens).unwrap_or_else(|_| 0);
-                    usage.cache_read = u32::try_from(u.cache_read_tokens).unwrap_or_else(|_| 0);
-                    usage.cache_creation =
-                        u32::try_from(u.cache_write_tokens).unwrap_or_else(|_| 0);
+                    usage.input = clamp_tokens("input", u.input_tokens);
+                    usage.output = clamp_tokens("output", u.output_tokens);
+                    usage.cache_read = clamp_tokens("cache_read", u.cache_read_tokens);
+                    usage.cache_creation = clamp_tokens("cache_write", u.cache_write_tokens);
                 }
             }
         }
@@ -751,13 +906,7 @@ impl Devin {
         if !text.is_empty() {
             content_blocks.push(crate::types::ContentBlock::Text { text });
         }
-        for (id, (name, arguments_json)) in tool_calls {
-            let input = serde_json::from_str(&arguments_json).map_err(|error| AgentError::Api {
-                status: 0,
-                message: format!("invalid Devin tool arguments for {name}: {error}"),
-            })?;
-            content_blocks.push(crate::types::ContentBlock::ToolUse { id, name, input });
-        }
+        content_blocks.extend(ordered_tool_call_blocks(tool_calls, tool_call_order)?);
         if content_blocks.is_empty() {
             content_blocks.push(crate::types::ContentBlock::Text {
                 text: String::new(),
@@ -887,5 +1036,183 @@ mod tests {
                 String::from("{\"path\":\"src/lib.rs\"}")
             ))
         );
+    }
+
+    const CASCADE_ID: &str = "cascade-1";
+    const TRAILER_ERROR: &str = "Devin stream failed with trailer code unavailable";
+    const TRAILER_JSON_ERROR: &str = "invalid Devin end-stream trailer JSON";
+
+    fn prompt_string_field(prompt: &[u8], field_number: u64) -> Option<String> {
+        crate::providers::devin_proto::iter_fields(prompt)
+            .map(|field| field.expect("valid prompt field"))
+            .find(|(field, wire, _)| *field == field_number && *wire == 2)
+            .map(|(_, _, value)| String::from_utf8(value.to_vec()).expect("UTF-8 prompt field"))
+    }
+
+    #[test]
+    fn credentials_file_distinguishes_absent_unreadable_and_malformed() {
+        let temp_dir = tempfile::tempdir().expect("temp directory");
+        let absent = temp_dir.path().join("absent.toml");
+        assert!(
+            DevinCredentials::from_path(&absent)
+                .expect("absent credentials are optional")
+                .is_none()
+        );
+
+        let malformed = temp_dir.path().join("malformed.toml");
+        std::fs::write(&malformed, "windsurf_api_key = [").expect("write malformed credentials");
+        assert!(matches!(
+            DevinCredentials::from_path(&malformed),
+            Err(AgentError::Config { message }) if message.contains("failed to parse Devin credentials")
+        ));
+
+        assert!(matches!(
+            DevinCredentials::from_path(temp_dir.path()),
+            Err(AgentError::Config { message }) if message.contains("failed to read Devin credentials")
+        ));
+    }
+
+    #[test]
+    fn explicit_api_server_url_takes_precedence() {
+        assert_eq!(
+            resolve_api_server_url(
+                "https://configured.example".to_string(),
+                Some("https://explicit.example")
+            ),
+            "https://explicit.example"
+        );
+    }
+
+    #[test]
+    fn configured_api_server_url_is_preserved_without_explicit_url() {
+        assert_eq!(
+            resolve_api_server_url("https://configured.example".to_string(), None),
+            "https://configured.example"
+        );
+    }
+
+    #[test]
+    fn chat_message_ids_are_stable_and_keep_bot_prefix() {
+        assert_eq!(
+            chat_message_id(CASCADE_ID, 2, "assistant"),
+            "bot-cascade-1-2-assistant"
+        );
+        assert_eq!(
+            chat_message_id(CASCADE_ID, 2, "user-0"),
+            chat_message_id(CASCADE_ID, 2, "user-0")
+        );
+    }
+
+    #[test]
+    fn encode_devin_tools_rejects_non_array() {
+        assert!(matches!(
+            encode_devin_tools(&serde_json::json!({"name": "read"})),
+            Err(AgentError::Config { message }) if message == "Devin tools must be an array"
+        ));
+    }
+
+    #[test]
+    fn model_max_tokens_are_not_capped_by_fallback() {
+        assert_eq!(max_tokens_for_model(Some(128_000)), 128_000);
+        assert_eq!(max_tokens_for_model(None), u64::from(DEFAULT_MAX_TOKENS));
+    }
+
+    #[test]
+    fn trailer_parser_accepts_success_and_rejects_sanitized_error() {
+        assert_eq!(
+            parse_devin_trailer(br#"{"code":"ok","message":"private"}"#)
+                .expect("successful trailer"),
+            Some("ok".to_string())
+        );
+        let error = parse_devin_trailer(br#"{"code":"unavailable","message":"private"}"#)
+            .expect_err("error trailer");
+        assert!(matches!(
+            error,
+            AgentError::Api { status: 0, message } if message == TRAILER_ERROR
+        ));
+
+        let malicious = parse_devin_trailer(br#"{"code":"bad token: secret"}"#)
+            .expect_err("invalid code is rejected");
+        assert!(matches!(
+            malicious,
+            AgentError::Api { status: 0, message }
+                if message == "Devin stream failed with trailer code invalid"
+        ));
+    }
+
+    #[test]
+    fn trailer_parser_rejects_malformed_json_without_echoing_payload() {
+        let error = parse_devin_trailer(b"secret raw payload").expect_err("malformed trailer");
+        assert!(matches!(
+            error,
+            AgentError::Api { status: 0, message } if message == TRAILER_JSON_ERROR
+        ));
+    }
+
+    #[test]
+    fn tool_result_splits_surrounding_user_text_into_stable_prompts() {
+        let messages = [Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::Text {
+                    text: "before".to_string(),
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: "call-1".to_string(),
+                    content: "result".to_string(),
+                    is_error: false,
+                },
+                ContentBlock::Text {
+                    text: "after".to_string(),
+                },
+            ],
+            display_text: None,
+            control: false,
+        }];
+
+        let prompts = encode_devin_chat_message_prompts(&messages, CASCADE_ID)
+            .expect("encode message prompts");
+        assert_eq!(prompts.len(), 3);
+        assert_eq!(
+            prompt_string_field(&prompts[0], 1).as_deref(),
+            Some("cascade-1-0-user-0")
+        );
+        assert_eq!(
+            prompt_string_field(&prompts[0], 3).as_deref(),
+            Some("before")
+        );
+        assert_eq!(
+            prompt_string_field(&prompts[1], 1).as_deref(),
+            Some("cascade-1-0-tool-call-1")
+        );
+        assert_eq!(
+            prompt_string_field(&prompts[1], 7).as_deref(),
+            Some("call-1")
+        );
+        assert_eq!(
+            prompt_string_field(&prompts[2], 1).as_deref(),
+            Some("cascade-1-0-user-1")
+        );
+        assert_eq!(
+            prompt_string_field(&prompts[2], 3).as_deref(),
+            Some("after")
+        );
+    }
+
+    #[test]
+    fn ordered_tool_call_blocks_follow_first_arrival_order() {
+        let tool_calls = HashMap::from([
+            (
+                "second".to_string(),
+                ("write".to_string(), "{}".to_string()),
+            ),
+            ("first".to_string(), ("read".to_string(), "{}".to_string())),
+        ]);
+        let blocks =
+            ordered_tool_call_blocks(tool_calls, vec!["first".to_string(), "second".to_string()])
+                .expect("ordered tool blocks");
+
+        assert!(matches!(&blocks[0], ContentBlock::ToolUse { id, .. } if id == "first"));
+        assert!(matches!(&blocks[1], ContentBlock::ToolUse { id, .. } if id == "second"));
     }
 }

@@ -2645,3 +2645,52 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
         },
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use test_case::test_case;
+
+    use super::models;
+    use crate::model::lookup_entry;
+
+    #[test]
+    fn catalog_prefixes_are_unique() {
+        let mut prefixes = HashSet::new();
+
+        for prefix in models().iter().flat_map(|entry| entry.prefixes) {
+            assert!(
+                prefixes.insert(prefix),
+                "duplicate Devin model prefix: {prefix}"
+            );
+        }
+    }
+
+    #[test_case("opus", "claude-opus-5-medium" ; "opus")]
+    #[test_case("sonnet", "claude-sonnet-5-medium" ; "sonnet")]
+    #[test_case("claude", "claude-sonnet-5-medium" ; "claude")]
+    #[test_case("gpt", "gpt-5-6-terra-none" ; "gpt")]
+    #[test_case("gemini", "gemini-3-6-flash-minimal" ; "gemini")]
+    #[test_case("haiku", "MODEL_PRIVATE_11" ; "haiku")]
+    #[test_case("codex", "gpt-5-3-codex-low" ; "codex")]
+    #[test_case("swe", "swe-1-7-lightning" ; "swe")]
+    fn catalog_alias_resolves_to_canonical_id(alias: &str, canonical_id: &str) {
+        let entry = lookup_entry(models(), alias).expect("catalog alias should resolve");
+
+        assert_eq!(entry.prefixes.first().copied(), Some(canonical_id));
+    }
+
+    #[test]
+    fn catalog_max_output_does_not_exceed_context_window() {
+        for entry in models() {
+            assert!(
+                entry.max_output_tokens <= entry.context_window,
+                "{} has max output {} above context window {}",
+                entry.prefixes[0],
+                entry.max_output_tokens,
+                entry.context_window,
+            );
+        }
+    }
+}
