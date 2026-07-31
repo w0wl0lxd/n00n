@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785527789619,
+  "lastUpdate": 1785531450610,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -10905,6 +10905,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 92891,
             "range": "± 5737",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fa890e95a928312904c2f5db5fd8f6d6dd4f8600",
+          "message": "fix: harden recent orchestration and graph features (#206)\n\n* fix: harden recent orchestration and graph features\n\n* fix: address orchestration review findings\n\n* test: align sanitized codegraph fallback\n\n* fix: track team failures explicitly",
+          "timestamp": "2026-07-31T20:41:49Z",
+          "tree_id": "25ef71549589bacaa994b0cea7b5eb6cb820bca1",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/fa890e95a928312904c2f5db5fd8f6d6dd4f8600"
+        },
+        "date": 1785531449151,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6741200,
+            "range": "± 144058",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2242993,
+            "range": "± 3910",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2238803,
+            "range": "± 3225",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8078190,
+            "range": "± 43819",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4349749,
+            "range": "± 21847",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4323853,
+            "range": "± 19081",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 586136,
+            "range": "± 2085",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191997,
+            "range": "± 996",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191956,
+            "range": "± 335",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1040409,
+            "range": "± 10233",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 588758,
+            "range": "± 1294",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 588506,
+            "range": "± 2732",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 70045,
+            "range": "± 3982",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 208287,
+            "range": "± 19922",
             "unit": "ns/iter"
           }
         ]
