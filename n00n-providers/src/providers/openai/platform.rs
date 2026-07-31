@@ -1405,6 +1405,7 @@ impl OpenAi {
             previous_response_id.as_deref(),
             Some(&prompt_cache_key),
             store,
+            true,
         );
         let mut full_history_body = None;
         let full_history_fallback_available = !store
@@ -1440,6 +1441,7 @@ impl OpenAi {
                             None,
                             Some(&prompt_cache_key),
                             false,
+                            true,
                         )
                     },
                     session_id.map(canonical_session_key),
@@ -1491,6 +1493,7 @@ impl OpenAi {
                                 None,
                                 Some(&prompt_cache_key),
                                 false,
+                                true,
                             )
                         })
                     };

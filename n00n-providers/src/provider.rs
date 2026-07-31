@@ -125,7 +125,7 @@ impl ProviderKind {
             Self::Synthetic => "https://api.synthetic.new/openai/v1",
             Self::TensorX => "https://api.tensorx.ai/v1",
             Self::Opencode => "https://opencode.ai/zen/v1",
-            Self::Devin => "devin acp subprocess (Agent Client Protocol)",
+            Self::Devin => "https://server.codeium.com (native Connect/gRPC-Web)",
             Self::Cursor => "cursor-agent subprocess (Cursor Agent CLI)",
         }
     }
@@ -156,7 +156,9 @@ impl ProviderKind {
             Self::Opencode => Some(
                 "Dynamically discovered models via [models.dev](https://models.dev/) + all the models provided by Opencode Zen API",
             ),
-            Self::Devin => Some("Agent Client Protocol via devin acp subprocess"),
+            Self::Devin => Some(
+                "Native Connect/gRPC-Web transport with streamed text, thinking, and tool calls",
+            ),
             Self::Cursor => Some(
                 "Cursor Agent CLI subprocess with stream-json parsing, session resume, and tool-call passthrough",
             ),
@@ -268,7 +270,7 @@ impl ProviderKind {
             Self::Synthetic => Ok(Box::new(Synthetic::new(timeouts)?)),
             Self::TensorX => Ok(Box::new(TensorX::new(timeouts)?)),
             Self::Opencode => Ok(Box::new(Opencode::new(timeouts)?)),
-            Self::Devin => Ok(Box::new(Devin::new(timeouts))),
+            Self::Devin => Ok(Box::new(Devin::new(timeouts)?)),
             Self::Cursor => Ok(Box::new(Cursor::new(timeouts)?)),
         }
     }

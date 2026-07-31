@@ -163,6 +163,7 @@ function M.launch(ctx, opts)
     audience = audience,
     name = opts.description,
     thinking = opts.thinking,
+    mode = subagent_type,
   })
   if sess_err then
     return nil, sess_err, nil, nil, model_spec

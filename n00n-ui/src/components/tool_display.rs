@@ -464,13 +464,8 @@ impl ToolLineBuilder {
         self.lines[0].spans.insert(0, Span::styled(text, style));
     }
 
-    fn push_code_content(
-        &mut self,
-        input: Option<&ToolInput>,
-        raw_input: Option<&serde_json::Value>,
-        output: Option<&ToolOutput>,
-    ) {
-        let content = code_view::render_tool_content(input, raw_input, output, false, self.limits);
+    fn push_code_content(&mut self, input: Option<&ToolInput>, output: Option<&ToolOutput>) {
+        let content = code_view::render_tool_content(input, output, false, self.limits);
         self.truncation.script |= content.truncation.script;
         self.truncation.output |= content.truncation.output;
         self.truncation.details |= content.truncation.details;
@@ -606,6 +601,47 @@ fn push_text_lines(lines: &mut Vec<Line<'static>>, text: &str, indent: &'static 
     }
 }
 
+fn format_argument_value(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => "null".into(),
+        serde_json::Value::Bool(value) => value.to_string(),
+        serde_json::Value::Number(value) => value.to_string(),
+        serde_json::Value::String(value) => value.clone(),
+        serde_json::Value::Array(values) => {
+            let values = values
+                .iter()
+                .map(format_argument_value)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("[{values}]")
+        }
+        serde_json::Value::Object(values) => {
+            let values = values
+                .iter()
+                .map(|(key, value)| format!("{key}: {}", format_argument_value(value)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{{{values}}}")
+        }
+    }
+}
+
+fn format_tool_arguments(input: &serde_json::Value) -> Option<String> {
+    let serde_json::Value::Object(values) = input else {
+        return Some(format_argument_value(input));
+    };
+    if values.is_empty() {
+        return None;
+    }
+    Some(
+        values
+            .iter()
+            .map(|(key, value)| format!("{key}: {}", format_argument_value(value)))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
 /// Bakes snapshot spans onto `out`. `"spinner"`-styled spans bake to the
 /// current frame, and `on_spinner` gets their span index in the same pass,
 /// so animation offsets can never drift from the baked spans.
@@ -708,13 +744,25 @@ pub fn build_tool_lines(
     let has_snapshot = msg.render_snapshot.is_some();
     b.push_code_content(
         msg.tool_input.as_deref(),
-        msg.tool_raw_input.as_deref(),
         if has_snapshot {
             None
         } else {
             msg.tool_output.as_deref()
         },
     );
+    if let (true, true, Some(arguments)) = (
+        msg.tool_input.is_none(),
+        msg.render_header.is_none(),
+        msg.tool_raw_input
+            .as_deref()
+            .and_then(format_tool_arguments),
+    ) {
+        let text = format!("Arguments:\n{arguments}");
+        let truncated = truncate_output(&text, b.limits.output);
+        push_text_lines(&mut b.lines, &truncated.kept, TOOL_BODY_INDENT);
+        b.push_search_text(&text);
+        b.push_truncation_count(truncated.skipped);
+    }
     let show_output = if let Some(ref snapshot) = msg.render_snapshot {
         let search_text = msg
             .tool_output
@@ -963,6 +1011,54 @@ mod tests {
         let text = lines_text(&tl);
         assert!(text.contains("line1"));
         assert!(text.contains("line2"));
+    }
+
+    #[test]
+    fn generic_tool_arguments_are_rendered_without_json() {
+        let mut msg = bash_msg("Search src\n2 matches", ToolStatus::Success, None, None);
+        msg.tool_raw_input = Some(Arc::new(serde_json::json!({
+            "query": "secret needle",
+            "path": "src"
+        })));
+
+        let lines = build_tool_lines(
+            &msg,
+            ToolStatus::Success,
+            &test_rctx(80),
+            SectionFlags::default(),
+        );
+        let text = lines_text(&lines);
+
+        assert!(text.contains("Search src"));
+        assert!(text.contains("2 matches"));
+        assert!(text.contains("Arguments:"));
+        assert!(text.contains("query: secret needle"));
+        assert!(text.contains("path: src"));
+        assert!(!text.contains("\"query\""));
+    }
+
+    #[test]
+    fn purpose_built_header_does_not_duplicate_arguments() {
+        let mut msg = bash_msg("fallback header", ToolStatus::Success, None, None);
+        msg.render_header = Some(make_snapshot(vec![vec![SnapshotSpan {
+            text: "Purpose-built header".into(),
+            style: SpanStyle::Default,
+        }]]));
+        msg.tool_raw_input = Some(Arc::new(serde_json::json!({
+            "query": "secret needle",
+        })));
+
+        let lines = build_tool_lines(
+            &msg,
+            ToolStatus::Success,
+            &test_rctx(80),
+            SectionFlags::default(),
+        );
+        let text = lines_text(&lines);
+
+        assert!(text.contains("Purpose-built header"));
+        assert!(!text.contains("Arguments:"));
+        assert!(!text.contains("secret needle"));
     }
 
     fn line_has_styled(tl: &ToolLines, text: &str, style: Style) -> bool {

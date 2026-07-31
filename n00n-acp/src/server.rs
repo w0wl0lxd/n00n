@@ -15,13 +15,15 @@ use color_eyre::eyre::Context;
 use flume::{Receiver, Sender};
 use n00n_agent::headless::{self, InteractiveHandle, InteractiveParams};
 use n00n_agent::types::AgentEvent;
-use n00n_agent::{AgentInput, AgentMode, Envelope, ImageMediaType, ImageSource};
+use n00n_agent::{
+    AgentInput, AgentMode, Envelope, ImageMediaType, ImageSource, mode_and_plan_from_stored,
+};
 use n00n_providers::Message;
 use n00n_providers::TokenUsage;
 use n00n_providers::model::Model;
 use n00n_providers::provider::available_model_specs;
 use n00n_storage::id::{SessionRef, n00nId};
-use n00n_storage::sessions::{Session, StoredMode};
+use n00n_storage::sessions::Session;
 use serde::Serialize;
 use serde_json::Value;
 use smol::io::AsyncBufReadExt;
@@ -150,8 +152,11 @@ fn handle_request(srv: &mut Server, method: &str, id: RequestId, raw: &Value, pa
                 req.session_id.0.parse().map_err(|_| {
                     AcpError::resource_not_found(Some(req.session_id.0.to_string()))
                 })?;
-            let stored = load_session(session_ref.id())?;
-            let (current_mode, plan_path) = stored_mode_to_agent_mode(&stored);
+            let storage = n00n_storage::StateDir::resolve()
+                .map_err(|e| AcpError::internal_error().data(json_str(&e)))?;
+            let stored = load_session_from(&storage, session_ref.id())?;
+            let (current_mode, plan_path) = mode_and_plan_from_stored(&storage, &stored.meta)
+                .map_err(|e| AcpError::internal_error().data(json_str(&e)))?;
             let history = stored.messages;
             let sid = SessionId::from(session_ref.to_string());
             for update in translate::replay_history(&history) {
@@ -232,28 +237,6 @@ fn install_session(
 }
 
 type StoredSession = Session<Message, TokenUsage, n00n_agent::ToolOutput>;
-
-fn stored_mode_to_agent_mode(stored: &StoredSession) -> (AgentMode, Option<PathBuf>) {
-    let plan_path = stored.meta.plan_path.as_ref().map(PathBuf::from);
-    match stored.meta.mode {
-        Some(StoredMode::Build) | None => (AgentMode::Build, plan_path),
-        Some(StoredMode::Plan) => {
-            let path = plan_path.unwrap_or_else(|| {
-                n00n_storage::StateDir::resolve()
-                    .and_then(|dir| n00n_storage::plans::new_plan_path(&dir))
-                    .unwrap_or_else(|_| PathBuf::from("plan.md"))
-            });
-            (AgentMode::Plan(path.clone()), Some(path))
-        }
-        Some(StoredMode::Research) => (AgentMode::Research, plan_path),
-    }
-}
-
-fn load_session(session_id: n00nId) -> Result<StoredSession, AcpError> {
-    let storage = n00n_storage::StateDir::resolve()
-        .map_err(|e| AcpError::internal_error().data(json_str(&e)))?;
-    load_session_from(&storage, session_id)
-}
 
 fn load_session_from(
     storage: &n00n_storage::StateDir,
