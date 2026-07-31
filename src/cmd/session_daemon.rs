@@ -4,10 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
-use color_eyre::Result;
-use color_eyre::eyre::{Context, eyre};
 use n00n_agent::headless::InteractiveHandle;
-use n00n_agent::{AgentInput, AgentMode};
+use n00n_agent::{AgentInput, mode_and_plan_from_stored};
 use n00n_daemon::backend::WorkerBackend;
 use n00n_daemon::error::{ControlError, ControlResult};
 use n00n_daemon::lock::DaemonRole;
@@ -248,8 +246,18 @@ fn message_interactive(
     if id != session_id {
         return Err(ControlError::NotFound(id.to_owned()));
     }
-    let (mode, plan_path) = restore_session_mode(session_id, state_dir)
+    let (mode, plan_path) = {
+        let session_ref = session_id
+            .parse::<SessionRef>()
+            .map_err(|_| ControlError::InvalidId(session_id.to_owned()))?;
+        let storage = StateDir::from_path(state_dir.to_path_buf());
+        let mut session = Session::<Message, TokenUsage, n00n_agent::ToolOutput>::load(
+            session_ref.id(),
+            &storage,
+        )
         .map_err(|error| ControlError::Unavailable(error.to_string()))?;
+        mode_and_plan_for_daemon(&storage, &mut session)?
+    };
     input_tx
         .try_send(AgentInput {
             message: text.to_owned(),
@@ -267,30 +275,22 @@ fn message_interactive(
     Ok(serde_json::json!({"queued": true, "steer": opts.steer, "control": opts.control}))
 }
 
-fn restore_session_mode(
-    session_id: &str,
-    state_dir: &Path,
-) -> Result<(AgentMode, Option<PathBuf>)> {
-    let session_ref = session_id
-        .parse::<SessionRef>()
-        .map_err(|error| eyre!("invalid session id {session_id:?}: {error}"))?;
-    let storage = StateDir::from_path(state_dir.to_path_buf());
-    let session =
-        Session::<Message, TokenUsage, n00n_agent::ToolOutput>::load(session_ref.id(), &storage)
-            .wrap_err_with(|| format!("failed to restore session {session_id}"))?;
-    Ok(match session.meta.mode {
-        Some(StoredMode::Build) => (AgentMode::Build, session.meta.plan_path.map(PathBuf::from)),
-        Some(StoredMode::Plan) => {
-            let path = session
-                .meta
-                .plan_path
-                .ok_or_else(|| eyre!("session {session_id} is missing stored plan path"))
-                .map(PathBuf::from)?;
-            (AgentMode::Plan(path.clone()), Some(path))
-        }
-        Some(StoredMode::Research) => (AgentMode::Research, None),
-        None => return Err(eyre!("session {session_id} is missing stored mode")),
-    })
+fn mode_and_plan_for_daemon(
+    storage: &StateDir,
+    session: &mut Session<Message, TokenUsage, n00n_agent::ToolOutput>,
+) -> ControlResult<(n00n_agent::AgentMode, Option<PathBuf>)> {
+    let (mode, plan_path) = mode_and_plan_from_stored(storage, &session.meta)
+        .map_err(|error| ControlError::Unavailable(error.to_string()))?;
+    if session.meta.mode == Some(StoredMode::Plan) && session.meta.plan_path.is_none() {
+        let plan_path = plan_path
+            .as_ref()
+            .ok_or_else(|| ControlError::Unavailable("missing generated plan path".into()))?;
+        session.meta.plan_path = Some(plan_path.display().to_string());
+        session
+            .save(storage)
+            .map_err(|error| ControlError::Unavailable(error.to_string()))?;
+    }
+    Ok((mode, plan_path))
 }
 
 fn stop_interactive(
@@ -309,6 +309,8 @@ fn stop_interactive(
 
 #[cfg(test)]
 mod tests {
+    use n00n_agent::AgentMode;
+
     use super::*;
 
     fn assert_restore_failure_does_not_dispatch(
@@ -336,9 +338,7 @@ mod tests {
     fn malformed_session_id_does_not_dispatch() {
         let temp = tempfile::tempdir().expect("tempdir");
         let error = assert_restore_failure_does_not_dispatch(temp.path(), "not-a-session-id");
-        assert!(
-            matches!(error, ControlError::Unavailable(message) if message.contains("invalid session id"))
-        );
+        assert!(matches!(error, ControlError::InvalidId(_)));
     }
 
     #[test]
@@ -346,9 +346,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let session_id = SessionRef::generate().to_string();
         let error = assert_restore_failure_does_not_dispatch(temp.path(), &session_id);
-        assert!(
-            matches!(error, ControlError::Unavailable(message) if message.contains("failed to restore session"))
-        );
+        assert!(matches!(error, ControlError::Unavailable(_)));
     }
 
     #[test]
@@ -359,44 +357,10 @@ mod tests {
             Session::<Message, TokenUsage, n00n_agent::ToolOutput>::new("model", "/project");
         session.meta.mode = Some(StoredMode::Build);
         session.meta.plan_path = Some("approved-plan.md".into());
-        session.save(&storage).expect("session fixture");
 
-        let restored = restore_session_mode(&session.id.to_string(), temp.path())
-            .expect("stored mode should restore");
         assert_eq!(
-            restored,
+            mode_and_plan_for_daemon(&storage, &mut session).expect("stored mode should restore"),
             (AgentMode::Build, Some(PathBuf::from("approved-plan.md")))
-        );
-    }
-
-    #[test]
-    fn unknown_session_mode_does_not_dispatch() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let storage = StateDir::from_path(temp.path().to_path_buf());
-        let mut session =
-            Session::<Message, TokenUsage, n00n_agent::ToolOutput>::new("model", "/project");
-        session.meta.mode = None;
-        session.save(&storage).expect("session fixture");
-
-        let error = assert_restore_failure_does_not_dispatch(temp.path(), &session.id.to_string());
-        assert!(
-            matches!(error, ControlError::Unavailable(message) if message.contains("missing stored mode"))
-        );
-    }
-
-    #[test]
-    fn legacy_plan_without_path_does_not_dispatch() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let storage = StateDir::from_path(temp.path().to_path_buf());
-        let mut session =
-            Session::<Message, TokenUsage, n00n_agent::ToolOutput>::new("model", "/project");
-        session.meta.mode = Some(StoredMode::Plan);
-        session.meta.plan_path = None;
-        session.save(&storage).expect("session fixture");
-
-        let error = assert_restore_failure_does_not_dispatch(temp.path(), &session.id.to_string());
-        assert!(
-            matches!(error, ControlError::Unavailable(message) if message.contains("missing stored plan path"))
         );
     }
 
@@ -415,8 +379,32 @@ mod tests {
         .expect("corrupt session fixture");
 
         let error = assert_restore_failure_does_not_dispatch(temp.path(), session_ref.as_str());
-        assert!(
-            matches!(error, ControlError::Unavailable(message) if message.contains("failed to restore session"))
+        assert!(matches!(error, ControlError::Unavailable(_)));
+    }
+
+    #[test]
+    fn legacy_plan_session_persists_generated_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage = StateDir::from_path(temp.path().to_path_buf());
+        let mut session =
+            Session::<Message, TokenUsage, n00n_agent::ToolOutput>::new("model", "/tmp");
+        session.meta.mode = Some(StoredMode::Plan);
+        session.save(&storage).expect("session fixture");
+
+        let (mode, plan_path) =
+            mode_and_plan_for_daemon(&storage, &mut session).expect("mode restoration");
+        let plan_path = plan_path.expect("generated plan path");
+        assert!(matches!(mode, AgentMode::Plan(_)));
+
+        let mut persisted =
+            Session::<Message, TokenUsage, n00n_agent::ToolOutput>::load(session.id, &storage)
+                .expect("persisted session");
+        assert_eq!(persisted.meta.plan_path.as_deref(), plan_path.to_str());
+        assert_eq!(
+            mode_and_plan_for_daemon(&storage, &mut persisted)
+                .expect("persisted mode restoration")
+                .1,
+            Some(plan_path)
         );
     }
 }

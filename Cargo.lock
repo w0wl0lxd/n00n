@@ -3283,6 +3283,7 @@ dependencies = [
  "smol",
  "strum 0.27.2",
  "test-case",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -3415,7 +3416,6 @@ dependencies = [
 name = "n00n-providers"
 version = "0.5.0"
 dependencies = [
- "agent-client-protocol-schema",
  "async-lock",
  "async-process",
  "async-tungstenite",

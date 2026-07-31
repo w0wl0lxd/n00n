@@ -361,14 +361,10 @@ impl<'h> Agent<'h> {
         let pre_dispatch_rollback_len = self
             .pre_dispatch_rollback_len
             .unwrap_or_else(|| rollback_len);
+        validate_input_message(&input)?;
         let mut msg = Message::user_with_images(input.message.clone(), input.images);
         msg.control = input.control;
         self.history.push(msg);
-        if self.history.len() == 1 && self.history.as_slice()[0].content.is_empty() {
-            return Err(AgentError::Config {
-                message: "message is empty".into(),
-            });
-        }
         self.mode = Arc::new(input.mode);
         self.workflow = input.workflow;
         // Filter the caller-supplied tool list in place. Rebuilding from the
@@ -863,6 +859,9 @@ impl<'h> Agent<'h> {
         info!(context_size = self.context_size, "auto-compacting");
         self.event_tx.send(AgentEvent::AutoCompacting)?;
         if let Err(e) = self.do_compact().await {
+            if matches!(e, AgentError::Cancelled) {
+                return Err(e);
+            }
             warn!(
                 error = %e,
                 "auto-compaction failed; continuing without compacting"
@@ -1038,6 +1037,7 @@ impl<'h> Agent<'h> {
             handled = true;
             match cmd {
                 ExtractedCommand::Interrupt(mut input, _) => {
+                    validate_input_message(&input)?;
                     self.event_tx.send(AgentEvent::QueueItemConsumed {
                         text: input.message.clone(),
                         image_count: input.images.len(),
@@ -1069,6 +1069,15 @@ impl<'h> Agent<'h> {
         }
         Ok(handled)
     }
+}
+
+fn validate_input_message(input: &AgentInput) -> Result<(), AgentError> {
+    if input.message.trim().is_empty() && input.images.is_empty() {
+        return Err(AgentError::Config {
+            message: "message is empty".into(),
+        });
+    }
+    Ok(())
 }
 
 fn history_replay_scope(
@@ -1521,6 +1530,22 @@ mod tests {
             prompt: None,
             plan_path: None,
         }
+    }
+
+    #[test]
+    fn queued_interrupt_validation_rejects_empty_text_without_images() {
+        let mut input = default_input();
+        input.message.clear();
+        assert!(matches!(
+            validate_input_message(&input),
+            Err(AgentError::Config { .. })
+        ));
+
+        input.images.push(ImageSource::new(
+            n00n_providers::ImageMediaType::Png,
+            std::sync::Arc::from("dGVzdA=="),
+        ));
+        assert!(validate_input_message(&input).is_ok());
     }
 
     #[test]

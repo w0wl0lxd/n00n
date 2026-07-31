@@ -255,7 +255,7 @@ where
             let file = openat(
                 &directory,
                 component,
-                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
                 Mode::empty(),
             )
             .map_err(|source| CodegraphError::Exec {

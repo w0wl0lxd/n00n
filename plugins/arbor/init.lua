@@ -259,13 +259,6 @@ two symbols.]],
     return ExploreResult.restore(output, ctx)
   end,
   handler = function(input, ctx)
-    local ok, err = pcall(n00n_arbor.check_binary)
-    if not ok then
-      return {
-        llm_output = "Arbor CLI not found. Install it with: cargo install arbor-graph-cli: " .. tostring(err),
-        is_error = true,
-      }
-    end
     local card, live_err = ExploreResult.live(ctx)
     if not card then
       return { llm_output = "error: failed to publish Arbor results: " .. tostring(live_err), is_error = true }

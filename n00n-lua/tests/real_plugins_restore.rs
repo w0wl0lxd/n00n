@@ -187,9 +187,11 @@ fn execute_plugin_with_native_mock(
 
 #[test_case::test_case(
     r#"
+        local run_dir = n00n.fs.joinpath("/state", "workflows", "aabbccdd")
+        local meta_path = n00n.fs.joinpath(run_dir, "meta.json")
         n00n.fs.metadata = function(path)
-            if path == "/state/workflows/aabbccdd" then return { is_dir = true }, nil end
-            if path == "/state/workflows/aabbccdd/meta.json" then return { is_file = true }, nil end
+            if path == run_dir then return { is_dir = true }, nil end
+            if path == meta_path then return { is_file = true }, nil end
             return nil, "permission denied"
         end
         n00n.fs.read = function()
@@ -201,12 +203,14 @@ fn execute_plugin_with_native_mock(
 )]
 #[test_case::test_case(
     r#"
+        local run_dir = n00n.fs.joinpath("/state", "workflows", "aabbccdd")
+        local meta_path = n00n.fs.joinpath(run_dir, "meta.json")
         n00n.fs.metadata = function(path)
-            if path == "/state/workflows/aabbccdd" then return { is_dir = true }, nil end
+            if path == run_dir then return { is_dir = true }, nil end
             return { is_file = true }, nil
         end
         n00n.fs.read = function(path)
-            if path == "/state/workflows/aabbccdd/meta.json" then
+            if path == meta_path then
                 return '{"run_id":"aabbccdd","script_hash":"script-id"}', nil
             end
             return nil, "input/output error"
@@ -276,12 +280,14 @@ fn workflow_script_mismatch_starts_zero_agents() {
         WORKFLOW_SRC,
         r#"
             n00n.env.state_dir = function() return "/state" end
+            local run_dir = n00n.fs.joinpath("/state", "workflows", "aabbccdd")
+            local meta_path = n00n.fs.joinpath(run_dir, "meta.json")
             n00n.fs.metadata = function(path)
-                if path == "/state/workflows/aabbccdd" then return { is_dir = true }, nil end
+                if path == run_dir then return { is_dir = true }, nil end
                 return { is_file = true }, nil
             end
             n00n.fs.read = function(path)
-                if path == "/state/workflows/aabbccdd/meta.json" then
+                if path == meta_path then
                     return '{"run_id":"aabbccdd","script_hash":"wrong"}', nil
                 end
                 return "", nil
@@ -331,6 +337,7 @@ fn arbor_native_graph_operations_do_not_require_cli(input: Value, expected: &str
         ARBOR_SRC,
         r#"
             n00n.arbor.available = function() return false end
+            n00n.arbor.check_binary = function() error("CLI must not be called") end
             n00n.arbor.graph_index_available = function() return true end
             n00n.arbor.ensure_fresh_index = function() error("CLI must not be called") end
             n00n.arbor.callers = function() error("CLI must not be called") end

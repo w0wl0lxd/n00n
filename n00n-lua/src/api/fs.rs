@@ -1,6 +1,8 @@
 use std::collections::{HashSet, VecDeque};
+#[cfg(unix)]
+use std::fs::File;
 use std::fs::FileType;
-use std::io::ErrorKind;
+use std::io::{Error, ErrorKind, Write};
 use std::time::UNIX_EPOCH;
 
 use futures_lite::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
@@ -696,7 +698,24 @@ async fn dir(lua: Lua, path: String, opts: Option<Table>) -> LuaResult<(Value, V
 #[lua_fn(guard = FsWrite)]
 async fn write(lua: Lua, path: String, content: String) -> LuaResult<(Value, Value)> {
     let abs = make_absolute(&path)?;
-    result_pair(&lua, smol::fs::write(&abs, content).await.map(|()| true))
+    let result = smol::unblock(move || atomic_write(&abs, content.as_bytes())).await;
+    result_pair(&lua, result.map(|()| true))
+}
+
+fn atomic_write(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        Error::new(
+            ErrorKind::InvalidInput,
+            "destination has no parent directory",
+        )
+    })?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(content)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    #[cfg(unix)]
+    File::open(parent)?.sync_all()?;
+    Ok(())
 }
 
 /// Delete the file, symlink, or directory at {path}.
@@ -827,7 +846,7 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
                 let entry = match entry {
                     Ok(e) => e,
                     Err(e) => {
-                        tracing::debug!(error = %e, "glob: walk error");
+                        tracing::warn!(error = %e, "glob: walk error");
                         continue;
                     }
                 };
@@ -857,7 +876,7 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
                 let entry = match entry {
                     Ok(e) => e,
                     Err(e) => {
-                        tracing::debug!(error = %e, "glob: walk error");
+                        tracing::warn!(error = %e, "glob: walk error");
                         continue;
                     }
                 };

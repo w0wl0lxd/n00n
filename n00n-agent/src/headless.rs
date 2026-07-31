@@ -21,9 +21,7 @@ use crate::cancel::{CancelMap, CancelToken};
 use crate::permissions::PermissionManager;
 use crate::prompt::ResolvedSlots;
 use crate::template;
-use crate::tools::{
-    ActiveTools, DescriptionContext, FileReadTracker, ToolAudience, ToolFilter, ToolRegistry,
-};
+use crate::tools::{DescriptionContext, FileReadTracker, ToolAudience, ToolFilter, ToolRegistry};
 use crate::{
     Agent, AgentConfig, AgentEvent, AgentInput, AgentMode, AgentParams, AgentRunParams, Envelope,
     EventSender, ImageSource, McpHandle, McpSession, PermissionsConfig, ToolOutput,
@@ -176,7 +174,7 @@ fn tool_definitions(
         vars,
         &ctx,
         model.supports_tool_examples(),
-        &ActiveTools::default(),
+        &crate::tools::default_active_tools(),
     );
 
     (tools, filter)
@@ -445,8 +443,20 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                 }
                 if matches!(input.mode, AgentMode::Build)
                     && let Some(plan_path) = input.plan_path.as_deref()
+                    && let Err(e) = agent::append_build_plan_prompt(&mut system, plan_path)
                 {
-                    agent::append_build_plan_prompt(&mut system, plan_path);
+                    error!(error = %e, "failed to append build plan prompt");
+                    run_id += 1;
+                    if event_tx
+                        .send(AgentEvent::Error {
+                            message: e.user_message(),
+                        })
+                        .is_err()
+                    {
+                        error!("event receiver closed while reporting plan prompt error");
+                        break;
+                    }
+                    continue;
                 }
 
                 let (trigger, cancel) = CancelToken::new();

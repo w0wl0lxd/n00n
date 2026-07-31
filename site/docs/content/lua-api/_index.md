@@ -804,6 +804,11 @@ and tool set.
     `(string)` or `(nil, err)`.
   - `name` (`string?`) display name for logs and UI.
   - `audience` (`string?`) tool audience for capability gating. Default: `"general_sub"`.
+  - `mode` (`string?`) agent operating mode: `"build"` (default), `"research"`, `"plan"`, or the
+
+  alias `"general"` (build). Plan mode requires `plan_path`.
+
+  - `plan_path` (`string?`) required when `mode` is `"plan"`; path to the approved plan file.
   - `thinking` (`string|integer?`) thinking mode: `"off"`, `"adaptive"`, an
     effort level (`"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`,
     `"max"`), or a budget integer (token count). Inherits parent setting
@@ -5451,7 +5456,7 @@ function ActivityPreview:prompt(sess, message, label)
 
 ```lua
 -- Checkpoint: save/load JSON snapshots for run lifecycle.
-function M.save(run_id, checkpoint_id, state)
+function M.save(run_id, checkpoint_id, state, sequence)
 function M.load(run_id, checkpoint_id)
 function M.list(run_id)
 function M.latest(run_id)

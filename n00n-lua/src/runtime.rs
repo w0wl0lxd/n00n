@@ -1138,11 +1138,11 @@ impl LuaRuntime {
             Ok(LuaValue::String(s)) => Some(s.to_string_lossy()),
             Ok(LuaValue::Nil) => None,
             Ok(_) => {
-                tracing::debug!(plugin, "prompt hint callback returned non-string");
+                tracing::warn!(plugin, "prompt hint callback returned non-string");
                 None
             }
             Err(e) => {
-                tracing::debug!(plugin, error = %e, "prompt hint callback failed");
+                tracing::warn!(plugin, error = %e, "prompt hint callback failed");
                 None
             }
         }
@@ -1694,17 +1694,33 @@ async fn compute_header(
     }
 }
 
-async fn restore_item(lua: &Lua, plugins: &PluginMap, item: RestoreItem) -> Option<RestoreReply> {
+async fn restore_item(
+    lua: &Lua,
+    plugins: &PluginMap,
+    item: RestoreItem,
+) -> Result<Option<RestoreReply>, String> {
     let (func, plugin_name) = {
         let plugins = plugins.borrow();
-        let (pname, tk) = plugins
+        let Some((pname, tk)) = plugins
             .iter()
-            .find_map(|(pname, tools)| tools.get(&*item.tool).map(|tk| (Arc::clone(pname), tk)))?;
-        let key = tk.restore.as_ref()?;
-        (lua.registry_value::<Function>(key).ok()?, pname)
+            .find_map(|(pname, tools)| tools.get(&*item.tool).map(|tk| (Arc::clone(pname), tk)))
+        else {
+            return Ok(None);
+        };
+        let Some(key) = tk.restore.as_ref() else {
+            return Ok(None);
+        };
+        (
+            lua.registry_value::<Function>(key)
+                .map_err(|e| format!("restore callback lookup failed: {e}"))?,
+            pname,
+        )
     };
-    let input_lua = json_to_lua(lua, &item.input).ok()?;
-    let thread = lua.create_thread(func).ok()?;
+    let input_lua = json_to_lua(lua, &item.input)
+        .map_err(|e| format!("restore input conversion failed: {e}"))?;
+    let thread = lua
+        .create_thread(func)
+        .map_err(|e| format!("restore coroutine creation failed: {e}"))?;
 
     let (dummy_tx, _) = flume::unbounded();
     let cell = TaskCell::new(
@@ -1718,17 +1734,16 @@ async fn restore_item(lua: &Lua, plugins: &PluginMap, item: RestoreItem) -> Opti
 
     let ctx = lua
         .create_userdata(LuaCtx::restore(item.tool_output_lines, item.state))
-        .ok()?;
+        .map_err(|e| format!("restore context creation failed: {e}"))?;
     let inner = thread
         .into_async::<LuaValue>((input_lua, &*item.output, item.is_error, ctx))
-        .ok()?;
+        .map_err(|e| format!("restore callback setup failed: {e}"))?;
     let scope = TaskScope::new(lua, cell);
     lock_cell(scope.handle()).inline_spawn = Some(Vec::new());
     let ret = scope
         .scope_future(inner)
         .await
-        .inspect_err(|e| tracing::debug!(tool = &*item.tool, error = %e, "restore callback failed"))
-        .ok()?;
+        .map_err(|e| format!("restore callback failed: {e}"))?;
     run_inline_tasks(lua, &scope).await;
 
     if let Some(buf) = crate::api::ui::buf::buf_from_reply(&ret) {
@@ -1754,7 +1769,9 @@ async fn restore_item(lua: &Lua, plugins: &PluginMap, item: RestoreItem) -> Opti
 
     drop(scope);
 
-    let mut reply = extract_restore_reply(&ret)?;
+    let Some(mut reply) = extract_restore_reply(&ret) else {
+        return Ok(None);
+    };
     if reply.header.is_none() {
         reply.header = Some(
             compute_header(lua, plugins, &plugin_name, &item.tool, item.input)
@@ -1762,7 +1779,7 @@ async fn restore_item(lua: &Lua, plugins: &PluginMap, item: RestoreItem) -> Opti
                 .into_snapshot(),
         );
     }
-    Some(reply)
+    Ok(Some(reply))
 }
 
 /// Runs `n00n.async.run` tasks queued during restore inline, so their
@@ -1819,11 +1836,13 @@ fn spawn_restore(
         let res = futures_lite::future::race(restore_item(&lua, &plugins, item), async {
             smol::Timer::after(RESTORE_ITEM_TIMEOUT).await;
             tracing::warn!(tool = &*tool, "restore item timed out");
-            None
+            Ok(None)
         })
         .await;
-        if let Some(reply) = res {
-            reply.emit(&id, theme_gen, &event_tx);
+        match res {
+            Ok(Some(reply)) => reply.emit(&id, theme_gen, &event_tx),
+            Ok(None) => {}
+            Err(error) => tracing::warn!(tool = &*tool, %error, "restore callback rejected"),
         }
     })
     .detach();
