@@ -19,7 +19,6 @@ use n00n_providers::{ContentBlock, Effort, Role, TokenUsage};
 use n00n_storage::sessions::{StoredMode, StoredThinking, TranscriptEntry};
 use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 use ratatui_image::picker::Picker;
-use std::env;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tempfile::TempDir;
@@ -70,12 +69,40 @@ fn build_app_with_mcp(
     })
 }
 
+fn isolated_app() -> App {
+    let tmp = TempDir::new().unwrap();
+    let dir = StateDir::from_path(tmp.path().to_path_buf());
+    let writer = Arc::new(StorageWriter::new(dir.clone()).unwrap());
+    let mut app = build_app(dir, Arc::clone(&writer));
+    app.test_state_dir = Some(TestStateDir {
+        dir: Some(tmp),
+        writer: Some(writer),
+    });
+    app
+}
+
 fn test_app() -> App {
-    let dir = StateDir::from_path(env::temp_dir());
-    let mut app = build_app(dir.clone(), Arc::new(StorageWriter::new(dir).unwrap()));
+    let mut app = isolated_app();
     let (shared_queue, _rx) = shared_queue::queue();
     app.queue.set_shared(shared_queue);
     app
+}
+
+#[test]
+fn test_app_cleans_up_isolated_state_directory() {
+    let path = {
+        let mut app = test_app();
+        let path = app.storage.path().to_path_buf();
+        app.state
+            .session
+            .messages
+            .push(Message::user("persist before cleanup".into()));
+        app.save_session();
+        assert!(path.exists());
+        path
+    };
+
+    assert!(!path.exists());
 }
 
 fn tempdir_app() -> (TempDir, StateDir, Arc<StorageWriter>, App) {
@@ -762,8 +789,7 @@ fn submit_prompt_rejects(mk: fn() -> App, text: &str, expected: &str) {
 }
 
 fn streaming_app_without_queue() -> App {
-    let dir = StateDir::from_path(env::temp_dir());
-    let mut app = build_app(dir.clone(), Arc::new(StorageWriter::new(dir).unwrap()));
+    let mut app = isolated_app();
     app.status = Status::Streaming;
     app
 }
