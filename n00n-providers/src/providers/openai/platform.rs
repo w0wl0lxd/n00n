@@ -38,6 +38,7 @@ const SESSION_STATE_TTL: Duration = Duration::from_hours(1);
 const FIVE_MINUTES_MILLIS: u64 = 5 * 60 * 1_000;
 const THIRTY_MINUTES_MILLIS: u64 = 30 * 60 * 1_000;
 const CODING_PLAN_DEFAULT_RETRY_DELAY: Duration = Duration::from_millis(250);
+const CODING_PLAN_ADMISSION_MAX_RETRIES: u8 = 3;
 const CODING_PLAN_MAX_SLOTS: u8 = 8;
 const RESPONSE_CHAIN_LOCK_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
 const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
@@ -84,13 +85,13 @@ impl OpenAiOptions {
 
     #[must_use]
     pub fn codex() -> Self {
-        Self::with_coding_plan_slots(u64::from(CODING_PLAN_MAX_SLOTS / 2)).with_codex()
+        Self::with_coding_plan_slots(u64::from(CODING_PLAN_MAX_SLOTS)).with_codex()
     }
 }
 
 impl Default for OpenAiOptions {
     fn default() -> Self {
-        Self::with_coding_plan_slots(u64::from(CODING_PLAN_MAX_SLOTS / 2))
+        Self::with_coding_plan_slots(u64::from(CODING_PLAN_MAX_SLOTS))
     }
 }
 
@@ -1656,7 +1657,7 @@ impl OpenAi {
         durable_chain: bool,
     ) -> CodexAttempt {
         let attempt_nonce = fastrand::u64(..);
-        let coding_plan_auth = match self.coding_plan_auth(false, None, attempt_nonce).await {
+        let mut coding_plan_auth = match self.coding_plan_auth(false, None, attempt_nonce).await {
             Ok(auth) => auth,
             Err(error) => {
                 return CodexAttempt {
@@ -1669,51 +1670,9 @@ impl OpenAi {
                 };
             }
         };
-        let attempt = self
-            .run_codex_attempt(
-                model,
-                messages,
-                system,
-                tools,
-                tools_hash,
-                event_tx,
-                opts,
-                session_id,
-                durable_chain,
-                &coding_plan_auth.resolved,
-                attempt_nonce,
-            )
-            .await;
-        if attempt.should_reacquire_admission() {
-            let Ok(current) = self.coding_plan_auth(false, None, attempt_nonce).await else {
-                return attempt;
-            };
-            return self
-                .run_codex_attempt(
-                    model,
-                    messages,
-                    system,
-                    tools,
-                    tools_hash,
-                    event_tx,
-                    opts,
-                    session_id,
-                    durable_chain,
-                    &current.resolved,
-                    attempt_nonce,
-                )
-                .await;
-        }
-        if let Some(delay) = coding_plan_admission_retry_delay(&attempt) {
-            debug!(
-                process_instance_nonce = process_instance_nonce(),
-                attempt_nonce,
-                phase = "request_admission_retry",
-                retry_delay_ms = delay.as_millis(),
-                "retrying definitively unsent OpenAI Coding Plan admission rejection"
-            );
-            smol::Timer::after(delay).await;
-            return self
+        let mut admission_retries = 0_u8;
+        loop {
+            let attempt = self
                 .run_codex_attempt(
                     model,
                     messages,
@@ -1728,34 +1687,40 @@ impl OpenAi {
                     attempt_nonce,
                 )
                 .await;
-        }
-        let Some(observed) = coding_plan_auth.oauth_tokens.as_ref() else {
-            return attempt;
-        };
-        if !attempt.should_retry_after_oauth_refresh() {
-            return attempt;
-        }
+            if attempt.should_reacquire_admission() {
+                let Ok(current) = self.coding_plan_auth(false, None, attempt_nonce).await else {
+                    return attempt;
+                };
+                coding_plan_auth = current;
+                continue;
+            }
+            if let Some(delay) = coding_plan_admission_retry_delay(&attempt, admission_retries) {
+                admission_retries += 1;
+                debug!(
+                    process_instance_nonce = process_instance_nonce(),
+                    attempt_nonce,
+                    phase = "request_admission_retry",
+                    retry_delay_ms = delay.as_millis(),
+                    "retrying OpenAI Coding Plan admission"
+                );
+                smol::Timer::after(delay).await;
+                continue;
+            }
+            let Some(observed) = coding_plan_auth.oauth_tokens.as_ref() else {
+                return attempt;
+            };
+            if !attempt.should_retry_after_oauth_refresh() {
+                return attempt;
+            }
 
-        let Ok(refreshed) = self
-            .coding_plan_auth(true, Some(observed), attempt_nonce)
-            .await
-        else {
-            return attempt;
-        };
-        self.run_codex_attempt(
-            model,
-            messages,
-            system,
-            tools,
-            tools_hash,
-            event_tx,
-            opts,
-            session_id,
-            durable_chain,
-            &refreshed.resolved,
-            attempt_nonce,
-        )
-        .await
+            let Ok(refreshed) = self
+                .coding_plan_auth(true, Some(observed), attempt_nonce)
+                .await
+            else {
+                return attempt;
+            };
+            coding_plan_auth = refreshed;
+        }
     }
 
     fn response_connection_slot(
@@ -2212,9 +2177,8 @@ impl Provider for OpenAi {
     }
 }
 
-fn coding_plan_admission_retry_delay(attempt: &CodexAttempt) -> Option<Duration> {
+fn coding_plan_admission_retry_delay(attempt: &CodexAttempt, retry_count: u8) -> Option<Duration> {
     if attempt.emitted_event
-        || !attempt.definitive_rejection
         || !matches!(
             &attempt.delivery,
             Some(RequestDeliveryMetadata {
@@ -2226,14 +2190,22 @@ fn coding_plan_admission_retry_delay(attempt: &CodexAttempt) -> Option<Duration>
     {
         return None;
     }
-    let Err(AgentError::CodingPlanAdmission { retry_after }) = &attempt.result else {
+    if retry_count >= CODING_PLAN_ADMISSION_MAX_RETRIES {
         return None;
-    };
-    let delay = match retry_after {
-        Some(delay) => *delay,
-        None => CODING_PLAN_DEFAULT_RETRY_DELAY,
-    };
-    Some(delay.max(CODING_PLAN_DEFAULT_RETRY_DELAY))
+    }
+    match &attempt.result {
+        Err(AgentError::CodingPlanAdmission { retry_after }) if attempt.definitive_rejection => {
+            let delay = match retry_after {
+                Some(delay) => *delay,
+                None => CODING_PLAN_DEFAULT_RETRY_DELAY,
+            };
+            Some(delay.max(CODING_PLAN_DEFAULT_RETRY_DELAY))
+        }
+        Err(AgentError::CodingPlanAdmissionTimeout { .. }) => {
+            Some(CODING_PLAN_DEFAULT_RETRY_DELAY * (1_u32 << u32::from(retry_count)))
+        }
+        _ => None,
+    }
 }
 
 fn is_missing_previous_response(attempt: &CodexAttempt) -> bool {
@@ -4182,36 +4154,106 @@ mod tests {
     }
 
     #[test]
-    fn coding_plan_admission_retries_only_once_before_response_create() {
-        let attempt = |phase, emitted_event| CodexAttempt {
+    fn coding_plan_admission_retries_before_response_create() {
+        let attempt = |phase, emitted_event, error: AgentError, definitive| CodexAttempt {
             previous_response_id: Some("resp_1".into()),
             store: false,
             emitted_event,
-            definitive_rejection: true,
+            definitive_rejection: definitive,
             delivery: Some(RequestDeliveryMetadata::new(phase)),
-            result: Err(AgentError::CodingPlanAdmission {
-                retry_after: Some(Duration::from_secs(7)),
-            }),
+            result: Err(error),
         };
 
         assert_eq!(
-            coding_plan_admission_retry_delay(&attempt(RequestDeliveryPhase::NotSent, false)),
+            coding_plan_admission_retry_delay(
+                &attempt(
+                    RequestDeliveryPhase::NotSent,
+                    false,
+                    AgentError::CodingPlanAdmission {
+                        retry_after: Some(Duration::from_secs(7)),
+                    },
+                    true,
+                ),
+                0
+            ),
             Some(Duration::from_secs(7))
         );
         assert!(
-            coding_plan_admission_retry_delay(&attempt(
-                RequestDeliveryPhase::SentAwaitingAcceptance,
-                false,
-            ))
+            coding_plan_admission_retry_delay(
+                &attempt(
+                    RequestDeliveryPhase::SentAwaitingAcceptance,
+                    false,
+                    AgentError::CodingPlanAdmission {
+                        retry_after: Some(Duration::from_secs(7)),
+                    },
+                    true,
+                ),
+                0,
+            )
             .is_none()
         );
         assert!(
-            coding_plan_admission_retry_delay(&attempt(RequestDeliveryPhase::Accepted, false))
-                .is_none()
+            coding_plan_admission_retry_delay(
+                &attempt(
+                    RequestDeliveryPhase::NotSent,
+                    false,
+                    AgentError::CodingPlanAdmission {
+                        retry_after: Some(Duration::from_secs(7)),
+                    },
+                    true,
+                ),
+                CODING_PLAN_ADMISSION_MAX_RETRIES,
+            )
+            .is_none()
+        );
+
+        assert_eq!(
+            coding_plan_admission_retry_delay(
+                &attempt(
+                    RequestDeliveryPhase::NotSent,
+                    false,
+                    AgentError::CodingPlanAdmissionTimeout { millis: 15_000 },
+                    false,
+                ),
+                0
+            ),
+            Some(Duration::from_millis(250))
+        );
+        assert_eq!(
+            coding_plan_admission_retry_delay(
+                &attempt(
+                    RequestDeliveryPhase::NotSent,
+                    false,
+                    AgentError::CodingPlanAdmissionTimeout { millis: 15_000 },
+                    false,
+                ),
+                1
+            ),
+            Some(Duration::from_millis(500))
         );
         assert!(
-            coding_plan_admission_retry_delay(&attempt(RequestDeliveryPhase::NotSent, true))
-                .is_none()
+            coding_plan_admission_retry_delay(
+                &attempt(
+                    RequestDeliveryPhase::NotSent,
+                    false,
+                    AgentError::CodingPlanAdmissionTimeout { millis: 15_000 },
+                    false,
+                ),
+                CODING_PLAN_ADMISSION_MAX_RETRIES,
+            )
+            .is_none()
+        );
+        assert!(
+            coding_plan_admission_retry_delay(
+                &attempt(
+                    RequestDeliveryPhase::NotSent,
+                    true,
+                    AgentError::CodingPlanAdmissionTimeout { millis: 15_000 },
+                    false,
+                ),
+                0,
+            )
+            .is_none()
         );
     }
 
