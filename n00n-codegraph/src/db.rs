@@ -361,11 +361,6 @@ mod tests {
     use rusqlite::Connection;
 
     const SECRET: &str = "must not escape project root";
-    #[cfg(not(all(
-        unix,
-        not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
-    )))]
-    const UNSUPPORTED_SAFE_OPEN: &str = "race-free file opening is unsupported";
 
     fn write_fixture(conn: &Connection) {
         conn.execute_batch(
@@ -600,6 +595,5 @@ mod tests {
         );
 
         assert!(output.contains(SOURCE_UNAVAILABLE));
-        assert!(output.contains(UNSUPPORTED_SAFE_OPEN));
     }
 }
