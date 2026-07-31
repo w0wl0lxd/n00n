@@ -334,23 +334,23 @@ mod tests {
         error
     }
 
-    #[test]
-    fn malformed_session_id_does_not_dispatch() {
+    #[test_case::test_case(())]
+    fn malformed_session_id_does_not_dispatch(_case: ()) {
         let temp = tempfile::tempdir().expect("tempdir");
         let error = assert_restore_failure_does_not_dispatch(temp.path(), "not-a-session-id");
         assert!(matches!(error, ControlError::InvalidId(_)));
     }
 
-    #[test]
-    fn missing_session_does_not_dispatch() {
+    #[test_case::test_case(())]
+    fn missing_session_does_not_dispatch(_case: ()) {
         let temp = tempfile::tempdir().expect("tempdir");
         let session_id = SessionRef::generate().to_string();
         let error = assert_restore_failure_does_not_dispatch(temp.path(), &session_id);
         assert!(matches!(error, ControlError::Unavailable(_)));
     }
 
-    #[test]
-    fn restores_current_build_mode_and_plan_path() {
+    #[test_case::test_case(())]
+    fn restores_current_build_mode_and_plan_path(_case: ()) {
         let temp = tempfile::tempdir().expect("tempdir");
         let storage = StateDir::from_path(temp.path().to_path_buf());
         let mut session =
@@ -364,8 +364,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn unreadable_session_does_not_dispatch() {
+    #[test_case::test_case(())]
+    fn unreadable_session_does_not_dispatch(_case: ()) {
         const ZSTD_MAGIC: &[u8] = &[0x28, 0xb5, 0x2f, 0xfd];
 
         let temp = tempfile::tempdir().expect("tempdir");
@@ -382,8 +382,8 @@ mod tests {
         assert!(matches!(error, ControlError::Unavailable(_)));
     }
 
-    #[test]
-    fn legacy_plan_session_persists_generated_path() {
+    #[test_case::test_case(())]
+    fn legacy_plan_session_persists_generated_path(_case: ()) {
         let temp = tempfile::tempdir().expect("tempdir");
         let storage = StateDir::from_path(temp.path().to_path_buf());
         let mut session =

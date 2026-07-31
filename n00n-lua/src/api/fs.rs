@@ -2,7 +2,11 @@ use std::collections::{HashSet, VecDeque};
 #[cfg(unix)]
 use std::fs::File;
 use std::fs::FileType;
+#[cfg(unix)]
+use std::fs::Permissions;
 use std::io::{Error, ErrorKind, Write};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::time::UNIX_EPOCH;
 
 use futures_lite::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
@@ -709,13 +713,39 @@ fn atomic_write(path: &Path, content: &[u8]) -> std::io::Result<()> {
             "destination has no parent directory",
         )
     })?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    let existing_permissions = match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "destination must not be a symbolic link",
+            ));
+        }
+        Ok(metadata) => Some(metadata.permissions()),
+        Err(error) if error.kind() == ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let mut temporary = new_atomic_tempfile(parent)?;
+    if let Some(permissions) = existing_permissions {
+        temporary.as_file().set_permissions(permissions)?;
+    }
     temporary.write_all(content)?;
     temporary.as_file().sync_all()?;
     temporary.persist(path).map_err(|error| error.error)?;
     #[cfg(unix)]
     File::open(parent)?.sync_all()?;
     Ok(())
+}
+
+#[cfg(unix)]
+fn new_atomic_tempfile(parent: &Path) -> std::io::Result<tempfile::NamedTempFile> {
+    tempfile::Builder::new()
+        .permissions(Permissions::from_mode(0o666))
+        .tempfile_in(parent)
+}
+
+#[cfg(not(unix))]
+fn new_atomic_tempfile(parent: &Path) -> std::io::Result<tempfile::NamedTempFile> {
+    tempfile::NamedTempFile::new_in(parent)
 }
 
 /// Delete the file, symlink, or directory at {path}.
@@ -1300,6 +1330,29 @@ mod tests {
         )
         .unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "second");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_preserves_permissions_and_rejects_symlinks() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("existing.txt");
+        std::fs::write(&file, "old").unwrap();
+        std::fs::set_permissions(&file, Permissions::from_mode(0o640)).unwrap();
+
+        atomic_write(&file, b"new").unwrap();
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+
+        let link = tmp.path().join("link.txt");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        let error = atomic_write(&link, b"rejected").unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "new");
     }
 
     #[test]

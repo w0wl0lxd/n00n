@@ -43,12 +43,16 @@ end
 
 local function native_index_ready(project)
   if not n00n_arbor.graph_index_available(project) then
-    return false
+    return false, nil
   end
   if not n00n_arbor.available() then
-    return true
+    return true, nil
   end
-  return pcall(n00n_arbor.ensure_fresh_index, project)
+  local ok, err = pcall(n00n_arbor.ensure_fresh_index, project)
+  if not ok then
+    return false, "failed to refresh graph index: " .. tostring(err)
+  end
+  return true, nil
 end
 
 local function native_trace_path(from_symbol, to_symbol, project)
@@ -75,15 +79,18 @@ local function dispatch(input)
       return { llm_output = "error: symbol required for " .. command, is_error = true }
     end
     local native_results, native_err
-    if native_index_ready(project) then
+    local ready, ready_err = native_index_ready(project)
+    if ready then
       native_results, native_err = native_relations(command, symbol, project)
+    else
+      native_err = ready_err
+    end
+    if native_err then
+      return { llm_output = "error: native graph query failed: " .. native_err, is_error = true }
     end
     local results = native_results
     if not results then
       if not n00n_arbor.available() then
-        if native_err then
-          return { llm_output = "error: native graph query failed: " .. native_err, is_error = true }
-        end
         return missing_cli(command)
       end
       if command == "callers" then

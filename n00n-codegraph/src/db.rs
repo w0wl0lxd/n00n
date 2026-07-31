@@ -20,6 +20,7 @@ use crate::CodegraphError;
 const DEFAULT_RESULT_LIMIT: usize = 12;
 const SOURCE_CONTEXT_LINES: u32 = 2;
 const SOURCE_MAX_BYTES: u64 = 1024 * 1024;
+const SOURCE_UNAVAILABLE: &str = "(source unavailable)";
 
 pub fn db_path(project: &Path) -> PathBuf {
     project.join(".codegraph/codegraph.db")
@@ -174,8 +175,17 @@ fn format_nodes(project: &Path, nodes: &[GraphNode]) -> String {
             "{} ({}, lines {}-{})\n",
             node.qualified_name, node.name, node.start_line, node.end_line
         );
-        let snippet = read_snippet(project, &node.file_path, node.start_line, node.end_line)
-            .unwrap_or_else(|err| format!("(source unavailable: {err:#})"));
+        let snippet = match read_snippet(project, &node.file_path, node.start_line, node.end_line) {
+            Ok(snippet) => snippet,
+            Err(error) => {
+                tracing::warn!(
+                    file_path = %node.file_path,
+                    error = %error,
+                    "codegraph source snippet read failed"
+                );
+                String::from(SOURCE_UNAVAILABLE)
+            }
+        };
         sections.push(format!("{header}{meta}\n{snippet}"));
     }
 
@@ -347,10 +357,15 @@ mod tests {
         not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
     ))]
     use super::open_source_file_with;
-    use super::{GraphNode, format_nodes, fts_query, search_nodes};
+    use super::{GraphNode, SOURCE_UNAVAILABLE, format_nodes, fts_query, search_nodes};
     use rusqlite::Connection;
 
     const SECRET: &str = "must not escape project root";
+    #[cfg(not(all(
+        unix,
+        not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
+    )))]
+    const UNSUPPORTED_SAFE_OPEN: &str = "race-free file opening is unsupported";
 
     fn write_fixture(conn: &Connection) {
         conn.execute_batch(
@@ -432,7 +447,7 @@ mod tests {
 
     fn assert_source_unavailable(project: &std::path::Path, file_path: String) {
         let output = format_nodes(project, &[node(file_path)]);
-        assert!(output.contains("source unavailable"));
+        assert!(output.contains(SOURCE_UNAVAILABLE));
         assert!(!output.contains(SECRET));
     }
 
@@ -459,6 +474,12 @@ mod tests {
         fs::write(&secret, SECRET).expect("secret fixture");
 
         assert_source_unavailable(&project, secret.to_string_lossy().into_owned());
+    }
+
+    #[test]
+    fn format_nodes_rejects_empty_source_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        assert_source_unavailable(temp.path(), String::new());
     }
 
     #[test]
@@ -578,7 +599,7 @@ mod tests {
             &[node(String::from("source.rs"))],
         );
 
-        assert!(output.contains("source unavailable"));
-        assert!(output.contains("race-free file opening is unsupported"));
+        assert!(output.contains(SOURCE_UNAVAILABLE));
+        assert!(output.contains(UNSUPPORTED_SAFE_OPEN));
     }
 }

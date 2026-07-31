@@ -30,6 +30,8 @@ use crate::{
 
 type StoredSession = Session<Message, TokenUsage, ToolOutput>;
 
+const NON_UTF8_PLAN_PATH_ERR: &str = "plan path must be valid UTF-8";
+
 struct SessionStore {
     dir: StateDir,
     session: StoredSession,
@@ -56,8 +58,11 @@ impl SessionStore {
             let mut session = StoredSession::new(model_spec, cwd);
             session.id = session_id;
             let mut store = Self { dir, session };
-            store.update_turn_metadata(mode, None);
-            store.save();
+            if let Err(error) = store.update_turn_metadata(mode, None) {
+                warn!(error, "session metadata was not persisted");
+            } else {
+                store.save();
+            }
             store
         }
     }
@@ -68,20 +73,36 @@ impl SessionStore {
         }
     }
 
-    fn update_turn_metadata(&mut self, mode: &AgentMode, plan_path: Option<&Path>) {
+    fn update_turn_metadata(
+        &mut self,
+        mode: &AgentMode,
+        plan_path: Option<&Path>,
+    ) -> Result<(), &'static str> {
         let (stored_mode, stored_plan_path) = match mode {
             AgentMode::Build => (StoredMode::Build, plan_path),
             AgentMode::Plan(path) => (StoredMode::Plan, Some(path.as_path())),
             AgentMode::Research => (StoredMode::Research, None),
         };
+        let stored_plan_path = stored_plan_path
+            .map(|path| {
+                path.to_str()
+                    .map(str::to_owned)
+                    .ok_or(NON_UTF8_PLAN_PATH_ERR)
+            })
+            .transpose()?;
         self.session.meta.mode = Some(stored_mode);
-        self.session.meta.plan_path =
-            stored_plan_path.map(|path| path.to_string_lossy().into_owned());
+        self.session.meta.plan_path = stored_plan_path;
+        Ok(())
     }
 
-    fn record_turn_started(&mut self, mode: &AgentMode, plan_path: Option<&Path>) {
-        self.update_turn_metadata(mode, plan_path);
+    fn record_turn_started(
+        &mut self,
+        mode: &AgentMode,
+        plan_path: Option<&Path>,
+    ) -> Result<(), &'static str> {
+        self.update_turn_metadata(mode, plan_path)?;
         self.save();
+        Ok(())
     }
 
     fn record_turn(
@@ -90,12 +111,13 @@ impl SessionStore {
         model_spec: String,
         mode: &AgentMode,
         plan_path: Option<&Path>,
-    ) {
+    ) -> Result<(), &'static str> {
+        self.update_turn_metadata(mode, plan_path)?;
         self.session.messages = messages.to_vec();
         self.session.model = model_spec;
         self.session.update_title_if_default();
-        self.update_turn_metadata(mode, plan_path);
         self.save();
+        Ok(())
     }
 }
 
@@ -262,8 +284,16 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
             .with_mcp(params.mcp_handle.clone().map(|h| McpSession::new(h, &[])));
 
             let plan_path = mode.plan_path().map(PathBuf::from);
-            if let Some(store) = &mut session_store {
-                store.record_turn_started(&mode, plan_path.as_deref());
+            if let Some(store) = &mut session_store
+                && let Err(message) = store.record_turn_started(&mode, plan_path.as_deref())
+            {
+                let _ = error_tx.send(AgentEvent::Error {
+                    message: message.into(),
+                });
+                if let Some(handle) = mcp_shutdown {
+                    handle.shutdown().await;
+                }
+                return;
             }
             let result = agent
                 .run(AgentInput {
@@ -281,8 +311,11 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                 .await;
             drop(agent);
 
-            if let Some(store) = &mut session_store {
-                store.record_turn(history.as_slice(), model_spec, &mode, plan_path.as_deref());
+            if let Some(store) = &mut session_store
+                && let Err(error) =
+                    store.record_turn(history.as_slice(), model_spec, &mode, plan_path.as_deref())
+            {
+                warn!(error, "session metadata was not persisted");
             }
 
             if let Err(e) = result {
@@ -402,8 +435,15 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                 let error_tx = event_tx.clone();
                 let turn_mode = input.mode.clone();
                 let turn_plan_path = input.plan_path.clone();
-                if let Some(store) = &mut store {
-                    store.record_turn_started(&turn_mode, turn_plan_path.as_deref());
+                if let Some(store) = &mut store
+                    && let Err(message) =
+                        store.record_turn_started(&turn_mode, turn_plan_path.as_deref())
+                {
+                    let _ = error_tx.send(AgentEvent::Error {
+                        message: message.into(),
+                    });
+                    run_id += 1;
+                    continue;
                 }
 
                 if let Some(mut new_model) = model_rx.try_iter().last()
@@ -511,13 +551,15 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                     });
                 }
 
-                if let Some(store) = &mut store {
-                    store.record_turn(
+                if let Some(store) = &mut store
+                    && let Err(error) = store.record_turn(
                         history.as_slice(),
                         model.spec(),
                         &turn_mode,
                         turn_plan_path.as_deref(),
-                    );
+                    )
+                {
+                    warn!(error, "session metadata was not persisted");
                 }
                 run_id += 1;
             }
@@ -596,50 +638,58 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut store = store_in(&tmp);
         let messages = vec![Message::user("fix the login bug".into())];
-        store.record_turn(
-            &messages,
-            MODEL_SPEC.into(),
-            &AgentMode::Plan(PathBuf::from("plan.md")),
-            None,
-        );
+        store
+            .record_turn(
+                &messages,
+                MODEL_SPEC.into(),
+                &AgentMode::Plan(PathBuf::from("plan.md")),
+                None,
+            )
+            .unwrap();
 
         let loaded = load(&tmp);
         assert_eq!(loaded.messages.len(), 1);
         assert_eq!(loaded.title, generate_title(&messages));
     }
 
-    #[test]
-    fn turn_mode_transitions_update_restored_metadata() {
+    #[test_case::test_case(())]
+    fn turn_mode_transitions_update_restored_metadata(_case: ()) {
         let tmp = TempDir::new().unwrap();
         let mut store = store_in(&tmp);
         let build_plan = PathBuf::from("approved-plan.md");
 
-        store.record_turn_started(&AgentMode::Build, Some(&build_plan));
+        store
+            .record_turn_started(&AgentMode::Build, Some(&build_plan))
+            .unwrap();
         let loaded = load(&tmp);
         assert_eq!(loaded.meta.mode, Some(StoredMode::Build));
         assert_eq!(loaded.meta.plan_path.as_deref(), Some("approved-plan.md"));
 
-        store.record_turn(
-            &[],
-            MODEL_SPEC.into(),
-            &AgentMode::Research,
-            Some(&build_plan),
-        );
+        store
+            .record_turn(
+                &[],
+                MODEL_SPEC.into(),
+                &AgentMode::Research,
+                Some(&build_plan),
+            )
+            .unwrap();
         let loaded = load(&tmp);
         assert_eq!(loaded.meta.mode, Some(StoredMode::Research));
         assert!(loaded.meta.plan_path.is_none());
     }
 
-    #[test]
-    fn reopening_resumes_existing_session() {
+    #[test_case::test_case(())]
+    fn reopening_resumes_existing_session(_case: ()) {
         let tmp = TempDir::new().unwrap();
         let mut store = store_in(&tmp);
-        store.record_turn(
-            &[Message::user("first prompt".into())],
-            MODEL_SPEC.into(),
-            &AgentMode::Plan(PathBuf::from("plan.md")),
-            None,
-        );
+        store
+            .record_turn(
+                &[Message::user("first prompt".into())],
+                MODEL_SPEC.into(),
+                &AgentMode::Plan(PathBuf::from("plan.md")),
+                None,
+            )
+            .unwrap();
         drop(store);
 
         let mut store = store_in(&tmp);
@@ -649,16 +699,37 @@ mod tests {
             Message::user("first prompt".into()),
             Message::user("second prompt".into()),
         ];
-        store.record_turn(
-            &messages,
-            "other/model".into(),
-            &AgentMode::Plan(PathBuf::from("plan.md")),
-            None,
-        );
+        store
+            .record_turn(
+                &messages,
+                "other/model".into(),
+                &AgentMode::Plan(PathBuf::from("plan.md")),
+                None,
+            )
+            .unwrap();
 
         let loaded = load(&tmp);
         assert_eq!(loaded.messages.len(), 2);
         assert_eq!(loaded.model, "other/model");
+    }
+
+    #[cfg(unix)]
+    #[test_case::test_case(())]
+    fn non_utf8_plan_path_is_rejected_without_mutating_metadata(_case: ()) {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let tmp = TempDir::new().unwrap();
+        let mut store = store_in(&tmp);
+        let original = store.session.meta.clone();
+        let path = PathBuf::from(OsString::from_vec(vec![0xff]));
+
+        assert_eq!(
+            store.update_turn_metadata(&AgentMode::Plan(path), None),
+            Err(NON_UTF8_PLAN_PATH_ERR)
+        );
+        assert_eq!(store.session.meta.mode, original.mode);
+        assert_eq!(store.session.meta.plan_path, original.plan_path);
     }
 
     #[test]

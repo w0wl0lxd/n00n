@@ -227,6 +227,9 @@ const FINISH_CALLED_TWICE_ERR: &str = "ctx:finish() already called";
 const DEADLINE_ALREADY_SET_ERR: &str = "ctx:set_deadline() already called";
 const TIMED_OUT_SUBSTR: &str = "timed out";
 const DEADLINE_HOT_LOOP_TIMEOUT_ERR: &str = "tool deadline_hot_loop timed out after 1s";
+const WORKFLOW_TIMEOUT_SCHEMA_SUBSTR: &str = "minimum 60s";
+const WORKFLOW_TIMEOUT_REJECTED_SUBSTR: &str = "at least 60";
+const WORKFLOW_TIMEOUT_CONFIG_ERR_SUBSTR: &str = "below minimum (60)";
 const ALREADY_CALLED_ERR: &str = "already called";
 const UNKNOWN_FIELD_ERR: &str = "unknown field";
 const PERMISSION_DENIED_MSG: &str = "permission denied";
@@ -2796,12 +2799,15 @@ fn workflow_per_run_timeout_schema_matches_runtime_bounds() {
         schema["properties"]["timeout_secs"]["description"]
             .as_str()
             .unwrap()
-            .contains("minimum 60s")
+            .contains(WORKFLOW_TIMEOUT_SCHEMA_SUBSTR)
     );
     assert!(entry.tool.parse(&input(60)).is_ok());
     assert!(entry.tool.parse(&input(1_200)).is_ok());
     let error = exec_tool(&reg, "workflow", input(59)).unwrap_err();
-    assert!(error.contains("at least 60"), "unexpected error: {error}");
+    assert!(
+        error.contains(WORKFLOW_TIMEOUT_REJECTED_SUBSTR),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]
@@ -2821,7 +2827,9 @@ fn workflow_configured_timeout_rejects_async_runtime_underrun() {
         .expect_err("workflow timeout below the async runtime minimum must fail");
 
     assert!(
-        error.to_string().contains("below minimum (60)"),
+        error
+            .to_string()
+            .contains(WORKFLOW_TIMEOUT_CONFIG_ERR_SUBSTR),
         "unexpected error: {error}"
     );
 }

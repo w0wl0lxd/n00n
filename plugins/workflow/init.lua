@@ -73,6 +73,7 @@ local schema = {
     },
     timeout_secs = {
       type = "integer",
+      minimum = ASYNC_RUNTIME_MIN_TIMEOUT_SECS,
       description = "Wall-clock timeout for this run (minimum 60s). May shorten, but cannot exceed, the configured workflow timeout.",
     },
   },
@@ -250,14 +251,14 @@ local function inspect_file(path, label, missing_error)
   local metadata, metadata_err = n00n.fs.metadata(path)
   if not metadata then
     if metadata_err then
-      return nil, "failed to inspect workflow " .. label .. ": " .. tostring(metadata_err)
+      return nil, "failed to inspect workflow " .. label .. ": " .. tostring(metadata_err), false
     end
-    return nil, missing_error
+    return nil, missing_error, true
   end
   if not metadata.is_file then
-    return nil, "workflow " .. label .. " path is not a file"
+    return nil, "workflow " .. label .. " path is not a file", false
   end
-  return true
+  return true, nil, false
 end
 
 local function load_journal(run_id, required)
@@ -267,9 +268,9 @@ local function load_journal(run_id, required)
     return nil, nil, nil, "cannot resolve workflow run directory"
   end
   local path = n00n.fs.joinpath(dir, JOURNAL_FILENAME)
-  local exists, inspect_err = inspect_file(path, "journal", "resume workflow journal not found")
+  local exists, inspect_err, missing = inspect_file(path, "journal", "resume workflow journal not found")
   if not exists then
-    if required or inspect_err ~= "resume workflow journal not found" then
+    if required or not missing then
       return nil, path, nil, inspect_err
     end
     return cache, path, ""

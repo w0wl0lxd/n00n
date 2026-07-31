@@ -774,7 +774,14 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
           if logger then
             logger.log("checkpoint_save_failed", { checkpoint_id = ckpt_id, error = save_err })
           end
-          error("failed to save checkpoint " .. ckpt_id .. ": " .. tostring(save_err), 0)
+          results[#results + 1] = "[checkpoint] ERROR failed to save " .. ckpt_id .. ": " .. tostring(save_err)
+          local failures = 0
+          for _, result in ipairs(results) do
+            if result:find("ERROR", 1, true) then
+              failures = failures + 1
+            end
+          end
+          return results, total_cost, failures, total_usage, false
         end
       end
 
@@ -1055,7 +1062,7 @@ finish_run = function(ctx, input, results, total_cost, completed, unit, slug, fa
       logger.log("run_error", { error = save_err })
     end
     return {
-      llm_output = "team persistence failed: " .. tostring(save_err),
+      llm_output = report .. summary .. "\n\n---\nWarning: team persistence failed: " .. tostring(save_err),
       is_error = true,
       cost = total_cost,
       usage = roles.usage(usage),

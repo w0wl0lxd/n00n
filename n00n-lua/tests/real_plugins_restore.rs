@@ -322,6 +322,11 @@ fn workflow_script_mismatch_starts_zero_agents() {
     "empty_callers"
 )]
 #[test_case::test_case(
+    json!({ "command": "callees", "symbol": "target", "project": "/fixture" }),
+    "callees of target\n  callee (function) src/lib.rs:11";
+    "callees"
+)]
+#[test_case::test_case(
     json!({
         "command": "trace_path",
         "from_symbol": "caller",
@@ -341,9 +346,13 @@ fn arbor_native_graph_operations_do_not_require_cli(input: Value, expected: &str
             n00n.arbor.graph_index_available = function() return true end
             n00n.arbor.ensure_fresh_index = function() error("CLI must not be called") end
             n00n.arbor.callers = function() error("CLI must not be called") end
+            n00n.arbor.callees = function() error("CLI must not be called") end
             n00n.arbor.graph_callers = function(symbol)
                 if symbol == "orphan" then return {} end
                 return { { name = "caller", kind = "function", path = "src/lib.rs", line = 7 } }
+            end
+            n00n.arbor.graph_callees = function()
+                return { { name = "callee", kind = "function", path = "src/lib.rs", line = 11 } }
             end
             n00n.arbor.graph_trace_path = function()
                 return { { name = "target", kind = "function", path = "src/lib.rs", line = 9 } }
@@ -354,6 +363,27 @@ fn arbor_native_graph_operations_do_not_require_cli(input: Value, expected: &str
     .expect("native Arbor operation should succeed without the CLI");
 
     assert_eq!(output, expected);
+}
+
+#[test_case::test_case(())]
+fn arbor_native_refresh_failure_does_not_fall_back_to_cli(_case: ()) {
+    let error = execute_plugin_with_native_mock(
+        "arbor",
+        ARBOR_SRC,
+        r#"
+            n00n.arbor.available = function() return true end
+            n00n.arbor.graph_index_available = function() return true end
+            n00n.arbor.ensure_fresh_index = function() error("refresh failed") end
+            n00n.arbor.callers = function() error("CLI must not be called") end
+        "#,
+        json!({ "command": "callers", "symbol": "target", "project": "/fixture" }),
+    )
+    .expect_err("native refresh failure must not query a stale CLI index");
+
+    assert!(
+        error.contains("failed to refresh graph index"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]

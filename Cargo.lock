@@ -3220,6 +3220,7 @@ dependencies = [
  "rustix 1.1.4",
  "tempfile",
  "thiserror 2.0.19",
+ "tracing",
  "wait-timeout",
 ]
 
