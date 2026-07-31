@@ -290,7 +290,7 @@ fn on(lua: &Lua, this: &BufHandle, event: String, callback: Function) -> LuaResu
         "change" => {
             this.buf.set_on_change(move || {
                 if let Err(e) = callback.call::<()>(()) {
-                    tracing::debug!(error = %e, "buf change callback failed");
+                    tracing::warn!(error = %e, "buf change callback failed");
                 }
             });
             track_slot(lua, HandlerSlot::Change(Arc::clone(&this.buf)));
