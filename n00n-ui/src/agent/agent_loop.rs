@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -26,6 +26,15 @@ use tracing::{error, warn};
 use super::ModelSlot;
 use super::cancel_map::RunCancelMap;
 use super::shared_queue::{QueueItem, QueueReceiver};
+
+fn build_plan_path<'a>(
+    mode: &n00n_agent::AgentMode,
+    plan_path: Option<&'a Path>,
+) -> Option<&'a Path> {
+    matches!(mode, n00n_agent::AgentMode::Build)
+        .then_some(plan_path)
+        .flatten()
+}
 
 pub(super) struct AgentLoop {
     model_slot: Arc<ArcSwap<ModelSlot>>,
@@ -198,7 +207,10 @@ impl AgentLoop {
         if self.init_cancel.is_cancelled() {
             return false;
         }
-        if let Err(e) = self.publish_btw_system(&n00n_agent::prompt::ResolvedSlots::default()) {
+        if let Err(e) = self.publish_btw_system(
+            &n00n_agent::prompt::ResolvedSlots::default(),
+            self.plan_path.as_deref(),
+        ) {
             warn!(error = %e, "failed to pre-build between-turn system prompt; will retry on first run");
         }
 
@@ -312,7 +324,10 @@ impl AgentLoop {
             return Err(e);
         }
         self.plan_path.clone_from(&input.plan_path);
-        if let Err(e) = self.publish_btw_system(&prompt_slots) {
+        if let Err(e) = self.publish_btw_system(
+            &prompt_slots,
+            build_plan_path(&input.mode, input.plan_path.as_deref()),
+        ) {
             self.clear_cancel_trigger(run_id);
             return Err(e);
         }
@@ -423,6 +438,7 @@ impl AgentLoop {
     fn publish_btw_system(
         &self,
         prompt_slots: &n00n_agent::prompt::ResolvedSlots,
+        plan_path: Option<&Path>,
     ) -> Result<(), n00n_providers::AgentError> {
         let slot = self.model_slot.load();
         let mut system = agent::build_system_prompt(
@@ -432,7 +448,7 @@ impl AgentLoop {
             prompt_slots,
             &slot.model,
         );
-        if let Some(plan_path) = self.plan_path.as_deref() {
+        if let Some(plan_path) = plan_path {
             agent::append_build_plan_prompt(&mut system, plan_path)?;
         }
         self.btw_system.store(Arc::new(system));
@@ -507,5 +523,34 @@ fn spawn_oauth_for_needs_auth(handle: &n00n_agent::mcp::McpHandle) {
             tracing::info!(server = %server_name, "MCP server authenticated via OAuth");
         })
         .detach();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use n00n_agent::AgentMode;
+
+    use super::build_plan_path;
+
+    #[test]
+    fn plan_mode_does_not_read_unwritten_plan() {
+        assert!(
+            build_plan_path(
+                &AgentMode::Plan("plan.md".into()),
+                Some(Path::new("plan.md"))
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn build_mode_reads_approved_plan() {
+        let plan_path = Path::new("plan.md");
+        assert_eq!(
+            build_plan_path(&AgentMode::Build, Some(plan_path)),
+            Some(plan_path)
+        );
     }
 }
