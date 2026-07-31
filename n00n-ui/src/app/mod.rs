@@ -202,6 +202,34 @@ pub enum Msg {
     Agent(Box<Envelope>),
 }
 
+#[cfg(test)]
+const TEST_WRITER_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[cfg(test)]
+struct TestStateDir {
+    dir: Option<tempfile::TempDir>,
+    writer: Option<Arc<StorageWriter>>,
+}
+
+#[cfg(test)]
+impl Drop for TestStateDir {
+    fn drop(&mut self) {
+        let Some(writer) = self.writer.take() else {
+            return;
+        };
+        let writer_stopped = match Arc::try_unwrap(writer) {
+            Ok(writer) => writer.wait_for_shutdown(TEST_WRITER_DRAIN_TIMEOUT),
+            Err(writer) => {
+                drop(writer);
+                false
+            }
+        };
+        if !writer_stopped && let Some(dir) = self.dir.take() {
+            drop(dir.keep());
+        }
+    }
+}
+
 pub struct App {
     pub(super) chats: Vec<Chat>,
     pub(super) active_chat: usize,
@@ -253,6 +281,8 @@ pub struct App {
     pub(crate) shared_tool_outputs: Option<Arc<Mutex<HashMap<String, ToolOutput>>>>,
     pub(crate) image_paste_rx: Vec<flume::Receiver<Result<ImageSource, String>>>,
     storage_writer: Arc<StorageWriter>,
+    #[cfg(test)]
+    test_state_dir: Option<TestStateDir>,
     pub(crate) shell: shell::ShellState,
     pub(crate) ui_config: UiConfig,
     pub(crate) permissions: Arc<PermissionManager>,
@@ -367,6 +397,8 @@ impl App {
             shared_tool_outputs: None,
             image_paste_rx: vec![],
             storage_writer,
+            #[cfg(test)]
+            test_state_dir: None,
             shell: shell::ShellState::default(),
             ui_config,
             permissions,

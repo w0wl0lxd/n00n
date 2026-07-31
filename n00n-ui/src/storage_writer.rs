@@ -104,6 +104,7 @@ impl StorageWriter {
                     }
                 }
                 flush(&writer_pending, &mut logs, &mut durable_revisions, &dir);
+                drop(logs);
                 let _ = done_tx.send(());
             })?;
 
@@ -159,10 +160,15 @@ impl StorageWriter {
     }
 
     pub fn shutdown(self, timeout: Duration) {
-        drop(self.ops);
-        if self.done_rx.recv_timeout(timeout).is_err() {
+        if !self.wait_for_shutdown(timeout) {
             warn!("storage writer did not drain within {timeout:?}");
         }
+    }
+
+    pub(crate) fn wait_for_shutdown(self, timeout: Duration) -> bool {
+        let Self { ops, done_rx, .. } = self;
+        drop(ops);
+        done_rx.recv_timeout(timeout).is_ok()
     }
 }
 
