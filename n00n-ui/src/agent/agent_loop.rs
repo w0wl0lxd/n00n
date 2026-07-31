@@ -72,6 +72,7 @@ pub(super) struct AgentLoopInit {
     pub(super) tool_output_lines: ToolOutputLines,
     pub(super) initial_history: Vec<Message>,
     pub(super) initial_transcript: Vec<TranscriptEntry<Message>>,
+    pub(super) initial_plan_path: Option<PathBuf>,
     pub(super) shared_history: Arc<ArcSwap<Vec<Message>>>,
     pub(super) shared_transcript: n00n_agent::SharedTranscript,
     pub(super) btw_system: Arc<ArcSwap<System>>,
@@ -97,6 +98,7 @@ impl AgentLoop {
             tool_output_lines,
             initial_history,
             initial_transcript,
+            initial_plan_path,
             shared_history,
             shared_transcript,
             btw_system,
@@ -140,7 +142,7 @@ impl AgentLoop {
             lua_handle,
             subagent_cancels,
             tools_cache: None,
-            plan_path: None,
+            plan_path: initial_plan_path,
         }
     }
 
