@@ -876,8 +876,17 @@ fn build_loaded_tool(
     tool_output_lines: &ToolOutputLines,
 ) -> (String, usize, Option<Arc<ToolOutput>>, Option<String>) {
     if let Some(output) = reconstructed {
+        let (text, skipped) = match &output {
+            ToolOutput::Plain(t) | ToolOutput::Markdown(t) | ToolOutput::ReadDir(t)
+                if !t.text.is_empty() =>
+            {
+                let tr = truncate_output(&t.text, tool_output_lines.get(tool));
+                (format!("{}\n{}", summary, tr.kept), tr.skipped)
+            }
+            _ => (summary.to_owned(), 0),
+        };
         let annotation = output.annotation();
-        (summary.to_owned(), 0, Some(Arc::new(output)), annotation)
+        (text, skipped, Some(Arc::new(output)), annotation)
     } else {
         let result = result_text.unwrap_or_else(|| "");
         let annotation = if result.is_empty() {

@@ -364,6 +364,11 @@ impl<'h> Agent<'h> {
         let mut msg = Message::user_with_images(input.message.clone(), input.images);
         msg.control = input.control;
         self.history.push(msg);
+        if self.history.len() == 1 && self.history.as_slice()[0].content.is_empty() {
+            return Err(AgentError::Config {
+                message: "message is empty".into(),
+            });
+        }
         self.mode = Arc::new(input.mode);
         self.workflow = input.workflow;
         // Filter the caller-supplied tool list in place. Rebuilding from the
@@ -388,7 +393,7 @@ impl<'h> Agent<'h> {
             fast: input.fast,
             message_cache_breakpoints: adaptive_cache_breakpoints(user_message_count),
             protect_history_replay,
-            allow_history_replay: false,
+            allow_history_replay: self.permissions.is_yolo(),
         };
 
         info!(
@@ -460,6 +465,9 @@ impl<'h> Agent<'h> {
     }
 
     async fn approve_history_replay(&self, reason: HistoryReplayReason) -> Result<(), AgentError> {
+        if self.permissions.is_yolo() {
+            return Ok(());
+        }
         let scope = history_replay_scope(
             reason,
             self.history.as_slice(),
@@ -584,7 +592,7 @@ impl<'h> Agent<'h> {
                 if !response.message.content.is_empty() {
                     self.history.push(response.message);
                 }
-                warn!(
+                info!(
                     "empty or reasoning-only response after tool calls, nudging model to continue"
                 );
                 self.event_tx.send(AgentEvent::Nudge)?;
@@ -594,7 +602,7 @@ impl<'h> Agent<'h> {
 
             if !has_text && has_thinking && !after_tool_results && !self.thinking_empty_retried {
                 self.thinking_empty_retried = true;
-                warn!("assistant produced only reasoning, nudging for final answer");
+                info!("assistant produced only reasoning, nudging for final answer");
                 self.history.push(response.message);
                 self.event_tx.send(AgentEvent::Nudge)?;
                 self.history
@@ -854,7 +862,13 @@ impl<'h> Agent<'h> {
         }
         info!(context_size = self.context_size, "auto-compacting");
         self.event_tx.send(AgentEvent::AutoCompacting)?;
-        self.do_compact().await?;
+        if let Err(e) = self.do_compact().await {
+            warn!(
+                error = %e,
+                "auto-compaction failed; continuing without compacting"
+            );
+            return Ok(false);
+        }
         Ok(true)
     }
 
@@ -1505,6 +1519,7 @@ mod tests {
             workflow: false,
             control: false,
             prompt: None,
+            plan_path: None,
         }
     }
 

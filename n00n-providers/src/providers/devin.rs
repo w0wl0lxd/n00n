@@ -10,14 +10,14 @@
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use futures_lite::io::{AsyncReadExt, BufReader};
 
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use flume::Sender;
-use isahc::AsyncReadResponseExt;
-use isahc::RequestExt;
+use isahc::{AsyncReadResponseExt, HttpClient};
 use serde::Deserialize;
 use tracing::debug;
 
@@ -145,7 +145,7 @@ fn encode_devin_tools(tools: &serde_json::Value) -> Result<Vec<Vec<u8>>, AgentEr
         let description = function
             .get("description")
             .and_then(serde_json::Value::as_str);
-        let schema_string = match function.get("parameters") {
+        let schema_string = match function.get("input_schema") {
             Some(v) => serde_json::to_string(v).map_err(|e| AgentError::Config {
                 message: format!("failed to serialize tool schema: {e}"),
             })?,
@@ -164,6 +164,22 @@ fn encode_devin_tools(tools: &serde_json::Value) -> Result<Vec<Vec<u8>>, AgentEr
         }));
     }
     Ok(encoded)
+}
+
+fn merge_tool_call(
+    tool_calls: &mut std::collections::HashMap<String, (String, String)>,
+    tool_call: ChatToolCall,
+) -> bool {
+    if let Some((name, arguments_json)) = tool_calls.get_mut(&tool_call.id) {
+        if !tool_call.name.is_empty() {
+            *name = tool_call.name;
+        }
+        arguments_json.push_str(&tool_call.arguments_json);
+        false
+    } else {
+        tool_calls.insert(tool_call.id, (tool_call.name, tool_call.arguments_json));
+        true
+    }
 }
 
 fn encode_devin_chat_message_prompts(messages: &[Message], cascade_id: &str) -> Vec<Vec<u8>> {
@@ -278,22 +294,22 @@ fn encode_devin_chat_message_prompts(messages: &[Message], cascade_id: &str) -> 
 pub struct Devin {
     credentials: Option<DevinCredentials>,
     client_model_configs: Mutex<Option<std::collections::HashMap<String, String>>>,
+    timeouts: super::Timeouts,
 }
 
 impl Devin {
     pub fn new(timeouts: super::Timeouts) -> Self {
-        let _ = timeouts; // Not used in native implementation
-
         Self {
             credentials: DevinCredentials::from_env().or_else(DevinCredentials::from_file),
             client_model_configs: Mutex::new(None),
+            timeouts,
         }
     }
 
     #[allow(clippy::unnecessary_wraps)]
     pub fn with_auth(
         auth: &Arc<Mutex<ResolvedAuth>>,
-        _timeouts: super::Timeouts,
+        timeouts: super::Timeouts,
     ) -> Result<Self, AgentError> {
         let resolved = match auth.lock() {
             Ok(guard) => guard,
@@ -314,15 +330,27 @@ impl Devin {
             .filter(|s| !s.is_empty())
             .map(normalize_session_token);
 
-        let credentials = session_token.map(|token| DevinCredentials {
-            session_token: token,
-            api_server_url,
-        });
+        let credentials = session_token
+            .map(|token| DevinCredentials {
+                session_token: token,
+                api_server_url: api_server_url.clone(),
+            })
+            .or_else(DevinCredentials::from_env)
+            .or_else(DevinCredentials::from_file)
+            .map(|mut credentials| {
+                credentials.api_server_url = api_server_url;
+                credentials
+            });
 
         Ok(Self {
             credentials,
             client_model_configs: Mutex::new(None),
+            timeouts,
         })
+    }
+
+    fn http_client(&self) -> Result<HttpClient, AgentError> {
+        super::http_client(self.timeouts)
     }
 
     async fn get_user_jwt(&self) -> Result<(String, String), AgentError> {
@@ -337,19 +365,21 @@ impl Devin {
 
         let url = format!("{}{}", creds.api_server_url, DEVIN_AUTH_PATH);
 
-        let mut response = isahc::Request::post(&url)
+        let request = isahc::Request::post(&url)
             .header("content-type", "application/proto")
             .header("connect-protocol-version", "1")
             .body(request_bytes)
             .map_err(|e| AgentError::Config {
                 message: format!("failed to build auth request: {e}"),
-            })?
-            .send_async()
-            .await
-            .map_err(|e| AgentError::Api {
-                status: 0,
-                message: format!("auth request failed: {e}"),
             })?;
+        let mut response =
+            self.http_client()?
+                .send_async(request)
+                .await
+                .map_err(|e| AgentError::Api {
+                    status: 0,
+                    message: format!("auth request failed: {e}"),
+                })?;
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
@@ -413,19 +443,21 @@ impl Devin {
         let request_bytes = encode_get_cli_model_configs_request(&creds.session_token);
 
         let url = format!("{base_url}{DEVIN_CLI_MODEL_CONFIGS_PATH}");
-        let mut response = isahc::Request::post(&url)
+        let request = isahc::Request::post(&url)
             .header("content-type", "application/proto")
             .header("connect-protocol-version", "1")
             .body(request_bytes)
             .map_err(|e| AgentError::Config {
                 message: format!("failed to build model configs request: {e}"),
-            })?
-            .send_async()
-            .await
-            .map_err(|e| AgentError::Api {
-                status: 0,
-                message: format!("model configs request failed: {e}"),
             })?;
+        let mut response =
+            self.http_client()?
+                .send_async(request)
+                .await
+                .map_err(|e| AgentError::Api {
+                    status: 0,
+                    message: format!("model configs request failed: {e}"),
+                })?;
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
@@ -540,7 +572,7 @@ impl Devin {
 
         let url = format!("{base_url}{DEVIN_CHAT_PATH}");
 
-        let mut response = isahc::Request::post(&url)
+        let request = isahc::Request::post(&url)
             .header("content-type", "application/connect+proto")
             .header("connect-protocol-version", "1")
             .header("connect-content-encoding", "gzip")
@@ -550,13 +582,15 @@ impl Devin {
             .body(frame)
             .map_err(|e| AgentError::Config {
                 message: format!("failed to build chat request: {e}"),
-            })?
-            .send_async()
-            .await
-            .map_err(|e| AgentError::Api {
-                status: 0,
-                message: format!("chat request failed: {e}"),
             })?;
+        let mut response =
+            self.http_client()?
+                .send_async(request)
+                .await
+                .map_err(|e| AgentError::Api {
+                    status: 0,
+                    message: format!("chat request failed: {e}"),
+                })?;
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
@@ -575,25 +609,45 @@ impl Devin {
         let mut frame_buffer = FrameBuffer::default();
         let mut text = String::new();
         let mut thinking = String::new();
+        let mut signature = String::new();
         let mut usage = TokenUsage::default();
+        let mut stream_deadline = Instant::now() + self.timeouts.stream;
         let mut stop_reason = StopReason::EndTurn;
         let mut tool_calls: std::collections::HashMap<String, (String, String)> =
             std::collections::HashMap::new();
 
         let mut buffer = vec![0u8; 8192];
 
-        loop {
-            let n = reader
-                .read(&mut buffer)
-                .await
-                .map_err(|e| AgentError::Api {
-                    status: 0,
-                    message: format!("failed to read response: {e}"),
-                })?;
+        'stream: loop {
+            let n = futures_lite::future::or(
+                async {
+                    reader.read(&mut buffer).await.map_err(|e| AgentError::Api {
+                        status: 0,
+                        message: format!("failed to read response: {e}"),
+                    })
+                },
+                async {
+                    smol::Timer::after(stream_deadline.saturating_duration_since(Instant::now()))
+                        .await;
+                    Err(AgentError::Timeout {
+                        secs: self.timeouts.stream.as_secs(),
+                    })
+                },
+            )
+            .await?;
 
             if n == 0 {
-                break;
+                let message = if frame_buffer.is_empty() {
+                    "Devin stream ended before the end-stream trailer"
+                } else {
+                    "truncated Devin Connect frame at end of stream"
+                };
+                return Err(AgentError::Api {
+                    status: 0,
+                    message: message.to_string(),
+                });
             }
+            stream_deadline = Instant::now() + self.timeouts.stream;
 
             frame_buffer.push(&buffer[..n]);
 
@@ -628,7 +682,7 @@ impl Devin {
                         }
                         debug!("devin trailer: {}", trailer);
                     }
-                    continue;
+                    break 'stream;
                 }
 
                 let payload = decode_frame_payload(&frame).map_err(|e| AgentError::Api {
@@ -657,16 +711,15 @@ impl Devin {
                         .send_async(ProviderEvent::ThinkingDelta { text: delta })
                         .await;
                 }
+                signature.push_str(&response.delta_signature);
 
                 for tc in response.delta_tool_calls {
-                    if !tool_calls.contains_key(&tc.id) {
+                    let id = tc.id.clone();
+                    let name = tc.name.clone();
+                    if merge_tool_call(&mut tool_calls, tc) {
                         let _ = event_tx
-                            .send_async(ProviderEvent::ToolUseStart {
-                                id: tc.id.clone(),
-                                name: tc.name.clone(),
-                            })
+                            .send_async(ProviderEvent::ToolUseStart { id, name })
                             .await;
-                        tool_calls.insert(tc.id.clone(), (tc.name.clone(), tc.arguments_json));
                     }
                 }
 
@@ -689,18 +742,20 @@ impl Devin {
         }
 
         let mut content_blocks = Vec::new();
-        if !thinking.is_empty() {
+        if !thinking.is_empty() || !signature.is_empty() {
             content_blocks.push(crate::types::ContentBlock::Thinking {
                 thinking,
-                signature: None,
+                signature: (!signature.is_empty()).then_some(signature),
             });
         }
         if !text.is_empty() {
             content_blocks.push(crate::types::ContentBlock::Text { text });
         }
         for (id, (name, arguments_json)) in tool_calls {
-            let input =
-                serde_json::from_str(&arguments_json).unwrap_or_else(|_| serde_json::Value::Null);
+            let input = serde_json::from_str(&arguments_json).map_err(|error| AgentError::Api {
+                status: 0,
+                message: format!("invalid Devin tool arguments for {name}: {error}"),
+            })?;
             content_blocks.push(crate::types::ContentBlock::ToolUse { id, name, input });
         }
         if content_blocks.is_empty() {
@@ -785,6 +840,52 @@ mod tests {
         assert_eq!(
             normalize_session_token("devin-session-token$abc123"),
             "devin-session-token$abc123"
+        );
+    }
+
+    #[test]
+    fn encode_devin_tools_uses_input_schema() {
+        let tools = serde_json::json!([{
+            "name": "read",
+            "description": "Read a file",
+            "input_schema": {"type": "object"}
+        }]);
+
+        let encoded = encode_devin_tools(&tools).expect("encode tools");
+        assert_eq!(encoded.len(), 1);
+        assert!(
+            encoded[0]
+                .windows(br#"{"type":"object"}"#.len())
+                .any(|window| window == br#"{"type":"object"}"#)
+        );
+    }
+
+    #[test]
+    fn merge_tool_call_appends_argument_deltas() {
+        let mut tool_calls = std::collections::HashMap::new();
+        assert!(merge_tool_call(
+            &mut tool_calls,
+            ChatToolCall {
+                id: "call-1".to_string(),
+                name: "read".to_string(),
+                arguments_json: "{\"path\":\"".to_string(),
+            },
+        ));
+        assert!(!merge_tool_call(
+            &mut tool_calls,
+            ChatToolCall {
+                id: "call-1".to_string(),
+                name: String::new(),
+                arguments_json: "src/lib.rs\"}".to_string(),
+            },
+        ));
+
+        assert_eq!(
+            tool_calls.get("call-1"),
+            Some(&(
+                String::from("read"),
+                String::from("{\"path\":\"src/lib.rs\"}")
+            ))
         );
     }
 }

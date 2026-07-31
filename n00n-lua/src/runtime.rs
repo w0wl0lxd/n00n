@@ -1138,11 +1138,11 @@ impl LuaRuntime {
             Ok(LuaValue::String(s)) => Some(s.to_string_lossy()),
             Ok(LuaValue::Nil) => None,
             Ok(_) => {
-                tracing::warn!(plugin, "prompt hint callback returned non-string");
+                tracing::debug!(plugin, "prompt hint callback returned non-string");
                 None
             }
             Err(e) => {
-                tracing::warn!(plugin, error = %e, "prompt hint callback failed");
+                tracing::debug!(plugin, error = %e, "prompt hint callback failed");
                 None
             }
         }
@@ -1727,7 +1727,7 @@ async fn restore_item(lua: &Lua, plugins: &PluginMap, item: RestoreItem) -> Opti
     let ret = scope
         .scope_future(inner)
         .await
-        .inspect_err(|e| tracing::warn!(tool = &*item.tool, error = %e, "restore callback failed"))
+        .inspect_err(|e| tracing::debug!(tool = &*item.tool, error = %e, "restore callback failed"))
         .ok()?;
     run_inline_tasks(lua, &scope).await;
 
