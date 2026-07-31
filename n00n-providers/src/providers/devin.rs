@@ -227,7 +227,9 @@ fn parse_devin_trailer(payload: &[u8]) -> Result<Option<String>, AgentError> {
         message: "invalid Devin end-stream trailer JSON".to_string(),
     })?;
     let code = value
-        .get("code")
+        .get("error")
+        .and_then(|error| error.get("code"))
+        .or_else(|| value.get("code"))
         .and_then(serde_json::Value::as_str)
         .map(sanitize_trailer_code);
     match code {
@@ -1128,6 +1130,15 @@ mod tests {
             .expect_err("error trailer");
         assert!(matches!(
             error,
+            AgentError::Api { status: 0, message } if message == TRAILER_ERROR
+        ));
+
+        let nested_error = parse_devin_trailer(
+            br#"{"error":{"code":"unavailable","message":"nested private payload"}}"#,
+        )
+        .expect_err("nested error trailer");
+        assert!(matches!(
+            nested_error,
             AgentError::Api { status: 0, message } if message == TRAILER_ERROR
         ));
 
