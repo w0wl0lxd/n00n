@@ -242,6 +242,7 @@ local function handler(input, ctx)
           audience = audience,
           name = input.description,
           thinking = input.thinking,
+          mode = subagent_type,
         })
         if sess_err then
           return { llm_output = sess_err, is_error = true }

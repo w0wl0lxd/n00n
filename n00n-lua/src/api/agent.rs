@@ -2,6 +2,7 @@
 //! validation, concurrency) lives in the task plugin, not here.
 
 use std::collections::{HashMap, VecDeque, hash_map::Entry};
+use std::path::PathBuf;
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -476,6 +477,9 @@ async fn call_tool(
 ///     `(string)` or `(nil, err)`.
 ///   `name` (string?) - display name for logs and UI.
 ///   `audience` (string?) - tool audience for capability gating. Default: `"general_sub"`.
+///   `mode` (string?) - agent operating mode: `"build"` (default), `"research"`, `"plan"`, or the
+///     aliases `"general"` (build) and `"research"`. Plan mode requires `plan_path`.
+///   `plan_path` (string?) - required when `mode` is `"plan"`; path to the approved plan file.
 ///   `thinking` (string|integer?) - thinking mode: `"off"`, `"adaptive"`, an
 ///     effort level (`"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`,
 ///     `"max"`), or a budget integer (token count). Inherits parent setting
@@ -509,6 +513,25 @@ async fn session(
     let local_tools_tbl: Option<Table> = opts.get("local_tools")?;
     let name: Option<String> = opts.get("name")?;
     let thinking_val: Option<LuaValue> = opts.get("thinking")?;
+    let mode = match opts.get::<Option<String>>("mode")? {
+        Some(s) => match s.as_str() {
+            "build" | "general" => AgentMode::Build,
+            "research" => AgentMode::Research,
+            "plan" => {
+                let plan_path: Option<String> = opts.get("plan_path")?;
+                match plan_path {
+                    Some(p) => AgentMode::Plan(PathBuf::from(p)),
+                    None => {
+                        return Ok(err_pair("plan mode requires plan_path".to_string()));
+                    }
+                }
+            }
+            other => {
+                return Ok(err_pair(format!("unknown mode: {other}")));
+            }
+        },
+        None => (*agent_ctx.mode).clone(),
+    };
     let audience = match opts.get::<Option<String>>("audience")? {
         Some(s) => {
             try_pair!(ToolAudience::parse_name(&s).ok_or_else(|| format!("unknown audience: {s}")))
@@ -559,7 +582,7 @@ async fn session(
             &vars,
             &ctx,
             model.supports_tool_examples(),
-            &n00n_agent::tools::ActiveTools::default(),
+            &n00n_agent::tools::default_active_tools(),
         );
         (tools, filter)
     };
@@ -689,7 +712,7 @@ async fn session(
         tool_filter,
         thinking,
         fast,
-        mode: (*agent_ctx.mode).clone(),
+        mode,
         mcp: agent_ctx.mcp.clone(),
         history: History::new(Vec::new()),
         sub_event_tx,
