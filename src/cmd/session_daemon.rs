@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
+use color_eyre::Result;
+use color_eyre::eyre::{Context, eyre};
 use n00n_agent::headless::InteractiveHandle;
 use n00n_agent::{AgentInput, AgentMode};
 use n00n_daemon::backend::WorkerBackend;
@@ -246,29 +248,8 @@ fn message_interactive(
     if id != session_id {
         return Err(ControlError::NotFound(id.to_owned()));
     }
-    let (mode, plan_path) = session_id
-        .parse::<SessionRef>()
-        .ok()
-        .and_then(|session_ref| {
-            let storage = StateDir::from_path(state_dir.to_path_buf());
-            Session::<Message, TokenUsage, n00n_agent::ToolOutput>::load(session_ref.id(), &storage)
-                .ok()
-                .map(|session| match session.meta.mode {
-                    Some(StoredMode::Build) => {
-                        (AgentMode::Build, session.meta.plan_path.map(PathBuf::from))
-                    }
-                    Some(StoredMode::Plan) => {
-                        let path = session
-                            .meta
-                            .plan_path
-                            .map_or_else(|| PathBuf::from("plan.md"), PathBuf::from);
-                        (AgentMode::Plan(path.clone()), Some(path))
-                    }
-                    Some(StoredMode::Research) => (AgentMode::Research, None),
-                    None => (AgentMode::Build, session.meta.plan_path.map(PathBuf::from)),
-                })
-        })
-        .unwrap_or_else(|| (AgentMode::Build, None));
+    let (mode, plan_path) = restore_session_mode(session_id, state_dir)
+        .map_err(|error| ControlError::Unavailable(error.to_string()))?;
     input_tx
         .try_send(AgentInput {
             message: text.to_owned(),
@@ -286,6 +267,32 @@ fn message_interactive(
     Ok(serde_json::json!({"queued": true, "steer": opts.steer, "control": opts.control}))
 }
 
+fn restore_session_mode(
+    session_id: &str,
+    state_dir: &Path,
+) -> Result<(AgentMode, Option<PathBuf>)> {
+    let session_ref = session_id
+        .parse::<SessionRef>()
+        .map_err(|error| eyre!("invalid session id {session_id:?}: {error}"))?;
+    let storage = StateDir::from_path(state_dir.to_path_buf());
+    let session =
+        Session::<Message, TokenUsage, n00n_agent::ToolOutput>::load(session_ref.id(), &storage)
+            .wrap_err_with(|| format!("failed to restore session {session_id}"))?;
+    Ok(match session.meta.mode {
+        Some(StoredMode::Build) => (AgentMode::Build, session.meta.plan_path.map(PathBuf::from)),
+        Some(StoredMode::Plan) => {
+            let path = session
+                .meta
+                .plan_path
+                .ok_or_else(|| eyre!("session {session_id} is missing stored plan path"))
+                .map(PathBuf::from)?;
+            (AgentMode::Plan(path.clone()), Some(path))
+        }
+        Some(StoredMode::Research) => (AgentMode::Research, None),
+        None => return Err(eyre!("session {session_id} is missing stored mode")),
+    })
+}
+
 fn stop_interactive(
     cancel_tx: &flume::Sender<()>,
     id: &str,
@@ -298,4 +305,118 @@ fn stop_interactive(
         .try_send(())
         .map_err(|_| ControlError::Unavailable(NO_SESSION_ERR.into()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_restore_failure_does_not_dispatch(
+        state_dir: &Path,
+        session_id: &str,
+    ) -> ControlError {
+        let (input_tx, input_rx) = flume::bounded(1);
+        let error = message_interactive(
+            &input_tx,
+            session_id,
+            session_id,
+            "do work",
+            &MessageOpts::default(),
+            state_dir,
+        )
+        .expect_err("session restoration should fail");
+        assert!(matches!(
+            input_rx.try_recv(),
+            Err(flume::TryRecvError::Empty)
+        ));
+        error
+    }
+
+    #[test]
+    fn malformed_session_id_does_not_dispatch() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let error = assert_restore_failure_does_not_dispatch(temp.path(), "not-a-session-id");
+        assert!(
+            matches!(error, ControlError::Unavailable(message) if message.contains("invalid session id"))
+        );
+    }
+
+    #[test]
+    fn missing_session_does_not_dispatch() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let session_id = SessionRef::generate().to_string();
+        let error = assert_restore_failure_does_not_dispatch(temp.path(), &session_id);
+        assert!(
+            matches!(error, ControlError::Unavailable(message) if message.contains("failed to restore session"))
+        );
+    }
+
+    #[test]
+    fn restores_current_build_mode_and_plan_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage = StateDir::from_path(temp.path().to_path_buf());
+        let mut session =
+            Session::<Message, TokenUsage, n00n_agent::ToolOutput>::new("model", "/project");
+        session.meta.mode = Some(StoredMode::Build);
+        session.meta.plan_path = Some("approved-plan.md".into());
+        session.save(&storage).expect("session fixture");
+
+        let restored = restore_session_mode(&session.id.to_string(), temp.path())
+            .expect("stored mode should restore");
+        assert_eq!(
+            restored,
+            (AgentMode::Build, Some(PathBuf::from("approved-plan.md")))
+        );
+    }
+
+    #[test]
+    fn unknown_session_mode_does_not_dispatch() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage = StateDir::from_path(temp.path().to_path_buf());
+        let mut session =
+            Session::<Message, TokenUsage, n00n_agent::ToolOutput>::new("model", "/project");
+        session.meta.mode = None;
+        session.save(&storage).expect("session fixture");
+
+        let error = assert_restore_failure_does_not_dispatch(temp.path(), &session.id.to_string());
+        assert!(
+            matches!(error, ControlError::Unavailable(message) if message.contains("missing stored mode"))
+        );
+    }
+
+    #[test]
+    fn legacy_plan_without_path_does_not_dispatch() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage = StateDir::from_path(temp.path().to_path_buf());
+        let mut session =
+            Session::<Message, TokenUsage, n00n_agent::ToolOutput>::new("model", "/project");
+        session.meta.mode = Some(StoredMode::Plan);
+        session.meta.plan_path = None;
+        session.save(&storage).expect("session fixture");
+
+        let error = assert_restore_failure_does_not_dispatch(temp.path(), &session.id.to_string());
+        assert!(
+            matches!(error, ControlError::Unavailable(message) if message.contains("missing stored plan path"))
+        );
+    }
+
+    #[test]
+    fn unreadable_session_does_not_dispatch() {
+        const ZSTD_MAGIC: &[u8] = &[0x28, 0xb5, 0x2f, 0xfd];
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let session_ref = SessionRef::generate();
+        let sessions_dir = temp.path().join("sessions");
+        std::fs::create_dir(&sessions_dir).expect("sessions directory");
+        std::fs::write(
+            sessions_dir.join(format!("{}.jsonl", session_ref.id())),
+            ZSTD_MAGIC,
+        )
+        .expect("corrupt session fixture");
+
+        let error = assert_restore_failure_does_not_dispatch(temp.path(), session_ref.as_str());
+        assert!(
+            matches!(error, ControlError::Unavailable(message) if message.contains("failed to restore session"))
+        );
+    }
 }

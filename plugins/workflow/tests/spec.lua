@@ -292,6 +292,25 @@ case("workflow_parallel_concurrency_is_clamped_and_type_safe", function()
   eq(clamp(100), 4)
 end)
 
+case("workflow_per_run_timeout_cannot_expand_configured_deadline", function()
+  local async_runtime_minimum = 60
+  local configured_timeout = 600
+  local function run_timeout(requested)
+    if requested and requested < async_runtime_minimum then
+      return nil, "below runtime minimum"
+    end
+    return math.min(requested or configured_timeout, configured_timeout)
+  end
+
+  local timeout, err = run_timeout(59)
+  eq(timeout, nil, "a per-run timeout below the runtime minimum must be rejected")
+  assert(err, "a rejected timeout must explain the failure")
+  eq(run_timeout(nil), 600, "omitted timeout must use the configured deadline")
+  eq(run_timeout(60), async_runtime_minimum, "runtime minimum must remain usable")
+  eq(run_timeout(120), 120, "a per-run timeout may shorten the configured deadline")
+  eq(run_timeout(1200), 600, "a per-run timeout must not expand the configured deadline")
+end)
+
 case("workflow_agent_budget_has_default_and_hard_ceiling", function()
   local default_budget = 24
   local hard_max = 32

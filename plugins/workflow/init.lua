@@ -47,6 +47,7 @@ local HARD_MAX_AGGREGATE_AGENTS = 12
 local INVALID_RUN_ID_ERROR = "resume must be a run_id (hex letters/digits only, no path separators)"
 local RUN_ID_PATTERN = "^[%x]+$"
 local DEFAULT_TIMEOUT_SECS = 600
+local ASYNC_RUNTIME_MIN_TIMEOUT_SECS = 60
 
 local description = [[Run sandboxed Lua workflow for multi-stage agent orchestration.
 
@@ -70,6 +71,10 @@ local schema = {
       type = "string",
       description = "Paused run_id. Replays journaled agent() calls.",
     },
+    timeout_secs = {
+      type = "integer",
+      description = "Wall-clock timeout for this run (minimum 60s). May shorten, but cannot exceed, the configured workflow timeout.",
+    },
   },
 }
 
@@ -91,8 +96,8 @@ local opts = n00n.api.register_options({
   },
   timeout_secs = {
     default = DEFAULT_TIMEOUT_SECS,
-    min = 1,
-    desc = "Hard deadline for one workflow run (cancels pure-Lua runaway loops via the VM watchdog).",
+    min = ASYNC_RUNTIME_MIN_TIMEOUT_SECS,
+    desc = "Maximum deadline for one workflow run; per-run timeout_secs may only shorten it.",
   },
 })
 
@@ -241,33 +246,137 @@ local function run_dir(run_id)
   return n00n.fs.joinpath(root, run_id)
 end
 
-local function load_journal(run_id)
+local function inspect_file(path, label, missing_error)
+  local metadata, metadata_err = n00n.fs.metadata(path)
+  if not metadata then
+    if metadata_err then
+      return nil, "failed to inspect workflow " .. label .. ": " .. tostring(metadata_err)
+    end
+    return nil, missing_error
+  end
+  if not metadata.is_file then
+    return nil, "workflow " .. label .. " path is not a file"
+  end
+  return true
+end
+
+local function load_journal(run_id, required)
   local cache = {}
   local dir = run_dir(run_id)
   if not dir then
-    return cache, nil, ""
+    return nil, nil, nil, "cannot resolve workflow run directory"
   end
   local path = n00n.fs.joinpath(dir, JOURNAL_FILENAME)
-  local text = n00n.fs.read(path)
-  if type(text) ~= "string" or text == "" then
+  local exists, inspect_err = inspect_file(path, "journal", "resume workflow journal not found")
+  if not exists then
+    if required or inspect_err ~= "resume workflow journal not found" then
+      return nil, path, nil, inspect_err
+    end
+    return cache, path, ""
+  end
+  local text, read_err = n00n.fs.read(path)
+  if type(text) ~= "string" then
+    return nil, path, nil, "failed to read workflow journal: " .. tostring(read_err)
+  end
+  if text == "" then
     return cache, path, ""
   end
   for line in string.gmatch(text, "[^\n]+") do
-    local ok, row = pcall(n00n.json.decode, line)
-    if ok and type(row) == "table" and type(row.k) == "string" and type(row.v) == "string" then
-      cache[row.k] = row.v
+    local ok, row, decode_err = pcall(n00n.json.decode, line)
+    if not ok then
+      return nil, path, nil, "invalid workflow journal JSON: " .. tostring(row)
     end
+    if type(row) ~= "table" or type(row.k) ~= "string" or type(row.v) ~= "string" then
+      return nil, path, nil, "invalid workflow journal JSON: " .. tostring(decode_err or "invalid journal row")
+    end
+    cache[row.k] = row.v
   end
   return cache, path, text
 end
 
-local function write_run_meta(run_id, meta)
+local function load_run_meta(run_id, script_hash)
   local dir = run_dir(run_id)
   if not dir then
-    return
+    return nil, "cannot resolve workflow run directory"
   end
-  n00n.fs.mkdir(dir, { parents = true })
-  n00n.fs.write(n00n.fs.joinpath(dir, META_FILENAME), n00n.json.encode(meta))
+  local dir_metadata, dir_err = n00n.fs.metadata(dir)
+  if not dir_metadata then
+    if dir_err then
+      return nil, "failed to inspect workflow run: " .. tostring(dir_err)
+    end
+    return nil, "resume run_id not found: " .. run_id
+  end
+  if not dir_metadata.is_dir then
+    return nil, "workflow run path is not a directory"
+  end
+
+  local path = n00n.fs.joinpath(dir, META_FILENAME)
+  local exists, inspect_err = inspect_file(path, "metadata", "resume workflow metadata not found")
+  if not exists then
+    return nil, inspect_err
+  end
+  local content, read_err = n00n.fs.read(path)
+  if type(content) ~= "string" then
+    return nil, "failed to read workflow metadata: " .. tostring(read_err)
+  end
+  local ok, meta, decode_err = pcall(n00n.json.decode, content)
+  if not ok then
+    return nil, "invalid workflow metadata JSON: " .. tostring(meta)
+  end
+  if type(meta) ~= "table" then
+    return nil, "invalid workflow metadata JSON: " .. tostring(decode_err or "metadata must be an object")
+  end
+  if meta.run_id ~= run_id then
+    return nil, "workflow metadata run_id mismatch"
+  end
+  if type(meta.script_hash) ~= "string" then
+    return nil, "workflow metadata is missing script identity"
+  end
+  if meta.script_hash ~= script_hash then
+    return nil, "workflow resume script mismatch"
+  end
+  return meta
+end
+
+local function write_run_meta(run_id, meta, journal_path)
+  local dir = run_dir(run_id)
+  if not dir or not journal_path then
+    return nil, "cannot resolve workflow run paths"
+  end
+  local mkdir_ok, mkdir_err = n00n.fs.mkdir(dir, { parents = true })
+  if not mkdir_ok then
+    return nil, "failed to create workflow run directory: " .. tostring(mkdir_err)
+  end
+
+  local meta_path = n00n.fs.joinpath(dir, META_FILENAME)
+  local existing_meta, meta_inspect_err = n00n.fs.metadata(meta_path)
+  if existing_meta then
+    return nil, "workflow metadata already exists"
+  end
+  if meta_inspect_err then
+    return nil, "failed to inspect workflow metadata: " .. tostring(meta_inspect_err)
+  end
+  local existing_journal, journal_inspect_err = n00n.fs.metadata(journal_path)
+  if existing_journal then
+    return nil, "workflow journal already exists"
+  end
+  if journal_inspect_err then
+    return nil, "failed to inspect workflow journal: " .. tostring(journal_inspect_err)
+  end
+
+  local journal_ok, journal_err = n00n.fs.write(journal_path, "")
+  if not journal_ok then
+    return nil, "failed to create workflow journal: " .. tostring(journal_err)
+  end
+  local content, encode_err = n00n.json.encode(meta)
+  if not content then
+    return nil, "failed to encode workflow metadata: " .. tostring(encode_err)
+  end
+  local write_ok, write_err = n00n.fs.write(meta_path, content)
+  if not write_ok then
+    return nil, "failed to write workflow metadata: " .. tostring(write_err)
+  end
+  return true
 end
 
 local run_seq = 0
@@ -453,18 +562,28 @@ local function make_agent(ctx, progress, journal, logger, run_guard)
       end
 
       local gate = journal.lock:acquire()
-      journal.cache[key] = out
       local io_ok, io_err = pcall(function()
         if not journal.path then
-          return
+          error("cannot resolve workflow journal path", 0)
         end
         local dir = n00n.fs.dirname(journal.path)
         if dir then
-          n00n.fs.mkdir(dir, { parents = true })
+          local mkdir_ok, mkdir_err = n00n.fs.mkdir(dir, { parents = true })
+          if not mkdir_ok then
+            error("failed to create workflow journal directory: " .. tostring(mkdir_err), 0)
+          end
         end
-        local line = n00n.json.encode({ k = key, v = out }) .. "\n"
-        journal.text = (journal.text or "") .. line
-        n00n.fs.write(journal.path, journal.text)
+        local line, encode_err = n00n.json.encode({ k = key, v = out })
+        if not line then
+          error("failed to encode workflow journal entry: " .. tostring(encode_err), 0)
+        end
+        local next_text = (journal.text or "") .. line .. "\n"
+        local write_ok, write_err = n00n.fs.write(journal.path, next_text)
+        if not write_ok then
+          error("failed to write workflow journal: " .. tostring(write_err), 0)
+        end
+        journal.text = next_text
+        journal.cache[key] = out
       end)
       journal.in_flight[key] = nil
       gate:release()
@@ -615,6 +734,18 @@ local function build_env(ctx, progress, inputs, journal, captured, saga, logger,
     if type(t) ~= "table" or type(t.name) ~= "string" then
       error("meta({...}) requires a `name` string", 0)
     end
+    if not journal.initialized then
+      local meta_ok, meta_err = write_run_meta(journal.run_id, {
+        name = t.name,
+        description = t.description,
+        run_id = journal.run_id,
+        script_hash = journal.script_hash,
+      }, journal.path)
+      if not meta_ok then
+        error(meta_err, 0)
+      end
+      journal.initialized = true
+    end
     captured.meta = t
     journal.meta_ready = true
     progress.set_name(t.name)
@@ -668,6 +799,12 @@ local function handler(input, ctx)
   if type(input.script) ~= "string" or input.script == "" then
     return { llm_output = SCRIPT_REQUIRED_ERROR, is_error = true }
   end
+  if input.timeout_secs and input.timeout_secs < ASYNC_RUNTIME_MIN_TIMEOUT_SECS then
+    return {
+      llm_output = "timeout_secs must be at least " .. ASYNC_RUNTIME_MIN_TIMEOUT_SECS,
+      is_error = true,
+    }
+  end
 
   local syntax_fn, syntax_err = n00n.workflow.compile(input.script, {})
   if not syntax_fn then
@@ -675,27 +812,34 @@ local function handler(input, ctx)
   end
 
   local run_id = input.resume
-  if type(run_id) == "string" and run_id ~= "" then
+  local is_resume = type(run_id) == "string" and run_id ~= ""
+  local script_hash = n00n.workflow.hash(input.script)
+  if is_resume then
     if not is_safe_run_id(run_id) then
       return { llm_output = INVALID_RUN_ID_ERROR, is_error = true }
+    end
+    local _, meta_err = load_run_meta(run_id, script_hash)
+    if meta_err then
+      return { llm_output = "failed to resume workflow: " .. meta_err, is_error = true }
     end
   else
     run_id = new_run_id(input.script)
   end
-  local cache, journal_path, journal_text = load_journal(run_id)
+
+  local cache, journal_path, journal_text, journal_err = load_journal(run_id, is_resume)
+  if journal_err then
+    return { llm_output = "failed to resume workflow: " .. journal_err, is_error = true }
+  end
   local journal = {
     cache = cache,
-    path = journal_path or (function()
-      local dir = run_dir(run_id)
-      if not dir then
-        return nil
-      end
-      return n00n.fs.joinpath(dir, JOURNAL_FILENAME)
-    end)(),
+    path = journal_path,
     text = journal_text or "",
     lock = n00n.async.semaphore(1),
     in_flight = {},
     meta_ready = false,
+    initialized = is_resume,
+    run_id = run_id,
+    script_hash = script_hash,
   }
 
   local progress = make_progress(ctx)
@@ -754,10 +898,12 @@ local function handler(input, ctx)
     end
   end
 
-  -- Bound pure-Lua runaway loops (while true) via the VM watchdog deadline.
-  ctx:set_deadline(opts.timeout_secs)
+  local timeout_secs = math.min(input.timeout_secs or opts.timeout_secs, opts.timeout_secs)
 
-  local run_guard = guard.new({ max_calls = max_agents_per_run, timeout_secs = opts.timeout_secs })
+  -- Bound pure-Lua runaway loops (while true) via the VM watchdog deadline.
+  ctx:set_deadline(timeout_secs)
+
+  local run_guard = guard.new({ max_calls = max_agents_per_run, timeout_secs = timeout_secs })
 
   n00n.async.run(function()
     local permit
@@ -772,11 +918,6 @@ local function handler(input, ctx)
       if not captured.meta then
         error(NO_META_ERROR, 0)
       end
-      write_run_meta(run_id, {
-        name = captured.meta.name,
-        description = captured.meta.description,
-        run_id = run_id,
-      })
       if type(output) ~= "string" then
         output = tostring(output)
       end

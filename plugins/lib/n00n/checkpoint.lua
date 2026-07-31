@@ -40,25 +40,48 @@ local function checkpoint_dir(run_id)
   return n00n.fs.joinpath(state, "projects/" .. project_id() .. "/runs/" .. run_id .. "/checkpoints")
 end
 
+local function checkpoint_less(a, b)
+  local a_has_sequence = type(a.sequence) == "number"
+  local b_has_sequence = type(b.sequence) == "number"
+  if a_has_sequence ~= b_has_sequence then
+    return not a_has_sequence
+  end
+  if a_has_sequence and a.sequence ~= b.sequence then
+    return a.sequence < b.sequence
+  end
+  if a.timestamp ~= b.timestamp then
+    return a.timestamp < b.timestamp
+  end
+  return a.checkpoint_id < b.checkpoint_id
+end
+
 local M = {}
 
-function M.save(run_id, checkpoint_id, state)
+function M.save(run_id, checkpoint_id, state, sequence)
   local dir, err = checkpoint_dir(run_id)
   if not dir then
     return nil, err
   end
 
-  n00n.fs.mkdir(dir, { parents = true })
+  local mkdir_ok, mkdir_err = n00n.fs.mkdir(dir, { parents = true })
+  if not mkdir_ok then
+    return nil, "mkdir error: " .. tostring(mkdir_err)
+  end
 
   local ok, vid = validate_id(checkpoint_id)
   if not ok then
     return nil, vid
   end
 
+  if sequence ~= nil and (type(sequence) ~= "number" or sequence < 0 or sequence ~= math.floor(sequence)) then
+    return nil, "sequence must be a non-negative integer"
+  end
+
   local checkpoint = {
     checkpoint_id = checkpoint_id,
     run_id = run_id,
     timestamp = os.time(),
+    sequence = sequence,
     state_snapshot = state,
   }
 
@@ -89,8 +112,11 @@ function M.load(run_id, checkpoint_id)
   end
 
   local decoded, dec_err = n00n.json.decode(content)
-  if not decoded then
-    return nil, "decode error: " .. tostring(dec_err)
+  if type(decoded) ~= "table" then
+    return nil, "decode error: " .. tostring(dec_err or "checkpoint must be a JSON object")
+  end
+  if type(decoded.state_snapshot) ~= "table" then
+    return nil, "decode error: checkpoint state_snapshot must be a JSON object"
   end
 
   return decoded.state_snapshot
@@ -102,9 +128,16 @@ function M.list(run_id)
     return nil, err
   end
 
-  local entries = n00n.fs.dir(dir)
+  local entries, dir_err = n00n.fs.dir(dir)
   if not entries then
-    return {}
+    local metadata, metadata_err = n00n.fs.metadata(dir)
+    if metadata_err then
+      return nil, "checkpoint directory metadata error: " .. tostring(metadata_err)
+    end
+    if not metadata then
+      return {}
+    end
+    return nil, "checkpoint directory read error: " .. tostring(dir_err)
   end
 
   local checkpoints = {}
@@ -112,21 +145,28 @@ function M.list(run_id)
     if entry[2] == "file" and entry[1]:sub(-5) == ".json" then
       local path = n00n.fs.joinpath(dir, entry[1])
       local content, read_err = n00n.fs.read(path)
-      if content then
-        local decoded, dec_err = n00n.json.decode(content)
-        if decoded then
-          checkpoints[#checkpoints + 1] = {
-            checkpoint_id = decoded.checkpoint_id,
-            timestamp = decoded.timestamp,
-          }
-        end
+      if not content then
+        return nil, "read error for " .. entry[1] .. ": " .. tostring(read_err)
       end
+      local decoded, dec_err = n00n.json.decode(content)
+      if type(decoded) ~= "table" then
+        return nil, "decode error for " .. entry[1] .. ": " .. tostring(dec_err or "checkpoint must be a JSON object")
+      end
+      if type(decoded.checkpoint_id) ~= "string" or type(decoded.timestamp) ~= "number" then
+        return nil, "decode error for " .. entry[1] .. ": invalid checkpoint metadata"
+      end
+      if decoded.sequence ~= nil and type(decoded.sequence) ~= "number" then
+        return nil, "decode error for " .. entry[1] .. ": invalid checkpoint sequence"
+      end
+      checkpoints[#checkpoints + 1] = {
+        checkpoint_id = decoded.checkpoint_id,
+        timestamp = decoded.timestamp,
+        sequence = decoded.sequence,
+      }
     end
   end
 
-  table.sort(checkpoints, function(a, b)
-    return (a.timestamp or 0) < (b.timestamp or 0)
-  end)
+  table.sort(checkpoints, checkpoint_less)
 
   return checkpoints
 end
@@ -141,16 +181,7 @@ function M.latest(run_id)
     return nil
   end
 
-  local latest = checkpoints[1]
-  local latest_ts = latest.timestamp or 0
-  for i = 2, #checkpoints do
-    if (checkpoints[i].timestamp or 0) > latest_ts then
-      latest = checkpoints[i]
-      latest_ts = checkpoints[i].timestamp or 0
-    end
-  end
-
-  return latest.checkpoint_id
+  return checkpoints[#checkpoints].checkpoint_id
 end
 
 function M.prune(run_id, keep_n)
@@ -173,7 +204,7 @@ function M.prune(run_id, keep_n)
   end
 
   table.sort(checkpoints, function(a, b)
-    return (a.timestamp or 0) > (b.timestamp or 0)
+    return checkpoint_less(b, a)
   end)
 
   local to_remove = {}
@@ -183,7 +214,10 @@ function M.prune(run_id, keep_n)
 
   for _, ckpt_id in ipairs(to_remove) do
     local path = n00n.fs.joinpath(dir, ckpt_id .. ".json")
-    pcall(n00n.fs.rm, path)
+    local rm_ok, rm_err = n00n.fs.rm(path)
+    if not rm_ok then
+      return nil, "remove error for " .. ckpt_id .. ": " .. tostring(rm_err)
+    end
   end
 
   return true

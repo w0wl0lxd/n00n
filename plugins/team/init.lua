@@ -349,7 +349,7 @@ local function run_autonomous(ctx, goal, input, steps, relay_k, logger, resume_s
       post_blackboard_status(ctx, "step_error", step, run_id, { index = i, error = r.error })
       if input.human_escalation then
         local pause_run_id = input.resume or memory.slug(goal)
-        memory.save_state(ctx, pause_run_id, {
+        local save_ok, save_err = memory.save_state(ctx, pause_run_id, {
           goal = goal,
           steps = steps,
           results = results,
@@ -362,6 +362,9 @@ local function run_autonomous(ctx, goal, input, steps, relay_k, logger, resume_s
           wave_index = 0,
           step_index = i,
         })
+        if not save_ok then
+          error("failed to save pause state: " .. tostring(save_err), 0)
+        end
         return results,
           total_cost,
           failures,
@@ -445,7 +448,7 @@ local function run_single_pass(ctx, goal, input, steps, relay_k, logger, resume_
       post_blackboard_status(ctx, "step_error", step, run_id, { index = i, error = r.error })
       if input.human_escalation then
         local pause_run_id = input.resume or memory.slug(goal)
-        memory.save_state(ctx, pause_run_id, {
+        local save_ok, save_err = memory.save_state(ctx, pause_run_id, {
           goal = goal,
           steps = steps,
           results = results,
@@ -458,6 +461,9 @@ local function run_single_pass(ctx, goal, input, steps, relay_k, logger, resume_
           wave_index = 0,
           step_index = i,
         })
+        if not save_ok then
+          error("failed to save pause state: " .. tostring(save_err), 0)
+        end
         return results,
           total_cost,
           failures,
@@ -763,11 +769,12 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
           ckpt_state.failed_step = failed_step_index
           ckpt_state.failed_role = failed_role
         end
-        local save_ok, save_err = checkpoint.save(run_id, ckpt_id, ckpt_state)
+        local save_ok, save_err = checkpoint.save(run_id, ckpt_id, ckpt_state, wave_idx)
         if not save_ok then
           if logger then
             logger.log("checkpoint_save_failed", { checkpoint_id = ckpt_id, error = save_err })
           end
+          error("failed to save checkpoint " .. ckpt_id .. ": " .. tostring(save_err), 0)
         end
       end
 
@@ -839,7 +846,10 @@ local function run_team(input, ctx)
   local steps, perr, supervisor_cost, supervisor_usage
   local resume_state
   if input.resume and #input.resume > 0 then
-    local latest_id = checkpoint.latest(input.resume)
+    local latest_id, latest_err = checkpoint.latest(input.resume)
+    if latest_err then
+      return { llm_output = "failed to load resume " .. input.resume .. ": " .. latest_err, is_error = true }
+    end
     if latest_id then
       local ckpt_state, ckpt_err = checkpoint.load(input.resume, latest_id)
       if ckpt_state then
@@ -851,21 +861,27 @@ local function run_team(input, ctx)
         if logger then
           logger.log("checkpoint_load_failed", { run_id = input.resume, error = ckpt_err })
         end
-        resume_state = memory.load_state(ctx, input.resume)
+        local resume_err
+        resume_state, resume_err = memory.load_state(ctx, input.resume)
         if resume_state then
           steps = resume_state.steps
           goal = resume_state.goal
           input.mode = requested_mode or resume_state.mode or "autonomous"
+        elseif resume_err then
+          return { llm_output = "failed to load resume " .. input.resume .. ": " .. resume_err, is_error = true }
         else
           return { llm_output = "resume run_id not found: " .. input.resume, is_error = true }
         end
       end
     else
-      resume_state = memory.load_state(ctx, input.resume)
+      local resume_err
+      resume_state, resume_err = memory.load_state(ctx, input.resume)
       if resume_state then
         steps = resume_state.steps
         goal = resume_state.goal
         input.mode = requested_mode or resume_state.mode or "autonomous"
+      elseif resume_err then
+        return { llm_output = "failed to load resume " .. input.resume .. ": " .. resume_err, is_error = true }
       else
         return { llm_output = "resume run_id not found: " .. input.resume, is_error = true }
       end
@@ -1033,7 +1049,18 @@ finish_run = function(ctx, input, results, total_cost, completed, unit, slug, fa
     summary = summary .. string.format(" %d step(s) failed; the run is incomplete.", failed)
   end
 
-  memory.save(ctx, slug, report .. summary)
+  local save_ok, save_err = memory.save(ctx, slug, report .. summary)
+  if not save_ok then
+    if logger then
+      logger.log("run_error", { error = save_err })
+    end
+    return {
+      llm_output = "team persistence failed: " .. tostring(save_err),
+      is_error = true,
+      cost = total_cost,
+      usage = roles.usage(usage),
+    }
+  end
 
   if logger then
     if failed > 0 then

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_lock::Mutex;
@@ -12,7 +12,7 @@ use n00n_providers::model::Model;
 use n00n_providers::provider::{self, Provider};
 use n00n_storage::StateDir;
 use n00n_storage::id::{SessionRef, n00nId};
-use n00n_storage::sessions::Session;
+use n00n_storage::sessions::{Session, StoredMode};
 use serde_json::Value;
 use tracing::{error, warn};
 
@@ -38,20 +38,27 @@ struct SessionStore {
 }
 
 impl SessionStore {
-    fn open(session_id: n00nId, cwd: &str, model_spec: &str) -> Option<Self> {
+    fn open(session_id: n00nId, cwd: &str, model_spec: &str, mode: &AgentMode) -> Option<Self> {
         let dir = StateDir::resolve()
             .map_err(|e| warn!(error = %e, "state dir unavailable; session will not be persisted"))
             .ok()?;
-        Some(Self::open_in(dir, session_id, cwd, model_spec))
+        Some(Self::open_in(dir, session_id, cwd, model_spec, mode))
     }
 
-    fn open_in(dir: StateDir, session_id: n00nId, cwd: &str, model_spec: &str) -> Self {
+    fn open_in(
+        dir: StateDir,
+        session_id: n00nId,
+        cwd: &str,
+        model_spec: &str,
+        mode: &AgentMode,
+    ) -> Self {
         if let Ok(session) = StoredSession::load(session_id, &dir) {
             Self { dir, session }
         } else {
             let mut session = StoredSession::new(model_spec, cwd);
             session.id = session_id;
             let mut store = Self { dir, session };
+            store.update_turn_metadata(mode, None);
             store.save();
             store
         }
@@ -63,10 +70,33 @@ impl SessionStore {
         }
     }
 
-    fn record_turn(&mut self, messages: &[Message], model_spec: String) {
+    fn update_turn_metadata(&mut self, mode: &AgentMode, plan_path: Option<&Path>) {
+        let (stored_mode, stored_plan_path) = match mode {
+            AgentMode::Build => (StoredMode::Build, plan_path),
+            AgentMode::Plan(path) => (StoredMode::Plan, Some(path.as_path())),
+            AgentMode::Research => (StoredMode::Research, None),
+        };
+        self.session.meta.mode = Some(stored_mode);
+        self.session.meta.plan_path =
+            stored_plan_path.map(|path| path.to_string_lossy().into_owned());
+    }
+
+    fn record_turn_started(&mut self, mode: &AgentMode, plan_path: Option<&Path>) {
+        self.update_turn_metadata(mode, plan_path);
+        self.save();
+    }
+
+    fn record_turn(
+        &mut self,
+        messages: &[Message],
+        model_spec: String,
+        mode: &AgentMode,
+        plan_path: Option<&Path>,
+    ) {
         self.session.messages = messages.to_vec();
         self.session.model = model_spec;
         self.session.update_title_if_default();
+        self.update_turn_metadata(mode, plan_path);
         self.save();
     }
 }
@@ -202,7 +232,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
             let mut history = History::new(Vec::new());
             let model_spec = model.spec();
             let mut session_store =
-                SessionStore::open(session_ref_clone.id(), &session_cwd, &model_spec);
+                SessionStore::open(session_ref_clone.id(), &session_cwd, &model_spec, &mode);
             let mut agent = Agent::new(
                 AgentParams {
                     provider,
@@ -233,11 +263,14 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
             .with_loaded_instructions(instructions.loaded)
             .with_mcp(params.mcp_handle.clone().map(|h| McpSession::new(h, &[])));
 
-            let plan_path = mode.plan_path().map(std::path::PathBuf::from);
+            let plan_path = mode.plan_path().map(PathBuf::from);
+            if let Some(store) = &mut session_store {
+                store.record_turn_started(&mode, plan_path.as_deref());
+            }
             let result = agent
                 .run(AgentInput {
                     message: params.prompt,
-                    mode,
+                    mode: mode.clone(),
                     images: params.images,
                     preamble: Vec::new(),
                     thinking: n00n_providers::ThinkingConfig::default(),
@@ -245,13 +278,13 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                     workflow,
                     control: false,
                     prompt: None,
-                    plan_path,
+                    plan_path: plan_path.clone(),
                 })
                 .await;
             drop(agent);
 
             if let Some(store) = &mut session_store {
-                store.record_turn(history.as_slice(), model_spec);
+                store.record_turn(history.as_slice(), model_spec, &mode, plan_path.as_deref());
             }
 
             if let Err(e) = result {
@@ -337,6 +370,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
     };
 
     let working_dir = params.initial_wd.to_string_lossy().into_owned();
+    let store = SessionStore::open(session_id, &working_dir, &params.model.spec(), &params.mode);
     let permissions = Arc::new(PermissionManager::new(
         params.permissions_config.clone(),
         params.initial_wd.clone(),
@@ -360,7 +394,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                     params.openai_options,
                 ));
 
-            let mut store = SessionStore::open(session_id, &working_dir, &model.spec());
+            let mut store = store;
             let mut history = History::restored(params.initial_history);
             let mut run_id: u64 = 0;
             let mut tool_filter = tool_filter.clone();
@@ -368,6 +402,11 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
             while let Ok(input) = input_rx.recv_async().await {
                 let event_tx = EventSender::new(raw_tx.clone(), run_id);
                 let error_tx = event_tx.clone();
+                let turn_mode = input.mode.clone();
+                let turn_plan_path = input.plan_path.clone();
+                if let Some(store) = &mut store {
+                    store.record_turn_started(&turn_mode, turn_plan_path.as_deref());
+                }
 
                 if let Some(mut new_model) = model_rx.try_iter().last()
                     && new_model.spec() != model.spec()
@@ -463,7 +502,12 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                 }
 
                 if let Some(store) = &mut store {
-                    store.record_turn(history.as_slice(), model.spec());
+                    store.record_turn(
+                        history.as_slice(),
+                        model.spec(),
+                        &turn_mode,
+                        turn_plan_path.as_deref(),
+                    );
                 }
                 run_id += 1;
             }
@@ -516,6 +560,7 @@ mod tests {
             session_id(),
             CWD,
             MODEL_SPEC,
+            &AgentMode::Plan(PathBuf::from("plan.md")),
         )
     }
 
@@ -531,6 +576,8 @@ mod tests {
         assert_eq!(loaded.id, session_id());
         assert_eq!(loaded.cwd, CWD);
         assert_eq!(loaded.model, MODEL_SPEC);
+        assert_eq!(loaded.meta.mode, Some(StoredMode::Plan));
+        assert_eq!(loaded.meta.plan_path.as_deref(), Some("plan.md"));
         assert!(loaded.messages.is_empty());
     }
 
@@ -539,7 +586,12 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut store = store_in(&tmp);
         let messages = vec![Message::user("fix the login bug".into())];
-        store.record_turn(&messages, MODEL_SPEC.into());
+        store.record_turn(
+            &messages,
+            MODEL_SPEC.into(),
+            &AgentMode::Plan(PathBuf::from("plan.md")),
+            None,
+        );
 
         let loaded = load(&tmp);
         assert_eq!(loaded.messages.len(), 1);
@@ -547,10 +599,37 @@ mod tests {
     }
 
     #[test]
+    fn turn_mode_transitions_update_restored_metadata() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = store_in(&tmp);
+        let build_plan = PathBuf::from("approved-plan.md");
+
+        store.record_turn_started(&AgentMode::Build, Some(&build_plan));
+        let loaded = load(&tmp);
+        assert_eq!(loaded.meta.mode, Some(StoredMode::Build));
+        assert_eq!(loaded.meta.plan_path.as_deref(), Some("approved-plan.md"));
+
+        store.record_turn(
+            &[],
+            MODEL_SPEC.into(),
+            &AgentMode::Research,
+            Some(&build_plan),
+        );
+        let loaded = load(&tmp);
+        assert_eq!(loaded.meta.mode, Some(StoredMode::Research));
+        assert!(loaded.meta.plan_path.is_none());
+    }
+
+    #[test]
     fn reopening_resumes_existing_session() {
         let tmp = TempDir::new().unwrap();
         let mut store = store_in(&tmp);
-        store.record_turn(&[Message::user("first prompt".into())], MODEL_SPEC.into());
+        store.record_turn(
+            &[Message::user("first prompt".into())],
+            MODEL_SPEC.into(),
+            &AgentMode::Plan(PathBuf::from("plan.md")),
+            None,
+        );
         drop(store);
 
         let mut store = store_in(&tmp);
@@ -560,7 +639,12 @@ mod tests {
             Message::user("first prompt".into()),
             Message::user("second prompt".into()),
         ];
-        store.record_turn(&messages, "other/model".into());
+        store.record_turn(
+            &messages,
+            "other/model".into(),
+            &AgentMode::Plan(PathBuf::from("plan.md")),
+            None,
+        );
 
         let loaded = load(&tmp);
         assert_eq!(loaded.messages.len(), 2);

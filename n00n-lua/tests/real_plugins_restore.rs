@@ -93,8 +93,13 @@ fn assert_publishes_live_buf(tool: &str, source: &str, input: Value, expected: &
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
     if tool == WORKFLOW_TOOL {
         host.load_source(
-            "disable_workflow_state",
-            "n00n.env.state_dir = function() return nil end",
+            "mock_workflow_state",
+            r#"
+                n00n.env.state_dir = function() return "/state" end
+                n00n.fs.metadata = function() return nil, nil end
+                n00n.fs.mkdir = function() return true, nil end
+                n00n.fs.write = function() return true, nil end
+            "#,
         )
         .unwrap();
     }
@@ -158,6 +163,241 @@ fn batch_state() -> Value {
         { "tool": "grep", "status": "success", "output": GREP_OUT },
         { "tool": "bash", "status": "success", "output": "hello-from-bash" },
     ]})
+}
+
+fn execute_plugin_with_native_mock(
+    tool: &str,
+    source: &str,
+    native_mock: &str,
+    input: Value,
+) -> Result<String, String> {
+    let registry = Arc::new(ToolRegistry::new());
+    let host = PluginHost::new(Arc::clone(&registry)).unwrap();
+    let mocked_source = format!("{native_mock}\n{source}");
+    host.load_source(tool, &mocked_source).unwrap();
+    let invocation = registry.get(tool).unwrap().tool.parse(&input).unwrap();
+    let ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
+    smol::block_on(invocation.execute(&ctx))
+        .output
+        .map(|output| match output {
+            n00n_agent::ToolOutput::Plain(output) => output.text,
+            other => panic!("unexpected output: {other:?}"),
+        })
+}
+
+#[test_case::test_case(
+    r#"
+        n00n.fs.metadata = function(path)
+            if path == "/state/workflows/aabbccdd" then return { is_dir = true }, nil end
+            if path == "/state/workflows/aabbccdd/meta.json" then return { is_file = true }, nil end
+            return nil, "permission denied"
+        end
+        n00n.fs.read = function()
+            return '{"run_id":"aabbccdd","script_hash":"script-id"}', nil
+        end
+    "#,
+    "permission denied";
+    "metadata_failure"
+)]
+#[test_case::test_case(
+    r#"
+        n00n.fs.metadata = function(path)
+            if path == "/state/workflows/aabbccdd" then return { is_dir = true }, nil end
+            return { is_file = true }, nil
+        end
+        n00n.fs.read = function(path)
+            if path == "/state/workflows/aabbccdd/meta.json" then
+                return '{"run_id":"aabbccdd","script_hash":"script-id"}', nil
+            end
+            return nil, "input/output error"
+        end
+    "#,
+    "input/output error";
+    "read_failure"
+)]
+fn workflow_journal_io_failure_prevents_replay(fs_mock: &str, expected: &str) {
+    let native_mock = format!(
+        r#"
+            n00n.env.state_dir = function() return "/state" end
+            n00n.workflow.hash = function() return "script-id" end
+            n00n.agent.session = function() error("paid agent call must not start") end
+            {fs_mock}
+        "#
+    );
+    let error = execute_plugin_with_native_mock(
+        "workflow",
+        WORKFLOW_SRC,
+        &native_mock,
+        json!({
+            "script": "meta({ name = 'resume' }); return agent({ prompt = 'paid' })",
+            "resume": "aabbccdd",
+        }),
+    )
+    .expect_err("journal I/O failure must reject resume before replay");
+
+    assert!(error.contains(expected), "unexpected error: {error}");
+    assert!(
+        !error.contains("paid agent call"),
+        "paid call was replayed: {error}"
+    );
+}
+
+#[test]
+fn workflow_missing_resume_id_starts_zero_agents() {
+    let error = execute_plugin_with_native_mock(
+        WORKFLOW_TOOL,
+        WORKFLOW_SRC,
+        r#"
+            n00n.env.state_dir = function() return "/state" end
+            n00n.fs.metadata = function() return nil, nil end
+            n00n.agent.session = function() error("paid agent call must not start") end
+        "#,
+        json!({
+            "script": "meta({ name = 'resume' }); return agent({ prompt = 'paid' })",
+            "resume": "aabbccdd",
+        }),
+    )
+    .expect_err("a missing explicit resume must be rejected");
+
+    assert!(
+        error.contains("resume run_id not found"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        !error.contains("paid agent call"),
+        "paid call started: {error}"
+    );
+}
+
+#[test]
+fn workflow_script_mismatch_starts_zero_agents() {
+    let error = execute_plugin_with_native_mock(
+        WORKFLOW_TOOL,
+        WORKFLOW_SRC,
+        r#"
+            n00n.env.state_dir = function() return "/state" end
+            n00n.fs.metadata = function(path)
+                if path == "/state/workflows/aabbccdd" then return { is_dir = true }, nil end
+                return { is_file = true }, nil
+            end
+            n00n.fs.read = function(path)
+                if path == "/state/workflows/aabbccdd/meta.json" then
+                    return '{"run_id":"aabbccdd","script_hash":"wrong"}', nil
+                end
+                return "", nil
+            end
+            n00n.agent.session = function() error("paid agent call must not start") end
+        "#,
+        json!({
+            "script": "meta({ name = 'resume' }); return agent({ prompt = 'paid' })",
+            "resume": "aabbccdd",
+        }),
+    )
+    .expect_err("resume with a different script must be rejected");
+
+    assert!(
+        error.contains("script mismatch"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        !error.contains("paid agent call"),
+        "paid call started: {error}"
+    );
+}
+
+#[test_case::test_case(
+    json!({ "command": "callers", "symbol": "target", "project": "/fixture" }),
+    "callers of target\n  caller (function) src/lib.rs:7";
+    "callers"
+)]
+#[test_case::test_case(
+    json!({ "command": "callers", "symbol": "orphan", "project": "/fixture" }),
+    "No callers found for symbol 'orphan'";
+    "empty_callers"
+)]
+#[test_case::test_case(
+    json!({
+        "command": "trace_path",
+        "from_symbol": "caller",
+        "to_symbol": "target",
+        "project": "/fixture"
+    }),
+    "trace_path caller -> target\n  target (function) src/lib.rs:9";
+    "trace_path"
+)]
+fn arbor_native_graph_operations_do_not_require_cli(input: Value, expected: &str) {
+    let output = execute_plugin_with_native_mock(
+        "arbor",
+        ARBOR_SRC,
+        r#"
+            n00n.arbor.available = function() return false end
+            n00n.arbor.graph_index_available = function() return true end
+            n00n.arbor.ensure_fresh_index = function() error("CLI must not be called") end
+            n00n.arbor.callers = function() error("CLI must not be called") end
+            n00n.arbor.graph_callers = function(symbol)
+                if symbol == "orphan" then return {} end
+                return { { name = "caller", kind = "function", path = "src/lib.rs", line = 7 } }
+            end
+            n00n.arbor.graph_trace_path = function()
+                return { { name = "target", kind = "function", path = "src/lib.rs", line = 9 } }
+            end
+        "#,
+        input,
+    )
+    .expect("native Arbor operation should succeed without the CLI");
+
+    assert_eq!(output, expected);
+}
+
+#[test]
+fn codegraph_native_database_does_not_require_cli() {
+    let output = execute_plugin_with_native_mock(
+        "codegraph",
+        CODEGRAPH_SRC,
+        r#"
+            n00n.codegraph.available = function() return false end
+            n00n.codegraph.has_index = function() return true end
+            n00n.codegraph.has_database = function() return true end
+            n00n.codegraph.explore = function() return "native result", nil end
+        "#,
+        json!({ "query": "target", "projectPath": "/fixture" }),
+    )
+    .expect("native Codegraph operation should succeed without the CLI");
+
+    assert_eq!(output, "native result");
+}
+
+#[test_case::test_case(
+    "arbor",
+    ARBOR_SRC,
+    r"n00n.arbor.available = function() return false end",
+    json!({ "command": "map", "project": "/fixture" }),
+    "Arbor CLI not found";
+    "arbor_map"
+)]
+#[test_case::test_case(
+    "codegraph",
+    CODEGRAPH_SRC,
+    r"
+        n00n.codegraph.available = function() return false end
+        n00n.codegraph.has_index = function() return true end
+        n00n.codegraph.has_database = function() return false end
+    ",
+    json!({ "query": "target", "projectPath": "/fixture" }),
+    "codegraph CLI not found";
+    "codegraph_without_database"
+)]
+fn cli_only_operations_report_missing_cli(
+    tool: &str,
+    source: &str,
+    native_mock: &str,
+    input: Value,
+    expected: &str,
+) {
+    let error = execute_plugin_with_native_mock(tool, source, native_mock, input)
+        .expect_err("CLI-only operation should fail without its CLI");
+
+    assert!(error.contains(expected), "unexpected error: {error}");
 }
 
 struct Restored {

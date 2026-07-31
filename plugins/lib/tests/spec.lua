@@ -1638,6 +1638,186 @@ case("structured_output_compile_validator_accepts_valid_schema", function()
   eq(err, nil)
 end)
 
+case("checkpoint_rejects_tuple_write_errors", function()
+  local checkpoint = require("n00n.checkpoint")
+  local old_mkdir = n00n.fs.mkdir
+  local old_write = n00n.fs.write
+  n00n.fs.mkdir = function()
+    return true
+  end
+  n00n.fs.write = function()
+    return nil, "disk full"
+  end
+
+  local ok, err = checkpoint.save("tuple-write-run", "wave_1", { goal = "test" })
+
+  n00n.fs.mkdir = old_mkdir
+  n00n.fs.write = old_write
+  eq(ok, nil, "tuple write failure must not report a saved checkpoint")
+  assert(err and err:find("disk full", 1, true), "checkpoint write error must be preserved")
+end)
+
+case("checkpoint_save_persists_sequence", function()
+  local checkpoint = require("n00n.checkpoint")
+  local old_mkdir = n00n.fs.mkdir
+  local old_write = n00n.fs.write
+  local written
+  n00n.fs.mkdir = function()
+    return true
+  end
+  n00n.fs.write = function(_, content)
+    written = content
+    return true
+  end
+
+  local ok, err = checkpoint.save("sequence-run", "wave_7", { goal = "test" }, 7)
+
+  n00n.fs.mkdir = old_mkdir
+  n00n.fs.write = old_write
+  local decoded = written and n00n.json.decode(written)
+  eq(ok, true, err)
+  eq(decoded and decoded.sequence, 7, "checkpoint sequence must be persisted")
+end)
+
+case("checkpoint_prune_rejects_tuple_remove_errors", function()
+  local checkpoint = require("n00n.checkpoint")
+  local old_list = checkpoint.list
+  local old_rm = n00n.fs.rm
+  checkpoint.list = function()
+    return {
+      { checkpoint_id = "new", timestamp = 2 },
+      { checkpoint_id = "old", timestamp = 1 },
+    }
+  end
+  n00n.fs.rm = function()
+    return nil, "permission denied"
+  end
+
+  local ok, err = checkpoint.prune("prune-run", 1)
+
+  checkpoint.list = old_list
+  n00n.fs.rm = old_rm
+  eq(ok, nil, "tuple remove failure must not report successful pruning")
+  assert(err and err:find("permission denied", 1, true), "checkpoint remove error must be preserved")
+end)
+
+case("checkpoint_list_treats_missing_directory_as_empty", function()
+  local checkpoint = require("n00n.checkpoint")
+  local old_dir = n00n.fs.dir
+  local old_metadata = n00n.fs.metadata
+  n00n.fs.dir = function()
+    return nil, "dir: path does not exist"
+  end
+  n00n.fs.metadata = function()
+    return nil, nil
+  end
+
+  local checkpoints, err = checkpoint.list("missing-run")
+
+  n00n.fs.dir = old_dir
+  n00n.fs.metadata = old_metadata
+  eq(err, nil, "a missing checkpoint directory is not an I/O failure")
+  eq(#checkpoints, 0, "a missing checkpoint directory must be empty")
+end)
+
+case("checkpoint_list_propagates_directory_read_failure", function()
+  local checkpoint = require("n00n.checkpoint")
+  local old_dir = n00n.fs.dir
+  local old_metadata = n00n.fs.metadata
+  n00n.fs.dir = function()
+    return nil, "dir: permission denied"
+  end
+  n00n.fs.metadata = function()
+    return { is_dir = true }
+  end
+
+  local checkpoints, err = checkpoint.list("unreadable-run")
+
+  n00n.fs.dir = old_dir
+  n00n.fs.metadata = old_metadata
+  eq(checkpoints, nil, "an unreadable checkpoint directory must not look empty")
+  assert(err and err:find("permission denied", 1, true), "directory read error must be preserved")
+end)
+
+case("checkpoint_list_reports_invalid_json", function()
+  local checkpoint = require("n00n.checkpoint")
+  local old_dir = n00n.fs.dir
+  local old_read = n00n.fs.read
+  n00n.fs.dir = function()
+    return { { "wave_1.json", "file" } }
+  end
+  n00n.fs.read = function()
+    return "{not valid json"
+  end
+
+  local checkpoints, err = checkpoint.list("invalid-json-run")
+
+  n00n.fs.dir = old_dir
+  n00n.fs.read = old_read
+  eq(checkpoints, nil, "invalid checkpoint JSON must not look like an empty run")
+  assert(err and err:find("decode", 1, true), "invalid checkpoint JSON must return an explicit decode error")
+end)
+
+case("checkpoint_latest_uses_sequence_when_timestamps_tie", function()
+  local checkpoint = require("n00n.checkpoint")
+  local old_dir = n00n.fs.dir
+  local old_read = n00n.fs.read
+  local order = { "wave_2.json", "wave_1.json" }
+  local contents = {
+    ["wave_1.json"] = n00n.json.encode({ checkpoint_id = "wave_1", timestamp = 100, sequence = 1 }),
+    ["wave_2.json"] = n00n.json.encode({ checkpoint_id = "wave_2", timestamp = 100, sequence = 2 }),
+  }
+  n00n.fs.dir = function()
+    local entries = {}
+    for _, name in ipairs(order) do
+      entries[#entries + 1] = { name, "file" }
+    end
+    return entries
+  end
+  n00n.fs.read = function(path)
+    return contents[n00n.fs.basename(path)]
+  end
+
+  local latest_first = checkpoint.latest("tied-sequence-run")
+  order = { "wave_1.json", "wave_2.json" }
+  local latest_reversed = checkpoint.latest("tied-sequence-run")
+
+  n00n.fs.dir = old_dir
+  n00n.fs.read = old_read
+  eq(latest_first, "wave_2", "the greatest sequence must win")
+  eq(latest_reversed, "wave_2", "directory order must not affect latest")
+end)
+
+case("checkpoint_latest_breaks_legacy_timestamp_ties_deterministically", function()
+  local checkpoint = require("n00n.checkpoint")
+  local old_dir = n00n.fs.dir
+  local old_read = n00n.fs.read
+  local order = { "legacy_b.json", "legacy_a.json" }
+  local contents = {
+    ["legacy_a.json"] = n00n.json.encode({ checkpoint_id = "legacy_a", timestamp = 100 }),
+    ["legacy_b.json"] = n00n.json.encode({ checkpoint_id = "legacy_b", timestamp = 100 }),
+  }
+  n00n.fs.dir = function()
+    local entries = {}
+    for _, name in ipairs(order) do
+      entries[#entries + 1] = { name, "file" }
+    end
+    return entries
+  end
+  n00n.fs.read = function(path)
+    return contents[n00n.fs.basename(path)]
+  end
+
+  local latest_first = checkpoint.latest("legacy-tied-run")
+  order = { "legacy_a.json", "legacy_b.json" }
+  local latest_reversed = checkpoint.latest("legacy-tied-run")
+
+  n00n.fs.dir = old_dir
+  n00n.fs.read = old_read
+  eq(latest_first, "legacy_b", "legacy ties must use checkpoint id")
+  eq(latest_reversed, "legacy_b", "legacy selection must ignore directory order")
+end)
+
 if #failures > 0 then
   error(#failures .. " case(s) failed:\n\n" .. table.concat(failures, "\n\n"))
 end
