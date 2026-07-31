@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785486858924,
+  "lastUpdate": 1785527789619,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -10797,6 +10797,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 143538,
             "range": "± 8139",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "56e7fe437a8887c9c2291d050c49f7cab8bc19fb",
+          "message": "fix(n00n-providers,plugins): reduce OpenAI admission timeouts, handle server overload, and increase team budget (#208)\n\n* fix(n00n-providers): reduce OpenAI Coding Plan admission timeouts\n\n* fix(n00n-providers,plugins): handle server_is_overloaded and team budget exhaustion",
+          "timestamp": "2026-07-31T19:43:30Z",
+          "tree_id": "068585c736ac1dab50bcc6d6c93a4ad5c6b5313d",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/56e7fe437a8887c9c2291d050c49f7cab8bc19fb"
+        },
+        "date": 1785527788127,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 5003304,
+            "range": "± 136238",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1898131,
+            "range": "± 5485",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1899194,
+            "range": "± 11257",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 5882957,
+            "range": "± 18719",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 2991887,
+            "range": "± 14632",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 2980819,
+            "range": "± 13030",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 429911,
+            "range": "± 1905",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 130499,
+            "range": "± 318",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 130328,
+            "range": "± 190",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 835466,
+            "range": "± 6630",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 503149,
+            "range": "± 9646",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 483825,
+            "range": "± 8115",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 37201,
+            "range": "± 6117",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 92891,
+            "range": "± 5737",
             "unit": "ns/iter"
           }
         ]
