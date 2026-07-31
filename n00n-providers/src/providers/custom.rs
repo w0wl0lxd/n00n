@@ -333,6 +333,7 @@ impl Provider for CustomOpenAiProvider {
                     None,
                     false,
                     opts.thinking,
+                    self.compat.config().supports_parallel_tool_calls,
                 );
                 return responses::do_stream(
                     self.compat.client(),
@@ -389,6 +390,54 @@ mod tests {
     // inventory; the old guard leaked it into the picker, where it then resolved
     // as the builtin and silently dropped the custom model. Listing must skip
     // every builtin slug so a providers.toml entry can never shadow one.
+    #[test]
+    fn custom_openai_protocol_omits_parallel_tool_calls() {
+        let provider = OpenAiCompatProvider::new(&CONFIG, Timeouts::default()).unwrap();
+        let model = Model::from_spec("openai/gpt-4o").unwrap();
+        let messages = vec![Message::user("hello".to_string())];
+        let tools = serde_json::json!([{
+            "name": "bash",
+            "description": "run shell commands",
+            "input_schema": {"type": "object"}
+        }]);
+
+        let body = provider.build_body_with_session(
+            &model,
+            &messages,
+            &System::from("system"),
+            &tools,
+            None,
+            None,
+            0,
+        );
+
+        assert!(body.get("parallel_tool_calls").is_none());
+    }
+
+    #[test]
+    fn custom_openai_responses_protocol_omits_parallel_tool_calls() {
+        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let tools = serde_json::json!([{
+            "name": "bash",
+            "description": "run shell commands",
+            "input_schema": {"type": "object"}
+        }]);
+
+        let body = responses::build_body(
+            &model,
+            &[],
+            &System::from("system"),
+            &tools,
+            None,
+            None,
+            false,
+            ThinkingConfig::default(),
+            CONFIG.supports_parallel_tool_calls,
+        );
+
+        assert!(body.get("parallel_tool_calls").is_none());
+    }
+
     #[test]
     fn declared_specs_skip_builtin_named_entries_but_keep_custom() {
         let mut config = ProvidersConfig::default();

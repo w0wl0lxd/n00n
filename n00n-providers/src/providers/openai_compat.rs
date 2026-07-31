@@ -18,13 +18,47 @@ use crate::{
 };
 
 const STREAM_DONE: &str = "[DONE]";
-const GPT_5_6_BREAKPOINT_PREFIX: &str = "gpt-5.6-";
+const GPT_MODEL_PREFIX: &str = "gpt-";
+const OPENAI_MODEL_PREFIX: &str = "openai/";
 const GPT_CODEX_MARKER: &str = "-codex";
+const MIN_BREAKPOINT_MODEL_MAJOR: u16 = 5;
+const MIN_BREAKPOINT_MODEL_MINOR: u16 = 6;
 
 fn model_supports_breakpoint(model: &crate::model::Model) -> bool {
-    model.family == crate::model::ModelFamily::Gpt
-        && model.id.starts_with(GPT_5_6_BREAKPOINT_PREFIX)
-        && !model.id.contains(GPT_CODEX_MARKER)
+    let model_id = match model.id.strip_prefix(OPENAI_MODEL_PREFIX) {
+        Some(model_id) => model_id,
+        None => model.id.as_str(),
+    };
+    if model_id.contains(GPT_CODEX_MARKER) {
+        return false;
+    }
+    let Some(version_and_suffix) = model_id.strip_prefix(GPT_MODEL_PREFIX) else {
+        return false;
+    };
+    let version = match version_and_suffix.split_once('-') {
+        Some((version, _)) => version,
+        None => version_and_suffix,
+    };
+    let (major, minor) = match version.split_once('.') {
+        Some((major, minor)) => (major, minor),
+        None => (version, "0"),
+    };
+    let (Ok(major), Ok(minor)) = (major.parse::<u16>(), minor.parse::<u16>()) else {
+        return false;
+    };
+    major > MIN_BREAKPOINT_MODEL_MAJOR
+        || major == MIN_BREAKPOINT_MODEL_MAJOR && minor >= MIN_BREAKPOINT_MODEL_MINOR
+}
+
+fn contains_prompt_cache_breakpoint(value: &Value) -> bool {
+    match value {
+        Value::Array(values) => values.iter().any(contains_prompt_cache_breakpoint),
+        Value::Object(object) => {
+            object.contains_key("prompt_cache_breakpoint")
+                || object.values().any(contains_prompt_cache_breakpoint)
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => false,
+    }
 }
 
 fn value_hash(value: &Value) -> u64 {
@@ -61,6 +95,7 @@ pub(crate) struct OpenAiCompatConfig {
     pub supports_prompt_cache_key: bool,
     pub supports_prompt_cache_breakpoint: bool,
     pub emit_reasoning_content: bool,
+    pub supports_parallel_tool_calls: bool,
 }
 
 pub(crate) struct OpenAiCompatProvider {
@@ -192,6 +227,7 @@ impl OpenAiCompatProvider {
         if let Some(system_message) = self.build_system_message(system, system_prefix, model) {
             wire_messages.insert(0, system_message);
         }
+        let has_explicit_breakpoint = wire_messages.iter().any(contains_prompt_cache_breakpoint);
         let wire_tools = self.wire_tools(tools);
 
         let mut body = json!({
@@ -207,13 +243,16 @@ impl OpenAiCompatProvider {
         }
         if wire_tools.as_array().is_some_and(|a| !a.is_empty()) {
             body["tools"] = wire_tools;
+            if self.config.supports_parallel_tool_calls {
+                body["parallel_tool_calls"] = json!(true);
+            }
         }
         if let Some(sid) = session_id
             && self.config.supports_prompt_cache_key
         {
             body["prompt_cache_key"] = json!(sid);
         }
-        if supports_breakpoints {
+        if supports_breakpoints && has_explicit_breakpoint {
             body["prompt_cache_options"] = json!({"mode": "explicit"});
         }
         body
@@ -990,6 +1029,19 @@ mod tests {
 
     const TEST_STREAM_TIMEOUT: Duration = Duration::from_mins(5);
 
+    const BREAKPOINT_TEST_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
+        slug: "test",
+        api_key_env: "TEST_KEY",
+        base_url: "https://test.com",
+        max_tokens_field: "max_tokens",
+        include_stream_usage: false,
+        provider_name: "Test",
+        supports_prompt_cache_key: false,
+        supports_prompt_cache_breakpoint: true,
+        emit_reasoning_content: false,
+        supports_parallel_tool_calls: false,
+    };
+
     #[test]
     fn post_response_transport_error_is_not_retried() {
         let error = AgentError::Io(std::io::Error::new(
@@ -1514,6 +1566,7 @@ data: [DONE]\n";
             supports_prompt_cache_key: true,
             supports_prompt_cache_breakpoint: false,
             emit_reasoning_content: false,
+            supports_parallel_tool_calls: false,
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
@@ -1546,6 +1599,7 @@ data: [DONE]\n";
             supports_prompt_cache_key: true,
             supports_prompt_cache_breakpoint: false,
             emit_reasoning_content: false,
+            supports_parallel_tool_calls: false,
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
@@ -1578,6 +1632,7 @@ data: [DONE]\n";
             supports_prompt_cache_key: false,
             supports_prompt_cache_breakpoint: true,
             emit_reasoning_content: false,
+            supports_parallel_tool_calls: false,
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
@@ -1609,6 +1664,47 @@ data: [DONE]\n";
     }
 
     #[test]
+    fn breakpoint_support_uses_normalized_model_version() {
+        let open_router_model =
+            crate::model::Model::from_spec("openrouter/openai/gpt-5.6-luna").unwrap();
+        let future_model = crate::model::Model::from_spec("openai/gpt-6").unwrap();
+        let codex_model = crate::model::Model::from_spec("openai/gpt-6-codex").unwrap();
+
+        assert!(model_supports_breakpoint(&open_router_model));
+        assert!(model_supports_breakpoint(&future_model));
+        assert!(!model_supports_breakpoint(&codex_model));
+    }
+
+    #[test]
+    fn build_body_omits_explicit_mode_without_a_breakpoint() {
+        let provider = OpenAiCompatProvider::new(
+            &BREAKPOINT_TEST_CONFIG,
+            crate::providers::Timeouts::default(),
+        )
+        .unwrap();
+        let model = crate::model::Model::from_spec("openai/gpt-5.6-luna").unwrap();
+        let messages = vec![Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text {
+                text: "answer".to_string(),
+            }],
+            ..Default::default()
+        }];
+
+        let body = provider.build_body_with_session(
+            &model,
+            &messages,
+            &System::default(),
+            &json!([]),
+            None,
+            None,
+            2,
+        );
+
+        assert!(body.get("prompt_cache_options").is_none());
+    }
+
+    #[test]
     fn build_body_with_session_adds_message_cache_breakpoints() {
         static TEST_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
             slug: "test",
@@ -1620,6 +1716,7 @@ data: [DONE]\n";
             supports_prompt_cache_key: false,
             supports_prompt_cache_breakpoint: true,
             emit_reasoning_content: false,
+            supports_parallel_tool_calls: false,
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
@@ -1683,6 +1780,7 @@ data: [DONE]\n";
             supports_prompt_cache_key: false,
             supports_prompt_cache_breakpoint: true,
             emit_reasoning_content: false,
+            supports_parallel_tool_calls: false,
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
@@ -1716,6 +1814,7 @@ data: [DONE]\n";
             supports_prompt_cache_key: false,
             supports_prompt_cache_breakpoint: true,
             emit_reasoning_content: false,
+            supports_parallel_tool_calls: false,
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
@@ -1749,6 +1848,7 @@ data: [DONE]\n";
             supports_prompt_cache_key: false,
             supports_prompt_cache_breakpoint: true,
             emit_reasoning_content: false,
+            supports_parallel_tool_calls: false,
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
@@ -1822,5 +1922,77 @@ data: [DONE]\n";
         assert!(result[2]["content"].is_array());
         let content = result[2]["content"].as_array().unwrap();
         assert_eq!(content[0]["prompt_cache_breakpoint"]["mode"], "explicit");
+    }
+
+    #[test]
+    fn build_body_with_tools_adds_parallel_tool_calls_when_supported() {
+        static TEST_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
+            slug: "test",
+            api_key_env: "TEST_KEY",
+            base_url: "https://test.com",
+            max_tokens_field: "max_tokens",
+            include_stream_usage: false,
+            provider_name: "Test",
+            supports_prompt_cache_key: false,
+            supports_prompt_cache_breakpoint: false,
+            emit_reasoning_content: false,
+            supports_parallel_tool_calls: true,
+        };
+        let provider =
+            OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
+        let model = crate::model::Model::from_spec("openai/gpt-4o").unwrap();
+        let messages = vec![Message::user("hello".to_string())];
+        let tools = json!([{
+            "name": "bash",
+            "description": "run shell commands",
+            "input_schema": {"type": "object"}
+        }]);
+
+        let body = provider.build_body_with_session(
+            &model,
+            &messages,
+            &System::from("system"),
+            &tools,
+            None,
+            None,
+            0,
+        );
+        assert_eq!(body["parallel_tool_calls"], true);
+    }
+
+    #[test]
+    fn build_body_with_tools_skips_parallel_tool_calls_when_unsupported() {
+        static TEST_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
+            slug: "test",
+            api_key_env: "TEST_KEY",
+            base_url: "https://test.com",
+            max_tokens_field: "max_tokens",
+            include_stream_usage: false,
+            provider_name: "Test",
+            supports_prompt_cache_key: false,
+            supports_prompt_cache_breakpoint: false,
+            emit_reasoning_content: false,
+            supports_parallel_tool_calls: false,
+        };
+        let provider =
+            OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
+        let model = crate::model::Model::from_spec("openai/gpt-4o").unwrap();
+        let messages = vec![Message::user("hello".to_string())];
+        let tools = json!([{
+            "name": "bash",
+            "description": "run shell commands",
+            "input_schema": {"type": "object"}
+        }]);
+
+        let body = provider.build_body_with_session(
+            &model,
+            &messages,
+            &System::from("system"),
+            &tools,
+            None,
+            None,
+            0,
+        );
+        assert!(body.get("parallel_tool_calls").is_none());
     }
 }

@@ -125,7 +125,7 @@ How many lines of output to show per tool in the UI. All values are `usize` with
 | `connect_timeout_secs` | u64 | `10` | 1 | HTTP connect timeout (seconds) |
 | `low_speed_timeout_secs` | u64 | `120` | 1 | Low speed timeout (seconds with less than 1 byte received) |
 | `stream_timeout_secs` | u64 | `300` | 10 | Streaming response timeout (seconds) |
-| `openai_coding_plan_slots` | u64 | `4` | 1 | Maximum concurrent OpenAI Coding Plan streams per account (1-8) |
+| `openai_coding_plan_slots` | u64 | `8` | 1 | Maximum concurrent OpenAI Coding Plan streams per account (1-8) |
 
 ### `storage`
 
@@ -265,7 +265,7 @@ n00n.setup({
 | `max_agents_per_run` | integer | `24` | 1 | Agent-call budget per workflow (default 24, no hard maximum). |
 | `max_concurrent_agents` | integer | `4` | 1 | Concurrency per parallel()/pipeline() (default 4, hard max 8). |
 | `max_concurrent_workflows` | integer | `2` | 1 | Concurrent workflows (default 2, hard max 4). |
-| `timeout_secs` | integer | `600` | 1 | Hard deadline for one workflow run (cancels pure-Lua runaway loops via the VM watchdog). |
+| `timeout_secs` | integer | `600` | 60 | Maximum deadline for one workflow run; per-run timeout_secs may only shorten it. |
 
 ## Validation
 

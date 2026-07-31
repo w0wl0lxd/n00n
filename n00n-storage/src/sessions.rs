@@ -65,6 +65,8 @@ pub enum SessionError {
     },
     #[error("cursor ahead of session (log has {saved}, session has {actual}); compact required")]
     CursorAhead { saved: usize, actual: usize },
+    #[error("session log contains an unknown record type")]
+    UnknownRecord,
 }
 
 /// Per-model token breakdown entry. Mirrors the four usage counters tracked by
@@ -1358,7 +1360,7 @@ where
             }
             builder.meta = m_meta;
         }
-        LogRecord::Unknown => {}
+        LogRecord::Unknown => return Err(SessionError::UnknownRecord),
     }
     Ok(())
 }
@@ -2796,6 +2798,27 @@ mod tests {
             super::parse_records::<Value, Value, Value>(&path).unwrap();
         assert!(!recovered_tail);
         assert_eq!(log_appends, 0);
+    }
+
+    #[test]
+    fn rejects_unknown_session_record() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let session: TestSession = Session::new("m", "/project");
+        let log = SessionLog::create(dir, &session).unwrap();
+        drop(log);
+
+        let mut encoded = Vec::new();
+        encode_frame(&mut encoded, b"{\"t\":\"future_record\"}\n").unwrap();
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(jsonl_path(dir, session.id))
+            .unwrap();
+        file.write_all(&encoded).unwrap();
+        drop(file);
+
+        let error = TestSession::load_from(session.id, dir).unwrap_err();
+        assert!(matches!(error, SessionError::UnknownRecord));
     }
 
     #[test]

@@ -12,8 +12,12 @@ workspace = true
 
 [dependencies]
 thiserror = { workspace = true }
+tracing = { workspace = true }
 wait-timeout = { workspace = true }
 rusqlite = { workspace = true }
+
+[target.'cfg(all(unix, not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))))'.dependencies]
+rustix = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

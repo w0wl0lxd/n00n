@@ -395,6 +395,31 @@ mod tests {
         assert_eq!(input_clone, *expected);
     }
 
+    #[test]
+    fn mistral_request_emits_parallel_tool_calls() {
+        let provider =
+            OpenAiCompatProvider::new(&CONFIG, super::super::Timeouts::default()).unwrap();
+        let model = Model::from_spec("mistral/mistral-medium-latest").unwrap();
+        let messages = vec![Message::user("hello".to_string())];
+        let tools = json!([{
+            "name": "bash",
+            "description": "run shell commands",
+            "input_schema": {"type": "object"}
+        }]);
+
+        let body = provider.build_body_with_session(
+            &model,
+            &messages,
+            &System::from("system"),
+            &tools,
+            None,
+            None,
+            0,
+        );
+
+        assert_eq!(body["parallel_tool_calls"], true);
+    }
+
     #[test_case("mistral/ministral-14b-latest", false ; "ministral_no_thinking")]
     #[test_case("mistral/mistral-medium-latest", true ; "mistral_medium_supports_thinking")]
     fn adjust_model_sets_thinking_support(spec: &str, expected: bool) {

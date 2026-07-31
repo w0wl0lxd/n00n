@@ -61,7 +61,7 @@ local MAX_PLAN_STEPS = 8
 local DEFAULT_PLAN_STEPS = 6
 local DEFAULT_SWARM_ROUNDS = 2
 local MAX_SWARM_ROUNDS = 4
-local DEFAULT_TEAM_AGENTS = 16
+local DEFAULT_TEAM_AGENTS = 24
 local MAX_TEAM_CONCURRENT = 4
 local TEAM_TIMEOUT_SECS = 1800
 local MAX_RELAY_BYTES = 12000
@@ -140,7 +140,7 @@ local schema = {
       type = "integer",
       minimum = 1,
       default = DEFAULT_TEAM_AGENTS,
-      description = "Team agent-call budget (default 16, no hard maximum).",
+      description = "Team agent-call budget (default 24, no hard maximum).",
     },
     timeout_secs = {
       type = "integer",
@@ -349,7 +349,7 @@ local function run_autonomous(ctx, goal, input, steps, relay_k, logger, resume_s
       post_blackboard_status(ctx, "step_error", step, run_id, { index = i, error = r.error })
       if input.human_escalation then
         local pause_run_id = input.resume or memory.slug(goal)
-        memory.save_state(ctx, pause_run_id, {
+        local save_ok, save_err = memory.save_state(ctx, pause_run_id, {
           goal = goal,
           steps = steps,
           results = results,
@@ -362,6 +362,9 @@ local function run_autonomous(ctx, goal, input, steps, relay_k, logger, resume_s
           wave_index = 0,
           step_index = i,
         })
+        if not save_ok then
+          error("failed to save pause state: " .. tostring(save_err), 0)
+        end
         return results,
           total_cost,
           failures,
@@ -445,7 +448,7 @@ local function run_single_pass(ctx, goal, input, steps, relay_k, logger, resume_
       post_blackboard_status(ctx, "step_error", step, run_id, { index = i, error = r.error })
       if input.human_escalation then
         local pause_run_id = input.resume or memory.slug(goal)
-        memory.save_state(ctx, pause_run_id, {
+        local save_ok, save_err = memory.save_state(ctx, pause_run_id, {
           goal = goal,
           steps = steps,
           results = results,
@@ -458,6 +461,9 @@ local function run_single_pass(ctx, goal, input, steps, relay_k, logger, resume_
           wave_index = 0,
           step_index = i,
         })
+        if not save_ok then
+          error("failed to save pause state: " .. tostring(save_err), 0)
+        end
         return results,
           total_cost,
           failures,
@@ -602,6 +608,7 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
   local results = {}
   local total_cost = 0.0
   local total_usage = roles.usage()
+  local failures = 0
   local start_wave_index = 1
   local start_step_index = 1
   local pause = nil
@@ -610,6 +617,7 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
     results = resume_state.results or results
     total_cost = resume_state.total_cost or total_cost
     total_usage = resume_state.total_usage or total_usage
+    failures = resume_state.failures or failures
     start_wave_index = resume_state.wave_index or start_wave_index
     start_step_index = resume_state.step_index or start_step_index
   end
@@ -678,6 +686,7 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
         wave_usage = roles.add_usage(wave_usage, wave_result.usage)
 
         if wave_result.failures > 0 then
+          failures = failures + wave_result.failures
           if logger then
             logger.log("wave_error", { wave = wave_name, failures = wave_result.failures })
           end
@@ -740,6 +749,7 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
               max_retries,
               validation_err or "unknown"
             )
+            failures = failures + 1
             if logger then
               logger.log("wave_failed", { wave = wave_name, retry_count = retry_count, cost = wave_cost })
             end
@@ -753,6 +763,7 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
           results = results,
           total_cost = total_cost,
           total_usage = total_usage,
+          failures = failures,
           mode = input.mode,
           wave_index = wave_passed and wave_idx + 1 or wave_idx,
           step_index = wave_passed and 1 or (failed_step_index or wave_start_step),
@@ -763,24 +774,19 @@ local function run_waves(ctx, goal, input, steps, relay_k, logger, resume_state,
           ckpt_state.failed_step = failed_step_index
           ckpt_state.failed_role = failed_role
         end
-        local save_ok, save_err = checkpoint.save(run_id, ckpt_id, ckpt_state)
+        local save_ok, save_err = checkpoint.save(run_id, ckpt_id, ckpt_state, wave_idx)
         if not save_ok then
           if logger then
             logger.log("checkpoint_save_failed", { checkpoint_id = ckpt_id, error = save_err })
           end
+          results[#results + 1] = "[checkpoint] ERROR failed to save " .. ckpt_id .. ": " .. tostring(save_err)
+          return results, total_cost, failures + 1, total_usage, false
         end
       end
 
       if pause then
         break
       end
-    end
-  end
-
-  local failures = 0
-  for _, r in ipairs(results) do
-    if r:find("ERROR") then
-      failures = failures + 1
     end
   end
 
@@ -839,7 +845,10 @@ local function run_team(input, ctx)
   local steps, perr, supervisor_cost, supervisor_usage
   local resume_state
   if input.resume and #input.resume > 0 then
-    local latest_id = checkpoint.latest(input.resume)
+    local latest_id, latest_err = checkpoint.latest(input.resume)
+    if latest_err then
+      return { llm_output = "failed to load resume " .. input.resume .. ": " .. latest_err, is_error = true }
+    end
     if latest_id then
       local ckpt_state, ckpt_err = checkpoint.load(input.resume, latest_id)
       if ckpt_state then
@@ -851,21 +860,27 @@ local function run_team(input, ctx)
         if logger then
           logger.log("checkpoint_load_failed", { run_id = input.resume, error = ckpt_err })
         end
-        resume_state = memory.load_state(ctx, input.resume)
+        local resume_err
+        resume_state, resume_err = memory.load_state(ctx, input.resume)
         if resume_state then
           steps = resume_state.steps
           goal = resume_state.goal
           input.mode = requested_mode or resume_state.mode or "autonomous"
+        elseif resume_err then
+          return { llm_output = "failed to load resume " .. input.resume .. ": " .. resume_err, is_error = true }
         else
           return { llm_output = "resume run_id not found: " .. input.resume, is_error = true }
         end
       end
     else
-      resume_state = memory.load_state(ctx, input.resume)
+      local resume_err
+      resume_state, resume_err = memory.load_state(ctx, input.resume)
       if resume_state then
         steps = resume_state.steps
         goal = resume_state.goal
         input.mode = requested_mode or resume_state.mode or "autonomous"
+      elseif resume_err then
+        return { llm_output = "failed to load resume " .. input.resume .. ": " .. resume_err, is_error = true }
       else
         return { llm_output = "resume run_id not found: " .. input.resume, is_error = true }
       end
@@ -1033,7 +1048,18 @@ finish_run = function(ctx, input, results, total_cost, completed, unit, slug, fa
     summary = summary .. string.format(" %d step(s) failed; the run is incomplete.", failed)
   end
 
-  memory.save(ctx, slug, report .. summary)
+  local save_ok, save_err = memory.save(ctx, slug, report .. summary)
+  if not save_ok then
+    if logger then
+      logger.log("run_error", { error = save_err })
+    end
+    return {
+      llm_output = report .. summary .. "\n\n---\nWarning: team persistence failed: " .. tostring(save_err),
+      is_error = true,
+      cost = total_cost,
+      usage = roles.usage(usage),
+    }
+  end
 
   if logger then
     if failed > 0 then

@@ -30,6 +30,7 @@ serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 toon-format = { workspace = true }
 thiserror = { workspace = true }
+tempfile = { workspace = true }
 tracing = { workspace = true }
 smol = { workspace = true }
 event-listener = { workspace = true }
@@ -93,7 +94,6 @@ base64 = { workspace = true }
 criterion = { workspace = true }
 image = { workspace = true }
 n00n-agent = { workspace = true }
-tempfile = { workspace = true }
 test-case = { workspace = true }
 
 [[bench]]

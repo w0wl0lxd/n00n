@@ -107,10 +107,32 @@ pub enum AgentError {
 }
 
 impl AgentError {
+    /// Returns true for a provider's transient `server_is_overloaded` response and
+    /// any similarly worded provider-overload error, so the agent loop retries
+    /// instead of giving up or consuming tool budgets on a temporary capacity fault.
+    #[must_use]
+    fn is_overload_message(message: &str) -> bool {
+        let m = message.to_lowercase();
+        m.contains("server_is_overloaded") || m.contains("our servers are currently overloaded")
+    }
+
+    #[must_use]
+    pub fn is_server_overloaded(&self) -> bool {
+        match self {
+            Self::Api { message, .. } | Self::RequestSent { message, .. } => {
+                Self::is_overload_message(message)
+            }
+            _ => false,
+        }
+    }
+
     #[must_use]
     pub fn is_retryable(&self) -> bool {
         if self.is_context_overflow() {
             return false;
+        }
+        if self.is_server_overloaded() {
+            return true;
         }
         match self {
             Self::Api { status, .. } => *status == 429 || *status >= 500,
@@ -138,8 +160,15 @@ impl AgentError {
     /// request has left the client. API/server errors are only suppressed when
     /// output has already been emitted or the request was accepted, preserving
     /// retryability when no output has been accepted.
+    ///
+    /// `server_is_overloaded` is never suppressed: it is a transient capacity
+    /// signal and must be retried by the agent loop even if the request left the
+    /// client, because the provider explicitly asks us to try again later.
     #[must_use]
     pub fn suppress_retry_after_send(self, metadata: Option<RequestDeliveryMetadata>) -> Self {
+        if self.is_server_overloaded() {
+            return self;
+        }
         let emitted_or_accepted = metadata
             .as_ref()
             .is_some_and(RequestDeliveryMetadata::emitted_or_accepted);
@@ -230,6 +259,9 @@ impl AgentError {
             Self::Config { message } => message.clone(),
             Self::Api { status: 429, .. } => "rate limited, try again in a moment".into(),
             Self::Api { status: 529, .. } => "provider is overloaded, try again later".into(),
+            Self::Api { message, .. } if Self::is_overload_message(message) => {
+                "provider is overloaded, try again later".into()
+            }
             Self::Api { status, .. } if *status >= 500 => format!("server error ({status})"),
             Self::Api { status: 401, .. } => {
                 "authentication failed, run `n00n auth login` or check your API key".into()
@@ -287,6 +319,7 @@ impl AgentError {
             Self::Api { status: 429, .. } => "Rate limited".into(),
             Self::Api { status: 529, .. } => "Provider is overloaded".into(),
             Self::Api { status, .. } if *status >= 500 => format!("Server error ({status})"),
+            _ if self.is_server_overloaded() => "Provider is overloaded".into(),
             Self::Io(_) | Self::Http(_) => "Connection error".into(),
             Self::Timeout { .. } => "Stream timed out".into(),
             Self::CredentialLockTimeout { .. } => "Credential store is busy".into(),
@@ -428,5 +461,46 @@ mod tests {
         let err = api_msg(400, "request exceeds the available context size");
         assert!(err.is_context_overflow());
         assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn server_overloaded_400_is_retryable() {
+        let err = api_msg(
+            400,
+            "server_is_overloaded: Our servers are currently overloaded. Please try again later.",
+        );
+        assert!(err.is_server_overloaded());
+        assert!(err.is_retryable());
+        assert_eq!(
+            err.user_message(),
+            "provider is overloaded, try again later"
+        );
+        assert_eq!(err.retry_message(), "Provider is overloaded");
+    }
+
+    #[test]
+    fn request_sent_with_server_overload_is_retryable() {
+        let err = AgentError::RequestSent {
+            message: "request may have been accepted before the connection failed: API error (400): server_is_overloaded".into(),
+            metadata: None,
+        };
+        assert!(err.is_server_overloaded());
+        assert!(err.is_retryable());
+        assert_eq!(err.retry_message(), "Provider is overloaded");
+    }
+
+    #[test]
+    fn server_overloaded_is_not_suppressed_to_request_sent() {
+        let err = api_msg(
+            400,
+            "server_is_overloaded: Our servers are currently overloaded. Please try again later.",
+        );
+        let metadata = Some(RequestDeliveryMetadata::new(
+            RequestDeliveryPhase::SentAwaitingAcceptance,
+        ));
+        assert!(matches!(
+            err.suppress_retry_after_send(metadata),
+            AgentError::Api { status: 400, .. }
+        ));
     }
 }

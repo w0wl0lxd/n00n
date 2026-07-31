@@ -270,7 +270,7 @@ Run ALMAS team for SDLC goal. supervised=plan, autonomous=execute, swarm=decentr
 | `mode` | string | no |  | supervised=plan, autonomous=run, swarm=decentralized. |
 | `waves` | boolean | no |  | Execute in waves with validation gates. |
 | `max_wave_retries` | integer | no |  | Validation gate retries. |
-| `max_agents` | integer | no | 16, no hard maximum | Team agent-call budget. |
+| `max_agents` | integer | no | 24, no hard maximum | Team agent-call budget. |
 | `checkpoints` | boolean | no |  | Persist checkpoints after each wave. |
 | `compact` | boolean | no |  | TOON-encode retrieved context. |
 | `model_tier` | string | no |  | Supervisor tier (weak/medium/strong). |
@@ -308,9 +308,10 @@ Run sandboxed Lua workflow for multi-stage agent orchestration.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
+| `resume` | string | no | Paused run_id. Replays journaled agent() calls. |
 | `inputs` | object | no | Free-form object exposed as global `inputs`. |
 | `script` | string | yes | Lua script. Start with meta({...}). Use agent/parallel/pipeline/phase/log. Return final string. |
-| `resume` | string | no | Paused run_id. Replays journaled agent() calls. |
+| `timeout_secs` | integer | no | Wall-clock timeout for this run (minimum 60s). May shorten, but cannot exceed, the configured workflow timeout. |
 
 ### `todo_write` *(lua plugin)*
 
