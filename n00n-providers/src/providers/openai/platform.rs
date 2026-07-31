@@ -298,6 +298,42 @@ fn canonical_session_key(session_id: &SessionRef) -> n00nId {
     session_id.id()
 }
 
+fn model_supports_responses(model: &Model) -> bool {
+    let id = model.id.as_str();
+    // Built-in OpenAI models that support Responses API
+    let builtin_supported = matches!(
+        id,
+        "gpt-5.6-luna"
+            | "gpt-5.6-terra"
+            | "gpt-5.6-sol"
+            | "gpt-5.5"
+            | "gpt-5.4"
+            | "gpt-5.4-nano"
+            | "gpt-5.4-mini"
+            | "gpt-4.1"
+            | "gpt-4.1-nano"
+            | "gpt-4.1-mini"
+            | "o3"
+            | "o4-mini"
+    );
+
+    // Pattern-based support for newer models
+    let pattern_supported = id.starts_with("gpt-5.")
+        || id.starts_with("gpt-4.1-")
+        || id.starts_with("gpt-4o")
+        || id.starts_with("o3")
+        || id.starts_with("o4");
+
+    // Exclude codex models and legacy models
+    let excluded = id.ends_with("-codex")
+        || id == "gpt-4"
+        || id == "gpt-4-turbo"
+        || id == "gpt-4-32k"
+        || id.starts_with("gpt-3.5");
+
+    (builtin_supported || pattern_supported) && !excluded
+}
+
 fn prompt_cache_key(
     model_id: &str,
     system: &System,
@@ -1726,6 +1762,121 @@ impl OpenAi {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
+    async fn run_responses_attempt(
+        &self,
+        model: &Model,
+        messages: &[Message],
+        system: &System,
+        tools: &Value,
+        tools_hash: &str,
+        event_tx: &Sender<ProviderEvent>,
+        opts: RequestOptions,
+        session_id: Option<&SessionRef>,
+    ) -> Result<StreamResponse, AgentError> {
+        let durable_chain = session_id.is_some() && self.response_state_storage.is_some();
+        let response_chain_lock = if durable_chain {
+            self.lock_response_chain(session_id).await?
+        } else {
+            None
+        };
+
+        let auth_scope_hash = response_state_scope_hash(&self.current_auth());
+        let (previous_response_id, incremental_messages) = self
+            .prepare_request(
+                session_id,
+                tools_hash,
+                &auth_scope_hash,
+                messages,
+                response_chain_lock.as_ref(),
+            )
+            .await?;
+
+        if full_history_replay_required(
+            previous_response_id.as_deref(),
+            messages.len(),
+            opts.protect_history_replay,
+            opts.allow_history_replay,
+        ) {
+            return Err(AgentError::HistoryReplayRequired {
+                reason: HistoryReplayReason::ContinuationUnavailable,
+            });
+        }
+
+        self.emit_cache_health(session_id, previous_response_id.is_some(), event_tx)
+            .await;
+
+        let prompt_cache_key = prompt_cache_key(&model.id, system, tools_hash, session_id);
+        let auth = self.current_auth();
+        let store = self.stores_responses(&auth);
+
+        let body = super::responses::build_body(
+            model,
+            incremental_messages,
+            system,
+            tools,
+            previous_response_id.as_deref(),
+            Some(&prompt_cache_key),
+            store,
+            opts.thinking,
+            true, // parallel_tool_calls
+        );
+
+        log_responses_request(
+            "http_sse",
+            &body,
+            messages.len(),
+            incremental_messages.len(),
+            previous_response_id.is_some(),
+            false,
+        );
+
+        let result = self
+            .with_oauth_retry(|| async {
+                super::responses::do_stream(
+                    self.compat.client(),
+                    model,
+                    &body,
+                    event_tx,
+                    &auth,
+                    self.compat.stream_timeout(),
+                )
+                .await
+            })
+            .await;
+
+        match result {
+            Ok((response_id, response)) => {
+                self.record_response(
+                    session_id,
+                    response_id.clone(),
+                    tools_hash,
+                    &auth_scope_hash,
+                    messages,
+                    durable_chain,
+                    response_chain_lock.as_ref(),
+                )
+                .await;
+
+                self.emit_cache_health(session_id, response_id.is_some(), event_tx)
+                    .await;
+
+                Ok(response)
+            }
+            Err(error) => {
+                // If we had a previous_response_id and the error indicates it was missing,
+                // clear the response chain
+                if is_missing_previous_response_error(&error, previous_response_id.as_deref()) {
+                    self.clear_response_chain(session_id, response_chain_lock.as_ref())
+                        .await;
+                    self.emit_cache_health(session_id, false, event_tx).await;
+                }
+                Err(error)
+            }
+        }
+    }
+
     fn response_connection_slot(
         &self,
         session_id: Option<&SessionRef>,
@@ -2052,12 +2203,42 @@ impl Provider for OpenAi {
             }
 
             let tools_hash = stable_json_hash(tools)?;
-            let prompt_cache_key = prompt_cache_key(
-                &model.id,
-                &System::from(prefixed_system),
-                &tools_hash,
-                session_id,
-            );
+            let prefixed_system_obj = System::from(prefixed_system);
+
+            // Try Responses API for supported models
+            if model_supports_responses(model) {
+                let result = self
+                    .run_responses_attempt(
+                        model,
+                        messages,
+                        &prefixed_system_obj,
+                        tools,
+                        &tools_hash,
+                        event_tx,
+                        opts,
+                        session_id,
+                    )
+                    .await;
+
+                match result {
+                    Ok(response) => return Ok(response),
+                    Err(error) if is_definitive_responses_rejection(&error) => {
+                        warn!(
+                            error = %error,
+                            "OpenAI Responses API rejected request; falling back to Chat Completions"
+                        );
+                        // Clear response chain on definitive rejection
+                        if session_id.is_some() && self.response_state_storage.is_some() {
+                            self.clear_response_chain(session_id, None).await;
+                        }
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+
+            // Fallback to Chat Completions
+            let prompt_cache_key =
+                prompt_cache_key(&model.id, &prefixed_system_obj, &tools_hash, session_id);
             let mut body = self.compat.build_body_with_session(
                 model,
                 messages,
@@ -2250,6 +2431,29 @@ fn should_clear_response_chain<T>(result: &Result<T, AgentError>, store: bool) -
     }
 }
 
+fn is_definitive_responses_rejection(error: &AgentError) -> bool {
+    matches!(error, AgentError::Api { status, .. } if *status == 400 || *status == 422)
+}
+
+fn is_missing_previous_response_error(
+    error: &AgentError,
+    previous_response_id: Option<&str>,
+) -> bool {
+    let Some(previous_response_id) = previous_response_id else {
+        return false;
+    };
+    let AgentError::Api { status, message } = error else {
+        return false;
+    };
+    let status = *status;
+    let normalized = message.trim().to_ascii_lowercase();
+    (status == 400
+        && (normalized.starts_with("previous_response_not_found:")
+            || (normalized.contains("previous response") && normalized.contains("not found"))))
+        || ((status == 0 || status == 404)
+            && normalized == format!("not found: {}", previous_response_id.to_ascii_lowercase()))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -2261,6 +2465,7 @@ mod tests {
     use test_case::test_case;
 
     use super::*;
+    use crate::model::{ModelFamily, ModelPricing, ModelTier};
     use crate::{ContentBlock, Role, TokenUsage};
 
     const TOOLS_HASH: &str = "[]";
@@ -2413,6 +2618,146 @@ mod tests {
 
         assert!(previous_response_id.is_none());
         assert_eq!(incremental_messages.len(), second.len());
+    }
+
+    #[test_case("gpt-5.6-luna")]
+    #[test_case("gpt-5.6-terra")]
+    #[test_case("gpt-5.6-sol")]
+    #[test_case("gpt-5.5")]
+    #[test_case("gpt-5.4")]
+    #[test_case("gpt-5.4-nano")]
+    #[test_case("gpt-5.4-mini")]
+    #[test_case("gpt-4.1")]
+    #[test_case("gpt-4.1-nano")]
+    #[test_case("gpt-4.1-mini")]
+    #[test_case("o3")]
+    #[test_case("o4-mini")]
+    fn model_supports_responses_builtin_models(model_id: &str) {
+        let model = Model {
+            id: model_id.to_string(),
+            provider: Arc::from("openai"),
+            tier: ModelTier::Medium,
+            family: ModelFamily::Gpt,
+            supports_tool_examples_override: None,
+            supports_thinking_override: None,
+            supports_vision_override: None,
+            pricing: ModelPricing::default(),
+            max_output_tokens: None,
+            context_window: 128_000,
+        };
+        assert!(
+            model_supports_responses(&model),
+            "{model_id} should support Responses API"
+        );
+    }
+
+    #[test_case("gpt-5.7")]
+    #[test_case("gpt-5.10")]
+    #[test_case("gpt-4.1-turbo")]
+    #[test_case("gpt-4o")]
+    #[test_case("gpt-4o-mini")]
+    #[test_case("o3-mini")]
+    #[test_case("o4")]
+    fn model_supports_responses_pattern_models(model_id: &str) {
+        let model = Model {
+            id: model_id.to_string(),
+            provider: Arc::from("openai"),
+            tier: ModelTier::Medium,
+            family: ModelFamily::Gpt,
+            supports_tool_examples_override: None,
+            supports_thinking_override: None,
+            supports_vision_override: None,
+            pricing: ModelPricing::default(),
+            max_output_tokens: None,
+            context_window: 128_000,
+        };
+        assert!(
+            model_supports_responses(&model),
+            "{model_id} should support Responses API"
+        );
+    }
+
+    #[test_case("gpt-4")]
+    #[test_case("gpt-4-turbo")]
+    #[test_case("gpt-4-32k")]
+    #[test_case("gpt-3.5-turbo")]
+    #[test_case("gpt-3.5")]
+    #[test_case("gpt-5.6-luna-codex")]
+    #[test_case("gpt-5.1-codex")]
+    fn model_does_not_support_responses_legacy_or_codex(model_id: &str) {
+        let model = Model {
+            id: model_id.to_string(),
+            provider: Arc::from("openai"),
+            tier: ModelTier::Medium,
+            family: ModelFamily::Gpt,
+            supports_tool_examples_override: None,
+            supports_thinking_override: None,
+            supports_vision_override: None,
+            pricing: ModelPricing::default(),
+            max_output_tokens: None,
+            context_window: 128_000,
+        };
+        assert!(
+            !model_supports_responses(&model),
+            "{model_id} should not support Responses API"
+        );
+    }
+
+    #[test]
+    fn is_definitive_responses_rejection_detects_400_and_422() {
+        let error_400 = AgentError::Api {
+            status: 400,
+            message: "bad request".into(),
+        };
+        let error_422 = AgentError::Api {
+            status: 422,
+            message: "unprocessable entity".into(),
+        };
+        let error_500 = AgentError::Api {
+            status: 500,
+            message: "internal server error".into(),
+        };
+        let error_network = AgentError::Io(std::io::Error::other("connection failed"));
+
+        assert!(is_definitive_responses_rejection(&error_400));
+        assert!(is_definitive_responses_rejection(&error_422));
+        assert!(!is_definitive_responses_rejection(&error_500));
+        assert!(!is_definitive_responses_rejection(&error_network));
+    }
+
+    #[test]
+    fn is_missing_previous_response_error_detects_missing_response() {
+        let error_400 = AgentError::Api {
+            status: 400,
+            message: "previous_response_not_found: resp_123".into(),
+        };
+        let error_404 = AgentError::Api {
+            status: 404,
+            message: "not found: resp_123".into(),
+        };
+        let error_500 = AgentError::Api {
+            status: 500,
+            message: "internal server error".into(),
+        };
+        let error_network = AgentError::Io(std::io::Error::other("connection failed"));
+
+        assert!(is_missing_previous_response_error(
+            &error_400,
+            Some("resp_123")
+        ));
+        assert!(is_missing_previous_response_error(
+            &error_404,
+            Some("resp_123")
+        ));
+        assert!(!is_missing_previous_response_error(
+            &error_500,
+            Some("resp_123")
+        ));
+        assert!(!is_missing_previous_response_error(
+            &error_network,
+            Some("resp_123")
+        ));
+        assert!(!is_missing_previous_response_error(&error_400, None));
     }
 
     #[test_case("gpt-5.6-luna")]
