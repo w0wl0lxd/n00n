@@ -1,5 +1,17 @@
+use std::fs::File;
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
+
+#[cfg(all(
+    unix,
+    not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
+))]
+use rustix::fs::{Mode, OFlags, open, openat};
+#[cfg(all(
+    unix,
+    not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
+))]
 use std::fs;
-use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags};
 
@@ -7,6 +19,8 @@ use crate::CodegraphError;
 
 const DEFAULT_RESULT_LIMIT: usize = 12;
 const SOURCE_CONTEXT_LINES: u32 = 2;
+const SOURCE_MAX_BYTES: u64 = 1024 * 1024;
+const SOURCE_UNAVAILABLE: &str = "(source unavailable)";
 
 pub fn db_path(project: &Path) -> PathBuf {
     project.join(".codegraph/codegraph.db")
@@ -156,15 +170,21 @@ fn format_nodes(project: &Path, nodes: &[GraphNode]) -> String {
     let mut sections = Vec::new();
 
     for node in nodes {
-        let file_path = resolve_file_path(project, &node.file_path);
         let header = format!("## {}\n", node.file_path);
         let meta = format!(
             "{} ({}, lines {}-{})\n",
             node.qualified_name, node.name, node.start_line, node.end_line
         );
-        let snippet = match read_snippet(&file_path, node.start_line, node.end_line) {
-            Ok(text) => text,
-            Err(err) => format!("(source unavailable: {err:#})"),
+        let snippet = match read_snippet(project, &node.file_path, node.start_line, node.end_line) {
+            Ok(snippet) => snippet,
+            Err(error) => {
+                tracing::warn!(
+                    file_path = %node.file_path,
+                    error = %error,
+                    "codegraph source snippet read failed"
+                );
+                String::from(SOURCE_UNAVAILABLE)
+            }
         };
         sections.push(format!("{header}{meta}\n{snippet}"));
     }
@@ -172,16 +192,136 @@ fn format_nodes(project: &Path, nodes: &[GraphNode]) -> String {
     sections.join("\n")
 }
 
-fn resolve_file_path(project: &Path, file_path: &str) -> PathBuf {
+fn validate_source_path(file_path: &str) -> Result<&Path, CodegraphError> {
     let path = Path::new(file_path);
-    if path.is_absolute() {
-        return path.to_path_buf();
+    if path.as_os_str().is_empty()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(CodegraphError::SourcePath {
+            reason: "path must be a non-empty relative path without parent components",
+        });
     }
-    project.join(path)
+    Ok(path)
 }
 
-fn read_snippet(path: &Path, start_line: u32, end_line: u32) -> Result<String, CodegraphError> {
-    let content = fs::read_to_string(path).map_err(|source| CodegraphError::Exec { source })?;
+#[cfg(all(
+    unix,
+    not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
+))]
+fn open_source_file(project: &Path, path: &Path) -> Result<File, CodegraphError> {
+    open_source_file_with(project, path, || {})
+}
+
+#[cfg(all(
+    unix,
+    not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
+))]
+fn open_source_file_with<F>(
+    project: &Path,
+    path: &Path,
+    mut after_directory_open: F,
+) -> Result<File, CodegraphError>
+where
+    F: FnMut(),
+{
+    let project_root =
+        fs::canonicalize(project).map_err(|source| CodegraphError::Exec { source })?;
+    let directory_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let mut directory =
+        open("/", directory_flags, Mode::empty()).map_err(|source| CodegraphError::Exec {
+            source: source.into(),
+        })?;
+    for component in project_root.components() {
+        match component {
+            Component::RootDir => {}
+            Component::Normal(name) => {
+                directory =
+                    openat(&directory, name, directory_flags, Mode::empty()).map_err(|source| {
+                        CodegraphError::Exec {
+                            source: source.into(),
+                        }
+                    })?;
+            }
+            _ => {
+                return Err(CodegraphError::SourcePath {
+                    reason: "project root could not be resolved to an absolute directory",
+                });
+            }
+        }
+    }
+    let mut components = path.components().peekable();
+
+    while let Some(Component::Normal(component)) = components.next() {
+        if components.peek().is_some() {
+            directory = openat(&directory, component, directory_flags, Mode::empty()).map_err(
+                |source| CodegraphError::Exec {
+                    source: source.into(),
+                },
+            )?;
+            after_directory_open();
+        } else {
+            let file = openat(
+                &directory,
+                component,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+                Mode::empty(),
+            )
+            .map_err(|source| CodegraphError::Exec {
+                source: source.into(),
+            })?;
+            return Ok(File::from(file));
+        }
+    }
+
+    Err(CodegraphError::SourcePath {
+        reason: "path must name a source file",
+    })
+}
+
+#[cfg(not(all(
+    unix,
+    not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
+)))]
+fn open_source_file(_project: &Path, _path: &Path) -> Result<File, CodegraphError> {
+    Err(CodegraphError::SourceSnippetsUnsupported)
+}
+
+fn read_snippet(
+    project: &Path,
+    file_path: &str,
+    start_line: u32,
+    end_line: u32,
+) -> Result<String, CodegraphError> {
+    let path = validate_source_path(file_path)?;
+    let mut file = open_source_file(project, path)?;
+    let metadata = file
+        .metadata()
+        .map_err(|source| CodegraphError::Exec { source })?;
+    if !metadata.is_file() {
+        return Err(CodegraphError::SourcePath {
+            reason: "resolved path is not a regular file",
+        });
+    }
+    if metadata.len() > SOURCE_MAX_BYTES {
+        return Err(CodegraphError::SourceTooLarge {
+            size: metadata.len(),
+            max: SOURCE_MAX_BYTES,
+        });
+    }
+
+    let mut content = String::new();
+    file.by_ref()
+        .take(SOURCE_MAX_BYTES + 1)
+        .read_to_string(&mut content)
+        .map_err(|source| CodegraphError::Exec { source })?;
+    if content.len() as u64 > SOURCE_MAX_BYTES {
+        return Err(CodegraphError::SourceTooLarge {
+            size: content.len() as u64,
+            max: SOURCE_MAX_BYTES,
+        });
+    }
     let start = start_line.saturating_sub(SOURCE_CONTEXT_LINES).max(1) as usize;
     let end = end_line.saturating_add(SOURCE_CONTEXT_LINES) as usize;
     let mut lines = Vec::new();
@@ -200,8 +340,27 @@ fn read_snippet(path: &Path, start_line: u32, end_line: u32) -> Result<String, C
 
 #[cfg(test)]
 mod tests {
-    use super::{GraphNode, fts_query, search_nodes};
+    use std::fs;
+    #[cfg(all(
+        unix,
+        not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
+    ))]
+    use std::io::Read as _;
+
+    #[cfg(all(
+        unix,
+        not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
+    ))]
+    use super::SOURCE_MAX_BYTES;
+    #[cfg(all(
+        unix,
+        not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
+    ))]
+    use super::open_source_file_with;
+    use super::{GraphNode, SOURCE_UNAVAILABLE, format_nodes, fts_query, search_nodes};
     use rusqlite::Connection;
+
+    const SECRET: &str = "must not escape project root";
 
     fn write_fixture(conn: &Connection) {
         conn.execute_batch(
@@ -266,5 +425,175 @@ mod tests {
                 docstring: Some(String::from("restore helper")),
             }
         );
+    }
+
+    fn node(file_path: String) -> GraphNode {
+        GraphNode {
+            id: String::from("node-1"),
+            name: String::from("secret"),
+            qualified_name: String::from("secret"),
+            file_path,
+            start_line: 1,
+            end_line: 1,
+            signature: None,
+            docstring: None,
+        }
+    }
+
+    fn assert_source_unavailable(project: &std::path::Path, file_path: String) {
+        let output = format_nodes(project, &[node(file_path)]);
+        assert!(output.contains(SOURCE_UNAVAILABLE));
+        assert!(!output.contains(SECRET));
+    }
+
+    #[cfg(all(
+        unix,
+        not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
+    ))]
+    #[test]
+    fn format_nodes_reads_regular_source_inside_project() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::write(temp.path().join("source.rs"), "fn visible() {}").expect("source fixture");
+
+        let output = format_nodes(temp.path(), &[node(String::from("source.rs"))]);
+        assert!(output.contains("fn visible() {}"));
+        assert!(!output.contains("source unavailable"));
+    }
+
+    #[test]
+    fn format_nodes_rejects_absolute_source_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("project");
+        fs::create_dir(&project).expect("project directory");
+        let secret = temp.path().join("secret.rs");
+        fs::write(&secret, SECRET).expect("secret fixture");
+
+        assert_source_unavailable(&project, secret.to_string_lossy().into_owned());
+    }
+
+    #[test]
+    fn format_nodes_rejects_empty_source_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        assert_source_unavailable(temp.path(), String::new());
+    }
+
+    #[test]
+    fn format_nodes_rejects_parent_source_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("project");
+        fs::create_dir(&project).expect("project directory");
+        fs::write(temp.path().join("secret.rs"), SECRET).expect("secret fixture");
+
+        assert_source_unavailable(&project, String::from("../secret.rs"));
+    }
+
+    #[cfg(all(
+        unix,
+        not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
+    ))]
+    #[test]
+    fn format_nodes_rejects_symlink_outside_project() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("project");
+        fs::create_dir(&project).expect("project directory");
+        fs::write(temp.path().join("secret.rs"), SECRET).expect("secret fixture");
+        symlink(temp.path().join("secret.rs"), project.join("linked.rs")).expect("source symlink");
+
+        assert_source_unavailable(&project, String::from("linked.rs"));
+    }
+
+    #[cfg(all(
+        unix,
+        not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
+    ))]
+    #[test]
+    fn format_nodes_rejects_symlink_path_component() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("project");
+        let outside = temp.path().join("outside");
+        fs::create_dir(&project).expect("project directory");
+        fs::create_dir(&outside).expect("outside directory");
+        fs::write(outside.join("secret.rs"), SECRET).expect("secret fixture");
+        symlink(&outside, project.join("linked")).expect("directory symlink");
+
+        assert_source_unavailable(&project, String::from("linked/secret.rs"));
+    }
+
+    #[cfg(all(
+        unix,
+        not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
+    ))]
+    #[test]
+    fn source_open_stays_anchored_when_directory_is_swapped() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("project");
+        let source_directory = project.join("component");
+        let moved_directory = project.join("original");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&source_directory).expect("source directory");
+        fs::create_dir(&outside).expect("outside directory");
+        fs::write(source_directory.join("source.rs"), "safe source").expect("safe fixture");
+        fs::write(outside.join("source.rs"), SECRET).expect("secret fixture");
+
+        let mut file = open_source_file_with(
+            &project,
+            std::path::Path::new("component/source.rs"),
+            || {
+                fs::rename(&source_directory, &moved_directory).expect("move opened directory");
+                symlink(&outside, &source_directory).expect("swap directory for symlink");
+            },
+        )
+        .expect("open anchored source");
+        let mut content = String::new();
+        file.read_to_string(&mut content).expect("read source");
+
+        assert_eq!(content, "safe source");
+        assert!(!content.contains(SECRET));
+    }
+
+    #[cfg(all(
+        unix,
+        not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
+    ))]
+    #[test]
+    fn format_nodes_rejects_non_regular_source() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::create_dir(temp.path().join("src")).expect("source directory");
+
+        assert_source_unavailable(temp.path(), String::from("src"));
+    }
+
+    #[cfg(all(
+        unix,
+        not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
+    ))]
+    #[test]
+    fn format_nodes_rejects_oversized_source() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let oversized_len = usize::try_from(SOURCE_MAX_BYTES).expect("source limit fits usize") + 1;
+        fs::write(temp.path().join("large.rs"), vec![b'x'; oversized_len])
+            .expect("large source fixture");
+
+        assert_source_unavailable(temp.path(), String::from("large.rs"));
+    }
+
+    #[cfg(not(all(
+        unix,
+        not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
+    )))]
+    #[test]
+    fn format_nodes_disables_source_reads_without_safe_opening() {
+        let output = format_nodes(
+            std::path::Path::new("."),
+            &[node(String::from("source.rs"))],
+        );
+
+        assert!(output.contains(SOURCE_UNAVAILABLE));
     }
 }
