@@ -1,10 +1,15 @@
-// Hand-rolled protobuf helpers for Devin Connect messages.
-//
-// Based on the proto definitions from:
-// - `exa/api_server_pb/api_server.proto`
-// - `exa/auth_pb/auth.proto`
-// - `exa/chat_pb/chat.proto`
-// - `exa/codeium_common_pb/codeium_common.proto`
+//! Hand-rolled protobuf wire helpers for Devin Connect messages.
+//!
+//! Field numbers and enum values were captured from requests emitted by Devin CLI `3000.3.22`
+//! for these upstream schema paths:
+//! - `exa/api_server_pb/api_server.proto`
+//! - `exa/auth_pb/auth.proto`
+//! - `exa/chat_pb/chat.proto`
+//! - `exa/codeium_common_pb/codeium_common.proto`
+//!
+//! The upstream schema source, revision, and redistribution license are not available in this
+//! repository, so only the observed message subset is encoded here. Do not replace it with
+//! generated bindings until authoritative, licensed schema files are available.
 
 // Helper to encode a repeated string field
 fn encode_repeated_string(field: u64, values: &[String]) -> Vec<u8> {
@@ -24,16 +29,13 @@ fn encode_repeated_message(field: u64, messages: &[Vec<u8>]) -> Vec<u8> {
     out
 }
 
-// ChatMessageSource enum values (will be used when encoding chat_message_prompts)
-#[allow(dead_code)]
+const CLI_SOURCE: &str = "devin";
+const CLI_VERSION: &str = "3000.3.22";
+
 pub(crate) const CHAT_MESSAGE_SOURCE_UNSPECIFIED: u64 = 0;
 pub(crate) const CHAT_MESSAGE_SOURCE_USER: u64 = 1;
 pub(crate) const CHAT_MESSAGE_SOURCE_SYSTEM: u64 = 2;
-#[allow(dead_code)]
-pub(crate) const CHAT_MESSAGE_SOURCE_UNKNOWN: u64 = 3;
 pub(crate) const CHAT_MESSAGE_SOURCE_TOOL: u64 = 4;
-#[allow(dead_code)]
-pub(crate) const CHAT_MESSAGE_SOURCE_SYSTEM_PROMPT: u64 = 5;
 
 // ConversationalPlannerMode enum values
 const CONVERSATIONAL_PLANNER_MODE_DEFAULT: u64 = 1;
@@ -50,11 +52,9 @@ const CACHE_CONTROL_TYPE_EPHEMERAL: u64 = 1;
 // ChatMessageRequestType enum values
 const CHAT_MESSAGE_REQUEST_TYPE_CASCADE: u64 = 5;
 
-// StopReason enum values (mapped in devin.rs, not used directly in encoding)
-// const STOP_REASON_UNSPECIFIED: u64 = 0;
-// const STOP_REASON_MAX_TOKENS: u64 = 1;
-// const STOP_REASON_STOP_SEQUENCE: u64 = 2;
-// const STOP_REASON_TOOL_USE: u64 = 3;
+pub(crate) const STOP_REASON_UNSPECIFIED: u32 = 0;
+pub(crate) const STOP_REASON_MAX_TOKENS: u32 = 3;
+pub(crate) const STOP_REASON_TOOL_USE: u32 = 10;
 
 pub fn encode_varint(mut value: u64, out: &mut Vec<u8>) {
     loop {
@@ -74,11 +74,8 @@ pub fn encode_varint(mut value: u64, out: &mut Vec<u8>) {
 pub fn field_ld(field: u64, data: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len() + 10);
     encode_varint((field << 3) | 2, &mut out);
-    let len = u64::try_from(data.len()).unwrap_or_else(|_| {
-        // If data.len() doesn't fit in u64, truncate to max u64
-        // This is extremely unlikely in practice (data would need to be > 18 EB)
-        u64::MAX
-    });
+    // All supported Rust targets have a pointer width no greater than 64 bits.
+    let len = data.len() as u64;
     encode_varint(len, &mut out);
     out.extend_from_slice(data);
     out
@@ -207,12 +204,12 @@ pub fn encode_get_user_jwt_request(api_key: &str) -> Vec<u8> {
 //   ...
 //   string user_jwt = 21;
 fn encode_metadata(api_key: &str) -> Vec<u8> {
-    let mut out = field_str(1, "devin");
-    out.extend(field_str(2, "3000.3.22"));
+    let mut out = field_str(1, CLI_SOURCE);
+    out.extend(field_str(2, CLI_VERSION));
     out.extend(field_str(3, api_key));
     out.extend(field_str(4, "en"));
-    out.extend(field_str(7, "3000.3.22"));
-    out.extend(field_str(12, "devin"));
+    out.extend(field_str(7, CLI_VERSION));
+    out.extend(field_str(12, CLI_SOURCE));
     out
 }
 
@@ -352,7 +349,6 @@ fn encode_image_data(image: &ImageData<'_>) -> Vec<u8> {
 }
 
 // ChatToolCall encoder (exa.codeium_common_pb.ChatToolCall)
-#[allow(dead_code)]
 fn encode_chat_tool_call(tc: &ChatToolCall) -> Vec<u8> {
     let mut out = Vec::new();
 
@@ -571,16 +567,12 @@ pub fn decode_get_chat_message_response(buf: &[u8]) -> Result<GetChatMessageResp
                 response.delta_text = String::from_utf8_lossy(data).into_owned();
             }
             5 => {
-                // stop_reason is an enum, stored as varint
-                if let Ok((value, _)) = decode_varint(data) {
-                    response.stop_reason = u32::try_from(value).map_or(0, std::convert::identity);
-                }
+                let (value, _) = decode_varint(data)?;
+                response.stop_reason = u32::try_from(value)
+                    .map_err(|_| format!("stop reason {value} does not fit in u32"))?;
             }
             6 => {
-                // delta_tool_calls is repeated
-                if let Ok(tc) = decode_chat_tool_call(data) {
-                    response.delta_tool_calls.push(tc);
-                }
+                response.delta_tool_calls.push(decode_chat_tool_call(data)?);
             }
             7 => {
                 response.usage = Some(decode_model_usage_stats(data)?);
@@ -622,26 +614,10 @@ fn decode_model_usage_stats(buf: &[u8]) -> Result<ModelUsageStats, String> {
     for field in iter_fields(buf) {
         let (num, _wire, data) = field?;
         match num {
-            1 => {
-                if let Ok((value, _)) = decode_varint(data) {
-                    stats.input_tokens = value;
-                }
-            }
-            2 => {
-                if let Ok((value, _)) = decode_varint(data) {
-                    stats.output_tokens = value;
-                }
-            }
-            3 => {
-                if let Ok((value, _)) = decode_varint(data) {
-                    stats.cache_read_tokens = value;
-                }
-            }
-            4 => {
-                if let Ok((value, _)) = decode_varint(data) {
-                    stats.cache_write_tokens = value;
-                }
-            }
+            1 => stats.input_tokens = decode_varint(data)?.0,
+            2 => stats.output_tokens = decode_varint(data)?.0,
+            3 => stats.cache_read_tokens = decode_varint(data)?.0,
+            4 => stats.cache_write_tokens = decode_varint(data)?.0,
             _ => {}
         }
     }
@@ -722,7 +698,6 @@ pub fn decode_cli_model_configs(
         if !display.is_empty() {
             map.insert(display.clone(), wire.clone());
         }
-        // also map by label if different
         if !label.is_empty() && label != display {
             map.insert(label, wire);
         }
@@ -751,11 +726,12 @@ mod tests {
     #[test]
     fn field_str_roundtrip() {
         let encoded = field_str(1, "hello");
-        for field in iter_fields(&encoded) {
-            let (num, _wire, data) = field.unwrap();
-            assert_eq!(num, 1);
-            assert_eq!(String::from_utf8_lossy(data), "hello");
-        }
+        let fields = iter_fields(&encoded)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decode fields");
+
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0], (1, 2, b"hello".as_slice()));
     }
 
     #[test]
@@ -765,5 +741,94 @@ mod tests {
         let response = decode_get_user_jwt_response(&encoded).unwrap();
         assert_eq!(response.user_jwt, "test_jwt");
         assert_eq!(response.custom_api_server_url, "https://custom.com");
+    }
+
+    #[test]
+    fn decode_chat_response_roundtrip_preserves_all_supported_fields() {
+        let tool_call = ChatToolCall {
+            id: "call-1".into(),
+            name: "read".into(),
+            arguments_json: r#"{"path":"file.txt"}"#.into(),
+        };
+        let mut usage = field_varint(1, 11);
+        usage.extend(field_varint(2, 7));
+        usage.extend(field_varint(3, 5));
+        usage.extend(field_varint(4, 3));
+        let mut encoded = field_str(1, "message-1");
+        encoded.extend(field_str(3, "text"));
+        encoded.extend(field_varint(5, u64::from(STOP_REASON_TOOL_USE)));
+        encoded.extend(field_ld(6, &encode_chat_tool_call(&tool_call)));
+        encoded.extend(field_ld(7, &usage));
+        encoded.extend(field_str(9, "thinking"));
+        encoded.extend(field_str(10, "signature"));
+
+        let response = decode_get_chat_message_response(&encoded).expect("decode response");
+
+        assert_eq!(response.message_id, "message-1");
+        assert_eq!(response.delta_text, "text");
+        assert_eq!(response.delta_thinking, "thinking");
+        assert_eq!(response.delta_signature, "signature");
+        assert_eq!(response.stop_reason, STOP_REASON_TOOL_USE);
+        assert_eq!(response.delta_tool_calls.len(), 1);
+        assert_eq!(response.delta_tool_calls[0].id, tool_call.id);
+        assert_eq!(response.delta_tool_calls[0].name, tool_call.name);
+        assert_eq!(
+            response.delta_tool_calls[0].arguments_json,
+            tool_call.arguments_json
+        );
+        let stats = response.usage.expect("usage");
+        assert_eq!(stats.input_tokens, 11);
+        assert_eq!(stats.output_tokens, 7);
+        assert_eq!(stats.cache_read_tokens, 5);
+        assert_eq!(stats.cache_write_tokens, 3);
+    }
+
+    #[test]
+    fn decode_chat_response_rejects_stop_reason_overflow() {
+        let encoded = field_varint(5, u64::MAX);
+
+        let error = decode_get_chat_message_response(&encoded).expect_err("must reject overflow");
+
+        assert!(error.contains("does not fit in u32"));
+    }
+
+    #[test]
+    fn decode_chat_response_propagates_tool_call_failure() {
+        let encoded = field_ld(6, &[0x0a, 0x02, b'x']);
+
+        let error = decode_get_chat_message_response(&encoded).expect_err("must reject tool call");
+
+        assert_eq!(error, "truncated length-delimited field");
+    }
+
+    #[test]
+    fn decode_chat_response_propagates_usage_failure() {
+        let encoded = field_ld(7, &[0x08, 0x80]);
+
+        let error = decode_get_chat_message_response(&encoded).expect_err("must reject usage");
+
+        assert_eq!(error, "truncated varint");
+    }
+
+    #[test]
+    fn cli_model_config_prefers_chat_model_name_for_display_and_label() {
+        let model_or_alias = field_str(3, "alias-wire-id");
+        let model_info = field_str(12, "chat-model-name");
+        let mut config = field_str(1, "Model Label");
+        config.extend(field_ld(2, &model_or_alias));
+        config.extend(field_str(22, "display-model-id"));
+        config.extend(field_ld(23, &model_info));
+        let encoded = field_ld(1, &config);
+
+        let models = decode_cli_model_configs(&encoded).expect("decode configs");
+
+        assert_eq!(
+            models.get("display-model-id").map(String::as_str),
+            Some("chat-model-name")
+        );
+        assert_eq!(
+            models.get("Model Label").map(String::as_str),
+            Some("chat-model-name")
+        );
     }
 }

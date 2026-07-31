@@ -221,9 +221,9 @@ The default is `false`.
 
 ### Devin
 
-- **Env var**: `DEVIN_API_KEY`
-- **API**: `devin acp subprocess (Agent Client Protocol)`
-- **Features**: Agent Client Protocol via devin acp subprocess
+- **Authentication**: `DEVIN_API_KEY`, `WINDSURF_API_KEY`, or `~/.local/share/devin/credentials.toml`
+- **API**: `https://server.codeium.com (native Connect/gRPC-Web)`
+- **Features**: Native Connect/gRPC-Web transport with streamed text, thinking, and tool calls
 
 | Tier | Models | Pricing (in/out per 1M tokens) | Context |
 |------|--------|-------------------------------|---------|

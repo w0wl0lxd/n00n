@@ -541,11 +541,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn codex_default_model_is_a_valid_qualified_spec() {
+    fn bare_codex_resolves_to_a_valid_qualified_spec() {
         let default = n00n_config::providers::resolve_default_model("codex", None)
             .expect("Codex should have a default model");
+        let model = crate::model::Model::from_spec("codex")
+            .expect("bare Codex should resolve to its default model");
 
-        assert!(crate::model::Model::from_spec(&default).is_ok());
+        assert_eq!(model.spec(), default);
+        assert!(default.starts_with("codex/"));
+    }
+
+    #[test]
+    fn codex_unknown_model_remains_accepted() {
+        assert!(crate::model::Model::from_spec("codex/unknown-id").is_ok());
     }
 
     #[test_case("gpt-5.6-luna", ModelTier::Weak, 1.0, 0.1, 1.25, 6.0)]

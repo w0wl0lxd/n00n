@@ -189,6 +189,17 @@ fn build_sections() -> Vec<ProviderSection> {
                     entries: ManifestRegistry::get(&kind.to_string()).unwrap().models,
                 });
             }
+            ProviderKind::Devin => {
+                sections.push(ProviderSection {
+                    kind,
+                    name: kind.display_name(),
+                    auth_line: "`DEVIN_API_KEY`, `WINDSURF_API_KEY`, or `~/.local/share/devin/credentials.toml`"
+                        .to_string(),
+                    urls: vec![kind.base_url()],
+                    features: kind.features(),
+                    entries: ManifestRegistry::get(&kind.to_string()).unwrap().models,
+                });
+            }
             _ => {
                 sections.push(ProviderSection {
                     kind,
@@ -293,7 +304,12 @@ fn no_catalog_note(kind: ProviderKind) -> &'static str {
 
 fn write_section(out: &mut String, section: &ProviderSection) {
     let _ = writeln!(out, "### {}\n", section.name);
-    let _ = writeln!(out, "- **Env var**: {}", section.auth_line);
+    let auth_label = if section.kind == ProviderKind::Devin {
+        "Authentication"
+    } else {
+        "Env var"
+    };
+    let _ = writeln!(out, "- **{auth_label}**: {}", section.auth_line);
 
     if section.urls.len() == 1 {
         let _ = writeln!(out, "- **API**: `{}`", section.urls[0]);
