@@ -537,6 +537,7 @@ local function handler(input)
       content = input.post.content,
       tags = input.post.tags or {},
       task_id = input.post.task_id,
+      extra = input.post.extra,
     }
 
     local id, err = write_post(post)
