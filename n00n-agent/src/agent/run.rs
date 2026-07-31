@@ -362,13 +362,13 @@ impl<'h> Agent<'h> {
             .pre_dispatch_rollback_len
             .unwrap_or_else(|| rollback_len);
         let mut msg = Message::user_with_images(input.message.clone(), input.images);
-        msg.control = input.control;
-        self.history.push(msg);
-        if self.history.len() == 1 && self.history.as_slice()[0].content.is_empty() {
+        if msg.content.is_empty() {
             return Err(AgentError::Config {
                 message: "message is empty".into(),
             });
         }
+        msg.control = input.control;
+        self.history.push(msg);
         self.mode = Arc::new(input.mode);
         self.workflow = input.workflow;
         // Filter the caller-supplied tool list in place. Rebuilding from the
@@ -863,6 +863,9 @@ impl<'h> Agent<'h> {
         info!(context_size = self.context_size, "auto-compacting");
         self.event_tx.send(AgentEvent::AutoCompacting)?;
         if let Err(e) = self.do_compact().await {
+            if matches!(e, AgentError::Cancelled) {
+                return Err(e);
+            }
             warn!(
                 error = %e,
                 "auto-compaction failed; continuing without compacting"

@@ -37,6 +37,8 @@ use std::path::{Path, PathBuf};
 pub use n00n_providers::AgentError;
 use n00n_providers::Message;
 pub use n00n_providers::{ImageMediaType, ImageSource, ThinkingConfig};
+use n00n_storage::StateDir;
+use n00n_storage::sessions::{SessionMeta, StoredMode};
 pub use types::{
     AgentEvent, BufferSnapshot, Envelope, EventSender, GrepFileEntry, GrepLine, GrepMatchGroup,
     InstructionBlock, NO_FILES_FOUND, SharedBuf, SnapshotLine, SnapshotSpan, SpanStyle,
@@ -64,6 +66,29 @@ impl AgentMode {
     #[must_use]
     pub fn is_readonly(&self) -> bool {
         matches!(self, Self::Plan(_) | Self::Research)
+    }
+}
+
+/// Convert stored session metadata into a runtime mode and optional plan path,
+/// with a logged fallback for generating a new plan path when needed.
+#[must_use]
+pub fn mode_and_plan_from_stored(
+    state_dir: &StateDir,
+    meta: &SessionMeta,
+) -> (AgentMode, Option<PathBuf>) {
+    let plan_path = meta.plan_path.as_ref().map(PathBuf::from);
+    match meta.mode {
+        Some(StoredMode::Build) | None => (AgentMode::Build, plan_path),
+        Some(StoredMode::Plan) => {
+            let path = plan_path.unwrap_or_else(|| {
+                n00n_storage::plans::new_plan_path(state_dir).unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "failed to generate new plan path; using fallback");
+                    PathBuf::from("plan.md")
+                })
+            });
+            (AgentMode::Plan(path.clone()), Some(path))
+        }
+        Some(StoredMode::Research) => (AgentMode::Research, plan_path),
     }
 }
 

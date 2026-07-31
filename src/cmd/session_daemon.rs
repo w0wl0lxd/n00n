@@ -1,11 +1,11 @@
 //! In-process session registration for headless modes (print, ACP).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use n00n_agent::headless::InteractiveHandle;
-use n00n_agent::{AgentInput, AgentMode};
+use n00n_agent::{AgentInput, mode_and_plan_from_stored};
 use n00n_daemon::backend::WorkerBackend;
 use n00n_daemon::error::{ControlError, ControlResult};
 use n00n_daemon::lock::DaemonRole;
@@ -17,7 +17,7 @@ use n00n_providers::ThinkingConfig;
 use n00n_providers::TokenUsage;
 use n00n_storage::StateDir;
 use n00n_storage::id::SessionRef;
-use n00n_storage::sessions::{Session, StoredMode};
+use n00n_storage::sessions::Session;
 use serde_json::Value;
 
 const STATUS_WORKING: &str = "working";
@@ -246,29 +246,18 @@ fn message_interactive(
     if id != session_id {
         return Err(ControlError::NotFound(id.to_owned()));
     }
-    let (mode, plan_path) = session_id
-        .parse::<SessionRef>()
-        .ok()
-        .and_then(|session_ref| {
-            let storage = StateDir::from_path(state_dir.to_path_buf());
-            Session::<Message, TokenUsage, n00n_agent::ToolOutput>::load(session_ref.id(), &storage)
-                .ok()
-                .map(|session| match session.meta.mode {
-                    Some(StoredMode::Build) => {
-                        (AgentMode::Build, session.meta.plan_path.map(PathBuf::from))
-                    }
-                    Some(StoredMode::Plan) => {
-                        let path = session
-                            .meta
-                            .plan_path
-                            .map_or_else(|| PathBuf::from("plan.md"), PathBuf::from);
-                        (AgentMode::Plan(path.clone()), Some(path))
-                    }
-                    Some(StoredMode::Research) => (AgentMode::Research, None),
-                    None => (AgentMode::Build, session.meta.plan_path.map(PathBuf::from)),
-                })
-        })
-        .unwrap_or_else(|| (AgentMode::Build, None));
+    let (mode, plan_path) = {
+        let session_ref = session_id
+            .parse::<SessionRef>()
+            .map_err(|_| ControlError::InvalidId(session_id.to_owned()))?;
+        let storage = StateDir::from_path(state_dir.to_path_buf());
+        let session = Session::<Message, TokenUsage, n00n_agent::ToolOutput>::load(
+            session_ref.id(),
+            &storage,
+        )
+        .map_err(|e| ControlError::Unavailable(e.to_string()))?;
+        mode_and_plan_from_stored(&storage, &session.meta)
+    };
     input_tx
         .try_send(AgentInput {
             message: text.to_owned(),

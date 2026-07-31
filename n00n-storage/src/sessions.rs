@@ -1358,7 +1358,9 @@ where
             }
             builder.meta = m_meta;
         }
-        LogRecord::Unknown => {}
+        LogRecord::Unknown => {
+            tracing::debug!("unknown session log record skipped");
+        }
     }
     Ok(())
 }
