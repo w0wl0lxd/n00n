@@ -7,6 +7,7 @@
 //! waits on every event source at once and wakes the moment a plugin action,
 //! agent event, or keypress arrives instead of sleeping in `event::poll`.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -216,10 +217,12 @@ impl SpawnCtx {
     fn spawn_runtime(&self, session: AppSession) -> SessionRuntime {
         let resumed = crate::app::session_has_content(&session);
         let permissions = Arc::new(self.permissions.fork());
+        let initial_plan_path = session.meta.plan_path.as_ref().map(PathBuf::from);
         let handles = AgentHandles::spawn(
             &self.model_slot,
             session.messages.clone(),
             session.transcript.clone(),
+            initial_plan_path,
             self.config.clone(),
             self.ui_config.tool_output_lines,
             &permissions,
