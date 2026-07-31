@@ -3,6 +3,7 @@ use n00n_providers::model::{ModelEntry, ModelTier};
 use n00n_providers::provider::ProviderKind;
 use std::fmt::Write;
 use strum::IntoEnumIterator;
+use thiserror::Error;
 
 const FRONT_MATTER: &str = r#"+++
 title = "Providers"
@@ -136,6 +137,20 @@ struct ProviderSection {
     entries: &'static [ModelEntry],
 }
 
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum GenerateError {
+    #[error("missing built-in provider manifest for {slug}")]
+    MissingManifest { slug: String },
+}
+
+fn manifest_models(slug: &str) -> Result<&'static [ModelEntry], GenerateError> {
+    ManifestRegistry::get(slug)
+        .map(|manifest| manifest.models)
+        .ok_or_else(|| GenerateError::MissingManifest {
+            slug: slug.to_string(),
+        })
+}
+
 fn format_auth(kind: ProviderKind) -> String {
     let env = kind.api_key_env();
     if kind == ProviderKind::Ollama {
@@ -145,7 +160,7 @@ fn format_auth(kind: ProviderKind) -> String {
     }
 }
 
-fn build_sections() -> Vec<ProviderSection> {
+fn build_sections() -> Result<Vec<ProviderSection>, GenerateError> {
     let mut sections = Vec::new();
 
     for kind in ProviderKind::iter() {
@@ -163,7 +178,7 @@ fn build_sections() -> Vec<ProviderSection> {
                         "https://api.z.ai/api/coding/paas/v4",
                     ],
                     features: ProviderKind::Zai.features(),
-                    entries: ManifestRegistry::get("zai").unwrap().models,
+                    entries: manifest_models("zai")?,
                 });
             }
             ProviderKind::OpenAi => {
@@ -173,7 +188,7 @@ fn build_sections() -> Vec<ProviderSection> {
                     auth_line: format!("{} (also supports OAuth device flow)", format_auth(kind)),
                     urls: vec![kind.base_url()],
                     features: kind.features(),
-                    entries: ManifestRegistry::get(&kind.to_string()).unwrap().models,
+                    entries: manifest_models(&kind.to_string())?,
                 });
             }
             ProviderKind::Copilot => {
@@ -186,7 +201,18 @@ fn build_sections() -> Vec<ProviderSection> {
                     ),
                     urls: vec![kind.base_url()],
                     features: kind.features(),
-                    entries: ManifestRegistry::get(&kind.to_string()).unwrap().models,
+                    entries: manifest_models(&kind.to_string())?,
+                });
+            }
+            ProviderKind::Devin => {
+                sections.push(ProviderSection {
+                    kind,
+                    name: kind.display_name(),
+                    auth_line: "`DEVIN_API_KEY`, `WINDSURF_API_KEY`, or `~/.local/share/devin/credentials.toml`"
+                        .to_string(),
+                    urls: vec![kind.base_url()],
+                    features: kind.features(),
+                    entries: manifest_models(&kind.to_string())?,
                 });
             }
             _ => {
@@ -196,13 +222,13 @@ fn build_sections() -> Vec<ProviderSection> {
                     auth_line: format_auth(kind),
                     urls: vec![kind.base_url()],
                     features: kind.features(),
-                    entries: ManifestRegistry::get(&kind.to_string()).unwrap().models,
+                    entries: manifest_models(&kind.to_string())?,
                 });
             }
         }
     }
 
-    sections
+    Ok(sections)
 }
 
 fn write_model_table(out: &mut String, entries: &[ModelEntry]) {
@@ -293,7 +319,12 @@ fn no_catalog_note(kind: ProviderKind) -> &'static str {
 
 fn write_section(out: &mut String, section: &ProviderSection) {
     let _ = writeln!(out, "### {}\n", section.name);
-    let _ = writeln!(out, "- **Env var**: {}", section.auth_line);
+    let auth_label = if section.kind == ProviderKind::Devin {
+        "Authentication"
+    } else {
+        "Env var"
+    };
+    let _ = writeln!(out, "- **{auth_label}**: {}", section.auth_line);
 
     if section.urls.len() == 1 {
         let _ = writeln!(out, "- **API**: `{}`", section.urls[0]);
@@ -326,7 +357,7 @@ fn write_section(out: &mut String, section: &ProviderSection) {
     }
 }
 
-pub fn generate() -> String {
+pub fn generate() -> Result<String, GenerateError> {
     let mut out = String::with_capacity(4096);
 
     let _ = writeln!(out, "{FRONT_MATTER}\n");
@@ -343,7 +374,7 @@ pub fn generate() -> String {
     let _ = writeln!(out, "{BASE_URL_OVERRIDES}\n");
     let _ = writeln!(out, "## Built-in Providers\n");
 
-    for section in &build_sections() {
+    for section in &build_sections()? {
         write_section(&mut out, section);
         let _ = writeln!(out);
     }
@@ -351,5 +382,21 @@ pub fn generate() -> String {
     let _ = writeln!(out, "{MODEL_IDENTIFIERS}\n");
     let _ = writeln!(out, "{}", dynamic_providers_section());
 
-    out
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_manifest_returns_typed_error() {
+        let error = manifest_models("missing-provider").expect_err("missing manifest");
+        assert_eq!(
+            error,
+            GenerateError::MissingManifest {
+                slug: "missing-provider".to_string(),
+            }
+        );
+    }
 }
