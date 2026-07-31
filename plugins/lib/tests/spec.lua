@@ -65,6 +65,24 @@ case("guard_consume_is_backwards_compatible", function()
   assert(err:find("budget"), "legacy consume must enforce limit: " .. tostring(err))
 end)
 
+case("guard_refunds_transient_overload_errors", function()
+  local g = guard.new({ max_calls = 2, max_consecutive_errors = 2 })
+  eq(g:check("p"), true)
+  eq(g.used, 1)
+  eq(g:record("p", "server_is_overloaded: Our servers are currently overloaded"), true)
+  eq(g.used, 0)
+  eq(g.consecutive_errors, 0)
+  eq(g:check("p"), true)
+  eq(g:record("p", "API error (400): server_is_overloaded"), true)
+  eq(g.used, 0)
+  eq(g.consecutive_errors, 0)
+  -- A non-transient error still consumes and counts.
+  eq(g:check("p"), true)
+  eq(g:record("p", "something went wrong"), true)
+  eq(g.used, 1)
+  eq(g.consecutive_errors, 1)
+end)
+
 -- Mock buf that records set_lines calls
 local function mock_buf()
   local b = { lines = nil, call_count = 0, handlers = {} }

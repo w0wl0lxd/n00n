@@ -270,7 +270,7 @@ Run ALMAS team for SDLC goal. supervised=plan, autonomous=execute, swarm=decentr
 | `mode` | string | no |  | supervised=plan, autonomous=run, swarm=decentralized. |
 | `waves` | boolean | no |  | Execute in waves with validation gates. |
 | `max_wave_retries` | integer | no |  | Validation gate retries. |
-| `max_agents` | integer | no | 16, no hard maximum | Team agent-call budget. |
+| `max_agents` | integer | no | 24, no hard maximum | Team agent-call budget. |
 | `checkpoints` | boolean | no |  | Persist checkpoints after each wave. |
 | `compact` | boolean | no |  | TOON-encode retrieved context. |
 | `model_tier` | string | no |  | Supervisor tier (weak/medium/strong). |

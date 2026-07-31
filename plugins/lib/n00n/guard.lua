@@ -16,6 +16,40 @@ local M = {}
 local DEFAULT_MAX_REPEATED_PROMPT = 3
 local DEFAULT_MAX_CONSECUTIVE_ERRORS = 3
 
+-- Provider-side capacity or transient transport failures should not consume
+-- agent-call budgets or count against runaway heuristics, because the call
+-- did not make progress and the runtime will retry.
+local TRANSIENT_ERROR_PATTERNS = {
+  "server_is_overloaded",
+  "our servers are currently overloaded",
+  "provider is overloaded",
+  "try again later",
+  "try again shortly",
+  "try again in a moment",
+  "rate limited",
+  "connection error",
+  "stream timed out",
+  "credential store is busy",
+  "this session is busy",
+  "openai session is busy",
+  "openai coding plan is busy",
+  "coding plan request admission timed out",
+  "admission timed out",
+}
+
+local function is_transient_error(err)
+  if not err or type(err) ~= "string" then
+    return false
+  end
+  local lower = err:lower()
+  for _, pattern in ipairs(TRANSIENT_ERROR_PATTERNS) do
+    if lower:find(pattern, 1, true) then
+      return true
+    end
+  end
+  return false
+end
+
 local function guard_error(kind, detail)
   return kind .. " runaway guard triggered" .. (detail and ": " .. detail or "")
 end
@@ -66,10 +100,20 @@ function M.new(opts)
   end
 
   -- Record a subagent result. Returns (ok, err); updates prompt-frequency and
-  -- consecutive-error heuristics.
+  -- consecutive-error heuristics. Transient provider capacity or transport
+  -- failures refund the call slot and reset the consecutive-error counter so a
+  -- temporary outage does not exhaust budgets or trip the runaway detector.
   function self.record(_, prompt, err)
     if prompt then
       self.prompts[prompt] = (self.prompts[prompt] or 0) + 1
+    end
+
+    if is_transient_error(err) then
+      if self.used > 0 then
+        self.used = self.used - 1
+      end
+      self.consecutive_errors = 0
+      return true
     end
 
     if err then
