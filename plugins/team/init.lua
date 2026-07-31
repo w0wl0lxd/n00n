@@ -61,7 +61,7 @@ local MAX_PLAN_STEPS = 8
 local DEFAULT_PLAN_STEPS = 6
 local DEFAULT_SWARM_ROUNDS = 2
 local MAX_SWARM_ROUNDS = 4
-local DEFAULT_TEAM_AGENTS = 16
+local DEFAULT_TEAM_AGENTS = 24
 local MAX_TEAM_CONCURRENT = 4
 local TEAM_TIMEOUT_SECS = 1800
 local MAX_RELAY_BYTES = 12000
@@ -140,7 +140,7 @@ local schema = {
       type = "integer",
       minimum = 1,
       default = DEFAULT_TEAM_AGENTS,
-      description = "Team agent-call budget (default 16, no hard maximum).",
+      description = "Team agent-call budget (default 24, no hard maximum).",
     },
     timeout_secs = {
       type = "integer",
