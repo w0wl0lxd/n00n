@@ -7,6 +7,89 @@ local MAX_CLAIM_TTL = 3600
 local DEFAULT_QUERY_LIMIT = 100
 local MAX_QUERY_LIMIT = 1000
 
+local MAX_EXTRA_DEPTH = 4
+local MAX_EXTRA_ENTRIES = 32
+local MAX_EXTRA_STRING_BYTES = 2048
+
+local function sensitive_extra_key(key)
+  local normalized = key:lower()
+  return normalized == "token"
+    or normalized == "secret"
+    or normalized == "password"
+    or normalized == "authorization"
+    or normalized == "credential"
+    or normalized == "cookie"
+    or normalized == "api_key"
+    or normalized == "apikey"
+end
+
+local function validate_extra(value, depth, budget, seen)
+  local kind = type(value)
+  if kind == "nil" or kind == "boolean" then
+    return true
+  end
+  if kind == "number" then
+    if value ~= value or value == math.huge or value == -math.huge then
+      return nil, "extra contains a non-finite number"
+    end
+    return true
+  end
+  if kind == "string" then
+    if #value > MAX_EXTRA_STRING_BYTES then
+      return nil, "extra string exceeds maximum length"
+    end
+    return true
+  end
+  if kind ~= "table" then
+    return nil, "extra must contain JSON-compatible values"
+  end
+  if depth >= MAX_EXTRA_DEPTH then
+    return nil, "extra exceeds maximum nesting depth"
+  end
+  if seen[value] then
+    return nil, "extra contains a cyclic table"
+  end
+  seen[value] = true
+  local object_keys = false
+  local array_length = 0
+  for key, child in pairs(value) do
+    budget.count = budget.count + 1
+    if budget.count > MAX_EXTRA_ENTRIES then
+      return nil, "extra exceeds maximum entry count"
+    end
+    if type(key) == "string" then
+      object_keys = true
+      if sensitive_extra_key(key) then
+        return nil, "extra contains a sensitive key"
+      end
+    elseif type(key) == "number" and key > 0 and key % 1 == 0 then
+      array_length = math.max(array_length, key)
+    else
+      return nil, "extra keys must be strings or positive array indexes"
+    end
+    local ok, err = validate_extra(child, depth + 1, budget, seen)
+    if not ok then
+      return nil, err
+    end
+  end
+  if object_keys and array_length > 0 then
+    return nil, "extra cannot mix object keys and array indexes"
+  end
+  for index = 1, array_length do
+    if value[index] == nil then
+      return nil, "extra arrays cannot contain holes"
+    end
+  end
+  seen[value] = nil
+  return true
+end
+
+local function validate_extra_payload(extra)
+  if extra == nil then
+    return true
+  end
+  return validate_extra(extra, 0, { count = 0 }, {})
+end
 local function project_id()
   if ok and memory_helpers then
     local cwd = n00n.uv.cwd()
@@ -467,7 +550,7 @@ local schema = {
         task_id = { type = "string", description = "Task id." },
         extra = {
           type = "any",
-          description = "Optional additional key/value payload.",
+          description = "Optional bounded JSON-compatible payload (max depth 4, 32 entries; sensitive keys rejected).",
         },
       },
       required = { "type", "content" },
@@ -527,6 +610,11 @@ local function handler(input)
     local valid_types = { observation = true, claim = true, status = true, escalation = true }
     if not valid_types[input.post.type] then
       return { llm_output = "Error: invalid post type", is_error = true }
+    end
+
+    local extra_ok, extra_err = validate_extra_payload(input.post.extra)
+    if not extra_ok then
+      return { llm_output = "Error: invalid extra: " .. extra_err, is_error = true }
     end
 
     local post = {

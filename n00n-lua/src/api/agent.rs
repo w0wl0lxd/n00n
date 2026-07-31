@@ -96,6 +96,22 @@ fn dispatch_ctx<'a>(ctx: &'a LuaCtx, method: &str) -> Result<&'a AgentContext, S
         .ok_or_else(|| ctx.cap_err(&format!("n00n.agent.{method}")))
 }
 
+fn parse_session_mode(
+    mode: Option<&str>,
+    plan_path: Option<String>,
+    inherited: &AgentMode,
+) -> Result<AgentMode, String> {
+    match mode {
+        Some("build" | "general") => Ok(AgentMode::Build),
+        Some("research") => Ok(AgentMode::Research),
+        Some("plan") => plan_path
+            .map(PathBuf::from)
+            .map(AgentMode::Plan)
+            .ok_or_else(|| "plan mode requires plan_path".to_string()),
+        Some(other) => Err(format!("unknown mode: {other}")),
+        None => Ok(inherited.clone()),
+    }
+}
 type Pair<T> = (Option<T>, Option<String>);
 
 #[allow(clippy::needless_pass_by_value)]
@@ -478,7 +494,7 @@ async fn call_tool(
 ///   `name` (string?) - display name for logs and UI.
 ///   `audience` (string?) - tool audience for capability gating. Default: `"general_sub"`.
 ///   `mode` (string?) - agent operating mode: `"build"` (default), `"research"`, `"plan"`, or the
-///     aliases `"general"` (build) and `"research"`. Plan mode requires `plan_path`.
+///   alias `"general"` (build). Plan mode requires `plan_path`.
 ///   `plan_path` (string?) - required when `mode` is `"plan"`; path to the approved plan file.
 ///   `thinking` (string|integer?) - thinking mode: `"off"`, `"adaptive"`, an
 ///     effort level (`"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`,
@@ -513,24 +529,14 @@ async fn session(
     let local_tools_tbl: Option<Table> = opts.get("local_tools")?;
     let name: Option<String> = opts.get("name")?;
     let thinking_val: Option<LuaValue> = opts.get("thinking")?;
-    let mode = match opts.get::<Option<String>>("mode")? {
-        Some(s) => match s.as_str() {
-            "build" | "general" => AgentMode::Build,
-            "research" => AgentMode::Research,
-            "plan" => {
-                let plan_path: Option<String> = opts.get("plan_path")?;
-                match plan_path {
-                    Some(p) => AgentMode::Plan(PathBuf::from(p)),
-                    None => {
-                        return Ok(err_pair("plan mode requires plan_path".to_string()));
-                    }
-                }
-            }
-            other => {
-                return Ok(err_pair(format!("unknown mode: {other}")));
-            }
-        },
-        None => (*agent_ctx.mode).clone(),
+    let plan_path: Option<String> = opts.get("plan_path")?;
+    let mode = match parse_session_mode(
+        opts.get::<Option<String>>("mode")?.as_deref(),
+        plan_path,
+        &agent_ctx.mode,
+    ) {
+        Ok(mode) => mode,
+        Err(error) => return Ok(err_pair(error)),
     };
     let audience = match opts.get::<Option<String>>("audience")? {
         Some(s) => {
@@ -1562,6 +1568,7 @@ fn call_local_tool(
 mod tests {
     use n00n_agent::ToolOutput;
     use serde_json::json;
+    use test_case::test_case;
 
     use super::*;
     use n00n_agent::{ExtractedCommand, InterruptPoint, InterruptSource};
@@ -1966,6 +1973,34 @@ mod tests {
         assert!(raised.contains("boom"), "got: {raised}");
         let wrong = call("function() return 42 end", &input).unwrap_err();
         assert!(wrong.contains("expected string"), "got: {wrong}");
+    }
+
+    #[test_case(Some("build"), None, AgentMode::Build ; "build")]
+    #[test_case(Some("general"), None, AgentMode::Build ; "general_alias")]
+    #[test_case(Some("research"), None, AgentMode::Research ; "research")]
+    #[test_case(Some("plan"), Some("plan.md"), AgentMode::Plan(PathBuf::from("plan.md")) ; "plan")]
+    fn parse_session_mode_accepts_supported_modes(
+        mode: Option<&str>,
+        plan_path: Option<&str>,
+        expected: AgentMode,
+    ) {
+        assert_eq!(
+            parse_session_mode(mode, plan_path.map(String::from), &AgentMode::Research),
+            Ok(expected)
+        );
+    }
+
+    #[test_case(Some("plan"), None, "plan mode requires plan_path" ; "plan_requires_path")]
+    #[test_case(Some("invalid"), None, "unknown mode: invalid" ; "unknown")]
+    fn parse_session_mode_rejects_invalid_modes(
+        mode: Option<&str>,
+        plan_path: Option<&str>,
+        expected: &str,
+    ) {
+        assert_eq!(
+            parse_session_mode(mode, plan_path.map(String::from), &AgentMode::Build),
+            Err(expected.to_string())
+        );
     }
 
     #[test]

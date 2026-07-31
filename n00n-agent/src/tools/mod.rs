@@ -1137,4 +1137,16 @@ mod tests {
             assert!(seen.insert(name), "duplicate builtin tool name: {name}");
         }
     }
+
+    #[test]
+    fn default_active_tools_include_deferred_tools() {
+        let active = default_active_tools();
+        for name in [
+            AGENT_CONTROL_TOOL_NAME,
+            BATCH_TOOL_NAME,
+            VIEW_IMAGE_TOOL_NAME,
+        ] {
+            assert!(active.names.contains(name), "missing default tool: {name}");
+        }
+    }
 }

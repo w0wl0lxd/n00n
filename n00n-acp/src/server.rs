@@ -155,7 +155,8 @@ fn handle_request(srv: &mut Server, method: &str, id: RequestId, raw: &Value, pa
             let storage = n00n_storage::StateDir::resolve()
                 .map_err(|e| AcpError::internal_error().data(json_str(&e)))?;
             let stored = load_session_from(&storage, session_ref.id())?;
-            let (current_mode, plan_path) = mode_and_plan_from_stored(&storage, &stored.meta);
+            let (current_mode, plan_path) = mode_and_plan_from_stored(&storage, &stored.meta)
+                .map_err(|e| AcpError::internal_error().data(json_str(&e)))?;
             let history = stored.messages;
             let sid = SessionId::from(session_ref.to_string());
             for update in translate::replay_history(&history) {
