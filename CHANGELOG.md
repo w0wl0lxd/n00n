@@ -57,7 +57,6 @@ See `changelog.d/README.md` for the fragment convention.
 ### Fixed
 
 - Fix hang when models emit only reasoning without final text.
-- Capture thinking deltas in Devin's `handle_session_update` and append to `thinking` buffer
 - Build assistant message with both `Thinking` and `Text` content blocks
 - Remove invalid `reasoning_content` field from OpenAI compat message conversion
 - Add nudge logic in agent when assistant produces only reasoning without text
@@ -101,8 +100,6 @@ See `changelog.d/README.md` for the fragment convention.
 - Fixed strict workspace lint failures while preserving the established `n00nId` public API.
 - Fixed team wave validation resolving model tiers as literal model IDs, which caused repeated validation failures and exhausted agent-call budgets.
 - Fix hang when models emit only reasoning without final text.
-- Add `thinking: Arc<AsyncMutex<String>>` field to Devin's `DevinInner`
-- Capture thinking deltas in `handle_session_update` and append to `thinking` buffer
 - Build assistant message with both `Thinking` and `Text` content blocks
 - Remove invalid `reasoning_content` field from OpenAI compat message conversion
 - Add nudge logic in agent when assistant produces only reasoning without text
