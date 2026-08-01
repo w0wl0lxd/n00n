@@ -999,7 +999,7 @@ fn publish(
                 let description_chars = t.description.chars().count();
                 let description = if description_chars > max_desc_chars {
                     let truncated = truncate_on_word_boundary(&t.description, max_desc_chars);
-                    warn!(
+                    debug!(
                         tool = %t.qualified_name,
                         original_len = description_chars,
                         truncated_len = truncated.chars().count(),
