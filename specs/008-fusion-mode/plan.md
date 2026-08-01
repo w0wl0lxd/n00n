@@ -5,7 +5,7 @@ Tracked in Linear: **[N00N-69](https://linear.app/n00n/issue/N00N-69/native-fusi
 ## Research basis (Cognition Devin Fusion, June–July 2026)
 
 1. **Sidekick pattern**: two parallel fully-capable agents (frontier lead + cheap sidekick), each with own persistent cached context.
-2. **Dynamic mid-session routing**: lightweight classifiers escalate/de-escalate; model switches at compaction (cache miss already happening).
+2. **Dynamic mid-session routing**: planned for a later phase; the beta keeps the lead model stable and does not switch the main model at compaction.
 3. **Lead tuning**: minimal actions; delegate early with spec-quality briefs; own plan, ambiguity, final review, commit.
 4. **When delegation fails**: short tasks, serial debugging chains.
 
@@ -13,7 +13,7 @@ Tracked in Linear: **[N00N-69](https://linear.app/n00n/issue/N00N-69/native-fusi
 
 | Cognition | n00n twist |
 |-----------|------------|
-| Fixed sidekick model | `ModelTier` routing + `auto_tier` on delegate |
+| Configuration-only sidekick tier | `[agent.fusion].sidekick_tier` with optional trusted plugin auto-tier |
 | Proprietary classifiers | Lexical `classify_delegation` + `route_tier` in Lua |
 | Devin-only harness | Works with any provider via `task`/`fusion_delegate` infra |
 | Hidden routing | `--fusion` CLI + `[agent.fusion]` config + per-session toggle |

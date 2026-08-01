@@ -5699,6 +5699,9 @@ function M.make_local_tool(schema, on_submit)
 --   output_schema: JSON Schema for structured output validation
 --   audience: Tool audience (default: computed from subagent_type)
 --   include_mcp: Include MCP tools (default: true)
+--   only_tools: Optional allowlist of tool names
+--   except_tools: Optional denylist of tool names
+--   system_append: Trusted instruction appended to the system prompt
 --   local_tools: Additional local tools to register
 --   preview: ActivityPreview object wrapping sess:prompt (optional)
 --   activity_label: Label used with preview (default: description)

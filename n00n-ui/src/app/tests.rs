@@ -567,6 +567,32 @@ fn exit_on_done_flag_triggers_exit(event: AgentEvent, expected: ExitRequest) {
     assert_eq!(app.exit_request, expected);
 }
 
+#[test_case(AgentEvent::Done { usage: TokenUsage::default(), num_turns: 1, stop_reason: None, fusion: None } ; "done")]
+#[test_case(AgentEvent::Error { message: "boom".into() } ; "error")]
+fn fusion_phase_clears_on_terminal_event(event: AgentEvent) {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    app.update(agent_msg(AgentEvent::FusionPhaseChanged {
+        phase: FusionPhase::Reviewing,
+    }));
+    assert_eq!(app.fusion_phase, Some(FusionPhase::Reviewing));
+
+    app.update(agent_msg(event));
+    assert_eq!(app.fusion_phase, None);
+}
+
+#[test]
+fn fusion_phase_clears_on_cancel() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.fusion_phase = Some(FusionPhase::Executing);
+
+    app.handle_cancel();
+
+    assert_eq!(app.fusion_phase, None);
+}
+
 #[test]
 fn toggle_mode_state_machine() {
     let tab = |app: &mut App| app.update(Msg::Key(key(KeyCode::Tab)));

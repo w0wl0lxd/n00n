@@ -23,6 +23,9 @@ local structured_output = require("n00n.structured_output")
 --   output_schema: JSON Schema for structured output validation
 --   audience: Tool audience (default: computed from subagent_type)
 --   include_mcp: Include MCP tools (default: true)
+--   only_tools: Optional allowlist of tool names
+--   except_tools: Optional denylist of tool names
+--   system_append: Trusted instruction appended to the system prompt
 --   local_tools: Additional local tools to register
 --   preview: ActivityPreview object wrapping sess:prompt (optional)
 --   activity_label: Label used with preview (default: description)
@@ -114,13 +117,20 @@ function M.launch(ctx, opts)
       return nil, system_err, nil, nil, model_spec
     end
   end
+  if opts.system_append then
+    system = system .. "\n\n" .. opts.system_append
+  end
 
   -- Get tool definitions
+
   local tool_defs, tools_err = n00n.agent.tools(ctx, {
     audience = audience,
     spec = model_spec,
+    only = opts.only_tools,
+    except = opts.except_tools,
     include_mcp = opts.include_mcp,
   })
+
   if tools_err then
     return nil, tools_err, nil, nil, model_spec
   end

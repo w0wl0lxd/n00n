@@ -193,7 +193,7 @@ pub struct Cli {
     #[arg(long, hide = true)]
     pub thinking_display: Option<String>,
 
-    /// Enable Fusion dual-lane routing (frontier lead + cost-aware sidekick)
+    /// Enable beta Fusion planning, sidekick execution, and lead review
     #[arg(long, global = true)]
     pub fusion: bool,
 

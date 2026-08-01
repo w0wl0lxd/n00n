@@ -18,7 +18,7 @@ use std::{
 use n00n_agent::AgentEvent;
 use n00n_agent::CancelTrigger;
 use n00n_agent::tools::ToolRegistry;
-use n00n_config::ToolOutputLines;
+use n00n_config::{ToolOutputLines, providers::Tier};
 use n00n_lua::PluginHost;
 use serde_json::{Value, json};
 
@@ -167,6 +167,53 @@ fn batch_state() -> Value {
         { "tool": "grep", "status": "success", "output": GREP_OUT },
         { "tool": "bash", "status": "success", "output": "hello-from-bash" },
     ]})
+}
+
+const FUSION_MODEL_MOCK: &str = r#"
+    n00n.agent.resolve_model = function(ctx, opts)
+        return { spec = "resolved/" .. tostring(opts.spec or opts.tier) }
+    end
+    n00n.agent.system_prompt = function() return "system" end
+    n00n.agent.tools = function() return {} end
+    n00n.agent.usage_cost = function() return 0, nil end
+    n00n.agent.session = function(ctx, opts)
+        local sess = {}
+        function sess:prompt() return { text = opts.model_spec } end
+        function sess:close() end
+        return sess
+    end
+"#;
+
+fn execute_fusion(
+    input: Value,
+    tier: Tier,
+    enabled: bool,
+    native_mock: &str,
+) -> Result<String, String> {
+    let registry = Arc::new(ToolRegistry::new());
+    let host = PluginHost::new(Arc::clone(&registry)).unwrap();
+    host.load_source("fusion", &format!("{native_mock}\n{FUSION_SRC}"))
+        .unwrap();
+    let invocation = registry
+        .get("fusion_delegate")
+        .unwrap()
+        .tool
+        .parse(&input)
+        .unwrap();
+    let mut ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
+    let fusion = &mut Arc::make_mut(&mut ctx.config).fusion;
+    fusion.enabled = enabled;
+    fusion.sidekick_tier = tier;
+    smol::block_on(invocation.execute(&ctx))
+        .output
+        .map(|output| match output {
+            n00n_agent::ToolOutput::Plain(output) => output.text,
+            other => panic!("unexpected output: {other:?}"),
+        })
+}
+
+fn execute_fusion_with_tier(input: Value, tier: Tier) -> Result<String, String> {
+    execute_fusion(input, tier, true, FUSION_MODEL_MOCK)
 }
 
 fn execute_plugin_with_native_mock(
@@ -763,7 +810,7 @@ fn fusion_and_blackboard_headers_render_prose() {
         .unwrap();
     assert_eq!(
         smol::block_on(inv.start_header()).text(),
-        "fusion: brief label"
+        "Executing: brief label"
     );
 
     let board = reg.get("blackboard").unwrap();
@@ -772,4 +819,53 @@ fn fusion_and_blackboard_headers_render_prose() {
         smol::block_on(inv.start_header()).text(),
         "blackboard: write"
     );
+}
+
+#[test_case::test_case(Tier::Medium, "resolved/medium\n\n[sidekick cost: $0.0000 · resolved/medium]"; "configured_tier")]
+#[test_case::test_case(Tier::Weak, "resolved/weak\n\n[sidekick cost: $0.0000 · resolved/weak]"; "weak_fallback")]
+fn fusion_uses_configured_or_weak_tier(tier: Tier, expected: &str) {
+    let output = execute_fusion_with_tier(
+        json!({"description":"test brief", "goal":"do it", "definition_of_done":"it works"}),
+        tier,
+    )
+    .unwrap();
+    assert_eq!(output, expected);
+}
+
+#[test]
+fn fusion_rejects_model_selection_arguments() {
+    let registry = Arc::new(ToolRegistry::new());
+    let host = PluginHost::new(Arc::clone(&registry)).unwrap();
+    host.load_source("fusion", FUSION_SRC).unwrap();
+    let tool = registry.get("fusion_delegate").unwrap().tool;
+    assert_eq!(tool.audience(), n00n_agent::tools::ToolAudience::MAIN);
+    let schema = tool.schema();
+    let properties = schema["properties"].as_object().unwrap();
+    assert!(!properties.contains_key("model"));
+    assert!(!properties.contains_key("model_tier"));
+    assert!(!properties.contains_key("auto_tier"));
+}
+
+#[test]
+fn fusion_is_rejected_when_disabled() {
+    let error = execute_fusion(
+        json!({"description":"test brief", "goal":"do it", "definition_of_done":"it works"}),
+        Tier::Weak,
+        false,
+        FUSION_MODEL_MOCK,
+    )
+    .unwrap_err();
+    assert_eq!(error, "Fusion sidekick error: Fusion is disabled");
+}
+
+#[test]
+fn fusion_model_resolution_failure_is_sanitized() {
+    let error = execute_fusion(
+        json!({"description":"test brief", "goal":"do it", "definition_of_done":"it works"}),
+        Tier::Weak,
+        true,
+        r#"n00n.agent.resolve_model = function() return nil, "model unavailable" end"#,
+    )
+    .unwrap_err();
+    assert_eq!(error, "Fusion sidekick error: model resolution failed");
 }

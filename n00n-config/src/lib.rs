@@ -146,7 +146,7 @@ pub const TOP_LEVEL_FIELDS: &[ConfigField] = &[
         ty: "bool",
         default: ConfigValue::Bool(false),
         min: None,
-        description: "Start every session with Fusion dual-lane routing (lead + sidekick)",
+        description: "Start every session with beta Fusion orchestration (off by default)",
     },
     ConfigField {
         name: "always_thinking",
