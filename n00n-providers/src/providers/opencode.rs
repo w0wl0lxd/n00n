@@ -506,6 +506,7 @@ impl Opencode {
             session_id.map(n00n_storage::id::SessionRef::as_str),
             self.system_prefix.as_deref(),
             opts.message_cache_breakpoints,
+            opts.fast,
         );
         opts.thinking
             .apply_reasoning_effort(&mut body, &dialect::PREFER_HIGH, model);

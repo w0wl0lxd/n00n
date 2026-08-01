@@ -210,6 +210,7 @@ impl Provider for Mistral {
                 session_id.map(n00n_storage::id::SessionRef::as_str),
                 self.system_prefix.as_deref(),
                 opts.message_cache_breakpoints,
+                opts.fast,
             );
             opts.thinking
                 .apply_reasoning_effort(&mut body, &dialect::HIGH_ONLY, model);
@@ -415,6 +416,7 @@ mod tests {
             None,
             None,
             0,
+            false,
         );
 
         assert_eq!(body["parallel_tool_calls"], true);
