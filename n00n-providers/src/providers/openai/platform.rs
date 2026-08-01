@@ -887,16 +887,6 @@ impl OpenAi {
         result
     }
 
-    fn stores_responses(&self, auth: &ResolvedAuth) -> bool {
-        let base_url = match auth.base_url.as_deref() {
-            Some(url) => url,
-            None => CONFIG.base_url,
-        };
-        self.storage.is_some()
-            && self.response_state_storage.is_some()
-            && base_url == CONFIG.base_url
-    }
-
     #[allow(clippy::large_futures)]
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_lines)]
@@ -1334,7 +1324,7 @@ impl OpenAi {
     ) -> CodexAttempt {
         let state_scope_hash = response_state_scope_hash(auth);
         let socket_credential_hash = credential_hash(auth);
-        let store = self.stores_responses(auth);
+        let store = false;
         let mut opts = opts;
         if !store {
             opts.allow_history_replay = true;
@@ -1763,7 +1753,6 @@ impl OpenAi {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_lines)]
     async fn run_responses_attempt(
         &self,
         model: &Model,
@@ -1775,106 +1764,42 @@ impl OpenAi {
         opts: RequestOptions,
         session_id: Option<&SessionRef>,
     ) -> Result<StreamResponse, AgentError> {
-        let durable_chain = session_id.is_some() && self.response_state_storage.is_some();
-        let response_chain_lock = if durable_chain {
-            self.lock_response_chain(session_id).await?
-        } else {
-            None
-        };
-
-        let auth_scope_hash = response_state_scope_hash(&self.current_auth());
-        let (previous_response_id, incremental_messages) = self
-            .prepare_request(
-                session_id,
-                tools_hash,
-                &auth_scope_hash,
-                messages,
-                response_chain_lock.as_ref(),
-            )
-            .await?;
-
-        if full_history_replay_required(
-            previous_response_id.as_deref(),
-            messages.len(),
-            opts.protect_history_replay,
-            opts.allow_history_replay,
-        ) {
-            return Err(AgentError::HistoryReplayRequired {
-                reason: HistoryReplayReason::ContinuationUnavailable,
-            });
-        }
-
-        self.emit_cache_health(session_id, previous_response_id.is_some(), event_tx)
-            .await;
-
         let prompt_cache_key = prompt_cache_key(&model.id, system, tools_hash, session_id);
         let auth = self.current_auth();
-        let store = self.stores_responses(&auth);
-
         let body = super::responses::build_body(
             model,
-            incremental_messages,
+            messages,
             system,
             tools,
-            previous_response_id.as_deref(),
+            None,
             Some(&prompt_cache_key),
-            store,
+            false,
             opts.thinking,
-            true, // parallel_tool_calls
+            true,
         );
 
         log_responses_request(
             "http_sse",
             &body,
             messages.len(),
-            incremental_messages.len(),
-            previous_response_id.is_some(),
+            messages.len(),
+            false,
             false,
         );
 
-        let result = self
-            .with_oauth_retry(|| async {
-                super::responses::do_stream(
-                    self.compat.client(),
-                    model,
-                    &body,
-                    event_tx,
-                    &auth,
-                    self.compat.stream_timeout(),
-                )
-                .await
-            })
-            .await;
-
-        match result {
-            Ok((response_id, response)) => {
-                self.record_response(
-                    session_id,
-                    response_id.clone(),
-                    tools_hash,
-                    &auth_scope_hash,
-                    messages,
-                    durable_chain,
-                    response_chain_lock.as_ref(),
-                )
-                .await;
-
-                self.emit_cache_health(session_id, response_id.is_some(), event_tx)
-                    .await;
-
-                Ok(response)
-            }
-            Err(error) => {
-                // If we had a previous_response_id and the error indicates it was missing,
-                // clear the response chain
-                if is_missing_previous_response_error(&error, previous_response_id.as_deref()) {
-                    self.clear_response_chain(session_id, response_chain_lock.as_ref())
-                        .await;
-                    self.emit_cache_health(session_id, false, event_tx).await;
-                }
-                Err(error)
-            }
-        }
+        self.with_oauth_retry(|| async {
+            super::responses::do_stream(
+                self.compat.client(),
+                model,
+                &body,
+                event_tx,
+                &auth,
+                self.compat.stream_timeout(),
+            )
+            .await
+        })
+        .await
+        .map(|(_, response)| response)
     }
 
     fn response_connection_slot(
@@ -2435,25 +2360,6 @@ fn is_definitive_responses_rejection(error: &AgentError) -> bool {
     matches!(error, AgentError::Api { status, .. } if *status == 400 || *status == 422)
 }
 
-fn is_missing_previous_response_error(
-    error: &AgentError,
-    previous_response_id: Option<&str>,
-) -> bool {
-    let Some(previous_response_id) = previous_response_id else {
-        return false;
-    };
-    let AgentError::Api { status, message } = error else {
-        return false;
-    };
-    let status = *status;
-    let normalized = message.trim().to_ascii_lowercase();
-    (status == 400
-        && (normalized.starts_with("previous_response_not_found:")
-            || (normalized.contains("previous response") && normalized.contains("not found"))))
-        || ((status == 0 || status == 404)
-            && normalized == format!("not found: {}", previous_response_id.to_ascii_lowercase()))
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -2461,6 +2367,7 @@ mod tests {
 
     use async_tungstenite::tungstenite::Message as WsMessage;
     use futures_lite::StreamExt;
+    use futures_lite::io::{AsyncReadExt, AsyncWriteExt};
     use tempfile::TempDir;
     use test_case::test_case;
 
@@ -2473,6 +2380,58 @@ mod tests {
     const LEGACY_SESSION_ID: &str = "01965087-4c71-7f00-8000-000000000000";
     const TEST_CREDENTIAL_HASH: &str = "test-credential";
     const TEST_STREAM_TIMEOUT: Duration = Duration::from_secs(30);
+
+    async fn read_http_request(stream: &mut smol::net::TcpStream) -> (String, Value) {
+        let mut request = Vec::new();
+        let mut chunk = [0_u8; 2048];
+        loop {
+            let read = stream.read(&mut chunk).await.unwrap();
+            assert_ne!(read, 0);
+            request.extend_from_slice(&chunk[..read]);
+            let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n")
+            else {
+                continue;
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().unwrap())
+                })
+                .unwrap();
+            let body_start = header_end + 4;
+            if request.len() < body_start + content_length {
+                continue;
+            }
+            let path = headers
+                .lines()
+                .next()
+                .unwrap()
+                .split_whitespace()
+                .nth(1)
+                .unwrap()
+                .to_string();
+            let body =
+                serde_json::from_slice(&request[body_start..body_start + content_length]).unwrap();
+            return (path, body);
+        }
+    }
+
+    async fn write_http_response(
+        stream: &mut smol::net::TcpStream,
+        status: &str,
+        content_type: &str,
+        body: &str,
+    ) {
+        let response = format!(
+            "HTTP/1.1 {status}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        stream.flush().await.unwrap();
+    }
 
     #[test_case(1)]
     #[test_case(8)]
@@ -2723,41 +2682,6 @@ mod tests {
         assert!(is_definitive_responses_rejection(&error_422));
         assert!(!is_definitive_responses_rejection(&error_500));
         assert!(!is_definitive_responses_rejection(&error_network));
-    }
-
-    #[test]
-    fn is_missing_previous_response_error_detects_missing_response() {
-        let error_400 = AgentError::Api {
-            status: 400,
-            message: "previous_response_not_found: resp_123".into(),
-        };
-        let error_404 = AgentError::Api {
-            status: 404,
-            message: "not found: resp_123".into(),
-        };
-        let error_500 = AgentError::Api {
-            status: 500,
-            message: "internal server error".into(),
-        };
-        let error_network = AgentError::Io(std::io::Error::other("connection failed"));
-
-        assert!(is_missing_previous_response_error(
-            &error_400,
-            Some("resp_123")
-        ));
-        assert!(is_missing_previous_response_error(
-            &error_404,
-            Some("resp_123")
-        ));
-        assert!(!is_missing_previous_response_error(
-            &error_500,
-            Some("resp_123")
-        ));
-        assert!(!is_missing_previous_response_error(
-            &error_network,
-            Some("resp_123")
-        ));
-        assert!(!is_missing_previous_response_error(&error_400, None));
     }
 
     #[test_case("gpt-5.6-luna")]
@@ -3381,27 +3305,142 @@ mod tests {
     }
 
     #[test]
-    fn coding_plan_uses_socket_local_state_while_api_keys_store_responses() {
-        let api_key = ResolvedAuth {
-            base_url: Some(CONFIG.base_url.into()),
-            headers: Vec::new(),
-        };
-        let coding_plan = ResolvedAuth {
-            base_url: Some(auth::CODING_PLAN_BASE_URL.into()),
-            headers: Vec::new(),
-        };
+    fn ordinary_api_key_uses_official_responses_base_url_without_storage() {
+        let auth = Arc::new(Mutex::new(ResolvedAuth::bearer("test-key")));
+        let provider = OpenAi::with_auth(auth, crate::providers::Timeouts::default()).unwrap();
 
-        let temp_dir = TempDir::new().unwrap();
-        let provider = provider_with_response_storage(temp_dir.path());
-        assert!(provider.stores_responses(&api_key));
-        assert!(!provider.stores_responses(&coding_plan));
+        assert_eq!(
+            super::super::responses::base_url(&provider.current_auth()),
+            super::super::OPENAI_API_BASE_URL
+        );
+        let body = super::super::responses::build_body(
+            &Model::from_spec("openai/gpt-4.1").unwrap(),
+            &[Message::user("private history".into())],
+            &System::from(""),
+            &serde_json::json!([]),
+            None,
+            None,
+            false,
+            Default::default(),
+            true,
+        );
+        assert_eq!(body["store"], false);
+        assert!(body.get("previous_response_id").is_none());
+    }
 
-        let external = OpenAi::with_auth(
-            Arc::new(Mutex::new(api_key.clone())),
-            crate::providers::Timeouts::default(),
-        )
-        .unwrap();
-        assert!(!external.stores_responses(&api_key));
+    #[test]
+    fn supported_model_dispatches_to_responses_with_private_full_history() {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (request_tx, request_rx) = flume::bounded(1);
+            let server = smol::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request = read_http_request(&mut stream).await;
+                request_tx.send_async(request).await.unwrap();
+                let sse = concat!(
+                    "event: response.created\ndata: {\"response\":{\"id\":\"resp_test\"}}\n\n",
+                    "event: response.output_text.delta\ndata: {\"delta\":\"hello\"}\n\n",
+                    "event: response.completed\ndata: {\"response\":{\"id\":\"resp_test\",\"status\":\"completed\"}}\n\n"
+                );
+                write_http_response(&mut stream, "200 OK", "text/event-stream", sse).await;
+            });
+            let auth = ResolvedAuth {
+                base_url: Some(format!("http://{address}/v1")),
+                headers: vec![("authorization".into(), "Bearer test-key".into())],
+            };
+            let provider = OpenAi::with_auth(
+                Arc::new(Mutex::new(auth)),
+                crate::providers::Timeouts::default(),
+            )
+            .unwrap();
+            let model = Model::from_spec("openai/gpt-4.1").unwrap();
+            let messages = vec![
+                Message::user("first".into()),
+                assistant("second"),
+                Message::user("third".into()),
+            ];
+            let (event_tx, _event_rx) = flume::unbounded();
+
+            provider
+                .stream_message(
+                    &model,
+                    &messages,
+                    &System::from("system"),
+                    &serde_json::json!([]),
+                    &event_tx,
+                    RequestOptions::default(),
+                    None,
+                )
+                .await
+                .unwrap();
+            server.await;
+
+            let (path, body) = request_rx.recv_async().await.unwrap();
+            assert_eq!(path, "/v1/responses");
+            assert_eq!(body["store"], false);
+            assert!(body.get("previous_response_id").is_none());
+            assert_eq!(body["input"].as_array().unwrap().len(), messages.len());
+        });
+    }
+
+    #[test]
+    fn responses_rejection_falls_back_to_chat_completions() {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (path_tx, path_rx) = flume::bounded(2);
+            let server = smol::spawn(async move {
+                let (mut responses_stream, _) = listener.accept().await.unwrap();
+                let (responses_path, _) = read_http_request(&mut responses_stream).await;
+                path_tx.send_async(responses_path).await.unwrap();
+                write_http_response(
+                    &mut responses_stream,
+                    "400 Bad Request",
+                    "application/json",
+                    r#"{"error":{"message":"Responses unsupported","type":"invalid_request_error"}}"#,
+                )
+                .await;
+
+                let (mut chat_stream, _) = listener.accept().await.unwrap();
+                let (chat_path, _) = read_http_request(&mut chat_stream).await;
+                path_tx.send_async(chat_path).await.unwrap();
+                let sse = concat!(
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"fallback\"},\"finish_reason\":null}]}\n\n",
+                    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                    "data: [DONE]\n\n"
+                );
+                write_http_response(&mut chat_stream, "200 OK", "text/event-stream", sse).await;
+            });
+            let auth = ResolvedAuth {
+                base_url: Some(format!("http://{address}/v1")),
+                headers: vec![("authorization".into(), "Bearer test-key".into())],
+            };
+            let provider = OpenAi::with_auth(
+                Arc::new(Mutex::new(auth)),
+                crate::providers::Timeouts::default(),
+            )
+            .unwrap();
+            let model = Model::from_spec("openai/gpt-4.1").unwrap();
+            let (event_tx, _event_rx) = flume::unbounded();
+
+            provider
+                .stream_message(
+                    &model,
+                    &[Message::user("hello".into())],
+                    &System::from(""),
+                    &serde_json::json!([]),
+                    &event_tx,
+                    RequestOptions::default(),
+                    None,
+                )
+                .await
+                .unwrap();
+            server.await;
+
+            assert_eq!(path_rx.recv_async().await.unwrap(), "/v1/responses");
+            assert_eq!(path_rx.recv_async().await.unwrap(), "/v1/chat/completions");
+        });
     }
 
     #[test]

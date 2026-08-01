@@ -10,6 +10,7 @@ use std::cmp::Reverse;
 
 use crate::model::{ModelEntry, ModelFamily, ModelInfo, ModelPricing, ModelTier, lookup_entry};
 
+pub(crate) const OPENAI_API_BASE_URL: &str = "https://api.openai.com/v1";
 const GPT_5_6_MAX_OUTPUT_TOKENS: u32 = 128_000;
 const GPT_5_6_CONTEXT_WINDOW: u32 = 372_000;
 
@@ -41,7 +42,7 @@ inventory::submit!(n00n_config::providers::BuiltInProvider {
     slug: "openai",
     display_name: "OpenAI",
     protocol: n00n_config::providers::Protocol::Openai,
-    default_base_url: "https://api.openai.com/v1",
+    default_base_url: OPENAI_API_BASE_URL,
     default_api_key_env: "OPENAI_API_KEY",
     default_model: "openai/gpt-5.5",
     plans: None,

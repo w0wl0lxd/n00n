@@ -250,6 +250,13 @@ pub(crate) fn convert_tools(anthropic_tools: &Value) -> Value {
     )
 }
 
+pub(crate) fn base_url(auth: &ResolvedAuth) -> &str {
+    match auth.base_url.as_deref() {
+        Some(base_url) => base_url,
+        None => super::OPENAI_API_BASE_URL,
+    }
+}
+
 pub(crate) async fn do_stream(
     client: &HttpClient,
     model: &crate::model::Model,
@@ -258,16 +265,14 @@ pub(crate) async fn do_stream(
     auth: &ResolvedAuth,
     stream_timeout: Duration,
 ) -> Result<(Option<String>, StreamResponse), AgentError> {
-    let base = auth.base_url.as_deref().ok_or_else(|| AgentError::Config {
-        message: "Responses API requires a base_url in auth".into(),
-    })?;
+    let base_url = base_url(auth);
     let json_body = serde_json::to_vec(body)?;
 
     let request = auth
         .configure_request(
             Request::builder()
                 .method("POST")
-                .uri(format!("{base}{RESPONSES_PATH}"))
+                .uri(format!("{base_url}{RESPONSES_PATH}"))
                 .header("content-type", "application/json")
                 .header("user-agent", super::super::user_agent()),
         )

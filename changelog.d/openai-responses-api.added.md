@@ -1,1 +1,1 @@
-Migrate non-Codex OpenAI provider to Responses API with previous_response_id and safe fallback to Chat Completions
+Migrate supported non-Codex OpenAI models to Responses API with safe Chat Completions fallback. API-key requests use `store: false` and send full history so provider-side response storage is not enabled by default.
