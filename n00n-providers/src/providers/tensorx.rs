@@ -97,6 +97,7 @@ impl Provider for TensorX {
                 session_id.map(n00n_storage::id::SessionRef::as_str),
                 self.system_prefix.as_deref(),
                 opts.message_cache_breakpoints,
+                opts.fast,
             );
 
             // TensorX rejects requests whose `max_tokens` would cause
