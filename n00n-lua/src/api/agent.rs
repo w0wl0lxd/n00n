@@ -34,7 +34,7 @@ use serde_json::Value as JsonValue;
 use tracing::info;
 
 use crate::api::ui::buf::BufHandle;
-use crate::api::util::convert::{json_to_lua, lua_to_json, lua_tool_result};
+use crate::api::util::convert::{JSON_ARRAY_META_FIELD, json_to_lua, lua_to_json, lua_tool_result};
 use crate::api::util::ctx::{AgentContext, LuaCtx};
 
 const SESSION_CLOSED_ERR: &str = "session closed";
@@ -60,6 +60,7 @@ const SAFE_ACTIVITY_DESCRIPTION_TOOLS: &[&str] = &[
 ];
 const PROGRESS_TIMEOUT_MS: u64 = 500;
 const STEERING_QUEUE_CAPACITY: usize = 32;
+const TOOL_EXCLUSIONS_META_FIELD: &str = "__n00n_tool_exclusions";
 
 fn resolve_model_from_ctx(ctx: &AgentContext, tier: Option<&str>) -> Result<Model, String> {
     let Some(tier_str) = tier else {
@@ -136,8 +137,50 @@ fn explicit_tool_filter(tools: &JsonValue) -> Result<ToolFilter, String> {
 fn inherited_mcp(
     parent: Option<&n00n_agent::mcp::McpSession>,
     include_mcp: bool,
+    excluded: &[String],
 ) -> Option<n00n_agent::mcp::McpSession> {
-    if include_mcp { parent.cloned() } else { None }
+    if include_mcp {
+        parent.map(|mcp| mcp.fresh_excluding(excluded))
+    } else {
+        None
+    }
+}
+
+fn attach_tool_exclusions(lua: &Lua, tools: &LuaValue, exclusions: &[String]) -> LuaResult<()> {
+    if exclusions.is_empty() {
+        return Ok(());
+    }
+    let LuaValue::Table(tools) = tools else {
+        return Err(mlua::Error::runtime("tools must be an array"));
+    };
+    let metadata = lua.create_table_with_capacity(0, 2)?;
+    metadata.raw_set(JSON_ARRAY_META_FIELD, true)?;
+    metadata.raw_set(TOOL_EXCLUSIONS_META_FIELD, exclusions.to_vec())?;
+    tools.set_metatable(Some(metadata))
+}
+
+fn merged_tool_exclusions(
+    tools: Option<&LuaValue>,
+    mut explicit: Option<Vec<String>>,
+) -> LuaResult<Option<Vec<String>>> {
+    let inherited = match tools {
+        Some(LuaValue::Table(tools)) => match tools.metatable() {
+            Some(metadata) => {
+                metadata.raw_get::<Option<Vec<String>>>(TOOL_EXCLUSIONS_META_FIELD)?
+            }
+            None => None,
+        },
+        _ => None,
+    };
+    if let Some(inherited) = inherited {
+        let exclusions = explicit.get_or_insert_with(Vec::new);
+        for name in inherited {
+            if !exclusions.contains(&name) {
+                exclusions.push(name);
+            }
+        }
+    }
+    Ok(explicit)
 }
 
 fn session_config(
@@ -419,6 +462,7 @@ fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pa
 
     let only: Option<Vec<String>> = opts.get("only")?;
     let except: Option<Vec<String>> = opts.get("except")?;
+    let tool_exclusions = except.clone();
     let include_mcp: bool = opts.get::<Option<bool>>("include_mcp")?.map_or(true, |v| v);
     let workflow: bool = opts.get::<Option<bool>>("workflow")?.map_or(false, |v| v);
     let spec_str: Option<String> = opts.get("spec")?;
@@ -469,7 +513,11 @@ fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pa
         filter_appended_definitions(&mut defs, base_count, &mcp_filter);
     }
 
-    Ok((Some(json_to_lua(lua, &defs)?), None))
+    let definitions = json_to_lua(lua, &defs)?;
+    if let Some(exclusions) = tool_exclusions.as_deref() {
+        attach_tool_exclusions(lua, &definitions, exclusions)?;
+    }
+    Ok((Some(definitions), None))
 }
 
 /// Run a tool by name and wait for the result. This is how you call built-in
@@ -601,7 +649,10 @@ async fn session(
     let include_mcp = opts
         .get::<Option<bool>>("include_mcp")?
         .map_or(true, |value| value);
-    let excluded_tools: Option<Vec<String>> = opts.get("except")?;
+    let excluded_tools = merged_tool_exclusions(
+        tools_val.as_ref(),
+        opts.get::<Option<Vec<String>>>("except")?,
+    )?;
     let name: Option<String> = opts.get("name")?;
     let thinking_val: Option<LuaValue> = opts.get("thinking")?;
     let plan_path: Option<String> = opts.get("plan_path")?;
@@ -780,7 +831,7 @@ async fn session(
         params: AgentParams {
             provider,
             model,
-            config: session_config(&agent_ctx.config, excluded_tools),
+            config: session_config(&agent_ctx.config, excluded_tools.clone()),
             tool_output_lines: n00n_config::ToolOutputLines::default(),
             permissions: Arc::clone(&agent_ctx.permissions),
             session_id: Some(session_id.into()),
@@ -799,7 +850,14 @@ async fn session(
         thinking,
         fast,
         mode,
-        mcp: inherited_mcp(agent_ctx.mcp.as_ref(), include_mcp),
+        mcp: inherited_mcp(
+            agent_ctx.mcp.as_ref(),
+            include_mcp,
+            match excluded_tools.as_deref() {
+                Some(excluded) => excluded,
+                None => &[],
+            },
+        ),
         history: History::new(Vec::new()),
         sub_event_tx,
         child_cancel,
@@ -1713,6 +1771,21 @@ mod tests {
     }
 
     #[test]
+    fn tool_definition_exclusions_follow_explicit_tools_into_sessions() {
+        let lua = Lua::new();
+        let tools = json_to_lua(&lua, &json!([{"name":"read"}])).unwrap();
+        attach_tool_exclusions(&lua, &tools, &["srv__dangerous".into()]).unwrap();
+
+        let exclusions = merged_tool_exclusions(Some(&tools), Some(vec!["write".into()])).unwrap();
+
+        assert_eq!(lua_to_json(&lua, &tools).unwrap(), json!([{"name":"read"}]));
+        assert_eq!(
+            exclusions,
+            Some(vec!["write".into(), "srv__dangerous".into()])
+        );
+    }
+
+    #[test]
     fn session_include_mcp_false_removes_parent_handle() {
         smol::block_on(async {
             let config = serde_json::from_value(json!({
@@ -1729,8 +1802,8 @@ mod tests {
                 .unwrap();
             let parent = n00n_agent::mcp::McpSession::new(handle, &[]);
 
-            assert!(inherited_mcp(Some(&parent), false).is_none());
-            assert!(inherited_mcp(Some(&parent), true).is_some());
+            assert!(inherited_mcp(Some(&parent), false, &[]).is_none());
+            assert!(inherited_mcp(Some(&parent), true, &[]).is_some());
             parent.shutdown().await;
         });
     }
