@@ -354,6 +354,7 @@ impl Provider for CustomOpenAiProvider {
                 tools,
                 session_id.map(n00n_storage::id::SessionRef::as_str),
                 None,
+                opts.message_cache_breakpoints,
                 opts.fast,
             );
             if matches!(opts.thinking, ThinkingConfig::Off) {
@@ -408,6 +409,7 @@ mod tests {
             &tools,
             None,
             None,
+            0,
             false,
         );
 

@@ -25,10 +25,13 @@ use serde_json::{Value, json};
 const ARBOR_SRC: &str = include_str!("../../plugins/arbor/init.lua");
 const BASH_SRC: &str = include_str!("../../plugins/bash/init.lua");
 const BATCH_SRC: &str = include_str!("../../plugins/batch/init.lua");
+const BLACKBOARD_SRC: &str = include_str!("../../plugins/blackboard/init.lua");
 const CODEGRAPH_SRC: &str = include_str!("../../plugins/codegraph/init.lua");
 const EXPLORE_SRC: &str = include_str!("../../plugins/explore/init.lua");
+const FUSION_SRC: &str = include_str!("../../plugins/fusion/init.lua");
 const GREP_SRC: &str = include_str!("../../plugins/grep/init.lua");
 const SEMBLEM_SRC: &str = include_str!("../../plugins/semblem/init.lua");
+const TASK_SRC: &str = include_str!("../../plugins/task/init.lua");
 const WORKFLOW_SRC: &str = include_str!("../../plugins/workflow/init.lua");
 
 /// Only the real `ToolView` emits this when collapsed.
@@ -85,6 +88,7 @@ fn load_host() -> PluginHost {
     host.load_source("explore", EXPLORE_SRC).unwrap();
     host.load_source("grep", GREP_SRC).unwrap();
     host.load_source("semblem", SEMBLEM_SRC).unwrap();
+    host.load_source("task", TASK_SRC).unwrap();
     host
 }
 
@@ -93,8 +97,13 @@ fn assert_publishes_live_buf(tool: &str, source: &str, input: Value, expected: &
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
     if tool == WORKFLOW_TOOL {
         host.load_source(
-            "disable_workflow_state",
-            "n00n.env.state_dir = function() return nil end",
+            "mock_workflow_state",
+            r#"
+                n00n.env.state_dir = function() return "/state" end
+                n00n.fs.metadata = function() return nil, nil end
+                n00n.fs.mkdir = function() return true, nil end
+                n00n.fs.write = function() return true, nil end
+            "#,
         )
         .unwrap();
     }
@@ -160,6 +169,278 @@ fn batch_state() -> Value {
     ]})
 }
 
+fn execute_plugin_with_native_mock(
+    tool: &str,
+    source: &str,
+    native_mock: &str,
+    input: Value,
+) -> Result<String, String> {
+    let registry = Arc::new(ToolRegistry::new());
+    let host = PluginHost::new(Arc::clone(&registry)).unwrap();
+    let mocked_source = format!("{native_mock}\n{source}");
+    host.load_source(tool, &mocked_source).unwrap();
+    let invocation = registry.get(tool).unwrap().tool.parse(&input).unwrap();
+    let ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
+    smol::block_on(invocation.execute(&ctx))
+        .output
+        .map(|output| match output {
+            n00n_agent::ToolOutput::Plain(output) => output.text,
+            other => panic!("unexpected output: {other:?}"),
+        })
+}
+
+#[test_case::test_case(
+    r#"
+        local run_dir = n00n.fs.joinpath("/state", "workflows", "aabbccdd")
+        local meta_path = n00n.fs.joinpath(run_dir, "meta.json")
+        n00n.fs.metadata = function(path)
+            if path == run_dir then return { is_dir = true }, nil end
+            if path == meta_path then return { is_file = true }, nil end
+            return nil, "permission denied"
+        end
+        n00n.fs.read = function()
+            return '{"run_id":"aabbccdd","script_hash":"script-id"}', nil
+        end
+    "#,
+    "permission denied";
+    "metadata_failure"
+)]
+#[test_case::test_case(
+    r#"
+        local run_dir = n00n.fs.joinpath("/state", "workflows", "aabbccdd")
+        local meta_path = n00n.fs.joinpath(run_dir, "meta.json")
+        n00n.fs.metadata = function(path)
+            if path == run_dir then return { is_dir = true }, nil end
+            return { is_file = true }, nil
+        end
+        n00n.fs.read = function(path)
+            if path == meta_path then
+                return '{"run_id":"aabbccdd","script_hash":"script-id"}', nil
+            end
+            return nil, "input/output error"
+        end
+    "#,
+    "input/output error";
+    "read_failure"
+)]
+fn workflow_journal_io_failure_prevents_replay(fs_mock: &str, expected: &str) {
+    let native_mock = format!(
+        r#"
+            n00n.env.state_dir = function() return "/state" end
+            n00n.workflow.hash = function() return "script-id" end
+            n00n.agent.session = function() error("paid agent call must not start") end
+            {fs_mock}
+        "#
+    );
+    let error = execute_plugin_with_native_mock(
+        "workflow",
+        WORKFLOW_SRC,
+        &native_mock,
+        json!({
+            "script": "meta({ name = 'resume' }); return agent({ prompt = 'paid' })",
+            "resume": "aabbccdd",
+        }),
+    )
+    .expect_err("journal I/O failure must reject resume before replay");
+
+    assert!(error.contains(expected), "unexpected error: {error}");
+    assert!(
+        !error.contains("paid agent call"),
+        "paid call was replayed: {error}"
+    );
+}
+
+#[test]
+fn workflow_missing_resume_id_starts_zero_agents() {
+    let error = execute_plugin_with_native_mock(
+        WORKFLOW_TOOL,
+        WORKFLOW_SRC,
+        r#"
+            n00n.env.state_dir = function() return "/state" end
+            n00n.fs.metadata = function() return nil, nil end
+            n00n.agent.session = function() error("paid agent call must not start") end
+        "#,
+        json!({
+            "script": "meta({ name = 'resume' }); return agent({ prompt = 'paid' })",
+            "resume": "aabbccdd",
+        }),
+    )
+    .expect_err("a missing explicit resume must be rejected");
+
+    assert!(
+        error.contains("resume run_id not found"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        !error.contains("paid agent call"),
+        "paid call started: {error}"
+    );
+}
+
+#[test]
+fn workflow_script_mismatch_starts_zero_agents() {
+    let error = execute_plugin_with_native_mock(
+        WORKFLOW_TOOL,
+        WORKFLOW_SRC,
+        r#"
+            n00n.env.state_dir = function() return "/state" end
+            local run_dir = n00n.fs.joinpath("/state", "workflows", "aabbccdd")
+            local meta_path = n00n.fs.joinpath(run_dir, "meta.json")
+            n00n.fs.metadata = function(path)
+                if path == run_dir then return { is_dir = true }, nil end
+                return { is_file = true }, nil
+            end
+            n00n.fs.read = function(path)
+                if path == meta_path then
+                    return '{"run_id":"aabbccdd","script_hash":"wrong"}', nil
+                end
+                return "", nil
+            end
+            n00n.agent.session = function() error("paid agent call must not start") end
+        "#,
+        json!({
+            "script": "meta({ name = 'resume' }); return agent({ prompt = 'paid' })",
+            "resume": "aabbccdd",
+        }),
+    )
+    .expect_err("resume with a different script must be rejected");
+
+    assert!(
+        error.contains("script mismatch"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        !error.contains("paid agent call"),
+        "paid call started: {error}"
+    );
+}
+
+#[test_case::test_case(
+    json!({ "command": "callers", "symbol": "target", "project": "/fixture" }),
+    "callers of target\n  caller (function) src/lib.rs:7";
+    "callers"
+)]
+#[test_case::test_case(
+    json!({ "command": "callers", "symbol": "orphan", "project": "/fixture" }),
+    "No callers found for symbol 'orphan'";
+    "empty_callers"
+)]
+#[test_case::test_case(
+    json!({ "command": "callees", "symbol": "target", "project": "/fixture" }),
+    "callees of target\n  callee (function) src/lib.rs:11";
+    "callees"
+)]
+#[test_case::test_case(
+    json!({
+        "command": "trace_path",
+        "from_symbol": "caller",
+        "to_symbol": "target",
+        "project": "/fixture"
+    }),
+    "trace_path caller -> target\n  target (function) src/lib.rs:9";
+    "trace_path"
+)]
+fn arbor_native_graph_operations_do_not_require_cli(input: Value, expected: &str) {
+    let output = execute_plugin_with_native_mock(
+        "arbor",
+        ARBOR_SRC,
+        r#"
+            n00n.arbor.available = function() return false end
+            n00n.arbor.check_binary = function() error("CLI must not be called") end
+            n00n.arbor.graph_index_available = function() return true end
+            n00n.arbor.ensure_fresh_index = function() error("CLI must not be called") end
+            n00n.arbor.callers = function() error("CLI must not be called") end
+            n00n.arbor.callees = function() error("CLI must not be called") end
+            n00n.arbor.graph_callers = function(symbol)
+                if symbol == "orphan" then return {} end
+                return { { name = "caller", kind = "function", path = "src/lib.rs", line = 7 } }
+            end
+            n00n.arbor.graph_callees = function()
+                return { { name = "callee", kind = "function", path = "src/lib.rs", line = 11 } }
+            end
+            n00n.arbor.graph_trace_path = function()
+                return { { name = "target", kind = "function", path = "src/lib.rs", line = 9 } }
+            end
+        "#,
+        input,
+    )
+    .expect("native Arbor operation should succeed without the CLI");
+
+    assert_eq!(output, expected);
+}
+
+#[test_case::test_case(())]
+fn arbor_native_refresh_failure_does_not_fall_back_to_cli(_case: ()) {
+    let error = execute_plugin_with_native_mock(
+        "arbor",
+        ARBOR_SRC,
+        r#"
+            n00n.arbor.available = function() return true end
+            n00n.arbor.graph_index_available = function() return true end
+            n00n.arbor.ensure_fresh_index = function() error("refresh failed") end
+            n00n.arbor.callers = function() error("CLI must not be called") end
+        "#,
+        json!({ "command": "callers", "symbol": "target", "project": "/fixture" }),
+    )
+    .expect_err("native refresh failure must not query a stale CLI index");
+
+    assert!(
+        error.contains("failed to refresh graph index"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn codegraph_native_database_does_not_require_cli() {
+    let output = execute_plugin_with_native_mock(
+        "codegraph",
+        CODEGRAPH_SRC,
+        r#"
+            n00n.codegraph.available = function() return false end
+            n00n.codegraph.has_index = function() return true end
+            n00n.codegraph.has_database = function() return true end
+            n00n.codegraph.explore = function() return "native result", nil end
+        "#,
+        json!({ "query": "target", "projectPath": "/fixture" }),
+    )
+    .expect("native Codegraph operation should succeed without the CLI");
+
+    assert_eq!(output, "native result");
+}
+
+#[test_case::test_case(
+    "arbor",
+    ARBOR_SRC,
+    r"n00n.arbor.available = function() return false end",
+    json!({ "command": "map", "project": "/fixture" }),
+    "Arbor CLI not found";
+    "arbor_map"
+)]
+#[test_case::test_case(
+    "codegraph",
+    CODEGRAPH_SRC,
+    r"
+        n00n.codegraph.available = function() return false end
+        n00n.codegraph.has_index = function() return true end
+        n00n.codegraph.has_database = function() return false end
+    ",
+    json!({ "query": "target", "projectPath": "/fixture" }),
+    "codegraph CLI not found";
+    "codegraph_without_database"
+)]
+fn cli_only_operations_report_missing_cli(
+    tool: &str,
+    source: &str,
+    native_mock: &str,
+    input: Value,
+    expected: &str,
+) {
+    let error = execute_plugin_with_native_mock(tool, source, native_mock, input)
+        .expect_err("CLI-only operation should fail without its CLI");
+
+    assert!(error.contains(expected), "unexpected error: {error}");
+}
+
 struct Restored {
     body: String,
     header: String,
@@ -208,6 +489,23 @@ fn restore(
         }
     }
     out
+}
+
+#[test]
+fn task_restore_rebuilds_old_plain_persisted_output() {
+    let host = load_host();
+    let output = "cancelled\nold detail one\nold detail two\nold detail three\nold detail four\nold detail five";
+    let restored = restore(
+        &host,
+        "task",
+        json!({ "description": "restored task", "prompt": "work" }),
+        output,
+        None,
+        vec![],
+    );
+
+    assert!(restored.body.contains("cancelled"));
+    assert!(restored.body.contains(EXPAND_HINT));
 }
 
 #[test_case::test_case(
@@ -442,5 +740,36 @@ fn multiedit_batch_child_shows_full_numbered_diff() {
     assert!(
         !text.contains("3 + n1"),
         "added lines get a blank gutter: {text}"
+    );
+}
+
+/// The only built-in tools without purpose-built views get a plain header fn
+/// so the start line reads as prose instead of raw JSON args.
+#[test]
+fn fusion_and_blackboard_headers_render_prose() {
+    let reg = Arc::new(ToolRegistry::new());
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    host.load_source("fusion", FUSION_SRC).unwrap();
+    host.load_source("blackboard", BLACKBOARD_SRC).unwrap();
+
+    let fusion = reg.get("fusion_delegate").unwrap();
+    let inv = fusion
+        .tool
+        .parse(&json!({
+            "description": "brief label",
+            "goal": "g",
+            "definition_of_done": "d",
+        }))
+        .unwrap();
+    assert_eq!(
+        smol::block_on(inv.start_header()).text(),
+        "fusion: brief label"
+    );
+
+    let board = reg.get("blackboard").unwrap();
+    let inv = board.tool.parse(&json!({ "action": "write" })).unwrap();
+    assert_eq!(
+        smol::block_on(inv.start_header()).text(),
+        "blackboard: write"
     );
 }
