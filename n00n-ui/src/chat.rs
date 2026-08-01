@@ -231,7 +231,7 @@ impl Chat {
                     "Model stalled after tool calls, nudging...".into(),
                 ));
             }
-            AgentEvent::SubagentHistory { .. } => {}
+            AgentEvent::FusionPhaseChanged { .. } | AgentEvent::SubagentHistory { .. } => {}
             AgentEvent::LiveToolBuf { id, body } => {
                 self.messages_panel.register_live_buf(id, body);
             }

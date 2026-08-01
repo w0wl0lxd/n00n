@@ -9,6 +9,7 @@ use crate::animation::{animation_elapsed_ms, spinner_frame};
 use crate::cast;
 use crate::theme;
 
+use n00n_agent::FusionPhase;
 use n00n_providers::{CacheHealth, ModelPricing, TokenUsage};
 use quanta::Instant as CacheInstant;
 use ratatui::Frame;
@@ -52,6 +53,7 @@ pub struct StatusBarContext<'a> {
     pub chat_name: Option<&'a str>,
     pub retry_info: Option<&'a RetryInfo>,
     pub thinking_label: Option<Cow<'static, str>>,
+    pub fusion_phase: Option<FusionPhase>,
     pub fast: bool,
     pub workflow: bool,
     pub restoring: bool,
@@ -131,6 +133,13 @@ impl StatusBar {
         }
 
         left_spans.push(Span::styled(format!(" {}", ctx.mode_label), ctx.mode_style));
+
+        if let Some(label) = ctx.fusion_phase.and_then(fusion_phase_label) {
+            left_spans.push(Span::styled(
+                format!(" · Fusion {label}"),
+                theme::current().status_notice,
+            ));
+        }
 
         if let Some(name) = ctx.chat_name {
             left_spans.push(Span::styled(
@@ -271,6 +280,16 @@ impl StatusBar {
             Paragraph::new(Line::from(right_spans)).alignment(Alignment::Right),
             right_area,
         );
+    }
+}
+
+fn fusion_phase_label(phase: FusionPhase) -> Option<&'static str> {
+    match phase {
+        FusionPhase::Planning => Some("planning"),
+        FusionPhase::Executing => Some("executing"),
+        FusionPhase::Reviewing => Some("reviewing"),
+        FusionPhase::LeadFallback => Some("lead fallback"),
+        FusionPhase::Idle | FusionPhase::Complete => None,
     }
 }
 
@@ -451,6 +470,7 @@ mod tests {
                         chat_name: None,
                         retry_info: None,
                         thinking_label: None,
+                        fusion_phase: Some(FusionPhase::Executing),
                         fast: false,
                         workflow: false,
                         restoring: false,
@@ -470,6 +490,7 @@ mod tests {
 
         assert!(!text.contains("thinking..."), "status bar: {text:?}");
         assert!(text.contains("NORMAL"), "status bar: {text:?}");
+        assert!(text.contains("Fusion executing"), "status bar: {text:?}");
         assert!(
             text.chars()
                 .any(|ch| ('\u{2800}'..='\u{28ff}').contains(&ch)),
@@ -520,6 +541,7 @@ mod tests {
                         chat_name: None,
                         retry_info: None,
                         thinking_label: None,
+                        fusion_phase: None,
                         fast: false,
                         workflow: false,
                         restoring: false,
@@ -607,6 +629,7 @@ mod tests {
                         chat_name: None,
                         retry_info: None,
                         thinking_label: None,
+                        fusion_phase: None,
                         fast: false,
                         workflow: false,
                         restoring: false,

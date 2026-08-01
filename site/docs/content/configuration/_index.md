@@ -58,7 +58,7 @@ All fields are optional. Typos in field names cause an error right away.
 | `always_yolo` | bool | `false` | Start every session with YOLO mode (skip permission prompts, deny rules still apply) |
 | `always_fast` | bool | `false` | Start every session with Anthropic fast mode (Opus only; ignored otherwise) |
 | `always_workflow` | bool | `false` | Start every session with workflow mode (task callable inside code_execution) |
-| `always_fusion` | bool | `false` | Start every session with Fusion dual-lane routing (lead + sidekick) |
+| `always_fusion` | bool | `false` | Start every session with beta Fusion orchestration (off by default) |
 | `always_thinking` | bool \| string | `false` | Start every session with extended thinking (true/"adaptive", "off", an effort level ("minimal" to "max"), or a token budget) |
 
 ### `ui`
@@ -114,8 +114,10 @@ How many lines of output to show per tool in the UI. All values are `usize` with
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | bool | `false` | Enable Fusion dual-lane routing (lead + sidekick) for this session |
-| `sidekick_tier` | string | - | Model tier for the sidekick lane (e.g. "haiku", "sonnet", "opus") |
+| `enabled` | bool | `false` | Enable beta Fusion planning, sidekick execution, and lead review for this session |
+| `sidekick_tier` | string | `weak` | Default model tier for the sidekick lane. |
+
+Fusion is beta and off by default. Enable `--fusion`, `always_fusion`, or `[agent.fusion].enabled` to let the lead plan, delegate execution, and review the result; the `plugins.fusion` plugin must also remain enabled. Short or trivial requests bypass Fusion, while security, sensitive, destructive, design, review, and other lead-only signals stay on the lead. `sidekick_tier` keeps delegation conservative. Optional `plugins.fusion.auto_tier` enables trusted configuration-based routing; model arguments are not accepted by `fusion_delegate`. The lead remains responsible for final decisions, and current delegation is lead-directed rather than an autonomous planner.
 
 ### `provider`
 
@@ -189,7 +191,7 @@ n00n.setup({
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
-| `auto_tier` | boolean | `true` | - | Route sidekick tier from the brief. |
+| `auto_tier` | boolean | `false` | - | Route sidekick tier automatically (trusted config). |
 | `default_subagent_type` | string | `"general"` | - | Default subagent_type when omitted. |
 
 ### `plugins.glob`

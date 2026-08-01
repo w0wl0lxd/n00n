@@ -33,6 +33,7 @@ const CODE_EXECUTION_BLOCKED_IN_PLAN: &str = "code_execution is not available in
 const UNKNOWN_TOOL_PREFIX: &str = "unknown tool";
 const TOOL_AUDIENCE_DENIED: &str = "tool is not available to this agent audience";
 const BASH_BLOCKED_IN_PLAN: &str = "bash command is not provably read-only in plan mode";
+const FUSION_DELEGATE_BLOCKED: &str = "fusion_delegate is unavailable for this request";
 
 /// Returns true when `command` contains shell metacharacters that are outside
 /// any quote and not escaped by a backslash. These are the characters that let
@@ -742,6 +743,7 @@ pub(super) async fn process_tool_calls(
     history: &mut super::history::History,
     event_tx: &crate::EventSender,
     ctx: &ToolContext,
+    fusion_delegate_allowed: bool,
 ) -> Result<Vec<ToolDoneEvent>, AgentError> {
     let tool_uses: Vec<(usize, String, String, Value)> = response
         .message
@@ -757,6 +759,7 @@ pub(super) async fn process_tool_calls(
     let mut immediate_errors: Vec<(usize, ToolDoneEvent)> = Vec::new();
     let mut skill_calls: Vec<PendingToolCall> = Vec::new();
     let mut non_skill_calls: Vec<PendingToolCall> = Vec::new();
+    let mut fusion_delegate_seen = false;
 
     for (position, id, name, input) in tool_uses {
         debug!(
@@ -765,13 +768,23 @@ pub(super) async fn process_tool_calls(
             input_preview = %crate::tools::schema::preview(&input.to_string()),
             "parsing tool call"
         );
-        if recent_calls.is_doom_loop(&name, &input) {
+        if name == crate::fusion::FUSION_DELEGATE_TOOL
+            && (!fusion_delegate_allowed || fusion_delegate_seen)
+        {
+            immediate_errors.push((
+                position,
+                ToolDoneEvent::error(id.clone(), FUSION_DELEGATE_BLOCKED),
+            ));
+        } else if recent_calls.is_doom_loop(&name, &input) {
             warn!(tool = %name, "doom loop detected, skipping execution");
             immediate_errors.push((
                 position,
                 ToolDoneEvent::error(id.clone(), DOOM_LOOP_MESSAGE),
             ));
         } else {
+            if name == crate::fusion::FUSION_DELEGATE_TOOL {
+                fusion_delegate_seen = true;
+            }
             let call = PendingToolCall {
                 position,
                 id,
@@ -1896,6 +1909,7 @@ mod tests {
                 &mut history,
                 &event_tx,
                 &ctx,
+                false,
             )
             .await
             .expect("process batch");
@@ -1920,6 +1934,47 @@ mod tests {
     }
 
     #[test]
+    fn fusion_delegate_is_bounded_at_dispatch_and_only_runs_once() {
+        smol::block_on(async {
+            let ctx = local_ctx(crate::fusion::FUSION_DELEGATE_TOOL, |_| Ok("ran".into()));
+            let (tx, _rx) = flume::unbounded::<crate::Envelope>();
+            let event_tx = crate::EventSender::new(tx, 0);
+            let mut history = crate::agent::History::new(Vec::new());
+            let mut recent_calls = RecentCalls::new();
+            let response = response_with_tool_uses(&[
+                (
+                    "blocked",
+                    crate::fusion::FUSION_DELEGATE_TOOL,
+                    serde_json::json!({}),
+                ),
+                (
+                    "also-blocked",
+                    crate::fusion::FUSION_DELEGATE_TOOL,
+                    serde_json::json!({}),
+                ),
+            ]);
+            let results = process_tool_calls(
+                response,
+                &mut recent_calls,
+                None,
+                &mut history,
+                &event_tx,
+                &ctx,
+                false,
+            )
+            .await
+            .expect("process batch");
+            assert_eq!(results.len(), 2);
+            assert!(results.iter().all(|result| result.is_error));
+            assert!(
+                results
+                    .iter()
+                    .all(|result| result.output.as_text().len() < 80)
+            );
+        });
+    }
+
+    #[test]
     fn process_tool_calls_without_skill_keeps_parallel_tools_allowed() {
         smol::block_on(async {
             let ctx = local_ctx("read", |_| Ok("ok".into()));
@@ -1938,6 +1993,7 @@ mod tests {
                 &mut history,
                 &event_tx,
                 &ctx,
+                false,
             )
             .await
             .expect("process batch");
@@ -2079,6 +2135,7 @@ mod tests {
                 &mut history,
                 &event_tx,
                 &ctx,
+                false,
             )
             .await
             .expect_err("failed subagent must abort the turn");
@@ -2130,6 +2187,7 @@ mod tests {
                 &mut history,
                 &event_tx,
                 &ctx,
+                false,
             )
             .await
             .expect_err("failed workflow subagent must abort the turn");
@@ -2170,6 +2228,7 @@ mod tests {
                 &mut history,
                 &event_tx,
                 &ctx,
+                false,
             )
             .await
             .expect("local task failure must not abort the turn");

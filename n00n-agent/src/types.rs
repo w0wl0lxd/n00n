@@ -884,6 +884,9 @@ pub enum AgentEvent {
     },
     AutoCompacting,
     CompactionDone,
+    FusionPhaseChanged {
+        phase: crate::fusion::FusionPhase,
+    },
     Retry {
         attempt: u32,
         message: String,
