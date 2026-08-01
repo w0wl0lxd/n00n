@@ -5,7 +5,7 @@
 local subagent = require("n00n.subagent")
 
 local description =
-  [[Beta Fusion delegation: the lead plans and reviews while a conservative sidekick executes. Pass goal, constraints, and definition_of_done — not file dumps. Fusion is off by default and delegation is lead-directed.]]
+  [[Beta Fusion delegation: the lead plans and reviews while a conservative sidekick executes. Pass goal, constraints, and definition_of_done, not file dumps. Fusion is off by default and delegation is lead-directed.]]
 
 local schema = {
   type = "object",
@@ -146,7 +146,14 @@ local function handler(input, ctx)
 end
 
 local function header(input)
-  return "Executing: " .. (input.description or ""):sub(1, 40)
+  local description = input.description or ""
+  if utf8 and utf8.offset then
+    local end_offset = utf8.offset(description, 41)
+    description = description:sub(1, end_offset and end_offset - 1 or #description)
+  else
+    description = description:sub(1, 40)
+  end
+  return "Executing: " .. description
 end
 
 n00n.api.register_tool({

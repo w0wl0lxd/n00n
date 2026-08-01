@@ -45,6 +45,9 @@ function M.launch(ctx, opts)
   if not ctx then
     return nil, "ctx is required", nil, nil, nil
   end
+  if opts.system_append ~= nil and type(opts.system_append) ~= "string" then
+    return nil, "opts.system_append must be a string", nil, nil, nil
+  end
 
   local function guard_check(prompt)
     if not opts.budget then

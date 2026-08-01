@@ -229,7 +229,7 @@ All fields are optional. Typos in field names cause an error right away.
     out.push_str(
         "| `sidekick_tier` | string | `weak` | Default model tier for the sidekick lane. |\n",
     );
-    out.push_str("\nFusion is beta and off by default. Enable `--fusion`, `always_fusion`, or `[agent.fusion].enabled` to let the lead plan, delegate execution, and review the result; the `plugins.fusion` plugin must also remain enabled. Short or trivial requests bypass Fusion, while security, sensitive, destructive, design, review, and other lead-only signals stay on the lead. `sidekick_tier` keeps delegation conservative. Optional `plugins.fusion.auto_tier` enables trusted configuration-based routing; model arguments are not accepted by `fusion_delegate`. The lead remains responsible for final decisions, and current delegation is lead-directed rather than an autonomous planner.\n\n");
+    out.push_str("\nFusion is beta and off by default. Enable it with `--fusion`, `always_fusion`, or `[agent.fusion].enabled`. The `plugins.fusion` plugin must also stay enabled. Short requests bypass Fusion. Security, sensitive, destructive, design, and review work stays on the lead. `sidekick_tier` selects a conservative sidekick model. Optional `plugins.fusion.auto_tier` lets trusted configuration choose the tier from the brief.\n\n");
 
     write_section(&mut out, "[provider]", ProviderConfig::FIELDS);
     write_section(&mut out, "[storage]", StorageConfig::FIELDS);

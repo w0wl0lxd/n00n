@@ -19,9 +19,9 @@ pub use agent::{
 };
 pub use cancel::{CancelMap, CancelToken, CancelTrigger, PreDispatchGate};
 pub use fusion::{
-    DelegationKind, FusionContinuation, FusionLane, FusionPhase, FusionRequestDecision,
-    FusionRoute, FusionState, FusionUsageStats, classify_delegation, fusion_sidekick_system_append,
-    route_after_compact,
+    DelegationKind, FUSION_DELEGATE_TOOL, FusionContinuation, FusionLane, FusionPhase,
+    FusionRequestDecision, FusionRoute, FusionState, FusionUsageStats, classify_delegation,
+    decide_request, fusion_lead_system_append, fusion_sidekick_system_append, route_after_compact,
 };
 pub use n00n_config::{AgentConfig, FusionConfig, PermissionsConfig, ToolOutputLines};
 pub mod command;

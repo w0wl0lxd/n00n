@@ -395,6 +395,18 @@ mod tests {
     use tempfile::TempDir;
     use test_case::test_case;
 
+    #[test_case(FusionPhase::Planning, Some("planning") ; "planning")]
+    #[test_case(FusionPhase::Executing, Some("executing") ; "executing")]
+    #[test_case(FusionPhase::Reviewing, Some("reviewing") ; "reviewing")]
+    #[test_case(FusionPhase::LeadFallback, Some("lead fallback") ; "fallback")]
+    #[test_case(FusionPhase::Idle, None ; "idle")]
+    #[test_case(FusionPhase::Complete, None ; "complete")]
+    #[test_case(FusionPhase::Cancelled, None ; "cancelled")]
+    #[test_case(FusionPhase::Failed, None ; "failed")]
+    fn fusion_phase_labels(phase: FusionPhase, expected: Option<&str>) {
+        assert_eq!(fusion_phase_label(phase), expected);
+    }
+
     #[test_case(999, "999")]
     #[test_case(1_000, "1.0k")]
     #[test_case(12_345, "12.3k")]

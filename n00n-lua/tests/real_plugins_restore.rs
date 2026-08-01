@@ -813,6 +813,20 @@ fn fusion_and_blackboard_headers_render_prose() {
         "Executing: brief label"
     );
 
+    let unicode_description = "é".repeat(41);
+    let inv = fusion
+        .tool
+        .parse(&json!({
+            "description": unicode_description,
+            "goal": "g",
+            "definition_of_done": "d",
+        }))
+        .unwrap();
+    assert_eq!(
+        smol::block_on(inv.start_header()).text(),
+        format!("Executing: {}", "é".repeat(40))
+    );
+
     let board = reg.get("blackboard").unwrap();
     let inv = board.tool.parse(&json!({ "action": "write" })).unwrap();
     assert_eq!(

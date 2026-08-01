@@ -2166,6 +2166,7 @@ mod tests {
     use tempfile::TempDir;
     use test_case::test_case;
 
+    const UNKNOWN_FUSION_FIELD: &str = "implicit_model_switch";
     fn plugin_enabled(enabled: bool) -> PluginFileConfig {
         PluginFileConfig {
             enabled: Some(enabled),
@@ -2299,9 +2300,7 @@ mod tests {
         .unwrap_err();
 
         assert!(
-            error
-                .to_string()
-                .contains("unknown field `implicit_model_switch`"),
+            error.to_string().contains(UNKNOWN_FUSION_FIELD),
             "unexpected parse error: {error}"
         );
     }
