@@ -5,11 +5,11 @@ use ratatui::text::{Line, Span};
 
 use crate::markdown::should_truncate;
 use crate::theme;
+use n00n_redact::{REDACTED, escape_value, is_secret_key, redact_json_value};
 
 const COMPACT_BUDGET: usize = 40;
 const COLLAPSED_LINE_BUDGET: usize = 160;
 const EXPANDED_LINE_BUDGET: usize = n00n_markdown::render::TOOL_OUTPUT_MAX_LINE_BYTES;
-const REDACTED: &str = "[redacted]";
 const INDENT_UNIT: &str = "  ";
 const DASH_PREFIX: &str = "- ";
 
@@ -50,7 +50,7 @@ pub(crate) fn render_args(
 }
 
 pub(crate) fn arg_search_text(input: &serde_json::Value) -> String {
-    let redacted = redact_value(input);
+    let redacted = redact_json_value(input);
     if let serde_json::Value::Object(map) = &redacted {
         map.iter()
             .map(|(key, value)| format!("{key}: {}", search_value(value)))
@@ -62,69 +62,10 @@ pub(crate) fn arg_search_text(input: &serde_json::Value) -> String {
 }
 
 pub(crate) fn redacted_json_text(value: &serde_json::Value) -> String {
-    let redacted = redact_value(value);
+    let redacted = redact_json_value(value);
     match serde_json::to_string_pretty(&redacted) {
         Ok(text) => text,
         Err(error) => format!("<invalid JSON: {error}>"),
-    }
-}
-
-fn is_secret_key(key: &str) -> bool {
-    let normalized: String = key
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .flat_map(char::to_lowercase)
-        .collect();
-    matches!(
-        normalized.as_str(),
-        "password"
-            | "passwd"
-            | "passphrase"
-            | "pwd"
-            | "secret"
-            | "token"
-            | "accesstoken"
-            | "authtoken"
-            | "apikey"
-            | "authorization"
-            | "cookie"
-            | "credential"
-            | "credentials"
-            | "privatekey"
-            | "clientsecret"
-            | "refreshtoken"
-            | "idtoken"
-            | "sessiontoken"
-            | "secretkey"
-            | "awssecretaccesskey"
-            | "xapikey"
-            | "accesskey"
-            | "authkey"
-            | "passwordhash"
-            | "secrettoken"
-            | "privatetoken"
-            | "apisecret"
-    )
-}
-
-fn redact_value(value: &serde_json::Value) -> serde_json::Value {
-    match value {
-        serde_json::Value::Object(map) => {
-            let out: serde_json::Map<String, serde_json::Value> = map
-                .iter()
-                .map(|(key, item)| {
-                    let item = if is_secret_key(key) {
-                        serde_json::Value::String(REDACTED.to_owned())
-                    } else {
-                        redact_value(item)
-                    };
-                    (key.clone(), item)
-                })
-                .collect();
-            serde_json::Value::Object(out)
-        }
-        serde_json::Value::Array(items) => items.iter().map(redact_value).collect(),
-        other => other.clone(),
     }
 }
 
@@ -277,15 +218,7 @@ impl ArgsBuilder {
     }
 
     fn escaped(&self, s: &str) -> String {
-        let mut out = String::with_capacity(s.len());
-        for ch in s.chars() {
-            match ch {
-                '\n' => out.push_str("\\n"),
-                '\t' => out.push_str("\\t"),
-                '\r' => out.push_str("\\r"),
-                _ => out.push(ch),
-            }
-        }
+        let out = escape_value(s);
         if out.len() > self.budget {
             let mut end = self.budget.saturating_sub(1);
             while !out.is_char_boundary(end) {
