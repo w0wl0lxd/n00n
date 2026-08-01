@@ -468,11 +468,18 @@ impl AgentLoop {
         let event_tx = EventSender::new(self.agent_tx.clone(), run_id);
         match error {
             AgentError::Cancelled => {
+                warn!("agent cancelled");
                 let _ = event_tx.send(AgentEvent::Done {
                     usage: TokenUsage::default(),
                     num_turns: 0,
                     stop_reason: None,
                     fusion: None,
+                });
+            }
+            e if e.is_history_replay_required() => {
+                info!(error = %e, "agent error: history replay required");
+                let _ = event_tx.send(AgentEvent::Error {
+                    message: e.user_message(),
                 });
             }
             e => {

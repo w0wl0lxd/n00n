@@ -492,7 +492,7 @@ pub async fn fetch_all_models(
                 continue;
             }
             Err(error) => {
-                warn!(provider = slug, %error, "failed to create provider, skipping");
+                debug!(provider = slug, %error, "failed to create provider, skipping");
                 continue;
             }
         };
