@@ -195,7 +195,11 @@ pub struct SessionMeta {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub usage_by_model: HashMap<String, StoredTokenUsage>,
     /// Fusion dual-lane cost breakdown when `--fusion` / `always_fusion` was on.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_fusion_usage_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub fusion: Option<StoredFusionUsage>,
     /// Monotonic snapshot ordering used by write-behind persistence.
     #[serde(default)]
@@ -218,6 +222,32 @@ pub struct StoredFusionUsage {
     pub compact_count: u32,
     #[serde(default)]
     pub final_lane: String,
+}
+
+/// Parses a JSON `Value` into `StoredFusionUsage`, dropping corrupt/empty records.
+///
+/// Older session files occasionally wrote `lead_cost` or `sidekick_cost` as objects
+/// (e.g., maps from the model) instead of plain `f64`s. We tolerate those so the
+/// whole meta record is not discarded.
+fn fusion_usage_from_value(value: serde_json::Value) -> Option<StoredFusionUsage> {
+    if value.is_null() {
+        return None;
+    }
+    match serde_json::from_value::<StoredFusionUsage>(value) {
+        Ok(usage) if usage == StoredFusionUsage::default() => None,
+        Ok(usage) => Some(usage),
+        Err(_) => None,
+    }
+}
+
+fn deserialize_fusion_usage_option<'de, D>(
+    deserializer: D,
+) -> Result<Option<StoredFusionUsage>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(raw.and_then(fusion_usage_from_value))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1237,10 +1267,16 @@ where
                         source,
                     });
                 }
+                let tag = serde_json::from_str::<serde_json::Value>(line)
+                    .ok()
+                    .and_then(|v| v.get("t").and_then(|t| t.as_str()).map(String::from));
+                let record_tag = tag.as_deref().map_or("?", |t| t);
                 warn!(
                     path = %path.display(),
                     error = %error,
                     line = line_count,
+                    record_tag = %record_tag,
+                    record_len = line.len(),
                     "skipping unrecognized JSONL record",
                 );
                 return Ok(());
@@ -2236,8 +2272,8 @@ mod tests {
         try_lock_openai_response_chain,
     };
     use super::{
-        SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError, TitleSource,
-        TranscriptEntry,
+        SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError, StoredFusionUsage,
+        StoredTokenUsage, TitleSource, TranscriptEntry,
     };
     use crate::StateDir;
     use crate::id::n00nId;
@@ -3859,5 +3895,39 @@ mod tests {
         let list = TestSession::list_in("/project", dir).unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].title, "huge-output");
+    }
+
+    #[test]
+    fn session_load_tolerates_corrupt_fusion_in_meta() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.title = "old".into();
+        session.meta.fusion = Some(StoredFusionUsage {
+            lead_cost: 0.12,
+            sidekick_cost: 0.34,
+            lead_usage: StoredTokenUsage {
+                input: 1,
+                output: 2,
+                cache_creation: 0,
+                cache_read: 0,
+            },
+            sidekick_usage: StoredTokenUsage::default(),
+            delegation_count: 1,
+            compact_count: 0,
+            final_lane: "lead".into(),
+        });
+        session.save_to(dir).unwrap();
+
+        // Append a corrupt meta record where lead_cost is a map instead of an f64.
+        let bad_meta = br#"{"t":"meta","title":"updated","token_usage":null,"updated_at":1,"log_appends":0,"fusion":{"lead_cost":{"foo":"bar"}}}"#;
+        let path = jsonl_path(dir, session.id);
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        encode_frame(&mut file, bad_meta).unwrap();
+        drop(file);
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert_eq!(loaded.title, "updated");
+        assert!(loaded.meta.fusion.is_none());
     }
 }
