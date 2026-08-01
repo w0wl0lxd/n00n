@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
@@ -52,6 +53,7 @@ const RESPONSE_CHAIN_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 const PROMPT_CACHE_SHARDS: u8 = 16;
 
 static PROCESS_INSTANCE_NONCE: OnceLock<u64> = OnceLock::new();
+static RESPONSE_OPERATIONS: OnceLock<ResponseOperationRegistry> = OnceLock::new();
 
 fn coding_plan_slot_count(slots: u64) -> u8 {
     match u8::try_from(slots.clamp(1, u64::from(CODING_PLAN_MAX_SLOTS))) {
@@ -61,6 +63,8 @@ fn coding_plan_slot_count(slots: u64) -> u8 {
 }
 
 type ResponseOperationSlot = Arc<AsyncMutex<()>>;
+type ResponseOperationKey = (PathBuf, n00nId);
+type ResponseOperationRegistry = Mutex<HashMap<ResponseOperationKey, Weak<AsyncMutex<()>>>>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct OpenAiOptions {
@@ -485,7 +489,6 @@ pub struct OpenAi {
     system_prefix: Option<String>,
     session_state: Arc<Mutex<HashMap<n00nId, OpenAiSessionState>>>,
     response_connections: Arc<Mutex<HashMap<n00nId, ResponseConnectionSlot>>>,
-    response_operations: Arc<Mutex<HashMap<n00nId, Weak<AsyncMutex<()>>>>>,
 }
 
 impl OpenAi {
@@ -522,7 +525,6 @@ impl OpenAi {
             system_prefix: None,
             session_state: Arc::new(Mutex::new(HashMap::new())),
             response_connections: Arc::new(Mutex::new(HashMap::new())),
-            response_operations: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -557,7 +559,6 @@ impl OpenAi {
             system_prefix: None,
             session_state: Arc::new(Mutex::new(HashMap::new())),
             response_connections: Arc::new(Mutex::new(HashMap::new())),
-            response_operations: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -1797,18 +1798,19 @@ impl OpenAi {
         &self,
         session_id: Option<&SessionRef>,
     ) -> Option<ResponseOperationSlot> {
-        let session_id = session_id?;
-        let session_id = canonical_session_key(session_id);
-        let mut operations = self
-            .response_operations
+        let session_id = canonical_session_key(session_id?);
+        let storage_path = self.response_state_storage.as_ref()?.path().to_path_buf();
+        let mut operations = RESPONSE_OPERATIONS
+            .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let key = (storage_path, session_id);
         operations.retain(|_, operation| operation.strong_count() > 0);
-        if let Some(operation) = operations.get(&session_id).and_then(Weak::upgrade) {
+        if let Some(operation) = operations.get(&key).and_then(Weak::upgrade) {
             return Some(operation);
         }
         let operation = Arc::new(AsyncMutex::new(()));
-        operations.insert(session_id, Arc::downgrade(&operation));
+        operations.insert(key, Arc::downgrade(&operation));
         Some(operation)
     }
 }
@@ -2065,6 +2067,7 @@ impl Provider for OpenAi {
                 tools,
                 Some(&prompt_cache_key),
                 self.system_prefix.as_deref(),
+                opts.message_cache_breakpoints,
             );
             opts.thinking
                 .apply_reasoning_effort(&mut body, &dialect::STANDARD, model);
@@ -3147,12 +3150,17 @@ mod tests {
     }
 
     #[test]
-    fn response_operation_slot_is_reused_while_request_is_live() {
+    fn response_operation_slot_is_reused_across_provider_instances() {
         let temp_dir = TempDir::new().unwrap();
-        let provider = provider_with_response_storage(temp_dir.path());
+        let first_provider = provider_with_response_storage(temp_dir.path());
+        let second_provider = provider_with_response_storage(temp_dir.path());
         let session_id = SessionRef::generate();
-        let first = provider.response_operation_slot(Some(&session_id)).unwrap();
-        let second = provider.response_operation_slot(Some(&session_id)).unwrap();
+        let first = first_provider
+            .response_operation_slot(Some(&session_id))
+            .unwrap();
+        let second = second_provider
+            .response_operation_slot(Some(&session_id))
+            .unwrap();
 
         assert!(Arc::ptr_eq(&first, &second));
     }
