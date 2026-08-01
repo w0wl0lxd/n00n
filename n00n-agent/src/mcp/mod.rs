@@ -310,6 +310,7 @@ pub struct McpHandle {
 pub struct McpSession {
     handle: McpHandle,
     loaded: Arc<Mutex<HashSet<Arc<str>>>>,
+    excluded: Arc<HashSet<Arc<str>>>,
 }
 
 impl std::ops::Deref for McpSession {
@@ -338,13 +339,27 @@ impl McpSession {
         Self {
             handle,
             loaded: Arc::new(Mutex::new(loaded)),
+            excluded: Arc::new(HashSet::new()),
         }
     }
 
     /// A view over the same handle with no loads, for a new (sub)session.
     #[must_use]
     pub fn fresh(&self) -> Self {
-        Self::new(self.handle.clone(), &[])
+        self.fresh_excluding(&[])
+    }
+
+    #[must_use]
+    pub fn fresh_excluding(&self, excluded: &[String]) -> Self {
+        let excluded = excluded
+            .iter()
+            .map(|name| Arc::from(internal_tool_name(name)))
+            .collect();
+        Self {
+            handle: self.handle.clone(),
+            loaded: Arc::new(Mutex::new(HashSet::new())),
+            excluded: Arc::new(excluded),
+        }
     }
 
     /// Append this request's MCP definitions: loaded and `always_load`
@@ -369,7 +384,7 @@ impl McpSession {
         let loaded = self.lock_loaded();
         let mut deferred: Vec<&ToolDescriptor> = Vec::new();
         for d in idx.descriptors.iter() {
-            if existing.contains(d.wire_name()) {
+            if self.excluded.contains(&d.qualified_name) || existing.contains(d.wire_name()) {
                 continue;
             }
             if !defer || d.always_load || loaded.contains(&*d.qualified_name) {
@@ -412,6 +427,7 @@ impl McpSession {
             .descriptors
             .iter()
             .filter(|d| !d.always_load)
+            .filter(|d| !self.excluded.contains(&d.qualified_name))
             .filter_map(|d| {
                 let name = d.wire_name().to_lowercase();
                 let haystack = build_haystack(&d.definition);
@@ -482,7 +498,9 @@ impl McpSession {
     /// Invoked on every MCP dispatch: a deferred tool the model calls by
     /// catalog name gets its full definition on the next request.
     pub fn mark_loaded(&self, qualified_name: &str) {
-        self.lock_loaded().insert(Arc::from(qualified_name));
+        if !self.excluded.contains(qualified_name) {
+            self.lock_loaded().insert(Arc::from(qualified_name));
+        }
     }
 
     fn lock_loaded(&self) -> std::sync::MutexGuard<'_, HashSet<Arc<str>>> {
@@ -1724,6 +1742,26 @@ mod tests {
             .expect("tool_search must stay while any tool is deferred");
         let description = catalog["description"].as_str().unwrap();
         assert!(description.contains("srv: gamma"), "got: {description}");
+    }
+
+    #[test]
+    fn session_exclusions_hide_and_prevent_loading_deferred_tools() {
+        let (_inner, parent) = setup(vec![fake_entry("srv", FakeTransport::new())]);
+        let session = parent.fresh_excluding(&[WIRE_TOOL_NAME.to_owned()]);
+        let mut tools = json!([]);
+        session.extend_tools(&mut tools);
+
+        assert!(tool_names(&tools).is_empty());
+        assert!(
+            session
+                .search_tools("tool")
+                .unwrap()
+                .contains(SEARCH_NO_MATCH)
+        );
+
+        session.mark_loaded(TOOL_NAME);
+        session.extend_tools(&mut tools);
+        assert!(tool_names(&tools).is_empty());
     }
 
     #[test]

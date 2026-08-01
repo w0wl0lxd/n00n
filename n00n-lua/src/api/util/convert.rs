@@ -8,6 +8,7 @@ pub(crate) fn err_pair(lua: &Lua, e: impl std::fmt::Display) -> LuaResult<(Value
 }
 
 pub(crate) const NIL_TOOL_RESULT_ERR: &str = "tool returned nil without an error message";
+pub(crate) const JSON_ARRAY_META_FIELD: &str = "__n00n_json_array";
 
 pub(crate) fn lua_tool_result(values: mlua::MultiValue) -> Result<String, String> {
     let mut iter = values.into_iter();
@@ -92,7 +93,17 @@ pub(crate) fn lua_to_json(lua: &Lua, val: &Value) -> LuaResult<JsonValue> {
                 }
             }
 
-            if !has_non_int && (any || tbl.metatable().as_ref() == Some(&lua.array_metatable())) {
+            let is_json_array = match tbl.metatable() {
+                Some(meta) => {
+                    meta == lua.array_metatable()
+                        || matches!(
+                            meta.raw_get::<Option<bool>>(JSON_ARRAY_META_FIELD)?,
+                            Some(true)
+                        )
+                }
+                None => false,
+            };
+            if !has_non_int && (any || is_json_array) {
                 let mut arr = Vec::with_capacity(len);
                 for i in 1..=len {
                     let v: Value = tbl.raw_get(i)?;
