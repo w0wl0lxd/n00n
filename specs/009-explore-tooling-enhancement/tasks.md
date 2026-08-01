@@ -14,12 +14,12 @@
 - **[Story]**: Which user story this task belongs to (US1, US2, US3, US4, US5, US6)
 - Include exact file paths in descriptions
 
-## Phase 1: Setup (Shared Infrastructure)
+## Phase 1: Baseline and Research (Shared Infrastructure)
 
 **Purpose**: Baseline verification and research
 
 - [ ] T001 Verify CodeGraph 1.5.0 compatibility by installing CLI and testing new commands on a fixture repo
-- [ ] T002 Capture current latency/token baselines for arbor map, codegraph explore, semblem search on n00n repo
+- [ ] T002 Capture tool call latency and tool definition token size baselines for `arbor`, `codegraph`, `explore`, and `semblem` on the n00n repo; store in `tests/fixtures/tooling-baseline.json` (linked to SC-009).
 - [ ] T003 Run `cargo nextest run --workspace` to establish green baseline
 - [ ] T004 Run `cargo clippy --all --tests -- -D warnings` to establish green baseline
 - [ ] T005 Run `cargo deny check` to establish green baseline
@@ -30,7 +30,7 @@
 
 ---
 
-## Phase 2: Foundational (Router + Prompts)
+## Phase 2: Router + Prompts (Foundational)
 
 **Purpose**: US1 and US2 - smarter router and first-tier prompts
 
@@ -53,7 +53,8 @@
 - [ ] T017 [US1] Add routing logic for symbol intent to arbor/codegraph in plugins/explore/router.lua
 - [ ] T018 [US1] Add routing logic for impact intent to arbor/codegraph in plugins/explore/router.lua
 - [ ] T019 [US1] Add routing logic for trace intent to arbor in plugins/explore/router.lua
-- [ ] T020 [US1] Run tests for new router intents in plugins/explore/router.lua
+- [ ] T020 [US1] Create `tests/fixtures/explore-queries.json` with ≥20 labeled queries and a test that validates router classification ≥90% (linked to SC-001).
+- [ ] T020a [US1] Run tests for new router intents in plugins/explore/router.lua
 
 ### Implementation for US2 (Prompts)
 
@@ -81,6 +82,7 @@
 - [ ] T029 [P] [US3] Add failing test for callees command in n00n-codegraph/src/lib.rs
 - [ ] T030 [P] [US3] Add failing test for impact command in n00n-codegraph/src/lib.rs
 - [ ] T031 [P] [US3] Add failing test for affected command in n00n-codegraph/src/lib.rs
+- [ ] T031a [P] [US3] Add failing test for files command in n00n-codegraph/src/lib.rs
 - [ ] T032 [P] [US3] Add failing test for node command in n00n-codegraph/src/lib.rs
 - [ ] T033 [P] [US3] Add failing test for query command in n00n-codegraph/src/lib.rs
 - [ ] T034 [P] [US3] Add failing test for sync command in n00n-codegraph/src/lib.rs
@@ -92,6 +94,7 @@
 - [ ] T037 [US3] Extend n00n-codegraph/src/lib.rs with callees command function
 - [ ] T038 [US3] Extend n00n-codegraph/src/lib.rs with impact command function
 - [ ] T039 [US3] Extend n00n-codegraph/src/lib.rs with affected command function
+- [ ] T039a [US3] Extend n00n-codegraph/src/lib.rs with files command function
 - [ ] T040 [US3] Extend n00n-codegraph/src/lib.rs with node command function
 - [ ] T041 [US3] Extend n00n-codegraph/src/lib.rs with query command function
 - [ ] T042 [US3] Extend n00n-codegraph/src/lib.rs with sync command function
@@ -99,6 +102,7 @@
 - [ ] T044 [US3] Extend n00n-codegraph/src/db.rs with native SQLite queries for callees
 - [ ] T045 [US3] Extend n00n-codegraph/src/db.rs with native SQLite queries for impact
 - [ ] T046 [US3] Extend n00n-codegraph/src/db.rs with native SQLite queries for affected
+- [ ] T046a [US3] Extend n00n-codegraph/src/db.rs with native SQLite queries for files
 - [ ] T047 [US3] Extend n00n-codegraph/src/db.rs with native SQLite queries for node
 - [ ] T048 [US3] Extend n00n-codegraph/src/db.rs with native SQLite queries for query
 - [ ] T049 [US3] Add Lua API functions in n00n-lua/src/api/codegraph.rs for new commands
@@ -124,6 +128,7 @@
 - [ ] T056 [P] [US4] Add failing test for refactor command in n00n-arbor/src/lib.rs
 - [ ] T057 [P] [US4] Add failing test for check command in n00n-arbor/src/lib.rs
 - [ ] T058 [P] [US4] Add failing test for summary command in n00n-arbor/src/lib.rs
+- [ ] T058a [P] [US4] Add failing test for trace command in n00n-arbor/src/lib.rs
 
 ### Implementation for US4
 
@@ -134,9 +139,10 @@
 - [ ] T063 [US4] Extend n00n-arbor/src/lib.rs with refactor command function
 - [ ] T064 [US4] Extend n00n-arbor/src/lib.rs with check command function
 - [ ] T065 [US4] Extend n00n-arbor/src/lib.rs with summary command function
-- [ ] T066 [US4] Improve in-memory GraphIndex fallback for callers in n00n-arbor/src/graph_query.rs
-- [ ] T067 [US4] Improve in-memory GraphIndex fallback for callees in n00n-arbor/src/graph_query.rs
-- [ ] T068 [US4] Improve in-memory GraphIndex fallback for trace_path in n00n-arbor/src/graph_query.rs
+- [ ] T065a [US4] Extend n00n-arbor/src/lib.rs with trace command function
+- [ ] T066 [US4] Use native `ArborGraph` from `.arbor/graph.json` to answer `arbor callers`, `callees`, and `trace` when the `arbor` CLI is not on `PATH`; ensure output matches CLI format.
+- [ ] T067 [US4] Use `ArborGraph` centrality and module data to implement `arbor map` with a token budget and `arbor entry-points` without the CLI.
+- [ ] T068 [US4] Extend `ArborGraph` parsing to support Rust, Python, and Lua files for native fallback; add fixture tests.
 - [ ] T069 [US4] Add Lua API functions in n00n-lua/src/api/arbor.rs for new commands
 - [ ] T070 [US4] Update plugins/arbor/init.lua to expose new commands in tool schema
 - [ ] T071 [US4] Run tests for new Arbor commands in n00n-arbor/src/lib.rs
@@ -160,14 +166,14 @@
 
 ### Implementation for US5
 
-- [ ] T076 [US5] Add upstream Semble CLI wrapper function in n00n-semble/src/lib.rs
-- [ ] T077 [US5] Add remote git URL support to Semble CLI wrapper in n00n-semble/src/lib.rs
-- [ ] T078 [US5] Add --content docs/config/all flag support to Semble CLI wrapper in n00n-semble/src/lib.rs
-- [ ] T079 [US5] Add find-related command support to Semble CLI wrapper in n00n-semble/src/lib.rs
-- [ ] T080 [US5] Add savings command support to Semble CLI wrapper in n00n-semble/src/lib.rs
-- [ ] T081 [US5] Add CLI availability check function in n00n-semble/src/lib.rs
-- [ ] T082 [US5] Update plugins/semblem/init.lua to call upstream CLI when available
-- [ ] T083 [US5] Update plugins/semblem/init.lua to fall back to native BM25 when CLI unavailable
+- [ ] T076 [US5] Add upstream Semble CLI wrapper function in n00n-semble/src/lib.rs for Semblem
+- [ ] T077 [US5] Add remote git URL support to Semble CLI wrapper in n00n-semble/src/lib.rs for Semblem
+- [ ] T078 [US5] Add --content docs/config/all flag support to Semble CLI wrapper in n00n-semble/src/lib.rs for Semblem
+- [ ] T079 [US5] Add find-related command support to Semble CLI wrapper in n00n-semble/src/lib.rs for Semblem
+- [ ] T080 [US5] Add savings command support to Semble CLI wrapper in n00n-semble/src/lib.rs for Semblem
+- [ ] T081 [US5] Add CLI availability check function in n00n-semble/src/lib.rs for Semblem
+- [ ] T082 [US5] Update plugins/semblem/init.lua to call upstream Semble CLI when available
+- [ ] T083 [US5] Update plugins/semblem/init.lua to fall back to native BM25 when Semble CLI unavailable
 - [ ] T084 [US5] Keep existing embedder nag logic for hybrid/semantic modes in n00n-semble/src/lib.rs
 - [ ] T085 [US5] Run tests for upstream CLI wrapper and BM25 fallback in n00n-semble/src/lib.rs
 
@@ -190,7 +196,7 @@
 
 - [ ] T088 [US6] Add session-local variable for RTK availability cache in plugins/bash/init.lua
 - [ ] T089 [US6] Update rtk_rewrite function to use cached availability in plugins/bash/init.lua
-- [ ] T090 [US6] Broaden rtk rewrite coverage with additional command patterns in plugins/bash/init.lua
+- [ ] T090 [US6] Add `podman`, `docker`, `npm`, `pip`, `python`, and `gh` to the rtk rewrite command table in `plugins/bash/init.lua`; ensure `jq`/`yq` passthrough is unchanged (FR-017).
 - [ ] T091 [US6] Verify jq and yq pass through unchanged in plugins/bash/init.lua
 - [ ] T092 [US6] Update prompt hints in plugins/bash/init.lua to explicitly recommend rtk-wrapped bash
 - [ ] T093 [US6] Run tests for RTK availability caching in plugins/bash/init.lua
@@ -199,7 +205,7 @@
 
 ---
 
-## Phase 7: Polish & Cross-Cutting Concerns
+## Phase 7: Docs + Config (Polish & Cross-Cutting Concerns)
 
 **Purpose**: Docs, config, and final verification
 
@@ -207,17 +213,30 @@
 - [ ] T095 [P] Update n00n-config/src/lib.rs tool output line budgets if needed
 - [ ] T096 [P] Update quickstart.md with validation commands for new features
 - [ ] T097 [P] Regenerate site docs with just gen-docs
+
+**Checkpoint**: Documentation updated
+
+---
+
+## Phase 8: Verification
+
+**Purpose**: Final verification and performance checks
+
 - [ ] T098 Run full test suite: cargo nextest run --workspace
 - [ ] T099 Run cargo clippy --all --tests -- -D warnings
 - [ ] T100 Run cargo deny check
 - [ ] T101 Run just explore-health
 - [ ] T102 Manual smoke test: explore router with various intents
-- [ ] T103 Manual smoke test: new CodeGraph commands
-- [ ] T104 Manual smoke test: new Arbor commands
-- [ ] T105 Manual smoke test: Semblem upstream CLI and BM25 fallback
-- [ ] T106 Manual smoke test: RTK rewriting and caching
+- [ ] T103 Manual smoke test: new CodeGraph commands (SC-003 smoke test)
+- [ ] T104 Manual smoke test: new Arbor commands (SC-004 smoke test)
+- [ ] T105 Manual smoke test: Semblem upstream CLI and BM25 fallback (SC-005–SC-006 smoke tests)
+- [ ] T106 Manual smoke test: RTK rewriting and caching (SC-007 smoke test)
 - [ ] T107 Measure tool definition token sizes against baseline
-- [ ] T108 Measure tool call latencies against baseline
+- [ ] T108 Run final performance regression: compare `arbor`, `codegraph`, `explore`, `semblem`, and `rtk` latency/token size against `tests/fixtures/tooling-baseline.json`; ensure no regression beyond 10% (SC-009).
+- [ ] T109 [P] Measure `explore`/`codegraph`/`arbor`/`semblem`/`rtk` tool definition token counts and verify they do not exceed the current baseline (SC-008).
+- [ ] T110 [P] Compare final tool call latency against `tests/fixtures/tooling-baseline.json`; ensure ≤10% regression (SC-009).
+- [ ] T111 Verify the agent's default prompt lists `explore`, `index`, `arbor`, `codegraph`, and `semblem` before `grep`/`bash` (SC-002).
+- [ ] T112 Add a test that `bash` plugin caches `rtk` availability per session and only invokes `rtk` when installed (SC-007).
 
 **Checkpoint**: All tests pass, documentation updated, performance verified
 
@@ -227,21 +246,22 @@
 
 ### Phase Dependencies
 
-- **Setup (Phase 1)**: No dependencies - can start immediately
-- **Foundational (Phase 2)**: Depends on Setup completion - BLOCKS all user stories
-- **User Stories (Phase 3-6)**: All depend on Foundational phase completion
+- **Baseline and Research (Phase 1)**: No dependencies - can start immediately
+- **Router + Prompts (Phase 2)**: Depends on Phase 1 completion - BLOCKS all user stories
+- **User Stories (Phase 3-6)**: All depend on Phase 2 completion
   - User stories can proceed in parallel (if staffed)
   - Or sequentially in priority order (P1 → P2 → P3)
-- **Polish (Phase 7)**: Depends on all desired user stories being complete
+- **Docs + Config (Phase 7)**: Depends on all desired user stories being complete
+- **Verification (Phase 8)**: Depends on Phase 7 completion
 
 ### User Story Dependencies
 
-- **User Story 1 (P1)**: Can start after Foundational (Phase 2) - No dependencies on other stories
-- **User Story 2 (P1)**: Can start after Foundational (Phase 2) - No dependencies on other stories
-- **User Story 3 (P2)**: Can start after Foundational (Phase 2) - No dependencies on other stories
-- **User Story 4 (P2)**: Can start after Foundational (Phase 2) - No dependencies on other stories
-- **User Story 5 (P3)**: Can start after Foundational (Phase 2) - No dependencies on other stories
-- **User Story 6 (P3)**: Can start after Foundational (Phase 2) - No dependencies on other stories
+- **User Story 1 (P1)**: Can start after Phase 2 (Router + Prompts) - No dependencies on other stories
+- **User Story 2 (P1)**: Can start after Phase 2 (Router + Prompts) - No dependencies on other stories
+- **User Story 3 (P2)**: Can start after Phase 2 (Router + Prompts) - No dependencies on other stories
+- **User Story 4 (P2)**: Can start after Phase 2 (Router + Prompts) - No dependencies on other stories
+- **User Story 5 (P3)**: Can start after Phase 2 (Router + Prompts) - No dependencies on other stories
+- **User Story 6 (P3)**: Can start after Phase 2 (Router + Prompts) - No dependencies on other stories
 
 ### Within Each User Story
 
@@ -260,20 +280,21 @@
 
 ### MVP First (User Stories 1-2 Only)
 
-1. Complete Phase 1: Setup
-2. Complete Phase 2: Foundational (US1 + US2)
+1. Complete Phase 1: Baseline and Research
+2. Complete Phase 2: Router + Prompts (US1 + US2)
 3. **STOP and VALIDATE**: Test router and prompts independently
 4. Deploy/demo if ready
 
 ### Incremental Delivery
 
-1. Complete Setup + Foundational → Foundation ready
+1. Complete Phase 1 + Phase 2 → Foundation ready
 2. Add US1 + US2 → Test independently → Deploy/Demo (MVP!)
 3. Add US3 → Test independently → Deploy/Demo
 4. Add US4 → Test independently → Deploy/Demo
 5. Add US5 → Test independently → Deploy/Demo
 6. Add US6 → Test independently → Deploy/Demo
-7. Complete Phase 7: Polish → Final release
+7. Complete Phase 7: Docs + Config → Documentation ready
+8. Complete Phase 8: Verification → Final release
 
 ## Notes
 

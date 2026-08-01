@@ -8,6 +8,14 @@
 
 **Input**: User description: "expand, refine, and further optimize + enhance the Codegraph, Semble, and Arbor integrations and tooling, as well as fully working with rtk where needed, and ensure they're used as a first tier codebase solution alongside the index tool"
 
+## Clarifications
+
+### Session 2026-08-01
+
+- Q: What does "first-tier" mean? → A: The five tools (`explore`, `index`, `arbor`, `codegraph`, and `semblem`) are listed in the agent's default prompt hierarchy above `grep`, `bash`, and generic search; the `explore` router is the preferred entry point.
+- Q: What does "smarter explore router" mean? → A: The router classifies a natural-language query into one of `search`, `skeleton`, `symbol`, `impact`, `trace`, or `fallback` and dispatches to the appropriate backend; target classification accuracy is ≥90% on the test query fixture (SC-001).
+- Q: What does "fully working" mean? → A: Each tool command has a defined contract, passes tests, and returns correct results on the n00n fixture repository without external CLI dependencies where a native fallback exists.
+
 ## User Scenarios & Testing
 
 ### User Story 1 - Smarter explore router (Priority: P1)
@@ -80,7 +88,7 @@ A user wants to use Arbor for entry-points, file-graph, inspect, path, refactor,
 
 A user wants semantic search with the upstream `semble` CLI for remote git URLs, `--content docs/config/all`, and `find-related` operations, while keeping the native `n00n-search` BM25 index as a fallback for offline cases.
 
-**Why this priority**: The upstream `semble` CLI v0.5.1 supports features not available in the native wrapper (remote URLs, content filters, savings). Wrapping it while keeping BM25 fallback provides the best of both worlds: advanced semantic search when available, offline keyword search when not.
+**Why this priority**: The upstream `semble` CLI v0.5.1 supports features not available in the native wrapper (remote URLs, content filters, savings). Wrapping it while keeping BM25 fallback provides the best of both worlds: advanced semantic search when available, offline keyword search when not. The n00n tool is called Semblem to distinguish it from the upstream Semble CLI.
 
 **Independent Test**: Can be fully tested by invoking semblem with the upstream CLI commands (search with remote URL, find-related, savings) and verifying correct results, then testing BM25 fallback when the CLI is unavailable.
 
@@ -114,7 +122,7 @@ A user wants bash commands to be automatically rewritten through `rtk` for token
 
 - What happens when the explore router cannot determine the intent from the query? The router defaults to `cross_file` (codegraph) and the agent can override with explicit `intent` parameter.
 - What happens when CodeGraph 1.5.0 CLI is unavailable but the SQLite database exists? Native queries work for supported commands; unsupported commands return a clear error suggesting CLI installation.
-- What happens when Arbor CLI is unavailable but `graph.json` exists? Native in-memory queries work for callers/callees/trace_path; unsupported commands return a clear error.
+- What happens when Arbor CLI is unavailable but `graph.json` exists? Native in-memory queries work for callers/callees/trace; unsupported commands return a clear error.
 - What happens when the upstream `semble` CLI is unavailable? The tool falls back to native `n00n-search` BM25 and returns keyword results.
 - What happens when rtk is not installed? Bash commands run normally without rewriting; no error is raised.
 - What happens when multiple tools attempt to index the same project concurrently? Each tool uses its own lock file (`.codegraph/.lock`, `.arbor/.lock`, `.n00n/search/.lock`) to serialize indexing operations.
@@ -132,15 +140,15 @@ A user wants bash commands to be automatically rewritten through `rtk` for token
 - **FR-006**: The `NATIVE_EFFICIENT_TOOLS` list MUST include `explore`, `index`, `arbor`, `codegraph`, and `semblem` without "optional" qualifiers.
 - **FR-007**: Tool descriptions for explore, arbor, codegraph, and semblem MUST position them as first-tier exploration tools.
 - **FR-008**: CodeGraph MUST be upgraded to target version 1.5.0.
-- **FR-009**: CodeGraph MUST expose commands: `explore`, `callers`, `callees`, `impact`, `affected`, `node`, `query`, `sync`.
+- **FR-009**: CodeGraph MUST expose commands: `explore`, `callers`, `callees`, `impact`, `affected`, `files`, `node`, `query`, `sync`.
 - **FR-010**: CodeGraph MUST prefer native SQLite queries from `.codegraph/codegraph.db` and fall back to the CLI.
-- **FR-011**: Arbor MUST expose commands: `callers`, `callees`, `map`, `diff`, `query`, `status`, `entry-points`, `file-graph`, `inspect`, `path`, `refactor`, `check`, `summary`.
-- **FR-012**: Arbor MUST use native in-memory `graph.json` for `callers`, `callees`, and `trace_path` when the CLI is unavailable.
+- **FR-011**: Arbor MUST expose commands: `callers`, `callees`, `map`, `diff`, `query`, `status`, `entry-points`, `file-graph`, `inspect`, `path`, `refactor`, `check`, `summary`, `trace`.
+- **FR-012**: Arbor MUST use native in-memory `graph.json` for `callers`, `callees`, and `trace` when the CLI is unavailable.
 - **FR-013**: Semblem MUST wrap the upstream `semble` CLI v0.5.1 for `search`, `find-related`, and `savings` commands.
 - **FR-014**: Semblem MUST support `--content docs/config/all` flags and remote git URLs.
 - **FR-015**: Semblem MUST keep the native `n00n-search` BM25 index as a fallback when the CLI is unavailable or no embedder is configured.
 - **FR-016**: The bash plugin MUST cache rtk availability per session.
-- **FR-017**: The bash plugin MUST rewrite commands through `rtk` for git, cargo, rg, grep, find, ls, cat, head, tail, and other supported commands.
+- **FR-017**: The bash plugin MUST pass the following commands through `rtk rewrite` when `rtk` is installed: `git`, `cargo`, `rg`, `grep`, `find`, `ls`, `cat`, `head`, `tail`, `n00n`, `podman`, `docker`, `npm`, `pip`, `python`, `gh`; `jq` and `yq` MUST pass through unchanged.
 - **FR-018**: The bash plugin MUST pass `jq` and `yq` commands through unchanged.
 - **FR-019**: Prompt hints MUST explicitly recommend rtk-wrapped bash for verbose shell commands.
 
@@ -159,7 +167,7 @@ A user wants bash commands to be automatically rewritten through `rtk` for token
 
 ### Measurable Outcomes
 
-- **SC-001**: The explore router correctly routes at least 90% of test queries to the intended backend.
+- **SC-001**: The explore router correctly classifies ≥90% of queries in `tests/fixtures/explore-queries.json` (a fixture of at least 20 representative queries across search, skeleton, symbol, impact, and trace intents).
 - **SC-002**: The `NATIVE_EFFICIENT_TOOLS` list and prompt hints consistently position explore/index/arbor/codegraph/semblem before grep/bash.
 - **SC-003**: CodeGraph 1.5.0 commands (callers, callees, impact, node, query, sync) return correct results on a test repository.
 - **SC-004**: Arbor commands (entry-points, file-graph, inspect, path, refactor, check, summary) return correct results on a test repository.
@@ -171,6 +179,7 @@ A user wants bash commands to be automatically rewritten through `rtk` for token
 
 ## Assumptions
 
+- The agent's default prompt will list `explore`, `index`, `arbor`, `codegraph`, and `semblem` before `grep` and `bash`.
 - CodeGraph 1.5.0 SQLite database schema is backward-compatible with the 1.4.1 format used for native queries.
 - Arbor 2.5.0 CLI output format for new commands (entry-points, file-graph, inspect, path, refactor, check, summary) is stable and parseable.
 - The upstream `semble` CLI v0.5.1 is available on PATH or can be installed by the user for semantic search features.
