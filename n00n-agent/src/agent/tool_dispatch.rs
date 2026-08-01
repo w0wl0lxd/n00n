@@ -264,9 +264,22 @@ fn is_subagent_failure(event: &ToolDoneEvent, ctx: &ToolContext) -> bool {
     let Some(entry) = ctx.registry.get(event.tool.as_ref()) else {
         return false;
     };
-    matches!(
+    let is_subagent = matches!(
         entry.source,
         ToolSource::Lua { plugin } if SUBAGENT_PLUGINS.contains(&plugin.as_ref())
+    );
+    is_subagent
+        && (ctx.cancel.is_cancelled()
+            || !is_cancelled_subagent_output(event.output.as_text().as_str()))
+}
+
+fn is_cancelled_subagent_output(output: &str) -> bool {
+    matches!(
+        output.trim(),
+        "cancelled"
+            | "sub-agent error: cancelled"
+            | "task failed: cancelled"
+            | "task failed: plugin interrupted: task cancelled"
     )
 }
 
@@ -1991,6 +2004,37 @@ mod tests {
                 message: self.message.clone(),
             }))
         }
+    }
+
+    #[test]
+    fn child_cancelled_subagent_only_fails_when_parent_is_cancelled() {
+        const CANCELLED: &str = "cancelled";
+        let registry = ToolRegistry::new();
+        let tool: Arc<dyn Tool> = Arc::new(FailingSubagentTool::new("task", CANCELLED));
+        registry
+            .register(
+                &tool,
+                &ToolSource::Lua {
+                    plugin: "task".into(),
+                },
+            )
+            .unwrap();
+        let (parent_cancel, parent_token) = crate::CancelToken::new();
+        let mut ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
+        ctx.cancel = parent_token;
+        ctx.registry = Arc::new(registry);
+        let event = ToolDoneEvent {
+            id: "tu1".into(),
+            tool: "task".into(),
+            output: ToolOutput::Plain(CANCELLED.into()),
+            is_error: true,
+            annotation: None,
+            written_path: None,
+        };
+
+        assert!(!is_subagent_failure(&event, &ctx));
+        parent_cancel.cancel();
+        assert!(is_subagent_failure(&event, &ctx));
     }
 
     #[test]
