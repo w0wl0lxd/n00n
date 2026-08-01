@@ -6,7 +6,7 @@
 
 ## Summary
 
-This feature expands and refines the CodeGraph, Semble, and Arbor integrations to make them first-tier exploration tools alongside index. Key changes include: upgrading CodeGraph to 1.5.0 and exposing additional commands (callers, callees, impact, affected, node, query, sync); expanding Arbor to expose entry-points, file-graph, inspect, path, refactor, check, and summary; wrapping the upstream `semble` CLI v0.5.1 for remote URLs and content filters while keeping native BM25 fallback; enhancing the explore router with new intents (search, skeleton, symbol, impact, trace); updating prompts and tool descriptions to position these tools as first-tier; and hardening RTK integration in the bash plugin with session caching and broader coverage.
+This feature expands and refines the CodeGraph, Semblem, and Arbor integrations to make them first-tier exploration tools alongside index. Key changes include: upgrading CodeGraph to 1.5.0 and exposing additional commands (callers, callees, impact, affected, files, node, query, sync); expanding Arbor to expose entry-points, file-graph, inspect, path, refactor, check, summary, and trace; wrapping the upstream `semble` CLI v0.5.1 for remote URLs and content filters while keeping native BM25 fallback; enhancing the explore router with new intents (search, skeleton, symbol, impact, trace); updating prompts and tool descriptions to position these tools as first-tier; and hardening RTK integration in the bash plugin with session caching and broader coverage.
 
 ## Technical Context
 
@@ -44,7 +44,7 @@ This feature expands and refines the CodeGraph, Semble, and Arbor integrations t
 
 ## Constitution Check
 
-*GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
+*GATE: Must pass before Phase 1 research. Re-check after Phase 2 design.*
 
 || Gate | Status | Notes |
 ||------|--------|-------|
@@ -98,7 +98,7 @@ No constitution violations expected. All changes are additive and build on exist
 
 ## Phased Roadmap
 
-### Phase 0: Baseline and Research
+### Phase 1: Baseline and Research
 
 1. Verify CodeGraph 1.5.0 compatibility: install CLI, run `codegraph --version`, test new commands on a fixture repo.
 2. Capture current latency/token baselines: time `arbor map`, `codegraph explore`, `semblem search` on n00n repo; measure tool definition token sizes.
@@ -106,7 +106,7 @@ No constitution violations expected. All changes are additive and build on exist
 4. Run `just explore-health` to verify current tool health.
 5. Document research findings in `research.md`: CodeGraph 1.5.0 features, Arbor 2.5.0 commands, Semble CLI v0.5.1 capabilities, RTK coverage.
 
-### Phase 1: Router + Prompts
+### Phase 2: Router + Prompts
 
 1. Extend `plugins/explore/router.lua` with new intents: `search`, `skeleton`, `symbol`, `impact`, `trace`.
 2. Update `plugins/explore/init.lua` schema to include new intents and routing logic.
@@ -115,24 +115,24 @@ No constitution violations expected. All changes are additive and build on exist
 5. Update tool descriptions in `plugins/arbor/init.lua`, `plugins/codegraph/init.lua`, `plugins/semblem/init.lua` to remove external CLI installation notes.
 6. Add tests for new router intents in `plugins/explore/router.lua`.
 
-### Phase 2: CodeGraph Expansion
+### Phase 3: CodeGraph Expansion
 
 1. Update `n00n-codegraph/Cargo.toml` to target CodeGraph 1.5.0 (no Rust dependency change, just CLI version expectation).
-2. Extend `n00n-codegraph/src/lib.rs` with new commands: `callers`, `callees`, `impact`, `affected`, `node`, `query`, `sync`.
+2. Extend `n00n-codegraph/src/lib.rs` with new commands: `callers`, `callees`, `impact`, `affected`, `files`, `node`, `query`, `sync`.
 3. Extend `n00n-codegraph/src/db.rs` with native SQLite queries for new commands where possible.
 4. Add Lua API functions in `n00n-lua/src/api/codegraph.rs` for new commands.
 5. Update `plugins/codegraph/init.lua` to expose new commands through the tool schema.
 6. Add tests for new CodeGraph commands in `n00n-codegraph/src/lib.rs`.
 
-### Phase 3: Arbor Expansion
+### Phase 4: Arbor Expansion
 
-1. Extend `n00n-arbor/src/lib.rs` with new CLI commands: `entry-points`, `file-graph`, `inspect`, `path`, `refactor`, `check`, `summary`.
-2. Improve in-memory `GraphIndex` fallbacks for existing commands (callers, callees, trace_path).
+1. Extend `n00n-arbor/src/lib.rs` with new CLI commands: `entry-points`, `file-graph`, `inspect`, `path`, `refactor`, `check`, `summary`, `trace`.
+2. Improve in-memory `GraphIndex` fallbacks for existing commands (callers, callees, trace).
 3. Add Lua API functions in `n00n-lua/src/api/arbor.rs` for new commands.
 4. Update `plugins/arbor/init.lua` to expose new commands through the tool schema.
 5. Add tests for new Arbor commands in `n00n-arbor/src/lib.rs`.
 
-### Phase 4: Semblem Hybrid
+### Phase 5: Semblem Hybrid
 
 1. Add upstream `semble` CLI wrapper in `n00n-semble/src/lib.rs` for `search`, `find-related`, and `savings`.
 2. Support `--content docs/config/all` flags and remote git URLs in the wrapper.
@@ -140,7 +140,7 @@ No constitution violations expected. All changes are additive and build on exist
 4. Keep existing embedder nag logic for hybrid/semantic modes without embedder.
 5. Add tests for upstream CLI wrapper and BM25 fallback in `n00n-semble/src/lib.rs`.
 
-### Phase 5: RTK Hardening
+### Phase 6: RTK Hardening
 
 1. Update `plugins/bash/init.lua` to cache rtk availability per session (store in session-local variable).
 2. Broaden rtk rewrite coverage: add more command patterns (e.g., `docker`, `npm`, `pip` if supported by rtk).
@@ -148,14 +148,14 @@ No constitution violations expected. All changes are additive and build on exist
 4. Update prompt hints in `plugins/bash/init.lua` to explicitly recommend rtk-wrapped bash.
 5. Add tests for rtk availability caching in `plugins/bash/init.lua`.
 
-### Phase 6: Docs + Config
+### Phase 7: Docs + Config
 
 1. Update `AGENTS.md` token-efficient section to reflect new tool hierarchy.
 2. Update `n00n-config/src/lib.rs` tool output line budgets if needed (consider per-tool budgets).
 3. Regenerate site docs with `just gen-docs`.
 4. Update `quickstart.md` with validation commands for new features.
 
-### Phase 7: Verification
+### Phase 8: Verification
 
 1. Run full test suite: `cargo nextest run --workspace`, `cargo clippy --all --tests -- -D warnings`, `cargo deny check`.
 2. Run `just explore-health` to verify all tools are healthy.
