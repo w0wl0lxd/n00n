@@ -40,6 +40,7 @@ const NUDGE_PROMPT: &str = "You just executed tool calls but returned an empty r
 const THINKING_NUDGE_PROMPT: &str = "You provided reasoning but no final response. Please summarize your reasoning into a concise answer for the user.";
 const MAX_TOKENS_CONTINUE_PROMPT: &str = "Continue exactly where you stopped.";
 const IMAGE_TOKEN_ESTIMATE: usize = 2_048;
+const FILE_REFERENCE_TOKEN_ESTIMATE: usize = 2_048;
 const HISTORY_REPLAY_PERMISSION_ID: &str = "history-replay";
 const HISTORY_REPLAY_TOOL: &str = "history_replay";
 
@@ -390,6 +391,8 @@ impl<'h> Agent<'h> {
             message_cache_breakpoints: adaptive_cache_breakpoints(user_message_count),
             protect_history_replay,
             allow_history_replay: self.permissions.is_yolo(),
+            moderation: false,
+            safety_identifier: None,
         };
 
         info!(
@@ -503,11 +506,11 @@ impl<'h> Agent<'h> {
         if self.cancel.is_cancelled() || !self.commit_pre_dispatch() {
             return Err(AgentError::Cancelled);
         }
-        let initial = self.stream_response(self.opts).await;
+        let initial = self.stream_response(self.opts.clone()).await;
         let response = match initial {
             Err(AgentError::HistoryReplayRequired { reason }) => {
                 self.approve_history_replay(reason).await?;
-                let mut approved_opts = self.opts;
+                let mut approved_opts = self.opts.clone();
                 approved_opts.allow_history_replay = true;
                 self.stream_response(approved_opts).await
             }
@@ -755,7 +758,7 @@ impl<'h> Agent<'h> {
             openai_options: self.openai_options,
             file_tracker: Arc::clone(&self.file_tracker),
             prompt_slots: Arc::clone(&self.prompt_slots),
-            opts: self.opts,
+            opts: self.opts.clone(),
             subagent_cancels: Arc::clone(&self.subagent_cancels),
             registry: Arc::clone(&self.registry),
             workflow: self.workflow,
@@ -1145,6 +1148,12 @@ pub fn estimate_message_tokens(messages: &[Message], model_id: &str) -> u32 {
             }
             ContentBlock::ToolUse { input, .. } => count_json_with_tokenizer(tokenizer, input),
             ContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE,
+            ContentBlock::File { source } => source
+                .file_data
+                .as_deref()
+                .map_or(FILE_REFERENCE_TOKEN_ESTIMATE, |data| {
+                    count_tokens_with_tokenizer(tokenizer, data)
+                }),
         })
         .sum();
     u32_from_usize_saturating(total)
@@ -1166,8 +1175,8 @@ mod tests {
 
     use n00n_providers::provider::{BoxFuture, Provider};
     use n00n_providers::{
-        ContentBlock, ImageMediaType, ImageSource, Message, Model, ProviderEvent, RequestOptions,
-        Role, StopReason, StreamResponse, TokenUsage,
+        ContentBlock, FileSource, ImageMediaType, ImageSource, Message, Model, ProviderEvent,
+        RequestOptions, Role, StopReason, StreamResponse, TokenUsage,
     };
     use n00n_storage::sessions::TranscriptEntry;
     use serde_json::Value;
@@ -1212,6 +1221,48 @@ mod tests {
             tokens >= 2,
             "expected at least two tokens for two words, got {tokens}"
         );
+    }
+
+    #[test]
+    fn estimate_message_tokens_counts_inline_file_data() {
+        let file_data = "inline file contents with several tokens";
+        let messages = [Message {
+            role: Role::User,
+            content: vec![ContentBlock::File {
+                source: FileSource {
+                    file_data: Some(file_data.into()),
+                    ..FileSource::new()
+                },
+            }],
+            ..Default::default()
+        }];
+
+        assert_eq!(
+            estimate_message_tokens(&messages, ""),
+            u32_from_usize_saturating(count_tokens_with_tokenizer(
+                tokenizer_for_model(""),
+                file_data,
+            ))
+        );
+    }
+
+    #[test]
+    fn estimate_message_tokens_uses_fixed_estimate_for_file_references() {
+        for source in [
+            FileSource::file_id("file-123", None),
+            FileSource::file_url("https://example.test/file.pdf", None),
+        ] {
+            let messages = [Message {
+                role: Role::User,
+                content: vec![ContentBlock::File { source }],
+                ..Default::default()
+            }];
+
+            assert_eq!(
+                estimate_message_tokens(&messages, ""),
+                u32_from_usize_saturating(FILE_REFERENCE_TOKEN_ESTIMATE)
+            );
+        }
     }
 
     #[test]
@@ -1305,10 +1356,7 @@ mod tests {
             content: vec![
                 ContentBlock::Text { text: "hi".into() },
                 ContentBlock::Image {
-                    source: ImageSource {
-                        media_type: ImageMediaType::Png,
-                        data: Arc::from("data"),
-                    },
+                    source: ImageSource::new(ImageMediaType::Png, Arc::from("data")),
                 },
             ],
             ..Default::default()

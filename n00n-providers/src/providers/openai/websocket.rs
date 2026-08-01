@@ -14,7 +14,7 @@ use smol::Timer;
 use tracing::{debug, warn};
 
 use super::responses::{
-    ResponseAccumulator, build_body, is_semantic_progress_event, response_in_flight_timeout,
+    ResponseAccumulator, is_semantic_progress_event, response_in_flight_timeout,
 };
 use crate::model::Model;
 use crate::providers::ResolvedAuth;
@@ -130,13 +130,13 @@ pub(crate) fn build_request_body(
     messages: &[Message],
     system: &System,
     tools: &Value,
-    opts: RequestOptions,
     previous_response_id: Option<&str>,
     prompt_cache_key: Option<&str>,
     store: bool,
+    opts: &RequestOptions,
     parallel_tool_calls: bool,
 ) -> Value {
-    build_body(
+    super::responses::build_body(
         model,
         messages,
         system,
@@ -144,7 +144,7 @@ pub(crate) fn build_request_body(
         previous_response_id,
         prompt_cache_key,
         store,
-        opts.thinking,
+        opts,
         parallel_tool_calls,
     )
 }
@@ -773,7 +773,10 @@ mod tests {
     use std::pin::Pin;
     use std::task::{Context, Poll};
 
+    use super::super::responses::MODERATION_MODEL;
     use super::*;
+    use crate::ContentBlock;
+    use crate::types::{FileSource, ImageDetail, ImageSource, Message};
     use async_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
     use async_tungstenite::tungstenite::protocol::{CloseFrame, Role};
     use futures_lite::io::{AsyncRead, AsyncWrite};
@@ -889,6 +892,9 @@ mod tests {
         let model = Model::from_spec("openai/gpt-5.6").unwrap();
         let opts = RequestOptions {
             thinking: crate::ThinkingConfig::Effort(crate::Effort::High),
+            fast: true,
+            safety_identifier: Some("test-id".to_string()),
+            moderation: true,
             ..Default::default()
         };
         let body = build_request_body(
@@ -896,10 +902,10 @@ mod tests {
             &[],
             &System::from("system"),
             &json!([]),
-            opts,
             None,
             None,
             true,
+            &opts,
             true,
         );
         let event = build_create_event(&body);
@@ -912,6 +918,79 @@ mod tests {
         assert_eq!(event["store"], true);
         assert!(event.get("stream").is_none());
         assert!(event.get("background").is_none());
+        // Verify new fields are preserved
+        assert_eq!(event["service_tier"], "fast");
+        assert_eq!(event["safety_identifier"], "test-id");
+        assert_eq!(event["moderation"], json!({"model": MODERATION_MODEL}));
+    }
+
+    #[test]
+    fn create_event_includes_image_detail_and_file_input() {
+        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let opts = RequestOptions::default();
+        let mut message = Message::user_with_images(
+            "test".to_string(),
+            vec![ImageSource::url(
+                "https://example.com/image.png",
+                Some(ImageDetail::High),
+            )],
+        );
+        message.content.push(ContentBlock::File {
+            source: FileSource::file_id("file_123", None),
+        });
+        let messages = vec![message];
+        let body = build_request_body(
+            &model,
+            &messages,
+            &System::default(),
+            &json!([]),
+            None,
+            None,
+            true,
+            &opts,
+            true,
+        );
+        let event = build_create_event(&body);
+        // Verify image detail is preserved in input
+        let input = event["input"].as_array().unwrap();
+        let content = input[0]["content"].as_array().unwrap();
+        let image = content[0].as_object().unwrap();
+        assert_eq!(image["type"], "input_image");
+        assert_eq!(image["detail"], "high");
+        assert_eq!(image["image_url"], "https://example.com/image.png");
+        let file = content[2].as_object().unwrap();
+        assert_eq!(file["type"], "input_file");
+        assert_eq!(file["file_id"], "file_123");
+    }
+
+    #[test]
+    fn create_event_includes_builtin_tool_config() {
+        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let opts = RequestOptions::default();
+        let tools = json!([{
+            "origin": "openai",
+            "name": "file_search",
+            "input_schema": {"type": "object"},
+            "vector_store_ids": ["vs_123"],
+            "max_num_results": 5
+        }]);
+        let body = build_request_body(
+            &model,
+            &[],
+            &System::default(),
+            &tools,
+            None,
+            None,
+            true,
+            &opts,
+            true,
+        );
+        let event = build_create_event(&body);
+        let wire_tools = event["tools"].as_array().unwrap();
+        assert_eq!(wire_tools.len(), 1);
+        assert_eq!(wire_tools[0]["type"], "file_search");
+        assert_eq!(wire_tools[0]["vector_store_ids"], json!(["vs_123"]));
+        assert_eq!(wire_tools[0]["max_num_results"], 5);
     }
 
     #[test]
@@ -1570,10 +1649,10 @@ mod tests {
             &[],
             &System::from("system"),
             &tools,
-            opts,
             None,
             None,
             true,
+            &opts,
             true,
         );
         assert_eq!(body["parallel_tool_calls"], true);
@@ -1596,10 +1675,10 @@ mod tests {
             &[],
             &System::from("system"),
             &tools,
-            opts,
             None,
             None,
             true,
+            &opts,
             false,
         );
         assert!(body.get("parallel_tool_calls").is_none());
