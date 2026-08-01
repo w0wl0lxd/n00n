@@ -353,6 +353,7 @@ pub(crate) fn request_diagnostics(body: &Value) -> RequestDiagnostics {
     diagnostics
 }
 
+const CLIENT_EXECUTED_BUILTIN_TOOLS: &[&str] = &["computer", "computer_use_preview"];
 const BUILTIN_TOOLS: &[&str] = &[
     "web_search",
     "file_search",
@@ -417,8 +418,17 @@ pub(crate) fn convert_tools(anthropic_tools: &Value, model: &crate::model::Model
             .iter()
             .filter_map(|t| {
                 let name = t.get("name")?.as_str()?;
+                let is_openai_builtin =
+                    t.get("origin").and_then(Value::as_str) == Some(OPENAI_BUILTIN_ORIGIN);
+                if is_openai_builtin && CLIENT_EXECUTED_BUILTIN_TOOLS.contains(&name) {
+                    warn!(
+                        tool = name,
+                        "omitting unsupported client-executed OpenAI tool"
+                    );
+                    return None;
+                }
                 // Check if this is a built-in tool from OpenAI and the model supports it
-                if t.get("origin").and_then(Value::as_str) == Some(OPENAI_BUILTIN_ORIGIN)
+                if is_openai_builtin
                     && BUILTIN_TOOLS.contains(&name)
                     && model.supports_responses_built_in_tools()
                 {
@@ -780,6 +790,7 @@ impl ResponseAccumulator {
 
             "response.output_item.done" => {
                 let item = &data["item"];
+                let previous_text_len = self.text.len();
                 let output_index = data["output_index"].as_u64().unwrap_or_else(|| {
                     (self.reasoning_items.len() + self.tool_accumulators.len()) as u64
                 });
@@ -919,9 +930,7 @@ impl ResponseAccumulator {
                         }
                     }
                     Some("computer_call") => {
-                        if let Some(call_id) = item.get("call_id").and_then(Value::as_str) {
-                            let _ = write!(self.text, "[computer_call:{call_id}]");
-                        }
+                        warn!("received unsupported client-executed OpenAI computer call");
                     }
                     Some("computer_call_output") => {
                         if let Some(output) = item.get("output")
@@ -958,6 +967,14 @@ impl ResponseAccumulator {
                         }
                     }
                     _ => {}
+                }
+                if self.text.len() > previous_text_len {
+                    let text = self.text[previous_text_len..].to_owned();
+                    self.is_first_content = false;
+                    self.emitted_event = true;
+                    event_tx
+                        .send_async(ProviderEvent::TextDelta { text })
+                        .await?;
                 }
             }
 
@@ -1435,6 +1452,53 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
                 .await
                 .unwrap();
             assert!(accumulator.emitted_event());
+        });
+    }
+
+    #[test]
+    fn synthesized_builtin_output_emits_text_deltas() {
+        smol::block_on(async {
+            let cases = [
+                (
+                    json!({"type":"web_search_call","action":{"queries":["rust async"]}}),
+                    "[search: rust async]",
+                ),
+                (
+                    json!({"type":"file_search_call","results":[{"filename":"doc.txt","file_id":"file_123"}]}),
+                    "[file:doc.txt (file_123)]",
+                ),
+                (
+                    json!({"type":"code_interpreter_call","outputs":[{"text":"Output: 42"}]}),
+                    "Output: 42",
+                ),
+                (json!({"type":"program_output","output":"done"}), "done"),
+                (
+                    json!({"type":"tool_search_output","tools":[{}, {}]}),
+                    "[loaded 2 tools]",
+                ),
+            ];
+
+            for (item, expected) in cases {
+                let (tx, rx) = flume::unbounded();
+                let mut accumulator = ResponseAccumulator::new();
+                accumulator
+                    .handle_event(
+                        "response.output_item.done",
+                        &json!({"output_index":0,"item":item}),
+                        &tx,
+                    )
+                    .await
+                    .unwrap();
+                let deltas: Vec<_> = rx
+                    .drain()
+                    .filter_map(|event| match event {
+                        ProviderEvent::TextDelta { text } => Some(text),
+                        _ => None,
+                    })
+                    .collect();
+
+                assert_eq!(deltas, vec![expected]);
+            }
         });
     }
 
@@ -2286,6 +2350,19 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
         }]);
         let converted = convert_tools(&tools, &Model::from_spec("openai/gpt-5.6").unwrap());
         assert_eq!(converted, json!([{"type": name}]));
+    }
+
+    #[test_case("computer" ; "computer")]
+    #[test_case("computer_use_preview" ; "computer_preview")]
+    fn convert_tools_omits_unsupported_client_executed_builtins(name: &str) {
+        let tools = json!([{
+            "origin": OPENAI_BUILTIN_ORIGIN,
+            "name": name,
+            "description": "client-executed provider tool",
+            "input_schema": {"type": "object"}
+        }]);
+        let converted = convert_tools(&tools, &Model::from_spec("openai/gpt-5.6").unwrap());
+        assert_eq!(converted, json!([]));
     }
 
     #[test]
