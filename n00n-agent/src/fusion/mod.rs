@@ -497,9 +497,37 @@ pub fn decide_request(prompt: &str) -> FusionRequestDecision {
 
 pub(crate) fn contains_lead_only_signal(prompt: &str) -> bool {
     let prompt = prompt.to_ascii_lowercase();
-    LEAD_ONLY_SIGNALS
-        .iter()
-        .any(|signal| contains_signal(&prompt, signal))
+    let normalized_prompt = normalize_word_separators(&prompt);
+    LEAD_ONLY_SIGNALS.iter().any(|signal| {
+        contains_signal(&prompt, signal)
+            || signal_has_multiple_words(signal)
+                && contains_signal(&normalized_prompt, &normalize_word_separators(signal))
+    })
+}
+
+fn signal_has_multiple_words(signal: &str) -> bool {
+    signal
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .nth(1)
+        .is_some()
+}
+
+fn normalize_word_separators(value: &str) -> String {
+    let mut normalized = String::with_capacity(value.len());
+    let mut pending_separator = false;
+    for character in value.chars() {
+        if character.is_alphanumeric() {
+            if pending_separator && !normalized.is_empty() {
+                normalized.push(' ');
+            }
+            normalized.push(character);
+            pending_separator = false;
+        } else {
+            pending_separator = true;
+        }
+    }
+    normalized
 }
 
 fn contains_signal(prompt: &str, signal: &str) -> bool {
@@ -547,6 +575,11 @@ mod tests {
     #[test_case("format files and commit the result", FusionRequestDecision::LeadOnly ; "commit overrides mechanics")]
     #[test_case("debug the serial authentication failure", FusionRequestDecision::LeadOnly ; "serial debugging")]
     #[test_case("search .env for API keys", FusionRequestDecision::LeadOnly ; "environment secrets")]
+    #[test_case("search for an api-key in config", FusionRequestDecision::LeadOnly ; "hyphenated api key")]
+    #[test_case("rotate the private-key safely", FusionRequestDecision::LeadOnly ; "hyphenated private key")]
+    #[test_case("inspect each environment-variable", FusionRequestDecision::LeadOnly ; "hyphenated environment variable")]
+    #[test_case("grep personal-data for duplicate records", FusionRequestDecision::LeadOnly ; "hyphenated personal data")]
+    #[test_case("grep customer-data for duplicate records", FusionRequestDecision::LeadOnly ; "hyphenated customer data")]
     #[test_case("grep customer data for duplicate records", FusionRequestDecision::LeadOnly ; "customer data")]
     #[test_case("implement cookie authentication and add tests", FusionRequestDecision::LeadOnly ; "authentication")]
     #[test_case("fix typo", FusionRequestDecision::Bypass ; "trivial bypass")]
@@ -565,6 +598,7 @@ mod tests {
 
     #[test_case("please explore tokenization details in repository", FusionRequestDecision::Delegate ; "token substring is not a signal")]
     #[test_case("please explore formatting details in repository", FusionRequestDecision::Delegate ; "format substring is not a signal")]
+    #[test_case("implement the api-keychain parser and add tests", FusionRequestDecision::Delegate ; "normalized phrase still uses word boundaries")]
     #[test_case("implement credential rotation and add tests", FusionRequestDecision::LeadOnly ; "credential signal")]
     #[test_case("implement credentials rotation and add tests", FusionRequestDecision::LeadOnly ; "credentials signal")]
     #[test_case("search for secrets, passwords, tokens, API keys, and cookies", FusionRequestDecision::LeadOnly ; "plural sensitive signals")]
