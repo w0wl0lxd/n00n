@@ -3183,6 +3183,7 @@ dependencies = [
  "libc",
  "n00n-config",
  "n00n-providers",
+ "n00n-redact",
  "n00n-storage",
  "open",
  "serde",
@@ -3339,6 +3340,7 @@ dependencies = [
  "n00n-lua-macro",
  "n00n-markdown",
  "n00n-providers",
+ "n00n-redact",
  "n00n-semble",
  "n00n-storage",
  "pin-project-lite",
@@ -3435,6 +3437,7 @@ dependencies = [
  "jiff",
  "libc",
  "n00n-config",
+ "n00n-redact",
  "n00n-storage",
  "reqwest",
  "rusqlite",
@@ -3454,6 +3457,14 @@ dependencies = [
  "url",
  "uuid",
  "wait-timeout",
+]
+
+[[package]]
+name = "n00n-redact"
+version = "0.5.0"
+dependencies = [
+ "serde_json",
+ "test-case",
 ]
 
 [[package]]
@@ -3536,6 +3547,7 @@ dependencies = [
  "n00n-lua",
  "n00n-markdown",
  "n00n-providers",
+ "n00n-redact",
  "n00n-storage",
  "notify",
  "nucleo",

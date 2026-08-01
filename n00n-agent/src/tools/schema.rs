@@ -16,6 +16,7 @@ use std::collections::HashSet;
 use std::fmt::{self, Display, Formatter, Write};
 
 use jsonrepair::{Options as RepairOpts, loads as repair_loads};
+use n00n_redact::{redact_json_arg, redact_json_value};
 use serde_json::{Value, json};
 use tracing::{debug, warn};
 
@@ -781,7 +782,7 @@ fn coerce_str_to(s: &str, expected: ParamKind) -> Option<Value> {
 
     let repaired = repair_loads(s, &RepairOpts::default()).ok()?;
     if ParamKind::of(&repaired) == expected {
-        debug!(input = %preview(s), "repaired malformed JSON");
+        debug!(input = %preview(&redact_json_arg(s)), "repaired malformed JSON");
         Some(repaired)
     } else {
         None
@@ -799,8 +800,8 @@ fn log_coercion(
         path = %path,
         from = %from,
         to = %to,
-        original = %preview(&original.to_string()),
-        coerced = %preview(&coerced.to_string()),
+        original = %preview(&redact_json_value(original).to_string()),
+        coerced = %preview(&redact_json_value(coerced).to_string()),
         "coerced tool param type"
     );
 }

@@ -24,6 +24,7 @@ n00n-arbor = { workspace = true }
 n00n-codegraph = { workspace = true }
 n00n-semble = { workspace = true }
 n00n-providers = { workspace = true }
+n00n-redact = { workspace = true }
 mlua = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
