@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785555007592,
+  "lastUpdate": 1785556740822,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -11229,6 +11229,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 171042,
             "range": "± 18414",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5ed56220cad6ba3e43170bbf8d21284e6ee14470",
+          "message": "fix: harden task progress and tool execution (#212)\n\n* fix: harden task progress and tool execution\n\n* fix: document live task progress fixes\n\n* fix(task): retain restore view dependency\n\n* fix(n00n-ui): harden tool argument rendering",
+          "timestamp": "2026-08-01T03:43:34Z",
+          "tree_id": "bfd21d0f43f4c71448c482ccfed7f577a6433a42",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/5ed56220cad6ba3e43170bbf8d21284e6ee14470"
+        },
+        "date": 1785556740422,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6706330,
+            "range": "± 196575",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2217964,
+            "range": "± 3492",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2217696,
+            "range": "± 23302",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7980112,
+            "range": "± 21611",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4276317,
+            "range": "± 15034",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4273997,
+            "range": "± 10556",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 582590,
+            "range": "± 1139",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191647,
+            "range": "± 289",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191566,
+            "range": "± 269",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1041472,
+            "range": "± 4471",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 588137,
+            "range": "± 1951",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 588103,
+            "range": "± 1042",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 81243,
+            "range": "± 1472",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 111688,
+            "range": "± 3146",
             "unit": "ns/iter"
           }
         ]
