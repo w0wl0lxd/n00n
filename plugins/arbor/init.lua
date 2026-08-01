@@ -3,7 +3,7 @@ local n00n_arbor = n00n.arbor
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Use **arbor** for caller/callee relationships, project map, and blast-radius diff before broad grep or read (native graph queries use .arbor/graph.json; other commands require the Arbor CLI).",
+  content = "- Use **arbor** for caller/callee relationships, project map, and blast-radius diff before broad grep or read.",
 })
 
 local function format_list(items)
@@ -229,8 +229,8 @@ Commands:
 - query <text>: Free-text search of the code graph.
 - status: Index status (node count, edge count, file count).
 
-Callers, callees, and trace_path can query .arbor/graph.json natively. Map,
-diff, query, and status require the Arbor CLI.
+Callers, callees, and trace_path can query .arbor/graph.json natively. Other
+commands use the Arbor CLI when available.
 
 Use this to understand call relationships, find affected code, and get a
 structured overview of a codebase. Complements codegraph — Arbor shows the

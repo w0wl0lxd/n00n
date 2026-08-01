@@ -33,10 +33,10 @@ pub const DEFAULT_TONE: &str = r"- Be concise. Your output is displayed on a CLI
 
 const NATIVE_EFFICIENT_TOOLS: &[&str] = &[
     "explore",
-    "arbor (optional, needs Arbor CLI)",
+    "arbor",
     "batch",
     "code_execution",
-    "codegraph (optional, needs .codegraph/ index)",
+    "codegraph",
     "index",
     "semblem",
     "task",

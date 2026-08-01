@@ -26,7 +26,7 @@ Best for:
 
 Prefer **index** for single-file structure, then **read** for specific sections. codegraph excels at multi-file exploration and impact analysis.
 
-Requires a .codegraph/ index in the project root. Native database indexes work without the CLI; legacy indexes require it.]],
+Requires a .codegraph/ index in the project root.]],
 
   schema = {
     type = "object",

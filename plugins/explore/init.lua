@@ -51,9 +51,12 @@ n00n.api.register_tool({
   name = "explore",
   kind = "read",
   description = [[Unified codebase exploration router. Picks the best backend for the question:
-- **file** intent (or a file path): compact single-file skeleton via `index`
-- **relations** intent: caller/callee maps, trace paths, blast radius via `arbor`
+- **file** or **skeleton** intent (or a file path): compact single-file skeleton via `index`
+- **relations** or **trace** intent: caller/callee maps, trace paths, blast radius via `arbor`
 - **cross_file** intent (default for NL questions): structural cross-file analysis via `codegraph`
+- **search** intent: keyword or natural-language search via `semblem`
+- **symbol** intent: symbol drill-down via `codegraph node`
+- **impact** intent: blast-radius analysis via `arbor impact`
 
 Set `intent` explicitly when you know the backend. Otherwise the router infers from the query.
 Use `command`, `symbol`, `from_symbol`, and `to_symbol` for precise arbor routing.]],
@@ -76,7 +79,7 @@ Use `command`, `symbol`, `from_symbol`, and `to_symbol` for precise arbor routin
       },
       intent = {
         type = "string",
-        enum = { "auto", "file", "relations", "cross_file" },
+        enum = { "auto", "file", "skeleton", "relations", "cross_file", "search", "symbol", "impact", "trace" },
         default = "auto",
       },
       command = {
@@ -88,6 +91,11 @@ Use `command`, `symbol`, `from_symbol`, and `to_symbol` for precise arbor routin
       to_symbol = { type = "string" },
       token_budget = { type = "integer", default = 1024 },
       use_cache = { type = "boolean", default = false },
+      mode = {
+        type = "string",
+        enum = { "bm25", "hybrid", "semantic" },
+        description = "Search mode for semblem (bm25, hybrid, or semantic).",
+      },
     },
   },
 

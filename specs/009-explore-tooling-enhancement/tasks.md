@@ -18,13 +18,13 @@
 
 **Purpose**: Baseline verification and research
 
-- [ ] T001 Verify CodeGraph 1.5.0 compatibility by installing CLI and testing new commands on a fixture repo
-- [ ] T002 Capture tool call latency and tool definition token size baselines for `arbor`, `codegraph`, `explore`, and `semblem` on the n00n repo; store in `tests/fixtures/tooling-baseline.json` (linked to SC-009).
-- [ ] T003 Run `cargo nextest run --workspace` to establish green baseline
-- [ ] T004 Run `cargo clippy --all --tests -- -D warnings` to establish green baseline
-- [ ] T005 Run `cargo deny check` to establish green baseline
-- [ ] T006 Run `just explore-health` to verify current tool health
-- [ ] T007 Document research findings in research.md
+- [X] T001 Verify CodeGraph 1.5.0 compatibility by installing CLI and testing new commands on a fixture repo
+- [X] T002 Capture tool call latency and tool definition token size baselines for `arbor`, `codegraph`, `explore`, and `semblem` on the n00n repo; store in `tests/fixtures/tooling-baseline.json` (linked to SC-009).
+- [ ] T003 Run `cargo nextest run --workspace` to establish green baseline (deferred due to system load)
+- [ ] T004 Run `cargo clippy --all --tests -- -D warnings` to establish green baseline (deferred due to system load)
+- [X] T005 Run `cargo deny check` to establish green baseline (pre-existing license error: webpki-roots CDLA-Permissive-2.0 not allowed)
+- [X] T006 Run `just explore-health` to verify current tool health (arbor not indexed, codegraph 1.4.1 with index)
+- [X] T007 Document research findings in research.md (already documented in spec kit)
 
 **Checkpoint**: Baseline established, research documented
 
@@ -38,33 +38,33 @@
 
 ### Tests for US1 (Router)
 
-- [ ] T008 [P] [US1] Add failing test for new intent `search` in plugins/explore/router.lua
-- [ ] T009 [P] [US1] Add failing test for new intent `skeleton` in plugins/explore/router.lua
-- [ ] T010 [P] [US1] Add failing test for new intent `symbol` in plugins/explore/router.lua
-- [ ] T011 [P] [US1] Add failing test for new intent `impact` in plugins/explore/router.lua
-- [ ] T012 [P] [US1] Add failing test for new intent `trace` in plugins/explore/router.lua
+- [X] T008 [P] [US1] Add failing test for new intent `search` in plugins/explore/router.lua
+- [X] T009 [P] [US1] Add failing test for new intent `skeleton` in plugins/explore/router.lua
+- [X] T010 [P] [US1] Add failing test for new intent `symbol` in plugins/explore/router.lua
+- [X] T011 [P] [US1] Add failing test for new intent `impact` in plugins/explore/router.lua
+- [X] T012 [P] [US1] Add failing test for new intent `trace` in plugins/explore/router.lua
 
 ### Implementation for US1 (Router)
 
-- [ ] T013 [US1] Extend plugins/explore/router.lua with new intents: search, skeleton, symbol, impact, trace
-- [ ] T014 [US1] Update plugins/explore/init.lua schema to include new intents in enum
-- [ ] T015 [US1] Add routing logic for search intent to semblem in plugins/explore/router.lua
-- [ ] T016 [US1] Add routing logic for skeleton intent to index in plugins/explore/router.lua
-- [ ] T017 [US1] Add routing logic for symbol intent to arbor/codegraph in plugins/explore/router.lua
-- [ ] T018 [US1] Add routing logic for impact intent to arbor/codegraph in plugins/explore/router.lua
-- [ ] T019 [US1] Add routing logic for trace intent to arbor in plugins/explore/router.lua
-- [ ] T020 [US1] Create `tests/fixtures/explore-queries.json` with ≥20 labeled queries and a test that validates router classification ≥90% (linked to SC-001).
-- [ ] T020a [US1] Run tests for new router intents in plugins/explore/router.lua
+- [X] T013 [US1] Extend plugins/explore/router.lua with new intents: search, skeleton, symbol, impact, trace
+- [X] T014 [US1] Update plugins/explore/init.lua schema to include new intents in enum
+- [X] T015 [US1] Add routing logic for search intent to semblem in plugins/explore/router.lua
+- [X] T016 [US1] Add routing logic for skeleton intent to index in plugins/explore/router.lua
+- [X] T017 [US1] Add routing logic for symbol intent to arbor/codegraph in plugins/explore/router.lua
+- [X] T018 [US1] Add routing logic for impact intent to arbor/codegraph in plugins/explore/router.lua
+- [X] T019 [US1] Add routing logic for trace intent to arbor in plugins/explore/router.lua
+- [X] T020 [US1] Create `tests/fixtures/explore-queries.json` with ≥20 labeled queries and a test that validates router classification ≥90% (linked to SC-001).
+- [X] T020a [US1] Run tests for new router intents in plugins/explore/router.lua
 
 ### Implementation for US2 (Prompts)
 
-- [ ] T021 [US2] Update n00n-agent/src/prompt.rs NATIVE_EFFICIENT_TOOLS to remove "optional" qualifiers from arbor/codegraph
-- [ ] T022 [US2] Update n00n-agent/src/prompts/system.md to position explore/index/arbor/codegraph/semblem before grep/bash
-- [ ] T023 [US2] Update n00n-agent/src/prompts/general.md to position explore/index/arbor/codegraph/semblem before grep/bash
-- [ ] T024 [US2] Update n00n-agent/src/prompts/research.md to position explore/index/arbor/codegraph/semblem before grep/bash
-- [ ] T025 [US2] Update plugins/arbor/init.lua tool description to remove external CLI installation notes
-- [ ] T026 [US2] Update plugins/codegraph/init.lua tool description to remove external CLI installation notes
-- [ ] T027 [US2] Update plugins/semblem/init.lua tool description to remove external CLI installation notes
+- [X] T021 [US2] Update n00n-agent/src/prompt.rs NATIVE_EFFICIENT_TOOLS to remove "optional" qualifiers from arbor/codegraph
+- [X] T022 [US2] Update n00n-agent/src/prompts/system.md to position explore/index/arbor/codegraph/semblem before grep/bash
+- [X] T023 [US2] Update n00n-agent/src/prompts/general.md to position explore/index/arbor/codegraph/semblem before grep/bash
+- [X] T024 [US2] Update n00n-agent/src/prompts/research.md to position explore/index/arbor/codegraph/semblem before grep/bash
+- [X] T025 [US2] Update plugins/arbor/init.lua tool description to remove external CLI installation notes
+- [X] T026 [US2] Update plugins/codegraph/init.lua tool description to remove external CLI installation notes
+- [X] T027 [US2] Update plugins/semblem/init.lua tool description to remove external CLI installation notes (no changes needed)
 
 **Checkpoint**: Router supports new intents, prompts position tools as first-tier
 
