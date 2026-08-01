@@ -120,9 +120,14 @@ local function handler(input, ctx)
   }
 end
 
+local function header(input)
+  return "fusion: " .. (input.description or ""):sub(1, 40)
+end
+
 n00n.api.register_tool({
   name = "fusion_delegate",
   description = description,
   schema = schema,
   handler = handler,
+  header = header,
 })

@@ -1497,11 +1497,7 @@ end)
 
 case("activity_preview_publishes_immediately_and_keeps_five_sessions", function()
   local old_buf = n00n.ui.buf
-  n00n.ui.buf = function()
-    local buf = mock_buf()
-    function buf:on() end
-    return buf
-  end
+  n00n.ui.buf = mock_buf
   local live_buf
   local ctx = {
     live_buf = function(_, buf)
@@ -1511,16 +1507,28 @@ case("activity_preview_publishes_immediately_and_keeps_five_sessions", function(
   local preview, err = ActivityPreview.new(ctx, "team", { session_rows = true })
   eq(err, nil)
   eq(live_buf, preview.view.buf, "preview must publish before any prompt")
+  preview.started_at = os.time() - 5
+  preview:update({ session_id = "idle", activities = {} })
+  eq(line_text(live_buf.lines[1]), "team · 5s", "idle progress polls must refresh the elapsed timer")
 
   local old_activity = { activities = { { id = "old", tool = "read", status = "success" } } }
   preview:update(old_activity, "role1", "session1")
   eq(preview.rows[1].label, "read", "message-free activity must show only tool and status")
+  preview:update({
+    session_id = "standalone",
+    activities = { { id = "search", tool = "grep", message = "Find callers", status = "running" } },
+  })
+  eq(preview.rows[2].key, "standalone/search", "standalone progress must derive its session key")
+  eq(preview.rows[2].label, "team/grep", "standalone progress must derive its label")
   for i = 1, 6 do
     preview:set_row("session" .. i, "role" .. i, nil, "success")
   end
   eq(#preview.rows, 5)
   eq(preview.rows[1].label, "role2")
   eq(preview.rows[5].label, "role6")
+  eq(#live_buf.lines, 1, "collapsed preview must show only its header")
+  live_buf:click({ row = 1 })
+  eq(#live_buf.lines, 6, "expanded preview must show at most five recent actions")
   preview:update(old_activity, "role1", "session1")
   eq(preview.rows[1].label, "role2", "evicted historical activity must not displace newer sessions")
   n00n.ui.buf = old_buf
