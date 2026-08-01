@@ -93,6 +93,12 @@ impl WebSocketAttemptError {
     }
 
     pub(crate) fn into_agent_error(self) -> AgentError {
+        if !self.delivery.emitted_event
+            && matches!(self.error, AgentError::Api { .. })
+            && self.error.is_retryable()
+        {
+            return self.error;
+        }
         if self.request_sent() && (self.transport_failure || self.delivery.emitted_or_accepted()) {
             AgentError::RequestSent {
                 message: self.error.to_string(),
@@ -774,6 +780,8 @@ mod tests {
     use serde_json::json;
     use test_case::test_case;
 
+    const CONNECTION_RESET_MESSAGE: &str = "connection reset";
+
     struct PendingIo;
 
     impl AsyncRead for PendingIo {
@@ -962,6 +970,77 @@ mod tests {
         assert_eq!(error.is_retryable(), retryable);
         assert_eq!(error.is_auth_error(), auth_error);
     }
+
+    #[test]
+    fn server_overload_after_send_is_not_wrapped_in_request_sent() {
+        let error = WebSocketAttemptError::response(
+            AgentError::Api {
+                status: 400,
+                message: "server_is_overloaded: Our servers are currently overloaded".into(),
+            },
+            false,
+            RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance),
+        )
+        .into_agent_error();
+
+        assert!(!matches!(error, AgentError::RequestSent { .. }));
+        assert!(error.is_server_overloaded());
+        assert!(error.is_retryable());
+        assert_eq!(
+            error.user_message(),
+            "provider is overloaded, try again later"
+        );
+    }
+
+    #[test]
+    fn server_error_500_after_accepted_response_id_is_not_wrapped_in_request_sent() {
+        let mut delivery =
+            RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance);
+        delivery.phase = RequestDeliveryPhase::Accepted;
+        delivery.response_id = Some("resp_close".into());
+
+        let error = WebSocketAttemptError::response(
+            AgentError::Api {
+                status: 500,
+                message: "WebSocket protocol error: Connection reset without closing handshake"
+                    .into(),
+            },
+            false,
+            delivery,
+        )
+        .into_agent_error();
+
+        assert!(matches!(error, AgentError::Api { status, .. } if status == 500));
+        assert!(error.is_retryable());
+        assert!(!matches!(error, AgentError::RequestSent { .. }));
+    }
+
+    #[test_case(
+        RequestDeliveryPhase::SentAwaitingAcceptance,
+        None;
+        "after_send"
+    )]
+    #[test_case(RequestDeliveryPhase::Accepted, Some("resp_close"); "after_acceptance")]
+    fn transport_failure_after_send_is_wrapped_in_request_sent(
+        phase: RequestDeliveryPhase,
+        response_id: Option<&str>,
+    ) {
+        let mut delivery = RequestDeliveryMetadata::new(phase);
+        delivery.response_id = response_id.map(String::from);
+        let error = WebSocketAttemptError::transport(
+            AgentError::Io(IoError::new(
+                ErrorKind::ConnectionReset,
+                CONNECTION_RESET_MESSAGE,
+            )),
+            false,
+            delivery,
+        )
+        .into_agent_error();
+
+        assert!(matches!(error, AgentError::RequestSent { .. }));
+        assert!(!error.is_retryable());
+    }
+
     #[test]
     #[allow(clippy::large_futures)]
     fn fake_transport_close_after_send_is_not_synthetic_422() {
@@ -1095,8 +1174,9 @@ mod tests {
                 error.delivery.close_reason.as_deref(),
                 Some("proxy restart request details removed")
             );
+            let agent_error = error.into_agent_error();
             assert!(matches!(
-                error.into_agent_error(),
+                agent_error,
                 AgentError::RequestSent { metadata: Some(metadata), .. }
                     if metadata.close_code == Some(1012)
                         && metadata.response_id.as_deref() == Some("resp_close")
