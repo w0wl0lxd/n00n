@@ -41,6 +41,7 @@ const MAX_TOKENS_CONTINUE_PROMPT: &str = "Continue exactly where you stopped.";
 const IMAGE_TOKEN_ESTIMATE: usize = 2_048;
 const HISTORY_REPLAY_PERMISSION_ID: &str = "history-replay";
 const HISTORY_REPLAY_TOOL: &str = "history_replay";
+const MAX_FUSION_PHASE_LABEL_CHARS: usize = 80;
 
 const CACHE_BREAKPOINT_LONG_SESSION: usize = 60;
 const CACHE_BREAKPOINT_MEDIUM_SESSION: usize = 30;
@@ -377,6 +378,13 @@ impl<'h> Agent<'h> {
         }
         .await;
 
+        let lifecycle_result = self.finish_fusion_run(&result);
+        if result.is_ok() {
+            lifecycle_result?;
+        } else if let Err(error) = lifecycle_result {
+            warn!(%error, "fusion: failed to emit terminal lifecycle phase");
+        }
+
         if matches!(result, Err(AgentError::Cancelled)) {
             if self
                 .pre_dispatch_gate
@@ -411,6 +419,7 @@ impl<'h> Agent<'h> {
             } else if let Some(max) = self.config.max_turns
                 && self.num_turns >= max
             {
+                self.finish_fusion_continuation()?;
                 self.emit_done(None)?;
                 return Ok(());
             }
@@ -715,9 +724,7 @@ impl<'h> Agent<'h> {
             self.history,
             &self.event_tx,
             &ctx,
-            self.fusion_state
-                .as_ref()
-                .is_some_and(|state| state.phase() == FusionPhase::Executing),
+            self.fusion_state.as_ref().map(FusionState::phase),
         )
         .await
     }
@@ -881,25 +888,30 @@ impl<'h> Agent<'h> {
         }
         if let Some(phase) = phase {
             self.event_tx
-                .send(AgentEvent::FusionPhaseChanged { phase })?;
+                .send(AgentEvent::FusionPhaseChanged { phase, label: None })?;
         }
         Ok(())
     }
 
     fn start_fusion_delegate(&mut self, message: &Message) -> Result<(), AgentError> {
-        let calls_delegate = message
-            .tool_uses()
-            .any(|(_, name, _)| name == crate::fusion::FUSION_DELEGATE_TOOL);
-        if !calls_delegate {
+        let Some((_, _, input)) = message.tool_uses().find(|(_, name, _)| {
+            let name = *name;
+            name.strip_prefix("functions.").map_or(name, |value| value)
+                == crate::fusion::FUSION_DELEGATE_TOOL
+        }) else {
             return Ok(());
-        }
+        };
+        let label = input
+            .get("description")
+            .and_then(Value::as_str)
+            .and_then(bounded_fusion_phase_label);
         let phase = self
             .fusion_state
             .as_mut()
             .and_then(FusionState::start_delegate);
         if let Some(phase) = phase {
             self.event_tx
-                .send(AgentEvent::FusionPhaseChanged { phase })?;
+                .send(AgentEvent::FusionPhaseChanged { phase, label })?;
         }
         Ok(())
     }
@@ -920,7 +932,7 @@ impl<'h> Agent<'h> {
         self.history
             .push(Message::synthetic(continuation.prompt().into()));
         self.event_tx
-            .send(AgentEvent::FusionPhaseChanged { phase })?;
+            .send(AgentEvent::FusionPhaseChanged { phase, label: None })?;
         Ok(Some(continuation))
     }
 
@@ -940,7 +952,20 @@ impl<'h> Agent<'h> {
             .and_then(FusionState::finish_continuation);
         if let Some(phase) = phase {
             self.event_tx
-                .send(AgentEvent::FusionPhaseChanged { phase })?;
+                .send(AgentEvent::FusionPhaseChanged { phase, label: None })?;
+        }
+        Ok(())
+    }
+
+    fn finish_fusion_run(&mut self, result: &Result<(), AgentError>) -> Result<(), AgentError> {
+        let phase = self.fusion_state.as_mut().and_then(|state| match result {
+            Err(AgentError::Cancelled) => state.cancel(),
+            Err(_) => state.fail(),
+            Ok(()) => None,
+        });
+        if let Some(phase) = phase {
+            self.event_tx
+                .send(AgentEvent::FusionPhaseChanged { phase, label: None })?;
         }
         Ok(())
     }
@@ -1034,6 +1059,14 @@ impl<'h> Agent<'h> {
         }
         Ok(handled)
     }
+}
+
+fn bounded_fusion_phase_label(label: &str) -> Option<String> {
+    let label = label.split_whitespace().collect::<Vec<_>>().join(" ");
+    if label.is_empty() {
+        return None;
+    }
+    Some(label.chars().take(MAX_FUSION_PHASE_LABEL_CHARS).collect())
 }
 
 fn validate_input_message(input: &AgentInput) -> Result<(), AgentError> {
@@ -1625,7 +1658,7 @@ mod tests {
             let phases = events
                 .iter()
                 .filter_map(|event| match event.event {
-                    AgentEvent::FusionPhaseChanged { phase } => Some(phase),
+                    AgentEvent::FusionPhaseChanged { phase, .. } => Some(phase),
                     _ => None,
                 })
                 .collect::<Vec<_>>();
@@ -1750,6 +1783,43 @@ mod tests {
                 })
                 .expect("expected Done event");
             assert!(done.is_none());
+        });
+    }
+
+    #[test]
+    fn disabled_fusion_preserves_baseline_provider_model_usage_and_events() {
+        smol::block_on(async {
+            let usage = TokenUsage {
+                input: 12,
+                output: 4,
+                cache_creation: 1,
+                cache_read: 2,
+            };
+            let mut response = text_response(StopReason::EndTurn);
+            response.usage = usage;
+            let (provider, requests) = MockProvider::recording(vec![response]);
+            let mut history = History::new(Vec::new());
+            let (mut agent, event_rx) = make_agent(provider, &mut history);
+            let provider_before = Arc::clone(&agent.provider);
+            let model_before = agent.model.id.clone();
+
+            agent.run(default_input()).await.unwrap();
+
+            assert!(Arc::ptr_eq(&agent.provider, &provider_before));
+            assert_eq!(agent.model.id, model_before);
+            assert_eq!(agent.total_usage(), usage);
+            assert_eq!(requests.lock().unwrap().len(), 1);
+            let events = drain_events(&event_rx);
+            assert!(
+                events
+                    .iter()
+                    .all(|event| { !matches!(event.event, AgentEvent::FusionPhaseChanged { .. }) })
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|event| { matches!(event.event, AgentEvent::Done { fusion: None, .. }) })
+            );
         });
     }
 
@@ -2130,10 +2200,12 @@ mod tests {
                 fusion_enabled_config(),
             );
             let lead_model = agent.model.id.clone();
+            let lead_provider = Arc::clone(&agent.provider);
 
             agent.do_compact().await.unwrap();
 
             assert_eq!(agent.model.id, lead_model);
+            assert!(Arc::ptr_eq(&agent.provider, &lead_provider));
             assert_eq!(
                 agent.fusion_state.as_ref().map(FusionState::phase),
                 Some(crate::fusion::FusionPhase::Idle)
@@ -2167,7 +2239,7 @@ mod tests {
         let phases = drain_events(&event_rx)
             .iter()
             .filter_map(|event| match event.event {
-                AgentEvent::FusionPhaseChanged { phase } => Some(phase),
+                AgentEvent::FusionPhaseChanged { phase, .. } => Some(phase),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -2263,7 +2335,7 @@ mod tests {
         assert_eq!(
             drain_events(&event_rx)
                 .iter()
-                .filter(|event| matches!(event.event, AgentEvent::FusionPhaseChanged { phase } if phase == expected_phase))
+                .filter(|event| matches!(event.event, AgentEvent::FusionPhaseChanged { phase, .. } if phase == expected_phase))
                 .count(),
             1
         );

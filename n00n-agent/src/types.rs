@@ -886,6 +886,8 @@ pub enum AgentEvent {
     CompactionDone,
     FusionPhaseChanged {
         phase: crate::fusion::FusionPhase,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
     },
     Retry {
         attempt: u32,

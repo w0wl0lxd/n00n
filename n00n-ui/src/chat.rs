@@ -32,6 +32,7 @@ pub(crate) const ERROR_TEXT: &str = "Error";
 pub(crate) const CANCELLED_TEXT: &str = "Cancelled";
 /// Messages rendered per frame when backfilling older history on resume.
 pub(crate) const RESTORE_BATCH_SIZE: usize = 32;
+const MAX_FUSION_PHASE_LABEL_CHARS: usize = 80;
 
 pub enum ChatEventResult {
     Continue,
@@ -231,7 +232,10 @@ impl Chat {
                     "Model stalled after tool calls, nudging...".into(),
                 ));
             }
-            AgentEvent::FusionPhaseChanged { .. } | AgentEvent::SubagentHistory { .. } => {}
+            AgentEvent::FusionPhaseChanged { phase, label } => {
+                self.push_fusion_phase(phase, label.as_deref());
+            }
+            AgentEvent::SubagentHistory { .. } => {}
             AgentEvent::LiveToolBuf { id, body } => {
                 self.messages_panel.register_live_buf(id, body);
             }
@@ -252,6 +256,32 @@ impl Chat {
             }
         }
         ChatEventResult::Continue
+    }
+
+    fn push_fusion_phase(&mut self, phase: n00n_agent::FusionPhase, label: Option<&str>) {
+        let phase = match phase {
+            n00n_agent::FusionPhase::Idle => "Idle",
+            n00n_agent::FusionPhase::Planning => "Planning",
+            n00n_agent::FusionPhase::Executing => "Executing",
+            n00n_agent::FusionPhase::Reviewing => "Reviewing",
+            n00n_agent::FusionPhase::LeadFallback => "Lead fallback",
+            n00n_agent::FusionPhase::Complete => "Complete",
+            n00n_agent::FusionPhase::Cancelled => "Cancelled",
+            n00n_agent::FusionPhase::Failed => "Failed",
+        };
+        let label = label
+            .map(str::split_whitespace)
+            .map(|parts| parts.collect::<Vec<_>>().join(" "))
+            .filter(|label| !label.is_empty())
+            .map(|label| {
+                label
+                    .chars()
+                    .take(MAX_FUSION_PHASE_LABEL_CHARS)
+                    .collect::<String>()
+            });
+        let text = label.map_or_else(|| phase.to_owned(), |label| format!("{phase}: {label}"));
+        self.messages_panel
+            .push(DisplayMessage::new(DisplayRole::Control, text));
     }
 
     pub fn scroll(&mut self, delta: i32) {
@@ -987,6 +1017,84 @@ mod tests {
 
     fn empty_outputs() -> HashMap<String, ToolOutput> {
         HashMap::new()
+    }
+
+    #[test_case(n00n_agent::FusionPhase::Planning, None, "Planning" ; "planning")]
+    #[test_case(n00n_agent::FusionPhase::Executing, Some("brief label"), "Executing: brief label" ; "executing")]
+    #[test_case(n00n_agent::FusionPhase::Reviewing, None, "Reviewing" ; "reviewing")]
+    #[test_case(n00n_agent::FusionPhase::LeadFallback, None, "Lead fallback" ; "lead fallback")]
+    fn fusion_phase_renders_typed_control_text(
+        phase: n00n_agent::FusionPhase,
+        label: Option<&str>,
+        expected: &str,
+    ) {
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
+        chat.handle_event(
+            AgentEvent::FusionPhaseChanged {
+                phase,
+                label: label.map(str::to_owned),
+            },
+            None,
+        );
+        assert_eq!(chat.last_message_text(), expected);
+    }
+
+    #[test]
+    fn fusion_phase_label_is_single_line_and_bounded() {
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
+        let label = format!(
+            "  {}\nignored  ",
+            "a".repeat(MAX_FUSION_PHASE_LABEL_CHARS + 20)
+        );
+        chat.handle_event(
+            AgentEvent::FusionPhaseChanged {
+                phase: n00n_agent::FusionPhase::Executing,
+                label: Some(label),
+            },
+            None,
+        );
+        let rendered = chat.last_message_text();
+        assert!(!rendered.contains('\n'));
+        assert_eq!(
+            rendered.chars().count(),
+            "Executing: ".chars().count() + MAX_FUSION_PHASE_LABEL_CHARS
+        );
+    }
+
+    #[test]
+    fn fusion_phase_does_not_disturb_streaming_or_compaction_cards() {
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
+        chat.handle_event(AgentEvent::AutoCompacting, None);
+        chat.handle_event(
+            AgentEvent::TextDelta {
+                text: "partial".into(),
+            },
+            None,
+        );
+        let cards_before = chat.compaction_card_count();
+        chat.handle_event(
+            AgentEvent::FusionPhaseChanged {
+                phase: n00n_agent::FusionPhase::Executing,
+                label: Some("brief label".into()),
+            },
+            None,
+        );
+        assert_eq!(chat.compaction_card_count(), cards_before);
+        assert!(!chat.streaming_text_is_empty());
+        assert_eq!(chat.last_message_text(), "Executing: brief label");
+    }
+
+    #[test]
+    fn existing_fusion_phase_event_also_renders_control_text() {
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
+        chat.handle_event(
+            AgentEvent::FusionPhaseChanged {
+                phase: n00n_agent::FusionPhase::Planning,
+                label: None,
+            },
+            None,
+        );
+        assert_eq!(chat.last_message_text(), "Planning");
     }
 
     #[test]

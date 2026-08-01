@@ -60,6 +60,15 @@ pub enum FusionPhase {
     Reviewing,
     LeadFallback,
     Complete,
+    Cancelled,
+    Failed,
+}
+
+impl FusionPhase {
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Complete | Self::Cancelled | Self::Failed)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,7 +161,7 @@ impl FusionState {
     }
 
     pub fn start_request(&mut self, decision: FusionRequestDecision) -> Option<FusionPhase> {
-        if !matches!(self.phase, FusionPhase::Idle | FusionPhase::Complete) {
+        if self.phase != FusionPhase::Idle {
             return None;
         }
         if decision != FusionRequestDecision::Delegate {
@@ -245,6 +254,22 @@ impl FusionState {
             return None;
         }
         self.phase = FusionPhase::Complete;
+        Some(self.phase)
+    }
+
+    pub fn cancel(&mut self) -> Option<FusionPhase> {
+        self.finish_with(FusionPhase::Cancelled)
+    }
+
+    pub fn fail(&mut self) -> Option<FusionPhase> {
+        self.finish_with(FusionPhase::Failed)
+    }
+
+    fn finish_with(&mut self, terminal: FusionPhase) -> Option<FusionPhase> {
+        if self.phase == FusionPhase::Idle || self.phase.is_terminal() {
+            return None;
+        }
+        self.phase = terminal;
         Some(self.phase)
     }
 
@@ -529,12 +554,11 @@ mod tests {
         assert_eq!(state.finish_continuation(), None);
     }
 
-    #[test_case("sidekick failed", FusionContinuation::Fallback ; "failure")]
-    #[test_case("sidekick cancelled", FusionContinuation::Fallback ; "cancel")]
-    fn failed_or_cancelled_delegate_schedules_one_fallback(
-        message: &str,
-        expected: FusionContinuation,
-    ) {
+    #[test_case("sidekick failed", FusionContinuation::Fallback ; "generic")]
+    #[test_case("sidekick timed out", FusionContinuation::Fallback ; "timeout")]
+    #[test_case("model unavailable", FusionContinuation::Fallback ; "model unavailable")]
+    #[test_case("sidekick cancelled", FusionContinuation::Fallback ; "delegate cancel")]
+    fn delegate_errors_schedule_one_fallback(message: &str, expected: FusionContinuation) {
         let mut state = FusionState::new();
         state.start_request(FusionRequestDecision::Delegate);
         state.start_delegate();
@@ -547,7 +571,11 @@ mod tests {
             written_path: None,
         };
 
-        assert_eq!(state.observe_tool_results(&[done]), Some(expected));
+        assert_eq!(
+            state.observe_tool_results(std::slice::from_ref(&done)),
+            Some(expected)
+        );
+        assert_eq!(state.observe_tool_results(&[done]), None);
         assert_eq!(state.phase(), FusionPhase::LeadFallback);
     }
 
@@ -577,6 +605,59 @@ mod tests {
         assert_eq!(state.sidekick_usage.output, 5);
         assert_eq!(state.sidekick_usage.cache_read, 2);
         assert_eq!(state.sidekick_usage.cache_creation, 1);
+    }
+
+    #[test_case(FusionPhase::Cancelled ; "cancelled")]
+    #[test_case(FusionPhase::Failed ; "failed")]
+    fn terminal_lifecycle_is_one_way(terminal: FusionPhase) {
+        let mut state = FusionState::new();
+        state.start_request(FusionRequestDecision::Delegate);
+        let changed = match terminal {
+            FusionPhase::Cancelled => state.cancel(),
+            FusionPhase::Failed => state.fail(),
+            _ => unreachable!(),
+        };
+        assert_eq!(changed, Some(terminal));
+        assert!(state.phase().is_terminal());
+        assert_eq!(state.start_delegate(), None);
+        assert_eq!(state.finish_continuation(), None);
+    }
+
+    #[test]
+    fn failed_delegate_telemetry_is_charged_once_and_missing_telemetry_is_zero() {
+        let mut state = FusionState::new();
+        state.start_request(FusionRequestDecision::Delegate);
+        state.start_delegate();
+        let telemetry = crate::ToolTelemetry::try_new(
+            Some(0.25),
+            Some(crate::ToolUsage::try_new(8, 3, 2, 13, 4).expect("conserving usage")),
+        )
+        .expect("valid telemetry")
+        .expect("some telemetry");
+        let failed = crate::ToolDoneEvent {
+            id: "failed".into(),
+            tool: Arc::from(FUSION_DELEGATE_TOOL),
+            output: crate::ToolOutput::Plain("model unavailable".into())
+                .with_telemetry(Some(telemetry)),
+            is_error: true,
+            annotation: None,
+            written_path: None,
+        };
+        assert_eq!(
+            state.observe_tool_results(std::slice::from_ref(&failed)),
+            Some(FusionContinuation::Fallback)
+        );
+        assert_eq!(state.observe_tool_results(&[failed]), None);
+        assert!((state.sidekick_cost - 0.25).abs() < f64::EPSILON);
+        assert_eq!(state.sidekick_usage.input, 8);
+        assert_eq!(state.sidekick_usage.output, 4);
+
+        let mut missing = FusionState::new();
+        missing.start_request(FusionRequestDecision::Delegate);
+        missing.start_delegate();
+        missing.observe_tool_results(&[crate::ToolDoneEvent::error("missing".into(), "timed out")]);
+        assert_eq!(missing.sidekick_cost, 0.0);
+        assert_eq!(missing.sidekick_usage, TokenUsage::default());
     }
 
     #[test]

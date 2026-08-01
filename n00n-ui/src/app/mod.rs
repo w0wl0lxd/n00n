@@ -1645,9 +1645,12 @@ impl App {
 
         if chat_idx == 0 {
             match &envelope.event {
-                AgentEvent::FusionPhaseChanged { phase } => {
+                AgentEvent::FusionPhaseChanged { phase, .. } => {
                     self.fusion_phase = match phase {
-                        FusionPhase::Idle | FusionPhase::Complete => None,
+                        FusionPhase::Idle
+                        | FusionPhase::Complete
+                        | FusionPhase::Cancelled
+                        | FusionPhase::Failed => None,
                         phase => Some(*phase),
                     };
                 }
