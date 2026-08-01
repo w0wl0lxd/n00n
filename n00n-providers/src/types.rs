@@ -536,6 +536,12 @@ pub mod dialect {
         adaptive: Some(Medium),
         off: None,
     };
+    /// `OpenAI` Responses API with extended effort levels (xhigh, max).
+    pub const OPENAI_EXTENDED: EffortDialect = EffortDialect {
+        supported: &[Minimal, Low, Medium, High, XHigh, Max],
+        adaptive: Some(Medium),
+        off: None,
+    };
     /// opencode chat-completions, openrouter (static fallback).
     pub const PREFER_HIGH: EffortDialect = EffortDialect {
         supported: &[Low, Medium, High],
@@ -578,6 +584,25 @@ pub mod dialect {
     };
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningMode {
+    Standard,
+    Pro,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningContext {
+    Auto,
+    CurrentTurn,
+    AllTurns,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ThinkingExtras {
+    pub reasoning_mode: Option<ReasoningMode>,
+    pub reasoning_context: Option<ReasoningContext>,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ThinkingConfig {
     #[default]
@@ -585,6 +610,7 @@ pub enum ThinkingConfig {
     Adaptive,
     Effort(Effort),
     Budget(u32),
+    WithExtras(Effort, ThinkingExtras),
 }
 
 /// Resolved thinking value for token-budget APIs.
@@ -601,6 +627,22 @@ impl ThinkingConfig {
         !matches!(self, Self::Off)
     }
 
+    #[must_use]
+    pub fn effort(self) -> Option<Effort> {
+        match self {
+            Self::Effort(e) | Self::WithExtras(e, _) => Some(e),
+            Self::Off | Self::Adaptive | Self::Budget(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn extras(self) -> ThinkingExtras {
+        match self {
+            Self::WithExtras(_, extras) => extras,
+            _ => ThinkingExtras::default(),
+        }
+    }
+
     /// The effort string to send, snapped to the dialect's supported levels
     /// here and nowhere else (never chain snaps). `None` means send nothing:
     /// `Off` without an explicit off string, or `Adaptive` on APIs with their
@@ -610,7 +652,7 @@ impl ThinkingConfig {
         let level = match self {
             Self::Off => return dialect.off,
             Self::Adaptive => dialect.adaptive?,
-            Self::Effort(e) => e,
+            Self::Effort(e) | Self::WithExtras(e, _) => e,
             Self::Budget(n) => Effort::from_budget(
                 n,
                 model
@@ -628,7 +670,7 @@ impl ThinkingConfig {
         match self {
             Self::Off => Budgeted::Off,
             Self::Adaptive => Budgeted::Adaptive,
-            Self::Effort(e) => {
+            Self::Effort(e) | Self::WithExtras(e, _) => {
                 Budgeted::Tokens(e.budget(max.unwrap_or_else(|| FALLBACK_MAX_THINKING_BUDGET)))
             }
             Self::Budget(n) => Budgeted::Tokens(match max {
@@ -646,7 +688,7 @@ impl ThinkingConfig {
             match self {
                 Self::Off => {}
                 Self::Adaptive => body["thinking"] = json!({"type": "adaptive"}),
-                Self::Effort(_) | Self::Budget(_) => {
+                Self::Effort(_) | Self::Budget(_) | Self::WithExtras(_, _) => {
                     body["thinking"] = json!({"type": "adaptive"});
                     if let Some(effort) = self.effort_str(&dialect::ANTHROPIC_ADAPTIVE, model) {
                         body["output_config"]["effort"] = json!(effort);
@@ -731,7 +773,7 @@ impl ThinkingConfig {
         match self {
             Self::Off => None,
             Self::Adaptive => Some(Cow::Borrowed("thinking")),
-            Self::Effort(e) => Some(Cow::Owned(format!("thinking: {e}"))),
+            Self::Effort(e) | Self::WithExtras(e, _) => Some(Cow::Owned(format!("thinking: {e}"))),
             Self::Budget(n) => Some(Cow::Owned(format!("thinking: {n}"))),
         }
     }
@@ -742,7 +784,7 @@ impl std::fmt::Display for ThinkingConfig {
         match self {
             Self::Off => f.write_str("off"),
             Self::Adaptive => f.write_str("adaptive"),
-            Self::Effort(e) => f.write_str(e.as_str()),
+            Self::Effort(e) | Self::WithExtras(e, _) => f.write_str(e.as_str()),
             Self::Budget(n) => write!(f, "{n}"),
         }
     }
@@ -764,13 +806,15 @@ impl From<ThinkingConfig> for StoredThinking {
         match c {
             ThinkingConfig::Off => Self::Off,
             ThinkingConfig::Adaptive => Self::Adaptive,
-            ThinkingConfig::Effort(e) => Self::Effort { level: e },
+            ThinkingConfig::Effort(e) | ThinkingConfig::WithExtras(e, _) => {
+                Self::Effort { level: e }
+            }
             ThinkingConfig::Budget(n) => Self::Budget { tokens: n },
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestOptions {
     pub thinking: ThinkingConfig,
     /// Raw user preference, reconciled by [`RequestOptions::clamped`] before use.
@@ -781,6 +825,10 @@ pub struct RequestOptions {
     pub message_cache_breakpoints: usize,
     pub protect_history_replay: bool,
     pub allow_history_replay: bool,
+    /// Optional safety identifier for the request (max 64 chars for `OpenAI`).
+    pub safety_identifier: Option<String>,
+    /// Whether moderation is enabled for this request.
+    pub moderation: bool,
 }
 
 impl Default for RequestOptions {
@@ -791,6 +839,8 @@ impl Default for RequestOptions {
             message_cache_breakpoints: 2,
             protect_history_replay: false,
             allow_history_replay: false,
+            safety_identifier: None,
+            moderation: false,
         }
     }
 }
@@ -811,6 +861,8 @@ impl RequestOptions {
             message_cache_breakpoints: self.message_cache_breakpoints,
             protect_history_replay: self.protect_history_replay,
             allow_history_replay: self.allow_history_replay,
+            safety_identifier: self.safety_identifier,
+            moderation: self.moderation,
         }
     }
 }
@@ -1003,6 +1055,7 @@ mod tests {
     fn dialects_have_non_empty_ascending_supported() {
         let all = [
             &dialect::STANDARD,
+            &dialect::OPENAI_EXTENDED,
             &dialect::PREFER_HIGH,
             &dialect::HIGH_ONLY,
             &dialect::GLM,
@@ -1089,6 +1142,7 @@ mod tests {
     #[test_case(ThinkingConfig::Adaptive,     &json!({"generationConfig": {"thinkingConfig": {"includeThoughts": true}}}) ; "adaptive")]
     #[test_case(ThinkingConfig::Budget(4096), &json!({"generationConfig": {"thinkingConfig": {"thinkingBudget": 4096}}}) ; "budget")]
     #[test_case(ThinkingConfig::Budget(10000), &json!({"generationConfig": {"thinkingConfig": {"thinkingBudget": 8192}}}) ; "budget_clamped")]
+    #[test_case(ThinkingConfig::WithExtras(High, ThinkingExtras { reasoning_mode: Some(ReasoningMode::Pro), reasoning_context: Some(ReasoningContext::AllTurns) }), &json!({"generationConfig": {"thinkingConfig": {"thinkingBudget": 4915}}}) ; "with_extras_maps_to_budget")]
     fn thinking_apply_google_thinking(config: ThinkingConfig, expected: &Value) {
         let mut body = json!({});
         config.apply_google_thinking(&mut body, 8192);
@@ -1146,6 +1200,8 @@ mod tests {
             message_cache_breakpoints: 2,
             protect_history_replay: false,
             allow_history_replay: false,
+            safety_identifier: None,
+            moderation: false,
         };
         assert_eq!(opts.clamped(&model).thinking, expected);
     }
@@ -1159,6 +1215,8 @@ mod tests {
             message_cache_breakpoints: 2,
             protect_history_replay: false,
             allow_history_replay: false,
+            safety_identifier: None,
+            moderation: false,
         };
         assert!(!opts.clamped(&model).fast);
     }
@@ -1195,5 +1253,79 @@ mod tests {
         };
         let json = serde_json::to_value(&block).unwrap();
         assert!(json.get("signature").is_none());
+    }
+
+    #[test]
+    fn thinking_config_with_extras_extracts_effort() {
+        let config = ThinkingConfig::WithExtras(
+            High,
+            ThinkingExtras {
+                reasoning_mode: Some(ReasoningMode::Pro),
+                reasoning_context: Some(ReasoningContext::AllTurns),
+            },
+        );
+        assert_eq!(config.effort(), Some(High));
+    }
+
+    #[test]
+    fn thinking_config_with_extras_extracts_extras() {
+        let extras = ThinkingExtras {
+            reasoning_mode: Some(ReasoningMode::Pro),
+            reasoning_context: Some(ReasoningContext::CurrentTurn),
+        };
+        let config = ThinkingConfig::WithExtras(High, extras);
+        let extracted = config.extras();
+        assert_eq!(extracted.reasoning_mode, Some(ReasoningMode::Pro));
+        assert_eq!(
+            extracted.reasoning_context,
+            Some(ReasoningContext::CurrentTurn)
+        );
+    }
+
+    #[test]
+    fn thinking_config_without_extras_returns_default_extras() {
+        let config = ThinkingConfig::Effort(High);
+        let extras = config.extras();
+        assert_eq!(extras.reasoning_mode, None);
+        assert_eq!(extras.reasoning_context, None);
+    }
+
+    #[test]
+    fn thinking_config_effort_str_with_extras() {
+        let config = ThinkingConfig::WithExtras(
+            XHigh,
+            ThinkingExtras {
+                reasoning_mode: Some(ReasoningMode::Pro),
+                reasoning_context: None,
+            },
+        );
+        let dialect = &dialect::OPENAI_EXTENDED;
+        let model = thinking_model("gpt-5.6-sol");
+        let effort_str = config.effort_str(dialect, &model);
+        assert_eq!(effort_str, Some("xhigh"));
+    }
+
+    #[test]
+    fn request_options_default_has_no_safety_or_moderation() {
+        let opts = RequestOptions::default();
+        assert!(opts.safety_identifier.is_none());
+        assert!(!opts.moderation);
+    }
+
+    #[test]
+    fn request_options_clamped_preserves_safety_and_moderation() {
+        let model = clamp_test_model(crate::provider::ProviderKind::OpenAi);
+        let opts = RequestOptions {
+            thinking: ThinkingConfig::Off,
+            fast: false,
+            message_cache_breakpoints: 2,
+            protect_history_replay: false,
+            allow_history_replay: false,
+            safety_identifier: Some("test-id".to_string()),
+            moderation: true,
+        };
+        let clamped = opts.clamped(&model);
+        assert_eq!(clamped.safety_identifier, Some("test-id".to_string()));
+        assert!(clamped.moderation);
     }
 }

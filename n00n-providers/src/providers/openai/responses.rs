@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::io::{Error as IoError, ErrorKind};
 use std::time::{Duration, Instant};
 
@@ -9,10 +10,10 @@ use serde_json::{Value, json};
 use tracing::{debug, warn};
 
 use crate::providers::ResolvedAuth;
-use crate::types::TOOL_RESULT_ERROR_PREFIX;
+use crate::types::{ReasoningContext, ReasoningMode, TOOL_RESULT_ERROR_PREFIX};
 use crate::{
     AgentError, ContentBlock, Message, ProviderEvent, RequestDeliveryMetadata,
-    RequestDeliveryPhase, Role, StopReason, StreamResponse, System, ThinkingConfig, TokenUsage,
+    RequestDeliveryPhase, RequestOptions, Role, StopReason, StreamResponse, System, TokenUsage,
     dialect,
 };
 
@@ -34,59 +35,134 @@ pub(crate) fn build_body(
     previous_response_id: Option<&str>,
     prompt_cache_key: Option<&str>,
     store: bool,
-    thinking: ThinkingConfig,
+    opts: &RequestOptions,
     parallel_tool_calls: bool,
 ) -> Value {
-    let input = convert_input(messages);
-    let wire_tools = convert_tools(tools);
+    let input = convert_input(messages, system, opts.message_cache_breakpoints, model);
+    let wire_tools = convert_tools(tools, model);
 
     let mut body = json!({
         "model": model.id,
-        "instructions": system.to_string(),
         "input": input,
         "stream": true,
         "store": store,
         "include": ["reasoning.encrypted_content"],
         "reasoning": {"summary": "auto"},
     });
+
+    // Add instructions as top-level field (not moved into input array)
+    let instructions = system.to_string();
+    if !instructions.is_empty() {
+        body["instructions"] = json!(instructions);
+    }
+
     if let Some(previous_response_id) = previous_response_id {
         body["previous_response_id"] = json!(previous_response_id);
     }
     if let Some(prompt_cache_key) = prompt_cache_key {
         body["prompt_cache_key"] = json!(prompt_cache_key);
     }
+
+    // Prompt cache options for models that support explicit breakpoints.
+    if model.supports_prompt_cache_breakpoint() {
+        body["prompt_cache_options"] = json!({
+            "mode": "explicit",
+            "ttl": "30m"
+        });
+    }
+
+    // Service tier for fast mode
+    if opts.fast && model.supports_fast() {
+        body["service_tier"] = json!("fast");
+    }
+
+    // Safety identifier (max 64 chars)
+    if let Some(ref safety_id) = opts.safety_identifier {
+        if safety_id.len() <= 64 {
+            body["safety_identifier"] = json!(safety_id);
+        } else {
+            warn!(
+                safety_id_len = safety_id.len(),
+                "safety_identifier exceeds 64 chars, omitting"
+            );
+        }
+    }
+
+    // Moderation
+    if opts.moderation {
+        body["moderation"] = json!({"enabled": true});
+    }
+
+    // Reasoning effort with extended dialect for xhigh/max
+    let extras = opts.thinking.extras();
+    if let Some(effort) = opts.thinking.effort_str(&dialect::OPENAI_EXTENDED, model) {
+        body["reasoning"]["effort"] = json!(effort);
+    }
+
+    // Reasoning mode and context from extras
+    if let Some(mode) = extras.reasoning_mode {
+        body["reasoning"]["mode"] = json!(match mode {
+            ReasoningMode::Standard => "standard",
+            ReasoningMode::Pro => "pro",
+        });
+    }
+    if let Some(context) = extras.reasoning_context {
+        body["reasoning"]["context"] = json!(match context {
+            ReasoningContext::Auto => "auto",
+            ReasoningContext::CurrentTurn => "current_turn",
+            ReasoningContext::AllTurns => "all_turns",
+        });
+    }
+
     if wire_tools.as_array().is_some_and(|a| !a.is_empty()) {
         body["tools"] = wire_tools;
         if parallel_tool_calls {
             body["parallel_tool_calls"] = json!(true);
         }
     }
-    if let Some(effort) = thinking.effort_str(&dialect::STANDARD, model) {
-        body["reasoning"]["effort"] = json!(effort);
-    }
+
     body
 }
 
-pub(crate) fn convert_input(messages: &[Message]) -> Value {
+pub(crate) fn convert_input(
+    messages: &[Message],
+    _system: &System,
+    message_cache_breakpoints: usize,
+    model: &crate::model::Model,
+) -> Value {
     let mut input = Vec::new();
+    let supports_breakpoint = model.supports_prompt_cache_breakpoint();
 
-    for msg in messages {
+    // Mark the last N user messages for explicit prompt-cache breakpoints.
+    // The breakpoint goes on the last content block of each selected message,
+    // so the prefix ending at that block is eligible for cache reuse.
+    let breakpoint_indices: HashSet<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| matches!(m.role, Role::User))
+        .map(|(i, _)| i)
+        .rev()
+        .take(message_cache_breakpoints)
+        .collect();
+
+    for (msg_idx, msg) in messages.iter().enumerate() {
         match msg.role {
             Role::User => {
-                for block in &msg.content {
+                let mut content_blocks = Vec::new();
+                for (block_idx, block) in msg.content.iter().enumerate() {
                     match block {
                         ContentBlock::Text { text } => {
-                            input.push(json!({
-                                "type": "message",
-                                "role": "user",
-                                "content": [{"type": "input_text", "text": text}]
+                            content_blocks.push(json!({
+                                "type": "input_text",
+                                "text": text
                             }));
                         }
                         ContentBlock::Image { source } => {
-                            input.push(json!({
-                                "type": "message",
-                                "role": "user",
-                                "content": [{"type": "input_image", "image_url": source.to_data_url()}]
+                            // Default to "auto" detail level for now
+                            content_blocks.push(json!({
+                                "type": "input_image",
+                                "image_url": source.to_data_url(),
+                                "detail": "auto"
                             }));
                         }
                         ContentBlock::ToolResult {
@@ -110,6 +186,23 @@ pub(crate) fn convert_input(messages: &[Message]) -> Value {
                         | ContentBlock::Thinking { .. }
                         | ContentBlock::RedactedThinking { .. } => {}
                     }
+
+                    // Add prompt_cache_breakpoint on the last block of selected messages.
+                    if supports_breakpoint
+                        && block_idx == msg.content.len() - 1
+                        && breakpoint_indices.contains(&msg_idx)
+                        && let Some(last) = content_blocks.last_mut()
+                    {
+                        last["prompt_cache_breakpoint"] = json!({"mode": "explicit"});
+                    }
+                }
+
+                if !content_blocks.is_empty() {
+                    input.push(json!({
+                        "type": "message",
+                        "role": "user",
+                        "content": content_blocks
+                    }));
                 }
             }
             Role::Assistant => {
@@ -229,7 +322,20 @@ pub(crate) fn request_diagnostics(body: &Value) -> RequestDiagnostics {
     diagnostics
 }
 
-pub(crate) fn convert_tools(anthropic_tools: &Value) -> Value {
+// Built-in tools that OpenAI Responses API supports
+const BUILTIN_TOOLS: &[&str] = &[
+    "web_search",
+    "file_search",
+    "computer",
+    "code_interpreter",
+    "mcp",
+    "apply_patch",
+    "skills",
+    "tool_search",
+    "programmatic_tool_calling",
+];
+
+pub(crate) fn convert_tools(anthropic_tools: &Value, model: &crate::model::Model) -> Value {
     let Some(tools) = anthropic_tools.as_array() else {
         return json!([]);
     };
@@ -238,9 +344,23 @@ pub(crate) fn convert_tools(anthropic_tools: &Value) -> Value {
         tools
             .iter()
             .filter_map(|t| {
+                let name = t.get("name")?.as_str()?;
+                // Check if this is a built-in tool
+                if BUILTIN_TOOLS.contains(&name) {
+                    // Emit built-in tool object if model supports it
+                    // For now, we conservatively only emit for GPT-5.6+
+                    if model.id.starts_with("gpt-5.6") {
+                        return Some(json!({
+                            "type": name,
+                        }));
+                    }
+                    // Skip built-in tools for unsupported models
+                    return None;
+                }
+                // Regular function tool
                 Some(json!({
                     "type": "function",
-                    "name": t.get("name")?,
+                    "name": name,
                     "description": t.get("description")?,
                     "parameters": t.get("input_schema")?,
                     "strict": false,
@@ -441,28 +561,69 @@ impl ResponseAccumulator {
                 let output_index = data["output_index"]
                     .as_u64()
                     .unwrap_or_else(|| self.tool_accumulators.len() as u64);
-                if item["type"].as_str() == Some("function_call") {
-                    let call_id = item["call_id"]
-                        .as_str()
-                        .map_or_else(String::new, ToString::to_string);
-                    let name = item["name"]
-                        .as_str()
-                        .map_or_else(String::new, ToString::to_string);
-                    if !name.is_empty() {
-                        self.emitted_event = true;
-                        event_tx
-                            .send_async(ProviderEvent::ToolUseStart {
-                                id: call_id.clone(),
-                                name: name.clone(),
-                            })
-                            .await?;
+                match item["type"].as_str() {
+                    Some("function_call") => {
+                        let call_id = item["call_id"]
+                            .as_str()
+                            .map_or_else(String::new, ToString::to_string);
+                        let name = item["name"]
+                            .as_str()
+                            .map_or_else(String::new, ToString::to_string);
+                        if !name.is_empty() {
+                            self.emitted_event = true;
+                            event_tx
+                                .send_async(ProviderEvent::ToolUseStart {
+                                    id: call_id.clone(),
+                                    name: name.clone(),
+                                })
+                                .await?;
+                        }
+                        self.tool_accumulators.push(ToolAccumulator {
+                            output_index,
+                            call_id,
+                            name,
+                            arguments: String::new(),
+                        });
                     }
-                    self.tool_accumulators.push(ToolAccumulator {
-                        output_index,
-                        call_id,
-                        name,
-                        arguments: String::new(),
-                    });
+                    Some(
+                        "web_search_call"
+                        | "file_search_call"
+                        | "computer_call"
+                        | "code_interpreter_call",
+                    ) => {
+                        // Built-in tool calls - log and extract message if present
+                        let tool_type = item["type"].as_str().unwrap_or_else(|| "unknown");
+                        debug!(tool_type, "OpenAI built-in tool call");
+                        // Extract output_text and annotations if present
+                        if let Some(content) = item.get("content").and_then(Value::as_array) {
+                            for part in content {
+                                if let Some(text) = part.get("output_text").and_then(Value::as_str)
+                                {
+                                    self.text.push_str(text);
+                                }
+                                // TODO: Handle url_citation, file_citation annotations
+                            }
+                        }
+                    }
+                    Some("program") => {
+                        // Program execution - represent as Thinking for now
+                        debug!("OpenAI program item");
+                        if let Some(code) = item.get("code").and_then(Value::as_str) {
+                            self.reasoning_summary_text.push_str(code);
+                        }
+                    }
+                    Some("program_output") => {
+                        // Program output - log for now
+                        debug!("OpenAI program_output item");
+                        if let Some(output) = item.get("output").and_then(Value::as_str) {
+                            self.text.push_str(output);
+                        }
+                    }
+                    _ => {
+                        // Unknown item type - log warning
+                        let item_type = item["type"].as_str().unwrap_or_else(|| "unknown");
+                        warn!(item_type, "Unknown OpenAI output item type");
+                    }
                 }
             }
 
@@ -898,6 +1059,17 @@ fn parse_usage(u: &Value) -> TokenUsage {
             },
         );
 
+    // Extract reasoning_tokens if present
+    let reasoning_tokens = u["output_tokens_details"]["reasoning_tokens"]
+        .as_u64()
+        .map_or_else(
+            || 0,
+            |v| match u32::try_from(v) {
+                Ok(v) => v,
+                Err(_) => u32::MAX,
+            },
+        );
+
     let fresh_input = input_tokens
         .saturating_sub(cached)
         .saturating_sub(cache_write);
@@ -906,6 +1078,7 @@ fn parse_usage(u: &Value) -> TokenUsage {
         cache_read_tokens = cached,
         cache_write_tokens = cache_write,
         output_tokens,
+        reasoning_tokens,
         "OpenAI Responses token usage"
     );
     TokenUsage {
@@ -919,6 +1092,7 @@ fn parse_usage(u: &Value) -> TokenUsage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Model;
     use futures_lite::io::{AsyncReadExt, AsyncWriteExt, Cursor};
     use serde_json::json;
 
@@ -1133,6 +1307,7 @@ data: {\"response\":{\"status\":\"incomplete\",\"usage\":{\"input_tokens\":10,\"
 
     #[test]
     fn convert_input_structure() {
+        let model = Model::from_spec("openai/gpt-4.1").unwrap();
         let messages = vec![
             Message::user("hello".to_string()),
             Message {
@@ -1160,7 +1335,7 @@ data: {\"response\":{\"status\":\"incomplete\",\"usage\":{\"input_tokens\":10,\"
             },
         ];
 
-        let input = convert_input(&messages);
+        let input = convert_input(&messages, &System::default(), 0, &model);
         let items = input.as_array().unwrap();
 
         assert_eq!(items[0]["type"], "message");
@@ -1193,7 +1368,12 @@ data: {\"response\":{\"status\":\"incomplete\",\"usage\":{\"input_tokens\":10,\"
             }],
             ..Default::default()
         }];
-        let input = convert_input(&messages);
+        let input = convert_input(
+            &messages,
+            &System::default(),
+            0,
+            &Model::from_spec("openai/gpt-4.1").unwrap(),
+        );
         let output = input[0]["output"].as_str().unwrap();
         assert!(output.starts_with(TOOL_RESULT_ERROR_PREFIX));
         assert!(output.contains("sub-agent error: API 500"));
@@ -1574,7 +1754,8 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 
     #[test]
     fn build_body_includes_continuity_and_cache_keys() {
-        let model = crate::model::Model::from_spec("openai/gpt-5.6").unwrap();
+        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let opts = RequestOptions::default();
         let body = build_body(
             &model,
             &[],
@@ -1583,7 +1764,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             Some("resp_1"),
             Some("session_1"),
             true,
-            ThinkingConfig::default(),
+            &opts,
             true,
         );
         assert_eq!(body["previous_response_id"], "resp_1");
@@ -1595,7 +1776,11 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 
     #[test]
     fn build_body_thinking_off() {
-        let model = crate::model::Model::from_spec("openai/gpt-5.6").unwrap();
+        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let opts = RequestOptions {
+            thinking: crate::types::ThinkingConfig::Off,
+            ..Default::default()
+        };
         let body = build_body(
             &model,
             &[],
@@ -1604,7 +1789,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             None,
             None,
             false,
-            ThinkingConfig::Off,
+            &opts,
             true,
         );
         assert_eq!(body["reasoning"], json!({"summary":"auto"}));
@@ -1612,7 +1797,11 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 
     #[test]
     fn build_body_thinking_adaptive() {
-        let model = crate::model::Model::from_spec("openai/gpt-5.6").unwrap();
+        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let opts = RequestOptions {
+            thinking: crate::types::ThinkingConfig::Adaptive,
+            ..Default::default()
+        };
         let body = build_body(
             &model,
             &[],
@@ -1621,7 +1810,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             None,
             None,
             false,
-            ThinkingConfig::Adaptive,
+            &opts,
             true,
         );
         assert_eq!(body["reasoning"]["summary"], "auto");
@@ -1630,7 +1819,11 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 
     #[test]
     fn build_body_thinking_effort_high() {
-        let model = crate::model::Model::from_spec("openai/gpt-5.6").unwrap();
+        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let opts = RequestOptions {
+            thinking: crate::types::ThinkingConfig::Effort(crate::Effort::High),
+            ..Default::default()
+        };
         let body = build_body(
             &model,
             &[],
@@ -1639,7 +1832,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             None,
             None,
             false,
-            ThinkingConfig::Effort(crate::Effort::High),
+            &opts,
             true,
         );
         assert_eq!(body["reasoning"]["summary"], "auto");
@@ -1648,7 +1841,11 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 
     #[test]
     fn build_body_thinking_budget() {
-        let model = crate::model::Model::from_spec("openai/gpt-5.6").unwrap();
+        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let opts = RequestOptions {
+            thinking: crate::types::ThinkingConfig::Budget(1024),
+            ..Default::default()
+        };
         let body = build_body(
             &model,
             &[],
@@ -1657,7 +1854,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             None,
             None,
             false,
-            ThinkingConfig::Budget(1024),
+            &opts,
             true,
         );
         assert_eq!(body["reasoning"]["summary"], "auto");
@@ -1692,7 +1889,12 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             ],
             ..Default::default()
         }];
-        let input = convert_input(&messages);
+        let input = convert_input(
+            &messages,
+            &System::default(),
+            0,
+            &Model::from_spec("openai/gpt-4.1").unwrap(),
+        );
         assert_eq!(input[0], reasoning_one);
         assert_eq!(input[1]["call_id"], "c1");
         assert_eq!(input[2], reasoning_two);
@@ -1815,7 +2017,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
                 base_url: Some(format!("http://{address}")),
                 headers: Vec::new(),
             };
-            let model = crate::model::Model::from_spec("openai/gpt-5.6").unwrap();
+            let model = Model::from_spec("openai/gpt-5.6").unwrap();
             let (event_tx, _event_rx) = flume::unbounded();
             let error = do_stream(
                 &client,
@@ -1921,12 +2123,13 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
 
     #[test]
     fn build_body_with_tools_adds_parallel_tool_calls_when_enabled() {
-        let model = crate::model::Model::from_spec("openai/gpt-5.6").unwrap();
+        let model = Model::from_spec("openai/gpt-5.6").unwrap();
         let tools = json!([{
             "name": "bash",
             "description": "run shell commands",
             "input_schema": {"type": "object"}
         }]);
+        let opts = RequestOptions::default();
         let body = build_body(
             &model,
             &[],
@@ -1935,7 +2138,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
             None,
             None,
             false,
-            ThinkingConfig::default(),
+            &opts,
             true,
         );
         assert_eq!(body["parallel_tool_calls"], true);
@@ -1943,12 +2146,13 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
 
     #[test]
     fn build_body_with_tools_omits_parallel_tool_calls_when_disabled() {
-        let model = crate::model::Model::from_spec("openai/gpt-5.6").unwrap();
+        let model = Model::from_spec("openai/gpt-5.6").unwrap();
         let tools = json!([{
             "name": "bash",
             "description": "run shell commands",
             "input_schema": {"type": "object"}
         }]);
+        let opts = RequestOptions::default();
         let body = build_body(
             &model,
             &[],
@@ -1957,7 +2161,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
             None,
             None,
             false,
-            ThinkingConfig::default(),
+            &opts,
             false,
         );
         assert!(body.get("parallel_tool_calls").is_none());

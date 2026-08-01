@@ -304,6 +304,7 @@ impl Provider for Zai {
                 tools,
                 session_id.map(n00n_storage::id::SessionRef::as_str),
                 self.system_prefix.as_deref(),
+                opts.fast,
             );
             if model.supports_thinking() {
                 opts.thinking

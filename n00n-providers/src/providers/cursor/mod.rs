@@ -203,7 +203,7 @@ impl Cursor {
     ) -> Result<StreamResponse, AgentError> {
         let prompt = self.build_prompt(messages, system, session_id)?;
         let mut child = self
-            .build_command(model, opts, prompt, session_id)?
+            .build_command(model, &opts, prompt, session_id)?
             .spawn()
             .map_err(|e| AgentError::Config {
                 message: format!("{SPAWN_FAILED}: {e}"),
@@ -415,7 +415,7 @@ impl Cursor {
     fn build_command(
         &self,
         model: &Model,
-        opts: RequestOptions,
+        opts: &RequestOptions,
         prompt: String,
         session_id: Option<&SessionRef>,
     ) -> Result<Command, AgentError> {
@@ -837,7 +837,7 @@ fn map_stderr_error(stderr: &str) -> AgentError {
     }
 }
 
-fn format_model_id(model: &Model, opts: RequestOptions) -> String {
+fn format_model_id(model: &Model, opts: &RequestOptions) -> String {
     let id = &model.id;
     if id.contains('[') {
         return id.clone();
@@ -854,7 +854,8 @@ fn format_model_id(model: &Model, opts: RequestOptions) -> String {
         ThinkingConfig::Adaptive | ThinkingConfig::Effort(Effort::Medium) => Some("medium"),
         ThinkingConfig::Effort(Effort::Minimal | Effort::Low) => Some("low"),
         ThinkingConfig::Effort(Effort::High | Effort::XHigh | Effort::Max)
-        | ThinkingConfig::Budget(_) => Some("high"),
+        | ThinkingConfig::Budget(_)
+        | ThinkingConfig::WithExtras(_, _) => Some("high"),
     };
 
     match effort {
@@ -1003,8 +1004,9 @@ mod tests {
     #[test]
     fn format_model_id_passthrough_with_brackets() {
         let model = test_model("claude-opus-4-8[context=1m,effort=high]");
+        let opts = RequestOptions::default();
         assert_eq!(
-            format_model_id(&model, RequestOptions::default()),
+            format_model_id(&model, &opts),
             "claude-opus-4-8[context=1m,effort=high]"
         );
     }
@@ -1016,16 +1018,14 @@ mod tests {
             thinking: ThinkingConfig::Effort(Effort::High),
             ..Default::default()
         };
-        assert_eq!(format_model_id(&model, opts), "composer-2.5[effort=high]");
+        assert_eq!(format_model_id(&model, &opts), "composer-2.5[effort=high]");
     }
 
     #[test]
     fn format_model_id_off_keeps_plain_id() {
         let model = test_model("composer-2.5");
-        assert_eq!(
-            format_model_id(&model, RequestOptions::default()),
-            "composer-2.5"
-        );
+        let opts = RequestOptions::default();
+        assert_eq!(format_model_id(&model, &opts), "composer-2.5");
     }
 
     #[test]

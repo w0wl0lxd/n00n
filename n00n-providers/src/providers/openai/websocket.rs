@@ -14,7 +14,7 @@ use smol::Timer;
 use tracing::{debug, warn};
 
 use super::responses::{
-    ResponseAccumulator, build_body, is_semantic_progress_event, response_in_flight_timeout,
+    ResponseAccumulator, is_semantic_progress_event, response_in_flight_timeout,
 };
 use crate::model::Model;
 use crate::providers::ResolvedAuth;
@@ -124,13 +124,13 @@ pub(crate) fn build_request_body(
     messages: &[Message],
     system: &System,
     tools: &Value,
-    opts: RequestOptions,
+    opts: &RequestOptions,
     previous_response_id: Option<&str>,
     prompt_cache_key: Option<&str>,
     store: bool,
     parallel_tool_calls: bool,
 ) -> Value {
-    build_body(
+    super::responses::build_body(
         model,
         messages,
         system,
@@ -138,7 +138,7 @@ pub(crate) fn build_request_body(
         previous_response_id,
         prompt_cache_key,
         store,
-        opts.thinking,
+        opts,
         parallel_tool_calls,
     )
 }
@@ -888,7 +888,7 @@ mod tests {
             &[],
             &System::from("system"),
             &json!([]),
-            opts,
+            &opts,
             None,
             None,
             true,
@@ -1490,7 +1490,7 @@ mod tests {
             &[],
             &System::from("system"),
             &tools,
-            opts,
+            &opts,
             None,
             None,
             true,
@@ -1516,7 +1516,7 @@ mod tests {
             &[],
             &System::from("system"),
             &tools,
-            opts,
+            &opts,
             None,
             None,
             true,

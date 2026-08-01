@@ -298,42 +298,6 @@ fn canonical_session_key(session_id: &SessionRef) -> n00nId {
     session_id.id()
 }
 
-fn model_supports_responses(model: &Model) -> bool {
-    let id = model.id.as_str();
-    // Built-in OpenAI models that support Responses API
-    let builtin_supported = matches!(
-        id,
-        "gpt-5.6-luna"
-            | "gpt-5.6-terra"
-            | "gpt-5.6-sol"
-            | "gpt-5.5"
-            | "gpt-5.4"
-            | "gpt-5.4-nano"
-            | "gpt-5.4-mini"
-            | "gpt-4.1"
-            | "gpt-4.1-nano"
-            | "gpt-4.1-mini"
-            | "o3"
-            | "o4-mini"
-    );
-
-    // Pattern-based support for newer models
-    let pattern_supported = id.starts_with("gpt-5.")
-        || id.starts_with("gpt-4.1-")
-        || id.starts_with("gpt-4o")
-        || id.starts_with("o3")
-        || id.starts_with("o4");
-
-    // Exclude codex models and legacy models
-    let excluded = id.ends_with("-codex")
-        || id == "gpt-4"
-        || id == "gpt-4-turbo"
-        || id == "gpt-4-32k"
-        || id.starts_with("gpt-3.5");
-
-    (builtin_supported || pattern_supported) && !excluded
-}
-
 fn prompt_cache_key(
     model_id: &str,
     system: &System,
@@ -1427,7 +1391,7 @@ impl OpenAi {
             incremental_messages,
             system,
             tools,
-            opts,
+            &opts,
             previous_response_id.as_deref(),
             Some(&prompt_cache_key),
             store,
@@ -1463,7 +1427,7 @@ impl OpenAi {
                             messages,
                             system,
                             tools,
-                            opts,
+                            &opts,
                             None,
                             Some(&prompt_cache_key),
                             false,
@@ -1515,7 +1479,7 @@ impl OpenAi {
                                 messages,
                                 system,
                                 tools,
-                                opts,
+                                &opts,
                                 None,
                                 Some(&prompt_cache_key),
                                 false,
@@ -1709,7 +1673,7 @@ impl OpenAi {
                     tools,
                     tools_hash,
                     event_tx,
-                    opts,
+                    opts.clone(),
                     session_id,
                     durable_chain,
                     &coding_plan_auth.resolved,
@@ -1774,7 +1738,7 @@ impl OpenAi {
             None,
             Some(&prompt_cache_key),
             false,
-            opts.thinking,
+            &opts,
             true,
         );
 
@@ -2089,7 +2053,7 @@ impl Provider for OpenAi {
                         tools,
                         &tools_hash,
                         event_tx,
-                        opts,
+                        opts.clone(),
                         session_id,
                         durable_chain,
                     )
@@ -2119,7 +2083,7 @@ impl Provider for OpenAi {
                         tools,
                         &tools_hash,
                         event_tx,
-                        opts,
+                        opts.clone(),
                         session_id,
                         durable_chain,
                     )
@@ -2131,7 +2095,7 @@ impl Provider for OpenAi {
             let prefixed_system_obj = System::from(prefixed_system);
 
             // Try Responses API for supported models
-            if model_supports_responses(model) {
+            if model.supports_responses() {
                 let result = self
                     .run_responses_attempt(
                         model,
@@ -2140,7 +2104,7 @@ impl Provider for OpenAi {
                         tools,
                         &tools_hash,
                         event_tx,
-                        opts,
+                        opts.clone(),
                         session_id,
                     )
                     .await;
@@ -2171,6 +2135,7 @@ impl Provider for OpenAi {
                 tools,
                 Some(&prompt_cache_key),
                 self.system_prefix.as_deref(),
+                opts.fast,
             );
             opts.thinking
                 .apply_reasoning_effort(&mut body, &dialect::STANDARD, model);
@@ -2372,7 +2337,6 @@ mod tests {
     use test_case::test_case;
 
     use super::*;
-    use crate::model::{ModelFamily, ModelPricing, ModelTier};
     use crate::{ContentBlock, Role, TokenUsage};
 
     const TOOLS_HASH: &str = "[]";
@@ -2577,89 +2541,6 @@ mod tests {
 
         assert!(previous_response_id.is_none());
         assert_eq!(incremental_messages.len(), second.len());
-    }
-
-    #[test_case("gpt-5.6-luna")]
-    #[test_case("gpt-5.6-terra")]
-    #[test_case("gpt-5.6-sol")]
-    #[test_case("gpt-5.5")]
-    #[test_case("gpt-5.4")]
-    #[test_case("gpt-5.4-nano")]
-    #[test_case("gpt-5.4-mini")]
-    #[test_case("gpt-4.1")]
-    #[test_case("gpt-4.1-nano")]
-    #[test_case("gpt-4.1-mini")]
-    #[test_case("o3")]
-    #[test_case("o4-mini")]
-    fn model_supports_responses_builtin_models(model_id: &str) {
-        let model = Model {
-            id: model_id.to_string(),
-            provider: Arc::from("openai"),
-            tier: ModelTier::Medium,
-            family: ModelFamily::Gpt,
-            supports_tool_examples_override: None,
-            supports_thinking_override: None,
-            supports_vision_override: None,
-            pricing: ModelPricing::default(),
-            max_output_tokens: None,
-            context_window: 128_000,
-        };
-        assert!(
-            model_supports_responses(&model),
-            "{model_id} should support Responses API"
-        );
-    }
-
-    #[test_case("gpt-5.7")]
-    #[test_case("gpt-5.10")]
-    #[test_case("gpt-4.1-turbo")]
-    #[test_case("gpt-4o")]
-    #[test_case("gpt-4o-mini")]
-    #[test_case("o3-mini")]
-    #[test_case("o4")]
-    fn model_supports_responses_pattern_models(model_id: &str) {
-        let model = Model {
-            id: model_id.to_string(),
-            provider: Arc::from("openai"),
-            tier: ModelTier::Medium,
-            family: ModelFamily::Gpt,
-            supports_tool_examples_override: None,
-            supports_thinking_override: None,
-            supports_vision_override: None,
-            pricing: ModelPricing::default(),
-            max_output_tokens: None,
-            context_window: 128_000,
-        };
-        assert!(
-            model_supports_responses(&model),
-            "{model_id} should support Responses API"
-        );
-    }
-
-    #[test_case("gpt-4")]
-    #[test_case("gpt-4-turbo")]
-    #[test_case("gpt-4-32k")]
-    #[test_case("gpt-3.5-turbo")]
-    #[test_case("gpt-3.5")]
-    #[test_case("gpt-5.6-luna-codex")]
-    #[test_case("gpt-5.1-codex")]
-    fn model_does_not_support_responses_legacy_or_codex(model_id: &str) {
-        let model = Model {
-            id: model_id.to_string(),
-            provider: Arc::from("openai"),
-            tier: ModelTier::Medium,
-            family: ModelFamily::Gpt,
-            supports_tool_examples_override: None,
-            supports_thinking_override: None,
-            supports_vision_override: None,
-            pricing: ModelPricing::default(),
-            max_output_tokens: None,
-            context_window: 128_000,
-        };
-        assert!(
-            !model_supports_responses(&model),
-            "{model_id} should not support Responses API"
-        );
     }
 
     #[test]
@@ -3313,6 +3194,7 @@ mod tests {
             super::super::responses::base_url(&provider.current_auth()),
             super::super::OPENAI_API_BASE_URL
         );
+        let opts = RequestOptions::default();
         let body = super::super::responses::build_body(
             &Model::from_spec("openai/gpt-4.1").unwrap(),
             &[Message::user("private history".into())],
@@ -3321,7 +3203,7 @@ mod tests {
             None,
             None,
             false,
-            Default::default(),
+            &opts,
             true,
         );
         assert_eq!(body["store"], false);
@@ -3354,7 +3236,7 @@ mod tests {
                 crate::providers::Timeouts::default(),
             )
             .unwrap();
-            let model = Model::from_spec("openai/gpt-4.1").unwrap();
+            let model = Model::from_spec("openai/gpt-5.5").unwrap();
             let messages = vec![
                 Message::user("first".into()),
                 assistant("second"),
@@ -3421,10 +3303,10 @@ mod tests {
                 crate::providers::Timeouts::default(),
             )
             .unwrap();
-            let model = Model::from_spec("openai/gpt-4.1").unwrap();
+            let model = Model::from_spec("openai/gpt-5.5").unwrap();
             let (event_tx, _event_rx) = flume::unbounded();
 
-            provider
+            let result = provider
                 .stream_message(
                     &model,
                     &[Message::user("hello".into())],
@@ -3434,10 +3316,11 @@ mod tests {
                     RequestOptions::default(),
                     None,
                 )
-                .await
-                .unwrap();
+                .await;
             server.await;
 
+            // Should succeed with fallback to chat completions
+            assert!(result.is_ok());
             assert_eq!(path_rx.recv_async().await.unwrap(), "/v1/responses");
             assert_eq!(path_rx.recv_async().await.unwrap(), "/v1/chat/completions");
         });
