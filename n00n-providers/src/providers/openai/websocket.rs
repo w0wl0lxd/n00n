@@ -93,7 +93,10 @@ impl WebSocketAttemptError {
     }
 
     pub(crate) fn into_agent_error(self) -> AgentError {
-        if self.error.is_server_overloaded() {
+        if !self.delivery.emitted_event
+            && self.error.is_retryable()
+            && !self.delivery.emitted_or_accepted()
+        {
             return self.error;
         }
         if self.request_sent() && (self.transport_failure || self.delivery.emitted_or_accepted()) {
@@ -974,12 +977,7 @@ mod tests {
                 message: "server_is_overloaded: Our servers are currently overloaded".into(),
             },
             false,
-            {
-                let mut delivery =
-                    RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance);
-                delivery.emitted_event = true;
-                delivery
-            },
+            RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance),
         )
         .into_agent_error();
 
@@ -990,6 +988,37 @@ mod tests {
             error.user_message(),
             "provider is overloaded, try again later"
         );
+    }
+
+    #[test]
+    fn server_error_500_after_send_is_not_wrapped_in_request_sent() {
+        let error = WebSocketAttemptError::response(
+            AgentError::Api {
+                status: 500,
+                message: "WebSocket protocol error: Connection reset without closing handshake"
+                    .into(),
+            },
+            false,
+            RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance),
+        )
+        .into_agent_error();
+
+        assert!(matches!(error, AgentError::Api { status, .. } if status == 500));
+        assert!(error.is_retryable());
+        assert!(!matches!(error, AgentError::RequestSent { .. }));
+    }
+
+    #[test]
+    fn transport_failure_after_send_is_not_wrapped_in_request_sent() {
+        let error = WebSocketAttemptError::transport(
+            AgentError::Io(IoError::new(ErrorKind::ConnectionReset, "connection reset")),
+            false,
+            RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance),
+        )
+        .into_agent_error();
+
+        assert!(!matches!(error, AgentError::RequestSent { .. }));
+        assert!(error.is_retryable());
     }
 
     #[test]
@@ -1125,8 +1154,9 @@ mod tests {
                 error.delivery.close_reason.as_deref(),
                 Some("proxy restart request details removed")
             );
+            let agent_error = error.into_agent_error();
             assert!(matches!(
-                error.into_agent_error(),
+                agent_error,
                 AgentError::RequestSent { metadata: Some(metadata), .. }
                     if metadata.close_code == Some(1012)
                         && metadata.response_id.as_deref() == Some("resp_close")
