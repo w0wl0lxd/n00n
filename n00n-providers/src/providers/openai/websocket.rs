@@ -93,6 +93,9 @@ impl WebSocketAttemptError {
     }
 
     pub(crate) fn into_agent_error(self) -> AgentError {
+        if self.error.is_server_overloaded() {
+            return self.error;
+        }
         if self.request_sent() && (self.transport_failure || self.delivery.emitted_or_accepted()) {
             AgentError::RequestSent {
                 message: self.error.to_string(),
@@ -962,6 +965,33 @@ mod tests {
         assert_eq!(error.is_retryable(), retryable);
         assert_eq!(error.is_auth_error(), auth_error);
     }
+
+    #[test]
+    fn server_overload_after_send_is_not_wrapped_in_request_sent() {
+        let error = WebSocketAttemptError::response(
+            AgentError::Api {
+                status: 400,
+                message: "server_is_overloaded: Our servers are currently overloaded".into(),
+            },
+            false,
+            {
+                let mut delivery =
+                    RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance);
+                delivery.emitted_event = true;
+                delivery
+            },
+        )
+        .into_agent_error();
+
+        assert!(!matches!(error, AgentError::RequestSent { .. }));
+        assert!(error.is_server_overloaded());
+        assert!(error.is_retryable());
+        assert_eq!(
+            error.user_message(),
+            "provider is overloaded, try again later"
+        );
+    }
+
     #[test]
     #[allow(clippy::large_futures)]
     fn fake_transport_close_after_send_is_not_synthetic_422() {
