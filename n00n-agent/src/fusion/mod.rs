@@ -42,6 +42,9 @@ const LEAD_ONLY_SIGNALS: &[&str] = &[
     "destroy",
     "destroying",
     "destructive",
+    "rm",
+    "wipe",
+    "wiping",
     "drop database",
     "commit",
     "merge",
@@ -573,6 +576,8 @@ mod tests {
     #[test_case("implement credential rotation and add tests", FusionRequestDecision::LeadOnly ; "credentials override mechanics")]
     #[test_case("delete the production database after review", FusionRequestDecision::LeadOnly ; "destructive overrides review")]
     #[test_case("format files and commit the result", FusionRequestDecision::LeadOnly ; "commit overrides mechanics")]
+    #[test_case("run rm -rf on generated files", FusionRequestDecision::LeadOnly ; "destructive shell command")]
+    #[test_case("wipe generated files before testing", FusionRequestDecision::LeadOnly ; "destructive wipe")]
     #[test_case("debug the serial authentication failure", FusionRequestDecision::LeadOnly ; "serial debugging")]
     #[test_case("search .env for API keys", FusionRequestDecision::LeadOnly ; "environment secrets")]
     #[test_case("search for an api-key in config", FusionRequestDecision::LeadOnly ; "hyphenated api key")]
