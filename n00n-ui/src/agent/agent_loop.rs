@@ -21,7 +21,7 @@ use n00n_providers::{AgentError, Message, Model, OpenAiOptions, System, TokenUsa
 use n00n_storage::id::SessionRef;
 use n00n_storage::sessions::TranscriptEntry;
 use serde_json::Value;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use super::ModelSlot;
 use super::cancel_map::RunCancelMap;
