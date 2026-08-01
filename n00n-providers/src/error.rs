@@ -249,6 +249,16 @@ impl AgentError {
     }
 
     #[must_use]
+    pub fn is_history_replay_required(&self) -> bool {
+        matches!(self, Self::HistoryReplayRequired { .. })
+    }
+
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        matches!(self, Self::Cancelled)
+    }
+
+    #[must_use]
     pub fn should_rotate_key(&self) -> bool {
         matches!(self, Self::Api { status, .. } if *status == 429 || *status == 401 || *status == 403)
     }
@@ -384,6 +394,21 @@ mod tests {
     #[test_case(403, false ; "forbidden")]
     fn api_auth_error(status: u16, expected: bool) {
         assert_eq!(api(status).is_auth_error(), expected);
+    }
+
+    #[test]
+    fn history_replay_required_is_detected() {
+        let err = AgentError::HistoryReplayRequired {
+            reason: HistoryReplayReason::ContinuationNotFound,
+        };
+        assert!(err.is_history_replay_required());
+        assert!(!err.is_cancelled());
+    }
+
+    #[test]
+    fn cancelled_is_detected() {
+        assert!(AgentError::Cancelled.is_cancelled());
+        assert!(!AgentError::Cancelled.is_history_replay_required());
     }
 
     #[test_case(429, "Rate limited"        ; "rate_limited")]
