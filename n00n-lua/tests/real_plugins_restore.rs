@@ -184,12 +184,12 @@ const FUSION_MODEL_MOCK: &str = r#"
     end
 "#;
 
-fn execute_fusion(
+fn execute_fusion_result(
     input: Value,
     tier: Tier,
     enabled: bool,
     native_mock: &str,
-) -> Result<String, String> {
+) -> n00n_agent::tools::registry::ToolExecResult {
     let registry = Arc::new(ToolRegistry::new());
     let host = PluginHost::new(Arc::clone(&registry)).unwrap();
     host.load_source("fusion", &format!("{native_mock}\n{FUSION_SRC}"))
@@ -205,6 +205,15 @@ fn execute_fusion(
     fusion.enabled = enabled;
     fusion.sidekick_tier = tier;
     smol::block_on(invocation.execute(&ctx))
+}
+
+fn execute_fusion(
+    input: Value,
+    tier: Tier,
+    enabled: bool,
+    native_mock: &str,
+) -> Result<String, String> {
+    execute_fusion_result(input, tier, enabled, native_mock)
         .output
         .map(|output| match output {
             n00n_agent::ToolOutput::Plain(output) => output.text,
@@ -214,6 +223,52 @@ fn execute_fusion(
 
 fn execute_fusion_with_tier(input: Value, tier: Tier) -> Result<String, String> {
     execute_fusion(input, tier, true, FUSION_MODEL_MOCK)
+}
+
+#[test]
+fn fusion_failed_delegate_preserves_charged_telemetry() {
+    let result = execute_fusion_result(
+        json!({
+            "description": "charged failure",
+            "goal": "exercise the error path",
+            "definition_of_done": "the failure keeps its telemetry",
+            "model": "test/sidekick",
+        }),
+        Tier::Weak,
+        true,
+        r#"
+            n00n.agent.resolve_model = function() return { spec = "test/sidekick" } end
+            n00n.agent.system_prompt = function() return "system" end
+            n00n.agent.tools = function() return {} end
+            n00n.agent.usage_cost = function() error("precomputed cost should be reused") end
+            n00n.agent.session = function()
+                local sess = {}
+                function sess:prompt()
+                    return {
+                        cost = 0.25,
+                        fresh_input_tokens = 8,
+                        cache_read_tokens = 2,
+                        cache_write_tokens = 1,
+                        input_tokens = 11,
+                        output_tokens = 4,
+                    }, "provider failed"
+                end
+                function sess:close() end
+                return sess
+            end
+        "#,
+    );
+    let error = result.output.expect_err("delegate must fail");
+    let telemetry = result.telemetry.expect("charged telemetry must survive");
+    let usage = telemetry.usage.expect("charged usage must survive");
+
+    assert!(
+        error.contains("provider request failed"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(telemetry.cost, Some(0.25));
+    assert_eq!(usage.input_tokens, 11);
+    assert_eq!(usage.output_tokens, 4);
 }
 
 fn execute_plugin_with_native_mock(
