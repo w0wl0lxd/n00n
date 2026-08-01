@@ -1707,6 +1707,7 @@ data: [DONE]\n";
             None,
             None,
             2,
+            false,
         );
 
         assert!(body.get("prompt_cache_options").is_none());
@@ -1744,6 +1745,7 @@ data: [DONE]\n";
             None,
             None,
             2,
+            false,
         );
 
         // Check that prompt_cache_options is set to explicit mode
@@ -1804,6 +1806,7 @@ data: [DONE]\n";
             None,
             None,
             0,
+            false,
         );
 
         assert!(body.get("prompt_cache_options").is_none());
@@ -1837,6 +1840,7 @@ data: [DONE]\n";
             None,
             None,
             2,
+            false,
         );
 
         // No prompt_cache_options for unsupported model
@@ -1895,6 +1899,7 @@ data: [DONE]\n";
             None,
             None,
             1,
+            false,
         );
 
         // Check that prompt_cache_options is set
@@ -2036,6 +2041,7 @@ data: [DONE]\n";
             &tools,
             None,
             None,
+            0,
             true,
         );
         assert_eq!(body["service_tier"], "fast");
@@ -2068,6 +2074,7 @@ data: [DONE]\n";
             &tools,
             None,
             None,
+            0,
             false,
         );
         assert!(body.get("service_tier").is_none());
