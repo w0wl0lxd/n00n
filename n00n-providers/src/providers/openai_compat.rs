@@ -210,19 +210,16 @@ impl OpenAiCompatProvider {
         system_prefix: Option<&str>,
         message_cache_breakpoints: usize,
     ) -> Value {
-        let supports_breakpoints = self.config.supports_prompt_cache_breakpoint
-            && model_supports_breakpoint(model)
-            && message_cache_breakpoints > 0;
+        let supports_breakpoints =
+            self.config.supports_prompt_cache_breakpoint && model_supports_breakpoint(model);
+        let message_cache_breakpoints = (supports_breakpoints && message_cache_breakpoints > 0)
+            .then_some(message_cache_breakpoints);
 
         let mut wire_messages = convert_messages_with_breakpoints(
             messages,
             None,
             self.config.emit_reasoning_content,
-            if supports_breakpoints {
-                Some(message_cache_breakpoints)
-            } else {
-                None
-            },
+            message_cache_breakpoints,
         );
         if let Some(system_message) = self.build_system_message(system, system_prefix, model) {
             wire_messages.insert(0, system_message);
@@ -1621,7 +1618,7 @@ data: [DONE]\n";
     }
 
     #[test]
-    fn build_body_with_session_adds_prompt_cache_breakpoint_for_gpt_5_6() {
+    fn build_body_adds_system_cache_breakpoint_and_explicit_mode_for_gpt_5_6() {
         static TEST_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
             slug: "test",
             api_key_env: "TEST_KEY",
@@ -1661,6 +1658,7 @@ data: [DONE]\n";
             content_array[0]["prompt_cache_breakpoint"]["mode"],
             "explicit"
         );
+        assert_eq!(body["prompt_cache_options"]["mode"], "explicit");
     }
 
     #[test]
@@ -1769,7 +1767,7 @@ data: [DONE]\n";
     }
 
     #[test]
-    fn build_body_with_session_no_breakpoints_when_zero() {
+    fn build_body_omits_breakpoints_when_zero_and_system_is_empty() {
         static TEST_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
             slug: "test",
             api_key_env: "TEST_KEY",
@@ -1791,14 +1789,13 @@ data: [DONE]\n";
         let body = provider.build_body_with_session(
             &model,
             &messages,
-            &System::from("be helpful"),
+            &System::default(),
             &tools,
             None,
             None,
             0,
         );
 
-        // No prompt_cache_options when message_cache_breakpoints == 0
         assert!(body.get("prompt_cache_options").is_none());
     }
 
