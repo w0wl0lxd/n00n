@@ -843,11 +843,16 @@ impl<'h> Agent<'h> {
         };
         let mut definitions = Value::Array(Vec::new());
         mcp.extend_tools(&mut definitions);
+        let capability_exclusions = crate::tools::capability_exclusions(&self.model);
         let names = definitions
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(|definition| definition.get("name").and_then(Value::as_str))
+            .filter(|name| {
+                crate::tools::is_tool_enabled(&self.config.disabled_tools, name)
+                    && !capability_exclusions.contains(name)
+            })
             .map(str::to_owned);
         self.tool_filter.clone().including(names)
     }
@@ -1415,6 +1420,26 @@ mod tests {
             .collect();
 
         assert_eq!(names, ["read", "srv__fetch_issue"]);
+    }
+
+    #[test]
+    fn dynamic_mcp_filter_keeps_disabled_tools_blocked() {
+        const DISABLED_MCP_TOOL: &str = "srv__fetch_issue";
+
+        let mut history = History::new(Vec::new());
+        let (mut agent, _) = make_agent(MockProvider::new(Vec::new()), &mut history);
+        let mcp = crate::mcp::stub_session(&[("srv.fetch_issue", "Fetch a GitHub issue")]);
+        let mut config = (*agent.config).clone();
+        config.disabled_tools.push(DISABLED_MCP_TOOL.into());
+        agent.config = Arc::new(config);
+        agent.tool_filter = ToolFilter::Only(vec![crate::mcp::TOOL_SEARCH_TOOL_NAME.into()]);
+        agent = agent
+            .with_mcp(Some(mcp.clone()))
+            .with_dynamic_mcp_tools(true);
+
+        mcp.search_tools("issue").unwrap();
+
+        assert!(!agent.effective_tool_filter().matches(DISABLED_MCP_TOOL));
     }
 
     #[test]
