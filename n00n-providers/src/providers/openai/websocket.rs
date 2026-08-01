@@ -93,16 +93,11 @@ impl WebSocketAttemptError {
     }
 
     pub(crate) fn into_agent_error(self) -> AgentError {
-        if !self.delivery.emitted_event {
-            match &self.error {
-                AgentError::Api { .. } if self.error.is_retryable() => return self.error,
-                AgentError::Io(_) | AgentError::Http(_) | AgentError::Timeout { .. }
-                    if !self.delivery.emitted_or_accepted() =>
-                {
-                    return self.error;
-                }
-                _ => {}
-            }
+        if !self.delivery.emitted_event
+            && matches!(self.error, AgentError::Api { .. })
+            && self.error.is_retryable()
+        {
+            return self.error;
         }
         if self.request_sent() && (self.transport_failure || self.delivery.emitted_or_accepted()) {
             AgentError::RequestSent {
@@ -1019,7 +1014,7 @@ mod tests {
     }
 
     #[test]
-    fn transport_failure_after_send_is_not_wrapped_in_request_sent() {
+    fn transport_failure_after_send_is_wrapped_in_request_sent() {
         let error = WebSocketAttemptError::transport(
             AgentError::Io(IoError::new(ErrorKind::ConnectionReset, "connection reset")),
             false,
@@ -1027,8 +1022,8 @@ mod tests {
         )
         .into_agent_error();
 
-        assert!(!matches!(error, AgentError::RequestSent { .. }));
-        assert!(error.is_retryable());
+        assert!(matches!(error, AgentError::RequestSent { .. }));
+        assert!(!error.is_retryable());
     }
 
     #[test]
