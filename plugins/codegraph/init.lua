@@ -26,7 +26,7 @@ Best for:
 
 Prefer **index** for single-file structure, then **read** for specific sections. codegraph excels at multi-file exploration and impact analysis.
 
-Requires the codegraph CLI and a .codegraph/ index in the project root.]],
+Requires a .codegraph/ index in the project root. Native database indexes work without the CLI; legacy indexes require it.]],
 
   schema = {
     type = "object",
@@ -53,13 +53,6 @@ Requires the codegraph CLI and a .codegraph/ index in the project root.]],
       return { llm_output = "error: query is required", is_error = true }
     end
 
-    if not n00n_codegraph.available() then
-      return {
-        llm_output = "error: codegraph CLI not found. Install it from https://github.com/colbymchenry/codegraph",
-        is_error = true,
-      }
-    end
-
     local project_path = input.projectPath or cwd
 
     if not n00n_codegraph.has_index(project_path) then
@@ -67,6 +60,13 @@ Requires the codegraph CLI and a .codegraph/ index in the project root.]],
         llm_output = "error: no .codegraph/ index found in "
           .. project_path
           .. ". Run `codegraph init` first to index the project.",
+        is_error = true,
+      }
+    end
+
+    if not n00n_codegraph.has_database(project_path) and not n00n_codegraph.available() then
+      return {
+        llm_output = "error: codegraph CLI not found on PATH; install it to query legacy indexes",
         is_error = true,
       }
     end

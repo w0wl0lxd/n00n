@@ -226,6 +226,10 @@ const NIL_WITHOUT_JOBS_ERR: &str =
 const FINISH_CALLED_TWICE_ERR: &str = "ctx:finish() already called";
 const DEADLINE_ALREADY_SET_ERR: &str = "ctx:set_deadline() already called";
 const TIMED_OUT_SUBSTR: &str = "timed out";
+const DEADLINE_HOT_LOOP_TIMEOUT_ERR: &str = "tool deadline_hot_loop timed out after 1s";
+const WORKFLOW_TIMEOUT_SCHEMA_SUBSTR: &str = "minimum 60s";
+const WORKFLOW_TIMEOUT_REJECTED_SUBSTR: &str = "at least 60";
+const WORKFLOW_TIMEOUT_CONFIG_ERR_SUBSTR: &str = "below minimum (60)";
 const ALREADY_CALLED_ERR: &str = "already called";
 const UNKNOWN_FIELD_ERR: &str = "unknown field";
 const PERMISSION_DENIED_MSG: &str = "permission denied";
@@ -2777,6 +2781,78 @@ fn ctx_set_deadline_times_out() {
     host.load_source("deadline_test", &src).unwrap();
     let err = exec_tool(&reg, "deadline_test", serde_json::json!({})).unwrap_err();
     assert!(err.contains(TIMED_OUT_SUBSTR), "got: {err}");
+}
+
+#[test]
+fn workflow_per_run_timeout_schema_matches_runtime_bounds() {
+    let (reg, _host) = builtins_host();
+    let entry = reg.get("workflow").unwrap();
+    let input = |timeout_secs| {
+        serde_json::json!({
+            "script": "meta({ name = 'timeout' }); return 'ok'",
+            "timeout_secs": timeout_secs,
+        })
+    };
+
+    let schema = entry.tool.schema();
+    assert!(
+        schema["properties"]["timeout_secs"]["description"]
+            .as_str()
+            .unwrap()
+            .contains(WORKFLOW_TIMEOUT_SCHEMA_SUBSTR)
+    );
+    assert!(entry.tool.parse(&input(60)).is_ok());
+    assert!(entry.tool.parse(&input(1_200)).is_ok());
+    let error = exec_tool(&reg, "workflow", input(59)).unwrap_err();
+    assert!(
+        error.contains(WORKFLOW_TIMEOUT_REJECTED_SUBSTR),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn workflow_configured_timeout_rejects_async_runtime_underrun() {
+    let reg = fresh_registry();
+    let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let raw = host
+        .send_run_init_lua(
+            "n00n.setup({ plugins = { workflow = { timeout_secs = 59 } } })".to_owned(),
+            "test_init.lua".to_owned(),
+            None,
+        )
+        .unwrap()
+        .expect("expected plugin config");
+    let error = host
+        .load_builtins(&PluginsConfig::from_plugins(&raw.plugins))
+        .expect_err("workflow timeout below the async runtime minimum must fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains(WORKFLOW_TIMEOUT_CONFIG_ERR_SUBSTR),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn ctx_set_deadline_normalizes_watchdog_error() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "deadline_hot_loop",
+            description = "uses ctx:set_deadline in a hot loop",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                ctx:set_deadline(1)
+                while true do end
+            end
+        }})"#,
+    );
+    host.load_source("deadline_hot_loop", &src).unwrap();
+    let err = exec_tool(&reg, "deadline_hot_loop", serde_json::json!({})).unwrap_err();
+    assert_eq!(err, DEADLINE_HOT_LOOP_TIMEOUT_ERR);
 }
 
 #[test]

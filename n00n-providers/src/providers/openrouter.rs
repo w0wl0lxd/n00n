@@ -194,6 +194,7 @@ impl Provider for OpenRouter {
                 tools,
                 session_id.map(n00n_storage::id::SessionRef::as_str),
                 self.system_prefix.as_deref(),
+                opts.message_cache_breakpoints,
                 opts.fast,
             );
 
