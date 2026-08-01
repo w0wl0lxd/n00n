@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use tracing::{debug, warn};
 
 use super::ResolvedAuth;
-use crate::types::TOOL_RESULT_ERROR_PREFIX;
+use crate::types::{ImageDetail, TOOL_RESULT_ERROR_PREFIX};
 use crate::{
     AgentError, CacheControl, ContentBlock, Message, ProviderEvent, RequestDeliveryMetadata,
     RequestDeliveryPhase, Role, StopReason, StreamResponse, System, TokenUsage,
@@ -470,20 +470,43 @@ pub fn convert_messages_with_breakpoints(
         match msg.role {
             Role::User => {
                 let mut tool_results = Vec::new();
-                let mut text_parts: Vec<&str> = Vec::new();
+                let mut text_parts: Vec<String> = Vec::new();
                 let mut image_parts = Vec::new();
 
                 for (block_idx, block) in msg.content.iter().enumerate() {
                     match block {
-                        ContentBlock::Text { text } => text_parts.push(text.as_str()),
+                        ContentBlock::Text { text } => text_parts.push(text.clone()),
                         ContentBlock::Image { source } => {
-                            image_parts.push(json!({
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": source.to_data_url(),
-                                    "detail": "auto"
-                                }
-                            }));
+                            if let Some(ref file_id) = source.file_id {
+                                // Chat Completions cannot use file_id, emit a note
+                                text_parts.push(format!("[image file omitted: {file_id}]"));
+                            } else {
+                                let url = source
+                                    .url
+                                    .as_deref()
+                                    .map_or_else(|| source.to_data_url(), ToString::to_string);
+                                let detail = source.detail.map_or_else(
+                                    || "auto".to_string(),
+                                    |d| {
+                                        if d == ImageDetail::Original {
+                                            "auto".to_string()
+                                        } else {
+                                            d.to_string()
+                                        }
+                                    },
+                                );
+                                image_parts.push(json!({
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": url,
+                                        "detail": detail
+                                    }
+                                }));
+                            }
+                        }
+                        ContentBlock::File { source } => {
+                            let identifier = source.identifier().unwrap_or_else(|| "unknown");
+                            text_parts.push(format!("[file omitted: {identifier}]"));
                         }
                         ContentBlock::ToolResult {
                             tool_use_id,
@@ -550,15 +573,16 @@ pub fn convert_messages_with_breakpoints(
                     }
                     out.push(json!({"role": "user", "content": parts}));
                 } else if !text_parts.is_empty() {
+                    let text = text_parts.join("\n");
                     if mark_user_breakpoint {
                         let content_array = json!([{
                             "type": "text",
-                            "text": text_parts.join("\n"),
+                            "text": text,
                             "prompt_cache_breakpoint": {"mode": "explicit"}
                         }]);
                         out.push(json!({"role": "user", "content": content_array}));
                     } else {
-                        out.push(json!({"role": "user", "content": text_parts.join("\n")}));
+                        out.push(json!({"role": "user", "content": text}));
                     }
                 }
             }
@@ -585,7 +609,8 @@ pub fn convert_messages_with_breakpoints(
                         }
                         ContentBlock::ToolResult { .. }
                         | ContentBlock::Image { .. }
-                        | ContentBlock::RedactedThinking { .. } => {}
+                        | ContentBlock::RedactedThinking { .. }
+                        | ContentBlock::File { .. } => {}
                     }
                 }
 

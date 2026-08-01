@@ -8,7 +8,8 @@
 //! 4. Parse Connect frames, gunzip, decode protobuf, emit `ProviderEvents`
 
 use std::collections::HashMap;
-use std::io::{ErrorKind, Write};
+use std::fmt::Write;
+use std::io::{ErrorKind, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -335,6 +336,10 @@ fn encode_devin_chat_message_prompts(
                             mime_type: source.media_type.mime(),
                             caption: "",
                         }),
+                        ContentBlock::File { source } => {
+                            let identifier = source.identifier().unwrap_or_else(|| "unknown");
+                            let _ = write!(prompt_text, "[file omitted: {identifier}]");
+                        }
                         ContentBlock::ToolResult {
                             tool_use_id,
                             content,

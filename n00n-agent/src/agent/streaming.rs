@@ -59,6 +59,7 @@ pub(crate) async fn stream_with_retry(
 ) -> Result<StreamResponse, AgentError> {
     let opts = ctx.opts.clamped(ctx.model);
     let messages = n00n_providers::adapt_images_for_model(ctx.model, ctx.messages);
+    let messages = n00n_providers::adapt_files_for_model(ctx.model, &messages);
     let messages = &*messages;
     let mut retry = RetryState::new();
     loop {

@@ -507,6 +507,7 @@ fn fallback_model() -> Model {
         supports_tool_examples_override: None,
         supports_thinking_override: None,
         supports_vision_override: None,
+        supports_files_override: None,
         pricing: ModelPricing::ZERO,
         max_output_tokens: None,
         context_window: FALLBACK_CONTEXT_WINDOW,

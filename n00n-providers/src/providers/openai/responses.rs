@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
+use std::fmt::Write;
 use std::io::{Error as IoError, ErrorKind};
 use std::time::{Duration, Instant};
 
@@ -24,17 +25,6 @@ const PROMPT_CACHE_TTL: &str = "30m";
 const MAX_SAFETY_IDENTIFIER_CHARS: usize = 64;
 const MODERATION_MODEL: &str = "omni-moderation-latest";
 const OPENAI_BUILTIN_ORIGIN: &str = "openai";
-const BUILTIN_TOOLS: &[&str] = &[
-    "web_search",
-    "file_search",
-    "computer",
-    "code_interpreter",
-    "mcp",
-    "apply_patch",
-    "skills",
-    "tool_search",
-    "programmatic_tool_calling",
-];
 
 pub(crate) fn response_in_flight_timeout(stream_timeout: Duration) -> Duration {
     stream_timeout
@@ -183,12 +173,28 @@ pub(crate) fn convert_input(
                             }));
                         }
                         ContentBlock::Image { source } => {
-                            // Default to "auto" detail level for now
-                            content_blocks.push(json!({
-                                "type": "input_image",
-                                "image_url": source.to_data_url(),
-                                "detail": "auto"
-                            }));
+                            content_blocks.push(source.to_input_image_payload());
+                        }
+                        ContentBlock::File { source } => {
+                            let mut file_obj = json!({
+                                "type": "input_file",
+                            });
+                            if let Some(ref file_id) = source.file_id {
+                                file_obj["file_id"] = json!(file_id);
+                            }
+                            if let Some(ref file_url) = source.file_url {
+                                file_obj["file_url"] = json!(file_url);
+                            }
+                            if let Some(ref file_data) = source.file_data {
+                                file_obj["file_data"] = json!(file_data);
+                            }
+                            if let Some(ref filename) = source.filename {
+                                file_obj["filename"] = json!(filename);
+                            }
+                            if let Some(detail) = source.detail {
+                                file_obj["detail"] = json!(detail.to_string());
+                            }
+                            content_blocks.push(file_obj);
                         }
                         ContentBlock::ToolResult {
                             tool_use_id,
@@ -257,7 +263,8 @@ pub(crate) fn convert_input(
                         }
                         ContentBlock::ToolResult { .. }
                         | ContentBlock::Image { .. }
-                        | ContentBlock::Thinking { .. } => {}
+                        | ContentBlock::Thinking { .. }
+                        | ContentBlock::File { .. } => {}
                     }
                 }
             }
@@ -345,6 +352,25 @@ pub(crate) fn request_diagnostics(body: &Value) -> RequestDiagnostics {
     diagnostics
 }
 
+// Built-in tools that OpenAI Responses API supports
+const BUILTIN_TOOLS: &[&str] = &[
+    "web_search",
+    "file_search",
+    "computer",
+    "computer_use_preview",
+    "code_interpreter",
+    "mcp",
+    "shell",
+    "local_shell",
+    "apply_patch",
+    "skills",
+    "tool_search",
+    "programmatic_tool_calling",
+    "image_generation",
+    "custom",
+    "namespace",
+    "function",
+];
 pub(crate) fn convert_tools(anthropic_tools: &Value, model: &crate::model::Model) -> Value {
     let Some(tools) = anthropic_tools.as_array() else {
         return json!([]);
@@ -355,14 +381,24 @@ pub(crate) fn convert_tools(anthropic_tools: &Value, model: &crate::model::Model
             .iter()
             .filter_map(|t| {
                 let name = t.get("name")?.as_str()?;
+                // Check if this is a built-in tool from OpenAI and the model supports it
                 if t.get("origin").and_then(Value::as_str) == Some(OPENAI_BUILTIN_ORIGIN)
                     && BUILTIN_TOOLS.contains(&name)
+                    && model.supports_responses_built_in_tools()
                 {
-                    return model.supports_responses_built_in_tools().then(|| {
-                        json!({
-                            "type": name,
-                        })
-                    });
+                    // If the tool already has a "type" field matching a built-in name,
+                    // prefer that and merge any other fields
+                    if let Some(tool_type) = t.get("type").and_then(Value::as_str)
+                        && BUILTIN_TOOLS.contains(&tool_type)
+                    {
+                        let mut built_in = json!({"type": tool_type});
+                        copy_builtin_config(&mut built_in, t, tool_type);
+                        return Some(built_in);
+                    }
+                    // Otherwise, construct from name
+                    let mut built_in = json!({"type": name});
+                    copy_builtin_config(&mut built_in, t, name);
+                    return Some(built_in);
                 }
                 // Regular function tool
                 Some(json!({
@@ -375,6 +411,90 @@ pub(crate) fn convert_tools(anthropic_tools: &Value, model: &crate::model::Model
             })
             .collect(),
     )
+}
+
+fn copy_builtin_config(built_in: &mut Value, source: &Value, tool_type: &str) {
+    match tool_type {
+        "file_search" => {
+            if let Some(v) = source.get("vector_store_ids") {
+                built_in["vector_store_ids"] = v.clone();
+            }
+            if let Some(v) = source.get("filters") {
+                built_in["filters"] = v.clone();
+            }
+            if let Some(v) = source.get("max_num_results") {
+                built_in["max_num_results"] = v.clone();
+            }
+            if let Some(v) = source.get("ranking_options") {
+                built_in["ranking_options"] = v.clone();
+            }
+        }
+        "web_search" => {
+            if let Some(v) = source.get("filters") {
+                built_in["filters"] = v.clone();
+            }
+            if let Some(v) = source.get("search_context_size") {
+                built_in["search_context_size"] = v.clone();
+            }
+            if let Some(v) = source.get("user_location") {
+                built_in["user_location"] = v.clone();
+            }
+        }
+        "code_interpreter" => {
+            if let Some(v) = source.get("container") {
+                built_in["container"] = v.clone();
+            }
+            if let Some(v) = source.get("allowed_callers") {
+                built_in["allowed_callers"] = v.clone();
+            }
+        }
+        "shell" | "local_shell" => {
+            if let Some(v) = source.get("environment") {
+                built_in["environment"] = v.clone();
+            }
+            if let Some(v) = source.get("allowed_callers") {
+                built_in["allowed_callers"] = v.clone();
+            }
+        }
+        "mcp" => {
+            if let Some(v) = source.get("server_label") {
+                built_in["server_label"] = v.clone();
+            }
+            if let Some(v) = source.get("server_url") {
+                built_in["server_url"] = v.clone();
+            }
+            if let Some(v) = source.get("connector_id") {
+                built_in["connector_id"] = v.clone();
+            }
+            if let Some(v) = source.get("tunnel_id") {
+                built_in["tunnel_id"] = v.clone();
+            }
+            if let Some(v) = source.get("allowed_callers") {
+                built_in["allowed_callers"] = v.clone();
+            }
+            if let Some(v) = source.get("allowed_tools") {
+                built_in["allowed_tools"] = v.clone();
+            }
+            if let Some(v) = source.get("require_approval") {
+                built_in["require_approval"] = v.clone();
+            }
+            if let Some(v) = source.get("headers") {
+                built_in["headers"] = v.clone();
+            }
+        }
+        "computer" | "computer_use_preview" => {
+            if let Some(v) = source.get("environment") {
+                built_in["environment"] = v.clone();
+            }
+            if let Some(v) = source.get("display_width") {
+                built_in["display_width"] = v.clone();
+            }
+            if let Some(v) = source.get("display_height") {
+                built_in["display_height"] = v.clone();
+            }
+        }
+        _ => {}
+    }
 }
 
 pub(crate) fn base_url(auth: &ResolvedAuth) -> &str {
@@ -629,6 +749,20 @@ impl ResponseAccumulator {
                     ) => {
                         debug!(tool_type, "OpenAI built-in tool call started");
                     }
+                    Some("program") => {
+                        // Program execution - represent as Thinking for now
+                        debug!("OpenAI program item");
+                        if let Some(code) = item.get("code").and_then(Value::as_str) {
+                            self.reasoning_summary_text.push_str(code);
+                        }
+                    }
+                    Some("program_output") => {
+                        // Program output - log for now
+                        debug!("OpenAI program_output item");
+                        if let Some(output) = item.get("output").and_then(Value::as_str) {
+                            self.text.push_str(output);
+                        }
+                    }
                     Some("reasoning" | "message") => {}
                     _ => {
                         let item_type = item["type"].as_str().unwrap_or_else(|| "unknown");
@@ -774,6 +908,91 @@ impl ResponseAccumulator {
                             name,
                             arguments,
                         });
+                    }
+                } else if item["type"].as_str() == Some("web_search_call") {
+                    // Extract web search results
+                    if let Some(action) = item.get("action") {
+                        if let Some(queries) = action.get("queries").and_then(Value::as_array) {
+                            for query in queries {
+                                let q = query
+                                    .as_str()
+                                    .or_else(|| query.get("text").and_then(Value::as_str));
+                                if let Some(q) = q {
+                                    let _ = write!(self.text, "[search: {q}]");
+                                }
+                            }
+                        }
+                        if let Some(results) = action.get("results").and_then(Value::as_array) {
+                            for result in results {
+                                if let Some(title) = result.get("title").and_then(Value::as_str)
+                                    && let Some(url) = result.get("url").and_then(Value::as_str)
+                                {
+                                    let _ = write!(self.text, "[{title}]({url})");
+                                }
+                            }
+                        }
+                    }
+                } else if item["type"].as_str() == Some("file_search_call") {
+                    // Extract file search results
+                    if let Some(results) = item.get("results").and_then(Value::as_array) {
+                        for result in results {
+                            if let Some(filename) = result.get("filename").and_then(Value::as_str)
+                                && let Some(file_id) = result.get("file_id").and_then(Value::as_str)
+                            {
+                                let _ = write!(self.text, "[file:{filename} ({file_id})]");
+                            }
+                        }
+                    }
+                } else if item["type"].as_str() == Some("code_interpreter_call") {
+                    // Extract code interpreter outputs
+                    if let Some(outputs) = item.get("outputs").and_then(Value::as_array) {
+                        for output in outputs {
+                            if let Some(text) = output.get("text").and_then(Value::as_str) {
+                                self.text.push_str(text);
+                            }
+                            if let Some(image) = output.get("image")
+                                && let Some(file_id) = image.get("file_id").and_then(Value::as_str)
+                            {
+                                let _ = write!(self.text, "[image:{file_id}]");
+                            }
+                        }
+                    }
+                } else if item["type"].as_str() == Some("computer_call") {
+                    // Computer call - treat as tool use
+                    if let Some(call_id) = item.get("call_id").and_then(Value::as_str) {
+                        let _ = write!(self.text, "[computer_call:{call_id}]");
+                    }
+                } else if item["type"].as_str() == Some("computer_call_output") {
+                    // Computer call output - capture screenshot
+                    if let Some(output) = item.get("output")
+                        && let Some(screenshot) = output.get("screenshot")
+                    {
+                        if let Some(file_id) = screenshot.get("file_id").and_then(Value::as_str) {
+                            let _ = write!(self.text, "[screenshot:{file_id}]");
+                        }
+                        if let Some(image_url) = screenshot.get("image_url").and_then(Value::as_str)
+                        {
+                            let _ = write!(self.text, "[screenshot:{image_url}]");
+                        }
+                    }
+                } else if item["type"].as_str() == Some("program") {
+                    // Program code - append to reasoning summary
+                    if let Some(code) = item.get("code").and_then(Value::as_str) {
+                        self.reasoning_summary_text.push_str(code);
+                    }
+                } else if item["type"].as_str() == Some("program_output") {
+                    // Program output - append to text
+                    if let Some(output) = item.get("output").and_then(Value::as_str) {
+                        self.text.push_str(output);
+                    }
+                } else if item["type"].as_str() == Some("tool_search_call") {
+                    // Tool search - log and note
+                    debug!("OpenAI tool_search_call item");
+                    self.text.push_str("[tool_search]");
+                } else if item["type"].as_str() == Some("tool_search_output") {
+                    // Tool search output - extract loaded tools
+                    if let Some(tools) = item.get("tools").and_then(Value::as_array) {
+                        let _ = write!(self.text, "[loaded {} tools]", tools.len());
                     }
                 }
             }
@@ -2334,5 +2553,111 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
             false,
         );
         assert!(body.get("parallel_tool_calls").is_none());
+    }
+
+    #[test]
+    fn parse_sse_web_search_call_item() {
+        smol::block_on(async {
+            let sse = "\
+event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"type\":\"web_search_call\",\"action\":{\"queries\":[{\"text\":\"rust async\"}],\"results\":[{\"title\":\"Rust async book\",\"url\":\"https://example.com\"}]}}}\n\
+event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\
+";
+            let (resp, _) = run_sse(sse).await;
+            let (_, resp) = resp.unwrap();
+            let text = resp.message.first_text_content().unwrap();
+            assert!(text.contains("[search: rust async]"));
+            assert!(text.contains("[Rust async book](https://example.com)"));
+        });
+    }
+
+    #[test]
+    fn parse_sse_file_search_call_item() {
+        smol::block_on(async {
+            let sse = "\
+event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"type\":\"file_search_call\",\"results\":[{\"filename\":\"doc.txt\",\"file_id\":\"file_123\"}]}}\n\
+event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\
+";
+            let (resp, _) = run_sse(sse).await;
+            let (_, resp) = resp.unwrap();
+            let text = resp.message.first_text_content().unwrap();
+            assert!(text.contains("[file:doc.txt (file_123)]"));
+        });
+    }
+
+    #[test]
+    fn parse_sse_code_interpreter_call_item() {
+        smol::block_on(async {
+            let sse = "\
+event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"type\":\"code_interpreter_call\",\"outputs\":[{\"text\":\"Output: 42\"},{\"image\":{\"file_id\":\"img_456\"}}]}}\n\
+event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\
+";
+            let (resp, _) = run_sse(sse).await;
+            let (_, resp) = resp.unwrap();
+            let text = resp.message.first_text_content().unwrap();
+            assert!(text.contains("Output: 42"));
+            assert!(text.contains("[image:img_456]"));
+        });
+    }
+
+    #[test]
+    fn parse_sse_computer_call_output_item() {
+        smol::block_on(async {
+            let sse = "\
+event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"type\":\"computer_call_output\",\"output\":{\"screenshot\":{\"file_id\":\"screenshot_789\"}}}}\n\
+event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\
+";
+            let (resp, _) = run_sse(sse).await;
+            let (_, resp) = resp.unwrap();
+            let text = resp.message.first_text_content().unwrap();
+            assert!(text.contains("[screenshot:screenshot_789]"));
+        });
+    }
+
+    #[test]
+    fn parse_sse_program_item() {
+        smol::block_on(async {
+            let sse = "\
+event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"type\":\"program\",\"code\":\"print('hello')\"}}\n\
+event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\
+";
+            let (resp, _) = run_sse(sse).await;
+            let (_, resp) = resp.unwrap();
+            // Program code goes to reasoning summary
+            let thinking = resp.message.content.iter().find_map(|b| match b {
+                ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
+                _ => None,
+            });
+            assert_eq!(thinking, Some("print('hello')"));
+        });
+    }
+
+    #[test]
+    fn parse_sse_program_output_item() {
+        smol::block_on(async {
+            let sse = "\
+event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"type\":\"program_output\",\"output\":\"hello world\"}}\n\
+event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\
+";
+            let (resp, _) = run_sse(sse).await;
+            let (_, resp) = resp.unwrap();
+            let text = resp.message.first_text_content().unwrap();
+            assert_eq!(text, "hello world");
+        });
+    }
+
+    #[test]
+    fn parse_sse_tool_search_items() {
+        smol::block_on(async {
+            let sse = "\
+event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"type\":\"tool_search_call\"}}\n\
+event: response.output_item.done\ndata: {\"output_index\":1,\"item\":{\"type\":\"tool_search_output\",\"tools\":[{\"name\":\"bash\"},{\"name\":\"read\"}]}}\n\
+event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\
+";
+            let (resp, _) = run_sse(sse).await;
+            let (_, resp) = resp.unwrap();
+            let text = resp.message.first_text_content().unwrap();
+            assert!(text.contains("[tool_search]"));
+            assert!(text.contains("[loaded 2 tools]"));
+        });
     }
 }

@@ -184,6 +184,7 @@ fn model_from_def(def: &ProviderDef, kind: ProviderKind, slug: &str, model_id: &
         supports_tool_examples_override,
         supports_thinking_override,
         supports_vision_override,
+        supports_files_override: None,
         pricing,
         max_output_tokens,
         context_window,

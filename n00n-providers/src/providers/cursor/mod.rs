@@ -906,6 +906,15 @@ fn append_content_block(prompt: &mut String, block: &ContentBlock) {
             prompt.push_str(&source.to_data_url());
             prompt.push(']');
         }
+        ContentBlock::File { source } => {
+            prompt.push_str("\n[file: ");
+            if let Some(id) = source.identifier() {
+                prompt.push_str(id);
+            } else {
+                prompt.push_str("unknown");
+            }
+            prompt.push(']');
+        }
     }
 }
 
@@ -964,6 +973,7 @@ mod tests {
             supports_tool_examples_override: None,
             supports_thinking_override: None,
             supports_vision_override: None,
+            supports_files_override: None,
             pricing: ModelPricing::ZERO,
             max_output_tokens: Some(32_768),
             context_window: 128_000,

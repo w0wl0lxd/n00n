@@ -218,6 +218,9 @@ mod tests {
             data: base64::engine::general_purpose::STANDARD
                 .encode(&png)
                 .into(),
+            detail: None,
+            file_id: None,
+            url: None,
         };
         let picker = Picker::halfblocks();
         let term_img = TerminalImage::from_source(&source, &picker, TEST_IMAGE_MAX_WIDTH).unwrap();

@@ -26,6 +26,16 @@ pub enum ImageMediaType {
     Webp,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display, Deserialize, Serialize)]
+#[strum(serialize_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+pub enum ImageDetail {
+    Auto,
+    Low,
+    High,
+    Original,
+}
+
 impl ImageMediaType {
     pub const ALL: [Self; 4] = [Self::Png, Self::Jpeg, Self::Gif, Self::Webp];
 
@@ -61,19 +71,124 @@ impl<'de> Deserialize<'de> for ImageMediaType {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ImageSource {
     pub media_type: ImageMediaType,
     pub data: Arc<str>,
+    pub detail: Option<ImageDetail>,
+    pub file_id: Option<String>,
+    pub url: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for ImageSource {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+        let value = Value::deserialize(deserializer)?;
+        let obj = value
+            .as_object()
+            .ok_or_else(|| Error::custom("ImageSource must be an object"))?;
+
+        let image_type = obj
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| "base64");
+
+        let detail = obj
+            .get("detail")
+            .and_then(Value::as_str)
+            .and_then(|s| match s {
+                "auto" => Some(ImageDetail::Auto),
+                "low" => Some(ImageDetail::Low),
+                "high" => Some(ImageDetail::High),
+                "original" => Some(ImageDetail::Original),
+                _ => None,
+            });
+
+        match image_type {
+            "file_id" => {
+                let file_id = obj
+                    .get("file_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| Error::custom("ImageSource file_id variant missing file_id"))?;
+                Ok(Self {
+                    media_type: ImageMediaType::Png,
+                    data: Arc::from(""),
+                    detail,
+                    file_id: Some(file_id.to_string()),
+                    url: None,
+                })
+            }
+            "url" => {
+                let url = obj
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| Error::custom("ImageSource url variant missing url"))?;
+                Ok(Self {
+                    media_type: ImageMediaType::Png,
+                    data: Arc::from(""),
+                    detail,
+                    file_id: None,
+                    url: Some(url.to_string()),
+                })
+            }
+            "base64" | "" => {
+                let media_type_str =
+                    obj.get("media_type")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            Error::custom("ImageSource base64 variant missing media_type")
+                        })?;
+                let media_type = ImageMediaType::from_mime(media_type_str).ok_or_else(|| {
+                    Error::custom(format!("unknown image media type '{media_type_str}'"))
+                })?;
+                let data = obj
+                    .get("data")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| Error::custom("ImageSource base64 variant missing data"))?;
+                Ok(Self {
+                    media_type,
+                    data: Arc::from(data),
+                    detail,
+                    file_id: None,
+                    url: None,
+                })
+            }
+            other => Err(Error::custom(format!("unknown ImageSource type '{other}'"))),
+        }
+    }
 }
 
 impl Serialize for ImageSource {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
+        if let Some(ref file_id) = self.file_id {
+            let mut state = serializer.serialize_struct("ImageSource", 2)?;
+            state.serialize_field("type", "file_id")?;
+            state.serialize_field("file_id", file_id)?;
+            if let Some(detail) = self.detail {
+                state.serialize_field("detail", &detail)?;
+            }
+            return state.end();
+        }
+        if let Some(ref url) = self.url {
+            let mut state = serializer.serialize_struct("ImageSource", 2)?;
+            state.serialize_field("type", "url")?;
+            state.serialize_field("url", url)?;
+            if let Some(detail) = self.detail {
+                state.serialize_field("detail", &detail)?;
+            }
+            return state.end();
+        }
         let mut state = serializer.serialize_struct("ImageSource", 3)?;
         state.serialize_field("type", "base64")?;
         state.serialize_field("media_type", &self.media_type)?;
         state.serialize_field("data", &self.data)?;
+        if let Some(detail) = self.detail {
+            state.serialize_field("detail", &detail)?;
+        }
         state.end()
     }
 }
@@ -81,17 +196,65 @@ impl Serialize for ImageSource {
 impl ImageSource {
     #[must_use]
     pub fn new(media_type: ImageMediaType, data: Arc<str>) -> Self {
-        Self { media_type, data }
+        Self {
+            media_type,
+            data,
+            detail: None,
+            file_id: None,
+            url: None,
+        }
+    }
+
+    #[must_use]
+    pub fn file_id(file_id: impl Into<String>, detail: Option<ImageDetail>) -> Self {
+        Self {
+            media_type: ImageMediaType::Png,
+            data: Arc::from(""),
+            detail,
+            file_id: Some(file_id.into()),
+            url: None,
+        }
+    }
+
+    #[must_use]
+    pub fn url(url: impl Into<String>, detail: Option<ImageDetail>) -> Self {
+        Self {
+            media_type: ImageMediaType::Png,
+            data: Arc::from(""),
+            detail,
+            file_id: None,
+            url: Some(url.into()),
+        }
     }
 
     #[must_use]
     pub fn to_data_url(&self) -> String {
         format!("data:{};base64,{}", self.media_type.mime(), self.data)
     }
+
+    #[must_use]
+    pub fn to_input_image_payload(&self) -> Value {
+        let mut obj = json!({
+            "type": "input_image",
+        });
+        if let Some(ref file_id) = self.file_id {
+            obj["file_id"] = json!(file_id);
+        } else if let Some(ref url) = self.url {
+            obj["image_url"] = json!(url);
+        } else {
+            obj["image_url"] = json!(self.to_data_url());
+        }
+        if let Some(detail) = self.detail {
+            obj["detail"] = json!(detail.to_string());
+        }
+        obj
+    }
 }
 
 pub const IMAGE_OMITTED_NOTE: &str =
     "[image omitted: the current model does not support image input]";
+
+pub const FILE_OMITTED_NOTE: &str = "[file omitted: the current model does not support file input]";
 
 /// Prefix prepended to errored tool-result content so downstream providers can
 /// distinguish a failed tool execution from a successful one.
@@ -118,6 +281,36 @@ pub fn adapt_images_for_model<'a>(model: &Model, messages: &'a [Message]) -> Cow
                 if matches!(block, ContentBlock::Image { .. }) {
                     *block = ContentBlock::Text {
                         text: IMAGE_OMITTED_NOTE.into(),
+                    };
+                }
+            }
+            m
+        })
+        .collect();
+    Cow::Owned(adapted)
+}
+
+/// For models without file support, file blocks become a text note instead of a
+/// wire block the API would reject. History keeps the file metadata, so switching
+/// back to a file-capable model restores them.
+#[must_use]
+pub fn adapt_files_for_model<'a>(model: &Model, messages: &'a [Message]) -> Cow<'a, [Message]> {
+    let has_file = |m: &Message| {
+        m.content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::File { .. }))
+    };
+    if model.supports_files() || !messages.iter().any(has_file) {
+        return Cow::Borrowed(messages);
+    }
+    let adapted = messages
+        .iter()
+        .map(|m| {
+            let mut m = m.clone();
+            for block in &mut m.content {
+                if matches!(block, ContentBlock::File { .. }) {
+                    *block = ContentBlock::Text {
+                        text: FILE_OMITTED_NOTE.into(),
                     };
                 }
             }
@@ -315,6 +508,62 @@ pub enum ContentBlock {
     Image {
         source: ImageSource,
     },
+    File {
+        source: FileSource,
+    },
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FileSource {
+    #[serde(default)]
+    pub file_id: Option<String>,
+    #[serde(default)]
+    pub file_url: Option<String>,
+    #[serde(default)]
+    pub file_data: Option<String>,
+    #[serde(default)]
+    pub filename: Option<String>,
+    #[serde(default)]
+    pub detail: Option<ImageDetail>,
+}
+
+impl FileSource {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            file_id: None,
+            file_url: None,
+            file_data: None,
+            filename: None,
+            detail: None,
+        }
+    }
+
+    #[must_use]
+    pub fn file_id(file_id: impl Into<String>, detail: Option<ImageDetail>) -> Self {
+        Self {
+            file_id: Some(file_id.into()),
+            detail,
+            ..Self::new()
+        }
+    }
+
+    #[must_use]
+    pub fn file_url(file_url: impl Into<String>, detail: Option<ImageDetail>) -> Self {
+        Self {
+            file_url: Some(file_url.into()),
+            detail,
+            ..Self::new()
+        }
+    }
+
+    #[must_use]
+    pub fn identifier(&self) -> Option<&str> {
+        self.file_id
+            .as_deref()
+            .or_else(|| self.filename.as_deref())
+            .or_else(|| self.file_url.as_deref())
+    }
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -1209,6 +1458,7 @@ mod tests {
             supports_tool_examples_override: None,
             supports_thinking_override: None,
             supports_vision_override: Some(provider.family().supports_vision()),
+            supports_files_override: None,
             pricing: crate::model::ModelPricing::default(),
             max_output_tokens: Some(8192),
             context_window: 200_000,
