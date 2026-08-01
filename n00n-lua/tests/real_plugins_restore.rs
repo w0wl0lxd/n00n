@@ -868,4 +868,5 @@ fn fusion_model_resolution_failure_is_sanitized() {
     )
     .unwrap_err();
     assert_eq!(error, "Fusion sidekick error: model resolution failed");
+    assert_eq!(error, "Fusion sidekick error: model resolution failed");
 }

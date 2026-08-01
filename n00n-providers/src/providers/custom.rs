@@ -354,6 +354,7 @@ impl Provider for CustomOpenAiProvider {
                 tools,
                 session_id.map(n00n_storage::id::SessionRef::as_str),
                 None,
+                opts.message_cache_breakpoints,
             );
             if matches!(opts.thinking, ThinkingConfig::Off) {
                 body["thinking"] = serde_json::json!({"type": "disabled"});
@@ -407,6 +408,7 @@ mod tests {
             &tools,
             None,
             None,
+            0,
         );
 
         assert!(body.get("parallel_tool_calls").is_none());
