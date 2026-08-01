@@ -51,7 +51,6 @@ const USAGE_WINDOW_1MONTH_SECONDS: i64 = 2_592_000;
 const USAGE_WINDOW_1YEAR_SECONDS: i64 = 31_536_000;
 const RESPONSE_CHAIN_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 const PROMPT_CACHE_SHARDS: u8 = 16;
-const STORE_CODEX_RESPONSES: bool = false;
 
 static PROCESS_INSTANCE_NONCE: OnceLock<u64> = OnceLock::new();
 static RESPONSE_OPERATIONS: OnceLock<ResponseOperationRegistry> = OnceLock::new();
@@ -127,7 +126,6 @@ struct PreSendAuth {
 
 struct CodexAttempt {
     previous_response_id: Option<String>,
-    store: bool,
     emitted_event: bool,
     definitive_rejection: bool,
     delivery: Option<RequestDeliveryMetadata>,
@@ -137,7 +135,6 @@ struct CodexAttempt {
 impl CodexAttempt {
     fn from_websocket_error(
         previous_response_id: Option<String>,
-        store: bool,
         error: super::websocket::WebSocketAttemptError,
     ) -> Self {
         let emitted_event = error.delivery.emitted_event;
@@ -146,7 +143,6 @@ impl CodexAttempt {
         let provider_error = error.into_agent_error();
         Self {
             previous_response_id,
-            store,
             emitted_event,
             definitive_rejection,
             delivery,
@@ -1262,7 +1258,7 @@ impl OpenAi {
     ) -> CodexAttempt {
         if attempt.previous_response_id.is_some()
             && (is_missing_previous_response(&attempt)
-                || should_clear_response_chain(&attempt.result, attempt.store))
+                || should_clear_response_chain(&attempt.result))
         {
             self.clear_response_chain(session_id, response_chain_lock)
                 .await;
@@ -1290,13 +1286,10 @@ impl OpenAi {
     ) -> CodexAttempt {
         let state_scope_hash = response_state_scope_hash(auth);
         let socket_credential_hash = credential_hash(auth);
-        // Keep both chain modes explicit: privacy policy currently requires
-        // connection-local continuation with provider storage disabled.
-        let store = STORE_CODEX_RESPONSES;
+        // Codex keeps continuation state only while its WebSocket stays connected.
+        // Full-history replay is therefore required after a connection change.
         let mut opts = opts;
-        if !store {
-            opts.allow_history_replay = true;
-        }
+        opts.allow_history_replay = true;
         let admission = match self
             .acquire_coding_plan_admission(auth, attempt_nonce)
             .await
@@ -1305,7 +1298,6 @@ impl OpenAi {
             Err(error) => {
                 return CodexAttempt {
                     previous_response_id: None,
-                    store,
                     emitted_event: false,
                     definitive_rejection: false,
                     delivery: Some(RequestDeliveryMetadata::new(RequestDeliveryPhase::NotSent)),
@@ -1319,7 +1311,6 @@ impl OpenAi {
                 Err(error) => {
                     return CodexAttempt {
                         previous_response_id: None,
-                        store,
                         emitted_event: false,
                         definitive_rejection: false,
                         delivery: Some(RequestDeliveryMetadata::new(RequestDeliveryPhase::NotSent)),
@@ -1339,7 +1330,7 @@ impl OpenAi {
                 attempt_nonce,
             )
             .await;
-        if !store && !connection_reusable {
+        if !connection_reusable {
             debug!(
                 chain_reset = true,
                 chain_reset_reason = "socket_not_reusable",
@@ -1362,7 +1353,6 @@ impl OpenAi {
             Err(error) => {
                 return CodexAttempt {
                     previous_response_id: None,
-                    store,
                     emitted_event: false,
                     definitive_rejection: false,
                     delivery: None,
@@ -1378,7 +1368,6 @@ impl OpenAi {
         ) {
             return CodexAttempt {
                 previous_response_id: None,
-                store,
                 emitted_event: false,
                 definitive_rejection: false,
                 delivery: Some(RequestDeliveryMetadata::new(RequestDeliveryPhase::NotSent)),
@@ -1397,13 +1386,12 @@ impl OpenAi {
             tools,
             previous_response_id.as_deref(),
             Some(&prompt_cache_key),
-            store,
+            false,
             &opts,
             true,
         );
         let mut full_history_body = None;
-        let full_history_fallback_available = !store
-            && previous_response_id.is_some()
+        let full_history_fallback_available = previous_response_id.is_some()
             && (!opts.protect_history_replay || opts.allow_history_replay);
         log_responses_request(
             "websocket",
@@ -1450,8 +1438,7 @@ impl OpenAi {
             match websocket_result {
                 Ok((response_id, response)) => (response_id, response, true),
                 Err(error) if should_fallback_to_http(&error) => {
-                    if !store
-                        && previous_response_id.is_some()
+                    if previous_response_id.is_some()
                         && opts.protect_history_replay
                         && !opts.allow_history_replay
                     {
@@ -1459,7 +1446,6 @@ impl OpenAi {
                             .finish_codex_attempt(
                                 CodexAttempt {
                                     previous_response_id,
-                                    store,
                                     emitted_event: false,
                                     definitive_rejection: false,
                                     delivery: Some(error.delivery),
@@ -1474,34 +1460,26 @@ impl OpenAi {
                             .await;
                     }
                     warn!("OpenAI Responses WebSocket unavailable; falling back to HTTP");
-                    let fallback_body = if store {
-                        &body
-                    } else {
-                        full_history_body.get_or_insert_with(|| {
-                            super::websocket::build_request_body(
-                                model,
-                                messages,
-                                system,
-                                tools,
-                                None,
-                                Some(&prompt_cache_key),
-                                false,
-                                &opts,
-                                true,
-                            )
-                        })
-                    };
+                    let fallback_body = full_history_body.get_or_insert_with(|| {
+                        super::websocket::build_request_body(
+                            model,
+                            messages,
+                            system,
+                            tools,
+                            None,
+                            Some(&prompt_cache_key),
+                            false,
+                            &opts,
+                            true,
+                        )
+                    });
                     log_responses_request(
                         "http_sse",
                         fallback_body,
                         messages.len(),
-                        if store {
-                            incremental_messages.len()
-                        } else {
-                            messages.len()
-                        },
-                        store && previous_response_id.is_some(),
-                        !store,
+                        messages.len(),
+                        false,
+                        true,
                     );
                     let fallback_auth = loop {
                         let preflight = match self.pre_send_auth(attempt_nonce).await {
@@ -1511,7 +1489,6 @@ impl OpenAi {
                                     .finish_codex_attempt(
                                         CodexAttempt {
                                             previous_response_id,
-                                            store,
                                             emitted_event: false,
                                             definitive_rejection: false,
                                             delivery: Some(RequestDeliveryMetadata::new(
@@ -1540,7 +1517,6 @@ impl OpenAi {
                                 .finish_codex_attempt(
                                     CodexAttempt {
                                         previous_response_id,
-                                        store,
                                         emitted_event: false,
                                         definitive_rejection: false,
                                         delivery: Some(RequestDeliveryMetadata::new(
@@ -1559,7 +1535,6 @@ impl OpenAi {
                                 .finish_codex_attempt(
                                     CodexAttempt {
                                         previous_response_id,
-                                        store,
                                         emitted_event: false,
                                         definitive_rejection: false,
                                         delivery: Some(RequestDeliveryMetadata::new(
@@ -1584,13 +1559,12 @@ impl OpenAi {
                     )
                     .await
                     {
-                        Ok((response_id, response)) => (response_id, response, store),
+                        Ok((response_id, response)) => (response_id, response, false),
                         Err(error) => {
                             return self
                                 .finish_codex_attempt(
                                     CodexAttempt {
                                         previous_response_id,
-                                        store,
                                         emitted_event: true,
                                         definitive_rejection: false,
                                         delivery: None,
@@ -1607,7 +1581,7 @@ impl OpenAi {
                 Err(error) => {
                     return self
                         .finish_codex_attempt(
-                            CodexAttempt::from_websocket_error(previous_response_id, store, error),
+                            CodexAttempt::from_websocket_error(previous_response_id, error),
                             session_id,
                             response_chain_lock.as_ref(),
                             event_tx,
@@ -1622,7 +1596,7 @@ impl OpenAi {
             tools_hash,
             &state_scope_hash,
             messages,
-            store,
+            false,
             response_chain_lock.as_ref(),
         )
         .await;
@@ -1630,7 +1604,6 @@ impl OpenAi {
             .await;
         CodexAttempt {
             previous_response_id,
-            store,
             emitted_event: false,
             definitive_rejection: false,
             delivery: None,
@@ -1659,7 +1632,6 @@ impl OpenAi {
             Err(error) => {
                 return CodexAttempt {
                     previous_response_id: None,
-                    store: false,
                     emitted_event: false,
                     definitive_rejection: false,
                     delivery: None,
@@ -1732,6 +1704,8 @@ impl OpenAi {
         opts: RequestOptions,
         session_id: Option<&SessionRef>,
     ) -> Result<StreamResponse, AgentError> {
+        // API-key Responses requests are intentionally stateless. This HTTP path cannot
+        // reuse a store=false response ID safely, so every turn sends full history.
         let prompt_cache_key = prompt_cache_key(&model.id, system, tools_hash, session_id);
         let body = super::responses::build_body(
             model,
@@ -2315,12 +2289,8 @@ fn is_missing_previous_response(attempt: &CodexAttempt) -> bool {
         && normalized == format!("not found: {}", previous_response_id.to_ascii_lowercase())
 }
 
-fn should_clear_response_chain<T>(result: &Result<T, AgentError>, store: bool) -> bool {
-    match result {
-        Err(AgentError::Api { status, .. }) => !store || !(*status == 429 || *status >= 500),
-        Err(_) => !store,
-        Ok(_) => false,
-    }
+fn should_clear_response_chain<T>(result: &Result<T, AgentError>) -> bool {
+    result.is_err()
 }
 
 fn is_definitive_responses_rejection(error: &AgentError) -> bool {
@@ -3583,7 +3553,6 @@ mod tests {
     fn pre_send_definitive_401_allows_oauth_refresh_retry() {
         let attempt = CodexAttempt::from_websocket_error(
             None,
-            false,
             super::super::websocket::WebSocketAttemptError::transport(
                 AgentError::Api {
                     status: 401,
@@ -3605,7 +3574,6 @@ mod tests {
             delivery.emitted_event = emitted_event;
             CodexAttempt::from_websocket_error(
                 None,
-                false,
                 super::super::websocket::WebSocketAttemptError {
                     error: AgentError::Api {
                         status: 401,
@@ -4382,7 +4350,6 @@ mod tests {
         let attempt =
             |phase, status, message: &str, emitted_event, definitive_rejection| CodexAttempt {
                 previous_response_id: Some("resp_1".into()),
-                store: false,
                 emitted_event,
                 definitive_rejection,
                 delivery: Some(RequestDeliveryMetadata::new(phase)),
@@ -4440,7 +4407,6 @@ mod tests {
     fn coding_plan_admission_retries_before_response_create() {
         let attempt = |phase, emitted_event, error: AgentError, definitive| CodexAttempt {
             previous_response_id: Some("resp_1".into()),
-            store: false,
             emitted_event,
             definitive_rejection: definitive,
             delivery: Some(RequestDeliveryMetadata::new(phase)),
@@ -4543,24 +4509,17 @@ mod tests {
     #[test]
     fn successful_socket_local_continuation_keeps_response_chain() {
         let success: Result<(), AgentError> = Ok(());
-        assert!(!should_clear_response_chain(&success, false));
+        assert!(!should_clear_response_chain(&success));
 
         let transport_error: Result<(), AgentError> =
             Err(std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "closed").into());
-        assert!(should_clear_response_chain(&transport_error, false));
-        assert!(!should_clear_response_chain(&transport_error, true));
+        assert!(should_clear_response_chain(&transport_error));
 
-        let transient_api_error: Result<(), AgentError> = Err(AgentError::Api {
+        let api_error: Result<(), AgentError> = Err(AgentError::Api {
             status: 500,
             message: "temporary".into(),
         });
-        assert!(!should_clear_response_chain(&transient_api_error, true));
-
-        let permanent_api_error: Result<(), AgentError> = Err(AgentError::Api {
-            status: 400,
-            message: "invalid request".into(),
-        });
-        assert!(should_clear_response_chain(&permanent_api_error, true));
+        assert!(should_clear_response_chain(&api_error));
     }
 
     #[test]

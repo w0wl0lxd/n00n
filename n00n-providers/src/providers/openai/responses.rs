@@ -23,7 +23,7 @@ const RESPONSE_IN_FLIGHT_TIMEOUT_MULTIPLIER: u32 = 6;
 const MAX_RESPONSE_IN_FLIGHT_TIMEOUT: Duration = Duration::from_mins(30);
 const PROMPT_CACHE_TTL: &str = "30m";
 const MAX_SAFETY_IDENTIFIER_CHARS: usize = 64;
-const MODERATION_MODEL: &str = "omni-moderation-latest";
+pub(super) const MODERATION_MODEL: &str = "omni-moderation-latest";
 const OPENAI_BUILTIN_ORIGIN: &str = "openai";
 
 pub(crate) fn response_in_flight_timeout(stream_timeout: Duration) -> Duration {
@@ -148,9 +148,6 @@ pub(crate) fn convert_input(
     let mut input = Vec::new();
     let supports_breakpoint = model.supports_prompt_cache_breakpoint();
 
-    // Mark the last N user messages for explicit prompt-cache breakpoints.
-    // The breakpoint goes on the last content block of each selected message,
-    // so the prefix ending at that block is eligible for cache reuse.
     let breakpoint_indices: HashSet<usize> = messages
         .iter()
         .enumerate()
@@ -163,6 +160,7 @@ pub(crate) fn convert_input(
     for (msg_idx, msg) in messages.iter().enumerate() {
         match msg.role {
             Role::User => {
+                let input_start = input.len();
                 let mut content_blocks = Vec::new();
                 for block in &msg.content {
                     match block {
@@ -219,10 +217,8 @@ pub(crate) fn convert_input(
                     }
                 }
 
-                if supports_breakpoint
-                    && breakpoint_indices.contains(&msg_idx)
-                    && let Some(last) = content_blocks.last_mut()
-                {
+                let add_breakpoint = supports_breakpoint && breakpoint_indices.contains(&msg_idx);
+                if add_breakpoint && let Some(last) = content_blocks.last_mut() {
                     last["prompt_cache_breakpoint"] = json!({"mode": "explicit"});
                 }
 
@@ -232,6 +228,11 @@ pub(crate) fn convert_input(
                         "role": "user",
                         "content": content_blocks
                     }));
+                } else if add_breakpoint
+                    && input.len() > input_start
+                    && let Some(last) = input.last_mut()
+                {
+                    last["prompt_cache_breakpoint"] = json!({"mode": "explicit"});
                 }
             }
             Role::Assistant => {
@@ -352,7 +353,6 @@ pub(crate) fn request_diagnostics(body: &Value) -> RequestDiagnostics {
     diagnostics
 }
 
-// Built-in tools that OpenAI Responses API supports
 const BUILTIN_TOOLS: &[&str] = &[
     "web_search",
     "file_search",
@@ -367,9 +367,45 @@ const BUILTIN_TOOLS: &[&str] = &[
     "tool_search",
     "programmatic_tool_calling",
     "image_generation",
-    "custom",
     "namespace",
     "function",
+];
+const BUILTIN_CONFIG_KEYS: &[(&[&str], &[&str])] = &[
+    (
+        &["file_search"],
+        &[
+            "vector_store_ids",
+            "filters",
+            "max_num_results",
+            "ranking_options",
+        ],
+    ),
+    (
+        &["web_search"],
+        &["filters", "search_context_size", "user_location"],
+    ),
+    (&["code_interpreter"], &["container", "allowed_callers"]),
+    (
+        &["shell", "local_shell"],
+        &["environment", "allowed_callers"],
+    ),
+    (
+        &["mcp"],
+        &[
+            "server_label",
+            "server_url",
+            "connector_id",
+            "tunnel_id",
+            "allowed_callers",
+            "allowed_tools",
+            "require_approval",
+            "headers",
+        ],
+    ),
+    (
+        &["computer", "computer_use_preview"],
+        &["environment", "display_width", "display_height"],
+    ),
 ];
 pub(crate) fn convert_tools(anthropic_tools: &Value, model: &crate::model::Model) -> Value {
     let Some(tools) = anthropic_tools.as_array() else {
@@ -414,86 +450,16 @@ pub(crate) fn convert_tools(anthropic_tools: &Value, model: &crate::model::Model
 }
 
 fn copy_builtin_config(built_in: &mut Value, source: &Value, tool_type: &str) {
-    match tool_type {
-        "file_search" => {
-            if let Some(v) = source.get("vector_store_ids") {
-                built_in["vector_store_ids"] = v.clone();
-            }
-            if let Some(v) = source.get("filters") {
-                built_in["filters"] = v.clone();
-            }
-            if let Some(v) = source.get("max_num_results") {
-                built_in["max_num_results"] = v.clone();
-            }
-            if let Some(v) = source.get("ranking_options") {
-                built_in["ranking_options"] = v.clone();
-            }
+    let Some((_, keys)) = BUILTIN_CONFIG_KEYS
+        .iter()
+        .find(|(tool_types, _)| tool_types.contains(&tool_type))
+    else {
+        return;
+    };
+    for key in *keys {
+        if let Some(value) = source.get(*key) {
+            built_in[*key] = value.clone();
         }
-        "web_search" => {
-            if let Some(v) = source.get("filters") {
-                built_in["filters"] = v.clone();
-            }
-            if let Some(v) = source.get("search_context_size") {
-                built_in["search_context_size"] = v.clone();
-            }
-            if let Some(v) = source.get("user_location") {
-                built_in["user_location"] = v.clone();
-            }
-        }
-        "code_interpreter" => {
-            if let Some(v) = source.get("container") {
-                built_in["container"] = v.clone();
-            }
-            if let Some(v) = source.get("allowed_callers") {
-                built_in["allowed_callers"] = v.clone();
-            }
-        }
-        "shell" | "local_shell" => {
-            if let Some(v) = source.get("environment") {
-                built_in["environment"] = v.clone();
-            }
-            if let Some(v) = source.get("allowed_callers") {
-                built_in["allowed_callers"] = v.clone();
-            }
-        }
-        "mcp" => {
-            if let Some(v) = source.get("server_label") {
-                built_in["server_label"] = v.clone();
-            }
-            if let Some(v) = source.get("server_url") {
-                built_in["server_url"] = v.clone();
-            }
-            if let Some(v) = source.get("connector_id") {
-                built_in["connector_id"] = v.clone();
-            }
-            if let Some(v) = source.get("tunnel_id") {
-                built_in["tunnel_id"] = v.clone();
-            }
-            if let Some(v) = source.get("allowed_callers") {
-                built_in["allowed_callers"] = v.clone();
-            }
-            if let Some(v) = source.get("allowed_tools") {
-                built_in["allowed_tools"] = v.clone();
-            }
-            if let Some(v) = source.get("require_approval") {
-                built_in["require_approval"] = v.clone();
-            }
-            if let Some(v) = source.get("headers") {
-                built_in["headers"] = v.clone();
-            }
-        }
-        "computer" | "computer_use_preview" => {
-            if let Some(v) = source.get("environment") {
-                built_in["environment"] = v.clone();
-            }
-            if let Some(v) = source.get("display_width") {
-                built_in["display_width"] = v.clone();
-            }
-            if let Some(v) = source.get("display_height") {
-                built_in["display_height"] = v.clone();
-            }
-        }
-        _ => {}
     }
 }
 
@@ -749,20 +715,8 @@ impl ResponseAccumulator {
                     ) => {
                         debug!(tool_type, "OpenAI built-in tool call started");
                     }
-                    Some("program") => {
-                        // Program execution - represent as Thinking for now
-                        debug!("OpenAI program item");
-                        if let Some(code) = item.get("code").and_then(Value::as_str) {
-                            self.reasoning_summary_text.push_str(code);
-                        }
-                    }
-                    Some("program_output") => {
-                        // Program output - log for now
-                        debug!("OpenAI program_output item");
-                        if let Some(output) = item.get("output").and_then(Value::as_str) {
-                            self.text.push_str(output);
-                        }
-                    }
+                    Some("program") => debug!("OpenAI program item"),
+                    Some("program_output") => debug!("OpenAI program_output item"),
                     Some("reasoning" | "message") => {}
                     _ => {
                         let item_type = item["type"].as_str().unwrap_or_else(|| "unknown");
@@ -829,171 +783,181 @@ impl ResponseAccumulator {
                 let output_index = data["output_index"].as_u64().unwrap_or_else(|| {
                     (self.reasoning_items.len() + self.tool_accumulators.len()) as u64
                 });
-                if item["type"].as_str() == Some("reasoning") {
-                    if !self.has_reasoning_item(item) {
-                        self.reasoning_items.push((output_index, item.clone()));
-                    }
-                } else if item["type"].as_str() == Some("message") && self.text.is_empty() {
-                    if let Some(content) = item["content"].as_array() {
-                        for part in content {
-                            if part["type"].as_str() == Some("output_text")
-                                && let Some(snapshot) = part["text"].as_str()
-                            {
-                                self.text.push_str(snapshot);
-                            }
+                match item["type"].as_str() {
+                    Some("reasoning") => {
+                        if !self.has_reasoning_item(item) {
+                            self.reasoning_items.push((output_index, item.clone()));
                         }
                     }
-                } else if item["type"].as_str() == Some("function_call") {
-                    let call_id = item["call_id"]
-                        .as_str()
-                        .map_or_else(String::new, ToString::to_string);
-                    let name = item["name"]
-                        .as_str()
-                        .map_or_else(String::new, ToString::to_string);
-                    let arguments = if let Some(s) = item["arguments"].as_str() {
-                        s.to_string()
-                    } else if let Some(obj) = item["arguments"].as_object() {
-                        match serde_json::to_string(obj) {
-                            Ok(s) => s,
-                            Err(e) => {
-                                warn!(error = %e, "failed to serialize arguments, using empty string");
-                                String::new()
-                            }
-                        }
-                    } else {
-                        String::new()
-                    };
-                    let idx = data["output_index"].as_u64();
-                    let acc = if let Some(idx) = idx {
-                        self.tool_accumulators
-                            .iter_mut()
-                            .find(|acc| acc.output_index == idx)
-                    } else {
-                        self.tool_accumulators.last_mut()
-                    };
-                    if let Some(acc) = acc {
-                        let should_emit_start = acc.name.is_empty() && !name.is_empty();
-                        if acc.call_id.is_empty() {
-                            acc.call_id.clone_from(&call_id);
-                        }
-                        if acc.name.is_empty() {
-                            acc.name.clone_from(&name);
-                        }
-                        if !arguments.is_empty() {
-                            acc.arguments = arguments;
-                        }
-                        if should_emit_start {
-                            self.emitted_event = true;
-                            event_tx
-                                .send_async(ProviderEvent::ToolUseStart {
-                                    id: acc.call_id.clone(),
-                                    name: acc.name.clone(),
-                                })
-                                .await?;
-                        }
-                    } else {
-                        if !name.is_empty() {
-                            self.emitted_event = true;
-                            event_tx
-                                .send_async(ProviderEvent::ToolUseStart {
-                                    id: call_id.clone(),
-                                    name: name.clone(),
-                                })
-                                .await?;
-                        }
-                        self.tool_accumulators.push(ToolAccumulator {
-                            output_index: idx
-                                .unwrap_or_else(|| self.tool_accumulators.len() as u64),
-                            call_id,
-                            name,
-                            arguments,
-                        });
-                    }
-                } else if item["type"].as_str() == Some("web_search_call") {
-                    // Extract web search results
-                    if let Some(action) = item.get("action") {
-                        if let Some(queries) = action.get("queries").and_then(Value::as_array) {
-                            for query in queries {
-                                let q = query
-                                    .as_str()
-                                    .or_else(|| query.get("text").and_then(Value::as_str));
-                                if let Some(q) = q {
-                                    let _ = write!(self.text, "[search: {q}]");
-                                }
-                            }
-                        }
-                        if let Some(results) = action.get("results").and_then(Value::as_array) {
-                            for result in results {
-                                if let Some(title) = result.get("title").and_then(Value::as_str)
-                                    && let Some(url) = result.get("url").and_then(Value::as_str)
+                    Some("message") if self.text.is_empty() => {
+                        if let Some(content) = item["content"].as_array() {
+                            for part in content {
+                                if part["type"].as_str() == Some("output_text")
+                                    && let Some(snapshot) = part["text"].as_str()
                                 {
-                                    let _ = write!(self.text, "[{title}]({url})");
+                                    self.text.push_str(snapshot);
                                 }
                             }
                         }
                     }
-                } else if item["type"].as_str() == Some("file_search_call") {
-                    // Extract file search results
-                    if let Some(results) = item.get("results").and_then(Value::as_array) {
-                        for result in results {
-                            if let Some(filename) = result.get("filename").and_then(Value::as_str)
-                                && let Some(file_id) = result.get("file_id").and_then(Value::as_str)
-                            {
-                                let _ = write!(self.text, "[file:{filename} ({file_id})]");
+                    Some("function_call") => {
+                        let call_id = item["call_id"]
+                            .as_str()
+                            .map_or_else(String::new, ToString::to_string);
+                        let name = item["name"]
+                            .as_str()
+                            .map_or_else(String::new, ToString::to_string);
+                        let arguments = if let Some(s) = item["arguments"].as_str() {
+                            s.to_string()
+                        } else if let Some(obj) = item["arguments"].as_object() {
+                            match serde_json::to_string(obj) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    warn!(error = %e, "failed to serialize arguments, using empty string");
+                                    String::new()
+                                }
+                            }
+                        } else {
+                            String::new()
+                        };
+                        let idx = data["output_index"].as_u64();
+                        let acc = if let Some(idx) = idx {
+                            self.tool_accumulators
+                                .iter_mut()
+                                .find(|acc| acc.output_index == idx)
+                        } else {
+                            self.tool_accumulators.last_mut()
+                        };
+                        if let Some(acc) = acc {
+                            let should_emit_start = acc.name.is_empty() && !name.is_empty();
+                            if acc.call_id.is_empty() {
+                                acc.call_id.clone_from(&call_id);
+                            }
+                            if acc.name.is_empty() {
+                                acc.name.clone_from(&name);
+                            }
+                            if !arguments.is_empty() {
+                                acc.arguments = arguments;
+                            }
+                            if should_emit_start {
+                                self.emitted_event = true;
+                                event_tx
+                                    .send_async(ProviderEvent::ToolUseStart {
+                                        id: acc.call_id.clone(),
+                                        name: acc.name.clone(),
+                                    })
+                                    .await?;
+                            }
+                        } else {
+                            if !name.is_empty() {
+                                self.emitted_event = true;
+                                event_tx
+                                    .send_async(ProviderEvent::ToolUseStart {
+                                        id: call_id.clone(),
+                                        name: name.clone(),
+                                    })
+                                    .await?;
+                            }
+                            self.tool_accumulators.push(ToolAccumulator {
+                                output_index: idx
+                                    .unwrap_or_else(|| self.tool_accumulators.len() as u64),
+                                call_id,
+                                name,
+                                arguments,
+                            });
+                        }
+                    }
+                    Some("web_search_call") => {
+                        if let Some(action) = item.get("action") {
+                            if let Some(queries) = action.get("queries").and_then(Value::as_array) {
+                                for query in queries {
+                                    let q = query
+                                        .as_str()
+                                        .or_else(|| query.get("text").and_then(Value::as_str));
+                                    if let Some(q) = q {
+                                        let _ = write!(self.text, "[search: {q}]");
+                                    }
+                                }
+                            }
+                            if let Some(results) = action.get("results").and_then(Value::as_array) {
+                                for result in results {
+                                    if let Some(title) = result.get("title").and_then(Value::as_str)
+                                        && let Some(url) = result.get("url").and_then(Value::as_str)
+                                    {
+                                        let _ = write!(self.text, "[{title}]({url})");
+                                    }
+                                }
                             }
                         }
                     }
-                } else if item["type"].as_str() == Some("code_interpreter_call") {
-                    // Extract code interpreter outputs
-                    if let Some(outputs) = item.get("outputs").and_then(Value::as_array) {
-                        for output in outputs {
-                            if let Some(text) = output.get("text").and_then(Value::as_str) {
-                                self.text.push_str(text);
-                            }
-                            if let Some(image) = output.get("image")
-                                && let Some(file_id) = image.get("file_id").and_then(Value::as_str)
-                            {
-                                let _ = write!(self.text, "[image:{file_id}]");
+                    Some("file_search_call") => {
+                        if let Some(results) = item.get("results").and_then(Value::as_array) {
+                            for result in results {
+                                if let Some(filename) =
+                                    result.get("filename").and_then(Value::as_str)
+                                    && let Some(file_id) =
+                                        result.get("file_id").and_then(Value::as_str)
+                                {
+                                    let _ = write!(self.text, "[file:{filename} ({file_id})]");
+                                }
                             }
                         }
                     }
-                } else if item["type"].as_str() == Some("computer_call") {
-                    // Computer call - treat as tool use
-                    if let Some(call_id) = item.get("call_id").and_then(Value::as_str) {
-                        let _ = write!(self.text, "[computer_call:{call_id}]");
-                    }
-                } else if item["type"].as_str() == Some("computer_call_output") {
-                    // Computer call output - capture screenshot
-                    if let Some(output) = item.get("output")
-                        && let Some(screenshot) = output.get("screenshot")
-                    {
-                        if let Some(file_id) = screenshot.get("file_id").and_then(Value::as_str) {
-                            let _ = write!(self.text, "[screenshot:{file_id}]");
+                    Some("code_interpreter_call") => {
+                        if let Some(outputs) = item.get("outputs").and_then(Value::as_array) {
+                            for output in outputs {
+                                if let Some(text) = output.get("text").and_then(Value::as_str) {
+                                    self.text.push_str(text);
+                                }
+                                if let Some(image) = output.get("image")
+                                    && let Some(file_id) =
+                                        image.get("file_id").and_then(Value::as_str)
+                                {
+                                    let _ = write!(self.text, "[image:{file_id}]");
+                                }
+                            }
                         }
-                        if let Some(image_url) = screenshot.get("image_url").and_then(Value::as_str)
+                    }
+                    Some("computer_call") => {
+                        if let Some(call_id) = item.get("call_id").and_then(Value::as_str) {
+                            let _ = write!(self.text, "[computer_call:{call_id}]");
+                        }
+                    }
+                    Some("computer_call_output") => {
+                        if let Some(output) = item.get("output")
+                            && let Some(screenshot) = output.get("screenshot")
                         {
-                            let _ = write!(self.text, "[screenshot:{image_url}]");
+                            if let Some(file_id) = screenshot.get("file_id").and_then(Value::as_str)
+                            {
+                                let _ = write!(self.text, "[screenshot:{file_id}]");
+                            }
+                            if let Some(image_url) =
+                                screenshot.get("image_url").and_then(Value::as_str)
+                            {
+                                let _ = write!(self.text, "[screenshot:{image_url}]");
+                            }
                         }
                     }
-                } else if item["type"].as_str() == Some("program") {
-                    // Program code - append to reasoning summary
-                    if let Some(code) = item.get("code").and_then(Value::as_str) {
-                        self.reasoning_summary_text.push_str(code);
+                    Some("program") => {
+                        if let Some(code) = item.get("code").and_then(Value::as_str) {
+                            self.reasoning_summary_text.push_str(code);
+                        }
                     }
-                } else if item["type"].as_str() == Some("program_output") {
-                    // Program output - append to text
-                    if let Some(output) = item.get("output").and_then(Value::as_str) {
-                        self.text.push_str(output);
+                    Some("program_output") => {
+                        if let Some(output) = item.get("output").and_then(Value::as_str) {
+                            self.text.push_str(output);
+                        }
                     }
-                } else if item["type"].as_str() == Some("tool_search_call") {
-                    // Tool search - log and note
-                    debug!("OpenAI tool_search_call item");
-                    self.text.push_str("[tool_search]");
-                } else if item["type"].as_str() == Some("tool_search_output") {
-                    // Tool search output - extract loaded tools
-                    if let Some(tools) = item.get("tools").and_then(Value::as_array) {
-                        let _ = write!(self.text, "[loaded {} tools]", tools.len());
+                    Some("tool_search_call") => {
+                        debug!("OpenAI tool_search_call item");
+                        self.text.push_str("[tool_search]");
                     }
+                    Some("tool_search_output") => {
+                        if let Some(tools) = item.get("tools").and_then(Value::as_array) {
+                            let _ = write!(self.text, "[loaded {} tools]", tools.len());
+                        }
+                    }
+                    _ => {}
                 }
             }
 
@@ -1002,6 +966,7 @@ impl ResponseAccumulator {
             | "response.computer_call.completed"
             | "response.code_interpreter_call.completed" => {
                 self.accepted = true;
+                self.emitted_event = true;
                 debug!(event_type, "OpenAI built-in tool call completed");
             }
 
@@ -1454,6 +1419,22 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
                 })
                 .collect();
             assert_eq!(deltas, vec!["verified answer"]);
+        });
+    }
+
+    #[test_case("response.web_search_call.completed" ; "web_search")]
+    #[test_case("response.file_search_call.completed" ; "file_search")]
+    #[test_case("response.computer_call.completed" ; "computer")]
+    #[test_case("response.code_interpreter_call.completed" ; "code_interpreter")]
+    fn builtin_completed_event_marks_output_emitted(event_type: &str) {
+        smol::block_on(async {
+            let (tx, _rx) = flume::unbounded();
+            let mut accumulator = ResponseAccumulator::new();
+            accumulator
+                .handle_event(event_type, &json!({}), &tx)
+                .await
+                .unwrap();
+            assert!(accumulator.emitted_event());
         });
     }
 
@@ -2246,6 +2227,55 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
         assert_eq!(converted[0]["name"], name);
     }
 
+    #[test]
+    fn convert_tools_keeps_custom_as_function() {
+        let tools = json!([{
+            "origin": OPENAI_BUILTIN_ORIGIN,
+            "name": "custom",
+            "description": "custom grammar tool",
+            "input_schema": {"type": "object"}
+        }]);
+        let converted = convert_tools(&tools, &Model::from_spec("openai/gpt-5.6").unwrap());
+        assert_eq!(converted[0]["type"], "function");
+        assert_eq!(converted[0]["name"], "custom");
+    }
+
+    #[test_case("file_search", &["vector_store_ids", "filters", "max_num_results", "ranking_options"] ; "file_search")]
+    #[test_case("web_search", &["filters", "search_context_size", "user_location"] ; "web_search")]
+    #[test_case("code_interpreter", &["container", "allowed_callers"] ; "code_interpreter")]
+    #[test_case("shell", &["environment", "allowed_callers"] ; "shell")]
+    #[test_case("local_shell", &["environment", "allowed_callers"] ; "local_shell_alias")]
+    #[test_case("mcp", &["server_label", "server_url", "connector_id", "tunnel_id", "allowed_callers", "allowed_tools", "require_approval", "headers"] ; "mcp")]
+    #[test_case("computer", &["environment", "display_width", "display_height"] ; "computer")]
+    #[test_case("computer_use_preview", &["environment", "display_width", "display_height"] ; "computer_alias")]
+    fn copy_builtin_config_uses_expected_keys(tool_type: &str, expected_keys: &[&str]) {
+        let source = json!({
+            "vector_store_ids": [],
+            "filters": {},
+            "max_num_results": 1,
+            "ranking_options": {},
+            "search_context_size": "low",
+            "user_location": {},
+            "container": "auto",
+            "allowed_callers": [],
+            "environment": "linux",
+            "server_label": "server",
+            "server_url": "server-url",
+            "connector_id": "connector",
+            "tunnel_id": "tunnel",
+            "allowed_tools": [],
+            "require_approval": "never",
+            "headers": {},
+            "display_width": 1,
+            "display_height": 1,
+        });
+        let mut built_in = json!({"type": tool_type});
+        copy_builtin_config(&mut built_in, &source, tool_type);
+        let object = built_in.as_object().unwrap();
+        assert_eq!(object.len(), expected_keys.len() + 1);
+        assert!(expected_keys.iter().all(|key| object.contains_key(*key)));
+    }
+
     #[test_case("web_search" ; "explicit_openai_builtin")]
     fn convert_tools_requires_openai_origin_for_builtins(name: &str) {
         let tools = json!([{
@@ -2285,6 +2315,38 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
         assert_eq!(input[1]["content"][0]["text"], "continue");
         assert_eq!(
             input[1]["content"][0]["prompt_cache_breakpoint"],
+            json!({"mode": "explicit"})
+        );
+    }
+
+    #[test]
+    fn convert_input_marks_tool_only_user_message_breakpoint() {
+        let messages = vec![Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "call_1".into(),
+                    content: "first".into(),
+                    is_error: false,
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: "call_2".into(),
+                    content: "last".into(),
+                    is_error: false,
+                },
+            ],
+            ..Default::default()
+        }];
+        let input = convert_input(
+            &messages,
+            &System::default(),
+            1,
+            &Model::from_spec("openai/gpt-5.6").unwrap(),
+        );
+        assert_eq!(input.as_array().map(Vec::len), Some(2));
+        assert!(input[0].get("prompt_cache_breakpoint").is_none());
+        assert_eq!(
+            input[1]["prompt_cache_breakpoint"],
             json!({"mode": "explicit"})
         );
     }
@@ -2617,12 +2679,12 @@ event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage
     fn parse_sse_program_item() {
         smol::block_on(async {
             let sse = "\
+event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"type\":\"program\",\"code\":\"print('hello')\"}}\n\
 event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"type\":\"program\",\"code\":\"print('hello')\"}}\n\
 event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\
 ";
             let (resp, _) = run_sse(sse).await;
             let (_, resp) = resp.unwrap();
-            // Program code goes to reasoning summary
             let thinking = resp.message.content.iter().find_map(|b| match b {
                 ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
                 _ => None,
@@ -2635,6 +2697,7 @@ event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage
     fn parse_sse_program_output_item() {
         smol::block_on(async {
             let sse = "\
+event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"type\":\"program_output\",\"output\":\"hello world\"}}\n\
 event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"type\":\"program_output\",\"output\":\"hello world\"}}\n\
 event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\
 ";
