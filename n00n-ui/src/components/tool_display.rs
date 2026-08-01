@@ -1,7 +1,6 @@
-use super::status_bar::format_tokens;
-use super::{DisplayMessage, ToolStatus};
-
 use super::code_view;
+use super::status_bar::format_tokens;
+use super::{DisplayMessage, ToolStatus, args_view};
 use crate::animation::{spinner_frame, spinner_str};
 use crate::cast;
 use crate::theme;
@@ -286,7 +285,7 @@ fn format_text_output(t: &TextOutput) -> Cow<'_, str> {
     let mut out = ToolOutput::Plain(t.clone()).as_text();
     if let Some(state) = &t.state {
         out.push_str("\n\nState:\n");
-        out.push_str(&code_view::json_text(state));
+        out.push_str(&args_view::redacted_json_text(state));
     }
     if let Some(tel) = &t.telemetry {
         out.push_str("\n\nTelemetry: ");
@@ -411,26 +410,40 @@ impl ToolLineBuilder {
             Span::styled(label, theme::current().tool_prefix),
             Span::styled("  ", theme::current().tool_dim),
         ];
+        let mut continuation: Vec<Line<'static>> = Vec::new();
         if let Some(snapshot) = render_header {
-            if let Some(first_line) = snapshot.lines.first() {
-                let line_idx = self.lines.len();
+            let base = self.lines.len();
+            for (i, sline) in snapshot.lines.iter().enumerate() {
                 let spinners = &mut self.spinner_lines;
-                bake_spans(&first_line.spans, &mut spans, spinner_str(0), |span_idx| {
-                    spinners.push((line_idx, span_idx));
-                });
+                if i == 0 {
+                    bake_spans(&sline.spans, &mut spans, spinner_str(0), |span_idx| {
+                        spinners.push((base, span_idx));
+                    });
+                } else {
+                    let mut line_spans = Vec::new();
+                    bake_spans(&sline.spans, &mut line_spans, spinner_str(0), |span_idx| {
+                        spinners.push((base + i, span_idx));
+                    });
+                    let mut line = Line::from(line_spans);
+                    line.spans.insert(0, Span::raw(TOOL_BODY_INDENT));
+                    continuation.push(line);
+                }
             }
         } else {
             spans.push(Span::styled(header.to_owned(), theme::current().tool));
         }
-        let mut copy = format!("{tool_name}> {header}");
         if let Some(ann) = annotation {
             spans.push(Span::styled(
                 format!(" ({ann})"),
                 theme::current().tool_annotation,
             ));
-            let _ = write!(copy, " ({ann})");
         }
         self.lines.push(Line::from(spans));
+        self.lines.extend(continuation);
+        let mut copy = format!("{tool_name}> {header}");
+        if let Some(ann) = annotation {
+            let _ = write!(copy, " ({ann})");
+        }
         self.search_text = copy;
     }
 
@@ -601,47 +614,6 @@ fn push_text_lines(lines: &mut Vec<Line<'static>>, text: &str, indent: &'static 
     }
 }
 
-fn format_argument_value(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::Null => "null".into(),
-        serde_json::Value::Bool(value) => value.to_string(),
-        serde_json::Value::Number(value) => value.to_string(),
-        serde_json::Value::String(value) => value.clone(),
-        serde_json::Value::Array(values) => {
-            let values = values
-                .iter()
-                .map(format_argument_value)
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("[{values}]")
-        }
-        serde_json::Value::Object(values) => {
-            let values = values
-                .iter()
-                .map(|(key, value)| format!("{key}: {}", format_argument_value(value)))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("{{{values}}}")
-        }
-    }
-}
-
-fn format_tool_arguments(input: &serde_json::Value) -> Option<String> {
-    let serde_json::Value::Object(values) = input else {
-        return Some(format_argument_value(input));
-    };
-    if values.is_empty() {
-        return None;
-    }
-    Some(
-        values
-            .iter()
-            .map(|(key, value)| format!("{key}: {}", format_argument_value(value)))
-            .collect::<Vec<_>>()
-            .join("\n"),
-    )
-}
-
 /// Bakes snapshot spans onto `out`. `"spinner"`-styled spans bake to the
 /// current frame, and `on_spinner` gets their span index in the same pass,
 /// so animation offsets can never drift from the baked spans.
@@ -750,18 +722,24 @@ pub fn build_tool_lines(
             msg.tool_output.as_deref()
         },
     );
-    if let (true, true, Some(arguments)) = (
-        msg.tool_input.is_none(),
-        msg.render_header.is_none(),
-        msg.tool_raw_input
-            .as_deref()
-            .and_then(format_tool_arguments),
-    ) {
-        let text = format!("Arguments:\n{arguments}");
-        let truncated = truncate_output(&text, b.limits.output);
-        push_text_lines(&mut b.lines, &truncated.kept, TOOL_BODY_INDENT);
-        b.push_search_text(&text);
-        b.push_truncation_count(truncated.skipped);
+    if msg.tool_input.is_none()
+        && msg.render_header.is_none()
+        && let Some(input) = msg.tool_raw_input.as_deref()
+    {
+        let view = args_view::render_args(input, b.limits.output, b.limits.is_output_expanded());
+        let arg_lines = view.lines.len();
+        if arg_lines >= 2 {
+            b.lines.push(Line::from(vec![
+                Span::raw(TOOL_BODY_INDENT),
+                Span::styled("Arguments:", theme::current().tool_annotation),
+            ]));
+            for mut line in view.lines {
+                line.spans.insert(0, Span::raw(TOOL_BODY_INDENT));
+                b.lines.push(line);
+            }
+            b.push_search_text(&args_view::arg_search_text(input));
+            b.push_truncation_count(view.hidden);
+        }
     }
     let show_output = if let Some(ref snapshot) = msg.render_snapshot {
         let search_text = msg
@@ -1059,6 +1037,82 @@ mod tests {
         assert!(text.contains("Purpose-built header"));
         assert!(!text.contains("Arguments:"));
         assert!(!text.contains("secret needle"));
+    }
+
+    #[test]
+    fn single_line_args_suppress_arguments_block() {
+        let mut msg = bash_msg("Search", ToolStatus::Success, None, None);
+        msg.tool_raw_input = Some(Arc::new(serde_json::json!({ "query": "needle" })));
+        let tl = build_tool_lines(
+            &msg,
+            ToolStatus::Success,
+            &test_rctx(80),
+            SectionFlags::default(),
+        );
+        let text = lines_text(&tl);
+        assert!(!text.contains("Arguments:"));
+        assert!(!text.contains("needle"));
+    }
+
+    #[test]
+    fn collapsed_args_truncation_notice_renders_once() {
+        let mut msg = bash_msg("Search", ToolStatus::Success, None, None);
+        msg.role = DisplayRole::Tool(Box::new(ToolRole {
+            id: "t1".into(),
+            status: ToolStatus::Success,
+            name: "generic".into(),
+        }));
+        msg.tool_raw_input = Some(Arc::new(serde_json::json!({
+            "a": 1,
+            "b": 2,
+            "c": 3,
+            "d": 4,
+            "e": 5,
+        })));
+        let tol = ToolOutputLines { other: 2, ..TOL };
+        let rctx = RenderCtx {
+            started_at: Instant::now(),
+            width: 80,
+            tool_output_lines: &tol,
+        };
+        let tl = build_tool_lines(&msg, ToolStatus::Success, &rctx, SectionFlags::default());
+        let text = lines_text(&tl);
+        assert!(text.contains("Arguments:"));
+        assert_eq!(
+            text.matches(TRUNCATION_PREFIX).count(),
+            1,
+            "truncation notice must render exactly once: {text}"
+        );
+    }
+
+    #[test]
+    fn multi_line_header_renders_all_lines_indented() {
+        let mut msg = bash_msg("first line", ToolStatus::Success, None, None);
+        msg.render_header = Some(make_snapshot(vec![
+            vec![SnapshotSpan {
+                text: "first line".into(),
+                style: SpanStyle::Default,
+            }],
+            vec![SnapshotSpan {
+                text: "second line".into(),
+                style: SpanStyle::Default,
+            }],
+        ]));
+        let tl = build_tool_lines(
+            &msg,
+            ToolStatus::Success,
+            &test_rctx(80),
+            SectionFlags::default(),
+        );
+        assert_eq!(tl.lines.len(), 2);
+        assert!(lines_text(&tl).contains("first line"));
+        let second: String = tl.lines[1]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(second, "    second line");
+        assert!(tl.search_text.contains("first line"));
     }
 
     fn line_has_styled(tl: &ToolLines, text: &str, style: Style) -> bool {
