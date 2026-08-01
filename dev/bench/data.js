@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785562858933,
+  "lastUpdate": 1785618704560,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -11551,6 +11551,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 168211,
             "range": "± 20992",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "81ce54a3c37b7d08ce2054151d507a1cbc39f0f3",
+          "message": "Merge pull request #215 from w0wl0lxd/fix/compaction-overload-truncation\n\nfix(compaction): add pre-truncation and server_overloaded handling",
+          "timestamp": "2026-08-01T20:55:54Z",
+          "tree_id": "6bb62a79416c8748f50a69dd292938eea0e8f9b1",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/81ce54a3c37b7d08ce2054151d507a1cbc39f0f3"
+        },
+        "date": 1785618703824,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6743487,
+            "range": "± 218954",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2234929,
+            "range": "± 9620",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2230793,
+            "range": "± 38009",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8080476,
+            "range": "± 66044",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4305368,
+            "range": "± 24175",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4315098,
+            "range": "± 36763",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 595648,
+            "range": "± 1329",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191411,
+            "range": "± 483",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 192046,
+            "range": "± 2854",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1053304,
+            "range": "± 9143",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 588918,
+            "range": "± 3148",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 588083,
+            "range": "± 2429",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 74462,
+            "range": "± 6108",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 185791,
+            "range": "± 15684",
             "unit": "ns/iter"
           }
         ]
