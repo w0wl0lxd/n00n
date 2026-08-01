@@ -656,7 +656,7 @@ mod tests {
         missing.start_request(FusionRequestDecision::Delegate);
         missing.start_delegate();
         missing.observe_tool_results(&[crate::ToolDoneEvent::error("missing".into(), "timed out")]);
-        assert_eq!(missing.sidekick_cost, 0.0);
+        assert!(missing.sidekick_cost.abs() < f64::EPSILON);
         assert_eq!(missing.sidekick_usage, TokenUsage::default());
     }
 
