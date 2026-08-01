@@ -815,6 +815,7 @@ and tool set.
     if omitted.
   - `fast` (`boolean?`) use fast mode. Inherits parent setting if omitted.
   - `include_mcp` (`boolean?`) inherit the parent MCP handle. Default: `true`.
+  - `except` (`string[]?`) tool names that remain unavailable if loaded later.
 
 **Returns:** ([`Session?`](#n00n-agent-Session), `string?`) Session handle, or `(nil, err)` on failure.
 
