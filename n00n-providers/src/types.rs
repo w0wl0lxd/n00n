@@ -18,6 +18,8 @@ use tracing::warn;
 use crate::TokenUsage;
 use crate::model::Model;
 
+const LEGACY_IMAGE_SOURCE_TYPE: &str = "base64";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageMediaType {
     Png,
@@ -91,21 +93,25 @@ impl<'de> Deserialize<'de> for ImageSource {
             .as_object()
             .ok_or_else(|| Error::custom("ImageSource must be an object"))?;
 
-        let image_type = obj
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or_else(|| "base64");
+        let image_type = match obj.get("type") {
+            None => LEGACY_IMAGE_SOURCE_TYPE,
+            Some(Value::String(image_type)) => image_type,
+            Some(_) => return Err(Error::custom("ImageSource type must be a string")),
+        };
 
-        let detail = obj
-            .get("detail")
-            .and_then(Value::as_str)
-            .and_then(|s| match s {
-                "auto" => Some(ImageDetail::Auto),
-                "low" => Some(ImageDetail::Low),
-                "high" => Some(ImageDetail::High),
-                "original" => Some(ImageDetail::Original),
-                _ => None,
-            });
+        let detail = match obj.get("detail") {
+            None => None,
+            Some(Value::String(detail)) => Some(match detail.as_str() {
+                "auto" => ImageDetail::Auto,
+                "low" => ImageDetail::Low,
+                "high" => ImageDetail::High,
+                "original" => ImageDetail::Original,
+                unknown => {
+                    return Err(Error::custom(format!("unknown ImageDetail '{unknown}'")));
+                }
+            }),
+            Some(_) => return Err(Error::custom("ImageSource detail must be a string")),
+        };
 
         match image_type {
             "file_id" => {
@@ -134,7 +140,7 @@ impl<'de> Deserialize<'de> for ImageSource {
                     url: Some(url.to_string()),
                 })
             }
-            "base64" | "" => {
+            "base64" => {
                 let media_type_str =
                     obj.get("media_type")
                         .and_then(Value::as_str)
@@ -1321,6 +1327,48 @@ mod tests {
     }
 
     use Effort::{High, Low, Max, Minimal, XHigh};
+
+    #[test]
+    fn image_source_rejects_unknown_detail() {
+        let error = serde_json::from_value::<ImageSource>(serde_json::json!({
+            "type": "url",
+            "url": "https://example.com/image.png",
+            "detail": "ultra"
+        }))
+        .unwrap_err();
+
+        assert!(error.to_string().contains("unknown ImageDetail 'ultra'"));
+    }
+
+    #[test]
+    fn image_source_rejects_malformed_type() {
+        let error = serde_json::from_value::<ImageSource>(serde_json::json!({
+            "type": 42,
+            "media_type": "image/png",
+            "data": "abc123"
+        }))
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("ImageSource type must be a string")
+        );
+    }
+
+    #[test]
+    fn image_source_missing_type_uses_legacy_base64_shape() {
+        let source = serde_json::from_value::<ImageSource>(serde_json::json!({
+            "media_type": "image/png",
+            "data": "abc123"
+        }))
+        .unwrap();
+
+        assert_eq!(source.media_type, ImageMediaType::Png);
+        assert_eq!(source.data.as_ref(), "abc123");
+        assert!(source.file_id.is_none());
+        assert!(source.url.is_none());
+    }
 
     /// `max_output_tokens: 8192`, so `max_thinking_budget()` is 4096.
     fn thinking_model(id: &str) -> crate::model::Model {

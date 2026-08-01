@@ -471,15 +471,21 @@ pub fn convert_messages_with_breakpoints(
             Role::User => {
                 let mut tool_results = Vec::new();
                 let mut text_parts: Vec<String> = Vec::new();
-                let mut image_parts = Vec::new();
+                let mut content_parts = Vec::new();
+                let mut has_images = false;
 
                 for (block_idx, block) in msg.content.iter().enumerate() {
                     match block {
-                        ContentBlock::Text { text } => text_parts.push(text.clone()),
+                        ContentBlock::Text { text } => {
+                            text_parts.push(text.clone());
+                            content_parts.push(json!({"type": "text", "text": text}));
+                        }
                         ContentBlock::Image { source } => {
                             if let Some(ref file_id) = source.file_id {
                                 // Chat Completions cannot use file_id, emit a note
-                                text_parts.push(format!("[image file omitted: {file_id}]"));
+                                let text = format!("[image file omitted: {file_id}]");
+                                text_parts.push(text.clone());
+                                content_parts.push(json!({"type": "text", "text": text}));
                             } else {
                                 let url = source
                                     .url
@@ -495,18 +501,21 @@ pub fn convert_messages_with_breakpoints(
                                         }
                                     },
                                 );
-                                image_parts.push(json!({
+                                content_parts.push(json!({
                                     "type": "image_url",
                                     "image_url": {
                                         "url": url,
                                         "detail": detail
                                     }
                                 }));
+                                has_images = true;
                             }
                         }
                         ContentBlock::File { source } => {
                             let identifier = source.identifier().unwrap_or_else(|| "unknown");
-                            text_parts.push(format!("[file omitted: {identifier}]"));
+                            let text = format!("[file omitted: {identifier}]");
+                            text_parts.push(text.clone());
+                            content_parts.push(json!({"type": "text", "text": text}));
                         }
                         ContentBlock::ToolResult {
                             tool_use_id,
@@ -548,30 +557,24 @@ pub fn convert_messages_with_breakpoints(
                 // tool_calls, before any user content.
                 out.extend(tool_results);
 
-                // Only mark user-level content if the message's last block is
-                // text or image. A trailing tool result gets its breakpoint on
-                // the generated tool message above.
+                // A trailing tool result gets its breakpoint on the generated
+                // tool message above. All other emitted user content is eligible.
                 let mark_user_breakpoint = msg.content.last().is_some_and(|last| {
-                    matches!(last, ContentBlock::Text { .. } | ContentBlock::Image { .. })
+                    matches!(
+                        last,
+                        ContentBlock::Text { .. }
+                            | ContentBlock::Image { .. }
+                            | ContentBlock::File { .. }
+                    )
                 }) && breakpoints
                     .as_ref()
                     .is_some_and(|bp| bp.contains(&(msg_idx, msg.content.len().saturating_sub(1))));
 
-                if !image_parts.is_empty() {
-                    let mut parts = image_parts;
-                    if !text_parts.is_empty() {
-                        let mut text_block = json!({"type": "text", "text": text_parts.join("\n")});
-                        if mark_user_breakpoint {
-                            text_block["prompt_cache_breakpoint"] = json!({"mode": "explicit"});
-                        }
-                        parts.push(text_block);
-                    } else if mark_user_breakpoint {
-                        // Add breakpoint to last image if no text
-                        if let Some(last) = parts.last_mut() {
-                            last["prompt_cache_breakpoint"] = json!({"mode": "explicit"});
-                        }
+                if has_images {
+                    if mark_user_breakpoint && let Some(last) = content_parts.last_mut() {
+                        last["prompt_cache_breakpoint"] = json!({"mode": "explicit"});
                     }
-                    out.push(json!({"role": "user", "content": parts}));
+                    out.push(json!({"role": "user", "content": content_parts}));
                 } else if !text_parts.is_empty() {
                     let text = text_parts.join("\n");
                     if mark_user_breakpoint {
@@ -1407,6 +1410,59 @@ data: [DONE]\n";
         );
         assert_eq!(content[1]["type"], "text");
         assert_eq!(content[1]["text"], "describe");
+    }
+
+    #[test]
+    fn convert_messages_preserves_text_image_text_order() {
+        use std::sync::Arc;
+
+        use crate::types::{ImageMediaType, ImageSource};
+
+        let messages = vec![Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::Text {
+                    text: "before".into(),
+                },
+                ContentBlock::Image {
+                    source: ImageSource::new(ImageMediaType::Png, Arc::from("abc123")),
+                },
+                ContentBlock::Text {
+                    text: "after".into(),
+                },
+            ],
+            ..Default::default()
+        }];
+
+        let result = convert_messages(&messages, None, false);
+        let content = result[0]["content"].as_array().unwrap();
+
+        assert_eq!(content.len(), 3);
+        assert_eq!(content[0], json!({"type": "text", "text": "before"}));
+        assert_eq!(content[1]["type"], "image_url");
+        assert_eq!(content[2], json!({"type": "text", "text": "after"}));
+    }
+
+    #[test]
+    fn convert_messages_marks_trailing_file_breakpoint() {
+        use crate::types::FileSource;
+
+        let messages = vec![Message {
+            role: Role::User,
+            content: vec![ContentBlock::File {
+                source: FileSource::file_id("file_123", None),
+            }],
+            ..Default::default()
+        }];
+
+        let result = convert_messages_with_breakpoints(&messages, None, false, Some(1));
+        let content = result[0]["content"].as_array().unwrap();
+
+        assert_eq!(content[0]["text"], "[file omitted: file_123]");
+        assert_eq!(
+            content[0]["prompt_cache_breakpoint"],
+            json!({"mode": "explicit"})
+        );
     }
 
     #[test]

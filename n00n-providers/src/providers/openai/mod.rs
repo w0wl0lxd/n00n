@@ -432,14 +432,17 @@ pub(crate) const fn codex_models() -> &'static [ModelEntry] {
             true,
             false,
         ),
-        with_coding_plan(
-            OPENAI_GPT_5_5_PRO,
-            &["gpt-5.5-pro"],
-            128_000,
-            CODING_PLAN_CONTEXT_WINDOW,
-            true,
-            false,
-        ),
+        ModelEntry {
+            pricing: OPENAI_GPT_5_5_PRO.pricing,
+            ..with_coding_plan(
+                OPENAI_GPT_5_5_PRO,
+                &["gpt-5.5-pro"],
+                128_000,
+                CODING_PLAN_CONTEXT_WINDOW,
+                true,
+                false,
+            )
+        },
         with_coding_plan(
             OPENAI_GPT_5_4,
             &["gpt-5.4"],
@@ -645,8 +648,17 @@ mod tests {
             .find(|model| model.prefixes.contains(&"gpt-5.5-pro"))
             .expect("gpt-5.5-pro should be registered");
         assert_eq!(model.tier, ModelTier::Strong);
+        assert_eq!(model.context_window, 1_050_000);
         assert_eq!(model.pricing.input, 7.5);
         assert_eq!(model.pricing.output, 45.0);
+
+        let codex_model = codex_models()
+            .iter()
+            .find(|model| model.prefixes.contains(&"gpt-5.5-pro"))
+            .expect("gpt-5.5-pro should be registered in Codex catalog");
+        assert_eq!(codex_model.context_window, CODING_PLAN_CONTEXT_WINDOW);
+        assert_eq!(codex_model.pricing.input, 7.5);
+        assert_eq!(codex_model.pricing.output, 45.0);
     }
 
     #[test_case("gpt-5.6-luna", ModelTier::Weak, 1.0, 0.1, 1.25, 6.0)]

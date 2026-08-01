@@ -315,6 +315,15 @@ impl Model {
             .unwrap_or_else(|| self.family.supports_vision())
     }
 
+    fn normalized_openai_model_id(&self) -> Option<&str> {
+        let model_id = self
+            .id
+            .strip_prefix(OPENAI_MODEL_PREFIX)
+            .map_or(self.id.as_str(), std::convert::identity);
+        (model_id.starts_with(GPT_MODEL_PREFIX) && !model_id.contains(GPT_CODEX_MARKER))
+            .then_some(model_id)
+    }
+
     #[must_use]
     pub fn supports_files(&self) -> bool {
         if let Some(files) = self.supports_files_override {
@@ -322,7 +331,10 @@ impl Model {
         }
         // For now, only OpenAI Responses API supports file input
         // TODO: Add per-model file support flags as they become available
-        self.provider.as_ref() == "openai" && self.id.starts_with("gpt-5.6")
+        self.provider.as_ref() == "openai"
+            && self
+                .normalized_openai_model_id()
+                .is_some_and(|model_id| model_id.starts_with("gpt-5.6"))
     }
 
     #[must_use]
@@ -357,19 +369,17 @@ impl Model {
     #[must_use]
     pub fn supports_responses(&self) -> bool {
         self.family == ModelFamily::Gpt
-            && (self.id.starts_with("gpt-5.6") || self.id.starts_with("gpt-5.5"))
+            && self.normalized_openai_model_id().is_some_and(|model_id| {
+                model_id.starts_with("gpt-5.6") || model_id.starts_with("gpt-5.5")
+            })
     }
 
     /// Check if the model supports explicit prompt-cache breakpoints.
     #[must_use]
     pub fn supports_prompt_cache_breakpoint(&self) -> bool {
-        let model_id = self
-            .id
-            .strip_prefix(OPENAI_MODEL_PREFIX)
-            .map_or(self.id.as_str(), std::convert::identity);
-        if model_id.contains(GPT_CODEX_MARKER) {
+        let Some(model_id) = self.normalized_openai_model_id() else {
             return false;
-        }
+        };
         let Some(version_and_suffix) = model_id.strip_prefix(GPT_MODEL_PREFIX) else {
             return false;
         };
@@ -1111,6 +1121,8 @@ mod tests {
     #[test_case("openai/gpt-5.6-luna", true ; "gpt_5_6_luna")]
     #[test_case("openai/gpt-5.6-terra", true ; "gpt_5_6_terra")]
     #[test_case("openai/gpt-5.6-sol", true ; "gpt_5_6_sol")]
+    #[test_case("openai/openai/gpt-5.6-luna", true ; "normalized_gpt_5_6_luna")]
+    #[test_case("openai/gpt-5.6-codex", false ; "gpt_5_6_codex")]
     #[test_case("openai/gpt-5.5", true ; "gpt_5_5")]
     #[test_case("openai/gpt-5.4", false ; "gpt_5_4")]
     #[test_case("openai/gpt-4.1", false ; "gpt_4_1")]
@@ -1122,11 +1134,33 @@ mod tests {
     #[test_case("openai/gpt-5.6-luna", true ; "gpt_5_6_luna")]
     #[test_case("openai/gpt-5.6-terra", true ; "gpt_5_6_terra")]
     #[test_case("openai/gpt-5.6-sol", true ; "gpt_5_6_sol")]
+    #[test_case("openai/openai/gpt-5.6-luna", true ; "normalized_gpt_5_6_luna")]
+    #[test_case("openai/gpt-5.6-codex", false ; "gpt_5_6_codex")]
     #[test_case("openai/gpt-5.5", false ; "gpt_5_5")]
     #[test_case("openai/gpt-5.4", false ; "gpt_5_4")]
     fn supports_prompt_cache_breakpoint_for_gpt_5_6_only(spec: &str, expected: bool) {
         let model = Model::from_spec(spec).unwrap();
         assert_eq!(model.supports_prompt_cache_breakpoint(), expected);
+    }
+
+    #[test_case("openai/gpt-5.6-luna", true ; "gpt_5_6_luna")]
+    #[test_case("openai/openai/gpt-5.6-luna", true ; "normalized_gpt_5_6_luna")]
+    #[test_case("openai/gpt-5.6-codex", false ; "gpt_5_6_codex")]
+    #[test_case("openai/gpt-5.5", false ; "gpt_5_5")]
+    fn supports_files_for_non_codex_gpt_5_6(spec: &str, expected: bool) {
+        let model = Model::from_spec(spec).unwrap();
+        assert_eq!(model.supports_files(), expected);
+    }
+
+    #[test]
+    fn supports_files_override_takes_precedence() {
+        let mut supported = Model::from_spec("openai/gpt-5.6-luna").unwrap();
+        supported.supports_files_override = Some(false);
+        assert!(!supported.supports_files());
+
+        let mut unsupported = Model::from_spec("openai/gpt-5.6-codex").unwrap();
+        unsupported.supports_files_override = Some(true);
+        assert!(unsupported.supports_files());
     }
 
     #[test]
