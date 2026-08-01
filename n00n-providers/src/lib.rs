@@ -30,8 +30,9 @@ pub use providers::opencode::{
     ProviderData, catalog_provider, catalog_providers, catalog_providers_if_available,
 };
 pub use types::{
-    CacheControl, CacheHealth, CacheKind, ContentBlock, Effort, EffortDialect, IMAGE_OMITTED_NOTE,
-    ImageMediaType, ImageSource, Message, ProviderEvent, ProviderUsage, RequestOptions, Role,
-    StopReason, StreamResponse, System, SystemBlock, ThinkingConfig, UsageLimit,
-    adapt_images_for_model, dialect,
+    CacheControl, CacheHealth, CacheKind, ContentBlock, Effort, EffortDialect, FILE_OMITTED_NOTE,
+    FileSource, IMAGE_OMITTED_NOTE, ImageDetail, ImageMediaType, ImageSource, Message,
+    ProviderEvent, ProviderUsage, ReasoningContext, ReasoningMode, RequestOptions, Role,
+    StopReason, StreamResponse, System, SystemBlock, ThinkingConfig, ThinkingExtras, UsageLimit,
+    adapt_files_for_model, adapt_images_for_model, dialect,
 };

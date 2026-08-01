@@ -88,6 +88,7 @@ impl ScriptModel {
             supports_tool_examples_override: self.supports_tool_examples,
             supports_thinking_override: self.supports_thinking,
             supports_vision_override: self.supports_vision,
+            supports_files_override: None,
             pricing: self.pricing.unwrap_or_else(Default::default),
             max_output_tokens: Some(self.max_output_tokens),
             context_window: self.context_window,
