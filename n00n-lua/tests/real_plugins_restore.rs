@@ -25,10 +25,13 @@ use serde_json::{Value, json};
 const ARBOR_SRC: &str = include_str!("../../plugins/arbor/init.lua");
 const BASH_SRC: &str = include_str!("../../plugins/bash/init.lua");
 const BATCH_SRC: &str = include_str!("../../plugins/batch/init.lua");
+const BLACKBOARD_SRC: &str = include_str!("../../plugins/blackboard/init.lua");
 const CODEGRAPH_SRC: &str = include_str!("../../plugins/codegraph/init.lua");
 const EXPLORE_SRC: &str = include_str!("../../plugins/explore/init.lua");
+const FUSION_SRC: &str = include_str!("../../plugins/fusion/init.lua");
 const GREP_SRC: &str = include_str!("../../plugins/grep/init.lua");
 const SEMBLEM_SRC: &str = include_str!("../../plugins/semblem/init.lua");
+const TASK_SRC: &str = include_str!("../../plugins/task/init.lua");
 const WORKFLOW_SRC: &str = include_str!("../../plugins/workflow/init.lua");
 
 /// Only the real `ToolView` emits this when collapsed.
@@ -85,6 +88,7 @@ fn load_host() -> PluginHost {
     host.load_source("explore", EXPLORE_SRC).unwrap();
     host.load_source("grep", GREP_SRC).unwrap();
     host.load_source("semblem", SEMBLEM_SRC).unwrap();
+    host.load_source("task", TASK_SRC).unwrap();
     host
 }
 
@@ -487,6 +491,23 @@ fn restore(
     out
 }
 
+#[test]
+fn task_restore_rebuilds_old_plain_persisted_output() {
+    let host = load_host();
+    let output = "cancelled\nold detail one\nold detail two\nold detail three\nold detail four\nold detail five";
+    let restored = restore(
+        &host,
+        "task",
+        json!({ "description": "restored task", "prompt": "work" }),
+        output,
+        None,
+        vec![],
+    );
+
+    assert!(restored.body.contains("cancelled"));
+    assert!(restored.body.contains(EXPAND_HINT));
+}
+
 #[test_case::test_case(
     "explore",
     json!({ "query": "how does session restore work", "project": "/tmp/project" }),
@@ -719,5 +740,36 @@ fn multiedit_batch_child_shows_full_numbered_diff() {
     assert!(
         !text.contains("3 + n1"),
         "added lines get a blank gutter: {text}"
+    );
+}
+
+/// The only built-in tools without purpose-built views get a plain header fn
+/// so the start line reads as prose instead of raw JSON args.
+#[test]
+fn fusion_and_blackboard_headers_render_prose() {
+    let reg = Arc::new(ToolRegistry::new());
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    host.load_source("fusion", FUSION_SRC).unwrap();
+    host.load_source("blackboard", BLACKBOARD_SRC).unwrap();
+
+    let fusion = reg.get("fusion_delegate").unwrap();
+    let inv = fusion
+        .tool
+        .parse(&json!({
+            "description": "brief label",
+            "goal": "g",
+            "definition_of_done": "d",
+        }))
+        .unwrap();
+    assert_eq!(
+        smol::block_on(inv.start_header()).text(),
+        "fusion: brief label"
+    );
+
+    let board = reg.get("blackboard").unwrap();
+    let inv = board.tool.parse(&json!({ "action": "write" })).unwrap();
+    assert_eq!(
+        smol::block_on(inv.start_header()).text(),
+        "blackboard: write"
     );
 }
