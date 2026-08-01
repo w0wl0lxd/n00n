@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785618704560,
+  "lastUpdate": 1785624782721,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -11659,6 +11659,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 185791,
             "range": "± 15684",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "97061c57d32bdf79e8873b89cb7dd0985c9dd244",
+          "message": "Merge pull request #213 from w0wl0lxd/fix/websocket-overload-request-sent\n\nfix(n00n-providers): keep retryable WebSocket errors unwrapped after send",
+          "timestamp": "2026-08-01T22:36:56Z",
+          "tree_id": "40e0a7c04d25033f1f730b55bd2065c8643b0f6a",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/97061c57d32bdf79e8873b89cb7dd0985c9dd244"
+        },
+        "date": 1785624781685,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6649897,
+            "range": "± 150715",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2226274,
+            "range": "± 3495",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2222158,
+            "range": "± 6990",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8156346,
+            "range": "± 188796",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4307609,
+            "range": "± 14085",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4271642,
+            "range": "± 27097",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 583235,
+            "range": "± 12126",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 192090,
+            "range": "± 690",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 192488,
+            "range": "± 432",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1040084,
+            "range": "± 11874",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 589887,
+            "range": "± 2622",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 588918,
+            "range": "± 1925",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 79202,
+            "range": "± 3558",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 183310,
+            "range": "± 16903",
             "unit": "ns/iter"
           }
         ]
