@@ -12,6 +12,7 @@ use n00n_providers::{
 use serde::de::Error as DeError;
 use serde::de::{Deserializer, MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 
 pub const NO_FILES_FOUND: &str = "No files found";
 
@@ -246,6 +247,36 @@ impl ToolTelemetry {
         }
         Ok((cost.is_some() || usage.is_some()).then_some(Self { cost, usage }))
     }
+
+    #[must_use]
+    fn is_empty(&self) -> bool {
+        self.cost.is_none() && self.usage.is_none()
+    }
+}
+
+/// Parses a JSON `Value` into `ToolTelemetry`, dropping corrupt/empty records.
+///
+/// This is used as a fallback for session files written before the `ToolTelemetry`
+/// schema settled, where `cost` or `usage` could be arbitrary objects or `telemetry`
+/// could be an empty map.
+fn tool_telemetry_from_value(value: JsonValue) -> Option<ToolTelemetry> {
+    if value.is_null() {
+        return None;
+    }
+    match serde_json::from_value::<ToolTelemetry>(value) {
+        Ok(telemetry) if !telemetry.is_empty() => Some(telemetry),
+        _ => None,
+    }
+}
+
+fn deserialize_tool_telemetry_option<'de, D>(
+    deserializer: D,
+) -> Result<Option<ToolTelemetry>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Option::<JsonValue>::deserialize(deserializer)?;
+    Ok(raw.and_then(tool_telemetry_from_value))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -337,7 +368,8 @@ impl<'de> Deserialize<'de> for TextOutput {
                                 return Err(A::Error::duplicate_field("telemetry"));
                             }
                             seen_telemetry = true;
-                            telemetry = map.next_value()?;
+                            let raw: Option<JsonValue> = map.next_value()?;
+                            telemetry = raw.and_then(tool_telemetry_from_value);
                         }
                         _ => {
                             map.next_value::<serde::de::IgnoredAny>()?;
@@ -376,7 +408,11 @@ pub enum ToolOutput {
         before: String,
         after: String,
         summary: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            deserialize_with = "deserialize_tool_telemetry_option",
+            skip_serializing_if = "Option::is_none"
+        )]
         telemetry: Option<ToolTelemetry>,
     },
     TodoList(Vec<TodoItem>),
@@ -403,7 +439,11 @@ pub enum ToolOutput {
         /// Caption for the `tool_result` block, e.g. "[image: slack.jpeg 222KB]";
         /// the pixels ride separately as a `ContentBlock::Image`.
         text: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            deserialize_with = "deserialize_tool_telemetry_option",
+            skip_serializing_if = "Option::is_none"
+        )]
         telemetry: Option<ToolTelemetry>,
     },
 }
@@ -1793,6 +1833,46 @@ mod tests {
 
         assert!(serde_json::from_str::<ToolTelemetry>(nonconserving).is_err());
         assert!(serde_json::from_str::<ToolTelemetry>(negative_cost).is_err());
+    }
+
+    #[test]
+    fn tool_output_tolerates_malformed_telemetry() {
+        // Legacy/corrupt session records may have `telemetry.cost` or `telemetry.usage`
+        // as objects instead of an f64 / ToolUsage. The whole output must still load
+        // with telemetry dropped rather than the entire record skipped.
+        let diff_json = r#"{"Diff":{"path":"a.rs","before":"old","after":"new","summary":"changed","telemetry":{"cost":{"currency":"USD","value":0.12}}}}"#;
+        let diff: ToolOutput = serde_json::from_str(diff_json).unwrap();
+        assert!(matches!(
+            diff,
+            ToolOutput::Diff {
+                telemetry: None,
+                ..
+            }
+        ));
+
+        let plain_json = r#"{"Plain":{"text":"hello","telemetry":{"cost":{"foo":0.1}}}}"#;
+        let plain: ToolOutput = serde_json::from_str(plain_json).unwrap();
+        assert!(matches!(
+            plain,
+            ToolOutput::Plain(TextOutput {
+                telemetry: None,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn tool_output_tolerates_empty_telemetry() {
+        // Empty `telemetry: {}` from older compacted sessions should be treated as absent.
+        let image_json = r#"{"Image":{"source":{"media_type":"image/png","data":"aGVsbG8="},"text":"caption","telemetry":{}}}"#;
+        let image: ToolOutput = serde_json::from_str(image_json).unwrap();
+        assert!(matches!(
+            image,
+            ToolOutput::Image {
+                telemetry: None,
+                ..
+            }
+        ));
     }
 
     #[test]
