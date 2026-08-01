@@ -859,6 +859,18 @@ fn fusion_is_rejected_when_disabled() {
 }
 
 #[test]
+fn fusion_rejects_compaction_sidekick_tier() {
+    let error = execute_fusion(
+        json!({"description":"test brief", "goal":"do it", "definition_of_done":"it works"}),
+        Tier::Compaction,
+        true,
+        FUSION_MODEL_MOCK,
+    )
+    .unwrap_err();
+    assert_eq!(error, "Fusion sidekick error: invalid sidekick tier");
+}
+
+#[test]
 fn fusion_model_resolution_failure_is_sanitized() {
     let error = execute_fusion(
         json!({"description":"test brief", "goal":"do it", "definition_of_done":"it works"}),
@@ -867,6 +879,5 @@ fn fusion_model_resolution_failure_is_sanitized() {
         r#"n00n.agent.resolve_model = function() return nil, "model unavailable" end"#,
     )
     .unwrap_err();
-    assert_eq!(error, "Fusion sidekick error: model resolution failed");
     assert_eq!(error, "Fusion sidekick error: model resolution failed");
 }

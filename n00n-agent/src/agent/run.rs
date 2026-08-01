@@ -52,6 +52,30 @@ const CACHE_BREAKPOINTS_MEDIUM: usize = 3;
 const CACHE_BREAKPOINTS_SHORT: usize = 2;
 const CACHE_BREAKPOINTS_MIN: usize = 1;
 
+fn remove_fusion_delegate_tool(tools: &mut Value) {
+    if let Some(definitions) = tools.as_array_mut() {
+        definitions.retain(|definition| {
+            definition.get("name").and_then(Value::as_str)
+                != Some(crate::fusion::FUSION_DELEGATE_TOOL)
+        });
+    }
+}
+
+fn system_without_fusion_lead_prompt(system: &System) -> System {
+    let mut filtered = System::new();
+    for block in system.blocks() {
+        if block.text != crate::fusion::fusion_lead_system_append() {
+            filtered.push(block.clone());
+        }
+    }
+    filtered
+}
+
+fn filter_provider_tools(tools: &mut Value, filter: &ToolFilter, mode: &AgentMode) {
+    crate::tools::filter_definitions(tools, filter);
+    filter_tools_for_mode(tools, mode);
+}
+
 fn filter_tools_for_mode(tools: &mut Value, mode: &AgentMode) {
     if !mode.is_readonly() {
         return;
@@ -334,7 +358,6 @@ impl<'h> Agent<'h> {
             .pre_dispatch_rollback_len
             .unwrap_or_else(|| rollback_len);
         validate_input_message(&input)?;
-        self.start_fusion_request(&input.message)?;
         let mut msg = Message::user_with_images(input.message.clone(), input.images);
         msg.control = input.control;
         self.history.push(msg);
@@ -348,7 +371,9 @@ impl<'h> Agent<'h> {
         if let Some(mcp) = self.mcp.as_ref() {
             mcp.extend_tools(&mut self.tools);
         }
-        filter_tools_for_mode(&mut self.tools, &self.mode);
+        filter_provider_tools(&mut self.tools, &self.tool_filter, &self.mode);
+        self.sync_fusion_availability();
+        self.start_fusion_request(&input.message)?;
         self.context_size = estimate_message_tokens(self.history.as_slice(), &self.model.id)
             .saturating_add(estimate_tool_tokens(&self.tools, &self.model.id));
         let user_message_count = self
@@ -440,18 +465,37 @@ impl<'h> Agent<'h> {
     }
 
     async fn stream_response(&self, opts: RequestOptions) -> Result<StreamResponse, AgentError> {
+        let mut tools = self.tools.clone();
+        filter_provider_tools(&mut tools, &self.tool_filter, &self.mode);
+        let visible = self.fusion_delegate_visible(&tools);
+        if !visible {
+            remove_fusion_delegate_tool(&mut tools);
+        }
+        let system = if visible {
+            self.system.clone()
+        } else {
+            system_without_fusion_lead_prompt(&self.system)
+        };
         stream_with_retry(super::streaming::StreamContext {
             provider: &*self.provider,
             model: &self.model,
             messages: self.history.as_slice(),
-            system: &self.system,
-            tools: &self.tools,
+            system: &system,
+            tools: &tools,
             event_tx: &self.event_tx,
             cancel: &self.cancel,
             opts,
             session_id: self.session_id.as_ref(),
         })
         .await
+    }
+
+    fn fusion_delegate_visible(&self, tools: &Value) -> bool {
+        self.fusion_delegate_available(tools)
+            && self
+                .fusion_state
+                .as_ref()
+                .is_some_and(|state| state.phase() == FusionPhase::Planning)
     }
 
     async fn approve_history_replay(&self, reason: HistoryReplayReason) -> Result<(), AgentError> {
@@ -753,6 +797,7 @@ impl<'h> Agent<'h> {
             registry: Arc::clone(&self.registry),
             workflow: self.workflow,
             audience: self.audience,
+            tool_filter: self.tool_filter.clone(),
             local_tools: Arc::clone(&self.local_tools),
             active_skill_policy: self.active_skill_policy.clone(),
             live_sink: None,
@@ -786,7 +831,7 @@ impl<'h> Agent<'h> {
         if let Some(mcp) = &self.mcp {
             mcp.extend_tools(&mut tools);
         }
-        filter_tools_for_mode(&mut tools, &self.mode);
+        filter_provider_tools(&mut tools, &self.tool_filter, &self.mode);
         self.tools = tools;
         if !self
             .fusion_state
@@ -871,7 +916,20 @@ impl<'h> Agent<'h> {
         Ok(true)
     }
 
+    fn sync_fusion_availability(&mut self) {
+        if self.fusion_delegate_available(&self.tools) {
+            if self.fusion_state.is_none() {
+                self.fusion_state = Some(FusionState::new());
+            }
+        } else {
+            self.fusion_state = None;
+        }
+    }
+
     fn start_fusion_request(&mut self, prompt: &str) -> Result<(), AgentError> {
+        if !self.fusion_delegate_available(&self.tools) {
+            return Ok(());
+        }
         let Some(state) = self.fusion_state.as_mut() else {
             return Ok(());
         };
@@ -891,6 +949,17 @@ impl<'h> Agent<'h> {
                 .send(AgentEvent::FusionPhaseChanged { phase, label: None })?;
         }
         Ok(())
+    }
+
+    fn fusion_delegate_available(&self, tools: &Value) -> bool {
+        self.config.fusion.enabled
+            && self.audience == ToolAudience::MAIN
+            && matches!(*self.mode, AgentMode::Build)
+            && !self.workflow
+            && self
+                .tool_filter
+                .matches(crate::fusion::FUSION_DELEGATE_TOOL)
+            && crate::tools::has_definition(tools, crate::fusion::FUSION_DELEGATE_TOOL)
     }
 
     fn start_fusion_delegate(&mut self, message: &Message) -> Result<(), AgentError> {
@@ -937,12 +1006,7 @@ impl<'h> Agent<'h> {
     }
 
     fn remove_fusion_delegate_tool(&mut self) {
-        if let Some(definitions) = self.tools.as_array_mut() {
-            definitions.retain(|definition| {
-                definition.get("name").and_then(Value::as_str)
-                    != Some(crate::fusion::FUSION_DELEGATE_TOOL)
-            });
-        }
+        remove_fusion_delegate_tool(&mut self.tools);
     }
 
     fn finish_fusion_continuation(&mut self) -> Result<(), AgentError> {
@@ -1371,6 +1435,7 @@ mod tests {
     struct MockProvider {
         responses: Mutex<Vec<StreamResponse>>,
         requests: Arc<Mutex<Vec<Vec<Message>>>>,
+        contexts: Arc<Mutex<Vec<(System, Value)>>>,
         cancel_on_request: Option<usize>,
         calls: AtomicUsize,
     }
@@ -1380,6 +1445,7 @@ mod tests {
             Self {
                 responses: Mutex::new(responses),
                 requests: Arc::new(Mutex::new(Vec::new())),
+                contexts: Arc::new(Mutex::new(Vec::new())),
                 cancel_on_request: None,
                 calls: AtomicUsize::new(0),
             }
@@ -1391,6 +1457,7 @@ mod tests {
                 Self {
                     responses: Mutex::new(responses),
                     requests: Arc::clone(&requests),
+                    contexts: Arc::new(Mutex::new(Vec::new())),
                     cancel_on_request: None,
                     calls: AtomicUsize::new(0),
                 },
@@ -1398,10 +1465,27 @@ mod tests {
             )
         }
 
+        fn recording_context(
+            responses: Vec<StreamResponse>,
+        ) -> (Self, Arc<Mutex<Vec<(System, Value)>>>) {
+            let contexts = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    responses: Mutex::new(responses),
+                    requests: Arc::new(Mutex::new(Vec::new())),
+                    contexts: Arc::clone(&contexts),
+                    cancel_on_request: None,
+                    calls: AtomicUsize::new(0),
+                },
+                contexts,
+            )
+        }
+
         fn cancel_on_request(responses: Vec<StreamResponse>, request: usize) -> Self {
             Self {
                 responses: Mutex::new(responses),
                 requests: Arc::new(Mutex::new(Vec::new())),
+                contexts: Arc::new(Mutex::new(Vec::new())),
                 cancel_on_request: Some(request),
                 calls: AtomicUsize::new(0),
             }
@@ -1413,8 +1497,8 @@ mod tests {
             &'a self,
             _: &'a Model,
             messages: &'a [Message],
-            _: &'a System,
-            _: &'a Value,
+            system: &'a System,
+            tools: &'a Value,
             _: &'a flume::Sender<ProviderEvent>,
             _: RequestOptions,
             _: Option<&'a SessionRef>,
@@ -1425,6 +1509,10 @@ mod tests {
                     return Err(AgentError::Cancelled);
                 }
                 self.requests.lock().unwrap().push(messages.to_vec());
+                self.contexts
+                    .lock()
+                    .unwrap()
+                    .push((system.clone(), tools.clone()));
                 let mut responses = self.responses.lock().unwrap();
                 assert!(!responses.is_empty(), "MockProvider: no more responses");
                 Ok(responses.remove(0))
@@ -1634,6 +1722,7 @@ mod tests {
             let mut history = History::new(Vec::new());
             let (mut agent, event_rx) =
                 make_agent_with_registry(provider, &mut history, fusion_enabled_config(), registry);
+            agent.tools = json!([{"name": crate::fusion::FUSION_DELEGATE_TOOL}]);
 
             let mut input = default_input();
             input.message = "implement the parser and add focused tests".into();
@@ -1699,6 +1788,7 @@ mod tests {
             config.max_continuation_turns = MAX_CONTINUATION_TURNS;
             let (mut agent, event_rx) =
                 make_agent_with_registry(provider, &mut history, config, registry);
+            agent.tools = json!([{"name": crate::fusion::FUSION_DELEGATE_TOOL}]);
 
             let mut input = default_input();
             input.message = "implement the parser and add focused tests".into();
@@ -1733,6 +1823,7 @@ mod tests {
             config.max_continuation_turns = 1;
             let (mut agent, _event_rx) =
                 make_agent_with_registry(provider, &mut history, config, registry);
+            agent.tools = json!([{"name": crate::fusion::FUSION_DELEGATE_TOOL}]);
 
             let mut input = default_input();
             input.message = "implement the parser and add focused tests".into();
@@ -1783,6 +1874,187 @@ mod tests {
                 })
                 .expect("expected Done event");
             assert!(done.is_none());
+        });
+    }
+
+    #[test]
+    fn disabled_provider_context_excludes_fusion() {
+        smol::block_on(async {
+            let (provider, contexts) =
+                MockProvider::recording_context(vec![text_response(StopReason::EndTurn)]);
+            let mut history = History::new(Vec::new());
+            let (mut agent, _event_rx) = make_agent(provider, &mut history);
+            agent.tools = json!([{"name": crate::fusion::FUSION_DELEGATE_TOOL}]);
+            agent.run(default_input()).await.unwrap();
+
+            let contexts = contexts.lock().unwrap();
+            assert_eq!(contexts.len(), 1);
+            assert!(contexts[0].1.as_array().is_some_and(|tools| {
+                tools
+                    .iter()
+                    .all(|tool| tool["name"] != crate::fusion::FUSION_DELEGATE_TOOL)
+            }));
+        });
+    }
+
+    #[test]
+    fn enabled_fusion_without_delegate_definition_skips_planning() {
+        smol::block_on(async {
+            let (provider, contexts) =
+                MockProvider::recording_context(vec![text_response(StopReason::EndTurn)]);
+            let mut history = History::new(Vec::new());
+            let (mut agent, event_rx) =
+                make_agent_with_config(provider, &mut history, fusion_enabled_config());
+            let mut input = default_input();
+            input.message = "implement the parser and add focused tests".into();
+            agent.run(input).await.unwrap();
+
+            let contexts = contexts.lock().unwrap();
+            assert!(
+                contexts[0]
+                    .0
+                    .blocks()
+                    .iter()
+                    .all(|block| block.text != crate::fusion::fusion_lead_system_append())
+            );
+            let events = drain_events(&event_rx);
+            assert!(
+                events
+                    .iter()
+                    .all(|event| !matches!(event.event, AgentEvent::FusionPhaseChanged { .. }))
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|event| matches!(event.event, AgentEvent::Done { fusion: None, .. }))
+            );
+        });
+    }
+
+    #[test]
+    fn provider_context_applies_explicit_filter_to_all_definitions() {
+        smol::block_on(async {
+            let (provider, contexts) =
+                MockProvider::recording_context(vec![text_response(StopReason::EndTurn)]);
+            let mut history = History::new(Vec::new());
+            let (mut agent, event_rx) =
+                make_agent_with_config(provider, &mut history, fusion_enabled_config());
+            agent.tools = json!([
+                {"name": "read"},
+                {"name": "mcp__inherited"},
+                {"name": crate::fusion::FUSION_DELEGATE_TOOL},
+            ]);
+            agent.tool_filter = ToolFilter::Only(vec!["read".into()]);
+            let mut input = default_input();
+            input.message = "implement the parser and add focused tests".into();
+            agent.run(input).await.unwrap();
+
+            let contexts = contexts.lock().unwrap();
+            assert_eq!(crate::mcp::tool_names(&contexts[0].1), vec!["read"]);
+            assert!(
+                contexts[0]
+                    .0
+                    .blocks()
+                    .iter()
+                    .all(|block| block.text != crate::fusion::fusion_lead_system_append())
+            );
+            assert!(
+                drain_events(&event_rx)
+                    .iter()
+                    .all(|event| !matches!(event.event, AgentEvent::FusionPhaseChanged { .. }))
+            );
+        });
+    }
+
+    #[test_case(AgentMode::Plan("plan.md".into()), ToolAudience::MAIN, false ; "plan")]
+    #[test_case(AgentMode::Build, ToolAudience::GENERAL_SUB, false ; "sidekick")]
+    #[test_case(AgentMode::Build, ToolAudience::MAIN, true ; "workflow")]
+    fn ineligible_contexts_exclude_fusion(mode: AgentMode, audience: ToolAudience, workflow: bool) {
+        smol::block_on(async {
+            let (provider, contexts) =
+                MockProvider::recording_context(vec![text_response(StopReason::EndTurn)]);
+            let mut history = History::new(Vec::new());
+            let (mut agent, _event_rx) =
+                make_agent_with_config(provider, &mut history, fusion_enabled_config());
+            agent.audience = audience;
+            agent.tools = json!([{"name": crate::fusion::FUSION_DELEGATE_TOOL}]);
+            let mut input = default_input();
+            input.message = "implement the parser and add focused tests".into();
+            input.mode = mode;
+            input.workflow = workflow;
+            agent.run(input).await.unwrap();
+
+            let contexts = contexts.lock().unwrap();
+            assert_eq!(contexts.len(), 1);
+            assert!(
+                contexts[0]
+                    .0
+                    .blocks()
+                    .iter()
+                    .all(|block| block.text != crate::fusion::fusion_lead_system_append())
+            );
+            assert!(contexts[0].1.as_array().is_some_and(|tools| {
+                tools
+                    .iter()
+                    .all(|tool| tool["name"] != crate::fusion::FUSION_DELEGATE_TOOL)
+            }));
+        });
+    }
+
+    #[test]
+    fn fusion_context_is_limited_to_planning_request() {
+        smol::block_on(async {
+            let (provider, contexts) = MockProvider::recording_context(vec![
+                text_response(StopReason::EndTurn),
+                text_response(StopReason::EndTurn),
+            ]);
+            let (registry, _calls) = counting_registry();
+            let mut history = History::new(Vec::new());
+            let (mut agent, _event_rx) =
+                make_agent_with_registry(provider, &mut history, fusion_enabled_config(), registry);
+            agent.tools = json!([{"name": crate::fusion::FUSION_DELEGATE_TOOL}]);
+            agent
+                .start_fusion_request("implement the parser and add focused tests")
+                .unwrap();
+            agent
+                .stream_response(RequestOptions::default())
+                .await
+                .unwrap();
+            agent
+                .start_fusion_delegate(&fusion_tool_response().message)
+                .unwrap();
+            agent.rebuild_tools();
+            agent
+                .stream_response(RequestOptions::default())
+                .await
+                .unwrap();
+
+            let contexts = contexts.lock().unwrap();
+            assert_eq!(contexts.len(), 2);
+            assert!(contexts[0].1.as_array().is_some_and(|tools| {
+                tools
+                    .iter()
+                    .any(|tool| tool["name"] == crate::fusion::FUSION_DELEGATE_TOOL)
+            }));
+            assert!(
+                contexts[0]
+                    .0
+                    .blocks()
+                    .iter()
+                    .any(|block| block.text == crate::fusion::fusion_lead_system_append())
+            );
+            assert!(contexts[1].1.as_array().is_some_and(|tools| {
+                tools
+                    .iter()
+                    .all(|tool| tool["name"] != crate::fusion::FUSION_DELEGATE_TOOL)
+            }));
+            assert!(
+                contexts[1]
+                    .0
+                    .blocks()
+                    .iter()
+                    .all(|block| block.text != crate::fusion::fusion_lead_system_append())
+            );
         });
     }
 
@@ -2191,6 +2463,32 @@ mod tests {
     }
 
     #[test]
+    fn post_compaction_provider_context_preserves_tool_filter() {
+        smol::block_on(async {
+            let (provider, contexts) = MockProvider::recording_context(vec![
+                text_response(StopReason::EndTurn),
+                text_response(StopReason::EndTurn),
+            ]);
+            let mut history = History::new(vec![Message::user("context".into())]);
+            let (mut agent, _event_rx) = make_agent(provider, &mut history);
+            agent.tools = json!([
+                {"name": "read"},
+                {"name": "mcp__inherited"},
+            ]);
+            agent.tool_filter = ToolFilter::Only(vec!["read".into()]);
+
+            agent.do_compact().await.unwrap();
+            agent
+                .stream_response(RequestOptions::default())
+                .await
+                .unwrap();
+
+            let contexts = contexts.lock().unwrap();
+            assert_eq!(crate::mcp::tool_names(&contexts[1].1), vec!["read"]);
+        });
+    }
+
+    #[test]
     fn fusion_compaction_keeps_main_agent_on_lead_model() {
         smol::block_on(async {
             let mut history = History::new(vec![Message::user("context".into())]);
@@ -2221,6 +2519,7 @@ mod tests {
             &mut history,
             fusion_enabled_config(),
         );
+        agent.tools = json!([{"name": crate::fusion::FUSION_DELEGATE_TOOL}]);
 
         agent
             .start_fusion_request("implement the parser and add focused tests")
@@ -2264,8 +2563,9 @@ mod tests {
 
         agent.start_fusion_request(prompt).unwrap();
 
+        let events = drain_events(&event_rx);
         assert!(
-            drain_events(&event_rx)
+            events
                 .iter()
                 .all(|event| !matches!(event.event, AgentEvent::FusionPhaseChanged { .. }))
         );

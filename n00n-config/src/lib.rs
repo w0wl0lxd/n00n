@@ -185,6 +185,10 @@ pub enum ConfigError {
          (bundled plugins: {valid})"
     )]
     UnknownPlugin { plugin: String, valid: String },
+    #[error(
+        "invalid config: agent.fusion.sidekick_tier must be weak, medium, or strong, got {tier:?}"
+    )]
+    InvalidFusionSidekickTier { tier: crate::providers::Tier },
 }
 
 fn check(
@@ -1376,6 +1380,11 @@ impl Config {
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.ui.validate_all()?;
         self.agent.validate()?;
+        if self.agent.fusion.sidekick_tier == crate::providers::Tier::Compaction {
+            return Err(ConfigError::InvalidFusionSidekickTier {
+                tier: self.agent.fusion.sidekick_tier,
+            });
+        }
         self.provider.validate()?;
         self.provider.validate_openai_coding_plan_slots()?;
         self.storage.validate()?;
@@ -2288,12 +2297,27 @@ mod tests {
             "[agent.fusion]\nenabled = true\nimplicit_model_switch = true\n",
         )
         .unwrap_err();
+
         assert!(
             error
                 .to_string()
                 .contains("unknown field `implicit_model_switch`"),
             "unexpected parse error: {error}"
         );
+    }
+
+    #[test]
+    fn fusion_compaction_sidekick_tier_is_rejected() {
+        let raw: RawConfig =
+            toml::from_str("[agent.fusion]\nenabled = true\nsidekick_tier = \"compaction\"\n")
+                .unwrap();
+        let config = raw.into_config(false).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::InvalidFusionSidekickTier {
+                tier: crate::providers::Tier::Compaction
+            })
+        ));
     }
 
     #[test]

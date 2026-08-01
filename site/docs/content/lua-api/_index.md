@@ -814,6 +814,7 @@ and tool set.
     `"max"`), or a budget integer (token count). Inherits parent setting
     if omitted.
   - `fast` (`boolean?`) use fast mode. Inherits parent setting if omitted.
+  - `include_mcp` (`boolean?`) inherit the parent MCP handle. Default: `true`.
 
 **Returns:** ([`Session?`](#n00n-agent-Session), `string?`) Session handle, or `(nil, err)` on failure.
 

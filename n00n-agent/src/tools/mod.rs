@@ -156,6 +156,27 @@ impl ToolFilter {
     }
 }
 
+pub fn filter_definitions(definitions: &mut Value, filter: &ToolFilter) {
+    let Some(definitions) = definitions.as_array_mut() else {
+        return;
+    };
+    definitions.retain(|definition| {
+        definition
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|name| filter.matches(name))
+    });
+}
+
+#[must_use]
+pub fn has_definition(definitions: &Value, name: &str) -> bool {
+    definitions.as_array().is_some_and(|definitions| {
+        definitions
+            .iter()
+            .any(|definition| definition.get("name").and_then(Value::as_str) == Some(name))
+    })
+}
+
 /// One gate for every definitions builder (main loop, headless, Lua): a model
 /// without vision never learns `view_image` exists.
 #[must_use]
@@ -286,6 +307,7 @@ pub struct ToolContext {
     pub opts: RequestOptions,
     pub subagent_cancels: Arc<CancelMap<String>>,
     pub registry: Arc<ToolRegistry>,
+    pub tool_filter: ToolFilter,
     pub workflow: bool,
     pub audience: ToolAudience,
     pub local_tools: LocalTools,
@@ -551,6 +573,7 @@ pub fn interpreter_ctx(
         opts: RequestOptions::default(),
         subagent_cancels: Arc::new(CancelMap::new()),
         registry,
+        tool_filter: ToolFilter::All,
         workflow: false,
         audience: ToolAudience::MAIN,
         local_tools: LocalTools::default(),

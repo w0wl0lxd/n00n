@@ -115,6 +115,31 @@ fn parse_session_mode(
 type Pair<T> = (Option<T>, Option<String>);
 
 #[allow(clippy::needless_pass_by_value)]
+fn explicit_tool_filter(tools: &JsonValue) -> Result<ToolFilter, String> {
+    let definitions = tools
+        .as_array()
+        .ok_or_else(|| "tools must be an array".to_owned())?;
+    let names = definitions
+        .iter()
+        .enumerate()
+        .map(|(index, definition)| {
+            definition
+                .get("name")
+                .and_then(JsonValue::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| format!("tools[{index}].name must be a string"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ToolFilter::Only(names))
+}
+
+fn inherited_mcp(
+    parent: Option<&n00n_agent::mcp::McpSession>,
+    include_mcp: bool,
+) -> Option<n00n_agent::mcp::McpSession> {
+    if include_mcp { parent.cloned() } else { None }
+}
+
 fn err_pair<T>(err: impl ToString) -> Pair<T> {
     (None, Some(err.to_string()))
 }
@@ -399,6 +424,7 @@ fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pa
     if include_mcp && let Some(ref mcp) = agent.mcp {
         mcp.extend_tools(&mut defs);
     }
+    n00n_agent::tools::filter_definitions(&mut defs, &filter);
 
     Ok((Some(json_to_lua(lua, &defs)?), None))
 }
@@ -501,6 +527,7 @@ async fn call_tool(
 ///     `"max"`), or a budget integer (token count). Inherits parent setting
 ///     if omitted.
 ///   `fast` (boolean?) - use fast mode. Inherits parent setting if omitted.
+///   `include_mcp` (boolean?) - inherit the parent MCP handle. Default: `true`.
 /// @return (Session?, string?) Session handle, or `(nil, err)` on failure.
 /// @example
 /// local tools = n00n.agent.tools(ctx, { audience = "general_sub" })
@@ -527,6 +554,9 @@ async fn session(
     let system: Option<String> = opts.get("system")?;
     let tools_val: Option<LuaValue> = opts.get("tools")?;
     let local_tools_tbl: Option<Table> = opts.get("local_tools")?;
+    let include_mcp = opts
+        .get::<Option<bool>>("include_mcp")?
+        .map_or(true, |value| value);
     let name: Option<String> = opts.get("name")?;
     let thinking_val: Option<LuaValue> = opts.get("thinking")?;
     let plan_path: Option<String> = opts.get("plan_path")?;
@@ -570,7 +600,8 @@ async fn session(
         let _ = sink.send(ToolLive::Annotation(model.spec()));
     }
 
-    let (mut tools_json, tool_filter) = if let Some(val) = tools_val {
+    let explicit_tools = tools_val.is_some();
+    let (mut tools_json, mut tool_filter) = if let Some(val) = tools_val {
         let tools = lua_to_json(&lua, &val)?;
         if !tools.is_array() {
             return Err(mlua::Error::runtime("tools must be an array"));
@@ -621,6 +652,9 @@ async fn session(
                     as LocalToolFn,
             );
         }
+    }
+    if explicit_tools {
+        tool_filter = try_pair!(explicit_tool_filter(&tools_json));
     }
 
     let thinking = match thinking_val {
@@ -719,7 +753,7 @@ async fn session(
         thinking,
         fast,
         mode,
-        mcp: agent_ctx.mcp.clone(),
+        mcp: inherited_mcp(agent_ctx.mcp.as_ref(), include_mcp),
         history: History::new(Vec::new()),
         sub_event_tx,
         child_cancel,
@@ -1577,6 +1611,42 @@ mod tests {
         let lua = Lua::new();
         let f: Function = lua.load(src).eval().unwrap();
         call_local_tool(&lua.weak(), &f, input)
+    }
+
+    #[test]
+    fn explicit_session_filter_uses_final_definition_names() {
+        let tools = json!([
+            {"name": "read"},
+            {"name": "local_result"},
+        ]);
+
+        assert_eq!(
+            explicit_tool_filter(&tools).unwrap(),
+            ToolFilter::Only(vec!["read".into(), "local_result".into()])
+        );
+    }
+
+    #[test]
+    fn session_include_mcp_false_removes_parent_handle() {
+        smol::block_on(async {
+            let config = serde_json::from_value(json!({
+                "mcp": {
+                    "disabled": {
+                        "enabled": false,
+                        "command": ["unused"]
+                    }
+                }
+            }))
+            .unwrap();
+            let handle = n00n_agent::mcp::start_with_config(config, 1_000)
+                .await
+                .unwrap();
+            let parent = n00n_agent::mcp::McpSession::new(handle, &[]);
+
+            assert!(inherited_mcp(Some(&parent), false).is_none());
+            assert!(inherited_mcp(Some(&parent), true).is_some());
+            parent.shutdown().await;
+        });
     }
 
     fn progress_start(id: &str, summary: &str) -> ToolStartEvent {
