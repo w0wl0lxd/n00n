@@ -1,0 +1,22 @@
+[
+  {"query": "src/main.rs", "intent": "file"},
+  {"query": "how does auth work", "intent": "cross_file"},
+  {"query": "callers of restore_item", "intent": "relations"},
+  {"query": "agent loop", "intent": "search"},
+  {"query": "main.rs skeleton", "intent": "skeleton"},
+  {"query": "AuthService symbol", "intent": "symbol"},
+  {"query": "impact of changing restore_item", "intent": "impact"},
+  {"query": "call path from foo to bar", "intent": "trace"},
+  {"query": "what calls parse_file", "intent": "relations"},
+  {"query": "what does main call", "intent": "relations"},
+  {"query": "project map", "intent": "relations"},
+  {"query": "trace path from A to B", "intent": "trace"},
+  {"query": "blast radius of Foo", "intent": "impact"},
+  {"query": "search for authentication", "intent": "search"},
+  {"query": "lib.rs structure", "intent": "skeleton"},
+  {"query": "definition of Config", "intent": "symbol"},
+  {"query": "affected by change in X", "intent": "impact"},
+  {"query": "status", "intent": "relations"},
+  {"query": "diff", "intent": "relations"},
+  {"query": "how does the agent loop work", "intent": "cross_file"}
+]

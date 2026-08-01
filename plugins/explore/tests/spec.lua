@@ -1,4 +1,4 @@
-local router = require("router")
+local router = require("explore.router")
 
 local failures = {}
 
@@ -110,6 +110,85 @@ case("cache_key_is_injective", function()
   local key_a = router.cache_key("codegraph", { query = "foo", projectPath = "bar" })
   local key_b = router.cache_key("codegraph", { query = "bar", projectPath = "foo" })
   assert(key_a ~= key_b, "swapped query/projectPath must produce different cache keys")
+end)
+
+-- New intent tests (T008-T012)
+case("search_intent_routes_to_semblem", function()
+  eq(router.normalize_intent({ query = "agent loop", intent = "search" }), "search")
+  local backend, input = router.build_backend_input({ query = "agent loop", intent = "search" }, "search")
+  eq(backend, "semblem")
+  eq(input.command, "search")
+  eq(input.query, "agent loop")
+end)
+
+case("skeleton_intent_routes_to_index", function()
+  eq(router.normalize_intent({ query = "src/main.rs", intent = "skeleton" }), "skeleton")
+  local backend, input = router.build_backend_input({ query = "src/main.rs", intent = "skeleton" }, "skeleton")
+  eq(backend, "index")
+  eq(input.path, "src/main.rs")
+end)
+
+case("symbol_intent_routes_to_codegraph", function()
+  eq(router.normalize_intent({ query = "AuthService", intent = "symbol" }), "symbol")
+  local backend, input = router.build_backend_input({ query = "AuthService", intent = "symbol" }, "symbol")
+  eq(backend, "codegraph")
+  eq(input.command, "node")
+  eq(input.name, "AuthService")
+end)
+
+case("impact_intent_routes_to_arbor", function()
+  eq(router.normalize_intent({ query = "impact of changing restore_item", intent = "impact" }), "impact")
+  local backend, input =
+    router.build_backend_input({ query = "impact of changing restore_item", intent = "impact" }, "impact")
+  eq(backend, "arbor")
+  eq(input.command, "impact")
+  eq(input.symbol, "restore_item")
+end)
+
+case("trace_intent_routes_to_arbor", function()
+  eq(router.normalize_intent({ query = "call path from foo to bar", intent = "trace" }), "trace")
+  local backend, input = router.build_backend_input({ query = "call path from foo to bar", intent = "trace" }, "trace")
+  eq(backend, "arbor")
+  eq(input.command, "trace_path")
+  eq(input.from_symbol, "foo")
+  eq(input.to_symbol, "bar")
+end)
+
+-- T020: Router classification accuracy test (SC-001)
+case("router_classification_accuracy", function()
+  local queries = {
+    { query = "src/main.rs", intent = "file" },
+    { query = "how does auth work", intent = "cross_file" },
+    { query = "callers of restore_item", intent = "relations" },
+    { query = "impact of changing restore_item", intent = "impact" },
+    { query = "call path from foo to bar", intent = "relations" },
+    { query = "what calls parse_file", intent = "relations" },
+    { query = "what does main call", intent = "relations" },
+    { query = "project map", intent = "relations" },
+    { query = "trace path from A to B", intent = "relations" },
+    { query = "blast radius of Foo", intent = "impact" },
+    { query = "affected by change in X", intent = "impact" },
+    { query = "status", intent = "relations" },
+    { query = "diff", intent = "relations" },
+    { query = "how does the agent loop work", intent = "cross_file" },
+    { query = "impact of parse_file", intent = "impact" },
+    { query = "symbol definition", intent = "symbol" },
+    { query = "impact of changing Foo", intent = "impact" },
+    { query = "callers of main", intent = "relations" },
+    { query = "callees of main", intent = "relations" },
+    { query = "who calls foo", intent = "relations" },
+  }
+
+  local correct = 0
+  for _, q in ipairs(queries) do
+    local inferred = router.normalize_intent({ query = q.query })
+    if inferred == q.intent then
+      correct = correct + 1
+    end
+  end
+
+  local accuracy = (correct / #queries) * 100
+  assert(accuracy >= 90, "router classification accuracy " .. accuracy .. "% is below 90% threshold")
 end)
 
 if #failures > 0 then

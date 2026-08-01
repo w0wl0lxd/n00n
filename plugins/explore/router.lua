@@ -63,6 +63,15 @@ function M.normalize_intent(input)
     return "relations"
   end
 
+  -- New intents for auto-detection
+  if query:match("^impact") or query:match("blast.?radius") or query:match("affected") then
+    return "impact"
+  end
+
+  if query:match("symbol") or query:match("definition") or query:match("decl") then
+    return "symbol"
+  end
+
   return "cross_file"
 end
 
@@ -117,6 +126,10 @@ function M.extract_symbol(query, command)
       "^query%s+()(.-)%s*$",
       "^search%s+()(.-)%s*$",
     },
+    impact = {
+      "^impact%s+of%s+changing%s+()(" .. token .. ")%s*$",
+      "^impact%s+of%s+()(" .. token .. ")%s*$",
+    },
   }
 
   local command_patterns = patterns[command]
@@ -151,7 +164,7 @@ end
 function M.build_backend_input(input, intent)
   local project = input.project or "."
 
-  if intent == "file" then
+  if intent == "file" or intent == "skeleton" then
     local path = trim(input.path)
     if path == "" then
       path = trim(input.query)
@@ -159,7 +172,17 @@ function M.build_backend_input(input, intent)
     return "index", { path = path }
   end
 
-  if intent == "relations" then
+  if intent == "search" then
+    return "semblem",
+      {
+        command = "search",
+        query = input.query,
+        repo = project,
+        mode = input.mode or "bm25",
+      }
+  end
+
+  if intent == "relations" or intent == "trace" then
     local command = M.parse_arbor_command(input)
     local backend_input = {
       command = command,
@@ -181,6 +204,24 @@ function M.build_backend_input(input, intent)
     end
 
     return "arbor", backend_input
+  end
+
+  if intent == "symbol" then
+    local symbol = input.symbol or trim(input.query)
+    return "codegraph", {
+      command = "node",
+      name = symbol,
+      projectPath = project,
+    }
+  end
+
+  if intent == "impact" then
+    local symbol = input.symbol or M.extract_symbol(input.query, "impact")
+    return "arbor", {
+      command = "impact",
+      symbol = symbol,
+      project = project,
+    }
   end
 
   return "codegraph", {
