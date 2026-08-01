@@ -178,6 +178,7 @@ function M.launch(ctx, opts)
     thinking = opts.thinking,
     mode = subagent_type,
     include_mcp = opts.include_mcp,
+    except = opts.except_tools,
   })
   if sess_err then
     return nil, sess_err, nil, nil, model_spec
