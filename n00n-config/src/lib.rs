@@ -12,6 +12,8 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 use thiserror::Error;
 use tracing::warn;
 
+use crate::providers::Tier;
+
 const PROJECT_DIR: &str = ".n00n";
 const PERMISSIONS_FILE: &str = "permissions.toml";
 
@@ -188,7 +190,7 @@ pub enum ConfigError {
     #[error(
         "invalid config: agent.fusion.sidekick_tier must be weak, medium, or strong, got {tier:?}"
     )]
-    InvalidFusionSidekickTier { tier: crate::providers::Tier },
+    InvalidFusionSidekickTier { tier: Tier },
 }
 
 fn check(
@@ -500,7 +502,7 @@ pub struct AgentFileConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct FusionFileConfig {
     pub enabled: Option<bool>,
-    pub sidekick_tier: Option<crate::providers::Tier>,
+    pub sidekick_tier: Option<Tier>,
 }
 
 #[derive(Deserialize, Default, Debug, Clone)]
@@ -1121,14 +1123,14 @@ pub struct AgentConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FusionConfig {
     pub enabled: bool,
-    pub sidekick_tier: crate::providers::Tier,
+    pub sidekick_tier: Tier,
 }
 
 impl Default for FusionConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            sidekick_tier: crate::providers::Tier::Weak,
+            sidekick_tier: Tier::Weak,
         }
     }
 }
@@ -1174,9 +1176,7 @@ impl AgentConfig {
         let fusion = if let Some(ff) = file.fusion {
             FusionConfig {
                 enabled: ff.enabled.map_or(false, |enabled| enabled),
-                sidekick_tier: ff
-                    .sidekick_tier
-                    .map_or(crate::providers::Tier::Weak, |tier| tier),
+                sidekick_tier: ff.sidekick_tier.map_or(Tier::Weak, |tier| tier),
             }
         } else {
             FusionConfig::default()
@@ -1380,7 +1380,7 @@ impl Config {
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.ui.validate_all()?;
         self.agent.validate()?;
-        if self.agent.fusion.sidekick_tier == crate::providers::Tier::Compaction {
+        if self.agent.fusion.sidekick_tier == Tier::Compaction {
             return Err(ConfigError::InvalidFusionSidekickTier {
                 tier: self.agent.fusion.sidekick_tier,
             });
@@ -2285,10 +2285,7 @@ mod tests {
 
         let merged = base.into_config(false).unwrap();
         assert!(merged.agent.fusion.enabled);
-        assert_eq!(
-            merged.agent.fusion.sidekick_tier,
-            crate::providers::Tier::Medium
-        );
+        assert_eq!(merged.agent.fusion.sidekick_tier, Tier::Medium);
         assert!(!merged.always_fusion);
     }
 
@@ -2314,7 +2311,7 @@ mod tests {
         assert!(matches!(
             config.validate(),
             Err(ConfigError::InvalidFusionSidekickTier {
-                tier: crate::providers::Tier::Compaction
+                tier: Tier::Compaction
             })
         ));
     }

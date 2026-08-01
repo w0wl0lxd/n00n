@@ -146,14 +146,14 @@ local function handler(input, ctx)
 end
 
 local function header(input)
-  local description = input.description or ""
+  local label = input.description or ""
   if utf8 and utf8.offset then
-    local end_offset = utf8.offset(description, 41)
-    description = description:sub(1, end_offset and end_offset - 1 or #description)
+    local end_offset = utf8.offset(label, 41)
+    label = label:sub(1, end_offset and end_offset - 1 or #label)
   else
-    description = description:sub(1, 40)
+    label = label:sub(1, 40)
   end
-  return "Executing: " .. description
+  return "Executing: " .. label
 end
 
 n00n.api.register_tool({
