@@ -98,6 +98,12 @@ fn is_secret_key(key: &str) -> bool {
             | "secretkey"
             | "awssecretaccesskey"
             | "xapikey"
+            | "accesskey"
+            | "authkey"
+            | "passwordhash"
+            | "secrettoken"
+            | "privatetoken"
+            | "apisecret"
     )
 }
 
@@ -280,9 +286,14 @@ impl ArgsBuilder {
                 _ => out.push(ch),
             }
         }
-        if out.chars().count() > self.budget {
-            let head: String = out.chars().take(self.budget.saturating_sub(1)).collect();
-            format!("{head}…")
+        if out.len() > self.budget {
+            let mut end = self.budget.saturating_sub(1);
+            while !out.is_char_boundary(end) {
+                end -= 1;
+            }
+            let mut head: String = out[..end].to_owned();
+            head.push('…');
+            head
         } else {
             out
         }
@@ -452,6 +463,12 @@ mod tests {
     #[test_case("Secret.Key" ; "secret_key_dot")]
     #[test_case("AWS_SECRET_ACCESS_KEY" ; "aws_secret_access_key")]
     #[test_case("x-api-key" ; "x_api_key")]
+    #[test_case("access_key" ; "access_key")]
+    #[test_case("auth_key" ; "auth_key")]
+    #[test_case("password_hash" ; "password_hash")]
+    #[test_case("secret_token" ; "secret_token")]
+    #[test_case("private_token" ; "private_token")]
+    #[test_case("api_secret" ; "api_secret")]
     fn normalized_secret_keys_redacted(key: &str) {
         let view = render(&json!({ key: "sensitive-value" }));
         let text = lines_text(&view);

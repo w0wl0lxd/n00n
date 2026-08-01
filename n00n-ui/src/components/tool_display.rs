@@ -444,6 +444,18 @@ impl ToolLineBuilder {
         if let Some(ann) = annotation {
             let _ = write!(copy, " ({ann})");
         }
+        if let Some(snapshot) = render_header {
+            let rest: Vec<String> = snapshot
+                .lines
+                .iter()
+                .skip(1)
+                .map(|line| line.spans.iter().map(|span| span.text.as_str()).collect())
+                .collect();
+            if !rest.is_empty() {
+                copy.push('\n');
+                copy.push_str(&rest.join("\n"));
+            }
+        }
         self.search_text = copy;
     }
 
@@ -726,6 +738,10 @@ pub fn build_tool_lines(
         && msg.render_header.is_none()
         && let Some(input) = msg.tool_raw_input.as_deref()
     {
+        let search = args_view::arg_search_text(input);
+        if !search.is_empty() {
+            b.push_search_text(&search);
+        }
         let view = args_view::render_args(
             input,
             rctx.tool_output_lines.get(tool_name),
@@ -742,7 +758,6 @@ pub fn build_tool_lines(
                 line.spans.insert(0, Span::raw(TOOL_BODY_INDENT));
                 b.lines.push(line);
             }
-            b.push_search_text(&args_view::arg_search_text(input));
             b.push_truncation_count(view.hidden);
         }
     }
@@ -1057,6 +1072,10 @@ mod tests {
         let text = lines_text(&tl);
         assert!(!text.contains("Arguments:"));
         assert!(!text.contains("needle"));
+        assert!(
+            tl.search_text.contains("needle"),
+            "suppressed args must stay searchable"
+        );
     }
 
     #[test]
@@ -1183,6 +1202,7 @@ mod tests {
             .collect();
         assert_eq!(second, "    second line");
         assert!(tl.search_text.contains("first line"));
+        assert!(tl.search_text.contains("second line"));
     }
 
     fn line_has_styled(tl: &ToolLines, text: &str, style: Style) -> bool {
