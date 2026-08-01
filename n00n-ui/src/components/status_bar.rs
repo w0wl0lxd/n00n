@@ -289,7 +289,10 @@ fn fusion_phase_label(phase: FusionPhase) -> Option<&'static str> {
         FusionPhase::Executing => Some("executing"),
         FusionPhase::Reviewing => Some("reviewing"),
         FusionPhase::LeadFallback => Some("lead fallback"),
-        FusionPhase::Idle | FusionPhase::Complete => None,
+        FusionPhase::Idle
+        | FusionPhase::Complete
+        | FusionPhase::Cancelled
+        | FusionPhase::Failed => None,
     }
 }
 

@@ -575,6 +575,7 @@ fn fusion_phase_clears_on_terminal_event(event: AgentEvent) {
     app.run_id = 1;
     app.update(agent_msg(AgentEvent::FusionPhaseChanged {
         phase: FusionPhase::Reviewing,
+        label: None,
     }));
     assert_eq!(app.fusion_phase, Some(FusionPhase::Reviewing));
 
@@ -2260,6 +2261,39 @@ fn stale_events_ignored_after_run_id_increment() {
     ));
     app.chats[0].flush();
     assert_eq!(app.chats[0].last_message_text(), "new text");
+}
+
+#[test]
+fn active_main_fusion_phase_is_visible_and_updates_status_bar_state() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    app.update(agent_msg(AgentEvent::FusionPhaseChanged {
+        phase: FusionPhase::Executing,
+        label: Some("brief label".into()),
+    }));
+    assert_eq!(app.fusion_phase, Some(FusionPhase::Executing));
+    assert_eq!(
+        app.main_chat().last_message_text(),
+        "Executing: brief label"
+    );
+}
+
+#[test]
+fn stale_fusion_phase_is_ignored() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 2;
+    let count_before = app.main_chat().message_count();
+    app.update(agent_msg_with_run_id(
+        AgentEvent::FusionPhaseChanged {
+            phase: FusionPhase::Reviewing,
+            label: None,
+        },
+        1,
+    ));
+    assert_eq!(app.fusion_phase, None);
+    assert_eq!(app.main_chat().message_count(), count_before);
 }
 
 #[test]
