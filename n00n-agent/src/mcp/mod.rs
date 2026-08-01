@@ -351,14 +351,16 @@ impl McpSession {
 
     #[must_use]
     pub fn fresh_excluding(&self, excluded: &[String]) -> Self {
-        let excluded = excluded
-            .iter()
-            .map(|name| Arc::from(internal_tool_name(name)))
-            .collect();
+        let mut inherited_exclusions = self.excluded.as_ref().clone();
+        inherited_exclusions.extend(
+            excluded
+                .iter()
+                .map(|name| Arc::from(internal_tool_name(name))),
+        );
         Self {
             handle: self.handle.clone(),
             loaded: Arc::new(Mutex::new(HashSet::new())),
-            excluded: Arc::new(excluded),
+            excluded: Arc::new(inherited_exclusions),
         }
     }
 
@@ -1745,22 +1747,23 @@ mod tests {
     }
 
     #[test]
-    fn session_exclusions_hide_and_prevent_loading_deferred_tools() {
+    fn session_exclusions_propagate_and_prevent_loading_deferred_tools() {
         let (_inner, parent) = setup(vec![fake_entry("srv", FakeTransport::new())]);
         let session = parent.fresh_excluding(&[WIRE_TOOL_NAME.to_owned()]);
+        let nested = session.fresh();
         let mut tools = json!([]);
-        session.extend_tools(&mut tools);
+        nested.extend_tools(&mut tools);
 
         assert!(tool_names(&tools).is_empty());
         assert!(
-            session
+            nested
                 .search_tools("tool")
                 .unwrap()
                 .contains(SEARCH_NO_MATCH)
         );
 
-        session.mark_loaded(TOOL_NAME);
-        session.extend_tools(&mut tools);
+        nested.mark_loaded(TOOL_NAME);
+        nested.extend_tools(&mut tools);
         assert!(tool_names(&tools).is_empty());
     }
 

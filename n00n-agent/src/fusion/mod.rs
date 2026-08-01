@@ -43,6 +43,7 @@ const LEAD_ONLY_SIGNALS: &[&str] = &[
     "destroying",
     "destructive",
     "rm",
+    "git reset --hard",
     "wipe",
     "wiping",
     "drop database",
