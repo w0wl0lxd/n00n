@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785535051881,
+  "lastUpdate": 1785555007592,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -11121,6 +11121,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 179240,
             "range": "± 24405",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b94bb61a289bf251dab742eb24c42744ad53bcf3",
+          "message": "feat(providers): add OpenAI message-level prompt cache breakpoints (#207)\n\n* feat(providers): add OpenAI message-level prompt cache breakpoints\n\nAdd message-level prompt cache breakpoints for OpenAI Chat Completions\non gpt-5.6+ models, mirroring Anthropic's adaptive breakpoint strategy.\n\n- Add message_cache_breakpoints parameter to OpenAiCompatProvider::build_body_with_session\n- Update convert_messages to mark last N user messages and last tool result with explicit breakpoints\n- Set prompt_cache_options.mode = explicit when breakpoints are enabled\n- Update all provider callers (openai, mistral, local, custom, opencode, synthetic, zai, openrouter, tensorx, deepseek)\n- Add comprehensive tests for breakpoint behavior\n- No changes for unsupported models or when message_cache_breakpoints == 0\n\n* fix(providers): fix OpenAI message cache breakpoint signature and double-marking\n\n- Split convert_messages into a backward-compatible 3-arg wrapper and a\n  4-arg convert_messages_with_breakpoints, avoiding edits to all callers/tests.\n- Use enumerate() for the block loop and collapse nested breakpoints check.\n- Only mark user-level content when the message's last block is text/image,\n  so a trailing tool result does not get both a user-level and tool-result\n  breakpoint.\n\n* fix(providers): emit explicit mode for system cache breakpoints",
+          "timestamp": "2026-08-01T03:13:35Z",
+          "tree_id": "db6cc7a612909664c9982a110af92f88890d971a",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/b94bb61a289bf251dab742eb24c42744ad53bcf3"
+        },
+        "date": 1785555006708,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6712393,
+            "range": "± 99160",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2233573,
+            "range": "± 11595",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2221290,
+            "range": "± 31943",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8300404,
+            "range": "± 36696",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4336984,
+            "range": "± 61563",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4340191,
+            "range": "± 15336",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 585404,
+            "range": "± 2975",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191828,
+            "range": "± 422",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191643,
+            "range": "± 1276",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1044801,
+            "range": "± 12150",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 589711,
+            "range": "± 1632",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 588468,
+            "range": "± 1370",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 80265,
+            "range": "± 1562",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 171042,
+            "range": "± 18414",
             "unit": "ns/iter"
           }
         ]
