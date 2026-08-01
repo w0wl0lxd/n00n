@@ -2245,6 +2245,55 @@ mod tests {
             config.storage.max_log_bytes,
             DEFAULT_MAX_LOG_BYTES_MB * 1024 * 1024
         );
+        assert!(!config.always_fusion, "Fusion must be opt-in");
+        assert!(
+            !config.agent.fusion.enabled,
+            "agent Fusion must default off independently"
+        );
+    }
+
+    #[test]
+    fn fusion_opt_ins_parse_independently() {
+        let agent_only: RawConfig = toml::from_str("[agent.fusion]\nenabled = true\n").unwrap();
+        let agent_only = agent_only.into_config(false).unwrap();
+        assert!(agent_only.agent.fusion.enabled);
+        assert!(!agent_only.always_fusion);
+
+        let always_only: RawConfig = toml::from_str("always_fusion = true\n").unwrap();
+        let always_only = always_only.into_config(false).unwrap();
+        assert!(always_only.always_fusion);
+        assert!(!always_only.agent.fusion.enabled);
+    }
+
+    #[test]
+    fn fusion_overlay_merges_fields_without_enabling_by_presence() {
+        let mut base: RawConfig =
+            toml::from_str("[agent.fusion]\nenabled = false\nsidekick_tier = \"medium\"\n")
+                .unwrap();
+        let overlay: RawConfig = toml::from_str("[agent.fusion]\nenabled = true\n").unwrap();
+        base.merge(overlay);
+        let merged = base.into_config(false).unwrap();
+
+        assert!(merged.agent.fusion.enabled);
+        assert_eq!(
+            merged.agent.fusion.sidekick_tier,
+            crate::providers::Tier::Medium
+        );
+        assert!(!merged.always_fusion);
+    }
+
+    #[test]
+    fn fusion_unknown_fields_are_rejected() {
+        let error = toml::from_str::<RawConfig>(
+            "[agent.fusion]\nenabled = true\nimplicit_model_switch = true\n",
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unknown field `implicit_model_switch`"),
+            "unexpected parse error: {error}"
+        );
     }
 
     #[test]

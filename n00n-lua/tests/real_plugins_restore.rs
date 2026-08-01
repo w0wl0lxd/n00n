@@ -763,7 +763,7 @@ fn fusion_and_blackboard_headers_render_prose() {
         .unwrap();
     assert_eq!(
         smol::block_on(inv.start_header()).text(),
-        "fusion: brief label"
+        "Executing: brief label"
     );
 
     let board = reg.get("blackboard").unwrap();

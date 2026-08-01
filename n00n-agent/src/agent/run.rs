@@ -5,8 +5,8 @@ use tracing::{error, info, warn};
 
 use n00n_providers::provider::Provider;
 use n00n_providers::{
-    ContentBlock, HistoryReplayReason, Message, Model, ModelTier, OpenAiOptions, RequestOptions,
-    Role, StopReason, StreamResponse, System, TokenUsage,
+    ContentBlock, HistoryReplayReason, Message, Model, OpenAiOptions, RequestOptions, Role,
+    StopReason, StreamResponse, System, TokenUsage,
 };
 
 use super::compaction::{self, CONTINUE_AFTER_COMPACT};
@@ -24,10 +24,9 @@ use crate::tools::{
 };
 use crate::{
     AgentConfig, AgentError, AgentEvent, AgentInput, AgentMode, EventSender, ExtractedCommand,
-    FusionLane, FusionRoute, FusionState, InterruptPoint, InterruptSource, ToolDoneEvent,
-    TurnCompleteEvent,
+    FusionFailure, FusionLane, FusionPhase, FusionRoute, FusionState, InterruptPoint,
+    InterruptSource, ToolDoneEvent, TurnCompleteEvent,
 };
-use n00n_config::providers::Tier;
 use n00n_config::{ToolKey, ToolOutputLines};
 use n00n_storage::id::SessionRef;
 
@@ -42,6 +41,8 @@ const MAX_TOKENS_CONTINUE_PROMPT: &str = "Continue exactly where you stopped.";
 const IMAGE_TOKEN_ESTIMATE: usize = 2_048;
 const HISTORY_REPLAY_PERMISSION_ID: &str = "history-replay";
 const HISTORY_REPLAY_TOOL: &str = "history_replay";
+const FUSION_REVIEW_PROMPT: &str = "Review the sidekick result above, verify it against the task, and produce the final lead response.";
+const FUSION_FALLBACK_PROMPT: &str = "The sidekick delegation failed. Continue with exactly one lead fallback attempt and produce the final response without delegating again.";
 
 const CACHE_BREAKPOINT_LONG_SESSION: usize = 60;
 const CACHE_BREAKPOINT_MEDIUM_SESSION: usize = 30;
@@ -51,15 +52,6 @@ const CACHE_BREAKPOINTS_LONG: usize = 4;
 const CACHE_BREAKPOINTS_MEDIUM: usize = 3;
 const CACHE_BREAKPOINTS_SHORT: usize = 2;
 const CACHE_BREAKPOINTS_MIN: usize = 1;
-
-fn tier_to_model_tier(tier: Tier) -> ModelTier {
-    match tier {
-        Tier::Weak => ModelTier::Weak,
-        Tier::Medium => ModelTier::Medium,
-        Tier::Strong => ModelTier::Strong,
-        Tier::Compaction => ModelTier::Compaction,
-    }
-}
 
 fn filter_tools_for_mode(tools: &mut Value, mode: &AgentMode) {
     if !mode.is_readonly() {
@@ -207,8 +199,6 @@ pub struct Agent<'h> {
     tool_filter: ToolFilter,
     active_tools: ActiveTools,
     supports_tool_examples: bool,
-    lead_model: Option<Arc<Model>>,
-    lead_provider: Option<Arc<dyn Provider>>,
     fusion_state: Option<FusionState>,
 }
 
@@ -217,16 +207,6 @@ impl<'h> Agent<'h> {
     pub fn new(params: AgentParams, run: AgentRunParams<'h>) -> Self {
         let supports_tool_examples = params.model.supports_tool_examples();
         let fusion_enabled = params.config.fusion.enabled;
-        let lead_model = if fusion_enabled {
-            Some(Arc::new(params.model.clone()))
-        } else {
-            None
-        };
-        let lead_provider = if fusion_enabled {
-            Some(Arc::clone(&params.provider))
-        } else {
-            None
-        };
         let fusion_state = if fusion_enabled {
             Some(FusionState::new_lead())
         } else {
@@ -275,8 +255,6 @@ impl<'h> Agent<'h> {
             tool_filter: run.tool_filter,
             active_tools: ActiveTools::default(),
             supports_tool_examples,
-            lead_model,
-            lead_provider,
             fusion_state,
         };
         if fusion_enabled {
@@ -398,12 +376,31 @@ impl<'h> Agent<'h> {
             message_len = input.message.len(),
             "agent run started"
         );
+        if self.fusion_state.is_some() {
+            self.emit_fusion_phase(FusionPhase::Planning)?;
+        }
 
         let result = async {
             self.try_auto_compact().await?;
             self.run_loop().await
         }
         .await;
+
+        if let Some(state) = self.fusion_state.as_mut() {
+            match &result {
+                Err(AgentError::Cancelled) => {
+                    if let Err(error) = state.cancel() {
+                        warn!(?error, "fusion: failed to mark run cancelled");
+                    }
+                }
+                Err(_) => {
+                    if let Err(error) = state.fail() {
+                        warn!(?error, "fusion: failed to mark run failed");
+                    }
+                }
+                Ok(()) => {}
+            }
+        }
 
         if matches!(result, Err(AgentError::Cancelled)) {
             if self
@@ -561,6 +558,7 @@ impl<'h> Agent<'h> {
             {
                 state.observe_tool_results(&tool_results);
             }
+            self.handle_fusion_results(&tool_results)?;
             self.apply_skill_policy_from_results(&tool_results);
             if self.apply_tool_search_results(&tool_results) {
                 self.rebuild_tools();
@@ -648,6 +646,12 @@ impl<'h> Agent<'h> {
         if has_tools {
             Ok(TurnOutcome::Continue)
         } else {
+            if let Some(state) = self.fusion_state.as_mut()
+                && !state.phase().is_terminal()
+                && let Err(error) = state.transition(FusionPhase::Complete)
+            {
+                warn!(?error, "fusion: failed to mark run complete");
+            }
             Ok(TurnOutcome::Done(stop_reason))
         }
     }
@@ -734,6 +738,52 @@ impl<'h> Agent<'h> {
             &ctx,
         )
         .await
+    }
+
+    fn emit_fusion_phase(&self, phase: FusionPhase) -> Result<(), AgentError> {
+        self.event_tx
+            .send(AgentEvent::FusionPhase { phase, label: None })
+    }
+
+    fn handle_fusion_results(&mut self, results: &[ToolDoneEvent]) -> Result<(), AgentError> {
+        let Some(result) = results
+            .iter()
+            .find(|result| &*result.tool == crate::fusion::FUSION_DELEGATE_TOOL)
+        else {
+            return Ok(());
+        };
+        let Some(state) = self.fusion_state.as_mut() else {
+            return Ok(());
+        };
+        if let Err(error) = state.transition(FusionPhase::Executing) {
+            warn!(?error, "fusion: rejected delegation transition");
+            return Ok(());
+        }
+        self.emit_fusion_phase(FusionPhase::Executing)?;
+
+        if result.is_error {
+            let failure = fusion_failure_from_result(result);
+            if let Some(state) = self.fusion_state.as_mut()
+                && let Err(error) = state.delegate_failed(failure)
+            {
+                warn!(?error, "fusion: rejected fallback transition");
+                return Ok(());
+            }
+            self.history
+                .push(Message::synthetic(FUSION_FALLBACK_PROMPT.into()));
+            self.emit_fusion_phase(FusionPhase::LeadFallback)?;
+        } else {
+            if let Some(state) = self.fusion_state.as_mut()
+                && let Err(error) = state.transition(FusionPhase::Reviewing)
+            {
+                warn!(?error, "fusion: rejected review transition");
+                return Ok(());
+            }
+            self.history
+                .push(Message::synthetic(FUSION_REVIEW_PROMPT.into()));
+            self.emit_fusion_phase(FusionPhase::Reviewing)?;
+        }
+        Ok(())
     }
 
     fn tool_context(&self) -> ToolContext {
@@ -872,98 +922,16 @@ impl<'h> Agent<'h> {
     }
 
     fn apply_fusion_route(&mut self, route: FusionRoute) {
-        let Some(lead) = self.lead_model.as_ref() else {
+        if self.fusion_state.is_none() {
             return;
-        };
+        }
         match route {
             FusionRoute::Stay(_) => {}
-            FusionRoute::EscalateToLead | FusionRoute::Switch(FusionLane::Lead) => {
-                if let Some(provider) = self.lead_provider.as_ref() {
-                    self.provider = Arc::clone(provider);
-                    self.model = Arc::clone(lead);
-                } else {
-                    let spec = lead.spec();
-                    let mut model = match Model::from_spec(&spec) {
-                        Ok(model) => model,
-                        Err(e) => {
-                            warn!(
-                                error = %e,
-                                spec = %spec,
-                                "fusion: failed to resolve lead model spec, keeping current provider/model"
-                            );
-                            return;
-                        }
-                    };
-                    let provider = match n00n_providers::provider::from_model_with_openai_options(
-                        &mut model,
-                        self.timeouts,
-                        self.openai_options,
-                    ) {
-                        Ok(provider) => provider,
-                        Err(e) => {
-                            warn!(
-                                error = %e,
-                                spec = %spec,
-                                "fusion: failed to build provider for lead model, keeping current provider/model"
-                            );
-                            return;
-                        }
-                    };
-                    self.provider = Arc::from(provider);
-                    self.model = Arc::new(model);
-                }
+            FusionRoute::EscalateToLead | FusionRoute::Switch(_) => {
                 if let Some(state) = self.fusion_state.as_mut() {
                     state.lane = FusionLane::Lead;
                 }
                 self.apply_fusion_lane_context(FusionLane::Lead);
-                info!(model = %self.model.id, "fusion: escalated to lead lane");
-            }
-            FusionRoute::Switch(FusionLane::Sidekick) => {
-                let tier = tier_to_model_tier(self.config.fusion.sidekick_tier);
-                let spec = match n00n_providers::model_registry::model_registry().read() {
-                    Ok(registry) => registry.spec_for_tier_any(tier),
-                    Err(e) => {
-                        warn!(
-                            error = ?e,
-                            ?tier,
-                            "fusion: model registry lock poisoned, cannot resolve sidekick"
-                        );
-                        return;
-                    }
-                };
-                let Some(spec) = spec else {
-                    warn!(?tier, "fusion: no model for sidekick tier");
-                    return;
-                };
-                let mut model = match Model::from_spec(&spec) {
-                    Ok(model) => model,
-                    Err(e) => {
-                        warn!(error = %e, spec = %spec, "fusion: invalid sidekick model spec");
-                        return;
-                    }
-                };
-                let provider = match n00n_providers::provider::from_model_with_openai_options(
-                    &mut model,
-                    self.timeouts,
-                    self.openai_options,
-                ) {
-                    Ok(provider) => provider,
-                    Err(e) => {
-                        warn!(
-                            error = %e,
-                            spec = %spec,
-                            "fusion: failed to build provider for sidekick model, keeping current provider/model"
-                        );
-                        return;
-                    }
-                };
-                self.provider = Arc::from(provider);
-                self.model = Arc::new(model);
-                if let Some(state) = self.fusion_state.as_mut() {
-                    state.record_delegation();
-                }
-                self.apply_fusion_lane_context(FusionLane::Sidekick);
-                info!(model = %self.model.id, "fusion: switched to sidekick lane");
             }
         }
     }
@@ -1068,6 +1036,19 @@ impl<'h> Agent<'h> {
             }
         }
         Ok(handled)
+    }
+}
+
+fn fusion_failure_from_result(result: &ToolDoneEvent) -> FusionFailure {
+    let message = result.output.as_text().to_ascii_lowercase();
+    if message.contains("timeout") || message.contains("timed out") {
+        FusionFailure::Timeout
+    } else if message.contains("model unavailable") {
+        FusionFailure::ModelUnavailable
+    } else if message.contains("cancel") {
+        FusionFailure::DelegateCancelled
+    } else {
+        FusionFailure::ToolError
     }
 }
 
@@ -1482,12 +1463,20 @@ mod tests {
         provider: MockProvider,
         history: &mut History,
     ) -> (Agent<'_>, flume::Receiver<Envelope>) {
+        make_agent_with_config(provider, history, AgentConfig::default())
+    }
+
+    fn make_agent_with_config(
+        provider: MockProvider,
+        history: &mut History,
+        config: AgentConfig,
+    ) -> (Agent<'_>, flume::Receiver<Envelope>) {
         let (raw_tx, event_rx) = flume::unbounded();
         let agent = Agent::new(
             AgentParams {
                 provider: Arc::new(provider),
                 model: default_model(),
-                config: Arc::new(AgentConfig::default()),
+                config: Arc::new(config),
                 tool_output_lines: ToolOutputLines::default(),
                 permissions: Arc::new(PermissionManager::new(
                     n00n_config::PermissionsConfig {
@@ -1674,6 +1663,253 @@ mod tests {
         });
     }
 
+    #[test]
+    fn fusion_disabled_preserves_baseline_run_identity_output_and_cost() {
+        smol::block_on(async {
+            let charged = TokenUsage {
+                input: 100,
+                output: 25,
+                cache_creation: 10,
+                cache_read: 5,
+            };
+            let mut response = text_response(StopReason::EndTurn);
+            response.usage = charged;
+            let (provider, requests) = MockProvider::recording(vec![response]);
+            let mut history = History::new(Vec::new());
+            let (mut agent, event_rx) = make_agent(provider, &mut history);
+            let provider_before = Arc::clone(&agent.provider);
+            let model_before = agent.model.id.clone();
+
+            assert!(agent.fusion_state.is_none());
+            assert!(
+                !agent.tools.as_array().unwrap().iter().any(|tool| {
+                    tool.get("name").and_then(Value::as_str) == Some("fusion_delegate")
+                }),
+                "disabled Fusion must not advertise fusion_delegate"
+            );
+
+            agent.run(default_input()).await.unwrap();
+            let expected_cost = charged.cost(&default_model().pricing, false);
+            assert_eq!(requests.lock().unwrap().len(), 1);
+            assert_eq!(agent.model.id, model_before);
+            assert!(Arc::ptr_eq(&agent.provider, &provider_before));
+            assert_eq!(agent.total_usage(), charged);
+            assert!((agent.total_cost() - expected_cost).abs() < COST_EPSILON);
+            assert_eq!(history.len(), 2);
+            assert_eq!(history.as_slice()[1].first_text_content(), Some("response"));
+
+            let events = drain_events(&event_rx);
+            assert!(events.iter().all(|envelope| {
+                !serde_json::to_string(&envelope.event)
+                    .unwrap()
+                    .contains("fusion_phase")
+            }));
+            let done = events
+                .into_iter()
+                .find_map(|envelope| match envelope.event {
+                    AgentEvent::Done { fusion, .. } => Some(fusion),
+                    _ => None,
+                });
+            assert!(matches!(done, Some(None)));
+        });
+    }
+
+    #[test]
+    fn disabled_hallucinated_delegate_is_denied_without_subagent_launch() {
+        smol::block_on(async {
+            let (provider, requests) = MockProvider::recording(vec![
+                tool_call_response("fusion_delegate", "delegate-1"),
+                text_response(StopReason::EndTurn),
+            ]);
+            let mut history = History::new(Vec::new());
+            let (mut agent, _event_rx) = make_agent(provider, &mut history);
+
+            agent.run(default_input()).await.unwrap();
+
+            assert_eq!(requests.lock().unwrap().len(), 2, "lead continues normally");
+            assert!(agent.fusion_state.is_none());
+            drop(agent);
+            let tool_result = history
+                .as_slice()
+                .iter()
+                .flat_map(|message| &message.content)
+                .find_map(|block| match block {
+                    ContentBlock::ToolResult {
+                        content, is_error, ..
+                    } => Some((content, is_error)),
+                    _ => None,
+                })
+                .expect("denial is returned to the lead as a tool result");
+            assert!(*tool_result.1);
+            assert!(
+                tool_result.0.contains("unknown tool")
+                    || tool_result.0.contains("not available")
+                    || tool_result.0.contains("disabled"),
+                "unexpected denial: {}",
+                tool_result.0
+            );
+        });
+    }
+
+    fn fusion_enabled_config() -> AgentConfig {
+        let mut config = AgentConfig::default();
+        config.fusion.enabled = true;
+        config
+    }
+
+    fn message_text(messages: &[Message]) -> String {
+        messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } | ContentBlock::ToolResult { content: text, .. } => {
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn fusion_routing_never_replaces_the_lead_model_or_provider() {
+        let mut history = History::new(Vec::new());
+        let (mut agent, _event_rx) = make_agent_with_config(
+            MockProvider::new(Vec::new()),
+            &mut history,
+            fusion_enabled_config(),
+        );
+        let model_before = agent.model.id.clone();
+        let provider_before = Arc::clone(&agent.provider);
+
+        agent.apply_fusion_route(FusionRoute::Switch(FusionLane::Sidekick));
+
+        assert_eq!(agent.model.id, model_before);
+        assert!(Arc::ptr_eq(&agent.provider, &provider_before));
+        assert_eq!(agent.fusion_state.as_ref().unwrap().lane, FusionLane::Lead);
+    }
+
+    #[test]
+    fn successful_delegate_is_followed_by_exactly_one_lead_review_turn() {
+        smol::block_on(async {
+            let (provider, requests) = MockProvider::recording(vec![
+                tool_call_response("fusion_delegate", "delegate-1"),
+                text_response(StopReason::EndTurn),
+            ]);
+            let calls = Arc::new(AtomicUsize::new(0));
+            let call_counter = Arc::clone(&calls);
+            let mut local = std::collections::HashMap::new();
+            local.insert(
+                "fusion_delegate".to_owned(),
+                Arc::new(move |_: &Value| {
+                    call_counter.fetch_add(1, Ordering::Relaxed);
+                    Ok("sidekick completed".to_owned())
+                }) as crate::tools::LocalToolFn,
+            );
+            let mut history = History::new(Vec::new());
+            let (agent, event_rx) =
+                make_agent_with_config(provider, &mut history, fusion_enabled_config());
+            let mut agent = agent.with_local_tools(Arc::new(local));
+            let mut input = default_input();
+            input.message = "grep for TODO markers".into();
+
+            agent.run(input).await.unwrap();
+
+            assert_eq!(calls.load(Ordering::Relaxed), 1);
+            let requests = requests.lock().unwrap();
+            assert_eq!(requests.len(), 2, "one delegation turn and one review turn");
+            assert!(
+                message_text(&requests[1])
+                    .to_ascii_lowercase()
+                    .contains("review"),
+                "next lead request must contain review instruction: {}",
+                message_text(&requests[1])
+            );
+            assert_eq!(
+                agent.model.id,
+                default_model().id,
+                "lead produces final response"
+            );
+
+            let phases: Vec<_> = drain_events(&event_rx)
+                .into_iter()
+                .filter_map(|envelope| match envelope.event {
+                    AgentEvent::FusionPhase { phase, .. } => Some(phase),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                phases,
+                [
+                    crate::fusion::FusionPhase::Planning,
+                    crate::fusion::FusionPhase::Executing,
+                    crate::fusion::FusionPhase::Reviewing
+                ]
+            );
+        });
+    }
+
+    #[test_case("generic tool error" ; "generic error")]
+    #[test_case("delegate timed out" ; "timeout")]
+    #[test_case("model unavailable" ; "model unavailable")]
+    #[test_case("delegate cancelled" ; "delegate cancellation")]
+    fn delegate_failure_is_followed_by_exactly_one_lead_fallback(error: &str) {
+        smol::block_on(async {
+            let (provider, requests) = MockProvider::recording(vec![
+                tool_call_response("fusion_delegate", "delegate-1"),
+                text_response(StopReason::EndTurn),
+            ]);
+            let calls = Arc::new(AtomicUsize::new(0));
+            let call_counter = Arc::clone(&calls);
+            let error = error.to_owned();
+            let mut local = std::collections::HashMap::new();
+            local.insert(
+                "fusion_delegate".to_owned(),
+                Arc::new(move |_: &Value| {
+                    call_counter.fetch_add(1, Ordering::Relaxed);
+                    Err(error.clone())
+                }) as crate::tools::LocalToolFn,
+            );
+            let mut history = History::new(Vec::new());
+            let (agent, event_rx) =
+                make_agent_with_config(provider, &mut history, fusion_enabled_config());
+            let mut agent = agent.with_local_tools(Arc::new(local));
+            let mut input = default_input();
+            input.message = "run cargo test".into();
+
+            agent.run(input).await.unwrap();
+
+            assert_eq!(
+                calls.load(Ordering::Relaxed),
+                1,
+                "delegate is never retried"
+            );
+            let requests = requests.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            assert!(
+                message_text(&requests[1])
+                    .to_ascii_lowercase()
+                    .contains("fallback"),
+                "next lead request must contain fallback instruction: {}",
+                message_text(&requests[1])
+            );
+            let phases: Vec<_> = drain_events(&event_rx)
+                .into_iter()
+                .filter_map(|envelope| match envelope.event {
+                    AgentEvent::FusionPhase { phase, .. } => Some(phase),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                phases,
+                [
+                    crate::fusion::FusionPhase::Planning,
+                    crate::fusion::FusionPhase::Executing,
+                    crate::fusion::FusionPhase::LeadFallback
+                ]
+            );
+        });
+    }
     #[test]
     fn charged_usage_survives_event_delivery_failure() {
         smol::block_on(async {

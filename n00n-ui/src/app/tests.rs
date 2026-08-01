@@ -2237,6 +2237,37 @@ fn stale_events_ignored_after_run_id_increment() {
 }
 
 #[test]
+fn active_main_fusion_phase_is_visible() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    app.update(agent_msg(AgentEvent::FusionPhase {
+        phase: n00n_agent::FusionPhase::Executing,
+        label: Some("brief label".into()),
+    }));
+    assert_eq!(
+        app.main_chat().last_message_text(),
+        "Executing: brief label"
+    );
+}
+
+#[test]
+fn stale_fusion_phase_is_ignored() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 2;
+    let count_before = app.main_chat().message_count();
+    app.update(agent_msg_with_run_id(
+        AgentEvent::FusionPhase {
+            phase: n00n_agent::FusionPhase::Reviewing,
+            label: None,
+        },
+        1,
+    ));
+    assert_eq!(app.main_chat().message_count(), count_before);
+}
+
+#[test]
 fn stale_done_does_not_drain_queue() {
     let mut app = test_app();
     app.status = Status::Streaming;

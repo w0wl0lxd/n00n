@@ -178,6 +178,21 @@ impl Chat {
                     self.messages_panel.flush();
                 }
             }
+            AgentEvent::FusionPhase { phase, label } => {
+                let phase = match phase {
+                    n00n_agent::FusionPhase::Planning => "Planning",
+                    n00n_agent::FusionPhase::Executing => "Executing",
+                    n00n_agent::FusionPhase::Reviewing => "Reviewing",
+                    n00n_agent::FusionPhase::LeadFallback => "Lead fallback",
+                    n00n_agent::FusionPhase::Complete => "Complete",
+                    n00n_agent::FusionPhase::Cancelled => "Cancelled",
+                    n00n_agent::FusionPhase::Failed => "Failed",
+                };
+                let text =
+                    label.map_or_else(|| phase.to_owned(), |label| format!("{phase}: {label}"));
+                self.messages_panel
+                    .push(DisplayMessage::new(DisplayRole::Control, text));
+            }
             AgentEvent::QueueItemConsumed {
                 text,
                 image_count,
@@ -989,6 +1004,50 @@ mod tests {
         HashMap::new()
     }
 
+    #[test_case(n00n_agent::FusionPhase::Planning, None, "Planning" ; "planning")]
+    #[test_case(n00n_agent::FusionPhase::Executing, Some("brief label"), "Executing: brief label" ; "executing")]
+    #[test_case(n00n_agent::FusionPhase::Reviewing, None, "Reviewing" ; "reviewing")]
+    #[test_case(n00n_agent::FusionPhase::LeadFallback, None, "Lead fallback" ; "lead fallback")]
+    fn fusion_phase_renders_typed_control_text(
+        phase: n00n_agent::FusionPhase,
+        label: Option<&str>,
+        expected: &str,
+    ) {
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
+        chat.handle_event(
+            AgentEvent::FusionPhase {
+                phase,
+                label: label.map(str::to_owned),
+            },
+            None,
+        );
+        assert_eq!(chat.last_message_text(), expected);
+    }
+
+    #[test]
+    fn fusion_phase_does_not_disturb_streaming_or_compaction_cards() {
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
+        chat.handle_event(AgentEvent::AutoCompacting, None);
+        chat.handle_event(
+            AgentEvent::TextDelta {
+                text: "partial".into(),
+            },
+            None,
+        );
+        let cards_before = chat.compaction_card_count();
+
+        chat.handle_event(
+            AgentEvent::FusionPhase {
+                phase: n00n_agent::FusionPhase::Executing,
+                label: Some("brief label".into()),
+            },
+            None,
+        );
+
+        assert_eq!(chat.compaction_card_count(), cards_before);
+        assert!(!chat.streaming_text_is_empty());
+        assert_eq!(chat.last_message_text(), "Executing: brief label");
+    }
     #[test]
     fn tool_lifecycle() {
         let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
