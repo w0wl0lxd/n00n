@@ -18,37 +18,6 @@ use crate::{
 };
 
 const STREAM_DONE: &str = "[DONE]";
-const GPT_MODEL_PREFIX: &str = "gpt-";
-const OPENAI_MODEL_PREFIX: &str = "openai/";
-const GPT_CODEX_MARKER: &str = "-codex";
-const MIN_BREAKPOINT_MODEL_MAJOR: u16 = 5;
-const MIN_BREAKPOINT_MODEL_MINOR: u16 = 6;
-
-fn model_supports_breakpoint(model: &crate::model::Model) -> bool {
-    let model_id = match model.id.strip_prefix(OPENAI_MODEL_PREFIX) {
-        Some(model_id) => model_id,
-        None => model.id.as_str(),
-    };
-    if model_id.contains(GPT_CODEX_MARKER) {
-        return false;
-    }
-    let Some(version_and_suffix) = model_id.strip_prefix(GPT_MODEL_PREFIX) else {
-        return false;
-    };
-    let version = match version_and_suffix.split_once('-') {
-        Some((version, _)) => version,
-        None => version_and_suffix,
-    };
-    let (major, minor) = match version.split_once('.') {
-        Some((major, minor)) => (major, minor),
-        None => (version, "0"),
-    };
-    let (Ok(major), Ok(minor)) = (major.parse::<u16>(), minor.parse::<u16>()) else {
-        return false;
-    };
-    major > MIN_BREAKPOINT_MODEL_MAJOR
-        || major == MIN_BREAKPOINT_MODEL_MAJOR && minor >= MIN_BREAKPOINT_MODEL_MINOR
-}
 
 fn contains_prompt_cache_breakpoint(value: &Value) -> bool {
     match value {
@@ -211,8 +180,8 @@ impl OpenAiCompatProvider {
         message_cache_breakpoints: usize,
         fast: bool,
     ) -> Value {
-        let supports_breakpoints =
-            self.config.supports_prompt_cache_breakpoint && model_supports_breakpoint(model);
+        let supports_breakpoints = self.config.supports_prompt_cache_breakpoint
+            && model.supports_prompt_cache_breakpoint();
         let message_cache_breakpoints = (supports_breakpoints && message_cache_breakpoints > 0)
             .then_some(message_cache_breakpoints);
 
@@ -276,7 +245,7 @@ impl OpenAiCompatProvider {
                 block.text.as_str(),
                 block.cache == CacheControl::Ephemeral
                     && self.config.supports_prompt_cache_breakpoint
-                    && model_supports_breakpoint(model),
+                    && model.supports_prompt_cache_breakpoint(),
             ));
         }
         if blocks.is_empty() {
@@ -1030,6 +999,7 @@ pub async fn parse_sse(
 mod tests {
     use super::*;
     use futures_lite::io::Cursor;
+    use test_case::test_case;
 
     const TEST_STREAM_TIMEOUT: Duration = Duration::from_mins(5);
 
@@ -1678,9 +1648,9 @@ data: [DONE]\n";
         let future_model = crate::model::Model::from_spec("openai/gpt-6").unwrap();
         let codex_model = crate::model::Model::from_spec("openai/gpt-6-codex").unwrap();
 
-        assert!(model_supports_breakpoint(&open_router_model));
-        assert!(model_supports_breakpoint(&future_model));
-        assert!(!model_supports_breakpoint(&codex_model));
+        assert!(open_router_model.supports_prompt_cache_breakpoint());
+        assert!(future_model.supports_prompt_cache_breakpoint());
+        assert!(!codex_model.supports_prompt_cache_breakpoint());
     }
 
     #[test]
@@ -2010,8 +1980,9 @@ data: [DONE]\n";
         assert!(body.get("parallel_tool_calls").is_none());
     }
 
-    #[test]
-    fn build_body_with_fast_emits_service_tier_fast() {
+    #[test_case(true, Some("fast") ; "fast")]
+    #[test_case(false, None ; "standard")]
+    fn build_body_service_tier(fast: bool, expected: Option<&str>) {
         static TEST_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
             slug: "test",
             api_key_env: "TEST_KEY",
@@ -2032,65 +2003,32 @@ data: [DONE]\n";
             output: 60.0,
         });
         let messages = vec![Message::user("hello".to_string())];
-        let tools = json!([]);
-
         let body = provider.build_body_with_session(
             &model,
             &messages,
             &System::from("system"),
-            &tools,
+            &json!([]),
             None,
             None,
             0,
-            true,
+            fast,
         );
-        assert_eq!(body["service_tier"], "fast");
+        assert_eq!(body.get("service_tier").and_then(Value::as_str), expected);
     }
 
-    #[test]
-    fn build_body_without_fast_no_service_tier() {
-        static TEST_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
-            slug: "test",
-            api_key_env: "TEST_KEY",
-            base_url: "https://test.com",
-            max_tokens_field: "max_tokens",
-            include_stream_usage: false,
-            provider_name: "Test",
-            supports_prompt_cache_key: false,
-            supports_prompt_cache_breakpoint: false,
-            emit_reasoning_content: false,
-            supports_parallel_tool_calls: false,
-        };
-        let provider =
-            OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
-        let model = crate::model::Model::from_spec("openai/gpt-5.6-sol").unwrap();
-        let messages = vec![Message::user("hello".to_string())];
-        let tools = json!([]);
-
-        let body = provider.build_body_with_session(
-            &model,
-            &messages,
-            &System::from("system"),
-            &tools,
-            None,
-            None,
-            0,
-            false,
-        );
-        assert!(body.get("service_tier").is_none());
-    }
-
-    #[test]
-    fn convert_messages_includes_image_detail_auto() {
-        use crate::types::{ImageMediaType, ImageSource};
+    #[test_case("abc123", "auto" ; "image_detail_auto")]
+    fn convert_messages_includes_image_detail(data: &str, expected_detail: &str) {
         use std::sync::Arc;
-        let source = ImageSource::new(ImageMediaType::Png, Arc::from("abc123"));
+
+        use crate::types::{ImageMediaType, ImageSource};
+
+        let source = ImageSource::new(ImageMediaType::Png, Arc::from(data));
         let msgs = vec![Message::user_with_images("describe".into(), vec![source])];
         let result = convert_messages(&msgs, Some("system"), false);
         let user = &result[1];
         let content = user["content"].as_array().unwrap();
         assert_eq!(content.len(), 2);
         assert_eq!(content[0]["type"], "image_url");
-        assert_eq!(content[0]["image_url"]["detail"], "auto");
+        assert_eq!(content[0]["image_url"]["detail"], expected_detail);
     }
 }

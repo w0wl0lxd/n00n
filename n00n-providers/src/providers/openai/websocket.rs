@@ -124,10 +124,10 @@ pub(crate) fn build_request_body(
     messages: &[Message],
     system: &System,
     tools: &Value,
-    opts: &RequestOptions,
     previous_response_id: Option<&str>,
     prompt_cache_key: Option<&str>,
     store: bool,
+    opts: &RequestOptions,
     parallel_tool_calls: bool,
 ) -> Value {
     super::responses::build_body(
@@ -888,10 +888,10 @@ mod tests {
             &[],
             &System::from("system"),
             &json!([]),
-            &opts,
             None,
             None,
             true,
+            &opts,
             true,
         );
         let event = build_create_event(&body);
@@ -1490,10 +1490,10 @@ mod tests {
             &[],
             &System::from("system"),
             &tools,
-            &opts,
             None,
             None,
             true,
+            &opts,
             true,
         );
         assert_eq!(body["parallel_tool_calls"], true);
@@ -1516,10 +1516,10 @@ mod tests {
             &[],
             &System::from("system"),
             &tools,
-            &opts,
             None,
             None,
             true,
+            &opts,
             false,
         );
         assert!(body.get("parallel_tool_calls").is_none());

@@ -7,7 +7,9 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 pub use n00n_storage::sessions::Effort;
-use n00n_storage::sessions::{MIN_THINKING_BUDGET, StoredThinking, TitleSource};
+use n00n_storage::sessions::{
+    MIN_THINKING_BUDGET, StoredReasoningContext, StoredReasoningMode, StoredThinking, TitleSource,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use strum::{Display, IntoStaticStr};
@@ -797,6 +799,24 @@ impl From<StoredThinking> for ThinkingConfig {
             StoredThinking::Adaptive => Self::Adaptive,
             StoredThinking::Effort { level } => Self::Effort(level),
             StoredThinking::Budget { tokens } => Self::Budget(tokens),
+            StoredThinking::WithExtras {
+                level,
+                reasoning_mode,
+                reasoning_context,
+            } => Self::WithExtras(
+                level,
+                ThinkingExtras {
+                    reasoning_mode: reasoning_mode.map(|mode| match mode {
+                        StoredReasoningMode::Standard => ReasoningMode::Standard,
+                        StoredReasoningMode::Pro => ReasoningMode::Pro,
+                    }),
+                    reasoning_context: reasoning_context.map(|context| match context {
+                        StoredReasoningContext::Auto => ReasoningContext::Auto,
+                        StoredReasoningContext::CurrentTurn => ReasoningContext::CurrentTurn,
+                        StoredReasoningContext::AllTurns => ReasoningContext::AllTurns,
+                    }),
+                },
+            ),
         }
     }
 }
@@ -806,10 +826,20 @@ impl From<ThinkingConfig> for StoredThinking {
         match c {
             ThinkingConfig::Off => Self::Off,
             ThinkingConfig::Adaptive => Self::Adaptive,
-            ThinkingConfig::Effort(e) | ThinkingConfig::WithExtras(e, _) => {
-                Self::Effort { level: e }
-            }
-            ThinkingConfig::Budget(n) => Self::Budget { tokens: n },
+            ThinkingConfig::Effort(level) => Self::Effort { level },
+            ThinkingConfig::Budget(tokens) => Self::Budget { tokens },
+            ThinkingConfig::WithExtras(level, extras) => Self::WithExtras {
+                level,
+                reasoning_mode: extras.reasoning_mode.map(|mode| match mode {
+                    ReasoningMode::Standard => StoredReasoningMode::Standard,
+                    ReasoningMode::Pro => StoredReasoningMode::Pro,
+                }),
+                reasoning_context: extras.reasoning_context.map(|context| match context {
+                    ReasoningContext::Auto => StoredReasoningContext::Auto,
+                    ReasoningContext::CurrentTurn => StoredReasoningContext::CurrentTurn,
+                    ReasoningContext::AllTurns => StoredReasoningContext::AllTurns,
+                }),
+            },
         }
     }
 }
@@ -1235,14 +1265,22 @@ mod tests {
         assert_eq!(result, expected);
     }
 
-    #[test_case(ThinkingConfig::Off      ; "off")]
-    #[test_case(ThinkingConfig::Adaptive ; "adaptive")]
-    #[test_case(ThinkingConfig::Effort(Max) ; "effort")]
-    #[test_case(ThinkingConfig::Budget(8192) ; "budget")]
-    fn thinking_display_round_trip(config: ThinkingConfig) {
+    #[test_case(ThinkingConfig::Off, ThinkingConfig::Off ; "off")]
+    #[test_case(ThinkingConfig::Adaptive, ThinkingConfig::Adaptive ; "adaptive")]
+    #[test_case(ThinkingConfig::Effort(Max), ThinkingConfig::Effort(Max) ; "effort")]
+    #[test_case(ThinkingConfig::Budget(8192), ThinkingConfig::Budget(8192) ; "budget")]
+    #[test_case(
+        ThinkingConfig::WithExtras(Max, ThinkingExtras {
+            reasoning_mode: Some(ReasoningMode::Pro),
+            reasoning_context: Some(ReasoningContext::AllTurns),
+        }),
+        ThinkingConfig::Effort(Max);
+        "with_extras_display_narrows_to_effort"
+    )]
+    fn thinking_display_round_trip(config: ThinkingConfig, expected: ThinkingConfig) {
         let s = config.to_string();
         let parsed = ThinkingConfig::parse(&s, ThinkingConfig::Off).unwrap();
-        assert_eq!(parsed, config);
+        assert_eq!(parsed, expected);
     }
 
     #[test]
@@ -1280,6 +1318,18 @@ mod tests {
             extracted.reasoning_context,
             Some(ReasoningContext::CurrentTurn)
         );
+    }
+
+    #[test_case(
+        ThinkingConfig::WithExtras(High, ThinkingExtras {
+            reasoning_mode: Some(ReasoningMode::Pro),
+            reasoning_context: Some(ReasoningContext::CurrentTurn),
+        });
+        "preserves_all_extras"
+    )]
+    fn thinking_config_stored_round_trip(config: ThinkingConfig) {
+        let stored = StoredThinking::from(config);
+        assert_eq!(ThinkingConfig::from(stored), config);
     }
 
     #[test]
