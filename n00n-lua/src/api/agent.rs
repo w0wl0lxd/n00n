@@ -140,6 +140,22 @@ fn inherited_mcp(
     if include_mcp { parent.cloned() } else { None }
 }
 
+fn session_config(
+    parent: &Arc<n00n_agent::AgentConfig>,
+    excluded_tools: Option<Vec<String>>,
+) -> Arc<n00n_agent::AgentConfig> {
+    let Some(excluded_tools) = excluded_tools else {
+        return Arc::clone(parent);
+    };
+    let mut config = parent.as_ref().clone();
+    for name in excluded_tools {
+        if !config.disabled_tools.contains(&name) {
+            config.disabled_tools.push(name);
+        }
+    }
+    Arc::new(config)
+}
+
 fn filter_appended_definitions(
     definitions: &mut JsonValue,
     base_count: usize,
@@ -555,6 +571,7 @@ async fn call_tool(
 ///     if omitted.
 ///   `fast` (boolean?) - use fast mode. Inherits parent setting if omitted.
 ///   `include_mcp` (boolean?) - inherit the parent MCP handle. Default: `true`.
+///   `except` (string[]?) - tool names that remain unavailable if loaded later.
 /// @return (Session?, string?) Session handle, or `(nil, err)` on failure.
 /// @example
 /// local tools = n00n.agent.tools(ctx, { audience = "general_sub" })
@@ -584,6 +601,7 @@ async fn session(
     let include_mcp = opts
         .get::<Option<bool>>("include_mcp")?
         .map_or(true, |value| value);
+    let excluded_tools: Option<Vec<String>> = opts.get("except")?;
     let name: Option<String> = opts.get("name")?;
     let thinking_val: Option<LuaValue> = opts.get("thinking")?;
     let plan_path: Option<String> = opts.get("plan_path")?;
@@ -762,7 +780,7 @@ async fn session(
         params: AgentParams {
             provider,
             model,
-            config: Arc::clone(&agent_ctx.config),
+            config: session_config(&agent_ctx.config, excluded_tools),
             tool_output_lines: n00n_config::ToolOutputLines::default(),
             permissions: Arc::clone(&agent_ctx.permissions),
             session_id: Some(session_id.into()),
@@ -1680,6 +1698,18 @@ mod tests {
             explicit_tool_filter(&tools).unwrap(),
             ToolFilter::Only(vec!["read".into(), "local_result".into()])
         );
+    }
+
+    #[test]
+    fn session_exclusions_extend_child_disabled_tools_only() {
+        let parent = Arc::new(n00n_agent::AgentConfig::default());
+        let child = session_config(
+            &parent,
+            Some(vec!["srv__dangerous".into(), "srv__dangerous".into()]),
+        );
+
+        assert!(parent.disabled_tools.is_empty());
+        assert_eq!(child.disabled_tools, ["srv__dangerous"]);
     }
 
     #[test]
