@@ -91,7 +91,7 @@ See `changelog.d/README.md` for the fragment convention.
 - Fixed Lua plugin compatibility with mlua 0.12 while preserving existing plugin behavior.
 - Nix packages now embed runtime library paths so copied `n00n` binaries run without wrapper-provided environment variables.
 - Fix Nix binary wrapping on macOS by using `DYLD_LIBRARY_PATH` instead of `LD_LIBRARY_PATH`, and scope wrapping to the computed package binary path.
-- Fixed OpenAI Responses disconnect handling so sent requests are never replayed, stale WebSockets are replaced before writes, and ambiguous stream failures retain safe delivery details.
+- Fixed OpenAI Responses disconnect handling so sent requests require replay approval, stale WebSockets are replaced before writes, and ambiguous stream failures retain safe delivery details.
 - Fixed OpenAI session continuity by serializing OAuth refreshes across processes, preserving valid credentials on refresh failures, keeping ephemeral subagent chains in memory, and replacing stale Responses WebSockets before sending.
 - Use the current 272K served context window consistently for OpenAI coding-plan and Codex models.
 - Pass Devin API keys through ACP initialize/authenticate metadata and harden the terminal-bench-2.1 harness for local providers.

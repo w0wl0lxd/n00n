@@ -5,8 +5,8 @@ use tracing::{error, info, warn};
 
 use n00n_providers::provider::Provider;
 use n00n_providers::{
-    ContentBlock, HistoryReplayReason, Message, Model, OpenAiOptions, RequestOptions, Role,
-    StopReason, StreamResponse, System, TokenUsage,
+    ContentBlock, HistoryReplayReason, Message, Model, OpenAiOptions, RequestDeliveryMetadata,
+    RequestDeliveryPhase, RequestOptions, Role, StopReason, StreamResponse, System, TokenUsage,
 };
 
 use super::compaction::{self, CONTINUE_AFTER_COMPACT};
@@ -41,6 +41,8 @@ const MAX_TOKENS_CONTINUE_PROMPT: &str = "Continue exactly where you stopped.";
 const IMAGE_TOKEN_ESTIMATE: usize = 2_048;
 const HISTORY_REPLAY_PERMISSION_ID: &str = "history-replay";
 const HISTORY_REPLAY_TOOL: &str = "history_replay";
+const AMBIGUOUS_REPLAY_PERMISSION_ID: &str = "ambiguous-request-replay";
+const AMBIGUOUS_REPLAY_TOOL: &str = "ambiguous_request_replay";
 const MAX_FUSION_PHASE_LABEL_CHARS: usize = 80;
 
 const CACHE_BREAKPOINT_LONG_SESSION: usize = 60;
@@ -537,19 +539,66 @@ impl<'h> Agent<'h> {
         }
     }
 
+    async fn approve_ambiguous_request_replay(
+        &self,
+        metadata: Option<&RequestDeliveryMetadata>,
+    ) -> Result<bool, AgentError> {
+        if self.permissions.is_yolo() {
+            return Ok(true);
+        }
+        let Some(response_rx) = self.user_response_rx.as_deref() else {
+            return Ok(false);
+        };
+        let response_rx = response_rx.lock().await;
+        self.event_tx.send(AgentEvent::PermissionRequest {
+            id: AMBIGUOUS_REPLAY_PERMISSION_ID.to_string(),
+            tool: ToolKey::native(AMBIGUOUS_REPLAY_TOOL),
+            scopes: vec![ambiguous_request_replay_scope(metadata)],
+        })?;
+        let response = self.cancel.race(response_rx.recv_async()).await;
+        drop(response_rx);
+        if self.cancel.is_cancelled() {
+            return Err(AgentError::Cancelled);
+        }
+        Ok(response
+            .ok()
+            .and_then(Result::ok)
+            .and_then(|answer| PermissionAnswer::decode(&answer))
+            .is_some_and(|answer| answer.is_allow()))
+    }
+
     async fn turn(&mut self) -> Result<TurnOutcome, AgentError> {
         if self.cancel.is_cancelled() || !self.commit_pre_dispatch() {
             return Err(AgentError::Cancelled);
         }
-        let initial = self.stream_response(self.opts).await;
-        let response = match initial {
-            Err(AgentError::HistoryReplayRequired { reason }) => {
-                self.approve_history_replay(reason).await?;
-                let mut approved_opts = self.opts;
-                approved_opts.allow_history_replay = true;
-                self.stream_response(approved_opts).await
+        let mut opts = self.opts;
+        let mut approved_history_replay = false;
+        let mut approved_ambiguous_replay = false;
+        let response = loop {
+            match self.stream_response(opts).await {
+                Err(AgentError::HistoryReplayRequired { reason }) if !approved_history_replay => {
+                    self.approve_history_replay(reason).await?;
+                    approved_history_replay = true;
+                    opts.allow_history_replay = true;
+                }
+                Err(error @ AgentError::RequestSent { .. }) if !approved_ambiguous_replay => {
+                    let metadata = match &error {
+                        AgentError::RequestSent { metadata, .. } => metadata.as_ref(),
+                        _ => None,
+                    };
+                    if !self.approve_ambiguous_request_replay(metadata).await? {
+                        break Err(error);
+                    }
+                    warn!(
+                        delivery_phase = ?metadata.map(|metadata| metadata.phase),
+                        response_id_present = metadata.is_some_and(|metadata| metadata.response_id.is_some()),
+                        output_emitted = metadata.is_some_and(|metadata| metadata.emitted_event),
+                        "replaying ambiguous provider request after approval"
+                    );
+                    approved_ambiguous_replay = true;
+                }
+                result => break result,
             }
-            result => result,
         };
         let response = match response {
             Ok(r) => {
@@ -1162,6 +1211,28 @@ fn validate_input_message(input: &AgentInput) -> Result<(), AgentError> {
     Ok(())
 }
 
+fn ambiguous_request_replay_scope(metadata: Option<&RequestDeliveryMetadata>) -> String {
+    let phase = match metadata.map(|metadata| metadata.phase) {
+        Some(RequestDeliveryPhase::NotSent) => "not sent",
+        Some(RequestDeliveryPhase::SentAwaitingAcceptance) => "sent; acceptance unknown",
+        Some(RequestDeliveryPhase::Accepted) => "accepted",
+        None => "delivery unknown",
+    };
+    let response_id = metadata
+        .and_then(|metadata| metadata.response_id.as_deref())
+        .map_or("unknown", |_| "known");
+    let output = metadata.map_or("unknown", |metadata| {
+        if metadata.emitted_event {
+            "already emitted"
+        } else {
+            "not observed"
+        }
+    });
+    format!(
+        "Replay one provider request ({phase}; response ID {response_id}; output {output}). This may duplicate output or charges"
+    )
+}
+
 fn history_replay_scope(
     reason: HistoryReplayReason,
     messages: &[Message],
@@ -1378,6 +1449,142 @@ mod tests {
     }
 
     #[test]
+    fn ambiguous_request_replay_requires_an_interactive_approval_channel() {
+        smol::block_on(async {
+            let mut history = History::new(Vec::new());
+            let (agent, _) = make_agent(MockProvider::new(Vec::new()), &mut history);
+            let metadata = RequestDeliveryMetadata {
+                phase: RequestDeliveryPhase::SentAwaitingAcceptance,
+                response_id: None,
+                close_code: None,
+                close_reason: None,
+                emitted_event: false,
+            };
+
+            assert!(
+                !agent
+                    .approve_ambiguous_request_replay(Some(&metadata))
+                    .await
+                    .unwrap()
+            );
+        });
+    }
+
+    #[test]
+    fn ambiguous_request_replay_accepts_explicit_user_approval() {
+        smol::block_on(async {
+            let mut history = History::new(Vec::new());
+            let (agent, event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
+            let (response_tx, response_rx) = flume::unbounded();
+            let agent = agent.with_user_response_rx(Arc::new(async_lock::Mutex::new(response_rx)));
+            response_tx
+                .send(PermissionAnswer::AllowOnce.encode())
+                .unwrap();
+            let metadata = RequestDeliveryMetadata {
+                phase: RequestDeliveryPhase::SentAwaitingAcceptance,
+                response_id: None,
+                close_code: None,
+                close_reason: None,
+                emitted_event: false,
+            };
+
+            assert!(
+                agent
+                    .approve_ambiguous_request_replay(Some(&metadata))
+                    .await
+                    .unwrap()
+            );
+
+            let event = event_rx.recv().unwrap();
+            assert!(matches!(
+                event.event,
+                AgentEvent::PermissionRequest { tool, scopes, .. }
+                    if tool == ToolKey::native(AMBIGUOUS_REPLAY_TOOL)
+                        && scopes[0].contains("duplicate output or charges")
+            ));
+        });
+    }
+
+    #[test]
+    fn approved_ambiguous_request_is_replayed_once() {
+        smol::block_on(async {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let provider = AmbiguousProvider {
+                calls: Arc::clone(&calls),
+                failures: 1,
+            };
+            let mut history = History::new(Vec::new());
+            let (mut agent, event_rx) = make_agent_with_registry(
+                provider,
+                &mut history,
+                AgentConfig::default(),
+                Arc::new(ToolRegistry::new()),
+            );
+            let (response_tx, response_rx) = flume::unbounded();
+            response_tx
+                .send(PermissionAnswer::AllowOnce.encode())
+                .unwrap();
+            agent = agent.with_user_response_rx(Arc::new(async_lock::Mutex::new(response_rx)));
+
+            agent.run(default_input()).await.unwrap();
+
+            assert_eq!(calls.load(Ordering::Relaxed), 2);
+            let events = drain_events(&event_rx);
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(
+                        event.event,
+                        AgentEvent::PermissionRequest { ref tool, .. }
+                            if *tool == ToolKey::native(AMBIGUOUS_REPLAY_TOOL)
+                    ))
+                    .count(),
+                1
+            );
+        });
+    }
+
+    #[test]
+    fn ambiguous_request_is_not_replayed_twice() {
+        smol::block_on(async {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let provider = AmbiguousProvider {
+                calls: Arc::clone(&calls),
+                failures: 2,
+            };
+            let mut history = History::new(Vec::new());
+            let (mut agent, event_rx) = make_agent_with_registry(
+                provider,
+                &mut history,
+                AgentConfig::default(),
+                Arc::new(ToolRegistry::new()),
+            );
+            let (response_tx, response_rx) = flume::unbounded();
+            response_tx
+                .send(PermissionAnswer::AllowOnce.encode())
+                .unwrap();
+            agent = agent.with_user_response_rx(Arc::new(async_lock::Mutex::new(response_rx)));
+
+            let error = agent.run(default_input()).await.unwrap_err();
+
+            assert!(matches!(error, AgentError::RequestSent { .. }));
+            assert_eq!(calls.load(Ordering::Relaxed), 2);
+            let events = drain_events(&event_rx);
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(
+                        event.event,
+                        AgentEvent::PermissionRequest { ref tool, .. }
+                            if *tool == ToolKey::native(AMBIGUOUS_REPLAY_TOOL)
+                    ))
+                    .count(),
+                1
+            );
+        });
+    }
+
+    #[test]
     fn context_size_additions_use_saturating_add() {
         let context_size: u32 = u32::MAX - 100;
         let additional: u32 = 200;
@@ -1405,6 +1612,45 @@ mod tests {
             tokens >= u32_from_usize_saturating(IMAGE_TOKEN_ESTIMATE),
             "image blocks should add {IMAGE_TOKEN_ESTIMATE} tokens"
         );
+    }
+
+    struct AmbiguousProvider {
+        calls: Arc<AtomicUsize>,
+        failures: usize,
+    }
+
+    impl Provider for AmbiguousProvider {
+        fn stream_message<'a>(
+            &'a self,
+            _: &'a Model,
+            _: &'a [Message],
+            _: &'a System,
+            _: &'a Value,
+            _: &'a flume::Sender<ProviderEvent>,
+            _: RequestOptions,
+            _: Option<&'a SessionRef>,
+        ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
+            Box::pin(async {
+                let call = self.calls.fetch_add(1, Ordering::Relaxed);
+                if call < self.failures {
+                    return Err(AgentError::RequestSent {
+                        message: "WebSocket connection reset".into(),
+                        metadata: Some(RequestDeliveryMetadata {
+                            phase: RequestDeliveryPhase::SentAwaitingAcceptance,
+                            response_id: None,
+                            close_code: None,
+                            close_reason: None,
+                            emitted_event: false,
+                        }),
+                    });
+                }
+                Ok(text_response(StopReason::EndTurn))
+            })
+        }
+
+        fn list_models(&self) -> BoxFuture<'_, Result<Vec<n00n_providers::ModelInfo>, AgentError>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
     }
 
     #[test]
@@ -1629,8 +1875,8 @@ mod tests {
         make_agent_with_config(provider, history, AgentConfig::default())
     }
 
-    fn make_agent_with_registry(
-        provider: MockProvider,
+    fn make_agent_with_registry<P: Provider + 'static>(
+        provider: P,
         history: &mut History,
         config: AgentConfig,
         registry: Arc<ToolRegistry>,
@@ -1755,7 +2001,12 @@ mod tests {
                 content: vec![ContentBlock::ToolUse {
                     id: "fusion-1".into(),
                     name: crate::fusion::FUSION_DELEGATE_TOOL.into(),
-                    input: json!({}),
+                    input: json!({
+                        "description": "Implement parser fix",
+                        "goal": "Implement the parser fix and add focused tests",
+                        "constraints": "Keep the change scoped to parser code",
+                        "definition_of_done": "Cargo test and clippy pass",
+                    }),
                 }],
                 ..Default::default()
             },
