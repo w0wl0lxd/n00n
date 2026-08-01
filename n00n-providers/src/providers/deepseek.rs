@@ -176,6 +176,7 @@ impl Provider for DeepSeek {
                 tools,
                 session_id.map(n00n_storage::id::SessionRef::as_str),
                 self.system_prefix.as_deref(),
+                opts.fast,
             );
 
             if opts.thinking.is_enabled() {

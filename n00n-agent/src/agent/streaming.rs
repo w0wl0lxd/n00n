@@ -74,7 +74,7 @@ pub(crate) async fn stream_with_retry(
                 ctx.system,
                 ctx.tools,
                 &ptx,
-                opts,
+                opts.clone(),
                 ctx.session_id,
             ),
             async {

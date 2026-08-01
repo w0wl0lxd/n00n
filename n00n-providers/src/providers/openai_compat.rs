@@ -174,6 +174,28 @@ impl OpenAiCompatProvider {
         tools: &Value,
         session_id: Option<&str>,
         system_prefix: Option<&str>,
+        fast: bool,
+    ) -> Value {
+        self.build_body_with_session_impl(
+            model,
+            messages,
+            system,
+            tools,
+            session_id,
+            system_prefix,
+            fast,
+        )
+    }
+
+    fn build_body_with_session_impl(
+        &self,
+        model: &crate::model::Model,
+        messages: &[Message],
+        system: &System,
+        tools: &Value,
+        session_id: Option<&str>,
+        system_prefix: Option<&str>,
+        fast: bool,
     ) -> Value {
         let mut wire_messages =
             convert_messages(messages, None, self.config.emit_reasoning_content);
@@ -203,6 +225,9 @@ impl OpenAiCompatProvider {
             && self.config.supports_prompt_cache_key
         {
             body["prompt_cache_key"] = json!(sid);
+        }
+        if fast && model.supports_fast() {
+            body["service_tier"] = json!("fast");
         }
         body
     }
@@ -410,7 +435,10 @@ pub fn convert_messages(
                         ContentBlock::Image { source } => {
                             image_parts.push(json!({
                                 "type": "image_url",
-                                "image_url": { "url": source.to_data_url() }
+                                "image_url": {
+                                    "url": source.to_data_url(),
+                                    "detail": "auto"
+                                }
                             }));
                         }
                         ContentBlock::ToolResult {
@@ -1428,6 +1456,7 @@ data: [DONE]\n";
             &tools,
             Some("session-123"),
             None,
+            false,
         );
 
         assert_eq!(body["prompt_cache_key"], "session-123");
@@ -1460,6 +1489,7 @@ data: [DONE]\n";
             &tools,
             None,
             None,
+            false,
         );
 
         assert!(body.get("prompt_cache_key").is_none());
@@ -1492,6 +1522,7 @@ data: [DONE]\n";
             &tools,
             Some("session-123"),
             None,
+            false,
         );
 
         let system_msg = &body["messages"][0];
@@ -1538,6 +1569,7 @@ data: [DONE]\n";
             &tools,
             None,
             None,
+            false,
         );
         assert_eq!(body["parallel_tool_calls"], true);
     }
@@ -1573,7 +1605,90 @@ data: [DONE]\n";
             &tools,
             None,
             None,
+            false,
         );
         assert!(body.get("parallel_tool_calls").is_none());
+    }
+
+    #[test]
+    fn build_body_with_fast_emits_service_tier_fast() {
+        static TEST_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
+            slug: "test",
+            api_key_env: "TEST_KEY",
+            base_url: "https://test.com",
+            max_tokens_field: "max_tokens",
+            include_stream_usage: false,
+            provider_name: "Test",
+            supports_prompt_cache_key: false,
+            supports_prompt_cache_breakpoint: false,
+            emit_reasoning_content: false,
+            supports_parallel_tool_calls: false,
+        };
+        let provider =
+            OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
+        let mut model = crate::model::Model::from_spec("anthropic/claude-opus-4-8").unwrap();
+        model.pricing.fast = Some(crate::model::FastPricing {
+            input: 10.0,
+            output: 60.0,
+        });
+        let messages = vec![Message::user("hello".to_string())];
+        let tools = json!([]);
+
+        let body = provider.build_body_with_session(
+            &model,
+            &messages,
+            &System::from("system"),
+            &tools,
+            None,
+            None,
+            true,
+        );
+        assert_eq!(body["service_tier"], "fast");
+    }
+
+    #[test]
+    fn build_body_without_fast_no_service_tier() {
+        static TEST_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
+            slug: "test",
+            api_key_env: "TEST_KEY",
+            base_url: "https://test.com",
+            max_tokens_field: "max_tokens",
+            include_stream_usage: false,
+            provider_name: "Test",
+            supports_prompt_cache_key: false,
+            supports_prompt_cache_breakpoint: false,
+            emit_reasoning_content: false,
+            supports_parallel_tool_calls: false,
+        };
+        let provider =
+            OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
+        let model = crate::model::Model::from_spec("openai/gpt-5.6-sol").unwrap();
+        let messages = vec![Message::user("hello".to_string())];
+        let tools = json!([]);
+
+        let body = provider.build_body_with_session(
+            &model,
+            &messages,
+            &System::from("system"),
+            &tools,
+            None,
+            None,
+            false,
+        );
+        assert!(body.get("service_tier").is_none());
+    }
+
+    #[test]
+    fn convert_messages_includes_image_detail_auto() {
+        use crate::types::{ImageMediaType, ImageSource};
+        use std::sync::Arc;
+        let source = ImageSource::new(ImageMediaType::Png, Arc::from("abc123"));
+        let msgs = vec![Message::user_with_images("describe".into(), vec![source])];
+        let result = convert_messages(&msgs, Some("system"), false);
+        let user = &result[1];
+        let content = user["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "image_url");
+        assert_eq!(content[0]["image_url"]["detail"], "auto");
     }
 }

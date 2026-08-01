@@ -335,6 +335,19 @@ impl Model {
             && ManifestRegistry::for_slug(&self.provider).is_some_and(|m| m.slug == FAST_PROVIDER)
     }
 
+    /// Check if the model supports the `OpenAI` Responses API.
+    #[must_use]
+    pub fn supports_responses(&self) -> bool {
+        self.family == ModelFamily::Gpt
+            && (self.id.starts_with("gpt-5.6") || self.id.starts_with("gpt-5.5"))
+    }
+
+    /// Check if the model supports `prompt_cache_breakpoint` on system content.
+    #[must_use]
+    pub fn supports_prompt_cache_breakpoint(&self) -> bool {
+        self.family == ModelFamily::Gpt && self.id.starts_with("gpt-5.6")
+    }
+
     #[must_use]
     pub fn spec(&self) -> String {
         format!("{}/{}", self.provider, self.id)
@@ -1049,6 +1062,27 @@ mod tests {
             output: 150.0,
         });
         assert!(!model.supports_fast());
+    }
+
+    #[test_case("openai/gpt-5.6-luna", true ; "gpt_5_6_luna")]
+    #[test_case("openai/gpt-5.6-terra", true ; "gpt_5_6_terra")]
+    #[test_case("openai/gpt-5.6-sol", true ; "gpt_5_6_sol")]
+    #[test_case("openai/gpt-5.5", true ; "gpt_5_5")]
+    #[test_case("openai/gpt-5.4", false ; "gpt_5_4")]
+    #[test_case("openai/gpt-4.1", false ; "gpt_4_1")]
+    fn supports_responses_for_gpt_5_6_and_5_5(spec: &str, expected: bool) {
+        let model = Model::from_spec(spec).unwrap();
+        assert_eq!(model.supports_responses(), expected);
+    }
+
+    #[test_case("openai/gpt-5.6-luna", true ; "gpt_5_6_luna")]
+    #[test_case("openai/gpt-5.6-terra", true ; "gpt_5_6_terra")]
+    #[test_case("openai/gpt-5.6-sol", true ; "gpt_5_6_sol")]
+    #[test_case("openai/gpt-5.5", false ; "gpt_5_5")]
+    #[test_case("openai/gpt-5.4", false ; "gpt_5_4")]
+    fn supports_prompt_cache_breakpoint_for_gpt_5_6_only(spec: &str, expected: bool) {
+        let model = Model::from_spec(spec).unwrap();
+        assert_eq!(model.supports_prompt_cache_breakpoint(), expected);
     }
 
     #[test]

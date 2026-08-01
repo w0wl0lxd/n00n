@@ -144,7 +144,7 @@ const OPENAI_GPT_5_6_TERRA: ModelEntry = model_entry(
 );
 
 const OPENAI_GPT_5_6_SOL: ModelEntry = model_entry(
-    &["gpt-5.6-sol"],
+    &["gpt-5.6-sol", "gpt-5.6"],
     ModelTier::Strong,
     true,
     true,
@@ -155,7 +155,10 @@ const OPENAI_GPT_5_6_SOL: ModelEntry = model_entry(
         output: 30.00,
         cache_write: 6.25,
         cache_read: 0.50,
-        fast: None,
+        fast: Some(crate::model::FastPricing {
+            input: 10.00,
+            output: 60.00,
+        }),
     },
 );
 
@@ -271,6 +274,22 @@ const OPENAI_GPT_5_5: ModelEntry = model_entry(
     },
 );
 
+const OPENAI_GPT_5_5_PRO: ModelEntry = model_entry(
+    &["gpt-5.5-pro"],
+    ModelTier::Strong,
+    true,
+    false,
+    128_000,
+    1_050_000,
+    ModelPricing {
+        input: 7.50,
+        output: 45.00,
+        cache_write: 0.00,
+        cache_read: 0.75,
+        fast: None,
+    },
+);
+
 const OPENAI_GPT_5_4: ModelEntry = model_entry(
     &["gpt-5.4"],
     ModelTier::Strong,
@@ -316,6 +335,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
         OPENAI_GPT_4_1,
         OPENAI_O4_MINI,
         OPENAI_GPT_5_5,
+        OPENAI_GPT_5_5_PRO,
         OPENAI_GPT_5_4,
         OPENAI_O3,
     ]
@@ -407,6 +427,14 @@ pub(crate) const fn codex_models() -> &'static [ModelEntry] {
         with_coding_plan(
             OPENAI_GPT_5_5,
             &["gpt-5.5"],
+            128_000,
+            CODING_PLAN_CONTEXT_WINDOW,
+            true,
+            false,
+        ),
+        with_coding_plan(
+            OPENAI_GPT_5_5_PRO,
+            &["gpt-5.5-pro"],
             128_000,
             CODING_PLAN_CONTEXT_WINDOW,
             true,
@@ -580,6 +608,45 @@ mod tests {
         assert_eq!(model.pricing.cache_read, cache_read);
         assert_eq!(model.pricing.cache_write, cache_write);
         assert_eq!(model.pricing.output, output);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn gpt_5_6_sol_has_fast_pricing() {
+        let model = models()
+            .iter()
+            .find(|model| model.prefixes.contains(&"gpt-5.6-sol"))
+            .expect("GPT-5.6-sol should be registered");
+        let fast = model
+            .pricing
+            .fast
+            .expect("GPT-5.6-sol should have fast pricing");
+        assert_eq!(fast.input, 10.0);
+        assert_eq!(fast.output, 60.0);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn gpt_5_6_alias_resolves_to_sol() {
+        let model = models()
+            .iter()
+            .find(|model| model.prefixes.contains(&"gpt-5.6"))
+            .expect("gpt-5.6 alias should be registered");
+        assert_eq!(model.tier, ModelTier::Strong);
+        assert_eq!(model.pricing.input, 5.0);
+        assert_eq!(model.pricing.output, 30.0);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn gpt_5_5_pro_is_registered() {
+        let model = models()
+            .iter()
+            .find(|model| model.prefixes.contains(&"gpt-5.5-pro"))
+            .expect("gpt-5.5-pro should be registered");
+        assert_eq!(model.tier, ModelTier::Strong);
+        assert_eq!(model.pricing.input, 7.5);
+        assert_eq!(model.pricing.output, 45.0);
     }
 
     #[test_case("gpt-5.6-luna", ModelTier::Weak, 1.0, 0.1, 1.25, 6.0)]

@@ -390,6 +390,8 @@ impl<'h> Agent<'h> {
             message_cache_breakpoints: adaptive_cache_breakpoints(user_message_count),
             protect_history_replay,
             allow_history_replay: self.permissions.is_yolo(),
+            moderation: false,
+            safety_identifier: None,
         };
 
         info!(
@@ -503,11 +505,11 @@ impl<'h> Agent<'h> {
         if self.cancel.is_cancelled() || !self.commit_pre_dispatch() {
             return Err(AgentError::Cancelled);
         }
-        let initial = self.stream_response(self.opts).await;
+        let initial = self.stream_response(self.opts.clone()).await;
         let response = match initial {
             Err(AgentError::HistoryReplayRequired { reason }) => {
                 self.approve_history_replay(reason).await?;
-                let mut approved_opts = self.opts;
+                let mut approved_opts = self.opts.clone();
                 approved_opts.allow_history_replay = true;
                 self.stream_response(approved_opts).await
             }
@@ -755,7 +757,7 @@ impl<'h> Agent<'h> {
             openai_options: self.openai_options,
             file_tracker: Arc::clone(&self.file_tracker),
             prompt_slots: Arc::clone(&self.prompt_slots),
-            opts: self.opts,
+            opts: self.opts.clone(),
             subagent_cancels: Arc::clone(&self.subagent_cancels),
             registry: Arc::clone(&self.registry),
             workflow: self.workflow,

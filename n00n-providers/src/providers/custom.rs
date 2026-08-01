@@ -332,7 +332,7 @@ impl Provider for CustomOpenAiProvider {
                     None,
                     None,
                     false,
-                    opts.thinking,
+                    &opts,
                     self.compat.config().supports_parallel_tool_calls,
                 );
                 return responses::do_stream(
@@ -354,6 +354,7 @@ impl Provider for CustomOpenAiProvider {
                 tools,
                 session_id.map(n00n_storage::id::SessionRef::as_str),
                 None,
+                opts.fast,
             );
             if matches!(opts.thinking, ThinkingConfig::Off) {
                 body["thinking"] = serde_json::json!({"type": "disabled"});
@@ -407,6 +408,7 @@ mod tests {
             &tools,
             None,
             None,
+            false,
         );
 
         assert!(body.get("parallel_tool_calls").is_none());
@@ -421,6 +423,7 @@ mod tests {
             "input_schema": {"type": "object"}
         }]);
 
+        let opts = crate::RequestOptions::default();
         let body = responses::build_body(
             &model,
             &[],
@@ -429,7 +432,7 @@ mod tests {
             None,
             None,
             false,
-            ThinkingConfig::default(),
+            &opts,
             CONFIG.supports_parallel_tool_calls,
         );
 
