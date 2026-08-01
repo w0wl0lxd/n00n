@@ -140,6 +140,25 @@ fn inherited_mcp(
     if include_mcp { parent.cloned() } else { None }
 }
 
+fn filter_appended_definitions(
+    definitions: &mut JsonValue,
+    base_count: usize,
+    filter: &ToolFilter,
+) {
+    let Some(all_definitions) = definitions.as_array_mut() else {
+        return;
+    };
+    if base_count > all_definitions.len() {
+        return;
+    }
+    let appended = all_definitions.split_off(base_count);
+    let mut appended = JsonValue::Array(appended);
+    n00n_agent::tools::filter_definitions(&mut appended, filter);
+    if let JsonValue::Array(appended) = appended {
+        all_definitions.extend(appended);
+    }
+}
+
 fn err_pair<T>(err: impl ToString) -> Pair<T> {
     (None, Some(err.to_string()))
 }
@@ -397,9 +416,14 @@ fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pa
         &agent.model
     };
 
+    let mcp_base = match (&only, &except) {
+        (Some(_), _) => ToolFilter::All,
+        (_, Some(excluded)) => ToolFilter::AllExcept(excluded.clone()),
+        _ => ToolFilter::All,
+    };
     let base = match (only, except) {
-        (Some(o), _) => ToolFilter::Only(o),
-        (_, Some(e)) => ToolFilter::AllExcept(e),
+        (Some(included), _) => ToolFilter::Only(included),
+        (_, Some(excluded)) => ToolFilter::AllExcept(excluded),
         _ => ToolFilter::All,
     };
     let disabled: Vec<&str> = agent
@@ -408,9 +432,11 @@ fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pa
         .iter()
         .map(String::as_str)
         .collect();
-    let filter = base
+    let capability_exclusions = n00n_agent::tools::capability_exclusions(model);
+    let filter = base.excluding(&disabled).excluding(capability_exclusions);
+    let mcp_filter = mcp_base
         .excluding(&disabled)
-        .excluding(n00n_agent::tools::capability_exclusions(model));
+        .excluding(capability_exclusions);
 
     let vars = n00n_agent::template::env_vars();
     let ctx_desc = DescriptionContext {
@@ -421,10 +447,12 @@ fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pa
     let mut defs =
         ToolRegistry::global().definitions(&vars, &ctx_desc, model.supports_tool_examples());
 
+    n00n_agent::tools::filter_definitions(&mut defs, &filter);
+    let base_count = defs.as_array().map_or(0, Vec::len);
     if include_mcp && let Some(ref mcp) = agent.mcp {
         mcp.extend_tools(&mut defs);
+        filter_appended_definitions(&mut defs, base_count, &mcp_filter);
     }
-    n00n_agent::tools::filter_definitions(&mut defs, &filter);
 
     Ok((Some(json_to_lua(lua, &defs)?), None))
 }
@@ -1611,6 +1639,32 @@ mod tests {
         let lua = Lua::new();
         let f: Function = lua.load(src).eval().unwrap();
         call_local_tool(&lua.weak(), &f, input)
+    }
+
+    #[test]
+    fn only_filter_preserves_separately_appended_mcp_definitions() {
+        let only = ToolFilter::Only(vec!["read".into()]);
+        let mut definitions = json!([
+            {"name": "read"},
+            {"name": "write"},
+        ]);
+        n00n_agent::tools::filter_definitions(&mut definitions, &only);
+        let base_count = definitions.as_array().unwrap().len();
+        definitions.as_array_mut().unwrap().extend([
+            json!({"name": "stub__read_file"}),
+            json!({"name": "tool_search"}),
+        ]);
+
+        filter_appended_definitions(&mut definitions, base_count, &ToolFilter::All);
+
+        assert_eq!(
+            definitions,
+            json!([
+                {"name": "read"},
+                {"name": "stub__read_file"},
+                {"name": "tool_search"},
+            ])
+        );
     }
 
     #[test]

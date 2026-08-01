@@ -9,6 +9,52 @@ const TRIVIAL_REQUEST_MAX_WORDS: usize = 4;
 const RECENT_ERROR_ESCALATE_THRESHOLD: u32 = 2;
 const SIDEKICK_FAILURE_ESCALATE_THRESHOLD: u32 = 2;
 const MAX_DELEGATIONS_BEFORE_LEAD_LOCK: u32 = 8;
+const LEAD_ONLY_SIGNALS: &[&str] = &[
+    "ambiguous",
+    "unclear",
+    "architect",
+    "design",
+    "security",
+    "sensitive",
+    "credential",
+    "credentials",
+    "secret",
+    "secrets",
+    "password",
+    "passwords",
+    "token",
+    "tokens",
+    "api key",
+    "api keys",
+    "private key",
+    "authorization",
+    "authentication",
+    "cookie",
+    "cookies",
+    ".env",
+    "environment variable",
+    "personal data",
+    "customer data",
+    "pii",
+    "production",
+    "delete",
+    "deleting",
+    "destroy",
+    "destroying",
+    "destructive",
+    "drop database",
+    "commit",
+    "merge",
+    "rebase",
+    "serial debug",
+    "serial-debug",
+    "debug chain",
+    "root cause",
+    "review",
+    "reviewing",
+    "approve",
+    "decide",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -411,52 +457,6 @@ pub fn route_after_compact(
 /// signals always win over mechanical signals, and short requests bypass Fusion.
 #[must_use]
 pub fn decide_request(prompt: &str) -> FusionRequestDecision {
-    const LEAD_ONLY: &[&str] = &[
-        "ambiguous",
-        "unclear",
-        "architect",
-        "design",
-        "security",
-        "sensitive",
-        "credential",
-        "credentials",
-        "secret",
-        "secrets",
-        "password",
-        "passwords",
-        "token",
-        "tokens",
-        "api key",
-        "api keys",
-        "private key",
-        "authorization",
-        "authentication",
-        "cookie",
-        "cookies",
-        ".env",
-        "environment variable",
-        "personal data",
-        "customer data",
-        "pii",
-        "production",
-        "delete",
-        "deleting",
-        "destroy",
-        "destroying",
-        "destructive",
-        "drop database",
-        "commit",
-        "merge",
-        "rebase",
-        "serial debug",
-        "serial-debug",
-        "debug chain",
-        "root cause",
-        "review",
-        "reviewing",
-        "approve",
-        "decide",
-    ];
     const DELEGATE: &[&str] = &[
         "explore",
         "search",
@@ -479,10 +479,7 @@ pub fn decide_request(prompt: &str) -> FusionRequestDecision {
     if prompt.is_empty() {
         return FusionRequestDecision::Bypass;
     }
-    if LEAD_ONLY
-        .iter()
-        .any(|signal| contains_signal(&prompt, signal))
-    {
+    if contains_lead_only_signal(&prompt) {
         return FusionRequestDecision::LeadOnly;
     }
     if prompt.split_whitespace().count() <= TRIVIAL_REQUEST_MAX_WORDS {
@@ -496,6 +493,13 @@ pub fn decide_request(prompt: &str) -> FusionRequestDecision {
     } else {
         FusionRequestDecision::LeadOnly
     }
+}
+
+pub(crate) fn contains_lead_only_signal(prompt: &str) -> bool {
+    let prompt = prompt.to_ascii_lowercase();
+    LEAD_ONLY_SIGNALS
+        .iter()
+        .any(|signal| contains_signal(&prompt, signal))
 }
 
 fn contains_signal(prompt: &str, signal: &str) -> bool {
