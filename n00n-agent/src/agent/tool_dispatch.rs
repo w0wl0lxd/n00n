@@ -32,6 +32,7 @@ const MCP_MUTATION_BLOCKED_IN_PLAN: &str =
 const CODE_EXECUTION_BLOCKED_IN_PLAN: &str = "code_execution is not available in plan mode";
 const UNKNOWN_TOOL_PREFIX: &str = "unknown tool";
 const TOOL_AUDIENCE_DENIED: &str = "tool is not available to this agent audience";
+const TOOL_FILTER_DENIED: &str = "tool is not available in this session";
 const BASH_BLOCKED_IN_PLAN: &str = "bash command is not provably read-only in plan mode";
 const FUSION_DELEGATE_BLOCKED: &str = "fusion_delegate is unavailable for this request";
 
@@ -350,6 +351,9 @@ async fn run_authorized(
             Arc::from(crate::fusion::FUSION_DELEGATE_TOOL),
             FUSION_DELEGATE_BLOCKED.into(),
         );
+    }
+    if !ctx.tool_filter.matches(name) {
+        return tool_done_error(id, Arc::from(name), TOOL_FILTER_DENIED.into());
     }
     if ctx.mode.plan_path().is_some() && name == crate::tools::CODE_EXECUTION_TOOL_NAME {
         return tool_done_error(
@@ -784,6 +788,8 @@ pub(super) async fn process_tool_calls(
     let mut fusion_delegate_seen = false;
     let fusion_delegate_allowed = ctx.config.fusion.enabled
         && ctx.audience == crate::tools::ToolAudience::MAIN
+        && matches!(*ctx.mode, crate::AgentMode::Build)
+        && !ctx.workflow
         && fusion_phase == Some(crate::fusion::FusionPhase::Executing);
 
     for (position, id, name, input) in tool_uses {
@@ -1491,6 +1497,34 @@ mod tests {
             .await;
             assert!(result.is_error);
             assert!(result.output.as_text().contains("not available"));
+        });
+    }
+
+    #[test]
+    fn excluded_native_tool_is_denied_even_when_registered() {
+        smol::block_on(async {
+            let registry = ToolRegistry::new();
+            let tool: Arc<dyn Tool> = Arc::new(GuardedMock);
+            let source = ToolSource::Lua {
+                plugin: "test".into(),
+            };
+            registry.register(&tool, &source).unwrap();
+            let mut ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
+            ctx.tool_filter = crate::tools::ToolFilter::Only(vec!["other_tool".into()]);
+
+            let done = run(
+                &registry,
+                None,
+                "t1".into(),
+                GUARDED_TOOL_NAME,
+                &serde_json::json!({}),
+                &ctx,
+                Emit::Silent,
+            )
+            .await;
+
+            assert!(done.is_error);
+            assert_eq!(done.output.as_text(), TOOL_FILTER_DENIED);
         });
     }
 

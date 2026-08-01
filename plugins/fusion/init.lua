@@ -103,6 +103,9 @@ local function handler(input, ctx)
 
   local auto_tier = opts.auto_tier
   local model_tier = config.fusion.sidekick_tier or "weak"
+  if model_tier ~= "weak" and model_tier ~= "medium" and model_tier ~= "strong" then
+    return { llm_output = "Fusion sidekick error: invalid sidekick tier", is_error = true }
+  end
 
   local prompt = build_prompt(input)
   local result, err, cost, usage, model_spec = subagent.launch(ctx, {
