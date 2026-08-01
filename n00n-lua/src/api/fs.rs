@@ -876,7 +876,7 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
                 let entry = match entry {
                     Ok(e) => e,
                     Err(e) => {
-                        tracing::warn!(error = %e, "glob: walk error");
+                        tracing::debug!(error = %e, "glob: walk error");
                         continue;
                     }
                 };
@@ -906,7 +906,7 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
                 let entry = match entry {
                     Ok(e) => e,
                     Err(e) => {
-                        tracing::warn!(error = %e, "glob: walk error");
+                        tracing::debug!(error = %e, "glob: walk error");
                         continue;
                     }
                 };
