@@ -851,11 +851,14 @@ fn format_model_id(model: &Model, opts: &RequestOptions) -> String {
 
     let effort = match opts.thinking {
         ThinkingConfig::Off => None,
-        ThinkingConfig::Adaptive | ThinkingConfig::Effort(Effort::Medium) => Some("medium"),
-        ThinkingConfig::Effort(Effort::Minimal | Effort::Low) => Some("low"),
+        ThinkingConfig::Adaptive
+        | ThinkingConfig::Effort(Effort::Medium)
+        | ThinkingConfig::WithExtras(Effort::Medium, _) => Some("medium"),
+        ThinkingConfig::Effort(Effort::Minimal | Effort::Low)
+        | ThinkingConfig::WithExtras(Effort::Minimal | Effort::Low, _) => Some("low"),
         ThinkingConfig::Effort(Effort::High | Effort::XHigh | Effort::Max)
-        | ThinkingConfig::Budget(_)
-        | ThinkingConfig::WithExtras(_, _) => Some("high"),
+        | ThinkingConfig::WithExtras(Effort::High | Effort::XHigh | Effort::Max, _)
+        | ThinkingConfig::Budget(_) => Some("high"),
     };
 
     match effort {
@@ -935,7 +938,8 @@ fn env_flag(name: &str, default: bool) -> bool {
 mod tests {
     use super::*;
     use crate::model::ModelPricing;
-    use crate::types::SystemBlock;
+    use crate::types::{SystemBlock, ThinkingExtras};
+    use test_case::test_case;
 
     fn test_cursor() -> Cursor {
         Cursor {
@@ -1019,6 +1023,20 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(format_model_id(&model, &opts), "composer-2.5[effort=high]");
+    }
+
+    #[test_case(Effort::Low, "low" ; "low")]
+    #[test_case(Effort::Medium, "medium" ; "medium")]
+    fn format_model_id_preserves_with_extras_effort(effort: Effort, expected: &str) {
+        let model = test_model("composer-2.5");
+        let opts = RequestOptions {
+            thinking: ThinkingConfig::WithExtras(effort, ThinkingExtras::default()),
+            ..Default::default()
+        };
+        assert_eq!(
+            format_model_id(&model, &opts),
+            format!("composer-2.5[effort={expected}]")
+        );
     }
 
     #[test]

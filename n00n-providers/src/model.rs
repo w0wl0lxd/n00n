@@ -17,6 +17,11 @@ use crate::model_registry::model_registry;
 use crate::providers::{anthropic, custom, dynamic};
 
 const PER_MILLION: f64 = 1_000_000.0;
+const GPT_MODEL_PREFIX: &str = "gpt-";
+const OPENAI_MODEL_PREFIX: &str = "openai/";
+const GPT_CODEX_MARKER: &str = "-codex";
+const MIN_BREAKPOINT_MODEL_MAJOR: u16 = 5;
+const MIN_BREAKPOINT_MODEL_MINOR: u16 = 6;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ModelError {
@@ -342,10 +347,36 @@ impl Model {
             && (self.id.starts_with("gpt-5.6") || self.id.starts_with("gpt-5.5"))
     }
 
-    /// Check if the model supports `prompt_cache_breakpoint` on system content.
+    /// Check if the model supports explicit prompt-cache breakpoints.
     #[must_use]
     pub fn supports_prompt_cache_breakpoint(&self) -> bool {
-        self.family == ModelFamily::Gpt && self.id.starts_with("gpt-5.6")
+        let model_id = self
+            .id
+            .strip_prefix(OPENAI_MODEL_PREFIX)
+            .map_or(self.id.as_str(), std::convert::identity);
+        if model_id.contains(GPT_CODEX_MARKER) {
+            return false;
+        }
+        let Some(version_and_suffix) = model_id.strip_prefix(GPT_MODEL_PREFIX) else {
+            return false;
+        };
+        let version = version_and_suffix
+            .split_once('-')
+            .map_or(version_and_suffix, |(version, _)| version);
+        let (major, minor) = version
+            .split_once('.')
+            .map_or((version, "0"), std::convert::identity);
+        let (Ok(major), Ok(minor)) = (major.parse::<u16>(), minor.parse::<u16>()) else {
+            return false;
+        };
+        major > MIN_BREAKPOINT_MODEL_MAJOR
+            || major == MIN_BREAKPOINT_MODEL_MAJOR && minor >= MIN_BREAKPOINT_MODEL_MINOR
+    }
+
+    /// Check if the model supports provider-managed Responses tools.
+    #[must_use]
+    pub fn supports_responses_built_in_tools(&self) -> bool {
+        self.supports_prompt_cache_breakpoint()
     }
 
     #[must_use]

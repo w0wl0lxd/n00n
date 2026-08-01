@@ -51,6 +51,7 @@ const USAGE_WINDOW_1MONTH_SECONDS: i64 = 2_592_000;
 const USAGE_WINDOW_1YEAR_SECONDS: i64 = 31_536_000;
 const RESPONSE_CHAIN_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 const PROMPT_CACHE_SHARDS: u8 = 16;
+const STORE_CODEX_RESPONSES: bool = false;
 
 static PROCESS_INSTANCE_NONCE: OnceLock<u64> = OnceLock::new();
 static RESPONSE_OPERATIONS: OnceLock<ResponseOperationRegistry> = OnceLock::new();
@@ -1289,7 +1290,9 @@ impl OpenAi {
     ) -> CodexAttempt {
         let state_scope_hash = response_state_scope_hash(auth);
         let socket_credential_hash = credential_hash(auth);
-        let store = false;
+        // Keep both chain modes explicit: privacy policy currently requires
+        // connection-local continuation with provider storage disabled.
+        let store = STORE_CODEX_RESPONSES;
         let mut opts = opts;
         if !store {
             opts.allow_history_replay = true;
@@ -1392,10 +1395,10 @@ impl OpenAi {
             incremental_messages,
             system,
             tools,
-            &opts,
             previous_response_id.as_deref(),
             Some(&prompt_cache_key),
             store,
+            &opts,
             true,
         );
         let mut full_history_body = None;
@@ -1428,10 +1431,10 @@ impl OpenAi {
                             messages,
                             system,
                             tools,
-                            &opts,
                             None,
                             Some(&prompt_cache_key),
                             false,
+                            &opts,
                             true,
                         )
                     },
@@ -1480,10 +1483,10 @@ impl OpenAi {
                                 messages,
                                 system,
                                 tools,
-                                &opts,
                                 None,
                                 Some(&prompt_cache_key),
                                 false,
+                                &opts,
                                 true,
                             )
                         })
@@ -1730,7 +1733,6 @@ impl OpenAi {
         session_id: Option<&SessionRef>,
     ) -> Result<StreamResponse, AgentError> {
         let prompt_cache_key = prompt_cache_key(&model.id, system, tools_hash, session_id);
-        let auth = self.current_auth();
         let body = super::responses::build_body(
             model,
             messages,
@@ -1753,6 +1755,7 @@ impl OpenAi {
         );
 
         self.with_oauth_retry(|| async {
+            let auth = self.current_auth();
             super::responses::do_stream(
                 self.compat.client(),
                 model,
@@ -2118,10 +2121,6 @@ impl Provider for OpenAi {
                             error = %error,
                             "OpenAI Responses API rejected request; falling back to Chat Completions"
                         );
-                        // Clear response chain on definitive rejection
-                        if session_id.is_some() && self.response_state_storage.is_some() {
-                            self.clear_response_chain(session_id, None).await;
-                        }
                     }
                     Err(error) => return Err(error),
                 }
@@ -2325,7 +2324,8 @@ fn should_clear_response_chain<T>(result: &Result<T, AgentError>, store: bool) -
 }
 
 fn is_definitive_responses_rejection(error: &AgentError) -> bool {
-    matches!(error, AgentError::Api { status, .. } if *status == 400 || *status == 422)
+    !error.is_context_overflow()
+        && matches!(error, AgentError::Api { status, .. } if *status == 400 || *status == 422)
 }
 
 #[cfg(test)]
@@ -2560,10 +2560,15 @@ mod tests {
             status: 500,
             message: "internal server error".into(),
         };
+        let context_overflow = AgentError::Api {
+            status: 400,
+            message: "maximum context length is 128000 tokens".into(),
+        };
         let error_network = AgentError::Io(std::io::Error::other("connection failed"));
 
         assert!(is_definitive_responses_rejection(&error_400));
         assert!(is_definitive_responses_rejection(&error_422));
+        assert!(!is_definitive_responses_rejection(&context_overflow));
         assert!(!is_definitive_responses_rejection(&error_500));
         assert!(!is_definitive_responses_rejection(&error_network));
     }

@@ -20,6 +20,21 @@ use crate::{
 const RESPONSES_PATH: &str = "/responses";
 const RESPONSE_IN_FLIGHT_TIMEOUT_MULTIPLIER: u32 = 6;
 const MAX_RESPONSE_IN_FLIGHT_TIMEOUT: Duration = Duration::from_mins(30);
+const PROMPT_CACHE_TTL: &str = "30m";
+const MAX_SAFETY_IDENTIFIER_CHARS: usize = 64;
+const MODERATION_MODEL: &str = "omni-moderation-latest";
+const OPENAI_BUILTIN_ORIGIN: &str = "openai";
+const BUILTIN_TOOLS: &[&str] = &[
+    "web_search",
+    "file_search",
+    "computer",
+    "code_interpreter",
+    "mcp",
+    "apply_patch",
+    "skills",
+    "tool_search",
+    "programmatic_tool_calling",
+];
 
 pub(crate) fn response_in_flight_timeout(stream_timeout: Duration) -> Duration {
     stream_timeout
@@ -39,6 +54,7 @@ pub(crate) fn build_body(
     parallel_tool_calls: bool,
 ) -> Value {
     let input = convert_input(messages, system, opts.message_cache_breakpoints, model);
+    let has_prompt_cache_breakpoint = contains_prompt_cache_breakpoint(&input);
     let wire_tools = convert_tools(tools, model);
 
     let mut body = json!({
@@ -63,11 +79,10 @@ pub(crate) fn build_body(
         body["prompt_cache_key"] = json!(prompt_cache_key);
     }
 
-    // Prompt cache options for models that support explicit breakpoints.
-    if model.supports_prompt_cache_breakpoint() {
+    if has_prompt_cache_breakpoint {
         body["prompt_cache_options"] = json!({
             "mode": "explicit",
-            "ttl": "30m"
+            "ttl": PROMPT_CACHE_TTL
         });
     }
 
@@ -76,21 +91,20 @@ pub(crate) fn build_body(
         body["service_tier"] = json!("fast");
     }
 
-    // Safety identifier (max 64 chars)
     if let Some(ref safety_id) = opts.safety_identifier {
-        if safety_id.len() <= 64 {
+        let safety_id_chars = safety_id.chars().count();
+        if safety_id_chars <= MAX_SAFETY_IDENTIFIER_CHARS {
             body["safety_identifier"] = json!(safety_id);
         } else {
             warn!(
-                safety_id_len = safety_id.len(),
+                safety_id_chars,
                 "safety_identifier exceeds 64 chars, omitting"
             );
         }
     }
 
-    // Moderation
     if opts.moderation {
-        body["moderation"] = json!({"enabled": true});
+        body["moderation"] = json!({"model": MODERATION_MODEL});
     }
 
     // Reasoning effort with extended dialect for xhigh/max
@@ -124,6 +138,17 @@ pub(crate) fn build_body(
     body
 }
 
+fn contains_prompt_cache_breakpoint(value: &Value) -> bool {
+    match value {
+        Value::Array(values) => values.iter().any(contains_prompt_cache_breakpoint),
+        Value::Object(map) => {
+            map.contains_key("prompt_cache_breakpoint")
+                || map.values().any(contains_prompt_cache_breakpoint)
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => false,
+    }
+}
+
 pub(crate) fn convert_input(
     messages: &[Message],
     _system: &System,
@@ -149,7 +174,7 @@ pub(crate) fn convert_input(
         match msg.role {
             Role::User => {
                 let mut content_blocks = Vec::new();
-                for (block_idx, block) in msg.content.iter().enumerate() {
+                for block in &msg.content {
                     match block {
                         ContentBlock::Text { text } => {
                             content_blocks.push(json!({
@@ -186,15 +211,13 @@ pub(crate) fn convert_input(
                         | ContentBlock::Thinking { .. }
                         | ContentBlock::RedactedThinking { .. } => {}
                     }
+                }
 
-                    // Add prompt_cache_breakpoint on the last block of selected messages.
-                    if supports_breakpoint
-                        && block_idx == msg.content.len() - 1
-                        && breakpoint_indices.contains(&msg_idx)
-                        && let Some(last) = content_blocks.last_mut()
-                    {
-                        last["prompt_cache_breakpoint"] = json!({"mode": "explicit"});
-                    }
+                if supports_breakpoint
+                    && breakpoint_indices.contains(&msg_idx)
+                    && let Some(last) = content_blocks.last_mut()
+                {
+                    last["prompt_cache_breakpoint"] = json!({"mode": "explicit"});
                 }
 
                 if !content_blocks.is_empty() {
@@ -322,19 +345,6 @@ pub(crate) fn request_diagnostics(body: &Value) -> RequestDiagnostics {
     diagnostics
 }
 
-// Built-in tools that OpenAI Responses API supports
-const BUILTIN_TOOLS: &[&str] = &[
-    "web_search",
-    "file_search",
-    "computer",
-    "code_interpreter",
-    "mcp",
-    "apply_patch",
-    "skills",
-    "tool_search",
-    "programmatic_tool_calling",
-];
-
 pub(crate) fn convert_tools(anthropic_tools: &Value, model: &crate::model::Model) -> Value {
     let Some(tools) = anthropic_tools.as_array() else {
         return json!([]);
@@ -345,17 +355,14 @@ pub(crate) fn convert_tools(anthropic_tools: &Value, model: &crate::model::Model
             .iter()
             .filter_map(|t| {
                 let name = t.get("name")?.as_str()?;
-                // Check if this is a built-in tool
-                if BUILTIN_TOOLS.contains(&name) {
-                    // Emit built-in tool object if model supports it
-                    // For now, we conservatively only emit for GPT-5.6+
-                    if model.id.starts_with("gpt-5.6") {
-                        return Some(json!({
+                if t.get("origin").and_then(Value::as_str) == Some(OPENAI_BUILTIN_ORIGIN)
+                    && BUILTIN_TOOLS.contains(&name)
+                {
+                    return model.supports_responses_built_in_tools().then(|| {
+                        json!({
                             "type": name,
-                        }));
-                    }
-                    // Skip built-in tools for unsupported models
-                    return None;
+                        })
+                    });
                 }
                 // Regular function tool
                 Some(json!({
@@ -472,6 +479,13 @@ pub(crate) fn is_semantic_progress_event(event_type: &str, data: &Value) -> bool
         "response.output_item.added" | "response.output_item.done" => {
             data.get("item").is_some_and(Value::is_object)
         }
+        "response.web_search_call.completed"
+        | "response.file_search_call.completed"
+        | "response.computer_call.completed"
+        | "response.code_interpreter_call.completed" => true,
+        "response.content_part.added" => data
+            .get("part")
+            .is_some_and(|part| part["type"].as_str() == Some("output_text")),
         "response.reasoning_summary_part.added" => data.get("part").is_some_and(Value::is_object),
         _ => false,
     }
@@ -556,6 +570,28 @@ impl ResponseAccumulator {
                 }
             }
 
+            "response.content_part.added" => {
+                let part = &data["part"];
+                if part["type"].as_str() == Some("output_text")
+                    && let Some(text) = part["text"].as_str()
+                    && !text.is_empty()
+                {
+                    let text = if self.is_first_content {
+                        self.is_first_content = false;
+                        text.trim_start().to_string()
+                    } else {
+                        text.to_string()
+                    };
+                    if !text.is_empty() {
+                        self.text.push_str(&text);
+                        self.emitted_event = true;
+                        event_tx
+                            .send_async(ProviderEvent::TextDelta { text })
+                            .await?;
+                    }
+                }
+            }
+
             "response.output_item.added" => {
                 let item = &data["item"];
                 let output_index = data["output_index"]
@@ -586,41 +622,15 @@ impl ResponseAccumulator {
                         });
                     }
                     Some(
-                        "web_search_call"
+                        tool_type @ ("web_search_call"
                         | "file_search_call"
                         | "computer_call"
-                        | "code_interpreter_call",
+                        | "code_interpreter_call"),
                     ) => {
-                        // Built-in tool calls - log and extract message if present
-                        let tool_type = item["type"].as_str().unwrap_or_else(|| "unknown");
-                        debug!(tool_type, "OpenAI built-in tool call");
-                        // Extract output_text and annotations if present
-                        if let Some(content) = item.get("content").and_then(Value::as_array) {
-                            for part in content {
-                                if let Some(text) = part.get("output_text").and_then(Value::as_str)
-                                {
-                                    self.text.push_str(text);
-                                }
-                                // TODO: Handle url_citation, file_citation annotations
-                            }
-                        }
+                        debug!(tool_type, "OpenAI built-in tool call started");
                     }
-                    Some("program") => {
-                        // Program execution - represent as Thinking for now
-                        debug!("OpenAI program item");
-                        if let Some(code) = item.get("code").and_then(Value::as_str) {
-                            self.reasoning_summary_text.push_str(code);
-                        }
-                    }
-                    Some("program_output") => {
-                        // Program output - log for now
-                        debug!("OpenAI program_output item");
-                        if let Some(output) = item.get("output").and_then(Value::as_str) {
-                            self.text.push_str(output);
-                        }
-                    }
+                    Some("reasoning" | "message") => {}
                     _ => {
-                        // Unknown item type - log warning
                         let item_type = item["type"].as_str().unwrap_or_else(|| "unknown");
                         warn!(item_type, "Unknown OpenAI output item type");
                     }
@@ -766,6 +776,14 @@ impl ResponseAccumulator {
                         });
                     }
                 }
+            }
+
+            "response.web_search_call.completed"
+            | "response.file_search_call.completed"
+            | "response.computer_call.completed"
+            | "response.code_interpreter_call.completed" => {
+                self.accepted = true;
+                debug!(event_type, "OpenAI built-in tool call completed");
             }
 
             "response.reasoning_summary_text.delta" => {
@@ -1095,6 +1113,7 @@ mod tests {
     use crate::model::Model;
     use futures_lite::io::{AsyncReadExt, AsyncWriteExt, Cursor};
     use serde_json::json;
+    use test_case::test_case;
 
     const TEST_STREAM_TIMEOUT: Duration = Duration::from_mins(5);
 
@@ -1196,6 +1215,26 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
                 })
                 .collect();
             assert_eq!(starts, vec![("c1", "bash"), ("c2", "read")]);
+        });
+    }
+
+    #[test]
+    fn parse_sse_builtin_lifecycle_uses_assistant_text_only() {
+        smol::block_on(async {
+            let sse = "event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"type\":\"web_search_call\",\"content\":[{\"output_text\":\"dead snapshot\"}]}}\n\nevent: response.web_search_call.completed\ndata: {\"output_index\":0,\"item_id\":\"ws_1\"}\n\nevent: response.content_part.added\ndata: {\"part\":{\"type\":\"output_text\",\"text\":\"verified answer\"}}\n\nevent: response.completed\ndata: {\"response\":{\"status\":\"completed\"}}\n\n";
+            let (response, events) = run_sse(sse).await;
+            let (_, response) = response.unwrap();
+            assert!(
+                matches!(&response.message.content[0], ContentBlock::Text { text } if text == "verified answer")
+            );
+            let deltas: Vec<_> = events
+                .iter()
+                .filter_map(|event| match event {
+                    ProviderEvent::TextDelta { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(deltas, vec!["verified answer"]);
         });
     }
 
@@ -1774,6 +1813,80 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
         assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
     }
 
+    #[test_case(0, false ; "no_emitted_breakpoint")]
+    #[test_case(1, true ; "emitted_breakpoint")]
+    fn build_body_prompt_cache_options_require_emitted_breakpoint(
+        message_cache_breakpoints: usize,
+        expected: bool,
+    ) {
+        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let opts = RequestOptions {
+            message_cache_breakpoints,
+            ..Default::default()
+        };
+        let body = build_body(
+            &model,
+            &[Message::user("cache me".into())],
+            &System::default(),
+            &json!([]),
+            None,
+            None,
+            false,
+            &opts,
+            true,
+        );
+        assert_eq!(body.get("prompt_cache_options").is_some(), expected);
+    }
+
+    #[test_case(64, true ; "unicode_boundary")]
+    #[test_case(65, false ; "unicode_over_limit")]
+    fn build_body_safety_identifier_counts_characters(chars: usize, expected: bool) {
+        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let opts = RequestOptions {
+            safety_identifier: Some("界".repeat(chars)),
+            ..Default::default()
+        };
+        let body = build_body(
+            &model,
+            &[],
+            &System::default(),
+            &json!([]),
+            None,
+            None,
+            false,
+            &opts,
+            true,
+        );
+        assert_eq!(body.get("safety_identifier").is_some(), expected);
+    }
+
+    #[test_case(true, Some(MODERATION_MODEL) ; "enabled")]
+    #[test_case(false, None ; "disabled")]
+    fn build_body_moderation_uses_model_shape(enabled: bool, expected: Option<&str>) {
+        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let opts = RequestOptions {
+            moderation: enabled,
+            ..Default::default()
+        };
+        let body = build_body(
+            &model,
+            &[],
+            &System::default(),
+            &json!([]),
+            None,
+            None,
+            false,
+            &opts,
+            true,
+        );
+        assert_eq!(
+            body.get("moderation")
+                .and_then(|moderation| moderation.get("model"))
+                .and_then(Value::as_str),
+            expected
+        );
+    }
+
     #[test]
     fn build_body_thinking_off() {
         let model = Model::from_spec("openai/gpt-5.6").unwrap();
@@ -1899,6 +2012,62 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
         assert_eq!(input[1]["call_id"], "c1");
         assert_eq!(input[2], reasoning_two);
         assert_eq!(input[3]["call_id"], "c2");
+    }
+
+    #[test_case("tool_search" ; "registry_tool_name_collision")]
+    #[test_case("load_namespace" ; "namespace_tool")]
+    fn convert_tools_keeps_named_local_tools_as_functions(name: &str) {
+        let tools = json!([{
+            "name": name,
+            "description": "local tool",
+            "input_schema": {"type": "object"}
+        }]);
+        let converted = convert_tools(&tools, &Model::from_spec("openai/gpt-5.6").unwrap());
+        assert_eq!(converted[0]["type"], "function");
+        assert_eq!(converted[0]["name"], name);
+    }
+
+    #[test_case("web_search" ; "explicit_openai_builtin")]
+    fn convert_tools_requires_openai_origin_for_builtins(name: &str) {
+        let tools = json!([{
+            "origin": OPENAI_BUILTIN_ORIGIN,
+            "name": name,
+            "description": "provider built-in",
+            "input_schema": {"type": "object"}
+        }]);
+        let converted = convert_tools(&tools, &Model::from_spec("openai/gpt-5.6").unwrap());
+        assert_eq!(converted, json!([{"type": name}]));
+    }
+
+    #[test]
+    fn convert_input_keeps_tool_result_before_following_text() {
+        let messages = vec![Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "call_1".into(),
+                    content: "result".into(),
+                    is_error: false,
+                },
+                ContentBlock::Text {
+                    text: "continue".into(),
+                },
+            ],
+            ..Default::default()
+        }];
+        let input = convert_input(
+            &messages,
+            &System::default(),
+            1,
+            &Model::from_spec("openai/gpt-5.6").unwrap(),
+        );
+        assert_eq!(input[0]["type"], "function_call_output");
+        assert_eq!(input[1]["type"], "message");
+        assert_eq!(input[1]["content"][0]["text"], "continue");
+        assert_eq!(
+            input[1]["content"][0]["prompt_cache_breakpoint"],
+            json!({"mode": "explicit"})
+        );
     }
 
     #[test]

@@ -459,12 +459,39 @@ impl FromStr for Effort {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StoredReasoningMode {
+    Standard,
+    Pro,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StoredReasoningContext {
+    Auto,
+    CurrentTurn,
+    AllTurns,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase", tag = "kind")]
 pub enum StoredThinking {
     Off,
     Adaptive,
-    Effort { level: Effort },
-    Budget { tokens: u32 },
+    Effort {
+        level: Effort,
+    },
+    Budget {
+        tokens: u32,
+    },
+    #[serde(rename = "with_extras")]
+    WithExtras {
+        level: Effort,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning_mode: Option<StoredReasoningMode>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning_context: Option<StoredReasoningContext>,
+    },
 }
 
 impl StoredThinking {
@@ -2221,7 +2248,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::StoredThinking;
     use super::ThinkingParseError;
     use super::{
         CWD_INDEX_FILE, DEFAULT_TITLE, LOG_FORMAT_VERSION, LogRecord, MAX_TITLE_LEN,
@@ -2229,6 +2255,7 @@ mod tests {
         classify_and_display, encode_frame, generate_title, jsonl_path, load_cwd_index, now_epoch,
         update_cwd_index,
     };
+    use super::{Effort, StoredReasoningContext, StoredReasoningMode, StoredThinking};
     use super::{
         OPENAI_RESPONSE_CHAIN_TTL_SECONDS, SESSIONS_DIR, StoredOpenAiResponseChain,
         delete_openai_response_chain, load_openai_response_chain, load_openai_response_chain_at,
@@ -3640,10 +3667,25 @@ mod tests {
     #[test_case(StoredThinking::Off ; "off")]
     #[test_case(StoredThinking::Adaptive ; "adaptive")]
     #[test_case(StoredThinking::Budget { tokens: 4096 } ; "budget")]
+    #[test_case(StoredThinking::Effort { level: Effort::High } ; "effort")]
+    #[test_case(StoredThinking::WithExtras {
+        level: Effort::XHigh,
+        reasoning_mode: Some(StoredReasoningMode::Pro),
+        reasoning_context: Some(StoredReasoningContext::AllTurns),
+    } ; "with_extras")]
     fn stored_thinking_serde_round_trip(variant: StoredThinking) {
         let json = serde_json::to_string(&variant).unwrap();
         let parsed: StoredThinking = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, variant);
+    }
+
+    #[test_case("{\"kind\":\"effort\",\"level\":\"high\"}", StoredThinking::Effort { level: Effort::High } ; "legacy_effort")]
+    #[test_case("{\"kind\":\"with_extras\",\"level\":\"high\"}", StoredThinking::WithExtras { level: Effort::High, reasoning_mode: None, reasoning_context: None } ; "missing_extras_default")]
+    fn stored_thinking_deserializes_compatible_json(json: &str, expected: StoredThinking) {
+        assert_eq!(
+            serde_json::from_str::<StoredThinking>(json).unwrap(),
+            expected
+        );
     }
 
     #[test_case("off", &Ok(StoredThinking::Off) ; "off")]

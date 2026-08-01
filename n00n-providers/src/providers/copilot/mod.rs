@@ -302,6 +302,7 @@ impl Copilot {
         let system = System::from(system);
         let opts = crate::RequestOptions {
             thinking,
+            message_cache_breakpoints: 0,
             ..Default::default()
         };
         let mut body = responses::build_body(
