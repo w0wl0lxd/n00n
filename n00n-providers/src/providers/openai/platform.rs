@@ -2065,6 +2065,7 @@ impl Provider for OpenAi {
                 tools,
                 Some(&prompt_cache_key),
                 self.system_prefix.as_deref(),
+                opts.message_cache_breakpoints,
             );
             opts.thinking
                 .apply_reasoning_effort(&mut body, &dialect::STANDARD, model);
