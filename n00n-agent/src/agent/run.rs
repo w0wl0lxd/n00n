@@ -222,6 +222,7 @@ pub struct Agent<'h> {
     local_tools: LocalTools,
     active_skill_policy: Option<crate::skill_policy::ActiveSkillPolicy>,
     tool_filter: ToolFilter,
+    allow_dynamic_mcp_tools: bool,
     active_tools: ActiveTools,
     supports_tool_examples: bool,
     fusion_state: Option<FusionState>,
@@ -278,6 +279,7 @@ impl<'h> Agent<'h> {
             local_tools: LocalTools::default(),
             active_skill_policy: None,
             tool_filter: run.tool_filter,
+            allow_dynamic_mcp_tools: false,
             active_tools: ActiveTools::default(),
             supports_tool_examples,
             fusion_state,
@@ -289,6 +291,12 @@ impl<'h> Agent<'h> {
     #[must_use]
     pub fn with_mcp(mut self, mcp: Option<McpSession>) -> Self {
         self.mcp = mcp;
+        self
+    }
+
+    #[must_use]
+    pub fn with_dynamic_mcp_tools(mut self, allow: bool) -> Self {
+        self.allow_dynamic_mcp_tools = allow;
         self
     }
 
@@ -373,7 +381,8 @@ impl<'h> Agent<'h> {
         if let Some(mcp) = self.mcp.as_ref() {
             mcp.extend_tools(&mut self.tools);
         }
-        filter_provider_tools(&mut self.tools, &self.tool_filter, &self.mode);
+        let tool_filter = self.effective_tool_filter();
+        filter_provider_tools(&mut self.tools, &tool_filter, &self.mode);
         self.sync_fusion_availability();
         self.start_fusion_request(&input.message)?;
         self.context_size = estimate_message_tokens(self.history.as_slice(), &self.model.id)
@@ -468,7 +477,7 @@ impl<'h> Agent<'h> {
 
     async fn stream_response(&self, opts: RequestOptions) -> Result<StreamResponse, AgentError> {
         let mut tools = self.tools.clone();
-        filter_provider_tools(&mut tools, &self.tool_filter, &self.mode);
+        filter_provider_tools(&mut tools, &self.effective_tool_filter(), &self.mode);
         let visible = self.fusion_delegate_visible(&tools);
         if !visible {
             remove_fusion_delegate_tool(&mut tools);
@@ -825,6 +834,24 @@ impl<'h> Agent<'h> {
         .await
     }
 
+    fn effective_tool_filter(&self) -> ToolFilter {
+        if !self.allow_dynamic_mcp_tools {
+            return self.tool_filter.clone();
+        }
+        let Some(mcp) = self.mcp.as_ref() else {
+            return self.tool_filter.clone();
+        };
+        let mut definitions = Value::Array(Vec::new());
+        mcp.extend_tools(&mut definitions);
+        let names = definitions
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|definition| definition.get("name").and_then(Value::as_str))
+            .map(str::to_owned);
+        self.tool_filter.clone().including(names)
+    }
+
     fn tool_context(&self) -> ToolContext {
         ToolContext {
             provider: Arc::clone(&self.provider),
@@ -849,7 +876,7 @@ impl<'h> Agent<'h> {
             registry: Arc::clone(&self.registry),
             workflow: self.workflow,
             audience: self.audience,
-            tool_filter: self.tool_filter.clone(),
+            tool_filter: self.effective_tool_filter(),
             local_tools: Arc::clone(&self.local_tools),
             active_skill_policy: self.active_skill_policy.clone(),
             live_sink: None,
@@ -883,7 +910,7 @@ impl<'h> Agent<'h> {
         if let Some(mcp) = &self.mcp {
             mcp.extend_tools(&mut tools);
         }
-        filter_provider_tools(&mut tools, &self.tool_filter, &self.mode);
+        filter_provider_tools(&mut tools, &self.effective_tool_filter(), &self.mode);
         self.tools = tools;
         if !self
             .fusion_state
@@ -1353,6 +1380,41 @@ mod tests {
             .filter_map(|definition| definition["name"].as_str())
             .collect();
         assert_eq!(names, ["codegraph", "server__search"]);
+    }
+
+    #[test]
+    fn explicit_base_filter_allows_mcp_tools_loaded_after_search() {
+        let mut history = History::new(Vec::new());
+        let (mut agent, _) = make_agent(MockProvider::new(Vec::new()), &mut history);
+        let mcp = crate::mcp::stub_session(&[("srv.fetch_issue", "Fetch a GitHub issue")]);
+        agent.tool_filter = ToolFilter::Only(vec![
+            "read".into(),
+            crate::mcp::TOOL_SEARCH_TOOL_NAME.into(),
+        ]);
+        agent = agent
+            .with_mcp(Some(mcp.clone()))
+            .with_dynamic_mcp_tools(true);
+
+        assert!(agent.effective_tool_filter().matches("tool_search"));
+        assert!(!agent.effective_tool_filter().matches("write"));
+        assert!(!agent.effective_tool_filter().matches("srv__fetch_issue"));
+
+        mcp.search_tools("issue").unwrap();
+        let effective_filter = agent.effective_tool_filter();
+        let mut definitions = json!([
+            {"name": "read"},
+            {"name": "write"},
+        ]);
+        mcp.extend_tools(&mut definitions);
+        filter_provider_tools(&mut definitions, &effective_filter, &AgentMode::Build);
+        let names: Vec<_> = definitions
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|definition| definition["name"].as_str())
+            .collect();
+
+        assert_eq!(names, ["read", "srv__fetch_issue"]);
     }
 
     #[test]

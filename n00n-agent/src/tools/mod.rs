@@ -66,6 +66,21 @@ impl ToolFilter {
     }
 
     #[must_use]
+    pub fn including(self, names: impl IntoIterator<Item = String>) -> Self {
+        match self {
+            Self::Only(mut allowed) => {
+                for name in names {
+                    if !allowed.contains(&name) {
+                        allowed.push(name);
+                    }
+                }
+                Self::Only(allowed)
+            }
+            other => other,
+        }
+    }
+
+    #[must_use]
     pub fn excluding(self, names: &[&str]) -> Self {
         if names.is_empty() {
             return self;

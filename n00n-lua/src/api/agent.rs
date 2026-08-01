@@ -778,6 +778,7 @@ async fn session(
         system: system.unwrap_or_else(String::new),
         tools: tools_json,
         tool_filter,
+        allow_dynamic_mcp_tools: explicit_tools && include_mcp,
         thinking,
         fast,
         mode,
@@ -1278,6 +1279,7 @@ struct SessionState {
     system: String,
     tools: JsonValue,
     tool_filter: ToolFilter,
+    allow_dynamic_mcp_tools: bool,
     thinking: ThinkingConfig,
     fast: bool,
     mode: AgentMode,
@@ -1454,6 +1456,7 @@ async fn prompt(
         }))
         .with_cancel(s.child_cancel.clone())
         .with_mcp(s.mcp.clone())
+        .with_dynamic_mcp_tools(s.allow_dynamic_mcp_tools)
         .with_local_tools(Arc::clone(&s.local_tools));
 
         let input = AgentInput {
