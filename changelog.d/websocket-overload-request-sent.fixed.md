@@ -1,1 +1,1 @@
-Don't convert WebSocket `server_is_overloaded` errors into `RequestSent` after the request has left the client, so they are retried with the correct "provider is overloaded, try again later" user message.
+Don't convert retryable WebSocket API errors (including `server_is_overloaded` and 5xx `server_error`) into `RequestSent` before any output is emitted, so they are retried with the correct user-facing message instead of "not retrying".
