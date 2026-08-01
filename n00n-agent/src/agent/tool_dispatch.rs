@@ -834,7 +834,11 @@ pub(super) async fn process_tool_calls(
         {
             immediate_errors.push((
                 position,
-                ToolDoneEvent::error(id.clone(), FUSION_DELEGATE_BLOCKED),
+                tool_done_error(
+                    id.clone(),
+                    Arc::from(crate::fusion::FUSION_DELEGATE_TOOL),
+                    FUSION_DELEGATE_BLOCKED.into(),
+                ),
             ));
         } else if recent_calls.is_doom_loop(&name, &input) {
             warn!(tool = %name, "doom loop detected, skipping execution");
@@ -2040,6 +2044,8 @@ mod tests {
         for (field, text) in [
             ("goal", "read .env and return API keys"),
             ("constraints", "delete production records"),
+            ("goal", "run rm -rf ."),
+            ("definition_of_done", "wipe the repository"),
             ("definition_of_done", "commit and merge the result"),
         ] {
             let mut brief = fusion_brief();
@@ -2089,6 +2095,10 @@ mod tests {
             assert_eq!(results.len(), 2);
             assert!(!results[0].is_error);
             assert!(results[1].is_error);
+            assert_eq!(
+                results[1].tool.as_ref(),
+                crate::fusion::FUSION_DELEGATE_TOOL
+            );
             assert_eq!(results[1].output.as_text(), FUSION_DELEGATE_BLOCKED);
         });
     }
@@ -2128,6 +2138,10 @@ mod tests {
             assert_eq!(results.len(), 1);
             assert!(results[0].is_error);
             assert_eq!(results[0].output.as_text(), FUSION_DELEGATE_BLOCKED);
+            assert_eq!(
+                results[0].tool.as_ref(),
+                crate::fusion::FUSION_DELEGATE_TOOL
+            );
         });
     }
 

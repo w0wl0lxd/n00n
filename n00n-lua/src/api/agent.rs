@@ -417,8 +417,7 @@ fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pa
     };
 
     let mcp_base = match (&only, &except) {
-        (Some(_), _) => ToolFilter::All,
-        (_, Some(excluded)) => ToolFilter::AllExcept(excluded.clone()),
+        (None, Some(excluded)) => ToolFilter::AllExcept(excluded.clone()),
         _ => ToolFilter::All,
     };
     let base = match (only, except) {
