@@ -262,6 +262,16 @@ impl AgentError {
     }
 
     #[must_use]
+    pub fn is_config(&self) -> bool {
+        matches!(self, Self::Config { .. })
+    }
+
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        matches!(self, Self::Cancelled)
+    }
+
+    #[must_use]
     pub fn should_rotate_key(&self) -> bool {
         matches!(self, Self::Api { status, .. } if *status == 429 || *status == 401 || *status == 403)
     }
@@ -565,5 +575,23 @@ mod tests {
             err.suppress_retry_after_send(metadata),
             AgentError::Api { status: 400, .. }
         ));
+    }
+
+    #[test]
+    fn config_error_is_recognized() {
+        let err = AgentError::Config {
+            message: "missing API key".into(),
+        };
+        assert!(err.is_config());
+        assert!(!err.is_cancelled());
+        assert!(!err.is_auth_error());
+    }
+
+    #[test]
+    fn cancelled_error_is_recognized() {
+        let err = AgentError::Cancelled;
+        assert!(err.is_cancelled());
+        assert!(!err.is_config());
+        assert!(!err.is_auth_error());
     }
 }

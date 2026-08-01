@@ -638,6 +638,10 @@ impl<'h> Agent<'h> {
                 }
                 return self.wait_for_reauth(e).await;
             }
+            Err(e) if e.is_cancelled() => {
+                warn!(error = %e, model = %self.model.id, self.num_turns, "stream_message cancelled");
+                return Err(e);
+            }
             Err(e) => {
                 error!(error = %e, model = %self.model.id, self.num_turns, "stream_message failed");
                 return Err(e);
