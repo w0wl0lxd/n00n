@@ -1,0 +1,1 @@
+Don't convert WebSocket `server_is_overloaded` errors into `RequestSent` after the request has left the client, so they are retried with the correct "provider is overloaded, try again later" user message.
