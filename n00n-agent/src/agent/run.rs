@@ -557,6 +557,9 @@ impl<'h> Agent<'h> {
                 r
             }
             Err(e) if e.is_auth_error() => {
+                if let Some(state) = self.fusion_state.as_mut() {
+                    state.retry_continuation();
+                }
                 return self.wait_for_reauth(e).await;
             }
             Err(e) => {
@@ -1092,6 +1095,7 @@ impl<'h> Agent<'h> {
             match cmd {
                 ExtractedCommand::Interrupt(mut input, _) => {
                     validate_input_message(&input)?;
+                    self.restrict_fusion_for_queued_input(&input.message)?;
                     self.event_tx.send(AgentEvent::QueueItemConsumed {
                         text: input.message.clone(),
                         image_count: input.images.len(),
@@ -1122,6 +1126,22 @@ impl<'h> Agent<'h> {
             }
         }
         Ok(handled)
+    }
+
+    fn restrict_fusion_for_queued_input(&mut self, prompt: &str) -> Result<(), AgentError> {
+        if crate::fusion::decide_request(prompt) == FusionRequestDecision::Delegate {
+            return Ok(());
+        }
+        self.remove_fusion_delegate_tool();
+        let phase = self
+            .fusion_state
+            .as_mut()
+            .and_then(FusionState::finish_continuation);
+        if let Some(phase) = phase {
+            self.event_tx
+                .send(AgentEvent::FusionPhaseChanged { phase, label: None })?;
+        }
+        Ok(())
     }
 }
 
@@ -1437,6 +1457,7 @@ mod tests {
         requests: Arc<Mutex<Vec<Vec<Message>>>>,
         contexts: Arc<Mutex<Vec<(System, Value)>>>,
         cancel_on_request: Option<usize>,
+        auth_error_on_request: Option<usize>,
         calls: AtomicUsize,
     }
 
@@ -1447,6 +1468,7 @@ mod tests {
                 requests: Arc::new(Mutex::new(Vec::new())),
                 contexts: Arc::new(Mutex::new(Vec::new())),
                 cancel_on_request: None,
+                auth_error_on_request: None,
                 calls: AtomicUsize::new(0),
             }
         }
@@ -1459,6 +1481,7 @@ mod tests {
                     requests: Arc::clone(&requests),
                     contexts: Arc::new(Mutex::new(Vec::new())),
                     cancel_on_request: None,
+                    auth_error_on_request: None,
                     calls: AtomicUsize::new(0),
                 },
                 requests,
@@ -1475,6 +1498,7 @@ mod tests {
                     requests: Arc::new(Mutex::new(Vec::new())),
                     contexts: Arc::clone(&contexts),
                     cancel_on_request: None,
+                    auth_error_on_request: None,
                     calls: AtomicUsize::new(0),
                 },
                 contexts,
@@ -1487,8 +1511,27 @@ mod tests {
                 requests: Arc::new(Mutex::new(Vec::new())),
                 contexts: Arc::new(Mutex::new(Vec::new())),
                 cancel_on_request: Some(request),
+                auth_error_on_request: None,
                 calls: AtomicUsize::new(0),
             }
+        }
+
+        fn auth_retry(
+            responses: Vec<StreamResponse>,
+            request: usize,
+        ) -> (Self, Arc<Mutex<Vec<Vec<Message>>>>) {
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    responses: Mutex::new(responses),
+                    requests: Arc::clone(&requests),
+                    contexts: Arc::new(Mutex::new(Vec::new())),
+                    cancel_on_request: None,
+                    auth_error_on_request: Some(request),
+                    calls: AtomicUsize::new(0),
+                },
+                requests,
+            )
         }
     }
 
@@ -1508,6 +1551,12 @@ mod tests {
                 if self.cancel_on_request == Some(request) {
                     return Err(AgentError::Cancelled);
                 }
+                if self.auth_error_on_request == Some(request) {
+                    return Err(AgentError::Api {
+                        status: 401,
+                        message: "expired credentials".into(),
+                    });
+                }
                 self.requests.lock().unwrap().push(messages.to_vec());
                 self.contexts
                     .lock()
@@ -1517,6 +1566,10 @@ mod tests {
                 assert!(!responses.is_empty(), "MockProvider: no more responses");
                 Ok(responses.remove(0))
             })
+        }
+
+        fn refresh_auth(&self) -> BoxFuture<'_, Result<(), AgentError>> {
+            Box::pin(async { Ok(()) })
         }
 
         fn list_models(&self) -> BoxFuture<'_, Result<Vec<n00n_providers::ModelInfo>, AgentError>> {
@@ -1802,6 +1855,83 @@ mod tests {
                 agent.fusion_state.as_ref().unwrap().continuation_attempts,
                 MAX_CONTINUATION_TURNS
             );
+
+            assert!(has_event(&drain_events(&event_rx), |event| matches!(
+                event,
+                AgentEvent::Done { .. }
+            )));
+        });
+    }
+
+    #[test_case("delete the production database after review"; "destructive")]
+    #[test_case("review this architecture"; "lead_only")]
+    fn queued_non_delegable_interrupt_hides_fusion_delegate(prompt: &str) {
+        smol::block_on(async {
+            let (registry, calls) = counting_registry();
+            let (provider, requests) = MockProvider::recording(vec![
+                text_response(StopReason::EndTurn),
+                fusion_tool_response(),
+                text_response(StopReason::EndTurn),
+            ]);
+            let mut history = History::new(Vec::new());
+            let mut config = fusion_enabled_config();
+            config.max_turns = Some(3);
+            config.max_continuation_turns = 1;
+            let (mut agent, _event_rx) =
+                make_agent_with_registry(provider, &mut history, config, registry);
+            agent.tools = json!([{"name": crate::fusion::FUSION_DELEGATE_TOOL}]);
+            let mut queued = default_input();
+            queued.message = prompt.into();
+            agent = agent.with_interrupt_source(MockInterruptSource::new(vec![
+                ExtractedCommand::Interrupt(queued, 1),
+            ]));
+
+            let mut input = default_input();
+            input.message = "implement the parser and add focused tests".into();
+            agent.run(input).await.unwrap();
+
+            assert_eq!(calls.load(Ordering::Relaxed), 0);
+            let requests = requests.lock().unwrap();
+            assert_eq!(requests.len(), 3);
+            assert!(requests[2].iter().any(|message| {
+                message.content.iter().any(|block| {
+                    matches!(
+                        block,
+                        ContentBlock::ToolResult { content, .. }
+                            if content.contains(tool_dispatch::FUSION_DELEGATE_BLOCKED)
+                    )
+                })
+            }));
+        });
+    }
+
+    #[test]
+    fn auth_retry_does_not_consume_single_fusion_continuation() {
+        smol::block_on(async {
+            let (registry, _calls) = counting_registry();
+            let (provider, requests) = MockProvider::auth_retry(
+                vec![fusion_tool_response(), text_response(StopReason::EndTurn)],
+                1,
+            );
+            let mut history = History::new(Vec::new());
+            let mut config = fusion_enabled_config();
+            config.max_continuation_turns = 1;
+            let (mut agent, event_rx) =
+                make_agent_with_registry(provider, &mut history, config, registry);
+            agent.tools = json!([{"name": crate::fusion::FUSION_DELEGATE_TOOL}]);
+            let (response_tx, response_rx) = flume::unbounded();
+            response_tx.send("reauthenticated".into()).unwrap();
+            agent = agent.with_user_response_rx(Arc::new(async_lock::Mutex::new(response_rx)));
+
+            let mut input = default_input();
+            input.message = "implement the parser and add focused tests".into();
+            agent.run(input).await.unwrap();
+
+            assert_eq!(requests.lock().unwrap().len(), 2);
+            assert_eq!(
+                agent.fusion_state.as_ref().unwrap().continuation_attempts,
+                1
+            );
             assert!(has_event(&drain_events(&event_rx), |event| matches!(
                 event,
                 AgentEvent::Done { .. }
@@ -1855,7 +1985,7 @@ mod tests {
             assert_eq!(requests.len(), 2);
             assert!(requests[1].iter().any(|message| {
                 message.content.iter().any(|block| {
-                    matches!(block, ContentBlock::ToolResult { content, .. } if content.contains("fusion_delegate is unavailable for this request"))
+                    matches!(block, ContentBlock::ToolResult { content, .. } if content.contains(tool_dispatch::FUSION_DELEGATE_BLOCKED))
                 })
             }));
             drop(requests);

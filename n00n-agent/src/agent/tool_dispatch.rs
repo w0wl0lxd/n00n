@@ -34,7 +34,7 @@ const UNKNOWN_TOOL_PREFIX: &str = "unknown tool";
 const TOOL_AUDIENCE_DENIED: &str = "tool is not available to this agent audience";
 const TOOL_FILTER_DENIED: &str = "tool is not available in this session";
 const BASH_BLOCKED_IN_PLAN: &str = "bash command is not provably read-only in plan mode";
-const FUSION_DELEGATE_BLOCKED: &str = "fusion_delegate is unavailable for this request";
+pub(super) const FUSION_DELEGATE_BLOCKED: &str = "fusion_delegate is unavailable for this request";
 
 /// Returns true when `command` contains shell metacharacters that are outside
 /// any quote and not escaped by a backslash. These are the characters that let
@@ -2038,14 +2038,19 @@ mod tests {
         });
     }
 
-    #[test]
-    fn fusion_delegate_requires_main_audience_even_when_phase_is_eligible() {
+    #[test_case(crate::tools::ToolAudience::GENERAL_SUB, Some(crate::fusion::FusionPhase::Executing) ; "ineligible audience")]
+    #[test_case(crate::tools::ToolAudience::MAIN, Some(crate::fusion::FusionPhase::Planning) ; "ineligible phase")]
+    #[test_case(crate::tools::ToolAudience::MAIN, None ; "missing phase")]
+    fn fusion_delegate_requires_main_audience_and_executing_phase(
+        audience: crate::tools::ToolAudience,
+        phase: Option<crate::fusion::FusionPhase>,
+    ) {
         smol::block_on(async {
             let mut ctx = local_ctx(crate::fusion::FUSION_DELEGATE_TOOL, |_| Ok("ran".into()));
             let mut config = (*ctx.config).clone();
             config.fusion.enabled = true;
             ctx.config = Arc::new(config);
-            ctx.audience = crate::tools::ToolAudience::GENERAL_SUB;
+            ctx.audience = audience;
             let (tx, _rx) = flume::unbounded::<crate::Envelope>();
             let event_tx = crate::EventSender::new(tx, 0);
             let mut history = crate::agent::History::new(Vec::new());
@@ -2061,7 +2066,7 @@ mod tests {
                 &mut history,
                 &event_tx,
                 &ctx,
-                Some(crate::fusion::FusionPhase::Executing),
+                phase,
             )
             .await
             .expect("return sanitized denial");

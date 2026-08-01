@@ -153,11 +153,17 @@ impl FusionState {
     }
 
     pub fn begin_continuation(&mut self, max_attempts: u32) -> bool {
-        if !self.needs_continuation() || self.continuation_attempts >= max_attempts.max(1) {
+        if !self.needs_continuation() || self.continuation_attempts >= max_attempts {
             return false;
         }
         self.continuation_attempts = self.continuation_attempts.saturating_add(1);
         true
+    }
+
+    pub(crate) fn retry_continuation(&mut self) {
+        if self.needs_continuation() {
+            self.continuation_attempts = self.continuation_attempts.saturating_sub(1);
+        }
     }
 
     pub fn start_request(&mut self, decision: FusionRequestDecision) -> Option<FusionPhase> {
@@ -216,25 +222,34 @@ impl FusionState {
         if self.phase != FusionPhase::Executing {
             return None;
         }
-        let done = results
+        let mut found_delegate = false;
+        let mut has_error = false;
+        for done in results
             .iter()
-            .find(|done| done.tool.as_ref() == FUSION_DELEGATE_TOOL)?;
-
-        self.delegation_count = self.delegation_count.saturating_add(1);
-        if done.is_error {
-            self.recent_tool_errors = self.recent_tool_errors.saturating_add(1);
-            self.sidekick_failures = self.sidekick_failures.saturating_add(1);
-        }
-        if let Some(telemetry) = done.output.telemetry() {
-            if let Some(cost) = telemetry.cost {
-                self.sidekick_cost += cost;
+            .filter(|done| done.tool.as_ref() == FUSION_DELEGATE_TOOL)
+        {
+            found_delegate = true;
+            self.delegation_count = self.delegation_count.saturating_add(1);
+            if done.is_error {
+                has_error = true;
+                self.recent_tool_errors = self.recent_tool_errors.saturating_add(1);
+                self.sidekick_failures = self.sidekick_failures.saturating_add(1);
             }
-            if let Some(usage) = telemetry.usage.as_ref() {
-                self.sidekick_usage += tool_usage_to_token_usage(usage);
+            if let Some(telemetry) = done.output.telemetry() {
+                if let Some(cost) = telemetry.cost {
+                    self.sidekick_cost += cost;
+                }
+                if let Some(usage) = telemetry.usage.as_ref() {
+                    self.sidekick_usage += tool_usage_to_token_usage(usage);
+                }
             }
         }
 
-        let continuation = if done.is_error {
+        if !found_delegate {
+            return None;
+        }
+
+        let continuation = if has_error {
             FusionContinuation::Fallback
         } else {
             FusionContinuation::Review
@@ -404,14 +419,20 @@ pub fn decide_request(prompt: &str) -> FusionRequestDecision {
         "security",
         "sensitive",
         "credential",
+        "credentials",
         "secret",
+        "secrets",
         "password",
+        "passwords",
         "token",
+        "tokens",
         "api key",
+        "api keys",
         "private key",
         "authorization",
         "authentication",
         "cookie",
+        "cookies",
         ".env",
         "environment variable",
         "personal data",
@@ -419,7 +440,9 @@ pub fn decide_request(prompt: &str) -> FusionRequestDecision {
         "pii",
         "production",
         "delete",
+        "deleting",
         "destroy",
+        "destroying",
         "destructive",
         "drop database",
         "commit",
@@ -430,6 +453,7 @@ pub fn decide_request(prompt: &str) -> FusionRequestDecision {
         "debug chain",
         "root cause",
         "review",
+        "reviewing",
         "approve",
         "decide",
     ];
@@ -455,17 +479,32 @@ pub fn decide_request(prompt: &str) -> FusionRequestDecision {
     if prompt.is_empty() {
         return FusionRequestDecision::Bypass;
     }
-    if LEAD_ONLY.iter().any(|signal| prompt.contains(signal)) {
+    if LEAD_ONLY
+        .iter()
+        .any(|signal| contains_signal(&prompt, signal))
+    {
         return FusionRequestDecision::LeadOnly;
     }
     if prompt.split_whitespace().count() <= TRIVIAL_REQUEST_MAX_WORDS {
         return FusionRequestDecision::Bypass;
     }
-    if DELEGATE.iter().any(|signal| prompt.contains(signal)) {
+    if DELEGATE
+        .iter()
+        .any(|signal| contains_signal(&prompt, signal))
+    {
         FusionRequestDecision::Delegate
     } else {
         FusionRequestDecision::LeadOnly
     }
+}
+
+fn contains_signal(prompt: &str, signal: &str) -> bool {
+    let is_word = |character: char| character.is_alphanumeric() || character == '_';
+    prompt.match_indices(signal).any(|(start, _)| {
+        let end = start + signal.len();
+        !prompt[..start].chars().next_back().is_some_and(is_word)
+            && !prompt[end..].chars().next().is_some_and(is_word)
+    })
 }
 
 fn tool_usage_to_token_usage(usage: &crate::ToolUsage) -> TokenUsage {
@@ -520,6 +559,18 @@ mod tests {
         assert_eq!(state.phase(), FusionPhase::Complete);
     }
 
+    #[test_case("please explore tokenization details in repository", FusionRequestDecision::Delegate ; "token substring is not a signal")]
+    #[test_case("please explore formatting details in repository", FusionRequestDecision::Delegate ; "format substring is not a signal")]
+    #[test_case("implement credential rotation and add tests", FusionRequestDecision::LeadOnly ; "credential signal")]
+    #[test_case("implement credentials rotation and add tests", FusionRequestDecision::LeadOnly ; "credentials signal")]
+    #[test_case("search for secrets, passwords, tokens, API keys, and cookies", FusionRequestDecision::LeadOnly ; "plural sensitive signals")]
+    #[test_case("implement deleting stale production records", FusionRequestDecision::LeadOnly ; "deleting signal")]
+    #[test_case("write test coverage while reviewing security", FusionRequestDecision::LeadOnly ; "reviewing signal")]
+    #[test_case("explore the repository and write test coverage", FusionRequestDecision::Delegate ; "valid signals")]
+    fn request_signals_use_word_boundaries(prompt: &str, expected: FusionRequestDecision) {
+        assert_eq!(decide_request(prompt), expected);
+    }
+
     #[test]
     fn successful_delegate_schedules_one_review_without_looping() {
         let mut state = FusionState::new();
@@ -543,6 +594,7 @@ mod tests {
         );
         assert_eq!(state.phase(), FusionPhase::Reviewing);
         assert!(state.needs_continuation());
+        assert!(!state.begin_continuation(0));
         assert!(state.begin_continuation(2));
         assert_eq!(state.continuation_attempts, 1);
         assert!(state.begin_continuation(2));
@@ -577,6 +629,49 @@ mod tests {
         );
         assert_eq!(state.observe_tool_results(&[done]), None);
         assert_eq!(state.phase(), FusionPhase::LeadFallback);
+    }
+
+    #[test]
+    fn observe_all_fusion_delegate_results_updates_sidekick_stats() {
+        let mut state = FusionState::new();
+        state.start_request(FusionRequestDecision::Delegate);
+        state.start_delegate();
+        let telemetry = |cost, input| {
+            crate::ToolOutput::Plain("ok".into()).with_telemetry(Some(
+                crate::ToolTelemetry::try_new(
+                    Some(cost),
+                    Some(crate::ToolUsage::try_new(input, 0, 0, input, 1).expect("valid usage")),
+                )
+                .expect("valid telemetry")
+                .expect("some telemetry"),
+            ))
+        };
+        let results = [
+            crate::ToolDoneEvent {
+                id: "1".into(),
+                tool: Arc::from(FUSION_DELEGATE_TOOL),
+                output: telemetry(0.12, 10),
+                is_error: false,
+                annotation: None,
+                written_path: None,
+            },
+            crate::ToolDoneEvent {
+                id: "2".into(),
+                tool: Arc::from(FUSION_DELEGATE_TOOL),
+                output: telemetry(0.25, 8),
+                is_error: true,
+                annotation: None,
+                written_path: None,
+            },
+        ];
+        assert_eq!(
+            state.observe_tool_results(&results),
+            Some(FusionContinuation::Fallback)
+        );
+        assert_eq!(state.delegation_count, 2);
+        assert_eq!(state.sidekick_failures, 1);
+        assert!((state.sidekick_cost - 0.37).abs() < f64::EPSILON);
+        assert_eq!(state.sidekick_usage.input, 18);
     }
 
     #[test]

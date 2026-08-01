@@ -15,7 +15,7 @@ use std::sync::Arc;
 use crate::selection::Selection;
 use n00n_agent::tools::{ToolInvocation, ToolRegistry, WRITE_TOOL_NAME};
 use n00n_agent::{
-    AgentEvent, BufferSnapshot, ImageSource, ToolDoneEvent, ToolOutput, ToolStartEvent,
+    AgentEvent, BufferSnapshot, FusionPhase, ImageSource, ToolDoneEvent, ToolOutput, ToolStartEvent,
 };
 use n00n_config::{ToolKey, ToolOutputLines, UiConfig};
 use n00n_providers::{CacheHealth, ContentBlock, Message, Role, TokenUsage};
@@ -258,16 +258,16 @@ impl Chat {
         ChatEventResult::Continue
     }
 
-    fn push_fusion_phase(&mut self, phase: n00n_agent::FusionPhase, label: Option<&str>) {
+    fn push_fusion_phase(&mut self, phase: FusionPhase, label: Option<&str>) {
         let phase = match phase {
-            n00n_agent::FusionPhase::Idle => "Idle",
-            n00n_agent::FusionPhase::Planning => "Planning",
-            n00n_agent::FusionPhase::Executing => "Executing",
-            n00n_agent::FusionPhase::Reviewing => "Reviewing",
-            n00n_agent::FusionPhase::LeadFallback => "Lead fallback",
-            n00n_agent::FusionPhase::Complete => "Complete",
-            n00n_agent::FusionPhase::Cancelled => "Cancelled",
-            n00n_agent::FusionPhase::Failed => "Failed",
+            FusionPhase::Idle => "Idle",
+            FusionPhase::Planning => "Planning",
+            FusionPhase::Executing => "Executing",
+            FusionPhase::Reviewing => "Reviewing",
+            FusionPhase::LeadFallback => "Lead fallback",
+            FusionPhase::Complete => "Complete",
+            FusionPhase::Cancelled => "Cancelled",
+            FusionPhase::Failed => "Failed",
         };
         let label = label
             .map(str::split_whitespace)
