@@ -726,9 +726,14 @@ pub fn build_tool_lines(
         && msg.render_header.is_none()
         && let Some(input) = msg.tool_raw_input.as_deref()
     {
-        let view = args_view::render_args(input, b.limits.output, b.limits.is_output_expanded());
-        let arg_lines = view.lines.len();
-        if arg_lines >= 2 {
+        let view = args_view::render_args(
+            input,
+            rctx.tool_output_lines.get(tool_name),
+            b.limits.output,
+            b.limits.is_output_expanded(),
+        );
+        let show_args = view.lines.len() >= 2 || view.hidden > 0;
+        if show_args {
             b.lines.push(Line::from(vec![
                 Span::raw(TOOL_BODY_INDENT),
                 Span::styled("Arguments:", theme::current().tool_annotation),
@@ -1083,6 +1088,71 @@ mod tests {
             1,
             "truncation notice must render exactly once: {text}"
         );
+    }
+
+    #[test]
+    fn one_line_cap_keeps_args_and_expand_notice_visible() {
+        let mut msg = bash_msg("Search", ToolStatus::Success, None, None);
+        msg.role = DisplayRole::Tool(Box::new(ToolRole {
+            id: "t1".into(),
+            status: ToolStatus::Success,
+            name: "generic".into(),
+        }));
+        msg.tool_raw_input = Some(Arc::new(serde_json::json!({
+            "a": 1,
+            "b": 2,
+            "c": 3,
+        })));
+        let tol = ToolOutputLines { other: 1, ..TOL };
+        let rctx = RenderCtx {
+            started_at: Instant::now(),
+            width: 80,
+            tool_output_lines: &tol,
+        };
+
+        let tl = build_tool_lines(&msg, ToolStatus::Success, &rctx, SectionFlags::default());
+        let text = lines_text(&tl);
+        assert!(text.contains("Arguments:"));
+        assert!(text.contains("a: 1"));
+        assert!(text.contains(TRUNCATION_PREFIX));
+    }
+
+    #[test]
+    fn expanded_args_reveal_lines_beyond_collapsed_cap() {
+        let mut msg = bash_msg("Search", ToolStatus::Success, None, None);
+        msg.role = DisplayRole::Tool(Box::new(ToolRole {
+            id: "t1".into(),
+            status: ToolStatus::Success,
+            name: "generic".into(),
+        }));
+        msg.tool_raw_input = Some(Arc::new(serde_json::json!({
+            "a": 1,
+            "b": 2,
+            "c": 3,
+            "d": 4,
+        })));
+        let tol = ToolOutputLines { other: 2, ..TOL };
+        let rctx = RenderCtx {
+            started_at: Instant::now(),
+            width: 80,
+            tool_output_lines: &tol,
+        };
+
+        let collapsed = build_tool_lines(&msg, ToolStatus::Success, &rctx, SectionFlags::default());
+        let expanded = build_tool_lines(
+            &msg,
+            ToolStatus::Success,
+            &rctx,
+            SectionFlags {
+                output: true,
+                ..SectionFlags::default()
+            },
+        );
+        let collapsed_text = lines_text(&collapsed);
+        let expanded_text = lines_text(&expanded);
+        assert!(!collapsed_text.contains("d: 4"));
+        assert!(expanded_text.contains("d: 4"));
+        assert!(!expanded_text.contains(TRUNCATION_PREFIX));
     }
 
     #[test]
