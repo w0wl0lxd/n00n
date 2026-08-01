@@ -725,6 +725,10 @@ local function handler(input)
   end
 end
 
+local function header(input)
+  return "blackboard: " .. tostring(input.action or "?")
+end
+
 n00n.api.register_tool({
   name = "blackboard",
   description = description,
@@ -732,4 +736,5 @@ n00n.api.register_tool({
   audiences = { "main", "general_sub", "workflow" },
   schema = schema,
   handler = handler,
+  header = header,
 })
