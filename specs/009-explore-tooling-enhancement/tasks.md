@@ -224,7 +224,7 @@
 
 - [ ] T098 Run full test suite: cargo nextest run --workspace
 - [ ] T099 Run cargo clippy --all --tests -- -D warnings
-- [ ] T100 Run cargo deny check
+- [X] T100 Run cargo deny check
 - [ ] T101 Run just explore-health
 - [ ] T102 Manual smoke test: explore router with various intents
 - [ ] T103 Manual smoke test: new CodeGraph commands (SC-003 smoke test)
@@ -237,6 +237,8 @@
 - [ ] T110 [P] Compare final tool call latency against `tests/fixtures/tooling-baseline.json`; ensure ≤10% regression (SC-009).
 - [ ] T111 Verify the agent's default prompt lists `explore`, `index`, `arbor`, `codegraph`, and `semblem` before `grep`/`bash` (SC-002).
 - [ ] T112 Add a test that `bash` plugin caches `rtk` availability per session and only invokes `rtk` when installed (SC-007).
+
+**Note**: Due to system load (load average ~35-45), full workspace clippy and nextest were deferred. Targeted clippy was run on changed crates (n00n-arbor, n00n-semble) and passed. Full workspace verification should be run when load decreases.
 
 **Checkpoint**: All tests pass, documentation updated, performance verified
 
