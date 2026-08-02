@@ -62,12 +62,34 @@ fn fusion_brief_is_authorized(input: &Value) -> bool {
 }
 
 /// Truncates `text` to `TOOL_ERROR_LOG_MAX_CHARS` on a character boundary,
-/// preserving the total byte count as a trailing hint.
+/// escaping control characters and preserving the total byte count as a trailing hint.
 fn truncate_for_log(text: &str) -> String {
-    match text.char_indices().nth(TOOL_ERROR_LOG_MAX_CHARS) {
-        Some((idx, _)) => format!("{}... ({} bytes)", &text[..idx], text.len()),
-        None => text.to_string(),
+    let escaped = escape_control_chars(text);
+    match escaped.char_indices().nth(TOOL_ERROR_LOG_MAX_CHARS) {
+        Some((idx, _)) => format!("{}... ({} bytes)", &escaped[..idx], text.len()),
+        None => escaped,
     }
+}
+
+/// Escapes control characters (newlines, tabs, carriage returns, backslashes, quotes)
+/// for safe logging, similar to the schema preview escaping logic.
+fn escape_control_chars(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        let escaped = match ch {
+            '\n' => Some("\\n"),
+            '\t' => Some("\\t"),
+            '\r' => Some("\\r"),
+            '\\' => Some("\\\\"),
+            '"' => Some("\\\""),
+            _ => None,
+        };
+        match escaped {
+            Some(s) => out.push_str(s),
+            None => out.push(ch),
+        }
+    }
+    out
 }
 
 /// Returns true when `command` contains shell metacharacters that are outside
@@ -2489,5 +2511,16 @@ mod tests {
         let preview = truncate_for_log(&emoji);
         assert!(preview.starts_with(&"😀".repeat(TOOL_ERROR_LOG_MAX_CHARS)));
         assert!(preview.ends_with(&format!("... ({} bytes)", emoji.len())));
+
+        // Control characters are escaped.
+        let with_controls = "line1\nline2\ttab\rreturn\\back\"quote";
+        let preview = truncate_for_log(with_controls);
+        assert!(preview.contains("\\n"));
+        assert!(preview.contains("\\t"));
+        assert!(preview.contains("\\r"));
+        assert!(preview.contains("\\\\"));
+        assert!(preview.contains("\\\""));
+        assert!(!preview.contains('\n'));
+        assert!(!preview.contains('\t'));
     }
 }

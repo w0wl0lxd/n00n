@@ -275,9 +275,11 @@ impl AgentError {
     pub fn is_missing_credentials(&self) -> bool {
         match self {
             Self::Config { message } => {
-                message.contains("not authenticated")
-                    || message.contains("not set")
-                    || message.contains("API key")
+                let msg_lower = message.to_lowercase();
+                // Match actual missing-credential messages, excluding "invalid API key" and unrelated errors
+                (msg_lower.contains("not authenticated") && !msg_lower.contains("invalid"))
+                    || (msg_lower.contains("not set") && !msg_lower.contains("invalid"))
+                    || (msg_lower.contains("api key") && !msg_lower.contains("invalid"))
             }
             _ => false,
         }
@@ -620,6 +622,12 @@ mod tests {
         };
         assert!(not_authenticated.is_missing_credentials());
         assert!(not_authenticated.is_config());
+
+        let invalid_key = AgentError::Config {
+            message: "invalid API key".into(),
+        };
+        assert!(!invalid_key.is_missing_credentials());
+        assert!(invalid_key.is_config());
 
         let other_config = AgentError::Config {
             message: "invalid URL".into(),
