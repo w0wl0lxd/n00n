@@ -103,7 +103,7 @@ Unified codebase exploration router. Picks the best backend for the question:
 | `use_cache` | boolean | no |  |
 | `intent` | string | no |  |
 | `to_symbol` | string | no |  |
-| `query` | string | yes | Question, symbol, or file path to explore. |
+| `query` | string | no | Question, symbol, or file path to explore. Required unless `command` is provided. |
 | `command` | string | no |  |
 | `mode` | string | no | Search mode for semblem (bm25, hybrid, or semantic). |
 | `project` | string | no | Project root for arbor/codegraph queries (defaults to cwd). |

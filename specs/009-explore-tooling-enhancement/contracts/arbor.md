@@ -12,8 +12,8 @@
   "properties": {
     "command": {
       "type": "string",
-      "enum": ["callers", "callees", "trace_path", "map", "diff", "query", "status", "entry_points", "file_graph", "inspect", "path", "refactor", "check", "summary"],
-      "description": "Arbor command to execute. Hyphenated forms (e.g., entry-points, file-graph) are normalized to underscores."
+      "enum": ["callers", "callees", "trace_path", "trace", "map", "diff", "query", "status", "entry_points", "file_graph", "inspect", "path", "refactor", "check", "summary"],
+      "description": "Arbor command to execute. Hyphenated forms (e.g., entry-points, file-graph) are normalized to underscores. `trace` is an alias for `trace_path`."
     },
     "symbol": {
       "type": "string",
@@ -41,13 +41,22 @@
     },
     "token_budget": {
       "type": "integer",
-      "minimum": 0,
+      "minimum": 1,
       "default": 1024,
       "description": "Token budget for map command (default 1024)."
     }
   }
 }
 ```
+
+## Command-Specific Input Rules
+
+- `command` is required.
+- `callers`, `callees`, and `inspect` require `symbol`.
+- `trace_path` and `path` require both `from_symbol` and `to_symbol`.
+- `refactor` requires `operation`.
+- `map` accepts an optional `token_budget` (minimum 1).
+- `file_graph` accepts an optional `path`.
 
 ## Commands
 

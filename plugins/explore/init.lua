@@ -66,11 +66,10 @@ Use `command`, `symbol`, `from_symbol`, and `to_symbol` for precise arbor routin
 
   schema = {
     type = "object",
-    required = { "query" },
     properties = {
       query = {
         type = "string",
-        description = "Question, symbol, or file path to explore.",
+        description = "Question, symbol, or file path to explore. Required unless `command` is provided.",
       },
       path = {
         type = "string",
@@ -104,7 +103,7 @@ Use `command`, `symbol`, `from_symbol`, and `to_symbol` for precise arbor routin
 
   header = function(input)
     local project = input.project or cwd
-    return ExploreResult.header(input.query, project)
+    return ExploreResult.header(input.query or input.command or "", project)
   end,
 
   restore = function(_input, output, _is_error, ctx)
@@ -112,7 +111,7 @@ Use `command`, `symbol`, `from_symbol`, and `to_symbol` for precise arbor routin
   end,
 
   handler = function(input, ctx)
-    if not input.query or trim(input.query) == "" then
+    if (not input.query or trim(input.query) == "") and not input.command then
       return { llm_output = "error: query is required", is_error = true }
     end
 

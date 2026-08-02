@@ -12,7 +12,7 @@ Failing test first, then minimum implementation, then refactor. Unit tests in `#
 
 ### Safety & No Silent Failures
 
-`unsafe_code = "forbid"` workspace-wide. No `.ok()` discards, no silent-default patterns. Typed errors with `thiserror`/`anyhow`. Missing data, parse failures, dependency errors, closed channels, and invalid state must become typed errors or explicit sanitized logged rejection.
+`unsafe_code = "forbid"` workspace-wide. No `.ok()` discards, no silent-default patterns. Library crates use `thiserror` for domain-specific errors; binary edges use `color-eyre`. Missing data, parse failures, dependency errors, closed channels, and invalid state must become typed errors or explicit sanitized logged rejection.
 
 ### No AI Attribution
 

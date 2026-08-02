@@ -82,8 +82,8 @@ function M.normalize_intent(input)
   end
 
   if query:match("skeleton") or query:match("structure") then
-    local path = input.path or M.extract_file_path(input.query)
-    if path and looks_like_file_path(path, false) then
+    local skeleton_path = input.path or M.extract_file_path(input.query)
+    if skeleton_path and looks_like_file_path(skeleton_path, false) then
       return "skeleton"
     end
   end

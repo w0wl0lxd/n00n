@@ -9,11 +9,10 @@
 ```json
 {
   "type": "object",
-  "required": ["query"],
   "properties": {
     "query": {
       "type": "string",
-      "description": "Question, symbol, or file path to explore."
+      "description": "Question, symbol, or file path to explore. Required unless `command` is provided."
     },
     "path": {
       "type": "string",
@@ -54,6 +53,12 @@
 || `symbol` | Symbol-specific drill-down | arbor or codegraph |
 || `impact` | Blast-radius or impact analysis | arbor or codegraph |
 || `trace` | Call path tracing | arbor |
+
+## Command-Specific Input Rules
+
+- `query` is required unless `command` is provided.
+- `command` `callers`, `callees`, and `trace_path` require `symbol` (and `from_symbol`/`to_symbol` for `trace_path`).
+- `command` `map`, `diff`, `status`, and `query` do not require `symbol` or `query`.
 
 ## Routing Logic
 
