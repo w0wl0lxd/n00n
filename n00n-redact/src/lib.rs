@@ -201,7 +201,19 @@ pub fn redact_json_value_for_log(value: &Value) -> Value {
             Value::Object(out)
         }
         Value::Array(items) => items.iter().map(redact_json_value_for_log).collect(),
-        Value::String(text) if looks_like_secret_value(text) => Value::String(REDACTED.to_owned()),
+        Value::String(text) => {
+            if looks_like_secret_value(text) {
+                Value::String(REDACTED.to_owned())
+            } else if let Ok(inner) = serde_json::from_str::<Value>(text) {
+                // String contains JSON - redact the inner content and re-serialize
+                let redacted_inner = redact_json_value_for_log(&inner);
+                serde_json::to_string(&redacted_inner)
+                    .unwrap_or_else(|_| REDACTED.to_owned())
+                    .into()
+            } else {
+                text.clone().into()
+            }
+        }
         other => other.clone(),
     }
 }
@@ -475,6 +487,46 @@ mod tests {
         let out = redact_json_arg(r#"{"token":"sk-123","user":""#);
         assert!(!out.contains("sk-123"), "token value leaked: {out}");
         assert!(out.contains("token"), "key name should stay: {out}");
+    }
+
+    #[test]
+    fn redact_json_arg_redacts_stringified_containers() {
+        let out = redact_json_arg(r#"{"api_key":"sk-live"}"#);
+        assert!(
+            !out.contains("sk-live"),
+            "secret leaked from stringified container: {out}"
+        );
+        assert!(out.contains("api_key"), "key name should stay: {out}");
+    }
+
+    #[test]
+    fn redact_json_value_does_not_descend_into_strings() {
+        use serde_json::json;
+        let value = json!(r#"{"api_key":"sk-live"}"#);
+        let redacted = redact_json_value(&value);
+        // redact_json_value does NOT descend into strings, so the secret remains
+        assert!(redacted.as_str().unwrap().contains("sk-live"));
+    }
+
+    #[test]
+    fn redact_json_value_for_log_descends_into_strings() {
+        use serde_json::json;
+        let value = json!(r#"{"api_key":"sk-live"}"#);
+        let redacted = redact_json_value_for_log(&value);
+        // redact_json_value_for_log DOES descend into strings via value pattern matching
+        assert!(!redacted.as_str().unwrap().contains("sk-live"));
+    }
+
+    #[test]
+    fn redact_json_value_for_log_redacts_nested_stringified_json() {
+        use serde_json::json;
+        let value = json!({
+            "config": r#"{"api_key":"sk-live","user":"bob"}"#,
+            "plain": "text"
+        });
+        let redacted = redact_json_value_for_log(&value);
+        assert!(!redacted["config"].as_str().unwrap().contains("sk-live"));
+        assert_eq!(redacted["plain"], "text");
     }
 
     #[test_case("plain", "plain"; "plain")]
