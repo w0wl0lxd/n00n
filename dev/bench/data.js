@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785637059910,
+  "lastUpdate": 1785658863318,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -11983,6 +11983,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 144043,
             "range": "± 1132",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "855219bcbfb11ddc1dff61d391467c133b142872",
+          "message": "Merge pull request #221 from w0wl0lxd/009-explore-tooling-enhancement\n\nfeat: 009 explore tooling enhancement",
+          "timestamp": "2026-08-02T08:05:05Z",
+          "tree_id": "5133c349c0f341c58a1fc1340688e76e68b25a0b",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/855219bcbfb11ddc1dff61d391467c133b142872"
+        },
+        "date": 1785658862244,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6525721,
+            "range": "± 291255",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2444841,
+            "range": "± 4873",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2447270,
+            "range": "± 47861",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7531617,
+            "range": "± 25412",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3836298,
+            "range": "± 109501",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3755911,
+            "range": "± 37536",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 554747,
+            "range": "± 2624",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 168268,
+            "range": "± 308",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 168103,
+            "range": "± 451",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1076765,
+            "range": "± 13381",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 655649,
+            "range": "± 9395",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 653627,
+            "range": "± 7165",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 77291,
+            "range": "± 3037",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 112395,
+            "range": "± 20021",
             "unit": "ns/iter"
           }
         ]
