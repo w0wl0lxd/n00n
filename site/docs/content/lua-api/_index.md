@@ -5285,7 +5285,7 @@ Call path between two symbols via the Arbor CLI.
 n00n.arbor.refactor({operation}, {project})
 ```
 
-Run refactoring operations via the Arbor CLI. WARNING: this mutates source files and must be used with caution.
+Run an allowlisted refactoring operation via the Arbor CLI. Requires explicit user confirmation; operations with unsafe characters are rejected.
 
 **Parameters:**
 
@@ -5576,11 +5576,11 @@ Returns true when `.n00n/search/metadata.json` exists in the project root.
 n00n.semblem.search({repo}, {query}, {mode?}, {top_k?}, {content?})
 ```
 
-Search indexed source chunks. Defaults to BM25; hybrid/semantic modes nag when no embedder is configured.
+Search indexed source chunks. BM25 is native; hybrid/semantic try the upstream semble CLI and fall back to BM25 with an embedder nag if the CLI is unavailable.
 
 **Parameters:**
 
-- `{repo}` (`string`) Path to the project root or https:// git URL.
+- `{repo}` (`string`) Local project root path, or an HTTPS git URL allowed by N00N_SEMBLE_ALLOWED_REMOTE_REPOS.
 - `{query}` (`string`) Natural-language or keyword query.
 - `{mode}` (`string`) One of bm25, hybrid, or semantic.
 - `{top_k}` (`integer`) Maximum number of results.
@@ -5600,7 +5600,7 @@ Find chunks related to a file location using BM25 over the anchor chunk.
 
 **Parameters:**
 
-- `{repo}` (`string`) Path to the project root.
+- `{repo}` (`string`) Local project root path, or an HTTPS git URL allowed by N00N_SEMBLE_ALLOWED_REMOTE_REPOS.
 - `{file_path}` (`string`) Relative or absolute file path.
 - `{line}` (`integer`) 1-based line number inside the file.
 - `{top_k}` (`integer`) Maximum number of results.
@@ -5619,7 +5619,7 @@ Estimate token savings from using a hybrid/semantic embedder. Requires the sembl
 
 **Parameters:**
 
-- `{repo}` (`string`) Path to the project root.
+- `{repo}` (`string`) Local project root path, or an HTTPS git URL allowed by N00N_SEMBLE_ALLOWED_REMOTE_REPOS.
 
 **Returns:** (`string?`, `string?`) savings summary and optional error message.
 
