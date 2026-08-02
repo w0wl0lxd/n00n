@@ -16,7 +16,7 @@ use std::collections::HashSet;
 use std::fmt::{self, Display, Formatter, Write};
 
 use jsonrepair::{Options as RepairOpts, loads as repair_loads};
-use n00n_redact::{redact_json_arg, redact_json_value};
+use n00n_redact::{redact_json_arg, redact_json_value_for_log};
 use serde_json::{Value, json};
 use tracing::{debug, warn};
 
@@ -800,10 +800,17 @@ fn log_coercion(
         path = %path,
         from = %from,
         to = %to,
-        original = %preview(&redact_json_value(original).to_string()),
-        coerced = %preview(&redact_json_value(coerced).to_string()),
+        original = %format_value_for_log(original),
+        coerced = %format_value_for_log(coerced),
         "coerced tool param type"
     );
+}
+
+fn format_value_for_log(value: &Value) -> String {
+    match value {
+        Value::String(raw) => preview(&redact_json_arg(raw)),
+        _ => preview(&redact_json_value_for_log(value).to_string()),
+    }
 }
 
 /// `OpenAI` requires the top-level `parameters` of every function to be an object
@@ -1217,6 +1224,23 @@ mod tests {
         assert_eq!(err.path.to_string(), "edits[0].new_string");
         let rendered = err.to_string();
         assert!(rendered.contains(MSG_MISSING), "render: {rendered}");
+    }
+
+    #[test]
+    fn stringified_container_log_value_redacts_nested_secrets() {
+        let object = json!(r#"{"api_key":"sk-live","nested":{"password":"two words"}}"#);
+        let array = json!(r#"[{"authorization":"Bearer visible-token"}]"#);
+
+        for value in [&object, &array] {
+            let sanitized = format_value_for_log(value);
+            assert!(sanitized.contains("[redacted]"), "sanitized: {sanitized}");
+            assert!(!sanitized.contains("sk-live"), "sanitized: {sanitized}");
+            assert!(!sanitized.contains("two words"), "sanitized: {sanitized}");
+            assert!(
+                !sanitized.contains("visible-token"),
+                "sanitized: {sanitized}"
+            );
+        }
     }
 
     #[test]

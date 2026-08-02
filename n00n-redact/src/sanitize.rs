@@ -20,7 +20,8 @@ const SENSITIVE_KEY_FRAGMENTS: &[&str] = &[
     "clientsecret",
 ];
 
-const SECRET_TOKEN_PREFIXES: &[&str] = &["sk-", "ghp_", "github_pat_", "glpat-", "xoxb-", "xoxp-"];
+pub(crate) const SECRET_TOKEN_PREFIXES: &[&str] =
+    &["sk-", "ghp_", "github_pat_", "glpat-", "xoxb-", "xoxp-"];
 
 /// Sanitizes a free-text string: `Bearer <token>`, `key=value` / `key:value`
 /// with sensitive keys, and token-shaped values are replaced with
@@ -46,7 +47,14 @@ pub fn sanitize_text(raw: &str, max_chars: usize) -> String {
             sanitized.push(format!("{key}{separator_char}{REDACTED}"));
             let inline_value = separator.and_then(|position| word.get(position + 1..));
             index += 1;
-            if inline_value.is_some_and(|value| value.eq_ignore_ascii_case("bearer")) {
+            if let Some(quote) = inline_value.and_then(unterminated_opening_quote) {
+                while let Some(fragment) = words.get(index) {
+                    index += 1;
+                    if contains_unescaped_quote(fragment, quote) {
+                        break;
+                    }
+                }
+            } else if inline_value.is_some_and(|value| value.eq_ignore_ascii_case("bearer")) {
                 index = index.saturating_add(1).min(words.len());
             } else if inline_value.is_none_or(str::is_empty) {
                 if words
@@ -78,6 +86,25 @@ pub fn sanitize_text(raw: &str, max_chars: usize) -> String {
         index += 1;
     }
     truncate(&sanitized.join(" "), max_chars)
+}
+
+fn unterminated_opening_quote(value: &str) -> Option<char> {
+    let quote = value
+        .chars()
+        .next()
+        .filter(|character| matches!(character, '\'' | '"'))?;
+    (!contains_unescaped_quote(&value[quote.len_utf8()..], quote)).then_some(quote)
+}
+
+fn contains_unescaped_quote(value: &str, quote: char) -> bool {
+    let mut escaped = false;
+    for character in value.chars() {
+        if character == quote && !escaped {
+            return true;
+        }
+        escaped = character == '\\' && !escaped;
+    }
+    false
 }
 
 fn is_sensitive_key(value: &str) -> bool {
@@ -144,6 +171,14 @@ mod tests {
             80,
         );
         assert_eq!(sanitized, "https:[REDACTED] [REDACTED] [REDACTED]");
+    }
+
+    #[test]
+    fn redacts_complete_multi_word_quoted_value_in_malformed_json() {
+        let sanitized = sanitize_text(r#"{"password":"two words"#, 80);
+        assert_eq!(sanitized, r#"{"password":[REDACTED]"#);
+        assert!(!sanitized.contains("two"));
+        assert!(!sanitized.contains("words"));
     }
 
     #[test]

@@ -3,6 +3,8 @@ use std::sync::Arc;
 use serde_json::Value;
 use tracing::{error, info, warn};
 
+use n00n_redact::demoted;
+
 use n00n_providers::provider::Provider;
 use n00n_providers::{
     ContentBlock, HistoryReplayReason, Message, Model, OpenAiOptions, RequestDeliveryMetadata,
@@ -698,7 +700,7 @@ impl<'h> Agent<'h> {
                 if !response.message.content.is_empty() {
                     self.history.push(response.message);
                 }
-                info!(
+                demoted!(
                     "empty or reasoning-only response after tool calls, nudging model to continue"
                 );
                 self.event_tx.send(AgentEvent::Nudge)?;
@@ -708,7 +710,7 @@ impl<'h> Agent<'h> {
 
             if !has_text && has_thinking && !after_tool_results && !self.thinking_empty_retried {
                 self.thinking_empty_retried = true;
-                info!("assistant produced only reasoning, nudging for final answer");
+                demoted!("assistant produced only reasoning, nudging for final answer");
                 self.history.push(response.message);
                 self.event_tx.send(AgentEvent::Nudge)?;
                 self.history
@@ -773,7 +775,7 @@ impl<'h> Agent<'h> {
             return Err(err);
         };
         self.reauth_attempts += 1;
-        warn!(error = %err, attempt = self.reauth_attempts, "auth error, waiting for re-authentication");
+        demoted!(error = %err, attempt = self.reauth_attempts, "auth error, waiting for re-authentication");
         self.event_tx.send(AgentEvent::AuthRequired)?;
         let rx = rx.lock().await;
         match futures_lite::future::race(rx.recv_async(), async {
