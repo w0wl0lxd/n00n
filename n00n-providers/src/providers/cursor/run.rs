@@ -34,7 +34,8 @@ use super::checksum::{
 };
 use super::connect::{ConnectFrame, FrameBuffer, decode_frame_payload, encode_frame};
 use super::proto::{
-    AGENT_MODE_AGENT, AgentServerMessage, RunFrameParams, build_run_frames, heartbeat_frame,
+    AGENT_MODE_AGENT, AgentServerMessage, RunFrameParams, build_run_frames,
+    exec_message_has_mcp_args, heartbeat_frame,
 };
 use super::wire::{
     CLIENT_TYPE, CLIENT_VERSION, CONNECT_CONTENT_TYPE, CONNECT_PROTOCOL_VERSION, wire_model_id,
@@ -710,7 +711,7 @@ fn handle_data_frame(
             kv_op: true,
         });
     }
-    if !server_msg.exec_server_message.is_empty() {
+    if exec_message_has_mcp_args(&server_msg.exec_server_message) {
         // Phase 0: n00n owns tools; ignore Cursor-side exec until Phase 1 maps them.
         // Aborting the whole turn drops text deltas that often follow.
         return Ok(FrameHandleOutcome {

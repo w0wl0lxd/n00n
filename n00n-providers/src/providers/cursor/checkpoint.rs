@@ -85,6 +85,7 @@ pub(crate) enum KvServerOp {
     },
 }
 
+/// Parse the bare `KvServerMessage` payload (the contents of `AgentServerMessage.kv_server_message`, field 4).
 pub(crate) fn parse_kv_server_message(payload: &[u8]) -> Result<Option<KvServerOp>, String> {
     let msg = KvServerMessage::decode(payload).map_err(|e| e.to_string())?;
     let id = u32::try_from(msg.id).map_err(|_| "kv id overflow".to_string())?;
