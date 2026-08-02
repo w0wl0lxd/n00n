@@ -17,4 +17,7 @@ regexes = [
   # Feature/version date identifiers, e.g. "oauth-2025-04-20" or
   # "interleaved-thinking-2025-05-14". Not credentials.
   '''(oauth|interleaved-thinking)-\d{4}-\d{2}-\d{2}''',
+  # HS256 JWT test fixtures in n00n-redact guardrail tests. The header is the
+  # standard jwt.io example, not a credential.
+  '''eyJhbGciOiJIUzI1Ni''',
 ]
