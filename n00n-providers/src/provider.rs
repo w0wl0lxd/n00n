@@ -379,7 +379,7 @@ pub fn from_model_fallback_with_openai_options(
 ) -> Box<dyn Provider> {
     match from_model_with_openai_options(model, timeouts, openai_options) {
         Ok(provider) => provider,
-        Err(e) if e.is_config() => {
+        Err(e) if e.is_missing_credentials() => {
             info!(error = %e, "provider not configured, using unconfigured provider");
             Box::new(UnconfiguredProvider)
         }

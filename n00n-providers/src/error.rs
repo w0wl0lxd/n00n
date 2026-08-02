@@ -272,6 +272,18 @@ impl AgentError {
     }
 
     #[must_use]
+    pub fn is_missing_credentials(&self) -> bool {
+        match self {
+            Self::Config { message } => {
+                message.contains("not authenticated")
+                    || message.contains("not set")
+                    || message.contains("API key")
+            }
+            _ => false,
+        }
+    }
+
+    #[must_use]
     pub fn should_rotate_key(&self) -> bool {
         matches!(self, Self::Api { status, .. } if *status == 429 || *status == 401 || *status == 403)
     }
@@ -593,5 +605,32 @@ mod tests {
         assert!(err.is_cancelled());
         assert!(!err.is_config());
         assert!(!err.is_auth_error());
+    }
+
+    #[test]
+    fn missing_credentials_error_is_recognized() {
+        let missing_key = AgentError::Config {
+            message: "API key not set".into(),
+        };
+        assert!(missing_key.is_missing_credentials());
+        assert!(missing_key.is_config());
+
+        let not_authenticated = AgentError::Config {
+            message: "not authenticated, run n00n auth login".into(),
+        };
+        assert!(not_authenticated.is_missing_credentials());
+        assert!(not_authenticated.is_config());
+
+        let other_config = AgentError::Config {
+            message: "invalid URL".into(),
+        };
+        assert!(!other_config.is_missing_credentials());
+        assert!(other_config.is_config());
+
+        let api_error = AgentError::Api {
+            status: 401,
+            message: "unauthorized".into(),
+        };
+        assert!(!api_error.is_missing_credentials());
     }
 }
