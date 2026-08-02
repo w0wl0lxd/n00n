@@ -814,6 +814,8 @@ and tool set.
     `"max"`), or a budget integer (token count). Inherits parent setting
     if omitted.
   - `fast` (`boolean?`) use fast mode. Inherits parent setting if omitted.
+  - `include_mcp` (`boolean?`) inherit the parent MCP handle. Default: `true`.
+  - `except` (`string[]?`) tool names that remain unavailable if loaded later.
 
 **Returns:** ([`Session?`](#n00n-agent-Session), `string?`) Session handle, or `(nil, err)` on failure.
 
@@ -5699,6 +5701,9 @@ function M.make_local_tool(schema, on_submit)
 --   output_schema: JSON Schema for structured output validation
 --   audience: Tool audience (default: computed from subagent_type)
 --   include_mcp: Include MCP tools (default: true)
+--   only_tools: Optional allowlist of tool names
+--   except_tools: Optional denylist of tool names
+--   system_append: Trusted instruction appended to the system prompt
 --   local_tools: Additional local tools to register
 --   preview: ActivityPreview object wrapping sess:prompt (optional)
 --   activity_label: Label used with preview (default: description)

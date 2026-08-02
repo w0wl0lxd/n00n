@@ -18,7 +18,11 @@ pub use agent::{
     SharedTranscript, find_subdirectory_instructions, is_instruction_file,
 };
 pub use cancel::{CancelMap, CancelToken, CancelTrigger, PreDispatchGate};
-pub use fusion::{FusionLane, FusionRoute, FusionState, FusionUsageStats};
+pub use fusion::{
+    DelegationKind, FUSION_DELEGATE_TOOL, FusionContinuation, FusionLane, FusionPhase,
+    FusionRequestDecision, FusionRoute, FusionState, FusionUsageStats, classify_delegation,
+    decide_request, fusion_lead_system_append, fusion_sidekick_system_append, route_after_compact,
+};
 pub use n00n_config::{AgentConfig, FusionConfig, PermissionsConfig, ToolOutputLines};
 pub mod command;
 pub mod diff;

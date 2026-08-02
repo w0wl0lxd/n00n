@@ -193,7 +193,7 @@ pub struct Cli {
     #[arg(long, hide = true)]
     pub thinking_display: Option<String>,
 
-    /// Enable Fusion dual-lane routing (frontier lead + cost-aware sidekick)
+    /// Enable beta Fusion planning, sidekick execution, and lead review
     #[arg(long, global = true)]
     pub fusion: bool,
 
@@ -586,6 +586,25 @@ mod tests {
                 }
             }) if g == "cleanup" && d == "refactor"
         ));
+    }
+
+    #[test]
+    fn fusion_flag_defaults_off() {
+        let cli = Cli::parse_from(["n00n", "agent", "run", "--prompt", "hello"]);
+        assert!(!cli.fusion);
+    }
+
+    #[test]
+    fn agent_run_accepts_fusion_flag_before_subcommand() {
+        let cli = Cli::parse_from([
+            "n00n",
+            "--fusion",
+            "agent",
+            "run",
+            "--prompt",
+            "delegate mechanical work",
+        ]);
+        assert!(cli.fusion);
     }
 
     #[test]
