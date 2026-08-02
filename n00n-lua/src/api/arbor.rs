@@ -1,7 +1,7 @@
 use mlua::{Lua, Result as LuaResult, Table};
 use n00n_arbor::{
-    ArborError, Client, ensure_fresh_index, graph_callees, graph_callers, graph_index_available,
-    graph_trace_path,
+    ArborError, Client, ensure_fresh_index, graph_callees, graph_callers, graph_entry_points,
+    graph_index_available, graph_map, graph_trace_path,
 };
 
 use crate::{
@@ -113,6 +113,54 @@ pub(crate) fn create_arbor_table(lua: &Lua) -> LuaResult<Table> {
         },
     )?;
     t.set("graph_trace_path", graph_trace)?;
+
+    // T067: Add native fallback functions
+    let graph_map_fn =
+        lua.create_function(|lua, (project, token_budget): (String, Option<u64>)| {
+            value_or_err(lua, graph_map(std::path::Path::new(&project), token_budget))
+        })?;
+    t.set("graph_map", graph_map_fn)?;
+
+    let graph_entry_points_fn = lua.create_function(|lua, project: String| {
+        value_or_err(lua, graph_entry_points(std::path::Path::new(&project)))
+    })?;
+    t.set("graph_entry_points", graph_entry_points_fn)?;
+
+    // T069: Add Lua API functions for new Arbor commands
+    let entry_points = lua.create_function(|_, project: String| {
+        Client::entry_points(std::path::Path::new(&project)).map_err(map_err)
+    })?;
+    t.set("entry_points", entry_points)?;
+
+    let file_graph = lua.create_function(|_, project: String| {
+        Client::file_graph(std::path::Path::new(&project)).map_err(map_err)
+    })?;
+    t.set("file_graph", file_graph)?;
+
+    let inspect = lua.create_function(|_, (symbol, project): (String, String)| {
+        Client::inspect(&symbol, std::path::Path::new(&project)).map_err(map_err)
+    })?;
+    t.set("inspect", inspect)?;
+
+    let path = lua.create_function(|_, (from, to, project): (String, String, String)| {
+        Client::path(&from, &to, std::path::Path::new(&project)).map_err(map_err)
+    })?;
+    t.set("path", path)?;
+
+    let refactor = lua.create_function(|_, (operation, project): (String, String)| {
+        Client::refactor(&operation, std::path::Path::new(&project)).map_err(map_err)
+    })?;
+    t.set("refactor", refactor)?;
+
+    let check = lua.create_function(|_, project: String| {
+        Client::check(std::path::Path::new(&project)).map_err(map_err)
+    })?;
+    t.set("check", check)?;
+
+    let summary = lua.create_function(|_, project: String| {
+        Client::summary(std::path::Path::new(&project)).map_err(map_err)
+    })?;
+    t.set("summary", summary)?;
 
     Ok(t)
 }

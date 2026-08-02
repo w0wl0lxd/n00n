@@ -352,6 +352,10 @@ impl GraphIndex {
             })
             .collect()
     }
+
+    pub fn nodes(&self) -> &[GraphNode] {
+        &self.nodes
+    }
 }
 
 fn validate_graph_data(data: &GraphData) -> Result<(), ArborError> {

@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use crate::graph_json::{GraphIndex, SymbolQuery, SymbolRef};
-use crate::{ArborError, Client, Relation, index_health};
+use crate::{ArborError, Client, MapEntry, MapSymbol, Relation, index_health};
 
 fn line_number(line_start: usize) -> Option<u64> {
     // usize -> u64 cannot overflow on 64-bit targets; on other targets we
@@ -117,6 +117,101 @@ fn graph_relations_for_matches(
 
 pub fn graph_index_available(project: &Path) -> bool {
     index_health::graph_index_available(project)
+}
+
+// T067: Native map implementation using graph.json
+pub fn graph_map(project: &Path, token_budget: Option<u64>) -> Result<Vec<MapEntry>, ArborError> {
+    let index = load_query_index(project)?;
+    let mut file_map: std::collections::HashMap<String, Vec<MapSymbol>> =
+        std::collections::HashMap::new();
+
+    for (idx, node) in index.nodes().iter().enumerate() {
+        let callers = index.find_callers(idx).len();
+        let callees = index.find_callees(idx).len();
+        let centrality = if callers + callees > 0 {
+            Some((callers as f64 + callees as f64) / (index.nodes().len() as f64))
+        } else {
+            None
+        };
+
+        let symbol = MapSymbol {
+            name: node.name.clone(),
+            kind: node.kind.clone(),
+            line: node.line_start as u64,
+            centrality,
+            callers: Some(callers as u64),
+            is_entry_point: Some(callers == 0 && callees > 0),
+        };
+
+        file_map.entry(node.file.clone()).or_default().push(symbol);
+    }
+
+    let mut entries: Vec<MapEntry> = file_map
+        .into_iter()
+        .map(|(file, symbols)| MapEntry { file, symbols })
+        .collect();
+
+    // Sort by centrality and apply token budget
+    entries.sort_by(|a, b| {
+        let max_a = a
+            .symbols
+            .iter()
+            .filter_map(|s| s.centrality)
+            .fold(0.0_f64, |acc, x| acc.max(x));
+        let max_b = b
+            .symbols
+            .iter()
+            .filter_map(|s| s.centrality)
+            .fold(0.0_f64, |acc, x| acc.max(x));
+        max_b.total_cmp(&max_a)
+    });
+
+    if let Some(budget) = token_budget {
+        let mut total_tokens = 0u64;
+        let mut filtered = Vec::new();
+        for entry in entries {
+            let entry_tokens = estimate_entry_tokens(&entry);
+            if total_tokens + entry_tokens <= budget {
+                total_tokens += entry_tokens;
+                filtered.push(entry);
+            }
+        }
+        entries = filtered;
+    }
+
+    Ok(entries)
+}
+
+// T067: Native entry_points implementation using graph.json
+pub fn graph_entry_points(project: &Path) -> Result<Vec<Relation>, ArborError> {
+    let index = load_query_index(project)?;
+    let mut entry_points = Vec::new();
+
+    for (idx, node) in index.nodes().iter().enumerate() {
+        let callers = index.find_callers(idx);
+        if callers.is_empty() {
+            entry_points.push(Relation {
+                name: node.name.clone(),
+                path: node.file.clone(),
+                kind: Some(node.kind.clone()),
+                line: line_number(node.line_start),
+            });
+        }
+    }
+
+    Ok(entry_points)
+}
+
+fn estimate_entry_tokens(entry: &MapEntry) -> u64 {
+    let file_tokens = entry.file.len() as u64;
+    let symbols_tokens: u64 = entry
+        .symbols
+        .iter()
+        .map(|s| {
+            s.name.len() as u64 + s.kind.len() as u64 + 20 // overhead for centrality, callers, etc.
+        })
+        .sum();
+    file_tokens + symbols_tokens + 10 // overhead per entry
 }
 
 #[cfg(test)]
