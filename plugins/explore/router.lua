@@ -72,6 +72,18 @@ function M.normalize_intent(input)
     return "symbol"
   end
 
+  if query:match("search") or query:match("find") then
+    return "search"
+  end
+
+  if query:match("skeleton") or query:match("structure") then
+    return "skeleton"
+  end
+
+  if query:match("trace") then
+    return "trace"
+  end
+
   return "cross_file"
 end
 
