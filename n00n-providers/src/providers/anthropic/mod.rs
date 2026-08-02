@@ -56,7 +56,7 @@ pub(crate) use shared::models;
 /// Returns whether the fast-mode beta header must be attached. We re-check
 /// `supports_fast()` here rather than trusting `opts.fast` alone, so a stale UI
 /// flag can never bill an ineligible model at the premium fast-mode rate.
-fn apply_fast_mode(body: &mut Value, model: &Model, opts: RequestOptions) -> bool {
+fn apply_fast_mode(body: &mut Value, model: &Model, opts: &RequestOptions) -> bool {
     let on = opts.fast && model.supports_fast();
     if on {
         body["speed"] = json!("fast");
@@ -419,7 +419,7 @@ impl Provider for Anthropic {
             );
             body["model"] = json!(shared::strip_long_context(&model.id));
             body["stream"] = json!(true);
-            let fast = apply_fast_mode(&mut body, model, opts);
+            let fast = apply_fast_mode(&mut body, model, &opts);
             let long_context = model.id.ends_with(shared::LONG_CONTEXT_SUFFIX);
 
             debug!(model = %model.id, num_messages = messages.len(), thinking = ?opts.thinking, fast, long_context, "sending API request");
@@ -863,14 +863,11 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
     fn apply_fast_mode_sets_speed_on_capable_model() {
         let model = Model::from_spec("anthropic/claude-opus-4-8").unwrap();
         let mut body = json!({});
-        let header = apply_fast_mode(
-            &mut body,
-            &model,
-            RequestOptions {
-                fast: true,
-                ..Default::default()
-            },
-        );
+        let opts = RequestOptions {
+            fast: true,
+            ..Default::default()
+        };
+        let header = apply_fast_mode(&mut body, &model, &opts);
         assert!(header);
         assert_eq!(body["speed"], json!("fast"));
     }
@@ -880,14 +877,11 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
         // Sonnet is not fast-capable, so opts.fast=true must still skip `speed`.
         let model = Model::from_spec("anthropic/claude-sonnet-4-5").unwrap();
         let mut body = json!({});
-        let header = apply_fast_mode(
-            &mut body,
-            &model,
-            RequestOptions {
-                fast: true,
-                ..Default::default()
-            },
-        );
+        let opts = RequestOptions {
+            fast: true,
+            ..Default::default()
+        };
+        let header = apply_fast_mode(&mut body, &model, &opts);
         assert!(!header);
         assert!(body.get("speed").is_none());
     }
@@ -896,7 +890,8 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
     fn apply_fast_mode_off_when_not_requested() {
         let model = Model::from_spec("anthropic/claude-opus-4-8").unwrap();
         let mut body = json!({});
-        let header = apply_fast_mode(&mut body, &model, RequestOptions::default());
+        let opts = RequestOptions::default();
+        let header = apply_fast_mode(&mut body, &model, &opts);
         assert!(!header);
         assert!(body.get("speed").is_none());
     }

@@ -17,6 +17,14 @@ use n00n_storage::StateDir;
 use crate::cli::{AgentCommand, AuthAction, Cli, Command, McpAction};
 use crate::update;
 
+pub(super) const fn resolve_fusion_opt_in(
+    cli_flag: bool,
+    always_fusion: bool,
+    agent_enabled: bool,
+) -> bool {
+    cli_flag || always_fusion || agent_enabled
+}
+
 pub fn dispatch(cli: Cli) -> Result<()> {
     match cli.command {
         Some(Command::Auth { action }) => {
@@ -147,4 +155,28 @@ pub fn dispatch(cli: Cli) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_fusion_opt_in;
+    use test_case::test_case;
+
+    #[test_case(false, false, false, false ; "default off")]
+    #[test_case(true, false, false, true ; "cli flag")]
+    #[test_case(false, true, false, true ; "always fusion")]
+    #[test_case(false, false, true, true ; "agent fusion")]
+    #[test_case(true, true, true, true ; "all opt ins")]
+    #[allow(clippy::fn_params_excessive_bools)]
+    fn fusion_opt_in_is_additive(
+        cli_flag: bool,
+        always_fusion: bool,
+        agent_enabled: bool,
+        expected: bool,
+    ) {
+        assert_eq!(
+            resolve_fusion_opt_in(cli_flag, always_fusion, agent_enabled),
+            expected
+        );
+    }
 }
