@@ -222,25 +222,25 @@
 
 **Purpose**: Final verification and performance checks
 
-- [ ] T098 Run full test suite: cargo nextest run --workspace
-- [ ] T099 Run cargo clippy --all --tests -- -D warnings
-- [X] T100 Run cargo deny check
-- [ ] T101 Run just explore-health
-- [ ] T102 Manual smoke test: explore router with various intents
-- [ ] T103 Manual smoke test: new CodeGraph commands (SC-003 smoke test)
-- [ ] T104 Manual smoke test: new Arbor commands (SC-004 smoke test)
-- [ ] T105 Manual smoke test: Semblem upstream CLI and BM25 fallback (SC-005–SC-006 smoke tests)
-- [ ] T106 Manual smoke test: RTK rewriting and caching (SC-007 smoke test)
-- [ ] T107 Measure tool definition token sizes against baseline
-- [ ] T108 Run final performance regression: compare `arbor`, `codegraph`, `explore`, `semblem`, and `rtk` latency/token size against `tests/fixtures/tooling-baseline.json`; ensure no regression beyond 10% (SC-009).
-- [ ] T109 [P] Measure `explore`/`codegraph`/`arbor`/`semblem`/`rtk` tool definition token counts and verify they do not exceed the current baseline (SC-008).
-- [ ] T110 [P] Compare final tool call latency against `tests/fixtures/tooling-baseline.json`; ensure ≤10% regression (SC-009).
-- [ ] T111 Verify the agent's default prompt lists `explore`, `index`, `arbor`, `codegraph`, and `semblem` before `grep`/`bash` (SC-002).
-- [ ] T112 Add a test that `bash` plugin caches `rtk` availability per session and only invokes `rtk` when installed (SC-007).
+- [ ] T098 Run full test suite: cargo nextest run --workspace (DEFERRED: system load too high for full workspace build)
+- [ ] T099 Run cargo clippy --all --tests -- -D warnings (DEFERRED: system load too high for full workspace build)
+- [X] T100 Run cargo deny check (pre-existing webpki-roots CDLA-Permissive-2.0 license error documented; no new errors from 009 changes)
+- [ ] T101 Run just explore-health (DEFERRED: requires Arbor CLI installation)
+- [X] T102 Manual smoke test: explore router with various intents (PASSED: lua plugins/explore/tests/spec.lua - all 22 tests passed)
+- [ ] T103 Manual smoke test: new CodeGraph commands (SC-003 smoke test) (DEFERRED: requires .codegraph/ index; no index in worktree)
+- [ ] T104 Manual smoke test: new Arbor commands (SC-004 smoke test) (DEFERRED: requires .arbor/ index; no index in worktree)
+- [ ] T105 Manual smoke test: Semblem upstream CLI and BM25 fallback (SC-005–SC-006 smoke tests) (DEFERRED: requires Semble CLI installation)
+- [ ] T106 Manual smoke test: RTK rewriting and caching (SC-007 smoke test) (DEFERRED: requires n00n runtime to test session caching)
+- [ ] T107 Measure tool definition token sizes against baseline (DEFERRED: baseline.json is empty; requires n00n CLI to generate tool definitions)
+- [ ] T108 Run final performance regression: compare `arbor`, `codegraph`, `explore`, `semblem`, and `rtk` latency/token size against `tests/fixtures/tooling-baseline.json`; ensure no regression beyond 10% (SC-009). (DEFERRED: baseline.json is empty; requires indexes and CLI tools)
+- [ ] T109 [P] Measure `explore`/`codegraph`/`arbor`/`semblem`/`rtk` tool definition token counts and verify they do not exceed the current baseline (SC-008). (DEFERRED: baseline.json is empty)
+- [ ] T110 [P] Compare final tool call latency against `tests/fixtures/tooling-baseline.json`; ensure ≤10% regression (SC-009). (DEFERRED: baseline.json is empty)
+- [X] T111 Verify the agent's default prompt lists `explore`, `index`, `arbor`, `codegraph`, and `semblem` before `grep`/`bash` (SC-002). (VERIFIED: NATIVE_EFFICIENT_TOOLS in prompt.rs includes explore, arbor, codegraph, index, semble; prompts/system.md, general.md, research.md all position explore/index/arbor/codegraph/semblem before grep/bash)
+- [ ] T112 Add a test that `bash` plugin caches `rtk` availability per session and only invokes `rtk` when installed (SC-007). (DEFERRED: requires n00n runtime to test session caching)
 
-**Note**: Due to system load (load average ~35-45), full workspace clippy and nextest were deferred. Targeted clippy was run on changed crates (n00n-arbor, n00n-semble) and passed. Full workspace verification should be run when load decreases.
+**Note**: Due to system load (load average ~35-45), full workspace clippy and nextest were deferred. Targeted clippy was attempted but timed out. Full workspace verification should be run when load decreases. Lua plugin smoke tests passed. Tool descriptions updated to remove external CLI installation notes. Prompts verified to position tools as first-tier.
 
-**Checkpoint**: All tests pass, documentation updated, performance verified
+**Checkpoint**: Partial verification complete; full workspace tests deferred due to load
 
 ---
 
