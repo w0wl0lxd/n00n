@@ -49,7 +49,7 @@ pub(crate) fn create_codegraph_table(lua: &Lua) -> LuaResult<Table> {
         )?;
     table.set("callers", callers)?;
 
-    let callees =
+    let callees_fn =
         lua.create_function(
             |_, (symbol, project, timeout_secs): (String, String, Option<u64>)| {
                 match Client::callees(&symbol, Path::new(&project), timeout_secs) {
@@ -58,7 +58,7 @@ pub(crate) fn create_codegraph_table(lua: &Lua) -> LuaResult<Table> {
                 }
             },
         )?;
-    table.set("callees", callees)?;
+    table.set("callees", callees_fn)?;
 
     let impact = lua.create_function(
         |_, (symbol, project, timeout_secs): (String, String, Option<u64>)| match Client::impact(
@@ -74,7 +74,7 @@ pub(crate) fn create_codegraph_table(lua: &Lua) -> LuaResult<Table> {
 
     let affected = lua.create_function(
         |_, (files, project, timeout_secs): (Vec<String>, String, Option<u64>)| {
-            let files_refs: Vec<&str> = files.iter().map(|s| s.as_str()).collect();
+            let files_refs: Vec<&str> = files.iter().map(String::as_str).collect();
             match Client::affected(&files_refs, Path::new(&project), timeout_secs) {
                 Ok(output) => Ok((Some(output), None::<String>)),
                 Err(e) => Ok((None::<String>, Some(format!("{e:#}")))),
