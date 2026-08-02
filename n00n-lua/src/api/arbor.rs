@@ -522,7 +522,7 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
         FnDoc {
             name: "refactor",
             args: "{operation}, {project}",
-            desc: "Run refactoring operations via the Arbor CLI. WARNING: this mutates source files and must be used with caution.",
+            desc: "Run an allowlisted refactoring operation via the Arbor CLI. Requires explicit user confirmation; operations with unsafe characters are rejected.",
             params: &[
                 ParamDoc {
                     name: "{operation}",

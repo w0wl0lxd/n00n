@@ -72,12 +72,12 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
         FnDoc {
             name: "search",
             args: "{repo}, {query}, {mode?}, {top_k?}, {content?}",
-            desc: "Search indexed source chunks. Defaults to BM25; hybrid/semantic modes nag when no embedder is configured.",
+            desc: "Search indexed source chunks. BM25 is native; hybrid/semantic try the upstream semble CLI and fall back to BM25 with an embedder nag if the CLI is unavailable.",
             params: &[
                 ParamDoc {
                     name: "{repo}",
                     ty: "string",
-                    desc: "Path to the project root or https:// git URL.",
+                    desc: "Local project root path, or an HTTPS git URL allowed by N00N_SEMBLE_ALLOWED_REMOTE_REPOS.",
                 },
                 ParamDoc {
                     name: "{query}",
@@ -111,7 +111,7 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
                 ParamDoc {
                     name: "{repo}",
                     ty: "string",
-                    desc: "Path to the project root.",
+                    desc: "Local project root path, or an HTTPS git URL allowed by N00N_SEMBLE_ALLOWED_REMOTE_REPOS.",
                 },
                 ParamDoc {
                     name: "{file_path}",
@@ -139,7 +139,7 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
             params: &[ParamDoc {
                 name: "{repo}",
                 ty: "string",
-                desc: "Path to the project root.",
+                desc: "Local project root path, or an HTTPS git URL allowed by N00N_SEMBLE_ALLOWED_REMOTE_REPOS.",
             }],
             returns: "(string?, string?) savings summary and optional error message.",
             example: "",
