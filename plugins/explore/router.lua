@@ -65,7 +65,10 @@ function M.normalize_intent(input)
 
   -- New intents for auto-detection
   if query:match("^impact") or query:match("blast.?radius") or query:match("affected") then
-    return "impact"
+    local symbol = M.extract_symbol(input.query, "impact")
+    if symbol and not looks_like_file_path(symbol, false) then
+      return "impact"
+    end
   end
 
   if query:match("symbol") or query:match("definition") or query:match("decl") then
@@ -229,10 +232,10 @@ function M.build_backend_input(input, intent)
 
   if intent == "impact" then
     local symbol = input.symbol or M.extract_symbol(input.query, "impact")
-    return "arbor", {
+    return "codegraph", {
       command = "impact",
       symbol = symbol,
-      project = project,
+      projectPath = project,
     }
   end
 

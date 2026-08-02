@@ -56,7 +56,7 @@ n00n.api.register_tool({
 - **cross_file** intent (default for NL questions): structural cross-file analysis via `codegraph`
 - **search** intent: keyword or natural-language search via `semblem`
 - **symbol** intent: symbol drill-down via `codegraph node`
-- **impact** intent: blast-radius analysis via `arbor impact`
+- **impact** intent: blast-radius analysis via `codegraph impact`
 
 Set `intent` explicitly when you know the backend. Otherwise the router infers from the query.
 Use `command`, `symbol`, `from_symbol`, and `to_symbol` for precise arbor routing.]],

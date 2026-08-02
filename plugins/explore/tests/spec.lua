@@ -89,8 +89,8 @@ case("what_does_call_routes_to_callees", function()
   eq(router.extract_symbol("what does restore_item call", "callees"), "restore_item")
 end)
 
-case("impact_routes_to_cross_file", function()
-  eq(router.normalize_intent({ query = "impact of changing restore_item" }), "cross_file")
+case("impact_query_auto_detects", function()
+  eq(router.normalize_intent({ query = "impact of changing restore_item" }), "impact")
 end)
 
 case("symbol_case_preserved", function()
@@ -136,13 +136,14 @@ case("symbol_intent_routes_to_codegraph", function()
   eq(input.name, "AuthService")
 end)
 
-case("impact_intent_routes_to_arbor", function()
+case("impact_intent_routes_to_codegraph", function()
   eq(router.normalize_intent({ query = "impact of changing restore_item", intent = "impact" }), "impact")
   local backend, input =
     router.build_backend_input({ query = "impact of changing restore_item", intent = "impact" }, "impact")
-  eq(backend, "arbor")
+  eq(backend, "codegraph")
   eq(input.command, "impact")
   eq(input.symbol, "restore_item")
+  eq(input.projectPath, ".")
 end)
 
 case("trace_intent_routes_to_arbor", function()
