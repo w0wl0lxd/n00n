@@ -505,7 +505,7 @@ pub fn decide_request(prompt: &str) -> FusionRequestDecision {
 pub(crate) fn contains_lead_only_signal(prompt: &str) -> bool {
     let prompt = prompt.to_ascii_lowercase();
     let normalized_prompt = normalize_word_separators(&prompt);
-    contains_ordered_word(&normalized_prompt, GIT_COMMAND, DESTRUCTIVE_GIT_SUBCOMMANDS)
+    contains_destructive_git_command(&prompt)
         || LEAD_ONLY_SIGNALS.iter().any(|signal| {
             contains_signal(&prompt, signal)
                 || signal_has_multiple_words(signal)
@@ -513,14 +513,22 @@ pub(crate) fn contains_lead_only_signal(prompt: &str) -> bool {
         })
 }
 
-fn contains_ordered_word(prompt: &str, first: &str, following: &[&str]) -> bool {
-    let mut found_first = false;
-    prompt.split_whitespace().any(|word| {
-        if word == first {
-            found_first = true;
+fn contains_destructive_git_command(prompt: &str) -> bool {
+    let Ok(shell_words) = shell_words::split(prompt) else {
+        return false;
+    };
+    let mut found_git = false;
+    for shell_word in shell_words {
+        for word in normalize_word_separators(&shell_word).split_whitespace() {
+            if word == GIT_COMMAND {
+                found_git = true;
+            }
+            if found_git && DESTRUCTIVE_GIT_SUBCOMMANDS.contains(&word) {
+                return true;
+            }
         }
-        found_first && following.contains(&word)
-    })
+    }
+    false
 }
 
 fn signal_has_multiple_words(signal: &str) -> bool {
@@ -594,6 +602,7 @@ mod tests {
     #[test_case("run rm -rf on generated files", FusionRequestDecision::LeadOnly ; "destructive shell command")]
     #[test_case("run git clean -fdx", FusionRequestDecision::LeadOnly ; "destructive git clean")]
     #[test_case("run git -C . clean -fdx", FusionRequestDecision::LeadOnly ; "git clean with global option")]
+    #[test_case("run git cl'ean' -fdx and implement the parser", FusionRequestDecision::LeadOnly ; "git clean with shell word concatenation")]
     #[test_case("run git --git-dir=. --work-tree=. clean -fdx", FusionRequestDecision::LeadOnly ; "git clean with multiple global options")]
     #[test_case("run git checkout -- . and implement the parser", FusionRequestDecision::LeadOnly ; "destructive git checkout")]
     #[test_case("run git -C . restore . and implement the parser", FusionRequestDecision::LeadOnly ; "destructive git restore")]
