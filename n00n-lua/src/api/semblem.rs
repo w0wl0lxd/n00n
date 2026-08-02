@@ -1,5 +1,5 @@
 use mlua::{Lua, Result as LuaResult, Table};
-use n00n_semble::{Client, FindRelatedRequest, Mode, SearchRequest, SembleError};
+use n00n_semble::{Client, Mode, SembleError};
 
 use crate::docs::{DocKind, FnDoc, ModuleDoc, ParamDoc};
 
@@ -78,13 +78,13 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
         },
         FnDoc {
             name: "search",
-            args: "{repo}, {query}, {mode?}, {top_k?}",
+            args: "{repo}, {query}, {mode?}, {top_k?}, {content?}",
             desc: "Search indexed source chunks. Defaults to BM25; hybrid/semantic modes nag when no embedder is configured.",
             params: &[
                 ParamDoc {
                     name: "{repo}",
                     ty: "string",
-                    desc: "Path to the project root.",
+                    desc: "Path to the project root or https:// git URL.",
                 },
                 ParamDoc {
                     name: "{query}",
@@ -100,6 +100,11 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
                     name: "{top_k}",
                     ty: "integer",
                     desc: "Maximum number of results.",
+                },
+                ParamDoc {
+                    name: "{content}",
+                    ty: "string",
+                    desc: "Content filter: docs, config, or all.",
                 },
             ],
             returns: "(string) Ranked snippet output.",
@@ -132,6 +137,18 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
                 },
             ],
             returns: "(string) Ranked snippet output.",
+            example: "",
+        },
+        FnDoc {
+            name: "savings",
+            args: "{repo}",
+            desc: "Estimate token savings from using a hybrid/semantic embedder.",
+            params: &[ParamDoc {
+                name: "{repo}",
+                ty: "string",
+                desc: "Path to the project root.",
+            }],
+            returns: "(string) Savings summary.",
             example: "",
         },
     ],
