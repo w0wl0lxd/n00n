@@ -33,8 +33,8 @@ use super::checksum::{
 };
 use super::connect::{ConnectFrame, FrameBuffer, decode_frame_payload, encode_frame};
 use super::proto::{
-    AGENT_MODE_AGENT, RunFrameParams, build_run_frames, extract_text_deltas,
-    extract_thinking_deltas, has_exec_server_message, heartbeat_frame, iter_fields,
+    AGENT_MODE_AGENT, AgentServerMessage, RunFrameParams, build_run_frames, extract_text_deltas,
+    extract_thinking_deltas, has_exec_server_message, heartbeat_frame,
 };
 use super::wire::{
     CLIENT_TYPE, CLIENT_VERSION, CONNECT_CONTENT_TYPE, CONNECT_PROTOCOL_VERSION, wire_model_id,
@@ -614,45 +614,17 @@ async fn run_text_turn_mode_tokio(
                         if let Ok(mut dumps) = STALL_DUMP.lock() {
                             dumps.push(payload.clone());
                         }
-                        for field in iter_fields(&payload).flatten() {
-                            top_fields.push(field.0);
-                            if field.0 == 1 && field.1 == 2 {
-                                for nested in iter_fields(field.2).flatten() {
-                                    interaction_fields.push(nested.0);
-                                    if interaction_sample.is_empty() && nested.1 == 2 {
-                                        let preview: String = nested
-                                            .2
-                                            .iter()
-                                            .take(96)
-                                            .map(|b| {
-                                                if (0x20..=0x7e).contains(b) {
-                                                    char::from(*b)
-                                                } else {
-                                                    '.'
-                                                }
-                                            })
-                                            .collect();
-                                        interaction_sample = format!("f{}:{preview}", nested.0);
-                                    }
-                                }
+                        // Use prost to decode for field inspection
+                        if let Ok(msg) = AgentServerMessage::decode(&payload) {
+                            top_fields.push(1);
+                            if msg.interaction_update.is_some() {
+                                top_fields.push(1);
                             }
-                            if field.0 == 2 && field.1 == 2 {
-                                let preview: String = field
-                                    .2
-                                    .iter()
-                                    .take(200)
-                                    .map(|b| {
-                                        if (0x20..=0x7e).contains(b) {
-                                            char::from(*b)
-                                        } else {
-                                            '.'
-                                        }
-                                    })
-                                    .collect();
-                                interaction_sample = format!(
-                                    "{interaction_sample}|f2(len={}):{preview}",
-                                    field.2.len()
-                                );
+                            if !msg.exec_server_message.is_empty() {
+                                top_fields.push(2);
+                            }
+                            if !msg.kv_server_message.is_empty() {
+                                top_fields.push(4);
                             }
                         }
                     }
@@ -801,7 +773,9 @@ fn queue_checkpoint_reply(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::cursor::proto::{AGENT_MODE_ASK, field_bytes, field_ld, field_varint};
+    use crate::providers::cursor::proto::{
+        AGENT_MODE_ASK, AgentServerMessage, InteractionUpdate, TextDelta,
+    };
     use flate2::Compression;
     use flate2::write::GzEncoder;
     use futures_lite::AsyncReadExt;
@@ -824,12 +798,22 @@ mod tests {
     #[test]
     fn handle_data_frame_accepts_gzip_text_delta() {
         // interaction_update(f1) → text_delta(f1) → text(f1) = "pong"
-        let text_delta = field_ld(1, &field_bytes(1, b"pong"));
-        let interaction = field_ld(1, &text_delta);
+        let msg = AgentServerMessage {
+            interaction_update: Some(InteractionUpdate {
+                text_delta: Some(TextDelta {
+                    text: "pong".to_string(),
+                }),
+                thinking_delta: None,
+            }),
+            exec_server_message: Vec::new(),
+            field_3: Vec::new(),
+            kv_server_message: Vec::new(),
+        };
+        let payload = msg.encode_to_vec();
         let frame = ConnectFrame {
             end_stream: false,
             compressed: true,
-            payload: gzip(&interaction),
+            payload: gzip(&payload),
         };
         let store = shared_store();
         let (outbound, _notify) = new_outbound_queue();
@@ -843,11 +827,23 @@ mod tests {
 
     #[test]
     fn handle_data_frame_queues_set_blob_ack() {
-        let mut args = field_bytes(1, b"blob-id");
-        args.extend(field_bytes(2, b"blob-data"));
-        let mut kv = field_varint(1, 9);
-        kv.extend(field_ld(3, &args));
-        let payload = field_ld(4, &kv);
+        use crate::providers::cursor::proto::{KvServerMessage, SetBlobArgs};
+        let args = SetBlobArgs {
+            blob_id: b"blob-id".to_vec(),
+            blob_data: b"blob-data".to_vec(),
+        };
+        let kv = KvServerMessage {
+            id: 9,
+            get_blob: None,
+            set_blob: Some(args),
+        };
+        let msg = AgentServerMessage {
+            interaction_update: None,
+            exec_server_message: Vec::new(),
+            field_3: Vec::new(),
+            kv_server_message: kv.encode_to_vec(),
+        };
+        let payload = msg.encode_to_vec();
         let frame = ConnectFrame {
             end_stream: false,
             compressed: false,
