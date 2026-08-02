@@ -287,9 +287,9 @@ fn encode_devin_tools(tools: &serde_json::Value) -> Result<Vec<Vec<u8>>, AgentEr
             .and_then(serde_json::Value::as_bool)
             .map_or(false, std::convert::identity);
         encoded.push(encode_chat_tool_definition(&ChatToolDefinition {
-            name,
-            description: description.map_or("", std::convert::identity),
-            json_schema_string: &schema_string,
+            name: name.to_string(),
+            description: description.map_or(String::new(), std::string::ToString::to_string),
+            json_schema_string: schema_string.clone(),
             strict,
         }));
     }
@@ -346,9 +346,9 @@ fn encode_devin_chat_message_prompts(
                     match block {
                         ContentBlock::Text { text } => prompt_text.push_str(text),
                         ContentBlock::Image { source } => images.push(ImageData {
-                            base64_data: source.data.as_ref(),
-                            mime_type: source.media_type.mime(),
-                            caption: "",
+                            base64_data: source.data.to_string(),
+                            mime_type: source.media_type.mime().to_string(),
+                            caption: String::new(),
                         }),
                         ContentBlock::File { source } => {
                             let identifier = source.identifier().unwrap_or_else(|| "unknown");
@@ -995,6 +995,7 @@ impl Provider for Devin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use prost::Message as ProstMessage;
 
     #[test]
     fn normalize_session_token_adds_prefix() {
@@ -1095,10 +1096,13 @@ mod tests {
     const TRAILER_JSON_ERROR: &str = "invalid Devin end-stream trailer JSON";
 
     fn prompt_string_field(prompt: &[u8], field_number: u64) -> Option<String> {
-        crate::providers::devin_proto::iter_fields(prompt)
-            .map(|field| field.expect("valid prompt field"))
-            .find(|(field, wire, _)| *field == field_number && *wire == 2)
-            .map(|(_, _, value)| String::from_utf8(value.to_vec()).expect("UTF-8 prompt field"))
+        let msg = crate::providers::devin_proto::ChatMessagePrompt::decode(prompt).ok()?;
+        match field_number {
+            1 => Some(msg.message_id),
+            3 => Some(msg.prompt),
+            7 => Some(msg.tool_call_id),
+            _ => None,
+        }
     }
 
     #[test]
