@@ -35,10 +35,10 @@ use super::devin_connect::{
 };
 use super::devin_proto::{
     CHAT_MESSAGE_SOURCE_SYSTEM, CHAT_MESSAGE_SOURCE_TOOL, CHAT_MESSAGE_SOURCE_USER,
-    ChatMessagePromptInput, ChatToolCall, ChatToolDefinition, ImageData, STOP_REASON_MAX_TOKENS,
-    STOP_REASON_TOOL_USE, STOP_REASON_UNSPECIFIED, decode_cli_model_configs,
-    decode_get_chat_message_response, decode_get_user_jwt_response, encode_chat_message_prompt,
-    encode_chat_tool_definition, encode_get_chat_message_request,
+    ChatMessagePromptInput, ChatToolCall, ChatToolDefinition, ImageData, ModelUsageStats,
+    STOP_REASON_MAX_TOKENS, STOP_REASON_TOOL_USE, STOP_REASON_UNSPECIFIED,
+    decode_cli_model_configs, decode_get_chat_message_response, decode_get_user_jwt_response,
+    encode_chat_message_prompt, encode_chat_tool_definition, encode_get_chat_message_request,
     encode_get_cli_model_configs_request, encode_get_user_jwt_request,
 };
 
@@ -198,6 +198,21 @@ fn clamp_tokens(field: &'static str, value: u64) -> u32 {
             value, "Devin usage token count out of range; clamping"
         );
         u32::MAX
+    }
+}
+
+fn devin_usage_to_token_usage(u: &ModelUsageStats) -> TokenUsage {
+    // Devin gRPC usage reports input_tokens as the total prompt tokens
+    // (including cache reads and writes), with cache fields as details.
+    // TokenUsage.input must be the non-cached portion so that total_input()
+    // and cost() are consistent with the rest of the providers.
+    let cached = u.cache_read_tokens.saturating_add(u.cache_write_tokens);
+    let input = u.input_tokens.saturating_sub(cached);
+    TokenUsage {
+        input: clamp_tokens("input", input),
+        output: clamp_tokens("output", u.output_tokens),
+        cache_creation: clamp_tokens("cache_write", u.cache_write_tokens),
+        cache_read: clamp_tokens("cache_read", u.cache_read_tokens),
     }
 }
 
@@ -896,10 +911,7 @@ impl Devin {
                 }
 
                 if let Some(u) = response.usage {
-                    usage.input = clamp_tokens("input", u.input_tokens);
-                    usage.output = clamp_tokens("output", u.output_tokens);
-                    usage.cache_read = clamp_tokens("cache_read", u.cache_read_tokens);
-                    usage.cache_creation = clamp_tokens("cache_write", u.cache_write_tokens);
+                    usage = devin_usage_to_token_usage(&u);
                 }
             }
         }
@@ -998,6 +1010,38 @@ mod tests {
             normalize_session_token("devin-session-token$abc123"),
             "devin-session-token$abc123"
         );
+    }
+
+    #[test]
+    fn devin_usage_maps_total_input_to_non_cached() {
+        let stats = ModelUsageStats {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_read_tokens: 30,
+            cache_write_tokens: 20,
+        };
+        let usage = devin_usage_to_token_usage(&stats);
+        assert_eq!(usage.input, 50);
+        assert_eq!(usage.output, 50);
+        assert_eq!(usage.cache_read, 30);
+        assert_eq!(usage.cache_creation, 20);
+        assert_eq!(usage.total_input(), 100);
+    }
+
+    #[test]
+    fn devin_usage_does_not_underflow_when_cache_exceeds_total() {
+        // Some responses may already report input_tokens as the non-cached
+        // remainder; saturating subtraction keeps the reported value safe.
+        let stats = ModelUsageStats {
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_read_tokens: 100,
+            cache_write_tokens: 50,
+        };
+        let usage = devin_usage_to_token_usage(&stats);
+        assert_eq!(usage.input, 0);
+        assert_eq!(usage.cache_read, 100);
+        assert_eq!(usage.cache_creation, 50);
     }
 
     #[test]

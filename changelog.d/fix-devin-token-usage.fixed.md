@@ -1,0 +1,1 @@
+Fix Devin token tracking by mapping `ModelUsageStats.input_tokens` (the total prompt count) to `TokenUsage.input` as the non-cached portion, while keeping `cache_read_tokens` and `cache_write_tokens` in their own categories. This matches how the rest of the providers report usage and prevents total input tokens from being double-counted when cache metrics are present.
