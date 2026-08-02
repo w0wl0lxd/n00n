@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785627399762,
+  "lastUpdate": 1785637059910,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -11875,6 +11875,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 183173,
             "range": "± 12690",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e41959222a1b939f58860b2362444eb2413685ae",
+          "message": "Merge pull request #214 from w0wl0lxd/feat/fusion-beta-orchestration\n\nfeat(fusion): add beta lead-sidekick orchestration",
+          "timestamp": "2026-08-02T02:03:42Z",
+          "tree_id": "470358a6a19fc9d245ff45b136d4fc6559af0588",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/e41959222a1b939f58860b2362444eb2413685ae"
+        },
+        "date": 1785637058364,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 5067363,
+            "range": "± 184829",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1897339,
+            "range": "± 4143",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1896098,
+            "range": "± 11489",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 5965016,
+            "range": "± 18494",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3137033,
+            "range": "± 10630",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3144704,
+            "range": "± 10846",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 431688,
+            "range": "± 814",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 130527,
+            "range": "± 178",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 130232,
+            "range": "± 151",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 810555,
+            "range": "± 1655",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 498424,
+            "range": "± 6130",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 493653,
+            "range": "± 5498",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 39289,
+            "range": "± 7422",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 144043,
+            "range": "± 1132",
             "unit": "ns/iter"
           }
         ]
