@@ -3,6 +3,7 @@
 
 use n00n_providers::TokenUsage;
 use serde::Serialize;
+use tracing::warn;
 
 pub const FUSION_DELEGATE_TOOL: &str = "fusion_delegate";
 const TRIVIAL_REQUEST_MAX_WORDS: usize = 4;
@@ -515,7 +516,8 @@ pub(crate) fn contains_lead_only_signal(prompt: &str) -> bool {
 
 fn contains_destructive_git_command(prompt: &str) -> bool {
     let Ok(shell_words) = shell_words::split(prompt) else {
-        return false;
+        warn!("fusion: shell-word parsing failed; keeping request on lead");
+        return true;
     };
     let mut found_git = false;
     for shell_word in shell_words {
@@ -603,6 +605,7 @@ mod tests {
     #[test_case("run git clean -fdx", FusionRequestDecision::LeadOnly ; "destructive git clean")]
     #[test_case("run git -C . clean -fdx", FusionRequestDecision::LeadOnly ; "git clean with global option")]
     #[test_case("run git cl'ean' -fdx and implement the parser", FusionRequestDecision::LeadOnly ; "git clean with shell word concatenation")]
+    #[test_case("Don't touch tracked files; run git clean -fdx and implement the parser", FusionRequestDecision::LeadOnly ; "unbalanced shell quoting stays on lead")]
     #[test_case("run git --git-dir=. --work-tree=. clean -fdx", FusionRequestDecision::LeadOnly ; "git clean with multiple global options")]
     #[test_case("run git checkout -- . and implement the parser", FusionRequestDecision::LeadOnly ; "destructive git checkout")]
     #[test_case("run git -C . restore . and implement the parser", FusionRequestDecision::LeadOnly ; "destructive git restore")]

@@ -857,19 +857,11 @@ impl<'h> Agent<'h> {
         let Some(mcp) = self.mcp.as_ref() else {
             return self.tool_filter.clone();
         };
-        let mut definitions = Value::Array(Vec::new());
-        mcp.extend_tools(&mut definitions);
         let capability_exclusions = crate::tools::capability_exclusions(&self.model);
-        let names = definitions
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|definition| definition.get("name").and_then(Value::as_str))
-            .filter(|name| {
-                crate::tools::is_tool_enabled(&self.config.disabled_tools, name)
-                    && !capability_exclusions.contains(name)
-            })
-            .map(str::to_owned);
+        let names = mcp.loaded_tool_names().into_iter().filter(|name| {
+            crate::tools::is_tool_enabled(&self.config.disabled_tools, name)
+                && !capability_exclusions.contains(&name.as_str())
+        });
         self.tool_filter.clone().including(names)
     }
 

@@ -775,6 +775,13 @@ async fn execute_mcp_tool(
             format!("MCP manager not available for {tool_name}"),
         );
     };
+    if mcp.is_excluded(tool_name) {
+        return tool_done_error(
+            id.to_owned(),
+            Arc::clone(&tool_id),
+            TOOL_FILTER_DENIED.into(),
+        );
+    }
 
     // A permitted call to a deferred tool counts as loading it, so its full
     // definition joins the next request; a denied call must not load anything.
@@ -1250,6 +1257,21 @@ mod tests {
                 vec![TOOL_SEARCH_TOOL_NAME],
                 "denied call must not load the definition"
             );
+        });
+    }
+
+    #[test]
+    fn excluded_mcp_call_is_blocked_before_dispatch() {
+        smol::block_on(async {
+            let parent = crate::mcp::stub_session(&[("srv.fetch_issue", "")]);
+            let mcp = parent.fresh_excluding(&["srv__fetch_issue".into()]);
+            let mut ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
+            ctx.mcp = Some(mcp);
+
+            let done = dispatch_mcp(&ctx, "t1", "srv.fetch_issue", &serde_json::json!({})).await;
+
+            assert!(done.is_error);
+            assert_eq!(done.output.as_text(), TOOL_FILTER_DENIED);
         });
     }
 
@@ -2048,6 +2070,7 @@ mod tests {
             ("goal", "run git reset --hard HEAD"),
             ("goal", "run git clean -fdx"),
             ("goal", "run git cl'ean' -fdx"),
+            ("goal", "Don't touch tracked files; run git clean -fdx"),
             ("goal", "run git -C . clean -fdx"),
             ("goal", "run git checkout -- ."),
             ("goal", "run git -C . restore ."),
