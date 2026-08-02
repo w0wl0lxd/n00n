@@ -13,6 +13,7 @@ use serde::de::Error as DeError;
 use serde::de::{Deserializer, MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use tracing::warn;
 
 pub const NO_FILES_FOUND: &str = "No files found";
 
@@ -263,9 +264,17 @@ fn tool_telemetry_from_value(value: JsonValue) -> Option<ToolTelemetry> {
     if value.is_null() {
         return None;
     }
-    match serde_json::from_value::<ToolTelemetry>(value) {
+    match serde_json::from_value::<ToolTelemetry>(value.clone()) {
         Ok(telemetry) if !telemetry.is_empty() => Some(telemetry),
-        _ => None,
+        Ok(_) => None,
+        Err(e) => {
+            warn!(
+                error = %e,
+                raw_value = %value,
+                "rejected malformed tool telemetry during session restore"
+            );
+            None
+        }
     }
 }
 
