@@ -1,4 +1,6 @@
-local router = require("explore.router")
+local router = require("router")
+
+local json = (n00n and n00n.json) or require("n00n.json")
 
 local failures = {}
 
@@ -164,7 +166,6 @@ case("router_classification_accuracy", function()
   local content = f:read("*a")
   f:close()
 
-  local json = require("n00n.json")
   local queries = json.decode(content)
 
   local correct = 0
