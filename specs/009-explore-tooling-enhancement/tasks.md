@@ -121,31 +121,31 @@
 
 ### Tests for US4
 
-- [ ] T052 [P] [US4] Add failing test for entry-points command in n00n-arbor/src/lib.rs
-- [ ] T053 [P] [US4] Add failing test for file-graph command in n00n-arbor/src/lib.rs
-- [ ] T054 [P] [US4] Add failing test for inspect command in n00n-arbor/src/lib.rs
-- [ ] T055 [P] [US4] Add failing test for path command in n00n-arbor/src/lib.rs
-- [ ] T056 [P] [US4] Add failing test for refactor command in n00n-arbor/src/lib.rs
-- [ ] T057 [P] [US4] Add failing test for check command in n00n-arbor/src/lib.rs
-- [ ] T058 [P] [US4] Add failing test for summary command in n00n-arbor/src/lib.rs
-- [ ] T058a [P] [US4] Add failing test for trace command in n00n-arbor/src/lib.rs
+- [X] T052 [P] [US4] Add failing test for entry-points command in n00n-arbor/src/lib.rs
+- [X] T053 [P] [US4] Add failing test for file-graph command in n00n-arbor/src/lib.rs
+- [X] T054 [P] [US4] Add failing test for inspect command in n00n-arbor/src/lib.rs
+- [X] T055 [P] [US4] Add failing test for path command in n00n-arbor/src/lib.rs
+- [X] T056 [P] [US4] Add failing test for refactor command in n00n-arbor/src/lib.rs
+- [X] T057 [P] [US4] Add failing test for check command in n00n-arbor/src/lib.rs
+- [X] T058 [P] [US4] Add failing test for summary command in n00n-arbor/src/lib.rs
+- [X] T058a [P] [US4] Add failing test for trace command in n00n-arbor/src/lib.rs
 
 ### Implementation for US4
 
-- [ ] T059 [US4] Extend n00n-arbor/src/lib.rs with entry-points command function
-- [ ] T060 [US4] Extend n00n-arbor/src/lib.rs with file-graph command function
-- [ ] T061 [US4] Extend n00n-arbor/src/lib.rs with inspect command function
-- [ ] T062 [US4] Extend n00n-arbor/src/lib.rs with path command function
-- [ ] T063 [US4] Extend n00n-arbor/src/lib.rs with refactor command function
-- [ ] T064 [US4] Extend n00n-arbor/src/lib.rs with check command function
-- [ ] T065 [US4] Extend n00n-arbor/src/lib.rs with summary command function
-- [ ] T065a [US4] Extend n00n-arbor/src/lib.rs with trace command function
-- [ ] T066 [US4] Use native `ArborGraph` from `.arbor/graph.json` to answer `arbor callers`, `callees`, and `trace` when the `arbor` CLI is not on `PATH`; ensure output matches CLI format.
-- [ ] T067 [US4] Use `ArborGraph` centrality and module data to implement `arbor map` with a token budget and `arbor entry-points` without the CLI.
-- [ ] T068 [US4] Extend `ArborGraph` parsing to support Rust, Python, and Lua files for native fallback; add fixture tests.
-- [ ] T069 [US4] Add Lua API functions in n00n-lua/src/api/arbor.rs for new commands
-- [ ] T070 [US4] Update plugins/arbor/init.lua to expose new commands in tool schema
-- [ ] T071 [US4] Run tests for new Arbor commands in n00n-arbor/src/lib.rs
+- [X] T059 [US4] Extend n00n-arbor/src/lib.rs with entry-points command function
+- [X] T060 [US4] Extend n00n-arbor/src/lib.rs with file-graph command function
+- [X] T061 [US4] Extend n00n-arbor/src/lib.rs with inspect command function
+- [X] T062 [US4] Extend n00n-arbor/src/lib.rs with path command function
+- [X] T063 [US4] Extend n00n-arbor/src/lib.rs with refactor command function
+- [X] T064 [US4] Extend n00n-arbor/src/lib.rs with check command function
+- [X] T065 [US4] Extend n00n-arbor/src/lib.rs with summary command function
+- [X] T065a [US4] Extend n00n-arbor/src/lib.rs with trace command function
+- [X] T066 [US4] Use native `ArborGraph` from `.arbor/graph.json` to answer `arbor callers`, `callees`, and `trace` when the `arbor` CLI is not on `PATH`; ensure output matches CLI format.
+- [X] T067 [US4] Use `ArborGraph` centrality and module data to implement `arbor map` with a token budget and `arbor entry-points` without the CLI.
+- [X] T068 [US4] Extend `ArborGraph` parsing to support Rust, Python, and Lua files for native fallback; add fixture tests.
+- [X] T069 [US4] Add Lua API functions in n00n-lua/src/api/arbor.rs for new commands
+- [X] T070 [US4] Update plugins/arbor/init.lua to expose new commands in tool schema
+- [X] T071 [US4] Run tests for new Arbor commands in n00n-arbor/src/lib.rs
 
 **Checkpoint**: Arbor commands exposed and tested
 
