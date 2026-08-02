@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785709507434,
+  "lastUpdate": 1785712015674,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -12199,6 +12199,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 134074,
             "range": "± 9892",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fda180a78e27cf701a86411c5453d8b8caffd0d1",
+          "message": "Merge pull request #217 from w0wl0lxd/fix/log-audit-session-record-tolerance",
+          "timestamp": "2026-08-02T22:51:10Z",
+          "tree_id": "aecbd7ae167e53a5b95ce6b5386a87a2a17620aa",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/fda180a78e27cf701a86411c5453d8b8caffd0d1"
+        },
+        "date": 1785712015236,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6659321,
+            "range": "± 171465",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2222655,
+            "range": "± 3240",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2224397,
+            "range": "± 6881",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8172848,
+            "range": "± 18097",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4315635,
+            "range": "± 31712",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4325967,
+            "range": "± 24510",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 584124,
+            "range": "± 4603",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191664,
+            "range": "± 335",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 192018,
+            "range": "± 271",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1045270,
+            "range": "± 5673",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 582579,
+            "range": "± 3120",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 581749,
+            "range": "± 3698",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 73606,
+            "range": "± 6586",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 188567,
+            "range": "± 14878",
             "unit": "ns/iter"
           }
         ]
