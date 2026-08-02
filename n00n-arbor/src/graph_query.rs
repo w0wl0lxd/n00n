@@ -120,16 +120,17 @@ pub fn graph_index_available(project: &Path) -> bool {
 }
 
 // T067: Native map implementation using graph.json
+#[allow(clippy::cast_precision_loss, clippy::similar_names)]
 pub fn graph_map(project: &Path, token_budget: Option<u64>) -> Result<Vec<MapEntry>, ArborError> {
     let index = load_query_index(project)?;
     let mut file_map: std::collections::HashMap<String, Vec<MapSymbol>> =
         std::collections::HashMap::new();
 
     for (idx, node) in index.nodes().iter().enumerate() {
-        let callers = index.find_callers(idx).len();
-        let callees = index.find_callees(idx).len();
-        let centrality = if callers + callees > 0 {
-            Some((callers as f64 + callees as f64) / (index.nodes().len() as f64))
+        let num_callers = index.find_callers(idx).len();
+        let num_callees = index.find_callees(idx).len();
+        let centrality = if num_callers + num_callees > 0 {
+            Some((num_callers as f64 + num_callees as f64) / (index.nodes().len() as f64))
         } else {
             None
         };
@@ -139,8 +140,8 @@ pub fn graph_map(project: &Path, token_budget: Option<u64>) -> Result<Vec<MapEnt
             kind: node.kind.clone(),
             line: node.line_start as u64,
             centrality,
-            callers: Some(callers as u64),
-            is_entry_point: Some(callers == 0 && callees > 0),
+            callers: Some(num_callers as u64),
+            is_entry_point: Some(num_callers == 0 && num_callees > 0),
         };
 
         file_map.entry(node.file.clone()).or_default().push(symbol);
@@ -157,12 +158,12 @@ pub fn graph_map(project: &Path, token_budget: Option<u64>) -> Result<Vec<MapEnt
             .symbols
             .iter()
             .filter_map(|s| s.centrality)
-            .fold(0.0_f64, |acc, x| acc.max(x));
+            .fold(0.0_f64, f64::max);
         let max_b = b
             .symbols
             .iter()
             .filter_map(|s| s.centrality)
-            .fold(0.0_f64, |acc, x| acc.max(x));
+            .fold(0.0_f64, f64::max);
         max_b.total_cmp(&max_a)
     });
 
@@ -185,12 +186,12 @@ pub fn graph_map(project: &Path, token_budget: Option<u64>) -> Result<Vec<MapEnt
 // T067: Native entry_points implementation using graph.json
 pub fn graph_entry_points(project: &Path) -> Result<Vec<Relation>, ArborError> {
     let index = load_query_index(project)?;
-    let mut entry_points = Vec::new();
+    let mut entries = Vec::new();
 
     for (idx, node) in index.nodes().iter().enumerate() {
-        let callers = index.find_callers(idx);
-        if callers.is_empty() {
-            entry_points.push(Relation {
+        let caller_nodes = index.find_callers(idx);
+        if caller_nodes.is_empty() {
+            entries.push(Relation {
                 name: node.name.clone(),
                 path: node.file.clone(),
                 kind: Some(node.kind.clone()),
@@ -199,19 +200,19 @@ pub fn graph_entry_points(project: &Path) -> Result<Vec<Relation>, ArborError> {
         }
     }
 
-    Ok(entry_points)
+    Ok(entries)
 }
 
 fn estimate_entry_tokens(entry: &MapEntry) -> u64 {
     let file_tokens = entry.file.len() as u64;
-    let symbols_tokens: u64 = entry
+    let symbol_tokens: u64 = entry
         .symbols
         .iter()
         .map(|s| {
             s.name.len() as u64 + s.kind.len() as u64 + 20 // overhead for centrality, callers, etc.
         })
         .sum();
-    file_tokens + symbols_tokens + 10 // overhead per entry
+    file_tokens + symbol_tokens + 10 // overhead per entry
 }
 
 #[cfg(test)]
