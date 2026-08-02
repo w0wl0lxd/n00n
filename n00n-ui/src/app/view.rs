@@ -323,6 +323,11 @@ impl App {
             chat_name,
             retry_info: self.retry_info.as_ref(),
             thinking_label: self.state.thinking.status_label(),
+            fusion_phase: if render_chat == 0 {
+                self.fusion_phase
+            } else {
+                None
+            },
             fast: self.state.fast,
             workflow: self.state.workflow,
             restoring: self.restoring.load(Ordering::Relaxed),
