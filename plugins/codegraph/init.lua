@@ -71,7 +71,6 @@ Requires a .codegraph/ index in the project root.]],
   },
 
   header = function(input)
-    local title = input.command or "codegraph"
     local subtitle = input.query or input.symbol or input.name or input.search or ""
     return ExploreResult.header(subtitle, input.projectPath)
   end,

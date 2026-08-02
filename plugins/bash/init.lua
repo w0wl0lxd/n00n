@@ -435,6 +435,9 @@ local function rtk_rewrite(command, ctx)
   -- jq and yq must pass through unchanged (FR-018)
   local normalized = strip_leading_assignments(cmd)
   local first_word = normalized:match("^(%S+)")
+  if not first_word then
+    return nil
+  end
   if first_word == "jq" or first_word == "yq" or first_word:match("/jq$") or first_word:match("/yq$") then
     return nil
   end

@@ -43,7 +43,10 @@ pub(crate) fn create_semblem_table(lua: &Lua) -> LuaResult<Table> {
     table.set("find_related", find_related)?;
 
     // T080: Add savings command
-    let savings = lua.create_function(|_, repo: String| Client::savings(&repo).map_err(map_err))?;
+    let savings = lua.create_function(|_, repo: String| match Client::savings(&repo) {
+        Ok(output) => Ok((Some(output), None::<String>)),
+        Err(e) => Ok((None::<String>, Some(format!("{e:#}")))),
+    })?;
     table.set("savings", savings)?;
 
     Ok(table)
@@ -132,13 +135,13 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
         FnDoc {
             name: "savings",
             args: "{repo}",
-            desc: "Estimate token savings from using a hybrid/semantic embedder.",
+            desc: "Estimate token savings from using a hybrid/semantic embedder. Requires the semble CLI and has no native fallback.",
             params: &[ParamDoc {
                 name: "{repo}",
                 ty: "string",
                 desc: "Path to the project root.",
             }],
-            returns: "(string) Savings summary.",
+            returns: "(string?, string?) savings summary and optional error message.",
             example: "",
         },
     ],

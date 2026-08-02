@@ -4,12 +4,12 @@ local json = (n00n and n00n.json) or require("n00n.json")
 
 local function try_read_one(path)
   if n00n and n00n.fs and n00n.fs.read then
-    local content, err = n00n.fs.read(path)
-    if not err then
+    local content = n00n.fs.read(path)
+    if content then
       return content
     end
   else
-    local f, err = io.open(path, "r")
+    local f = io.open(path, "r")
     if f then
       local content = f:read("*a")
       f:close()
@@ -157,10 +157,16 @@ case("search_intent_routes_to_semblem", function()
 end)
 
 case("skeleton_intent_routes_to_index", function()
-  eq(router.normalize_intent({ query = "src/main.rs", intent = "skeleton" }), "skeleton")
-  local backend, input = router.build_backend_input({ query = "src/main.rs", intent = "skeleton" }, "skeleton")
+  eq(router.normalize_intent({ query = "skeleton src/main.rs", intent = "skeleton" }), "skeleton")
+  local backend, input = router.build_backend_input({ query = "skeleton src/main.rs", intent = "skeleton" }, "skeleton")
   eq(backend, "index")
   eq(input.path, "src/main.rs")
+end)
+
+case("skeleton_intent_requires_file_path", function()
+  local backend, input = router.build_backend_input({ query = "skeleton", intent = "skeleton" }, "skeleton")
+  eq(backend, nil)
+  assert(input.is_error, "should return error when no file path provided")
 end)
 
 case("symbol_intent_routes_to_codegraph", function()
@@ -220,6 +226,7 @@ case("router_classification_accuracy", function()
   local content = read_file("tests/fixtures/explore-queries.json")
 
   local queries = json.decode(content)
+  assert(#queries > 0, "fixture must contain at least one query")
 
   local correct = 0
   for _, q in ipairs(queries) do

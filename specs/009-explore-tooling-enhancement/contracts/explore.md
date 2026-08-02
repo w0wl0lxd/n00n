@@ -76,6 +76,7 @@
 ```
 
 The `llm_output` includes a route prefix indicating the backend used:
+
 - `[file via index]`
 - `[relations via arbor]`
 - `[cross_file via codegraph]`

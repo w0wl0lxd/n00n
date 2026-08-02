@@ -21,19 +21,11 @@
     },
     "from_symbol": {
       "type": "string",
-      "description": "From symbol for trace_path command."
+      "description": "From symbol for trace_path and path commands."
     },
     "to_symbol": {
       "type": "string",
-      "description": "To symbol for trace_path command."
-    },
-    "from": {
-      "type": "string",
-      "description": "From symbol for path command."
-    },
-    "to": {
-      "type": "string",
-      "description": "To symbol for path command."
+      "description": "To symbol for trace_path and path commands."
     },
     "operation": {
       "type": "string",
@@ -43,8 +35,14 @@
       "type": "string",
       "description": "Project root path (defaults to cwd)."
     },
+    "path": {
+      "type": "string",
+      "description": "Optional file path to focus the file_graph command."
+    },
     "token_budget": {
       "type": "integer",
+      "minimum": 0,
+      "default": 1024,
       "description": "Token budget for map command (default 1024)."
     }
   }

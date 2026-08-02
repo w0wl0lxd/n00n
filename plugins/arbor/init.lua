@@ -70,6 +70,9 @@ local function native_trace_path(from_symbol, to_symbol, project)
 end
 
 local function dispatch(input)
+  if not input.command or input.command == "" then
+    return { llm_output = "error: command is required", is_error = true }
+  end
   local command = input.command:gsub("-", "_")
   local project = input.project or "."
   local symbol = input.symbol
@@ -217,14 +220,22 @@ local function dispatch(input)
         is_error = true,
       }
     end
-    return { llm_output = n00n_arbor.query(symbol, project) }
+    local result, err = n00n_arbor.query(symbol, project)
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
+    end
+    return { llm_output = result }
   end
 
   if command == "status" then
     if not n00n_arbor.available() then
       return missing_cli(command)
     end
-    return { llm_output = n00n_arbor.status(project) }
+    local output, err = n00n_arbor.status(project)
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
+    end
+    return { llm_output = output }
   end
 
   -- T070: Add new commands that require CLI
@@ -256,7 +267,11 @@ local function dispatch(input)
           is_error = true,
         }
       end
-      return { llm_output = n00n_arbor.entry_points(project) }
+      local output, err = n00n_arbor.entry_points(project)
+      if err then
+        return { llm_output = "error: " .. tostring(err), is_error = true }
+      end
+      return { llm_output = output }
     end
     if #results == 0 then
       return { llm_output = "No entry points found" }
@@ -275,7 +290,12 @@ local function dispatch(input)
         is_error = true,
       }
     end
-    return { llm_output = n00n_arbor.file_graph(project) }
+    local path = input.path
+    local output, err = n00n_arbor.file_graph(project, path)
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
+    end
+    return { llm_output = output }
   end
 
   if command == "inspect" then
@@ -292,16 +312,16 @@ local function dispatch(input)
         is_error = true,
       }
     end
-    local ok, result = pcall(n00n_arbor.inspect, symbol, project)
-    if not ok then
-      return { llm_output = "error: " .. tostring(result), is_error = true }
+    local output, err = n00n_arbor.inspect(symbol, project)
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
     end
-    return { llm_output = result }
+    return { llm_output = output }
   end
 
   if command == "path" then
-    if not input.from or not input.to then
-      return { llm_output = "error: from and to required for path", is_error = true }
+    if not input.from_symbol or not input.to_symbol then
+      return { llm_output = "error: from_symbol and to_symbol required for path", is_error = true }
     end
     if not n00n_arbor.available() then
       return missing_cli(command)
@@ -313,11 +333,11 @@ local function dispatch(input)
         is_error = true,
       }
     end
-    local ok, result = pcall(n00n_arbor.path, input.from, input.to, project)
-    if not ok then
-      return { llm_output = "error: " .. tostring(result), is_error = true }
+    local output, err = n00n_arbor.path(input.from_symbol, input.to_symbol, project)
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
     end
-    return { llm_output = result }
+    return { llm_output = output }
   end
 
   if command == "refactor" then
@@ -334,11 +354,11 @@ local function dispatch(input)
         is_error = true,
       }
     end
-    local ok, result = pcall(n00n_arbor.refactor, input.operation, project)
-    if not ok then
-      return { llm_output = "error: " .. tostring(result), is_error = true }
+    local output, err = n00n_arbor.refactor(input.operation, project)
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
     end
-    return { llm_output = result }
+    return { llm_output = output }
   end
 
   if command == "check" then
@@ -352,7 +372,11 @@ local function dispatch(input)
         is_error = true,
       }
     end
-    return { llm_output = n00n_arbor.check(project) }
+    local output, err = n00n_arbor.check(project)
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
+    end
+    return { llm_output = output }
   end
 
   if command == "summary" then
@@ -366,7 +390,11 @@ local function dispatch(input)
         is_error = true,
       }
     end
-    return { llm_output = n00n_arbor.summary(project) }
+    local output, err = n00n_arbor.summary(project)
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
+    end
+    return { llm_output = output }
   end
 
   return { llm_output = "error: unknown command: " .. tostring(command), is_error = true }
@@ -391,7 +419,7 @@ Commands:
 - entry_points: List API entry points and public symbols.
 - file_graph: Show file-level dependency graph.
 - inspect <symbol>: Detailed symbol information with context.
-- path <from> <to>: Call path between two symbols (CLI version).
+- path <from_symbol> <to_symbol>: Call path between two symbols (CLI version).
 - refactor <operation>: Run refactoring operations (requires Arbor CLI).
 - check: Run static analysis checks on the codebase.
 - summary: High-level project summary and statistics.
@@ -429,10 +457,9 @@ two symbols.]],
       symbol = { type = "string" },
       from_symbol = { type = "string" },
       to_symbol = { type = "string" },
-      from = { type = "string" },
-      to = { type = "string" },
       operation = { type = "string" },
       project = { type = "string" },
+      path = { type = "string" },
       token_budget = { type = "integer", default = 1024 },
     },
   },
@@ -443,8 +470,8 @@ two symbols.]],
         label = label .. " " .. input.from_symbol .. " -> " .. input.to_symbol
       end
     elseif input.command == "path" then
-      if input.from and input.to then
-        label = label .. " " .. input.from .. " -> " .. input.to
+      if input.from_symbol and input.to_symbol then
+        label = label .. " " .. input.from_symbol .. " -> " .. input.to_symbol
       end
     elseif input.command == "inspect" and input.symbol then
       label = label .. " " .. input.symbol

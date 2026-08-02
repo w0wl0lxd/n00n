@@ -13,6 +13,7 @@ This feature expands and refines the CodeGraph, Semblem, and Arbor integrations 
 **Language/Version**: Rust 2024 edition (workspace `rust-version = 1.97`), Lua 5.1 (Luau).
 
 **Primary Dependencies**:
+
 - `rusqlite` 0.40+ (bundled, `modern_sqlite` for WAL/FTS5) for CodeGraph SQLite access.
 - `arbor-core` 2.5.0 + `arbor-graph` 2.5.0 (existing) for Arbor parsing and graph queries.
 - `tantivy` 0.26+ (existing) for BM25 search in `n00n-search`.
@@ -28,11 +29,13 @@ This feature expands and refines the CodeGraph, Semblem, and Arbor integrations 
 **Project Type**: CLI/TUI agent with built-in Lua plugins.
 
 **Performance Goals**:
+
 - Tool call latency for arbor, codegraph, and semblem must not exceed current baseline.
 - Tool definition token count must not increase beyond current baseline.
 - RTK availability check must be cached per session to avoid repeated spawns.
 
 **Constraints**:
+
 - `unsafe_code = "deny"` workspace-wide; no new `unsafe` blocks.
 - `unwrap_used` and `expect_used` denied in production code.
 - New dependencies must pass `cargo deny check` and be published at least 7 days ago.

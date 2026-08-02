@@ -3,6 +3,7 @@ use n00n_arbor::{
     ArborError, Client, ensure_fresh_index, graph_callees, graph_callers, graph_entry_points,
     graph_index_available, graph_map, graph_trace_path,
 };
+use std::path::Path;
 
 use crate::{
     api::util::convert::json_to_lua,
@@ -39,68 +40,66 @@ pub(crate) fn create_arbor_table(lua: &Lua) -> LuaResult<Table> {
     t.set("available", available)?;
 
     let callers = lua.create_function(|lua, (symbol, project): (String, String)| {
-        value_or_err(
-            lua,
-            Client::callers(&symbol, std::path::Path::new(&project)),
-        )
+        value_or_err(lua, Client::callers(&symbol, Path::new(&project)))
     })?;
     t.set("callers", callers)?;
 
     let callees = lua.create_function(|lua, (symbol, project): (String, String)| {
-        value_or_err(
-            lua,
-            Client::callees(&symbol, std::path::Path::new(&project)),
-        )
+        value_or_err(lua, Client::callees(&symbol, Path::new(&project)))
     })?;
     t.set("callees", callees)?;
 
     let map_fn = lua.create_function(|lua, (project, token_budget): (String, Option<u64>)| {
-        value_or_err(
-            lua,
-            Client::map(std::path::Path::new(&project), token_budget),
-        )
+        value_or_err(lua, Client::map(Path::new(&project), token_budget))
     })?;
     t.set("map", map_fn)?;
 
     let diff = lua.create_function(|lua, project: String| {
-        value_or_err(lua, Client::diff(std::path::Path::new(&project)))
+        value_or_err(lua, Client::diff(Path::new(&project)))
     })?;
     t.set("diff", diff)?;
 
-    let query_fn = lua.create_function(|_, (query, project): (String, String)| {
-        Client::query(&query, std::path::Path::new(&project)).map_err(map_err)
-    })?;
+    let query_fn =
+        lua.create_function(|_, (query, project): (String, String)| {
+            match Client::query(&query, Path::new(&project)) {
+                Ok(output) => Ok((Some(output), None::<String>)),
+                Err(e) => Ok((None::<String>, Some(format!("{e:#}")))),
+            }
+        })?;
     t.set("query", query_fn)?;
 
-    let status_fn = lua.create_function(|_, project: String| {
-        Client::status(std::path::Path::new(&project)).map_err(map_err)
-    })?;
+    let status_fn =
+        lua.create_function(
+            |_, project: String| match Client::status(Path::new(&project)) {
+                Ok(output) => Ok((Some(output), None::<String>)),
+                Err(e) => Ok((None::<String>, Some(format!("{e:#}")))),
+            },
+        )?;
     t.set("status", status_fn)?;
 
     let ensure_indexed = lua.create_function(|_, project: String| {
-        Client::ensure_indexed(std::path::Path::new(&project)).map_err(map_err)?;
+        Client::ensure_indexed(Path::new(&project)).map_err(map_err)?;
         Ok(())
     })?;
     t.set("ensure_indexed", ensure_indexed)?;
 
     let ensure_fresh_index_fn = lua.create_function(|_, project: String| {
-        ensure_fresh_index(std::path::Path::new(&project)).map_err(map_err)?;
+        ensure_fresh_index(Path::new(&project)).map_err(map_err)?;
         Ok(())
     })?;
     t.set("ensure_fresh_index", ensure_fresh_index_fn)?;
 
-    let graph_available = lua.create_function(|_, project: String| {
-        Ok(graph_index_available(std::path::Path::new(&project)))
-    })?;
+    let graph_available =
+        lua.create_function(|_, project: String| Ok(graph_index_available(Path::new(&project))))?;
     t.set("graph_index_available", graph_available)?;
 
     let graph_callers_fn = lua.create_function(|lua, (symbol, project): (String, String)| {
-        value_or_err(lua, graph_callers(&symbol, std::path::Path::new(&project)))
+        value_or_err(lua, graph_callers(&symbol, Path::new(&project)))
     })?;
     t.set("graph_callers", graph_callers_fn)?;
 
     let graph_callees_fn = lua.create_function(|lua, (symbol, project): (String, String)| {
-        value_or_err(lua, graph_callees(&symbol, std::path::Path::new(&project)))
+        value_or_err(lua, graph_callees(&symbol, Path::new(&project)))
     })?;
     t.set("graph_callees", graph_callees_fn)?;
 
@@ -108,7 +107,7 @@ pub(crate) fn create_arbor_table(lua: &Lua) -> LuaResult<Table> {
         |lua, (from_symbol, to_symbol, project): (String, String, String)| {
             value_or_err(
                 lua,
-                graph_trace_path(&from_symbol, &to_symbol, std::path::Path::new(&project)),
+                graph_trace_path(&from_symbol, &to_symbol, Path::new(&project)),
             )
         },
     )?;
@@ -117,49 +116,80 @@ pub(crate) fn create_arbor_table(lua: &Lua) -> LuaResult<Table> {
     // T067: Add native fallback functions
     let graph_map_fn =
         lua.create_function(|lua, (project, token_budget): (String, Option<u64>)| {
-            value_or_err(lua, graph_map(std::path::Path::new(&project), token_budget))
+            value_or_err(lua, graph_map(Path::new(&project), token_budget))
         })?;
     t.set("graph_map", graph_map_fn)?;
 
     let graph_entry_points_fn = lua.create_function(|lua, project: String| {
-        value_or_err(lua, graph_entry_points(std::path::Path::new(&project)))
+        value_or_err(lua, graph_entry_points(Path::new(&project)))
     })?;
     t.set("graph_entry_points", graph_entry_points_fn)?;
 
     // T069: Add Lua API functions for new Arbor commands
     let entry_points = lua.create_function(|_, project: String| {
-        Client::entry_points(std::path::Path::new(&project)).map_err(map_err)
+        match Client::entry_points(Path::new(&project)) {
+            Ok(output) => Ok((Some(output), None::<String>)),
+            Err(e) => Ok((None::<String>, Some(format!("{e:#}")))),
+        }
     })?;
     t.set("entry_points", entry_points)?;
 
-    let file_graph = lua.create_function(|_, project: String| {
-        Client::file_graph(std::path::Path::new(&project)).map_err(map_err)
-    })?;
+    let file_graph =
+        lua.create_function(
+            |_, (project, file): (String, Option<String>)| match Client::file_graph(
+                Path::new(&project),
+                file.as_deref(),
+            ) {
+                Ok(output) => Ok((Some(output), None::<String>)),
+                Err(e) => Ok((None::<String>, Some(format!("{e:#}")))),
+            },
+        )?;
     t.set("file_graph", file_graph)?;
 
     let inspect = lua.create_function(|_, (symbol, project): (String, String)| {
-        Client::inspect(&symbol, std::path::Path::new(&project)).map_err(map_err)
+        match Client::inspect(&symbol, Path::new(&project)) {
+            Ok(output) => Ok((Some(output), None::<String>)),
+            Err(e) => Ok((None::<String>, Some(format!("{e:#}")))),
+        }
     })?;
     t.set("inspect", inspect)?;
 
-    let path = lua.create_function(|_, (from, to, project): (String, String, String)| {
-        Client::path(&from, &to, std::path::Path::new(&project)).map_err(map_err)
-    })?;
+    let path = lua.create_function(
+        |_, (from_symbol, to_symbol, project): (String, String, String)| match Client::path(
+            &from_symbol,
+            &to_symbol,
+            Path::new(&project),
+        ) {
+            Ok(output) => Ok((Some(output), None::<String>)),
+            Err(e) => Ok((None::<String>, Some(format!("{e:#}")))),
+        },
+    )?;
     t.set("path", path)?;
 
     let refactor = lua.create_function(|_, (operation, project): (String, String)| {
-        Client::refactor(&operation, std::path::Path::new(&project)).map_err(map_err)
+        match Client::refactor(&operation, Path::new(&project)) {
+            Ok(output) => Ok((Some(output), None::<String>)),
+            Err(e) => Ok((None::<String>, Some(format!("{e:#}")))),
+        }
     })?;
     t.set("refactor", refactor)?;
 
-    let check = lua.create_function(|_, project: String| {
-        Client::check(std::path::Path::new(&project)).map_err(map_err)
-    })?;
+    let check =
+        lua.create_function(
+            |_, project: String| match Client::check(Path::new(&project)) {
+                Ok(output) => Ok((Some(output), None::<String>)),
+                Err(e) => Ok((None::<String>, Some(format!("{e:#}")))),
+            },
+        )?;
     t.set("check", check)?;
 
-    let summary = lua.create_function(|_, project: String| {
-        Client::summary(std::path::Path::new(&project)).map_err(map_err)
-    })?;
+    let summary =
+        lua.create_function(
+            |_, project: String| match Client::summary(Path::new(&project)) {
+                Ok(output) => Ok((Some(output), None::<String>)),
+                Err(e) => Ok((None::<String>, Some(format!("{e:#}")))),
+            },
+        )?;
     t.set("summary", summary)?;
 
     Ok(t)
@@ -271,7 +301,7 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
                     desc: "Path to the project root.",
                 },
             ],
-            returns: "(string) Raw query results as text.",
+            returns: "(string?, string?) output and optional error message.",
             example: "",
         },
         FnDoc {
@@ -283,7 +313,7 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
                 ty: "string",
                 desc: "Path to the project root.",
             }],
-            returns: "(string) Status text.",
+            returns: "(string?, string?) output and optional error message.",
             example: "",
         },
         FnDoc {
@@ -424,19 +454,26 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
                 ty: "string",
                 desc: "Path to the project root.",
             }],
-            returns: "(string) Raw CLI stdout output.",
+            returns: "(string?, string?) output and optional error message.",
             example: "",
         },
         FnDoc {
             name: "file_graph",
-            args: "{project}",
-            desc: "Show file-level dependency graph via the Arbor CLI.",
-            params: &[ParamDoc {
-                name: "{project}",
-                ty: "string",
-                desc: "Path to the project root.",
-            }],
-            returns: "(string) File graph output.",
+            args: "{project}, {file?}",
+            desc: "Show file-level dependency graph via the Arbor CLI. Optional file focuses the graph on that file.",
+            params: &[
+                ParamDoc {
+                    name: "{project}",
+                    ty: "string",
+                    desc: "Path to the project root.",
+                },
+                ParamDoc {
+                    name: "{file}",
+                    ty: "string",
+                    desc: "Optional file path to focus the dependency graph.",
+                },
+            ],
+            returns: "(string?, string?) output and optional error message.",
             example: "",
         },
         FnDoc {
@@ -455,21 +492,21 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
                     desc: "Path to the project root.",
                 },
             ],
-            returns: "(string) Detailed symbol information.",
+            returns: "(string?, string?) output and optional error message.",
             example: "",
         },
         FnDoc {
             name: "path",
-            args: "{from}, {to}, {project}",
+            args: "{from_symbol}, {to_symbol}, {project}",
             desc: "Call path between two symbols via the Arbor CLI.",
             params: &[
                 ParamDoc {
-                    name: "{from}",
+                    name: "{from_symbol}",
                     ty: "string",
                     desc: "Start symbol name.",
                 },
                 ParamDoc {
-                    name: "{to}",
+                    name: "{to_symbol}",
                     ty: "string",
                     desc: "End symbol name.",
                 },
@@ -479,13 +516,13 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
                     desc: "Path to the project root.",
                 },
             ],
-            returns: "(string) Call path output.",
+            returns: "(string?, string?) output and optional error message.",
             example: "",
         },
         FnDoc {
             name: "refactor",
             args: "{operation}, {project}",
-            desc: "Run refactoring operations via the Arbor CLI.",
+            desc: "Run refactoring operations via the Arbor CLI. WARNING: this mutates source files and must be used with caution.",
             params: &[
                 ParamDoc {
                     name: "{operation}",
@@ -498,7 +535,7 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
                     desc: "Path to the project root.",
                 },
             ],
-            returns: "(string) Refactoring output.",
+            returns: "(string?, string?) output and optional error message.",
             example: "",
         },
         FnDoc {
@@ -510,7 +547,7 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
                 ty: "string",
                 desc: "Path to the project root.",
             }],
-            returns: "(string) Check output.",
+            returns: "(string?, string?) output and optional error message.",
             example: "",
         },
         FnDoc {
@@ -522,7 +559,7 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
                 ty: "string",
                 desc: "Path to the project root.",
             }],
-            returns: "(string) Project summary.",
+            returns: "(string?, string?) output and optional error message.",
             example: "",
         },
     ],

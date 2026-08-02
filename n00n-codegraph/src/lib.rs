@@ -514,108 +514,120 @@ mod tests {
     use super::{Client, CodegraphError};
     use std::path::Path;
 
+    const NO_INDEX: &str = "no .codegraph/ index found";
+    const QUERY_REQUIRED: &str = "query is required";
+    const SYMBOL_REQUIRED: &str = "symbol is required";
+    const NAME_REQUIRED: &str = "name is required";
+    const SEARCH_REQUIRED: &str = "search is required";
+    const FILES_REQUIRED: &str = "at least one file is required";
+
+    fn assert_cli_error(result: Result<String, CodegraphError>, expected: &str) {
+        match result {
+            Err(CodegraphError::Cli { message }) => {
+                assert!(message.contains(expected), "message: {message}");
+            }
+            other => panic!("expected Cli error, got: {other:?}"),
+        }
+    }
+
     #[test]
     fn explore_requires_query() {
-        let result = Client::explore("   ", Path::new("."), None);
-        assert!(matches!(result, Err(CodegraphError::Cli { .. })));
+        assert_cli_error(Client::explore("   ", Path::new("."), None), QUERY_REQUIRED);
     }
 
     #[test]
     fn explore_requires_index_directory() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let result = Client::explore("how does auth work", dir.path(), None);
-        assert!(matches!(result, Err(CodegraphError::Cli { .. })));
+        assert_cli_error(
+            Client::explore("how does auth work", dir.path(), None),
+            NO_INDEX,
+        );
     }
 
     #[test]
     fn callers_requires_symbol() {
-        let result = Client::callers("   ", Path::new("."), None);
-        assert!(matches!(result, Err(CodegraphError::Cli { .. })));
+        assert_cli_error(
+            Client::callers("   ", Path::new("."), None),
+            SYMBOL_REQUIRED,
+        );
     }
 
     #[test]
     fn callers_requires_index_directory() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let result = Client::callers("restore_item", dir.path(), None);
-        assert!(matches!(result, Err(CodegraphError::Cli { .. })));
+        assert_cli_error(Client::callers("restore_item", dir.path(), None), NO_INDEX);
     }
 
     #[test]
     fn callees_requires_symbol() {
-        let result = Client::callees("   ", Path::new("."), None);
-        assert!(matches!(result, Err(CodegraphError::Cli { .. })));
+        assert_cli_error(
+            Client::callees("   ", Path::new("."), None),
+            SYMBOL_REQUIRED,
+        );
     }
 
     #[test]
     fn callees_requires_index_directory() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let result = Client::callees("main", dir.path(), None);
-        assert!(matches!(result, Err(CodegraphError::Cli { .. })));
+        assert_cli_error(Client::callees("main", dir.path(), None), NO_INDEX);
     }
 
     #[test]
     fn impact_requires_symbol() {
-        let result = Client::impact("   ", Path::new("."), None);
-        assert!(matches!(result, Err(CodegraphError::Cli { .. })));
+        assert_cli_error(Client::impact("   ", Path::new("."), None), SYMBOL_REQUIRED);
     }
 
     #[test]
     fn impact_requires_index_directory() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let result = Client::impact("Config", dir.path(), None);
-        assert!(matches!(result, Err(CodegraphError::Cli { .. })));
+        assert_cli_error(Client::impact("Config", dir.path(), None), NO_INDEX);
     }
 
     #[test]
     fn affected_requires_files() {
-        let result = Client::affected(&[], Path::new("."), None);
-        assert!(matches!(result, Err(CodegraphError::Cli { .. })));
+        assert_cli_error(Client::affected(&[], Path::new("."), None), FILES_REQUIRED);
     }
 
     #[test]
     fn affected_requires_index_directory() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let result = Client::affected(&["src/main.rs"], dir.path(), None);
-        assert!(matches!(result, Err(CodegraphError::Cli { .. })));
+        assert_cli_error(
+            Client::affected(&["src/main.rs"], dir.path(), None),
+            NO_INDEX,
+        );
     }
 
     #[test]
     fn node_requires_name() {
-        let result = Client::node("   ", Path::new("."), None);
-        assert!(matches!(result, Err(CodegraphError::Cli { .. })));
+        assert_cli_error(Client::node("   ", Path::new("."), None), NAME_REQUIRED);
     }
 
     #[test]
     fn node_requires_index_directory() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let result = Client::node("AuthService", dir.path(), None);
-        assert!(matches!(result, Err(CodegraphError::Cli { .. })));
+        assert_cli_error(Client::node("AuthService", dir.path(), None), NO_INDEX);
     }
 
     #[test]
     fn query_requires_search() {
-        let result = Client::query("   ", Path::new("."), None);
-        assert!(matches!(result, Err(CodegraphError::Cli { .. })));
+        assert_cli_error(Client::query("   ", Path::new("."), None), SEARCH_REQUIRED);
     }
 
     #[test]
     fn query_requires_index_directory() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let result = Client::query("auth", dir.path(), None);
-        assert!(matches!(result, Err(CodegraphError::Cli { .. })));
+        assert_cli_error(Client::query("auth", dir.path(), None), NO_INDEX);
     }
 
     #[test]
     fn sync_requires_index_directory() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let result = Client::sync(dir.path(), None);
-        assert!(matches!(result, Err(CodegraphError::Cli { .. })));
+        assert_cli_error(Client::sync(dir.path(), None), NO_INDEX);
     }
 
     #[test]
     fn files_requires_index_directory() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let result = Client::files(dir.path(), None);
-        assert!(matches!(result, Err(CodegraphError::Cli { .. })));
+        assert_cli_error(Client::files(dir.path(), None), NO_INDEX);
     }
 }
