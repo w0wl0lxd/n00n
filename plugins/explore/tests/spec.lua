@@ -156,28 +156,15 @@ end)
 
 -- T020: Router classification accuracy test (SC-001)
 case("router_classification_accuracy", function()
-  local queries = {
-    { query = "src/main.rs", intent = "file" },
-    { query = "how does auth work", intent = "cross_file" },
-    { query = "callers of restore_item", intent = "relations" },
-    { query = "impact of changing restore_item", intent = "impact" },
-    { query = "call path from foo to bar", intent = "relations" },
-    { query = "what calls parse_file", intent = "relations" },
-    { query = "what does main call", intent = "relations" },
-    { query = "project map", intent = "relations" },
-    { query = "trace path from A to B", intent = "relations" },
-    { query = "blast radius of Foo", intent = "impact" },
-    { query = "affected by change in X", intent = "impact" },
-    { query = "status", intent = "relations" },
-    { query = "diff", intent = "relations" },
-    { query = "how does the agent loop work", intent = "cross_file" },
-    { query = "impact of parse_file", intent = "impact" },
-    { query = "symbol definition", intent = "symbol" },
-    { query = "impact of changing Foo", intent = "impact" },
-    { query = "callers of main", intent = "relations" },
-    { query = "callees of main", intent = "relations" },
-    { query = "who calls foo", intent = "relations" },
-  }
+  local f = io.open("tests/fixtures/explore-queries.json", "r")
+  if not f then
+    error("could not open tests/fixtures/explore-queries.json")
+  end
+  local content = f:read("*a")
+  f:close()
+
+  local json = require("n00n.json")
+  local queries = json.decode(content)
 
   local correct = 0
   for _, q in ipairs(queries) do
