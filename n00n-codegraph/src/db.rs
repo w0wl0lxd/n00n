@@ -175,6 +175,42 @@ pub fn files_database(project: &Path) -> Result<String, CodegraphError> {
     Ok(files.join("\n"))
 }
 
+pub fn affected_database(files: &[&str], project: &Path) -> Result<String, CodegraphError> {
+    let db_path = db_path(project);
+    let conn = Connection::open_with_flags(
+        &db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|source| CodegraphError::Sqlite { source })?;
+
+    conn.pragma_update(None, "query_only", "true")
+        .map_err(|source| CodegraphError::Sqlite { source })?;
+
+    let mut affected_files = Vec::new();
+    for file in files {
+        let pattern = format!("%{}%", file.trim());
+        let mut stmt = conn
+            .prepare(
+                "SELECT DISTINCT file_path FROM nodes WHERE file_path LIKE ?1 ORDER BY file_path",
+            )
+            .map_err(|source| CodegraphError::Sqlite { source })?;
+
+        let rows = stmt
+            .query_map((pattern.as_str(),), |row| row.get::<_, String>(0))
+            .map_err(|source| CodegraphError::Sqlite { source })?;
+
+        for row in rows {
+            affected_files.push(row.map_err(|source| CodegraphError::Sqlite { source })?);
+        }
+    }
+
+    if affected_files.is_empty() {
+        return Ok(format!("No affected files found for: {}", files.join(", ")));
+    }
+
+    Ok(affected_files.join("\n"))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraphNode {
     pub id: String,

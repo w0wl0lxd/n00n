@@ -78,36 +78,36 @@
 
 ### Tests for US3
 
-- [ ] T028 [P] [US3] Add failing test for callers command in n00n-codegraph/src/lib.rs
-- [ ] T029 [P] [US3] Add failing test for callees command in n00n-codegraph/src/lib.rs
-- [ ] T030 [P] [US3] Add failing test for impact command in n00n-codegraph/src/lib.rs
-- [ ] T031 [P] [US3] Add failing test for affected command in n00n-codegraph/src/lib.rs
-- [ ] T031a [P] [US3] Add failing test for files command in n00n-codegraph/src/lib.rs
-- [ ] T032 [P] [US3] Add failing test for node command in n00n-codegraph/src/lib.rs
-- [ ] T033 [P] [US3] Add failing test for query command in n00n-codegraph/src/lib.rs
-- [ ] T034 [P] [US3] Add failing test for sync command in n00n-codegraph/src/lib.rs
+- [X] T028 [P] [US3] Add failing test for callers command in n00n-codegraph/src/lib.rs
+- [X] T029 [P] [US3] Add failing test for callees command in n00n-codegraph/src/lib.rs
+- [X] T030 [P] [US3] Add failing test for impact command in n00n-codegraph/src/lib.rs
+- [X] T031 [P] [US3] Add failing test for affected command in n00n-codegraph/src/lib.rs
+- [X] T031a [P] [US3] Add failing test for files command in n00n-codegraph/src/lib.rs
+- [X] T032 [P] [US3] Add failing test for node command in n00n-codegraph/src/lib.rs
+- [X] T033 [P] [US3] Add failing test for query command in n00n-codegraph/src/lib.rs
+- [X] T034 [P] [US3] Add failing test for sync command in n00n-codegraph/src/lib.rs
 
 ### Implementation for US3
 
-- [ ] T035 [US3] Update n00n-codegraph/Cargo.toml to target CodeGraph 1.5.0 (add comment, no dependency change)
-- [ ] T036 [US3] Extend n00n-codegraph/src/lib.rs with callers command function
-- [ ] T037 [US3] Extend n00n-codegraph/src/lib.rs with callees command function
-- [ ] T038 [US3] Extend n00n-codegraph/src/lib.rs with impact command function
-- [ ] T039 [US3] Extend n00n-codegraph/src/lib.rs with affected command function
-- [ ] T039a [US3] Extend n00n-codegraph/src/lib.rs with files command function
-- [ ] T040 [US3] Extend n00n-codegraph/src/lib.rs with node command function
-- [ ] T041 [US3] Extend n00n-codegraph/src/lib.rs with query command function
-- [ ] T042 [US3] Extend n00n-codegraph/src/lib.rs with sync command function
-- [ ] T043 [US3] Extend n00n-codegraph/src/db.rs with native SQLite queries for callers
-- [ ] T044 [US3] Extend n00n-codegraph/src/db.rs with native SQLite queries for callees
-- [ ] T045 [US3] Extend n00n-codegraph/src/db.rs with native SQLite queries for impact
-- [ ] T046 [US3] Extend n00n-codegraph/src/db.rs with native SQLite queries for affected
-- [ ] T046a [US3] Extend n00n-codegraph/src/db.rs with native SQLite queries for files
-- [ ] T047 [US3] Extend n00n-codegraph/src/db.rs with native SQLite queries for node
-- [ ] T048 [US3] Extend n00n-codegraph/src/db.rs with native SQLite queries for query
-- [ ] T049 [US3] Add Lua API functions in n00n-lua/src/api/codegraph.rs for new commands
-- [ ] T050 [US3] Update plugins/codegraph/init.lua to expose new commands in tool schema
-- [ ] T051 [US3] Run tests for new CodeGraph commands in n00n-codegraph/src/lib.rs
+- [X] T035 [US3] Update n00n-codegraph/Cargo.toml to target CodeGraph 1.5.0 (add comment, no dependency change)
+- [X] T036 [US3] Extend n00n-codegraph/src/lib.rs with callers command function
+- [X] T037 [US3] Extend n00n-codegraph/src/lib.rs with callees command function
+- [X] T038 [US3] Extend n00n-codegraph/src/lib.rs with impact command function
+- [X] T039 [US3] Extend n00n-codegraph/src/lib.rs with affected command function
+- [X] T039a [US3] Extend n00n-codegraph/src/lib.rs with files command function
+- [X] T040 [US3] Extend n00n-codegraph/src/lib.rs with node command function
+- [X] T041 [US3] Extend n00n-codegraph/src/lib.rs with query command function
+- [X] T042 [US3] Extend n00n-codegraph/src/lib.rs with sync command function
+- [X] T043 [US3] Extend n00n-codegraph/src/db.rs with native SQLite queries for callers
+- [X] T044 [US3] Extend n00n-codegraph/src/db.rs with native SQLite queries for callees
+- [X] T045 [US3] Extend n00n-codegraph/src/db.rs with native SQLite queries for impact
+- [X] T046 [US3] Extend n00n-codegraph/src/db.rs with native SQLite queries for affected
+- [X] T046a [US3] Extend n00n-codegraph/src/db.rs with native SQLite queries for files
+- [X] T047 [US3] Extend n00n-codegraph/src/db.rs with native SQLite queries for node
+- [X] T048 [US3] Extend n00n-codegraph/src/db.rs with native SQLite queries for query
+- [X] T049 [US3] Add Lua API functions in n00n-lua/src/api/codegraph.rs for new commands
+- [X] T050 [US3] Update plugins/codegraph/init.lua to expose new commands in tool schema
+- [X] T051 [US3] Run tests for new CodeGraph commands in n00n-codegraph/src/lib.rs
 
 **Checkpoint**: CodeGraph 1.5.0 commands exposed and tested
 
