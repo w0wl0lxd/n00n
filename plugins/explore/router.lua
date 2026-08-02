@@ -47,14 +47,16 @@ function M.normalize_intent(input)
     return "cross_file"
   end
 
+  if query:match("trace.?path") or query:match("call path") or query:match("^trace%s") or query:match("trace from") then
+    return "trace"
+  end
+
   if
     query:match("caller")
     or query:match("callee")
     or query:match("who calls")
     or query:match("what calls")
     or query:match("what does%s+.-call$")
-    or query:match("trace.?path")
-    or query:match("call path")
     or query:match("^map$")
     or query:match("project map")
     or query:match("^status$")
