@@ -505,6 +505,25 @@ impl McpSession {
         }
     }
 
+    #[must_use]
+    pub fn is_excluded(&self, qualified_name: &str) -> bool {
+        self.excluded.contains(qualified_name)
+    }
+
+    #[must_use]
+    pub fn loaded_tool_names(&self) -> Vec<String> {
+        let loaded = self.lock_loaded();
+        self.handle
+            .index
+            .load()
+            .descriptors
+            .iter()
+            .filter(|descriptor| loaded.contains(&descriptor.qualified_name))
+            .filter(|descriptor| !self.excluded.contains(&descriptor.qualified_name))
+            .map(|descriptor| descriptor.wire_name().to_owned())
+            .collect()
+    }
+
     fn lock_loaded(&self) -> std::sync::MutexGuard<'_, HashSet<Arc<str>>> {
         self.loaded
             .lock()
@@ -1549,6 +1568,18 @@ mod tests {
         assert!(names.contains(&"eager__tool"));
         assert!(names.contains(&TOOL_SEARCH_TOOL_NAME));
         assert!(!names.contains(&"lazy__tool"));
+    }
+
+    #[test]
+    fn loaded_tool_names_excludes_always_load_tools() {
+        let (_inner, handle) = setup(vec![
+            always_load_entry("eager", FakeTransport::new()),
+            fake_entry("lazy", FakeTransport::new()),
+        ]);
+
+        handle.search_tools("lazy__tool").unwrap();
+
+        assert_eq!(handle.loaded_tool_names(), ["lazy__tool"]);
     }
 
     #[test]
