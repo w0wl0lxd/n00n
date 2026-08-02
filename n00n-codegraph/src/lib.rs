@@ -156,6 +156,10 @@ impl Client {
             });
         }
 
+        if Self::has_database(project) {
+            return db::affected_database(files, project);
+        }
+
         Self::affected_cli(files, project, timeout_secs)
     }
 
