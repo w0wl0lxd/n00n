@@ -477,7 +477,8 @@ fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pa
     };
 
     let mcp_base = match (&only, &except) {
-        (None, Some(excluded)) => ToolFilter::AllExcept(excluded.clone()),
+        (Some(included), _) => ToolFilter::Only(included.clone()),
+        (_, Some(excluded)) => ToolFilter::AllExcept(excluded.clone()),
         _ => ToolFilter::All,
     };
     let base = match (only, except) {
@@ -752,6 +753,9 @@ async fn session(
     if explicit_tools {
         tool_filter = try_pair!(explicit_tool_filter(&tools_json));
     }
+    let allow_dynamic_mcp_tools = explicit_tools
+        && include_mcp
+        && tool_filter.matches(n00n_agent::mcp::TOOL_SEARCH_TOOL_NAME);
 
     let thinking = match thinking_val {
         Some(LuaValue::String(s)) => match StoredThinking::parse_setting(&s.to_str()?) {
@@ -846,7 +850,7 @@ async fn session(
         system: system.unwrap_or_else(String::new),
         tools: tools_json,
         tool_filter,
-        allow_dynamic_mcp_tools: explicit_tools && include_mcp,
+        allow_dynamic_mcp_tools,
         thinking,
         fast,
         mode,
@@ -1720,7 +1724,7 @@ mod tests {
     }
 
     #[test]
-    fn only_filter_preserves_separately_appended_mcp_definitions() {
+    fn only_filter_restricts_separately_appended_mcp_definitions() {
         let only = ToolFilter::Only(vec!["read".into()]);
         let mut definitions = json!([
             {"name": "read"},
@@ -1733,16 +1737,9 @@ mod tests {
             json!({"name": "tool_search"}),
         ]);
 
-        filter_appended_definitions(&mut definitions, base_count, &ToolFilter::All);
+        filter_appended_definitions(&mut definitions, base_count, &only);
 
-        assert_eq!(
-            definitions,
-            json!([
-                {"name": "read"},
-                {"name": "stub__read_file"},
-                {"name": "tool_search"},
-            ])
-        );
+        assert_eq!(definitions, json!([{"name": "read"}]));
     }
 
     #[test]

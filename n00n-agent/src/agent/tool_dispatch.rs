@@ -2048,6 +2048,8 @@ mod tests {
             ("goal", "run git reset --hard HEAD"),
             ("goal", "run git clean -fdx"),
             ("goal", "run git -C . clean -fdx"),
+            ("goal", "run git checkout -- ."),
+            ("goal", "run git -C . restore ."),
             ("definition_of_done", "wipe the repository"),
             ("definition_of_done", "commit and merge the result"),
         ] {
