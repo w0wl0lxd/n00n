@@ -56,10 +56,11 @@ local schema = {
   properties = {
     tool_calls = {
       type = "array",
-      description = "Array of tool calls to execute in parallel",
+      description = "Required. Array of tool calls to execute in parallel. Key must be 'tool_calls'.",
       required = true,
+      alias = "tool_uses",
       items = {
-        description = "Tool invocation: { tool: string, parameters: object } or flat { tool: string, ...params }",
+        description = "Tool invocation: {tool, parameters} or flat {tool, ...params}.",
       },
     },
   },

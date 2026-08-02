@@ -606,7 +606,7 @@ Commands run in ]] .. cwd .. [[ by default.
 - Reserve for git, builds, tests, and system CLI operations. Do NOT use for file edits/writes.
 - Auto-rewrites via rtk when installed (git, cargo, rg, grep, gh, find, ls, cat, head, tail).
 - Use `workdir` instead of `cd`. Chain dependent commands with `&&`.
-- Unbounded/broad commands (e.g. find without -maxdepth, rg without limits) require `justification`.
+- Unbounded/broad commands (e.g. find without -maxdepth, rg without limits) require `justification`; the tool fails without it.
 - Interactive commands fail immediately. Truncated beyond 500 lines or 16KB.]]
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
@@ -634,7 +634,7 @@ n00n.api.register_tool({
       description = { type = "string", description = "Short description (3-5 words) of what the command does" },
       justification = {
         type = "string",
-        description = "Required when command is broad/unbounded. Explain scope and bound assumptions.",
+        description = "Required for unbounded commands. Explain scope and bounds.",
       },
     },
   },
