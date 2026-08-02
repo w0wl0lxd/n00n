@@ -52,13 +52,6 @@ pub(crate) fn telemetry_text(telemetry: &ToolTelemetry) -> String {
     out
 }
 
-pub(crate) fn json_text(value: &serde_json::Value) -> String {
-    match serde_json::to_string_pretty(value) {
-        Ok(s) => s,
-        Err(e) => format!("<invalid JSON: {e}>"),
-    }
-}
-
 fn todo_status_style(status: TodoStatus) -> Style {
     match status {
         TodoStatus::Completed => theme::current().tool_success,

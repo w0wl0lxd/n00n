@@ -1,3 +1,4 @@
+pub(crate) mod args_view;
 pub(crate) mod btw_modal;
 pub(crate) mod code_view;
 pub mod command;
@@ -464,6 +465,7 @@ pub(crate) fn test_model() -> n00n_providers::Model {
         supports_tool_examples_override: None,
         supports_thinking_override: None,
         supports_vision_override: Some(true),
+        supports_files_override: None,
         pricing: test_pricing(),
         max_output_tokens: Some(8192),
         context_window: TEST_CONTEXT_WINDOW,
