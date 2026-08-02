@@ -233,6 +233,9 @@ const WORKFLOW_TIMEOUT_CONFIG_ERR_SUBSTR: &str = "below minimum (60)";
 const ALREADY_CALLED_ERR: &str = "already called";
 const UNKNOWN_FIELD_ERR: &str = "unknown field";
 const PERMISSION_DENIED_MSG: &str = "permission denied";
+const VALIDATION_PROMPT_NO_PROVIDER_ERR: &str =
+    "validation prompt error: no provider configured — run /login or `n00n auth login`";
+const TOOLS_MUST_BE_ARRAY_ERR: &str = "tools must be an array";
 
 #[test]
 fn stdlib_globals_accessible() {
@@ -4032,10 +4035,7 @@ n00n.api.register_tool({{
         .output
         .expect("team validation wave should complete");
 
-    assert_eq!(
-        output.as_text(),
-        "validation prompt error: no provider configured — run /login or `n00n auth login`"
-    );
+    assert_eq!(output.as_text(), VALIDATION_PROMPT_NO_PROVIDER_ERR);
 }
 
 #[test]

@@ -62,7 +62,10 @@ impl ChildGuard {
             if let Some(mut child) = child {
                 futures_lite::future::or(
                     async {
-                        let _ = child.status().await;
+                        match child.status().await {
+                            Ok(_) => {}
+                            Err(e) => tracing::warn!("failed to reap child process: {}", e),
+                        }
                     },
                     async {
                         async_io::Timer::after(REAP_TIMEOUT).await;

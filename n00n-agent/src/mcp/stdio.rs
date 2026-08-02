@@ -401,11 +401,14 @@ mod tests {
             let outstanding_clone = Arc::clone(&transport);
             let pid = i32::try_from(transport.child_guard().id()).unwrap();
 
+            // SAFETY: pid was captured before reaping; kill(pid, 0) only checks process liveness without sending a signal.
             assert_eq!(unsafe { libc::kill(pid, 0) }, 0);
             transport.shutdown().await;
+            // SAFETY: pid was captured before reaping; kill(pid, 0) only checks process liveness without sending a signal.
             assert_ne!(unsafe { libc::kill(pid, 0) }, 0);
 
             outstanding_clone.shutdown().await;
+            // SAFETY: pid was captured before reaping; kill(pid, 0) only checks process liveness without sending a signal.
             assert_ne!(unsafe { libc::kill(pid, 0) }, 0);
         });
     }
