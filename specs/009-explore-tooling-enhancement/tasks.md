@@ -159,23 +159,23 @@
 
 ### Tests for US5
 
-- [ ] T072 [P] [US5] Add failing test for upstream CLI wrapper in n00n-semble/src/lib.rs
-- [ ] T073 [P] [US5] Add failing test for remote URL support in n00n-semble/src/lib.rs
-- [ ] T074 [P] [US5] Add failing test for content filter support in n00n-semble/src/lib.rs
-- [ ] T075 [P] [US5] Add failing test for BM25 fallback when CLI unavailable in n00n-semble/src/lib.rs
+- [X] T072 [P] [US5] Add failing test for upstream CLI wrapper in n00n-semble/src/lib.rs
+- [X] T073 [P] [US5] Add failing test for remote URL support in n00n-semble/src/lib.rs
+- [X] T074 [P] [US5] Add failing test for content filter support in n00n-semble/src/lib.rs
+- [X] T075 [P] [US5] Add failing test for BM25 fallback when CLI unavailable in n00n-semble/src/lib.rs
 
 ### Implementation for US5
 
-- [ ] T076 [US5] Add upstream Semble CLI wrapper function in n00n-semble/src/lib.rs for Semblem
-- [ ] T077 [US5] Add remote git URL support to Semble CLI wrapper in n00n-semble/src/lib.rs for Semblem
-- [ ] T078 [US5] Add --content docs/config/all flag support to Semble CLI wrapper in n00n-semble/src/lib.rs for Semblem
-- [ ] T079 [US5] Add find-related command support to Semble CLI wrapper in n00n-semble/src/lib.rs for Semblem
-- [ ] T080 [US5] Add savings command support to Semble CLI wrapper in n00n-semble/src/lib.rs for Semblem
-- [ ] T081 [US5] Add CLI availability check function in n00n-semble/src/lib.rs for Semblem
-- [ ] T082 [US5] Update plugins/semblem/init.lua to call upstream Semble CLI when available
-- [ ] T083 [US5] Update plugins/semblem/init.lua to fall back to native BM25 when Semble CLI unavailable
-- [ ] T084 [US5] Keep existing embedder nag logic for hybrid/semantic modes in n00n-semble/src/lib.rs
-- [ ] T085 [US5] Run tests for upstream CLI wrapper and BM25 fallback in n00n-semble/src/lib.rs
+- [X] T076 [US5] Add upstream Semble CLI wrapper function in n00n-semble/src/lib.rs for Semblem
+- [X] T077 [US5] Add remote git URL support to Semble CLI wrapper in n00n-semble/src/lib.rs for Semblem
+- [X] T078 [US5] Add --content docs/config/all flag support to Semble CLI wrapper in n00n-semble/src/lib.rs for Semblem
+- [X] T079 [US5] Add find-related command support to Semble CLI wrapper in n00n-semble/src/lib.rs for Semblem
+- [X] T080 [US5] Add savings command support to Semble CLI wrapper in n00n-semble/src/lib.rs for Semblem
+- [X] T081 [US5] Add CLI availability check function in n00n-semble/src/lib.rs for Semblem
+- [X] T082 [US5] Update plugins/semblem/init.lua to call upstream Semble CLI when available
+- [X] T083 [US5] Update plugins/semblem/init.lua to fall back to native BM25 when Semble CLI unavailable
+- [X] T084 [US5] Keep existing embedder nag logic for hybrid/semantic modes in n00n-semble/src/lib.rs
+- [X] T085 [US5] Run tests for upstream CLI wrapper and BM25 fallback in n00n-semble/src/lib.rs
 
 **Checkpoint**: Semblem hybrid with upstream CLI and BM25 fallback
 

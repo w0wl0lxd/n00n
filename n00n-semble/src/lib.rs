@@ -78,8 +78,7 @@ impl Client {
         Command::new("semble")
             .arg("--version")
             .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false)
+            .is_ok_and(|output| output.status.success())
     }
 
     // T076-T078: Search with upstream semble CLI wrapper
@@ -176,6 +175,7 @@ impl Client {
     }
 
     // T077: Handle remote git URLs by cloning to temp dir
+    #[allow(deprecated)]
     pub fn resolve_repo_path(repo: &str) -> Result<PathBuf, SembleError> {
         if repo.starts_with("https://") || repo.starts_with("git@") {
             let temp_dir = tempfile::tempdir().map_err(|e| SembleError::Cli {
@@ -265,12 +265,10 @@ impl Client {
     ) -> Result<String, SembleError> {
         // Try CLI for hybrid/semantic modes
         if matches!(mode, Mode::Hybrid | Mode::Semantic) && Self::cli_available() {
-            match Self::cli_search(repo, query, mode, top_k, content) {
-                Ok(result) => return Ok(result),
-                Err(_) => {
-                    // CLI failed, fall back to BM25 with embedder nag
-                }
+            if let Ok(result) = Self::cli_search(repo, query, mode, top_k, content) {
+                return Ok(result);
             }
+            // CLI failed, fall back to BM25 with embedder nag
         }
 
         // Fall back to native BM25
@@ -308,12 +306,10 @@ impl Client {
     ) -> Result<String, SembleError> {
         // Try CLI first
         if Self::cli_available() {
-            match Self::cli_find_related(repo, file_path, line, top_k) {
-                Ok(result) => return Ok(result),
-                Err(_) => {
-                    // CLI failed, fall back to native
-                }
+            if let Ok(result) = Self::cli_find_related(repo, file_path, line, top_k) {
+                return Ok(result);
             }
+            // CLI failed, fall back to native
         }
 
         // Fall back to native
