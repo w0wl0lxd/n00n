@@ -223,6 +223,18 @@ impl GraphIndex {
         self.find_neighbors(&self.outgoing, index, Some(CALLS_EDGE_KIND))
     }
 
+    pub fn caller_count(&self, index: usize) -> usize {
+        self.incoming.get(&index).map_or(0, |links| {
+            Self::neighbor_indices(links, Some(CALLS_EDGE_KIND)).len()
+        })
+    }
+
+    pub fn callee_count(&self, index: usize) -> usize {
+        self.outgoing.get(&index).map_or(0, |links| {
+            Self::neighbor_indices(links, Some(CALLS_EDGE_KIND)).len()
+        })
+    }
+
     pub fn trace_path_symbols(
         &self,
         from: &SymbolQuery,

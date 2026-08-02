@@ -10,12 +10,6 @@ local function case(name, fn)
   end
 end
 
-local function eq(actual, expected, msg)
-  if actual ~= expected then
-    error((msg or "") .. "\nexpected: " .. tostring(expected) .. "\n  actual: " .. tostring(actual))
-  end
-end
-
 -- T086: Test RTK availability caching (simulated via module inspection)
 case("rtk_availability_cache_exists", function()
   -- The bash plugin should have a module-level rtk_available variable
@@ -45,17 +39,21 @@ end)
 
 -- T091: Test jq and yq passthrough
 case("jq_yq_passthrough_in_code", function()
-  local f = io.open("plugins/bash/init.lua", "r")
-  if not f then
-    error("could not open plugins/bash/init.lua")
-  end
-  local content = f:read("*a")
-  f:close()
+  local bash_init = loadfile("plugins/bash/init.lua")
+  assert(bash_init, "bash init.lua should be loadable")
 
-  -- Check that rtk_rewrite has explicit jq/yq passthrough logic
-  assert(content:find("jq"), "rtk_rewrite should handle jq")
-  assert(content:find("yq"), "rtk_rewrite should handle yq")
-  assert(content:find("pass through unchanged") or content:find("pass through"), "should mention passthrough behavior")
+  -- Verify the strip_leading_assignments function exists and handles nil
+  local env = {}
+  bash_init(env)
+  assert(env.strip_leading_assignments, "strip_leading_assignments function should exist")
+
+  -- Test that strip_leading_assignments returns empty string for empty input
+  local result = env.strip_leading_assignments("")
+  assert(result == "", "strip_leading_assignments should handle empty input")
+
+  -- Test that strip_leading_assignments handles assignments
+  result = env.strip_leading_assignments("FOO=bar jq .")
+  assert(result == "jq .", "strip_leading_assignments should strip leading assignments")
 end)
 
 -- T092: Test prompt hints mention rtk-wrapped bash

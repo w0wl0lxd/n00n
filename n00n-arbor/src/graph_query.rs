@@ -4,6 +4,11 @@ use std::path::Path;
 use crate::graph_json::{GraphIndex, SymbolQuery, SymbolRef};
 use crate::{ArborError, Client, MapEntry, MapSymbol, Relation, index_health};
 
+/// Estimated tokens for a symbol's centrality, caller count, and entry-point flag.
+const SYMBOL_METADATA_TOKENS: u64 = 20;
+/// Estimated tokens for the per-file entry header.
+const ENTRY_OVERHEAD_TOKENS: u64 = 10;
+
 fn line_number(line_start: usize) -> Option<u64> {
     // usize -> u64 cannot overflow on 64-bit targets; on other targets we
     // intentionally drop lines that do not fit rather than panic.
@@ -127,8 +132,8 @@ pub fn graph_map(project: &Path, token_budget: Option<u64>) -> Result<Vec<MapEnt
         std::collections::HashMap::new();
 
     for (idx, node) in index.nodes().iter().enumerate() {
-        let num_callers = index.find_callers(idx).len();
-        let num_callees = index.find_callees(idx).len();
+        let num_callers = index.caller_count(idx);
+        let num_callees = index.callee_count(idx);
         let centrality = if num_callers + num_callees > 0 {
             Some((num_callers as f64 + num_callees as f64) / (index.nodes().len() as f64))
         } else {
@@ -189,8 +194,7 @@ pub fn graph_entry_points(project: &Path) -> Result<Vec<Relation>, ArborError> {
     let mut entries = Vec::new();
 
     for (idx, node) in index.nodes().iter().enumerate() {
-        let caller_nodes = index.find_callers(idx);
-        if caller_nodes.is_empty() {
+        if index.caller_count(idx) == 0 && index.callee_count(idx) > 0 {
             entries.push(Relation {
                 name: node.name.clone(),
                 path: node.file.clone(),
@@ -208,11 +212,9 @@ fn estimate_entry_tokens(entry: &MapEntry) -> u64 {
     let symbol_tokens: u64 = entry
         .symbols
         .iter()
-        .map(|s| {
-            s.name.len() as u64 + s.kind.len() as u64 + 20 // overhead for centrality, callers, etc.
-        })
+        .map(|s| s.name.len() as u64 + s.kind.len() as u64 + SYMBOL_METADATA_TOKENS)
         .sum();
-    file_tokens + symbol_tokens + 10 // overhead per entry
+    file_tokens + symbol_tokens + ENTRY_OVERHEAD_TOKENS
 }
 
 #[cfg(test)]

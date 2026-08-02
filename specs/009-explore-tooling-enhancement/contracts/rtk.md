@@ -18,6 +18,7 @@ This is not a tool contract but a configuration and prompt contract for RTK bash
 ### Command Rewriting
 
 The following commands are rewritten through `rtk` when available:
+
 - git (status, diff, log, branch, remote, etc.)
 - cargo (test, build, check, clippy, etc.)
 - rg, grep
@@ -26,6 +27,7 @@ The following commands are rewritten through `rtk` when available:
 - Other commands supported by rtk
 
 The following commands pass through unchanged:
+
 - jq
 - yq
 - Commands with unsupported flags (e.g., find with -exec, -delete)

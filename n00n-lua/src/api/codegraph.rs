@@ -278,7 +278,7 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
         FnDoc {
             name: "affected",
             args: "{files}, {project}, {timeout_secs?}",
-            desc: "Find test files affected by changed source files using `codegraph affected`.",
+            desc: "Accept an array of file paths and compute the affected file set using `codegraph affected`.",
             params: &[
                 ParamDoc {
                     name: "{files}",

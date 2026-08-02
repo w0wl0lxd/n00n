@@ -18,7 +18,7 @@
     },
     "repo": {
       "type": "string",
-      "description": "Repository path or remote git URL."
+      "description": "Repository path or remote git URL (defaults to cwd). Remote URLs require the N00N_SEMBLE_ALLOWED_REMOTE_REPOS allowlist."
     },
     "query": {
       "type": "string",
@@ -41,8 +41,7 @@
     "content": {
       "type": "string",
       "enum": ["code", "docs", "config", "all"],
-      "default": "code",
-      "description": "Content filter for search command (upstream CLI only)."
+      "description": "Optional content filter for search command (upstream CLI only; no default)."
     },
     "top_k": {
       "type": "integer",
@@ -67,6 +66,7 @@
 Returns ranked code snippets with file path, line range, score, and snippet content.
 
 Format:
+
 ```
 file_path:start_line-end_line score=0.xxx
 snippet content
@@ -82,7 +82,8 @@ Returns token savings analysis as formatted text.
 
 ## Error Handling
 
-- If repo is not provided, return error: "repo is required".
+- If repo is omitted, the current working directory is used.
+- Remote git URLs are only permitted when listed in the `N00N_SEMBLE_ALLOWED_REMOTE_REPOS` allowlist.
 - If query is not provided for search command, return error: "query is required".
 - If file_path or line is not provided for find_related, return error: "file_path and line are required".
 - If upstream CLI is unavailable, fall back to native BM25 for search and find_related.

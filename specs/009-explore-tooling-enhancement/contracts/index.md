@@ -23,7 +23,8 @@
 Returns a compact single-file skeleton with top-level definitions, function signatures, and line ranges.
 
 Format:
-```
+
+```text
 file_path
   definition1 (line N-M)
   definition2 (line N-M)

@@ -2,6 +2,7 @@
 #![allow(clippy::new_without_default)]
 #![allow(clippy::must_use_candidate)]
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -81,6 +82,28 @@ struct DiffResponse {
     #[allow(dead_code)]
     changed_symbols: u64,
     impact: DiffImpact,
+}
+
+fn run_arbor_cmd<I, S>(subcommand: &str, args: I) -> Result<String, ArborError>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let output = Command::new("arbor")
+        .arg(subcommand)
+        .arg("--")
+        .args(args)
+        .output()
+        .map_err(|source| ArborError::Exec { source })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ArborError::Cli {
+            message: stderr.to_string(),
+        });
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 pub struct Client;
@@ -297,139 +320,41 @@ impl Client {
 
     // T059: entry-points command
     pub fn entry_points(project: &Path) -> Result<String, ArborError> {
-        let output = Command::new("arbor")
-            .arg("entry-points")
-            .arg("--")
-            .arg(project.as_os_str())
-            .output()
-            .map_err(|e| ArborError::Exec { source: e })?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(ArborError::Cli {
-                message: stderr.to_string(),
-            });
-        }
-
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        run_arbor_cmd("entry-points", [project.as_os_str()])
     }
 
     // T060: file-graph command
-    pub fn file_graph(project: &Path) -> Result<String, ArborError> {
-        let output = Command::new("arbor")
-            .arg("file-graph")
-            .arg("--")
-            .arg(project.as_os_str())
-            .output()
-            .map_err(|e| ArborError::Exec { source: e })?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(ArborError::Cli {
-                message: stderr.to_string(),
-            });
+    pub fn file_graph(project: &Path, file: Option<&str>) -> Result<String, ArborError> {
+        if let Some(f) = file {
+            run_arbor_cmd("file-graph", [project.as_os_str(), f.as_ref()])
+        } else {
+            run_arbor_cmd("file-graph", [project.as_os_str()])
         }
-
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
     // T061: inspect command
     pub fn inspect(symbol: &str, project: &Path) -> Result<String, ArborError> {
-        let output = Command::new("arbor")
-            .arg("inspect")
-            .arg("--")
-            .arg(symbol)
-            .arg(project.as_os_str())
-            .output()
-            .map_err(|e| ArborError::Exec { source: e })?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(ArborError::Cli {
-                message: stderr.to_string(),
-            });
-        }
-
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        run_arbor_cmd("inspect", [symbol.as_ref(), project.as_os_str()])
     }
 
     // T062: path command
     pub fn path(from: &str, to: &str, project: &Path) -> Result<String, ArborError> {
-        let output = Command::new("arbor")
-            .arg("path")
-            .arg("--")
-            .arg(from)
-            .arg(to)
-            .arg(project.as_os_str())
-            .output()
-            .map_err(|e| ArborError::Exec { source: e })?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(ArborError::Cli {
-                message: stderr.to_string(),
-            });
-        }
-
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        run_arbor_cmd("path", [from.as_ref(), to.as_ref(), project.as_os_str()])
     }
 
-    // T063: refactor command
+    // T063: refactor command (mutates source files - use with caution)
     pub fn refactor(operation: &str, project: &Path) -> Result<String, ArborError> {
-        let output = Command::new("arbor")
-            .arg("refactor")
-            .arg("--")
-            .arg(operation)
-            .arg(project.as_os_str())
-            .output()
-            .map_err(|e| ArborError::Exec { source: e })?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(ArborError::Cli {
-                message: stderr.to_string(),
-            });
-        }
-
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        run_arbor_cmd("refactor", [operation.as_ref(), project.as_os_str()])
     }
 
     // T064: check command
     pub fn check(project: &Path) -> Result<String, ArborError> {
-        let output = Command::new("arbor")
-            .arg("check")
-            .arg("--")
-            .arg(project.as_os_str())
-            .output()
-            .map_err(|e| ArborError::Exec { source: e })?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(ArborError::Cli {
-                message: stderr.to_string(),
-            });
-        }
-
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        run_arbor_cmd("check", [project.as_os_str()])
     }
 
     // T065: summary command
     pub fn summary(project: &Path) -> Result<String, ArborError> {
-        let output = Command::new("arbor")
-            .arg("summary")
-            .arg("--")
-            .arg(project.as_os_str())
-            .output()
-            .map_err(|e| ArborError::Exec { source: e })?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(ArborError::Cli {
-                message: stderr.to_string(),
-            });
-        }
-
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        run_arbor_cmd("summary", [project.as_os_str()])
     }
 }
 
@@ -607,88 +532,52 @@ mod tests {
         assert!(s.is_entry_point.is_none());
     }
 
-    // T052: Test for entry-points command
+    // T052-T058: Test helper for CLI commands that require Arbor binary
+    fn assert_cli_requires_cli<F>(fn_name: &str, f: F)
+    where
+        F: FnOnce(&Path) -> Result<String, ArborError>,
+    {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let result = f(dir.path());
+        assert!(result.is_err(), "{fn_name} should fail without Arbor CLI");
+        match result.unwrap_err() {
+            ArborError::Exec { .. } | ArborError::Cli { .. } => (),
+            other => panic!("{fn_name}: expected Exec or Cli error, got: {other:?}"),
+        }
+    }
+
     #[test]
     fn entry_points_requires_cli() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let result = Client::entry_points(dir.path());
-        assert!(result.is_err());
-        // Accept either Exec (CLI not found) or Cli (CLI found but project not indexed)
-        match result.unwrap_err() {
-            ArborError::Exec { .. } | ArborError::Cli { .. } => (),
-            other => panic!("expected Exec or Cli error, got: {other:?}"),
-        }
+        assert_cli_requires_cli("entry_points", Client::entry_points);
     }
 
-    // T053: Test for file-graph command
     #[test]
     fn file_graph_requires_cli() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let result = Client::file_graph(dir.path());
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            ArborError::Exec { .. } | ArborError::Cli { .. } => (),
-            other => panic!("expected Exec or Cli error, got: {other:?}"),
-        }
+        assert_cli_requires_cli("file_graph", |p| Client::file_graph(p, None));
     }
 
-    // T054: Test for inspect command
     #[test]
     fn inspect_requires_cli() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let result = Client::inspect("main", dir.path());
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            ArborError::Exec { .. } | ArborError::Cli { .. } => (),
-            other => panic!("expected Exec or Cli error, got: {other:?}"),
-        }
+        assert_cli_requires_cli("inspect", |p| Client::inspect("main", p));
     }
 
-    // T055: Test for path command
     #[test]
     fn path_requires_cli() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let result = Client::path("main", "helper", dir.path());
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            ArborError::Exec { .. } | ArborError::Cli { .. } => (),
-            other => panic!("expected Exec or Cli error, got: {other:?}"),
-        }
+        assert_cli_requires_cli("path", |p| Client::path("main", "helper", p));
     }
 
-    // T056: Test for refactor command
     #[test]
     fn refactor_requires_cli() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let result = Client::refactor("rename", dir.path());
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            ArborError::Exec { .. } | ArborError::Cli { .. } => (),
-            other => panic!("expected Exec or Cli error, got: {other:?}"),
-        }
+        assert_cli_requires_cli("refactor", |p| Client::refactor("rename", p));
     }
 
-    // T057: Test for check command
     #[test]
     fn check_requires_cli() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let result = Client::check(dir.path());
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            ArborError::Exec { .. } | ArborError::Cli { .. } => (),
-            other => panic!("expected Exec or Cli error, got: {other:?}"),
-        }
+        assert_cli_requires_cli("check", Client::check);
     }
 
-    // T058: Test for summary command
     #[test]
     fn summary_requires_cli() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let result = Client::summary(dir.path());
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            ArborError::Exec { .. } | ArborError::Cli { .. } => (),
-            other => panic!("expected Exec or Cli error, got: {other:?}"),
-        }
+        assert_cli_requires_cli("summary", Client::summary);
     }
 }

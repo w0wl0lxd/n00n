@@ -21,6 +21,9 @@ end
 local function dispatch(input, ctx, use_cache)
   local intent = router.normalize_intent(input)
   local backend, backend_input = router.build_backend_input(input, intent)
+  if backend_input and backend_input.is_error then
+    return backend_input, route_label(backend or "unknown", intent), false
+  end
   local cache_key = router.cache_key(backend, backend_input)
 
   if use_cache and session_cache[cache_key] then

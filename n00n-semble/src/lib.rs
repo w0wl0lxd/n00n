@@ -9,6 +9,7 @@ use n00n_search::{
     Error as SearchError, Query, SearchConfig, SearchIndex, SearchMode, SearchResult,
 };
 
+const SEMBLE_BINARY: &str = "semble";
 const DEFAULT_TOP_K: usize = 5;
 
 fn resolve_top_k(top_k: Option<usize>) -> usize {
@@ -76,7 +77,7 @@ impl Client {
 
     // T081: Check if semble CLI is available
     pub fn cli_available() -> bool {
-        Command::new("semble")
+        Command::new(SEMBLE_BINARY)
             .arg("--version")
             .output()
             .is_ok_and(|output| output.status.success())
@@ -90,7 +91,7 @@ impl Client {
         top_k: Option<usize>,
         content: Option<&str>,
     ) -> Result<String, SembleError> {
-        let mut cmd = Command::new("semble");
+        let mut cmd = Command::new(SEMBLE_BINARY);
         cmd.arg("search");
 
         if let Some(k) = top_k {
@@ -133,7 +134,7 @@ impl Client {
         line: usize,
         top_k: Option<usize>,
     ) -> Result<String, SembleError> {
-        let mut cmd = Command::new("semble");
+        let mut cmd = Command::new(SEMBLE_BINARY);
         cmd.arg("find-related");
 
         if let Some(k) = top_k {
@@ -158,7 +159,7 @@ impl Client {
 
     // T080: savings command with upstream semble CLI wrapper
     pub fn cli_savings(repo: &Path) -> Result<String, SembleError> {
-        let output = Command::new("semble")
+        let output = Command::new(SEMBLE_BINARY)
             .arg("savings")
             .arg("--")
             .arg(repo)
@@ -182,6 +183,33 @@ impl Client {
         repo: &str,
     ) -> Result<(PathBuf, Option<tempfile::TempDir>), SembleError> {
         if repo.starts_with("https://") || repo.starts_with("git@") {
+            // Validate remote URL against allowlist
+            let allowed = std::env::var("N00N_SEMBLE_ALLOWED_REMOTE_REPOS");
+            let allowed = match allowed {
+                Ok(v) if !v.is_empty() => v,
+                _ => {
+                    return Err(SembleError::Cli {
+                        message: String::from(
+                            "remote repository URLs are not allowed; set N00N_SEMBLE_ALLOWED_REMOTE_REPOS to authorize",
+                        ),
+                    });
+                }
+            };
+
+            if allowed != "*" {
+                let allowed_prefixes: Vec<&str> = allowed.split(',').map(str::trim).collect();
+                let is_allowed = allowed_prefixes
+                    .iter()
+                    .any(|prefix| repo.starts_with(prefix));
+                if !is_allowed {
+                    return Err(SembleError::Cli {
+                        message: format!(
+                            "remote repository URL '{repo}' is not in the allowed list (N00N_SEMBLE_ALLOWED_REMOTE_REPOS={allowed})"
+                        ),
+                    });
+                }
+            }
+
             let temp_dir = tempfile::tempdir().map_err(|e| SembleError::Cli {
                 message: format!("failed to create temp dir: {e}"),
             })?;
@@ -280,13 +308,26 @@ impl Client {
     ) -> Result<String, SembleError> {
         let (repo_path, _temp_dir) = Self::resolve_repo_path(repo)?;
 
-        // Try CLI for hybrid/semantic modes
-        if matches!(mode, Mode::Hybrid | Mode::Semantic)
-            && Self::cli_available()
-            && let Ok(result) = Self::cli_search(&repo_path, query, mode, top_k, content)
-        {
-            return Ok(result);
-            // CLI failed, fall back to BM25 with embedder nag
+        // Try CLI for hybrid/semantic modes, or when content filter is requested
+        let should_try_cli = matches!(mode, Mode::Hybrid | Mode::Semantic) || content.is_some();
+        if should_try_cli && Self::cli_available() {
+            match Self::cli_search(&repo_path, query, mode, top_k, content) {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    // Prepend warning before falling back
+                    let mut fallback_output = format!("[semblem CLI unavailable: {e}]\n");
+                    let request = SearchRequest {
+                        repo: repo_path.as_path(),
+                        query,
+                        mode,
+                        top_k,
+                        content,
+                    };
+                    let native_result = Self::search(&request)?;
+                    fallback_output.push_str(&native_result);
+                    return Ok(fallback_output);
+                }
+            }
         }
 
         // Fall back to native BM25
@@ -310,11 +351,34 @@ impl Client {
         let (repo_path, _temp_dir) = Self::resolve_repo_path(repo)?;
 
         // Try CLI first
-        if Self::cli_available()
-            && let Ok(result) = Self::cli_find_related(&repo_path, file_path, line, top_k)
-        {
-            return Ok(result);
-            // CLI failed, fall back to native
+        if Self::cli_available() {
+            match Self::cli_find_related(&repo_path, file_path, line, top_k) {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    // Prepend warning before falling back
+                    let mut fallback_output = format!("[semblem CLI unavailable: {e}]\n");
+
+                    let index_dir = Self::index_dir(&repo_path);
+                    let mut index =
+                        SearchIndex::open_or_create(&index_dir, &SearchConfig::default())
+                            .map_err(map_search_err)?;
+                    if !Self::has_index(&repo_path) {
+                        index.update(&repo_path, |_| {}).map_err(map_search_err)?;
+                    }
+
+                    let results = index
+                        .find_related(file_path, line)
+                        .map_err(map_search_err)?;
+                    let native_result = format_results(
+                        &results
+                            .into_iter()
+                            .take(resolve_top_k(top_k))
+                            .collect::<Vec<_>>(),
+                    );
+                    fallback_output.push_str(&native_result);
+                    return Ok(fallback_output);
+                }
+            }
         }
 
         // Fall back to native
@@ -492,6 +556,10 @@ mod tests {
     // T072: Test for upstream CLI wrapper
     #[test]
     fn cli_search_requires_semble_cli() {
+        if Client::cli_available() {
+            // Skip if CLI is available - the test is for error handling when absent
+            return;
+        }
         let repo = tempdir().expect("tempdir");
         let result = Client::cli_search(repo.path(), "test", Mode::Bm25, Some(5), None);
         assert!(result.is_err());
@@ -510,9 +578,13 @@ mod tests {
     // T074: Test for content filter support
     #[test]
     fn cli_search_with_content_filter() {
+        if Client::cli_available() {
+            // Skip if CLI is available - the test is for error handling when absent
+            return;
+        }
         let repo = tempdir().expect("tempdir");
         let result = Client::cli_search(repo.path(), "test", Mode::Bm25, Some(5), Some("docs"));
-        assert!(result.is_err()); // CLI not available
+        assert!(result.is_err());
     }
 
     // T075: Test for BM25 fallback when CLI unavailable
@@ -530,17 +602,11 @@ mod tests {
             None,
         )
         .expect("search_hybrid");
-        assert!(output.contains("No embedder configured"));
-        assert!(output.contains("fallback_test"));
-    }
 
-    // T081: Test for CLI availability check
-    #[test]
-    fn cli_available_returns_false_when_not_installed() {
-        // This test assumes semble is not installed in the test environment
-        let available = Client::cli_available();
-        // We don't assert false because it might be installed in some environments
-        // Just verify the function doesn't panic
-        let _ = available;
+        if !Client::cli_available() {
+            // Only check embedder nag when CLI is unavailable
+            assert!(output.contains("No embedder configured"));
+        }
+        assert!(output.contains("fallback_test"));
     }
 }

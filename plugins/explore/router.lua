@@ -67,7 +67,7 @@ function M.normalize_intent(input)
 
   -- New intents for auto-detection
   if query:match("^impact") or query:match("blast.?radius") or query:match("affected") then
-    local symbol = M.extract_symbol(input.query, "impact")
+    local symbol = input.symbol or M.extract_symbol(input.query, "impact")
     if symbol and not looks_like_file_path(symbol, false) then
       return "impact"
     end
@@ -82,7 +82,10 @@ function M.normalize_intent(input)
   end
 
   if query:match("skeleton") or query:match("structure") then
-    return "skeleton"
+    local path = input.path or M.extract_file_path(input.query)
+    if path and looks_like_file_path(path, false) then
+      return "skeleton"
+    end
   end
 
   if query:match("trace") then
@@ -208,7 +211,10 @@ function M.build_backend_input(input, intent)
   if intent == "file" or intent == "skeleton" then
     local path = trim(input.path)
     if path == "" then
-      path = M.extract_file_path(input.query) or trim(input.query)
+      path = M.extract_file_path(input.query)
+    end
+    if not path then
+      return nil, { llm_output = "error: file path required for " .. intent, is_error = true }
     end
     return "index", { path = path }
   end
