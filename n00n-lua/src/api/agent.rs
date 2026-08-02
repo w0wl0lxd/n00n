@@ -571,7 +571,11 @@ async fn session(
     }
 
     let (mut tools_json, tool_filter) = if let Some(val) = tools_val {
-        let tools = lua_to_json(&lua, &val)?;
+        let empty_lua_table = matches!(&val, LuaValue::Table(table) if table.is_empty());
+        let mut tools = lua_to_json(&lua, &val)?;
+        if empty_lua_table && matches!(&tools, JsonValue::Object(object) if object.is_empty()) {
+            tools = JsonValue::Array(Vec::new());
+        }
         if !tools.is_array() {
             return Err(mlua::Error::runtime("tools must be an array"));
         }
