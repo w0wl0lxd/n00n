@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785658863318,
+  "lastUpdate": 1785709507434,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -12091,6 +12091,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 112395,
             "range": "± 20021",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7f74c92c8510604ab6bd6d1df50c741c90997618",
+          "message": "fix(agent,providers): demote routine OpenAI chain fallback and retry logs (#219)\n\n* fix(agent,providers): demote routine OpenAI chain fallback and retry logs\n\n- OpenAI Responses continuation fallback is a normal recovery path (the\n  previous response was not found, so we replay approved full history). It\n  no longer logs at `warn!`; `info!` is sufficient.\n- Provider retry attempts are expected for transient overloads; log them at\n  `info!` so `warn!` is reserved for the actual final failure or key rotation.\n\n* chore: add changelog fragment\n\nAdd the missing changelog.d fragment for this PR.",
+          "timestamp": "2026-08-02T22:09:16Z",
+          "tree_id": "548628f1df4bb194f878baf1101da7f603417158",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/7f74c92c8510604ab6bd6d1df50c741c90997618"
+        },
+        "date": 1785709506474,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6641745,
+            "range": "± 285401",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2220134,
+            "range": "± 76516",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2218008,
+            "range": "± 6318",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8038861,
+            "range": "± 175187",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4268730,
+            "range": "± 29807",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4265566,
+            "range": "± 15431",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 590556,
+            "range": "± 5097",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191696,
+            "range": "± 392",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191527,
+            "range": "± 5025",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1045160,
+            "range": "± 55571",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 583100,
+            "range": "± 3882",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 582307,
+            "range": "± 27864",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 47900,
+            "range": "± 3075",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 134074,
+            "range": "± 9892",
             "unit": "ns/iter"
           }
         ]
