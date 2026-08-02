@@ -42,8 +42,10 @@ const IMAGE_TOKEN_ESTIMATE: usize = 2_048;
 const FILE_REFERENCE_TOKEN_ESTIMATE: usize = 2_048;
 const HISTORY_REPLAY_PERMISSION_ID: &str = "history-replay";
 const HISTORY_REPLAY_TOOL: &str = "history_replay";
+const HISTORY_REPLAY_CHANNEL_CLOSED_MESSAGE: &str = "History replay approval channel closed";
 const AMBIGUOUS_REPLAY_PERMISSION_ID: &str = "ambiguous-request-replay";
 const AMBIGUOUS_REPLAY_TOOL: &str = "ambiguous_request_replay";
+const AMBIGUOUS_REPLAY_CHANNEL_CLOSED_MESSAGE: &str = "Ambiguous replay approval channel closed";
 const AMBIGUOUS_REPLAY_RESET_MESSAGE: &str = "Resetting partial output before approved replay";
 const MAX_FUSION_PHASE_LABEL_CHARS: usize = 80;
 
@@ -536,13 +538,16 @@ impl<'h> Agent<'h> {
             tool: ToolKey::native(HISTORY_REPLAY_TOOL),
             scopes: vec![scope.clone()],
         })?;
-        let response = self.cancel.race(response_rx.recv_async()).await;
+        let response = self
+            .cancel
+            .race(response_rx.recv_async())
+            .await
+            .map_err(|_| AgentError::Cancelled)?;
         drop(response_rx);
-        let approved = response
-            .ok()
-            .and_then(Result::ok)
-            .and_then(|answer| PermissionAnswer::decode(&answer))
-            .is_some_and(|answer| answer.is_allow());
+        let answer = response.map_err(|error| AgentError::Config {
+            message: format!("{HISTORY_REPLAY_CHANNEL_CLOSED_MESSAGE}: {error}"),
+        })?;
+        let approved = PermissionAnswer::decode(&answer).is_some_and(|answer| answer.is_allow());
         if approved {
             Ok(())
         } else {
@@ -568,16 +573,16 @@ impl<'h> Agent<'h> {
             tool: ToolKey::native(AMBIGUOUS_REPLAY_TOOL),
             scopes: vec![ambiguous_request_replay_scope(metadata)],
         })?;
-        let response = self.cancel.race(response_rx.recv_async()).await;
+        let response = self
+            .cancel
+            .race(response_rx.recv_async())
+            .await
+            .map_err(|_| AgentError::Cancelled)?;
         drop(response_rx);
-        if self.cancel.is_cancelled() {
-            return Err(AgentError::Cancelled);
-        }
-        Ok(response
-            .ok()
-            .and_then(Result::ok)
-            .and_then(|answer| PermissionAnswer::decode(&answer))
-            .is_some_and(|answer| answer.is_allow()))
+        let answer = response.map_err(|error| AgentError::Config {
+            message: format!("{AMBIGUOUS_REPLAY_CHANNEL_CLOSED_MESSAGE}: {error}"),
+        })?;
+        Ok(PermissionAnswer::decode(&answer).is_some_and(|answer| answer.is_allow()))
     }
 
     async fn turn(&mut self) -> Result<TurnOutcome, AgentError> {
@@ -1628,6 +1633,28 @@ mod tests {
     }
 
     #[test]
+    fn history_replay_propagates_closed_approval_channel() {
+        smol::block_on(async {
+            let mut history = History::new(vec![Message::user("restored".into())]);
+            let (agent, _event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
+            let (response_tx, response_rx) = flume::unbounded::<String>();
+            drop(response_tx);
+            let agent = agent.with_user_response_rx(Arc::new(async_lock::Mutex::new(response_rx)));
+
+            let error = agent
+                .approve_history_replay(HistoryReplayReason::ContinuationNotFound)
+                .await
+                .unwrap_err();
+
+            assert!(matches!(
+                error,
+                AgentError::Config { message }
+                    if message.contains(HISTORY_REPLAY_CHANNEL_CLOSED_MESSAGE)
+            ));
+        });
+    }
+
+    #[test]
     fn ambiguous_request_replay_requires_an_interactive_approval_channel() {
         smol::block_on(async {
             let mut history = History::new(Vec::new());
@@ -1646,6 +1673,28 @@ mod tests {
                     .await
                     .unwrap()
             );
+        });
+    }
+
+    #[test]
+    fn ambiguous_request_replay_propagates_closed_approval_channel() {
+        smol::block_on(async {
+            let mut history = History::new(Vec::new());
+            let (agent, _event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
+            let (response_tx, response_rx) = flume::unbounded::<String>();
+            drop(response_tx);
+            let agent = agent.with_user_response_rx(Arc::new(async_lock::Mutex::new(response_rx)));
+
+            let error = agent
+                .approve_ambiguous_request_replay(None)
+                .await
+                .unwrap_err();
+
+            assert!(matches!(
+                error,
+                AgentError::Config { message }
+                    if message.contains(AMBIGUOUS_REPLAY_CHANNEL_CLOSED_MESSAGE)
+            ));
         });
     }
 

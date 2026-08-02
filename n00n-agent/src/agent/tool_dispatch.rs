@@ -2047,6 +2047,7 @@ mod tests {
             ("goal", "run rm -rf ."),
             ("goal", "run git reset --hard HEAD"),
             ("goal", "run git clean -fdx"),
+            ("goal", "run git cl'ean' -fdx"),
             ("goal", "run git -C . clean -fdx"),
             ("goal", "run git checkout -- ."),
             ("goal", "run git -C . restore ."),
