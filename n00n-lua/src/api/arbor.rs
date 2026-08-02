@@ -384,6 +384,147 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
             returns: "(table) Path nodes or error when no path exists.",
             example: "",
         },
+        FnDoc {
+            name: "graph_map",
+            args: "{project}, {token_budget?}",
+            desc: "Ranked project skeleton from the native graph index.",
+            params: &[
+                ParamDoc {
+                    name: "{project}",
+                    ty: "string",
+                    desc: "Path to the project root.",
+                },
+                ParamDoc {
+                    name: "{token_budget}",
+                    ty: "integer",
+                    desc: "Optional token budget (default 1024).",
+                },
+            ],
+            returns: "(table) Array of map entries with `file`, `symbols`.",
+            example: "",
+        },
+        FnDoc {
+            name: "graph_entry_points",
+            args: "{project}",
+            desc: "List API entry points from the native graph index.",
+            params: &[ParamDoc {
+                name: "{project}",
+                ty: "string",
+                desc: "Path to the project root.",
+            }],
+            returns: "(table) Array of entry point objects.",
+            example: "",
+        },
+        FnDoc {
+            name: "entry_points",
+            args: "{project}",
+            desc: "List API entry points via the Arbor CLI.",
+            params: &[ParamDoc {
+                name: "{project}",
+                ty: "string",
+                desc: "Path to the project root.",
+            }],
+            returns: "(table) Array of entry point objects.",
+            example: "",
+        },
+        FnDoc {
+            name: "file_graph",
+            args: "{project}",
+            desc: "Show file-level dependency graph via the Arbor CLI.",
+            params: &[ParamDoc {
+                name: "{project}",
+                ty: "string",
+                desc: "Path to the project root.",
+            }],
+            returns: "(string) File graph output.",
+            example: "",
+        },
+        FnDoc {
+            name: "inspect",
+            args: "{symbol}, {project}",
+            desc: "Detailed symbol information with context via the Arbor CLI.",
+            params: &[
+                ParamDoc {
+                    name: "{symbol}",
+                    ty: "string",
+                    desc: "Symbol name.",
+                },
+                ParamDoc {
+                    name: "{project}",
+                    ty: "string",
+                    desc: "Path to the project root.",
+                },
+            ],
+            returns: "(string) Detailed symbol information.",
+            example: "",
+        },
+        FnDoc {
+            name: "path",
+            args: "{from}, {to}, {project}",
+            desc: "Call path between two symbols via the Arbor CLI.",
+            params: &[
+                ParamDoc {
+                    name: "{from}",
+                    ty: "string",
+                    desc: "Start symbol name.",
+                },
+                ParamDoc {
+                    name: "{to}",
+                    ty: "string",
+                    desc: "End symbol name.",
+                },
+                ParamDoc {
+                    name: "{project}",
+                    ty: "string",
+                    desc: "Path to the project root.",
+                },
+            ],
+            returns: "(string) Call path output.",
+            example: "",
+        },
+        FnDoc {
+            name: "refactor",
+            args: "{operation}, {project}",
+            desc: "Run refactoring operations via the Arbor CLI.",
+            params: &[
+                ParamDoc {
+                    name: "{operation}",
+                    ty: "string",
+                    desc: "Refactoring operation description.",
+                },
+                ParamDoc {
+                    name: "{project}",
+                    ty: "string",
+                    desc: "Path to the project root.",
+                },
+            ],
+            returns: "(string) Refactoring output.",
+            example: "",
+        },
+        FnDoc {
+            name: "check",
+            args: "{project}",
+            desc: "Run static analysis checks via the Arbor CLI.",
+            params: &[ParamDoc {
+                name: "{project}",
+                ty: "string",
+                desc: "Path to the project root.",
+            }],
+            returns: "(string) Check output.",
+            example: "",
+        },
+        FnDoc {
+            name: "summary",
+            args: "{project}",
+            desc: "High-level project summary and statistics via the Arbor CLI.",
+            params: &[ParamDoc {
+                name: "{project}",
+                ty: "string",
+                desc: "Path to the project root.",
+            }],
+            returns: "(string) Project summary.",
+            example: "",
+        },
     ],
 };
 
