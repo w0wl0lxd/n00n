@@ -233,10 +233,17 @@ fn fusion_usage_from_value(value: serde_json::Value) -> Option<StoredFusionUsage
     if value.is_null() {
         return None;
     }
-    match serde_json::from_value::<StoredFusionUsage>(value) {
+    match serde_json::from_value::<StoredFusionUsage>(value.clone()) {
         Ok(usage) if usage == StoredFusionUsage::default() => None,
         Ok(usage) => Some(usage),
-        Err(_) => None,
+        Err(e) => {
+            warn!(
+                error = %e,
+                raw_value = %value,
+                "rejected malformed fusion usage during session restore"
+            );
+            None
+        }
     }
 }
 
@@ -1267,9 +1274,18 @@ where
                         source,
                     });
                 }
-                let tag = serde_json::from_str::<serde_json::Value>(line)
-                    .ok()
-                    .and_then(|v| v.get("t").and_then(|t| t.as_str()).map(String::from));
+                let tag = match serde_json::from_str::<serde_json::Value>(line) {
+                    Ok(v) => v.get("t").and_then(|t| t.as_str()).map(String::from),
+                    Err(tag_error) => {
+                        warn!(
+                            path = %path.display(),
+                            tag_error = %tag_error,
+                            line = line_count,
+                            "failed to extract record tag from malformed JSONL line"
+                        );
+                        None
+                    }
+                };
                 let record_tag = tag.as_deref().map_or("?", |t| t);
                 warn!(
                     path = %path.display(),
