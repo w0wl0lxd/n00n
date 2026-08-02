@@ -12,7 +12,10 @@ mod graph_query;
 mod index_health;
 
 pub use graph_json::{GraphIndex, GraphNode, SymbolQuery, SymbolRef};
-pub use graph_query::{graph_callees, graph_callers, graph_index_available, graph_trace_path};
+pub use graph_query::{
+    graph_callees, graph_callers, graph_entry_points, graph_index_available, graph_map,
+    graph_trace_path,
+};
 pub use index_health::{
     ensure_fresh_index, graph_index_available as graph_file_available, graph_json_path,
     graph_modified_at, status_is_stale, status_needs_index,
@@ -282,6 +285,136 @@ impl Client {
         }
         GraphIndex::from_graph_json_path(&graph_path)
     }
+
+    // T059: entry-points command
+    pub fn entry_points(project: &Path) -> Result<String, ArborError> {
+        let output = Command::new("arbor")
+            .arg("entry-points")
+            .arg(project.as_os_str())
+            .output()
+            .map_err(|e| ArborError::Exec { source: e })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(ArborError::Cli {
+                message: stderr.to_string(),
+            });
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    // T060: file-graph command
+    pub fn file_graph(project: &Path) -> Result<String, ArborError> {
+        let output = Command::new("arbor")
+            .arg("file-graph")
+            .arg(project.as_os_str())
+            .output()
+            .map_err(|e| ArborError::Exec { source: e })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(ArborError::Cli {
+                message: stderr.to_string(),
+            });
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    // T061: inspect command
+    pub fn inspect(symbol: &str, project: &Path) -> Result<String, ArborError> {
+        let output = Command::new("arbor")
+            .arg("inspect")
+            .arg(symbol)
+            .arg(project.as_os_str())
+            .output()
+            .map_err(|e| ArborError::Exec { source: e })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(ArborError::Cli {
+                message: stderr.to_string(),
+            });
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    // T062: path command
+    pub fn path(from: &str, to: &str, project: &Path) -> Result<String, ArborError> {
+        let output = Command::new("arbor")
+            .arg("path")
+            .arg(from)
+            .arg(to)
+            .arg(project.as_os_str())
+            .output()
+            .map_err(|e| ArborError::Exec { source: e })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(ArborError::Cli {
+                message: stderr.to_string(),
+            });
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    // T063: refactor command
+    pub fn refactor(operation: &str, project: &Path) -> Result<String, ArborError> {
+        let output = Command::new("arbor")
+            .arg("refactor")
+            .arg(operation)
+            .arg(project.as_os_str())
+            .output()
+            .map_err(|e| ArborError::Exec { source: e })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(ArborError::Cli {
+                message: stderr.to_string(),
+            });
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    // T064: check command
+    pub fn check(project: &Path) -> Result<String, ArborError> {
+        let output = Command::new("arbor")
+            .arg("check")
+            .arg(project.as_os_str())
+            .output()
+            .map_err(|e| ArborError::Exec { source: e })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(ArborError::Cli {
+                message: stderr.to_string(),
+            });
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    // T065: summary command
+    pub fn summary(project: &Path) -> Result<String, ArborError> {
+        let output = Command::new("arbor")
+            .arg("summary")
+            .arg(project.as_os_str())
+            .output()
+            .map_err(|e| ArborError::Exec { source: e })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(ArborError::Cli {
+                message: stderr.to_string(),
+            });
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -456,5 +589,90 @@ mod tests {
         assert!(s.centrality.is_none());
         assert!(s.callers.is_none());
         assert!(s.is_entry_point.is_none());
+    }
+
+    // T052: Test for entry-points command
+    #[test]
+    fn entry_points_requires_cli() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let result = Client::entry_points(dir.path());
+        assert!(result.is_err());
+        // Accept either Exec (CLI not found) or Cli (CLI found but project not indexed)
+        match result.unwrap_err() {
+            ArborError::Exec { .. } | ArborError::Cli { .. } => (),
+            other => panic!("expected Exec or Cli error, got: {other:?}"),
+        }
+    }
+
+    // T053: Test for file-graph command
+    #[test]
+    fn file_graph_requires_cli() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let result = Client::file_graph(dir.path());
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ArborError::Exec { .. } | ArborError::Cli { .. } => (),
+            other => panic!("expected Exec or Cli error, got: {other:?}"),
+        }
+    }
+
+    // T054: Test for inspect command
+    #[test]
+    fn inspect_requires_cli() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let result = Client::inspect("main", dir.path());
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ArborError::Exec { .. } | ArborError::Cli { .. } => (),
+            other => panic!("expected Exec or Cli error, got: {other:?}"),
+        }
+    }
+
+    // T055: Test for path command
+    #[test]
+    fn path_requires_cli() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let result = Client::path("main", "helper", dir.path());
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ArborError::Exec { .. } | ArborError::Cli { .. } => (),
+            other => panic!("expected Exec or Cli error, got: {other:?}"),
+        }
+    }
+
+    // T056: Test for refactor command
+    #[test]
+    fn refactor_requires_cli() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let result = Client::refactor("rename", dir.path());
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ArborError::Exec { .. } | ArborError::Cli { .. } => (),
+            other => panic!("expected Exec or Cli error, got: {other:?}"),
+        }
+    }
+
+    // T057: Test for check command
+    #[test]
+    fn check_requires_cli() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let result = Client::check(dir.path());
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ArborError::Exec { .. } | ArborError::Cli { .. } => (),
+            other => panic!("expected Exec or Cli error, got: {other:?}"),
+        }
+    }
+
+    // T058: Test for summary command
+    #[test]
+    fn summary_requires_cli() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let result = Client::summary(dir.path());
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ArborError::Exec { .. } | ArborError::Cli { .. } => (),
+            other => panic!("expected Exec or Cli error, got: {other:?}"),
+        }
     }
 }
