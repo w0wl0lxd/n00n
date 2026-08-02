@@ -15,7 +15,6 @@ use std::sync::{Arc, Mutex};
 use prost::Message;
 
 use super::proto::{GetBlobResult, KvClientMessage, KvServerMessage, SetBlobResult};
-use crate::providers::cursor::connect::encode_frame;
 
 #[derive(Debug, Default)]
 pub(crate) struct CheckpointStore {
@@ -46,7 +45,7 @@ pub(crate) fn shared_store() -> SharedCheckpointStore {
 #[must_use]
 pub(crate) fn encode_get_blob_result(request_id: u32, blob_data: Option<&[u8]>) -> Vec<u8> {
     let result = GetBlobResult {
-        blob_data: blob_data.unwrap_or_default().to_vec(),
+        blob_data: blob_data.map_or_else(Vec::new, <[u8]>::to_vec),
     };
     let kv = KvClientMessage {
         id: u64::from(request_id),

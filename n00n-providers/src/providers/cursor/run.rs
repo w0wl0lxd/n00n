@@ -20,6 +20,7 @@ use bytes::Bytes;
 use futures::StreamExt;
 use futures_lite::io::AsyncRead;
 use n00n_storage::id::n00nId;
+use prost::Message;
 use uuid::Uuid;
 
 use crate::AgentError;
@@ -33,8 +34,7 @@ use super::checksum::{
 };
 use super::connect::{ConnectFrame, FrameBuffer, decode_frame_payload, encode_frame};
 use super::proto::{
-    AGENT_MODE_AGENT, AgentServerMessage, RunFrameParams, build_run_frames, extract_text_deltas,
-    extract_thinking_deltas, has_exec_server_message, heartbeat_frame,
+    AGENT_MODE_AGENT, AgentServerMessage, RunFrameParams, build_run_frames, heartbeat_frame,
 };
 use super::wire::{
     CLIENT_TYPE, CLIENT_VERSION, CONNECT_CONTENT_TYPE, CONNECT_PROTOCOL_VERSION, wire_model_id,
@@ -526,8 +526,8 @@ async fn run_text_turn_mode_tokio(
     let mut text_deltas = 0u32;
     let mut kv_ops = 0u32;
     let mut top_fields: Vec<u64> = Vec::new();
-    let mut interaction_fields: Vec<u64> = Vec::new();
-    let mut interaction_sample = String::new();
+    let interaction_fields: Vec<u64> = Vec::new();
+    let interaction_sample = String::new();
     let started = Instant::now();
     let mut last_data = Instant::now();
     let mut got_any_data = false;
@@ -615,7 +615,7 @@ async fn run_text_turn_mode_tokio(
                             dumps.push(payload.clone());
                         }
                         // Use prost to decode for field inspection
-                        if let Ok(msg) = AgentServerMessage::decode(&payload) {
+                        if let Ok(msg) = AgentServerMessage::decode(&*payload) {
                             top_fields.push(1);
                             if msg.interaction_update.is_some() {
                                 top_fields.push(1);
@@ -695,7 +695,14 @@ fn handle_data_frame(
         status: 502,
         message,
     })?;
-    if let Ok(Some(op)) = parse_kv_server_message(&payload) {
+    let Some(server_msg) = AgentServerMessage::decode(&*payload).ok() else {
+        return Ok(FrameHandleOutcome {
+            exec_skipped: false,
+            text_deltas: 0,
+            kv_op: false,
+        });
+    };
+    if let Ok(Some(op)) = parse_kv_server_message(&server_msg.kv_server_message) {
         queue_checkpoint_reply(op, checkpoints, outbound)?;
         return Ok(FrameHandleOutcome {
             exec_skipped: false,
@@ -703,7 +710,7 @@ fn handle_data_frame(
             kv_op: true,
         });
     }
-    if let Ok(true) = has_exec_server_message(&payload) {
+    if !server_msg.exec_server_message.is_empty() {
         // Phase 0: n00n owns tools; ignore Cursor-side exec until Phase 1 maps them.
         // Aborting the whole turn drops text deltas that often follow.
         return Ok(FrameHandleOutcome {
@@ -713,15 +720,17 @@ fn handle_data_frame(
         });
     }
     let mut deltas = 0u32;
-    if let Ok(text_deltas) = extract_text_deltas(&payload) {
-        for delta in text_deltas {
-            text.push_str(&delta);
+    if let Some(update) = server_msg.interaction_update {
+        if let Some(delta) = update.text_delta
+            && !delta.text.is_empty()
+        {
+            text.push_str(&delta.text);
             deltas = deltas.saturating_add(1);
         }
-    }
-    if let Ok(thinking_deltas) = extract_thinking_deltas(&payload) {
-        for delta in thinking_deltas {
-            thinking.push_str(&delta);
+        if let Some(delta) = update.thinking_delta
+            && !delta.text.is_empty()
+        {
+            thinking.push_str(&delta.text);
         }
     }
     Ok(FrameHandleOutcome {

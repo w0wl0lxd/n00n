@@ -24,7 +24,7 @@ pub(crate) const AGENT_MODE_AGENT: u64 = AgentMode::Agent as u64;
 pub(crate) const AGENT_MODE_ASK: u64 = AgentMode::Ask as u64;
 
 /// Model metadata: `{f1: model_id, f3: {f1:"fast", f2:"false"}}`.
-#[derive(Clone, Debug, Default, PartialEq, prost::Message)]
+#[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct ModelMeta {
     #[prost(string, tag = "1")]
     pub model_id: String,
@@ -32,7 +32,7 @@ pub(crate) struct ModelMeta {
     pub options: Option<ModelOptions>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, prost::Message)]
+#[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct ModelOptions {
     #[prost(string, tag = "1")]
     pub key: String,
@@ -53,7 +53,7 @@ impl ModelMeta {
 }
 
 /// User message in the conversation.
-#[derive(Clone, Debug, Default, PartialEq, prost::Message)]
+#[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct UserMessage {
     #[prost(string, tag = "1")]
     pub prompt: String,
@@ -66,14 +66,14 @@ pub(crate) struct UserMessage {
 }
 
 /// Action wrapper for user message.
-#[derive(Clone, Debug, Default, PartialEq, prost::Message)]
+#[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct Action {
     #[prost(message, optional, tag = "1")]
     pub user_message: Option<UserMessage>,
 }
 
 /// Environment context for the agent.
-#[derive(Clone, Debug, Default, PartialEq, prost::Message)]
+#[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct Environment {
     #[prost(string, tag = "1")]
     pub os: String,
@@ -118,21 +118,21 @@ impl Environment {
 }
 
 /// Context wrapper for environment.
-#[derive(Clone, Debug, Default, PartialEq, prost::Message)]
+#[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct Context {
     #[prost(message, optional, tag = "1")]
     pub environment: Option<Environment>,
 }
 
 /// Session metadata wrapper.
-#[derive(Clone, Debug, Default, PartialEq, prost::Message)]
+#[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct SessionMeta {
     #[prost(message, optional, tag = "1")]
     pub context: Option<Context>,
 }
 
 /// Agent client message sent to the server.
-#[derive(Clone, Debug, Default, PartialEq, prost::Message)]
+#[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct AgentClientMessage {
     #[prost(string, tag = "1")]
     pub field_1: String,
@@ -153,7 +153,7 @@ pub(crate) struct AgentClientMessage {
 }
 
 /// Marker message for pacing.
-#[derive(Clone, Debug, Default, PartialEq, prost::Message)]
+#[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct MarkerMessage {
     #[prost(uint64, tag = "1")]
     pub index: u64,
@@ -184,12 +184,13 @@ pub(crate) fn build_run_frames(params: &RunFrameParams<'_>) -> Result<Vec<Vec<u8
     };
 
     let model_meta = ModelMeta::new(params.model_id);
-    let mut environments = Vec::new();
-    environments.push(ModelMeta {
-        model_id: "default".to_string(),
-        options: None,
-    });
-    environments.push(model_meta.clone());
+    let environments = vec![
+        ModelMeta {
+            model_id: "default".to_string(),
+            options: None,
+        },
+        model_meta.clone(),
+    ];
 
     let client_msg = AgentClientMessage {
         field_1: String::new(),
@@ -243,21 +244,21 @@ pub(crate) fn heartbeat_frame() -> Result<Vec<u8>, String> {
 }
 
 /// Text delta from the server.
-#[derive(Clone, Debug, Default, PartialEq, prost::Message)]
+#[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct TextDelta {
     #[prost(string, tag = "1")]
     pub text: String,
 }
 
 /// Thinking delta from the server.
-#[derive(Clone, Debug, Default, PartialEq, prost::Message)]
+#[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct ThinkingDelta {
     #[prost(string, tag = "1")]
     pub text: String,
 }
 
 /// Interaction update from the server.
-#[derive(Clone, Debug, Default, PartialEq, prost::Message)]
+#[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct InteractionUpdate {
     #[prost(message, optional, tag = "1")]
     pub text_delta: Option<TextDelta>,
@@ -266,7 +267,7 @@ pub(crate) struct InteractionUpdate {
 }
 
 /// Agent server message received from the server.
-#[derive(Clone, Debug, Default, PartialEq, prost::Message)]
+#[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct AgentServerMessage {
     #[prost(message, optional, tag = "1")]
     pub interaction_update: Option<InteractionUpdate>,
@@ -279,14 +280,14 @@ pub(crate) struct AgentServerMessage {
 }
 
 /// Get blob arguments from server.
-#[derive(Clone, Debug, Default, PartialEq, prost::Message)]
+#[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct GetBlobArgs {
     #[prost(bytes, tag = "1")]
     pub blob_id: Vec<u8>,
 }
 
 /// Set blob arguments from server.
-#[derive(Clone, Debug, Default, PartialEq, prost::Message)]
+#[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct SetBlobArgs {
     #[prost(bytes, tag = "1")]
     pub blob_id: Vec<u8>,
@@ -295,7 +296,7 @@ pub(crate) struct SetBlobArgs {
 }
 
 /// KV server message wrapper.
-#[derive(Clone, Debug, Default, PartialEq, prost::Message)]
+#[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct KvServerMessage {
     #[prost(uint64, tag = "1")]
     pub id: u64,
@@ -306,21 +307,21 @@ pub(crate) struct KvServerMessage {
 }
 
 /// Get blob result from client.
-#[derive(Clone, Debug, Default, PartialEq, prost::Message)]
+#[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct GetBlobResult {
     #[prost(bytes, tag = "1")]
     pub blob_data: Vec<u8>,
 }
 
 /// Set blob result from client.
-#[derive(Clone, Debug, Default, PartialEq, prost::Message)]
+#[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct SetBlobResult {
     #[prost(string, tag = "1")]
     pub error: String,
 }
 
 /// KV client message wrapper.
-#[derive(Clone, Debug, Default, PartialEq, prost::Message)]
+#[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct KvClientMessage {
     #[prost(uint64, tag = "1")]
     pub id: u64,
@@ -334,12 +335,11 @@ pub(crate) struct KvClientMessage {
 pub(crate) fn extract_text_deltas(payload: &[u8]) -> Result<Vec<String>, String> {
     let msg = AgentServerMessage::decode(payload).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
-    if let Some(update) = msg.interaction_update {
-        if let Some(delta) = update.text_delta {
-            if !delta.text.is_empty() {
-                out.push(delta.text);
-            }
-        }
+    if let Some(update) = msg.interaction_update
+        && let Some(delta) = update.text_delta
+        && !delta.text.is_empty()
+    {
+        out.push(delta.text);
     }
     Ok(out)
 }
@@ -348,12 +348,11 @@ pub(crate) fn extract_text_deltas(payload: &[u8]) -> Result<Vec<String>, String>
 pub(crate) fn extract_thinking_deltas(payload: &[u8]) -> Result<Vec<String>, String> {
     let msg = AgentServerMessage::decode(payload).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
-    if let Some(update) = msg.interaction_update {
-        if let Some(delta) = update.thinking_delta {
-            if !delta.text.is_empty() {
-                out.push(delta.text);
-            }
-        }
+    if let Some(update) = msg.interaction_update
+        && let Some(delta) = update.thinking_delta
+        && !delta.text.is_empty()
+    {
+        out.push(delta.text);
     }
     Ok(out)
 }
