@@ -2,6 +2,38 @@ local router = require("router")
 
 local json = (n00n and n00n.json) or require("n00n.json")
 
+local function try_read_one(path)
+  if n00n and n00n.fs and n00n.fs.read then
+    local content, err = n00n.fs.read(path)
+    if not err then
+      return content
+    end
+  else
+    local f, err = io.open(path, "r")
+    if f then
+      local content = f:read("*a")
+      f:close()
+      return content
+    end
+  end
+  return nil
+end
+
+local function read_file(name)
+  local candidates = {
+    name,
+    "../" .. name,
+    "../../" .. name,
+  }
+  for _, path in ipairs(candidates) do
+    local content = try_read_one(path)
+    if content then
+      return content
+    end
+  end
+  error("could not read " .. name)
+end
+
 local failures = {}
 
 local function case(name, fn)
@@ -159,12 +191,7 @@ end)
 
 -- T020: Router classification accuracy test (SC-001)
 case("router_classification_accuracy", function()
-  local f = io.open("tests/fixtures/explore-queries.json", "r")
-  if not f then
-    error("could not open tests/fixtures/explore-queries.json")
-  end
-  local content = f:read("*a")
-  f:close()
+  local content = read_file("tests/fixtures/explore-queries.json")
 
   local queries = json.decode(content)
 
