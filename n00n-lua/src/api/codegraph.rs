@@ -38,6 +38,99 @@ pub(crate) fn create_codegraph_table(lua: &Lua) -> LuaResult<Table> {
     )?;
     table.set("explore", explore)?;
 
+    let callers =
+        lua.create_function(
+            |_, (symbol, project, timeout_secs): (String, String, Option<u64>)| {
+                match Client::callers(&symbol, Path::new(&project), timeout_secs) {
+                    Ok(output) => Ok((Some(output), None::<String>)),
+                    Err(e) => Ok((None::<String>, Some(format!("{e:#}")))),
+                }
+            },
+        )?;
+    table.set("callers", callers)?;
+
+    let callees =
+        lua.create_function(
+            |_, (symbol, project, timeout_secs): (String, String, Option<u64>)| {
+                match Client::callees(&symbol, Path::new(&project), timeout_secs) {
+                    Ok(output) => Ok((Some(output), None::<String>)),
+                    Err(e) => Ok((None::<String>, Some(format!("{e:#}")))),
+                }
+            },
+        )?;
+    table.set("callees", callees)?;
+
+    let impact = lua.create_function(
+        |_, (symbol, project, timeout_secs): (String, String, Option<u64>)| match Client::impact(
+            &symbol,
+            Path::new(&project),
+            timeout_secs,
+        ) {
+            Ok(output) => Ok((Some(output), None::<String>)),
+            Err(e) => Ok((None::<String>, Some(format!("{e:#}")))),
+        },
+    )?;
+    table.set("impact", impact)?;
+
+    let affected = lua.create_function(
+        |_, (files, project, timeout_secs): (Vec<String>, String, Option<u64>)| {
+            let files_refs: Vec<&str> = files.iter().map(|s| s.as_str()).collect();
+            match Client::affected(&files_refs, Path::new(&project), timeout_secs) {
+                Ok(output) => Ok((Some(output), None::<String>)),
+                Err(e) => Ok((None::<String>, Some(format!("{e:#}")))),
+            }
+        },
+    )?;
+    table.set("affected", affected)?;
+
+    let node = lua.create_function(
+        |_, (name, project, timeout_secs): (String, String, Option<u64>)| match Client::node(
+            &name,
+            Path::new(&project),
+            timeout_secs,
+        ) {
+            Ok(output) => Ok((Some(output), None::<String>)),
+            Err(e) => Ok((None::<String>, Some(format!("{e:#}")))),
+        },
+    )?;
+    table.set("node", node)?;
+
+    let query = lua.create_function(
+        |_, (search, project, timeout_secs): (String, String, Option<u64>)| match Client::query(
+            &search,
+            Path::new(&project),
+            timeout_secs,
+        ) {
+            Ok(output) => Ok((Some(output), None::<String>)),
+            Err(e) => Ok((None::<String>, Some(format!("{e:#}")))),
+        },
+    )?;
+    table.set("query", query)?;
+
+    let sync =
+        lua.create_function(
+            |_, (project, timeout_secs): (String, Option<u64>)| match Client::sync(
+                Path::new(&project),
+                timeout_secs,
+            ) {
+                Ok(output) => Ok((Some(output), None::<String>)),
+                Err(e) => Ok((None::<String>, Some(format!("{e:#}")))),
+            },
+        )?;
+    table.set("sync", sync)?;
+
+    let files =
+        lua.create_function(
+            |_, (project, timeout_secs): (String, Option<u64>)| match Client::files(
+                Path::new(&project),
+                timeout_secs,
+            ) {
+                Ok(output) => Ok((Some(output), None::<String>)),
+                Err(e) => Ok((None::<String>, Some(format!("{e:#}")))),
+            },
+        )?;
+    table.set("files", files)?;
+
     Ok(table)
 }
 
@@ -96,6 +189,188 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
                     ty: "string",
                     desc: "Natural language question or symbol names to explore.",
                 },
+                ParamDoc {
+                    name: "{project}",
+                    ty: "string",
+                    desc: "Path to the project root.",
+                },
+                ParamDoc {
+                    name: "{timeout_secs}",
+                    ty: "integer",
+                    desc: "Optional timeout in seconds (default 30).",
+                },
+            ],
+            returns: "(string?, string?) output and optional error message.",
+            example: "",
+        },
+        FnDoc {
+            name: "callers",
+            args: "{symbol}, {project}, {timeout_secs?}",
+            desc: "Find all functions/methods that call a specific symbol using native SQLite when available, otherwise `codegraph callers`.",
+            params: &[
+                ParamDoc {
+                    name: "{symbol}",
+                    ty: "string",
+                    desc: "Symbol name to find callers for.",
+                },
+                ParamDoc {
+                    name: "{project}",
+                    ty: "string",
+                    desc: "Path to the project root.",
+                },
+                ParamDoc {
+                    name: "{timeout_secs}",
+                    ty: "integer",
+                    desc: "Optional timeout in seconds (default 30).",
+                },
+            ],
+            returns: "(string?, string?) output and optional error message.",
+            example: "",
+        },
+        FnDoc {
+            name: "callees",
+            args: "{symbol}, {project}, {timeout_secs?}",
+            desc: "Find all functions/methods that a specific symbol calls using native SQLite when available, otherwise `codegraph callees`.",
+            params: &[
+                ParamDoc {
+                    name: "{symbol}",
+                    ty: "string",
+                    desc: "Symbol name to find callees for.",
+                },
+                ParamDoc {
+                    name: "{project}",
+                    ty: "string",
+                    desc: "Path to the project root.",
+                },
+                ParamDoc {
+                    name: "{timeout_secs}",
+                    ty: "integer",
+                    desc: "Optional timeout in seconds (default 30).",
+                },
+            ],
+            returns: "(string?, string?) output and optional error message.",
+            example: "",
+        },
+        FnDoc {
+            name: "impact",
+            args: "{symbol}, {project}, {timeout_secs?}",
+            desc: "Analyze what code is affected by changing a symbol using native SQLite when available, otherwise `codegraph impact`.",
+            params: &[
+                ParamDoc {
+                    name: "{symbol}",
+                    ty: "string",
+                    desc: "Symbol name to analyze impact for.",
+                },
+                ParamDoc {
+                    name: "{project}",
+                    ty: "string",
+                    desc: "Path to the project root.",
+                },
+                ParamDoc {
+                    name: "{timeout_secs}",
+                    ty: "integer",
+                    desc: "Optional timeout in seconds (default 30).",
+                },
+            ],
+            returns: "(string?, string?) output and optional error message.",
+            example: "",
+        },
+        FnDoc {
+            name: "affected",
+            args: "{files}, {project}, {timeout_secs?}",
+            desc: "Find test files affected by changed source files using `codegraph affected`.",
+            params: &[
+                ParamDoc {
+                    name: "{files}",
+                    ty: "table<string>",
+                    desc: "Array of file paths that changed.",
+                },
+                ParamDoc {
+                    name: "{project}",
+                    ty: "string",
+                    desc: "Path to the project root.",
+                },
+                ParamDoc {
+                    name: "{timeout_secs}",
+                    ty: "integer",
+                    desc: "Optional timeout in seconds (default 30).",
+                },
+            ],
+            returns: "(string?, string?) output and optional error message.",
+            example: "",
+        },
+        FnDoc {
+            name: "node",
+            args: "{name}, {project}, {timeout_secs?}",
+            desc: "Get one symbol's source + caller/callee trail using native SQLite when available, otherwise `codegraph node`.",
+            params: &[
+                ParamDoc {
+                    name: "{name}",
+                    ty: "string",
+                    desc: "Symbol name to look up.",
+                },
+                ParamDoc {
+                    name: "{project}",
+                    ty: "string",
+                    desc: "Path to the project root.",
+                },
+                ParamDoc {
+                    name: "{timeout_secs}",
+                    ty: "integer",
+                    desc: "Optional timeout in seconds (default 30).",
+                },
+            ],
+            returns: "(string?, string?) output and optional error message.",
+            example: "",
+        },
+        FnDoc {
+            name: "query",
+            args: "{search}, {project}, {timeout_secs?}",
+            desc: "Search for symbols in the codebase using native SQLite when available, otherwise `codegraph query`.",
+            params: &[
+                ParamDoc {
+                    name: "{search}",
+                    ty: "string",
+                    desc: "Search query for symbols.",
+                },
+                ParamDoc {
+                    name: "{project}",
+                    ty: "string",
+                    desc: "Path to the project root.",
+                },
+                ParamDoc {
+                    name: "{timeout_secs}",
+                    ty: "integer",
+                    desc: "Optional timeout in seconds (default 30).",
+                },
+            ],
+            returns: "(string?, string?) output and optional error message.",
+            example: "",
+        },
+        FnDoc {
+            name: "sync",
+            args: "{project}, {timeout_secs?}",
+            desc: "Sync changes since last index using `codegraph sync`.",
+            params: &[
+                ParamDoc {
+                    name: "{project}",
+                    ty: "string",
+                    desc: "Path to the project root.",
+                },
+                ParamDoc {
+                    name: "{timeout_secs}",
+                    ty: "integer",
+                    desc: "Optional timeout in seconds (default 30).",
+                },
+            ],
+            returns: "(string?, string?) output and optional error message.",
+            example: "",
+        },
+        FnDoc {
+            name: "files",
+            args: "{project}, {timeout_secs?}",
+            desc: "Show project file structure from the index using native SQLite when available, otherwise `codegraph files`.",
+            params: &[
                 ParamDoc {
                     name: "{project}",
                     ty: "string",
