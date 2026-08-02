@@ -104,7 +104,7 @@ function M.parse_arbor_command(input)
   if query:match("callee") or query:match("what does%s+.-call$") then
     return "callees"
   end
-  if query:match("trace.?path") or query:match("call path") then
+  if query:match("trace.?path") or query:match("call path") or query:match("^trace%s") or query:match("trace from") then
     return "trace_path"
   end
   if query:match("^diff") then
@@ -128,6 +128,7 @@ function M.extract_symbol(query, command)
   local lowered = lower(query)
 
   local token = "[%w_%.:%->]+"
+  local token_with_slash = "[%w_%.:%->/]+"
 
   local patterns = {
     callers = {
@@ -144,8 +145,17 @@ function M.extract_symbol(query, command)
       "^search%s+()(.-)%s*$",
     },
     impact = {
-      "^impact%s+of%s+changing%s+()(" .. token .. ")%s*$",
-      "^impact%s+of%s+()(" .. token .. ")%s*$",
+      "^impact%s+of%s+changing%s+()(" .. token_with_slash .. ")%s*$",
+      "^impact%s+of%s+()(" .. token_with_slash .. ")%s*$",
+      "^blast%s*radius%s+of%s+()(" .. token_with_slash .. ")%s*$",
+      "^affected%s+by%s+change%s+in%s+()(" .. token_with_slash .. ")%s*$",
+      "^affected%s+by%s+()(" .. token_with_slash .. ")%s*$",
+    },
+    symbol = {
+      "^symbol%s+()(" .. token .. ")%s*$",
+      "^()(" .. token .. ")%s+symbol%s*$",
+      "^definition%s+of%s+()(" .. token .. ")%s*$",
+      "^decl%w*%s+of%s+()(" .. token .. ")%s*$",
     },
   }
 
@@ -178,13 +188,27 @@ function M.extract_trace_symbols(query)
   return nil, nil
 end
 
+function M.extract_file_path(query)
+  if not query or query == "" then
+    return nil
+  end
+
+  local trimmed = trim(query)
+  for token in trimmed:gmatch("%S+") do
+    if looks_like_file_path(token, false) then
+      return token
+    end
+  end
+  return nil
+end
+
 function M.build_backend_input(input, intent)
   local project = input.project or "."
 
   if intent == "file" or intent == "skeleton" then
     local path = trim(input.path)
     if path == "" then
-      path = trim(input.query)
+      path = M.extract_file_path(input.query) or trim(input.query)
     end
     return "index", { path = path }
   end
@@ -224,7 +248,7 @@ function M.build_backend_input(input, intent)
   end
 
   if intent == "symbol" then
-    local symbol = input.symbol or trim(input.query)
+    local symbol = input.symbol or M.extract_symbol(input.query, "symbol")
     return "codegraph", {
       command = "node",
       name = symbol,
@@ -242,6 +266,7 @@ function M.build_backend_input(input, intent)
   end
 
   return "codegraph", {
+    command = "explore",
     query = input.query,
     projectPath = project,
   }

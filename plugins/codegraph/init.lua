@@ -49,6 +49,10 @@ Requires a .codegraph/ index in the project root.]],
         type = "string",
         description = "Symbol name for node command",
       },
+      node_id = {
+        type = "string",
+        description = "Node ID for node command",
+      },
       search = {
         type = "string",
         description = "Search query for query command",
@@ -59,6 +63,10 @@ Requires a .codegraph/ index in the project root.]],
         description = "Array of file paths for affected command",
       },
       projectPath = { type = "string", description = "Absolute path to the project (defaults to current workspace)" },
+      timeout_secs = {
+        type = "integer",
+        description = "Timeout in seconds for CodeGraph operations (default 30)",
+      },
     },
   },
 
@@ -78,6 +86,7 @@ Requires a .codegraph/ index in the project root.]],
     end
 
     local project_path = input.projectPath or cwd
+    local timeout = input.timeout_secs or CG_TIMEOUT_SECS
 
     if not n00n_codegraph.has_index(project_path) then
       return {
@@ -108,43 +117,43 @@ Requires a .codegraph/ index in the project root.]],
       if not input.query then
         return { llm_output = "error: query is required for explore command", is_error = true }
       end
-      output, err = n00n_codegraph.explore(input.query, project_path, CG_TIMEOUT_SECS)
+      output, err = n00n_codegraph.explore(input.query, project_path, timeout)
     elseif cmd == "callers" then
       if not input.symbol then
         return { llm_output = "error: symbol is required for callers command", is_error = true }
       end
-      output, err = n00n_codegraph.callers(input.symbol, project_path, CG_TIMEOUT_SECS)
+      output, err = n00n_codegraph.callers(input.symbol, project_path, timeout)
     elseif cmd == "callees" then
       if not input.symbol then
         return { llm_output = "error: symbol is required for callees command", is_error = true }
       end
-      output, err = n00n_codegraph.callees(input.symbol, project_path, CG_TIMEOUT_SECS)
+      output, err = n00n_codegraph.callees(input.symbol, project_path, timeout)
     elseif cmd == "impact" then
       if not input.symbol then
         return { llm_output = "error: symbol is required for impact command", is_error = true }
       end
-      output, err = n00n_codegraph.impact(input.symbol, project_path, CG_TIMEOUT_SECS)
+      output, err = n00n_codegraph.impact(input.symbol, project_path, timeout)
     elseif cmd == "affected" then
       if not input.files or #input.files == 0 then
         return { llm_output = "error: files array is required for affected command", is_error = true }
       end
-      output, err = n00n_codegraph.affected(input.files, project_path, CG_TIMEOUT_SECS)
+      output, err = n00n_codegraph.affected(input.files, project_path, timeout)
     elseif cmd == "node" then
-      local name = input.name or input.symbol
+      local name = input.node_id or input.name or input.symbol
       if not name then
-        return { llm_output = "error: name or symbol is required for node command", is_error = true }
+        return { llm_output = "error: node_id, name, or symbol is required for node command", is_error = true }
       end
-      output, err = n00n_codegraph.node(name, project_path, CG_TIMEOUT_SECS)
+      output, err = n00n_codegraph.node(name, project_path, timeout)
     elseif cmd == "query" then
       local search = input.search or input.query
       if not search then
         return { llm_output = "error: search or query is required for query command", is_error = true }
       end
-      output, err = n00n_codegraph.query(search, project_path, CG_TIMEOUT_SECS)
+      output, err = n00n_codegraph.query(search, project_path, timeout)
     elseif cmd == "sync" then
-      output, err = n00n_codegraph.sync(project_path, CG_TIMEOUT_SECS)
+      output, err = n00n_codegraph.sync(project_path, timeout)
     elseif cmd == "files" then
-      output, err = n00n_codegraph.files(project_path, CG_TIMEOUT_SECS)
+      output, err = n00n_codegraph.files(project_path, timeout)
     else
       return { llm_output = "error: unknown command: " .. cmd, is_error = true }
     end

@@ -12,8 +12,8 @@
   "properties": {
     "command": {
       "type": "string",
-      "enum": ["callers", "callees", "map", "diff", "query", "status", "entry-points", "file-graph", "inspect", "path", "refactor", "check", "summary"],
-      "description": "Arbor command to execute."
+      "enum": ["callers", "callees", "trace_path", "map", "diff", "query", "status", "entry_points", "file_graph", "inspect", "path", "refactor", "check", "summary"],
+      "description": "Arbor command to execute. Hyphenated forms (e.g., entry-points, file-graph) are normalized to underscores."
     },
     "symbol": {
       "type": "string",
@@ -27,9 +27,17 @@
       "type": "string",
       "description": "To symbol for trace_path command."
     },
-    "path": {
+    "from": {
       "type": "string",
-      "description": "File path for file-graph command."
+      "description": "From symbol for path command."
+    },
+    "to": {
+      "type": "string",
+      "description": "To symbol for path command."
+    },
+    "operation": {
+      "type": "string",
+      "description": "Refactoring operation for refactor command."
     },
     "project": {
       "type": "string",
@@ -49,12 +57,13 @@
 ||---------|-------------|----------------|
 || `callers` | List callers of a symbol | Native in-memory graph.json or CLI fallback |
 || `callees` | List callees of a symbol | Native in-memory graph.json or CLI fallback |
+|| `trace_path` | Shortest call path between two symbols | Native in-memory graph.json |
 || `map` | Project map with ranked symbols | CLI only |
 || `diff` | Diff impact analysis | CLI only |
 || `query` | Symbol query | CLI only |
 || `status` | Index status | CLI only |
-|| `entry-points` | List entry points | CLI only |
-|| `file-graph` | File-level graph | CLI only |
+|| `entry_points` | List entry points | CLI only |
+|| `file_graph` | File-level graph | CLI only |
 || `inspect` | Inspect a symbol | CLI only |
 || `path` | Path between symbols | CLI only |
 || `refactor` | Refactoring suggestions | CLI only |
@@ -83,11 +92,11 @@ Returns query results as formatted text.
 
 Returns index status as formatted text.
 
-### entry-points
+### entry_points
 
-Returns list of entry points with symbol details.
+Returns raw CLI stdout output.
 
-### file-graph
+### file_graph
 
 Returns file-level graph with nodes and edges.
 

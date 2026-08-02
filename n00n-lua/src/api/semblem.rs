@@ -29,14 +29,7 @@ pub(crate) fn create_semblem_table(lua: &Lua) -> LuaResult<Table> {
                 Some(raw) => Mode::parse(raw).map_err(map_err)?,
                 None => Mode::Bm25,
             };
-            Client::search_hybrid(
-                std::path::Path::new(&repo),
-                &query,
-                mode,
-                top_k,
-                content.as_deref(),
-            )
-            .map_err(map_err)
+            Client::search_hybrid(&repo, &query, mode, top_k, content.as_deref()).map_err(map_err)
         },
     )?;
     table.set("search", search)?;
@@ -44,16 +37,13 @@ pub(crate) fn create_semblem_table(lua: &Lua) -> LuaResult<Table> {
     // T082-T083: Use hybrid find_related with CLI fallback
     let find_related = lua.create_function(
         |_, (repo, file_path, line, top_k): (String, String, usize, Option<usize>)| {
-            Client::find_related_hybrid(std::path::Path::new(&repo), &file_path, line, top_k)
-                .map_err(map_err)
+            Client::find_related_hybrid(&repo, &file_path, line, top_k).map_err(map_err)
         },
     )?;
     table.set("find_related", find_related)?;
 
     // T080: Add savings command
-    let savings = lua.create_function(|_, repo: String| {
-        Client::cli_savings(std::path::Path::new(&repo)).map_err(map_err)
-    })?;
+    let savings = lua.create_function(|_, repo: String| Client::savings(&repo).map_err(map_err))?;
     table.set("savings", savings)?;
 
     Ok(table)
@@ -104,7 +94,7 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
                 ParamDoc {
                     name: "{content}",
                     ty: "string",
-                    desc: "Content filter: docs, config, or all.",
+                    desc: "Content filter: docs, config, code, or all.",
                 },
             ],
             returns: "(string) Ranked snippet output.",

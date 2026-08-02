@@ -311,7 +311,7 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
-    const NATIVE_EFFICIENT_LINE: &str = "Most efficient tools: explore, arbor (optional, needs Arbor CLI), batch, code_execution, codegraph (optional, needs .codegraph/ index), index, semblem, task, thoughtbox";
+    const NATIVE_EFFICIENT_LINE: &str = "Most efficient tools: explore, arbor, batch, code_execution, codegraph, index, semblem, task, thoughtbox";
 
     fn slots(prompt: PromptId, entries: &[(Slot, &str)]) -> ResolvedSlots {
         let mut slots = ResolvedSlots::default();
@@ -598,7 +598,7 @@ mod tests {
         // because it carries required static instructions that are not meant to shrink.
         const SYSTEM_BASELINE: usize = 1645;
         const GENERAL_BASELINE: usize = 1759;
-        const RESEARCH_BASELINE: usize = 1439;
+        const RESEARCH_BASELINE: usize = 1530;
         const COMPACTION_USER_BASELINE: usize = 927;
         const COMPACTION_BASELINE: usize = 669;
         const PLAN_BASELINE: usize = 1031;

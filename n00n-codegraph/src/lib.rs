@@ -262,6 +262,7 @@ impl Client {
         let timeout = Duration::from_secs(timeout_secs);
         let child = Command::new(CODEGRAPH_BINARY)
             .arg("callers")
+            .arg("--")
             .arg(symbol)
             .arg(project)
             .stdout(Stdio::piped())
@@ -281,6 +282,7 @@ impl Client {
         let timeout = Duration::from_secs(timeout_secs);
         let child = Command::new(CODEGRAPH_BINARY)
             .arg("callees")
+            .arg("--")
             .arg(symbol)
             .arg(project)
             .stdout(Stdio::piped())
@@ -300,6 +302,7 @@ impl Client {
         let timeout = Duration::from_secs(timeout_secs);
         let child = Command::new(CODEGRAPH_BINARY)
             .arg("impact")
+            .arg("--")
             .arg(symbol)
             .arg(project)
             .stdout(Stdio::piped())
@@ -318,7 +321,7 @@ impl Client {
         let timeout_secs = timeout_secs.unwrap_or_else(|| DEFAULT_TIMEOUT_SECS);
         let timeout = Duration::from_secs(timeout_secs);
         let mut cmd = Command::new(CODEGRAPH_BINARY);
-        cmd.arg("affected");
+        cmd.arg("affected").arg("--");
         for file in files {
             cmd.arg(file);
         }
@@ -341,6 +344,7 @@ impl Client {
         let timeout = Duration::from_secs(timeout_secs);
         let child = Command::new(CODEGRAPH_BINARY)
             .arg("node")
+            .arg("--")
             .arg(name)
             .arg(project)
             .stdout(Stdio::piped())
@@ -360,6 +364,7 @@ impl Client {
         let timeout = Duration::from_secs(timeout_secs);
         let child = Command::new(CODEGRAPH_BINARY)
             .arg("query")
+            .arg("--")
             .arg(search)
             .arg(project)
             .stdout(Stdio::piped())
@@ -375,6 +380,7 @@ impl Client {
         let timeout = Duration::from_secs(timeout_secs);
         let child = Command::new(CODEGRAPH_BINARY)
             .arg("sync")
+            .arg("--")
             .arg(project)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -389,6 +395,7 @@ impl Client {
         let timeout = Duration::from_secs(timeout_secs);
         let child = Command::new(CODEGRAPH_BINARY)
             .arg("files")
+            .arg("--")
             .arg(project)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
