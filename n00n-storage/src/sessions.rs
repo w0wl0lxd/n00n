@@ -239,7 +239,14 @@ fn fusion_usage_from_value(value: &serde_json::Value) -> Option<StoredFusionUsag
         Err(e) => {
             warn!(
                 error = %e,
-                raw_value = %value,
+                value_type = %match value {
+                    serde_json::Value::Object(_) => "object",
+                    serde_json::Value::Array(_) => "array",
+                    serde_json::Value::String(_) => "string",
+                    serde_json::Value::Number(_) => "number",
+                    serde_json::Value::Bool(_) => "boolean",
+                    serde_json::Value::Null => "null",
+                },
                 "rejected malformed fusion usage during session restore"
             );
             None
