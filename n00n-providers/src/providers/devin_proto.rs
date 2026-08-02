@@ -61,21 +61,21 @@ pub(crate) struct ChatToolChoice {
 
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct Metadata {
-    #[prost(string, tag = "1")]
+    #[prost(string, required, tag = "1")]
     pub ide_name: String,
-    #[prost(string, tag = "2")]
+    #[prost(string, required, tag = "2")]
     pub extension_version: String,
-    #[prost(string, tag = "3")]
+    #[prost(string, required, tag = "3")]
     pub api_key: String,
-    #[prost(string, tag = "4")]
+    #[prost(string, required, tag = "4")]
     pub locale: String,
     #[prost(string, tag = "5")]
     pub os: String,
     #[prost(bool, tag = "6")]
     pub disable_telemetry: bool,
-    #[prost(string, tag = "7")]
+    #[prost(string, required, tag = "7")]
     pub ide_version: String,
-    #[prost(string, tag = "12")]
+    #[prost(string, required, tag = "12")]
     pub extension_name: String,
     #[prost(string, tag = "21")]
     pub user_jwt: String,
@@ -97,9 +97,9 @@ pub(crate) struct GetUserJwtResponse {
 
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct ImageData {
-    #[prost(string, tag = "1")]
+    #[prost(string, required, tag = "1")]
     pub base64_data: String,
-    #[prost(string, tag = "2")]
+    #[prost(string, required, tag = "2")]
     pub mime_type: String,
     #[prost(string, tag = "3")]
     pub caption: String,
@@ -107,19 +107,19 @@ pub(crate) struct ImageData {
 
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct ChatToolCall {
-    #[prost(string, tag = "1")]
+    #[prost(string, required, tag = "1")]
     pub id: String,
-    #[prost(string, tag = "2")]
+    #[prost(string, required, tag = "2")]
     pub name: String,
-    #[prost(string, tag = "3")]
+    #[prost(string, required, tag = "3")]
     pub arguments_json: String,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct ChatMessagePrompt {
-    #[prost(string, tag = "1")]
+    #[prost(string, required, tag = "1")]
     pub message_id: String,
-    #[prost(uint64, tag = "2")]
+    #[prost(uint64, required, tag = "2")]
     pub source: u64,
     #[prost(string, tag = "3")]
     pub prompt: String,
@@ -139,41 +139,41 @@ pub(crate) struct ChatMessagePrompt {
 
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct ChatToolDefinition {
-    #[prost(string, tag = "1")]
+    #[prost(string, required, tag = "1")]
     pub name: String,
-    #[prost(string, tag = "2")]
+    #[prost(string, required, tag = "2")]
     pub description: String,
-    #[prost(string, tag = "3")]
+    #[prost(string, required, tag = "3")]
     pub json_schema_string: String,
-    #[prost(bool, tag = "12")]
+    #[prost(bool, required, tag = "12")]
     pub strict: bool,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct PromptCacheOptions {
-    #[prost(uint64, tag = "1")]
+    #[prost(uint64, required, tag = "1")]
     pub cache_control_type: u64,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct CompletionConfiguration {
-    #[prost(uint64, tag = "1")]
+    #[prost(uint64, required, tag = "1")]
     pub num_completions: u64,
-    #[prost(uint64, tag = "2")]
+    #[prost(uint64, required, tag = "2")]
     pub max_tokens: u64,
-    #[prost(uint64, tag = "3")]
+    #[prost(uint64, required, tag = "3")]
     pub max_newlines: u64,
-    #[prost(double, tag = "5")]
+    #[prost(double, required, tag = "5")]
     pub temperature: f64,
-    #[prost(double, tag = "6")]
+    #[prost(double, required, tag = "6")]
     pub first_temperature: f64,
-    #[prost(uint64, tag = "7")]
+    #[prost(uint64, required, tag = "7")]
     pub top_k: u64,
-    #[prost(double, tag = "8")]
+    #[prost(double, required, tag = "8")]
     pub top_p: f64,
     #[prost(string, repeated, tag = "9")]
     pub stop_patterns: Vec<String>,
-    #[prost(double, tag = "11")]
+    #[prost(double, required, tag = "11")]
     pub fim_eot_prob_threshold: f64,
 }
 
@@ -181,33 +181,33 @@ pub(crate) struct CompletionConfiguration {
 pub(crate) struct GetChatMessageRequest {
     #[prost(message, optional, tag = "1")]
     pub metadata: Option<Metadata>,
-    #[prost(string, tag = "2")]
+    #[prost(string, required, tag = "2")]
     pub prompt: String,
     #[prost(bytes, repeated, tag = "3")]
     pub chat_message_prompts: Vec<Vec<u8>>,
-    #[prost(string, tag = "21")]
+    #[prost(string, required, tag = "21")]
     pub chat_model_uid: String,
-    #[prost(uint64, tag = "7")]
+    #[prost(uint64, required, tag = "7")]
     pub request_type: u64,
     #[prost(message, optional, tag = "8")]
     pub configuration: Option<CompletionConfiguration>,
     #[prost(bytes, repeated, tag = "10")]
     pub tools: Vec<Vec<u8>>,
-    #[prost(bool, tag = "11")]
+    #[prost(bool, required, tag = "11")]
     pub disable_parallel_tool_calls: bool,
     #[prost(message, optional, tag = "12")]
     pub tool_choice: Option<ChatToolChoice>,
     #[prost(message, optional, tag = "13")]
     pub system_prompt_cache_options: Option<PromptCacheOptions>,
-    #[prost(string, tag = "16")]
+    #[prost(string, required, tag = "16")]
     pub cascade_id: String,
-    #[prost(uint64, tag = "18")]
+    #[prost(uint64, required, tag = "18")]
     pub provider_source: u64,
-    #[prost(uint64, tag = "19")]
+    #[prost(uint64, required, tag = "19")]
     pub language: u64,
-    #[prost(uint64, tag = "20")]
+    #[prost(uint64, required, tag = "20")]
     pub planner_mode: u64,
-    #[prost(string, tag = "22")]
+    #[prost(string, required, tag = "22")]
     pub execution_id: String,
 }
 
@@ -445,6 +445,7 @@ pub fn decode_cli_model_configs(buf: &[u8]) -> Result<HashMap<String, String>, S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::proto_test_util::parse_wire_fields;
 
     #[test]
     fn decode_get_user_jwt_response_roundtrip() {
@@ -525,5 +526,158 @@ mod tests {
             models.get("Model Label").map(String::as_str),
             Some("chat-model-name")
         );
+    }
+
+    #[test]
+    fn get_chat_message_request_wire_format_preserves_order_and_zero_defaults() {
+        let tool = ChatToolDefinition {
+            name: "read".to_string(),
+            description: String::new(),
+            json_schema_string: "{}".to_string(),
+            strict: false,
+        };
+        let tool_bytes = tool.encode_to_vec();
+        let request = encode_get_chat_message_request(
+            "api-key",
+            "user-jwt",
+            "prompt",
+            "chat-model-uid",
+            "cascade-id",
+            "execution-id",
+            &[],
+            &[tool_bytes],
+            100,
+            0.7,
+            0.9,
+        );
+        let fields = parse_wire_fields(&request).expect("valid request");
+        // prost encodes message fields in ascending tag order; assert the sorted tags.
+        let numbers: Vec<_> = fields.iter().map(|f| f.number).collect();
+        assert_eq!(
+            numbers,
+            vec![1, 2, 7, 8, 10, 11, 12, 13, 16, 18, 19, 20, 21, 22]
+        );
+
+        let metadata = parse_wire_fields(fields[0].as_bytes().unwrap()).expect("metadata");
+        assert_eq!(
+            metadata.iter().map(|f| f.number).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 7, 12, 21]
+        );
+
+        let by_number: std::collections::HashMap<_, _> =
+            fields.iter().map(|f| (f.number, f)).collect();
+        assert_eq!(by_number[&7].as_varint(), Some(5)); // request_type
+        assert_eq!(by_number[&18].as_varint(), Some(12)); // provider_source
+        assert_eq!(by_number[&19].as_varint(), Some(0)); // language
+        assert_eq!(by_number[&20].as_varint(), Some(1)); // planner_mode
+
+        let tool_field = by_number[&10];
+        let decoded_tool =
+            ChatToolDefinition::decode(tool_field.as_bytes().unwrap()).expect("tool");
+        assert_eq!(decoded_tool.name, "read");
+        assert_eq!(decoded_tool.description, "");
+        assert!(!decoded_tool.strict);
+    }
+
+    #[test]
+    fn chat_tool_definition_encodes_empty_description_and_false_strict() {
+        let tool = ChatToolDefinition {
+            name: "name".to_string(),
+            description: String::new(),
+            json_schema_string: "{}".to_string(),
+            strict: false,
+        };
+        let buf = tool.encode_to_vec();
+        let fields = parse_wire_fields(&buf).expect("valid tool");
+        assert_eq!(fields.len(), 4);
+        assert_eq!(fields[0].number, 1);
+        assert_eq!(fields[0].as_string().as_deref(), Some("name"));
+        assert_eq!(fields[1].number, 2);
+        assert_eq!(fields[1].as_string().as_deref(), Some(""));
+        assert_eq!(fields[2].number, 3);
+        assert_eq!(fields[3].number, 12);
+        assert_eq!(fields[3].as_varint(), Some(0));
+    }
+
+    #[test]
+    fn metadata_does_not_encode_os_disable_telemetry_or_empty_user_jwt() {
+        let request = encode_get_user_jwt_request("api-key");
+        let fields = parse_wire_fields(&request).expect("valid request");
+        assert_eq!(fields.len(), 1);
+        let metadata = parse_wire_fields(fields[0].as_bytes().unwrap()).expect("metadata");
+        assert_eq!(
+            metadata.iter().map(|f| f.number).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 7, 12]
+        );
+    }
+
+    #[test]
+    fn chat_message_prompt_requires_message_id_and_source() {
+        let prompt = encode_chat_message_prompt(&ChatMessagePromptInput {
+            message_id: "msg-1",
+            source: CHAT_MESSAGE_SOURCE_USER,
+            prompt: "",
+            tool_calls: &[],
+            tool_call_id: "",
+            tool_result_is_error: false,
+            images: &[ImageData {
+                base64_data: "data".to_string(),
+                mime_type: "image/png".to_string(),
+                caption: String::new(),
+            }],
+            thinking: "",
+            signature: "",
+        });
+        let fields = parse_wire_fields(&prompt).expect("valid prompt");
+        assert_eq!(
+            fields.iter().map(|f| f.number).collect::<Vec<_>>(),
+            vec![1, 2, 10]
+        );
+        let image = parse_wire_fields(fields[2].as_bytes().unwrap()).expect("image");
+        assert_eq!(
+            image.iter().map(|f| f.number).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn decode_rejects_truncated_message() {
+        let response = GetChatMessageResponse {
+            message_id: "x".to_string(),
+            ..Default::default()
+        };
+        let mut buf = response.encode_to_vec();
+        buf.pop();
+        assert!(decode_get_chat_message_response(&buf).is_err());
+    }
+
+    #[test]
+    fn decode_with_unknown_field_succeeds() {
+        let mut buf = GetChatMessageResponse {
+            message_id: "x".to_string(),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let mut unknown = Vec::new();
+        prost::encoding::encode_varint((999 << 3) | 2, &mut unknown);
+        prost::encoding::encode_varint(0u64, &mut unknown);
+        buf.extend(unknown);
+        let decoded = decode_get_chat_message_response(&buf).expect("decode with unknown");
+        assert_eq!(decoded.message_id, "x");
+    }
+
+    #[test]
+    fn chat_tool_choice_unset_encodes_empty() {
+        let choice = ChatToolChoice { choice: None };
+        let buf = choice.encode_to_vec();
+        assert!(buf.is_empty());
+        let decoded = ChatToolChoice::decode(&buf[..]).expect("decode");
+        assert!(decoded.choice.is_none());
+    }
+
+    #[test]
+    fn empty_payload_decodes_to_default() {
+        let decoded = GetChatMessageResponse::decode(&[][..]).expect("empty default");
+        assert!(decoded.message_id.is_empty());
     }
 }

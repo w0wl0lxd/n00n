@@ -1,10 +1,12 @@
 //! In-memory Cursor checkpoint blob store for `KvClientMessage` / `KvServerMessage`.
 //!
 //! Wire (from cursor-agent 2026.07.26):
-//! - Server → client: `AgentServerMessage.kv_server_message` (f4)
-//!   - `GetBlobArgs { blob_id }` (f2) or `SetBlobArgs { blob_id, blob_data }` (f3)
-//! - Client → server: `AgentClientMessage.kv_client_message` (f3)
-//!   - `GetBlobResult { blob_data? }` (f2) or `SetBlobResult { error? }` (f3)
+//! - Server → client: `AgentServerMessage.kv_server_message` (f4) wraps a `KvServerMessage`
+//!   - `KvServerMessage.get_blob` (f2) → `GetBlobArgs { blob_id }` (f1)
+//!   - `KvServerMessage.set_blob` (f3) → `SetBlobArgs { blob_id, blob_data }` (f1, f2)
+//! - Client → server: `AgentClientMessage.kv_client_message` (f3) wraps a `KvClientMessage`
+//!   - `KvClientMessage.get_blob_result` (f2) → `GetBlobResult { blob_data? }` (f1)
+//!   - `KvClientMessage.set_blob_result` (f3) → `SetBlobResult { error? }` (f1)
 //! - Resume: `UserMessage.conversation_state_blob_id` (f10 bytes)
 
 #![allow(dead_code)]
@@ -105,7 +107,8 @@ pub(crate) fn parse_kv_server_message(payload: &[u8]) -> Result<Option<KvServerO
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::cursor::proto::{KvServerMessage, SetBlobArgs};
+    use crate::providers::cursor::proto::{GetBlobArgs, KvServerMessage, SetBlobArgs};
+    use crate::providers::proto_test_util::parse_wire_fields;
 
     #[test]
     fn store_roundtrip() {
@@ -144,5 +147,56 @@ mod tests {
         let decoded = KvClientMessage::decode(&frame[..]).expect("decode");
         assert_eq!(decoded.id, 3);
         assert!(decoded.get_blob_result.is_some());
+    }
+
+    #[test]
+    fn get_blob_result_wire_format_with_data() {
+        let frame = encode_get_blob_result(7, Some(b"payload"));
+        let fields = parse_wire_fields(&frame).expect("valid kv");
+        assert_eq!(
+            fields.iter().map(|f| f.number).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        let result = parse_wire_fields(fields[1].as_bytes().unwrap()).expect("result");
+        assert_eq!(result[0].number, 1);
+        assert_eq!(result[0].as_bytes(), Some(b"payload".as_slice()));
+    }
+
+    #[test]
+    fn get_blob_result_wire_format_without_data() {
+        let frame = encode_get_blob_result(7, None);
+        let fields = parse_wire_fields(&frame).expect("valid kv");
+        assert_eq!(
+            fields.iter().map(|f| f.number).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        let result = parse_wire_fields(fields[1].as_bytes().unwrap()).expect("result");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn set_blob_result_wire_format() {
+        let frame = encode_set_blob_result(5);
+        let fields = parse_wire_fields(&frame).expect("valid kv");
+        assert_eq!(
+            fields.iter().map(|f| f.number).collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+        let result = parse_wire_fields(fields[1].as_bytes().unwrap()).expect("result");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_kv_server_message_rejects_truncated() {
+        let mut buf = KvServerMessage {
+            id: 7,
+            get_blob: Some(GetBlobArgs {
+                blob_id: b"id".to_vec(),
+            }),
+            set_blob: None,
+        }
+        .encode_to_vec();
+        buf.pop();
+        assert!(parse_kv_server_message(&buf).is_err());
     }
 }
