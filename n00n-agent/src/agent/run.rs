@@ -844,7 +844,9 @@ impl<'h> Agent<'h> {
     }
 
     fn effective_tool_filter(&self) -> ToolFilter {
-        if !self.allow_dynamic_mcp_tools {
+        if !self.allow_dynamic_mcp_tools
+            || !self.tool_filter.matches(crate::mcp::TOOL_SEARCH_TOOL_NAME)
+        {
             return self.tool_filter.clone();
         }
         let Some(mcp) = self.mcp.as_ref() else {
@@ -1438,6 +1440,36 @@ mod tests {
             .collect();
 
         assert_eq!(names, ["read", "srv__fetch_issue"]);
+    }
+
+    #[test]
+    fn dynamic_mcp_filter_preserves_only_without_tool_search() {
+        let mut history = History::new(Vec::new());
+        let (mut agent, _) = make_agent(MockProvider::new(Vec::new()), &mut history);
+        let mcp = crate::mcp::stub_session(&[("srv.fetch_issue", "Fetch a GitHub issue")]);
+        agent.tool_filter = ToolFilter::Only(vec!["read".into()]);
+        agent = agent
+            .with_mcp(Some(mcp.clone()))
+            .with_dynamic_mcp_tools(true);
+
+        mcp.search_tools("issue").unwrap();
+        let effective_filter = agent.effective_tool_filter();
+        assert!(!effective_filter.matches("tool_search"));
+        assert!(!effective_filter.matches("srv__fetch_issue"));
+        let mut definitions = json!([
+            {"name": "read"},
+            {"name": "write"},
+        ]);
+        mcp.extend_tools(&mut definitions);
+        filter_provider_tools(&mut definitions, &effective_filter, &AgentMode::Build);
+        let names = definitions
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|definition| definition["name"].as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, ["read"]);
     }
 
     #[test]
