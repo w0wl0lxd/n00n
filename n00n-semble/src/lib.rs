@@ -264,10 +264,11 @@ impl Client {
         content: Option<&str>,
     ) -> Result<String, SembleError> {
         // Try CLI for hybrid/semantic modes
-        if matches!(mode, Mode::Hybrid | Mode::Semantic) && Self::cli_available() {
-            if let Ok(result) = Self::cli_search(repo, query, mode, top_k, content) {
-                return Ok(result);
-            }
+        if matches!(mode, Mode::Hybrid | Mode::Semantic)
+            && Self::cli_available()
+            && let Ok(result) = Self::cli_search(repo, query, mode, top_k, content)
+        {
+            return Ok(result);
             // CLI failed, fall back to BM25 with embedder nag
         }
 
@@ -305,10 +306,10 @@ impl Client {
         top_k: Option<usize>,
     ) -> Result<String, SembleError> {
         // Try CLI first
-        if Self::cli_available() {
-            if let Ok(result) = Self::cli_find_related(repo, file_path, line, top_k) {
-                return Ok(result);
-            }
+        if Self::cli_available()
+            && let Ok(result) = Self::cli_find_related(repo, file_path, line, top_k)
+        {
+            return Ok(result);
             // CLI failed, fall back to native
         }
 
