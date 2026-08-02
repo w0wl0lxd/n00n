@@ -238,7 +238,7 @@ impl Client {
         project: &Path,
         timeout_secs: Option<u64>,
     ) -> Result<String, CodegraphError> {
-        let timeout_secs = timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
+        let timeout_secs = timeout_secs.unwrap_or_else(|| DEFAULT_TIMEOUT_SECS);
         let timeout = Duration::from_secs(timeout_secs);
         let child = Command::new(CODEGRAPH_BINARY)
             .arg("explore")
@@ -258,7 +258,7 @@ impl Client {
         project: &Path,
         timeout_secs: Option<u64>,
     ) -> Result<String, CodegraphError> {
-        let timeout_secs = timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
+        let timeout_secs = timeout_secs.unwrap_or_else(|| DEFAULT_TIMEOUT_SECS);
         let timeout = Duration::from_secs(timeout_secs);
         let child = Command::new(CODEGRAPH_BINARY)
             .arg("callers")
@@ -277,7 +277,7 @@ impl Client {
         project: &Path,
         timeout_secs: Option<u64>,
     ) -> Result<String, CodegraphError> {
-        let timeout_secs = timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
+        let timeout_secs = timeout_secs.unwrap_or_else(|| DEFAULT_TIMEOUT_SECS);
         let timeout = Duration::from_secs(timeout_secs);
         let child = Command::new(CODEGRAPH_BINARY)
             .arg("callees")
@@ -296,7 +296,7 @@ impl Client {
         project: &Path,
         timeout_secs: Option<u64>,
     ) -> Result<String, CodegraphError> {
-        let timeout_secs = timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
+        let timeout_secs = timeout_secs.unwrap_or_else(|| DEFAULT_TIMEOUT_SECS);
         let timeout = Duration::from_secs(timeout_secs);
         let child = Command::new(CODEGRAPH_BINARY)
             .arg("impact")
@@ -315,7 +315,7 @@ impl Client {
         project: &Path,
         timeout_secs: Option<u64>,
     ) -> Result<String, CodegraphError> {
-        let timeout_secs = timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
+        let timeout_secs = timeout_secs.unwrap_or_else(|| DEFAULT_TIMEOUT_SECS);
         let timeout = Duration::from_secs(timeout_secs);
         let mut cmd = Command::new(CODEGRAPH_BINARY);
         cmd.arg("affected");
@@ -337,7 +337,7 @@ impl Client {
         project: &Path,
         timeout_secs: Option<u64>,
     ) -> Result<String, CodegraphError> {
-        let timeout_secs = timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
+        let timeout_secs = timeout_secs.unwrap_or_else(|| DEFAULT_TIMEOUT_SECS);
         let timeout = Duration::from_secs(timeout_secs);
         let child = Command::new(CODEGRAPH_BINARY)
             .arg("node")
@@ -356,7 +356,7 @@ impl Client {
         project: &Path,
         timeout_secs: Option<u64>,
     ) -> Result<String, CodegraphError> {
-        let timeout_secs = timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
+        let timeout_secs = timeout_secs.unwrap_or_else(|| DEFAULT_TIMEOUT_SECS);
         let timeout = Duration::from_secs(timeout_secs);
         let child = Command::new(CODEGRAPH_BINARY)
             .arg("query")
@@ -371,7 +371,7 @@ impl Client {
     }
 
     fn sync_cli(project: &Path, timeout_secs: Option<u64>) -> Result<String, CodegraphError> {
-        let timeout_secs = timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
+        let timeout_secs = timeout_secs.unwrap_or_else(|| DEFAULT_TIMEOUT_SECS);
         let timeout = Duration::from_secs(timeout_secs);
         let child = Command::new(CODEGRAPH_BINARY)
             .arg("sync")
@@ -385,7 +385,7 @@ impl Client {
     }
 
     fn files_cli(project: &Path, timeout_secs: Option<u64>) -> Result<String, CodegraphError> {
-        let timeout_secs = timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
+        let timeout_secs = timeout_secs.unwrap_or_else(|| DEFAULT_TIMEOUT_SECS);
         let timeout = Duration::from_secs(timeout_secs);
         let child = Command::new(CODEGRAPH_BINARY)
             .arg("files")
@@ -404,10 +404,10 @@ impl Client {
         command_name: &str,
     ) -> Result<String, CodegraphError> {
         let mut stdout = child.stdout.take().ok_or_else(|| CodegraphError::Cli {
-            message: format!("failed to capture codegraph {} stdout", command_name),
+            message: format!("failed to capture codegraph {command_name} stdout"),
         })?;
         let mut stderr = child.stderr.take().ok_or_else(|| CodegraphError::Cli {
-            message: format!("failed to capture codegraph {} stderr", command_name),
+            message: format!("failed to capture codegraph {command_name} stderr"),
         })?;
 
         let stdout_handle = thread::spawn(move || {
@@ -449,13 +449,13 @@ impl Client {
         let stdout_bytes = stdout_handle
             .join()
             .map_err(|_| CodegraphError::Cli {
-                message: format!("codegraph {} stdout reader panicked", command_name),
+                message: format!("codegraph {command_name} stdout reader panicked"),
             })?
             .map_err(|source| CodegraphError::Exec { source })?;
         let stderr_bytes = stderr_handle
             .join()
             .map_err(|_| CodegraphError::Cli {
-                message: format!("codegraph {} stderr reader panicked", command_name),
+                message: format!("codegraph {command_name} stderr reader panicked"),
             })?
             .map_err(|source| CodegraphError::Exec { source })?;
 
