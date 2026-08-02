@@ -12,7 +12,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use super::proto::{field_bytes, field_ld, field_varint};
+use prost::Message;
+
+use super::proto::{GetBlobResult, KvClientMessage, KvServerMessage, SetBlobResult};
+use crate::providers::cursor::connect::encode_frame;
 
 #[derive(Debug, Default)]
 pub(crate) struct CheckpointStore {
@@ -42,21 +45,29 @@ pub(crate) fn shared_store() -> SharedCheckpointStore {
 /// Encode `AgentClientMessage.kv_client_message` for a get-blob response.
 #[must_use]
 pub(crate) fn encode_get_blob_result(request_id: u32, blob_data: Option<&[u8]>) -> Vec<u8> {
-    let mut result = Vec::new();
-    if let Some(data) = blob_data {
-        result.extend(field_bytes(1, data));
-    }
-    let mut kv = field_varint(1, u64::from(request_id));
-    kv.extend(field_ld(2, &result));
-    field_ld(3, &kv)
+    let result = GetBlobResult {
+        blob_data: blob_data.unwrap_or_default().to_vec(),
+    };
+    let kv = KvClientMessage {
+        id: u64::from(request_id),
+        get_blob_result: Some(result),
+        set_blob_result: None,
+    };
+    kv.encode_to_vec()
 }
 
 /// Encode `AgentClientMessage.kv_client_message` for a set-blob ack.
 #[must_use]
 pub(crate) fn encode_set_blob_result(request_id: u32) -> Vec<u8> {
-    let mut kv = field_varint(1, u64::from(request_id));
-    kv.extend(field_ld(3, &[]));
-    field_ld(3, &kv)
+    let result = SetBlobResult {
+        error: String::new(),
+    };
+    let kv = KvClientMessage {
+        id: u64::from(request_id),
+        get_blob_result: None,
+        set_blob_result: Some(result),
+    };
+    kv.encode_to_vec()
 }
 
 /// Parse `kv_server_message` payload into get/set ops.
@@ -74,85 +85,20 @@ pub(crate) enum KvServerOp {
 }
 
 pub(crate) fn parse_kv_server_message(payload: &[u8]) -> Result<Option<KvServerOp>, String> {
-    use super::proto::{decode_varint, iter_fields};
-
-    for field in iter_fields(payload) {
-        let (num, wire, data) = field?;
-        if num != 4 || wire != 2 {
-            continue;
-        }
-        let mut id = 0u32;
-        let mut get_blob: Option<Vec<u8>> = None;
-        let mut set_blob: Option<(Vec<u8>, Vec<u8>)> = None;
-        let mut rest = data;
-        while !rest.is_empty() {
-            let (tag, after) = decode_varint(rest)?;
-            rest = after;
-            let field_no = tag >> 3;
-            let wire_ty = (tag & 7) as u8;
-            match (field_no, wire_ty) {
-                (1, 0) => {
-                    let (value, after) = decode_varint(rest)?;
-                    id = u32::try_from(value).map_err(|_| "kv id overflow".to_string())?;
-                    rest = after;
-                }
-                (2, 2) => {
-                    let (len, after) = decode_varint(rest)?;
-                    let len = usize::try_from(len).map_err(|_| "len overflow".to_string())?;
-                    if after.len() < len {
-                        return Err("truncated get_blob_args".into());
-                    }
-                    let (args, after) = after.split_at(len);
-                    rest = after;
-                    for arg in iter_fields(args) {
-                        let (anum, awire, adata) = arg?;
-                        if anum == 1 && awire == 2 {
-                            get_blob = Some(adata.to_vec());
-                        }
-                    }
-                }
-                (3, 2) => {
-                    let (len, after) = decode_varint(rest)?;
-                    let len = usize::try_from(len).map_err(|_| "len overflow".to_string())?;
-                    if after.len() < len {
-                        return Err("truncated set_blob_args".into());
-                    }
-                    let (args, after) = after.split_at(len);
-                    rest = after;
-                    let mut blob_id = Vec::new();
-                    let mut blob_data = Vec::new();
-                    for arg in iter_fields(args) {
-                        let (anum, awire, adata) = arg?;
-                        if anum == 1 && awire == 2 {
-                            blob_id = adata.to_vec();
-                        } else if anum == 2 && awire == 2 {
-                            blob_data = adata.to_vec();
-                        }
-                    }
-                    set_blob = Some((blob_id, blob_data));
-                }
-                (_, 2) => {
-                    let (len, after) = decode_varint(rest)?;
-                    let len = usize::try_from(len).map_err(|_| "len overflow".to_string())?;
-                    if after.len() < len {
-                        return Err("truncated kv field".into());
-                    }
-                    rest = &after[len..];
-                }
-                (_, 0) => {
-                    let (_, after) = decode_varint(rest)?;
-                    rest = after;
-                }
-                _ => return Err(format!("unsupported kv wire {wire_ty}")),
-            }
-        }
-        if let Some(blob_id) = get_blob {
-            return Ok(Some(KvServerOp::Get { id, blob_id }));
-        }
-        if let Some((blob_id, data)) = set_blob {
-            return Ok(Some(KvServerOp::Set { id, blob_id, data }));
-        }
-        return Ok(None);
+    let msg = KvServerMessage::decode(payload).map_err(|e| e.to_string())?;
+    let id = u32::try_from(msg.id).map_err(|_| "kv id overflow".to_string())?;
+    if let Some(get_blob) = msg.get_blob {
+        return Ok(Some(KvServerOp::Get {
+            id,
+            blob_id: get_blob.blob_id,
+        }));
+    }
+    if let Some(set_blob) = msg.set_blob {
+        return Ok(Some(KvServerOp::Set {
+            id,
+            blob_id: set_blob.blob_id,
+            data: set_blob.blob_data,
+        }));
     }
     Ok(None)
 }
@@ -160,7 +106,7 @@ pub(crate) fn parse_kv_server_message(payload: &[u8]) -> Result<Option<KvServerO
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::cursor::proto::{field_bytes, field_ld, field_varint};
+    use crate::providers::cursor::proto::{KvServerMessage, SetBlobArgs};
 
     #[test]
     fn store_roundtrip() {
@@ -171,11 +117,16 @@ mod tests {
 
     #[test]
     fn parse_set_blob_args() {
-        let mut args = field_bytes(1, b"blob-id");
-        args.extend(field_bytes(2, b"blob-data"));
-        let mut kv = field_varint(1, 7);
-        kv.extend(field_ld(3, &args));
-        let msg = field_ld(4, &kv);
+        let args = SetBlobArgs {
+            blob_id: b"blob-id".to_vec(),
+            blob_data: b"blob-data".to_vec(),
+        };
+        let kv = KvServerMessage {
+            id: 7,
+            get_blob: None,
+            set_blob: Some(args),
+        };
+        let msg = kv.encode_to_vec();
         let op = parse_kv_server_message(&msg).expect("parse").expect("op");
         assert_eq!(
             op,
@@ -190,8 +141,9 @@ mod tests {
     #[test]
     fn encode_get_blob_result_wraps_client_message_field_3() {
         let frame = encode_get_blob_result(3, Some(b"payload"));
-        // outer field 3 = kv_client_message
-        assert_eq!(frame[0] & 0x07, 2);
-        assert_eq!(frame[0] >> 3, 3);
+        // Check that it's valid protobuf that can be decoded
+        let decoded = KvClientMessage::decode(&frame[..]).expect("decode");
+        assert_eq!(decoded.id, 3);
+        assert!(decoded.get_blob_result.is_some());
     }
 }
