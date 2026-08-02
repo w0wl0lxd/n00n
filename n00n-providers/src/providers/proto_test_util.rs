@@ -51,17 +51,15 @@ fn decode_varint(buf: &[u8]) -> Result<(u64, &[u8]), String> {
 pub(crate) fn parse_wire_fields(mut buf: &[u8]) -> Result<Vec<WireField>, String> {
     let mut out = Vec::new();
     while !buf.is_empty() {
-        let start = buf;
         let (tag, rest) = decode_varint(buf)?;
         let number = tag >> 3;
         let wire_type = (tag & 0x7) as u8;
-        let _ = start; // only rest is needed after decoding the tag
         match wire_type {
             0 => {
-                let field_start = rest;
+                let varint_start = rest;
                 let (_, rest2) = decode_varint(rest)?;
-                let value_consumed = field_start.len() - rest2.len();
-                let value_bytes = &field_start[..value_consumed];
+                let value_consumed = varint_start.len() - rest2.len();
+                let value_bytes = &varint_start[..value_consumed];
                 buf = rest2;
                 out.push(WireField {
                     number,
@@ -111,4 +109,44 @@ pub(crate) fn parse_wire_fields(mut buf: &[u8]) -> Result<Vec<WireField>, String
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_wire_fields_roundtrips_varint_string_and_bytes() {
+        // Build a minimal protobuf by hand: field 1 varint 150, field 2 string "hi",
+        // field 3 bytes "bye".
+        let mut buf = Vec::new();
+        // tag 1 (varint) -> 0x08, value 150 -> 0x96 0x01
+        buf.extend([0x08, 0x96, 0x01]);
+        // tag 2 (ld) -> 0x12, length 2, "hi"
+        buf.extend([0x12, 0x02, b'h', b'i']);
+        // tag 3 (ld) -> 0x1a, length 3, "bye"
+        buf.extend([0x1a, 0x03, b'b', b'y', b'e']);
+
+        let fields = parse_wire_fields(&buf).expect("valid");
+        assert_eq!(fields.len(), 3);
+
+        assert_eq!(fields[0].number, 1);
+        assert_eq!(fields[0].wire_type, 0);
+        assert_eq!(fields[0].as_varint(), Some(150));
+
+        assert_eq!(fields[1].number, 2);
+        assert_eq!(fields[1].wire_type, 2);
+        assert_eq!(fields[1].as_string().as_deref(), Some("hi"));
+
+        assert_eq!(fields[2].number, 3);
+        assert_eq!(fields[2].wire_type, 2);
+        assert_eq!(fields[2].as_bytes(), Some(b"bye".as_slice()));
+    }
+
+    #[test]
+    fn parse_wire_fields_rejects_truncated() {
+        let mut buf = Vec::new();
+        buf.extend([0x08, 0x80]); // tag 1 varint, incomplete varint
+        assert!(parse_wire_fields(&buf).is_err());
+    }
 }

@@ -59,6 +59,9 @@ pub(crate) struct ChatToolChoice {
     pub choice: Option<ChatToolChoiceOneof>,
 }
 
+/// Devin `Metadata`. Fields 5, 6, and 21 are conditionally encoded because the
+/// original hand-rolled encoder omitted them when they held default/empty values;
+/// all other scalar/string fields are emitted even when empty to stay wire-compatible.
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct Metadata {
     #[prost(string, required, tag = "1")]

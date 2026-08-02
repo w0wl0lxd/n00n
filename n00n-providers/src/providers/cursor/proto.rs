@@ -279,6 +279,20 @@ pub(crate) struct AgentServerMessage {
     pub kv_server_message: Vec<u8>,
 }
 
+/// Exec message from the server. Field 11 marks an MCP tool request.
+#[derive(Clone, PartialEq, prost::Message)]
+pub(crate) struct ExecServerMessage {
+    #[prost(message, optional, tag = "11")]
+    pub mcp_args: Option<McpArgs>,
+}
+
+/// MCP tool arguments requested by the server.
+#[derive(Clone, PartialEq, prost::Message)]
+pub(crate) struct McpArgs {
+    #[prost(string, tag = "5")]
+    pub name: String,
+}
+
 /// Get blob arguments from server.
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct GetBlobArgs {
@@ -357,17 +371,13 @@ pub(crate) fn extract_thinking_deltas(payload: &[u8]) -> Result<Vec<String>, Str
     Ok(out)
 }
 
-/// True when the server asked for an MCP tool via `exec_server_message` (field 2).
-pub(crate) fn has_exec_server_message(payload: &[u8]) -> Result<bool, String> {
-    let msg = AgentServerMessage::decode(payload).map_err(|e| e.to_string())?;
-    Ok(!msg.exec_server_message.is_empty())
-}
-
-/// True when the server sent a KV get/set request (`kv_server_message` field 4).
-#[allow(dead_code)] // used when Run wires checkpoint replies (Phase 1)
-pub(crate) fn has_kv_server_message(payload: &[u8]) -> Result<bool, String> {
-    let msg = AgentServerMessage::decode(payload).map_err(|e| e.to_string())?;
-    Ok(!msg.kv_server_message.is_empty())
+/// True when `exec_server_message` contains an `mcp_args` request (field 11).
+///
+/// Session-meta payloads may be stored in field 2 as raw, non-protobuf bytes; this
+/// soft-scan decodes the inner message and only returns true when the MCP args
+/// field is present, matching the original shunt behavior.
+pub(crate) fn exec_message_has_mcp_args(exec: &[u8]) -> bool {
+    ExecServerMessage::decode(exec).is_ok_and(|m| m.mcp_args.is_some())
 }
 
 #[cfg(test)]
@@ -439,23 +449,18 @@ mod tests {
     }
 
     #[test]
-    fn has_exec_server_message_detects_non_empty_field_2() {
-        let msg = AgentServerMessage {
-            interaction_update: None,
-            exec_server_message: b"exec_data".to_vec(),
-            field_3: Vec::new(),
-            kv_server_message: Vec::new(),
+    fn exec_message_has_mcp_args_detects_nested_mcp_args_and_rejects_session_meta() {
+        let mcp_args = McpArgs {
+            name: "Read".to_string(),
         };
-        let payload = msg.encode_to_vec();
-        assert!(has_exec_server_message(&payload).expect("ok"));
-        // Empty field 2 must not false-positive
-        let msg_empty = AgentServerMessage {
-            interaction_update: None,
-            exec_server_message: Vec::new(),
-            field_3: Vec::new(),
-            kv_server_message: Vec::new(),
+        let exec = ExecServerMessage {
+            mcp_args: Some(mcp_args),
         };
-        assert!(!has_exec_server_message(&msg_empty.encode_to_vec()).expect("ok"));
+        assert!(exec_message_has_mcp_args(&exec.encode_to_vec()));
+
+        // Empty exec message or session-meta payload must not false-positive.
+        assert!(!exec_message_has_mcp_args(&[]));
+        assert!(!exec_message_has_mcp_args(b"meta"));
     }
 
     #[test]
