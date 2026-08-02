@@ -9,6 +9,8 @@ const TRIVIAL_REQUEST_MAX_WORDS: usize = 4;
 const RECENT_ERROR_ESCALATE_THRESHOLD: u32 = 2;
 const SIDEKICK_FAILURE_ESCALATE_THRESHOLD: u32 = 2;
 const MAX_DELEGATIONS_BEFORE_LEAD_LOCK: u32 = 8;
+const GIT_COMMAND: &str = "git";
+const GIT_CLEAN_SUBCOMMAND: &str = "clean";
 const LEAD_ONLY_SIGNALS: &[&str] = &[
     "ambiguous",
     "unclear",
@@ -44,7 +46,6 @@ const LEAD_ONLY_SIGNALS: &[&str] = &[
     "destructive",
     "rm",
     "git reset --hard",
-    "git clean",
     "wipe",
     "wiping",
     "drop database",
@@ -503,10 +504,21 @@ pub fn decide_request(prompt: &str) -> FusionRequestDecision {
 pub(crate) fn contains_lead_only_signal(prompt: &str) -> bool {
     let prompt = prompt.to_ascii_lowercase();
     let normalized_prompt = normalize_word_separators(&prompt);
-    LEAD_ONLY_SIGNALS.iter().any(|signal| {
-        contains_signal(&prompt, signal)
-            || signal_has_multiple_words(signal)
-                && contains_signal(&normalized_prompt, &normalize_word_separators(signal))
+    contains_ordered_words(&normalized_prompt, GIT_COMMAND, GIT_CLEAN_SUBCOMMAND)
+        || LEAD_ONLY_SIGNALS.iter().any(|signal| {
+            contains_signal(&prompt, signal)
+                || signal_has_multiple_words(signal)
+                    && contains_signal(&normalized_prompt, &normalize_word_separators(signal))
+        })
+}
+
+fn contains_ordered_words(prompt: &str, first: &str, second: &str) -> bool {
+    let mut found_first = false;
+    prompt.split_whitespace().any(|word| {
+        if word == first {
+            found_first = true;
+        }
+        found_first && word == second
     })
 }
 
@@ -580,6 +592,8 @@ mod tests {
     #[test_case("format files and commit the result", FusionRequestDecision::LeadOnly ; "commit overrides mechanics")]
     #[test_case("run rm -rf on generated files", FusionRequestDecision::LeadOnly ; "destructive shell command")]
     #[test_case("run git clean -fdx", FusionRequestDecision::LeadOnly ; "destructive git clean")]
+    #[test_case("run git -C . clean -fdx", FusionRequestDecision::LeadOnly ; "git clean with global option")]
+    #[test_case("run git --git-dir=. --work-tree=. clean -fdx", FusionRequestDecision::LeadOnly ; "git clean with multiple global options")]
     #[test_case("wipe generated files before testing", FusionRequestDecision::LeadOnly ; "destructive wipe")]
     #[test_case("debug the serial authentication failure", FusionRequestDecision::LeadOnly ; "serial debugging")]
     #[test_case("search .env for API keys", FusionRequestDecision::LeadOnly ; "environment secrets")]

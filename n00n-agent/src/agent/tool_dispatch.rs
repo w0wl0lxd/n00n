@@ -2047,6 +2047,7 @@ mod tests {
             ("goal", "run rm -rf ."),
             ("goal", "run git reset --hard HEAD"),
             ("goal", "run git clean -fdx"),
+            ("goal", "run git -C . clean -fdx"),
             ("definition_of_done", "wipe the repository"),
             ("definition_of_done", "commit and merge the result"),
         ] {
