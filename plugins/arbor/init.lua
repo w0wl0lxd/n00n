@@ -70,7 +70,7 @@ local function native_trace_path(from_symbol, to_symbol, project)
 end
 
 local function dispatch(input)
-  local command = input.command
+  local command = input.command:gsub("-", "_")
   local project = input.project or "."
   local symbol = input.symbol
 
@@ -292,7 +292,11 @@ local function dispatch(input)
         is_error = true,
       }
     end
-    return { llm_output = n00n_arbor.inspect(symbol, project) }
+    local ok, result = pcall(n00n_arbor.inspect, symbol, project)
+    if not ok then
+      return { llm_output = "error: " .. tostring(result), is_error = true }
+    end
+    return { llm_output = result }
   end
 
   if command == "path" then
@@ -309,7 +313,11 @@ local function dispatch(input)
         is_error = true,
       }
     end
-    return { llm_output = n00n_arbor.path(input.from, input.to, project) }
+    local ok, result = pcall(n00n_arbor.path, input.from, input.to, project)
+    if not ok then
+      return { llm_output = "error: " .. tostring(result), is_error = true }
+    end
+    return { llm_output = result }
   end
 
   if command == "refactor" then
@@ -326,7 +334,11 @@ local function dispatch(input)
         is_error = true,
       }
     end
-    return { llm_output = n00n_arbor.refactor(input.operation, project) }
+    local ok, result = pcall(n00n_arbor.refactor, input.operation, project)
+    if not ok then
+      return { llm_output = "error: " .. tostring(result), is_error = true }
+    end
+    return { llm_output = result }
   end
 
   if command == "check" then

@@ -424,7 +424,7 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
                 ty: "string",
                 desc: "Path to the project root.",
             }],
-            returns: "(table) Array of entry point objects.",
+            returns: "(string) Raw CLI stdout output.",
             example: "",
         },
         FnDoc {

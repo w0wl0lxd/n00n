@@ -108,9 +108,10 @@ impl Client {
     pub fn callers(symbol: &str, project: &Path) -> Result<Vec<Relation>, ArborError> {
         let output = Command::new("arbor")
             .arg("callers")
+            .arg("--json")
+            .arg("--")
             .arg(symbol)
             .arg(project.as_os_str())
-            .arg("--json")
             .output()
             .map_err(|e| ArborError::Exec { source: e })?;
 
@@ -129,9 +130,10 @@ impl Client {
     pub fn callees(symbol: &str, project: &Path) -> Result<Vec<Relation>, ArborError> {
         let output = Command::new("arbor")
             .arg("callees")
+            .arg("--json")
+            .arg("--")
             .arg(symbol)
             .arg(project.as_os_str())
-            .arg("--json")
             .output()
             .map_err(|e| ArborError::Exec { source: e })?;
 
@@ -149,10 +151,11 @@ impl Client {
 
     pub fn map(project: &Path, token_budget: Option<u64>) -> Result<Vec<MapEntry>, ArborError> {
         let mut cmd = Command::new("arbor");
-        cmd.arg("map").arg(project.as_os_str()).arg("--json");
+        cmd.arg("map").arg("--json");
         if let Some(budget) = token_budget {
             cmd.arg("--tokens").arg(budget.to_string());
         }
+        cmd.arg("--").arg(project.as_os_str());
 
         let output = cmd.output().map_err(|e| ArborError::Exec { source: e })?;
 
@@ -171,6 +174,7 @@ impl Client {
     pub fn query(query: &str, project: &Path) -> Result<String, ArborError> {
         let output = Command::new("arbor")
             .arg("query")
+            .arg("--")
             .arg(query)
             .arg(project.as_os_str())
             .output()
@@ -189,6 +193,7 @@ impl Client {
     pub fn status(project: &Path) -> Result<String, ArborError> {
         let output = Command::new("arbor")
             .arg("status")
+            .arg("--")
             .arg(project.as_os_str())
             .output()
             .map_err(|e| ArborError::Exec { source: e })?;
@@ -206,8 +211,9 @@ impl Client {
     pub fn diff(project: &Path) -> Result<DiffImpact, ArborError> {
         let output = Command::new("arbor")
             .arg("diff")
-            .arg(project.as_os_str())
             .arg("--json")
+            .arg("--")
+            .arg(project.as_os_str())
             .output()
             .map_err(|e| ArborError::Exec { source: e })?;
 
@@ -226,6 +232,7 @@ impl Client {
     pub fn ensure_indexed(project: &Path) -> Result<(), ArborError> {
         let output = Command::new("arbor")
             .arg("status")
+            .arg("--")
             .arg(project.as_os_str())
             .output()
             .map_err(|e| ArborError::Exec { source: e })?;
@@ -241,6 +248,7 @@ impl Client {
         if index_health::status_needs_index(&status) {
             let output = Command::new("arbor")
                 .arg("index")
+                .arg("--")
                 .arg(project.as_os_str())
                 .output()
                 .map_err(|e| ArborError::Exec { source: e })?;
@@ -262,6 +270,7 @@ impl Client {
     pub fn reindex(project: &Path) -> Result<(), ArborError> {
         let output = Command::new("arbor")
             .arg("index")
+            .arg("--")
             .arg(project.as_os_str())
             .output()
             .map_err(|source| ArborError::Exec { source })?;
@@ -290,6 +299,7 @@ impl Client {
     pub fn entry_points(project: &Path) -> Result<String, ArborError> {
         let output = Command::new("arbor")
             .arg("entry-points")
+            .arg("--")
             .arg(project.as_os_str())
             .output()
             .map_err(|e| ArborError::Exec { source: e })?;
@@ -308,6 +318,7 @@ impl Client {
     pub fn file_graph(project: &Path) -> Result<String, ArborError> {
         let output = Command::new("arbor")
             .arg("file-graph")
+            .arg("--")
             .arg(project.as_os_str())
             .output()
             .map_err(|e| ArborError::Exec { source: e })?;
@@ -326,6 +337,7 @@ impl Client {
     pub fn inspect(symbol: &str, project: &Path) -> Result<String, ArborError> {
         let output = Command::new("arbor")
             .arg("inspect")
+            .arg("--")
             .arg(symbol)
             .arg(project.as_os_str())
             .output()
@@ -345,6 +357,7 @@ impl Client {
     pub fn path(from: &str, to: &str, project: &Path) -> Result<String, ArborError> {
         let output = Command::new("arbor")
             .arg("path")
+            .arg("--")
             .arg(from)
             .arg(to)
             .arg(project.as_os_str())
@@ -365,6 +378,7 @@ impl Client {
     pub fn refactor(operation: &str, project: &Path) -> Result<String, ArborError> {
         let output = Command::new("arbor")
             .arg("refactor")
+            .arg("--")
             .arg(operation)
             .arg(project.as_os_str())
             .output()
@@ -384,6 +398,7 @@ impl Client {
     pub fn check(project: &Path) -> Result<String, ArborError> {
         let output = Command::new("arbor")
             .arg("check")
+            .arg("--")
             .arg(project.as_os_str())
             .output()
             .map_err(|e| ArborError::Exec { source: e })?;
@@ -402,6 +417,7 @@ impl Client {
     pub fn summary(project: &Path) -> Result<String, ArborError> {
         let output = Command::new("arbor")
             .arg("summary")
+            .arg("--")
             .arg(project.as_os_str())
             .output()
             .map_err(|e| ArborError::Exec { source: e })?;

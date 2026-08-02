@@ -21,11 +21,16 @@
     },
     "symbol": {
       "type": "string",
-      "description": "Symbol name for callers, callees, impact, affected commands."
+      "description": "Symbol name for callers, callees, impact commands."
     },
     "node_id": {
       "type": "string",
       "description": "Node ID for node command."
+    },
+    "files": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Array of file paths for affected command."
     },
     "projectPath": {
       "type": "string",

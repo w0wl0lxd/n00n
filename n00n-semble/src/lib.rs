@@ -45,6 +45,7 @@ pub struct SearchRequest<'a> {
     pub query: &'a str,
     pub mode: Mode,
     pub top_k: Option<usize>,
+    pub content: Option<&'a str>,
 }
 
 pub struct FindRelatedRequest<'a> {
@@ -90,7 +91,7 @@ impl Client {
         content: Option<&str>,
     ) -> Result<String, SembleError> {
         let mut cmd = Command::new("semble");
-        cmd.arg("search").arg(query).arg(repo);
+        cmd.arg("search");
 
         if let Some(k) = top_k {
             cmd.arg("--top-k").arg(k.to_string());
@@ -108,6 +109,8 @@ impl Client {
                 Mode::Bm25 => "bm25",
             });
         }
+
+        cmd.arg("--").arg(query).arg(repo);
 
         let output = cmd.output().map_err(|e| SembleError::Cli {
             message: format!("semble CLI failed: {e}"),
@@ -131,14 +134,13 @@ impl Client {
         top_k: Option<usize>,
     ) -> Result<String, SembleError> {
         let mut cmd = Command::new("semble");
-        cmd.arg("find-related")
-            .arg(file_path)
-            .arg(line.to_string())
-            .arg(repo);
+        cmd.arg("find-related");
 
         if let Some(k) = top_k {
             cmd.arg("--top-k").arg(k.to_string());
         }
+
+        cmd.arg("--").arg(file_path).arg(line.to_string()).arg(repo);
 
         let output = cmd.output().map_err(|e| SembleError::Cli {
             message: format!("semble CLI failed: {e}"),
@@ -158,6 +160,7 @@ impl Client {
     pub fn cli_savings(repo: &Path) -> Result<String, SembleError> {
         let output = Command::new("semble")
             .arg("savings")
+            .arg("--")
             .arg(repo)
             .output()
             .map_err(|e| SembleError::Cli {
@@ -175,8 +178,9 @@ impl Client {
     }
 
     // T077: Handle remote git URLs by cloning to temp dir
-    #[allow(deprecated)]
-    pub fn resolve_repo_path(repo: &str) -> Result<PathBuf, SembleError> {
+    pub fn resolve_repo_path(
+        repo: &str,
+    ) -> Result<(PathBuf, Option<tempfile::TempDir>), SembleError> {
         if repo.starts_with("https://") || repo.starts_with("git@") {
             let temp_dir = tempfile::tempdir().map_err(|e| SembleError::Cli {
                 message: format!("failed to create temp dir: {e}"),
@@ -201,11 +205,9 @@ impl Client {
                 });
             }
 
-            // Keep temp_dir alive by leaking it (not ideal but works for this use case)
-            let _ = temp_dir.into_path();
-            Ok(clone_path)
+            Ok((clone_path, Some(temp_dir)))
         } else {
-            Ok(PathBuf::from(repo))
+            Ok((PathBuf::from(repo), None))
         }
     }
 
@@ -224,13 +226,26 @@ impl Client {
             output.push('\n');
         }
 
-        let results = index
+        let mut results = index
             .search(&Query {
                 text: request.query.to_owned(),
                 mode: SearchMode::Bm25,
                 top_k: resolve_top_k(request.top_k),
             })
             .map_err(map_search_err)?;
+
+        // Filter by content type if specified
+        if let Some(content_filter) = request.content {
+            results.retain(|result| {
+                let path = result.file_path.as_str();
+                match content_filter {
+                    "docs" => is_docs(path),
+                    "config" => is_config(path),
+                    "code" => !is_docs(path) && !is_config(path),
+                    _ => true,
+                }
+            });
+        }
 
         output.push_str(&format_results(&results));
         Ok(output)
@@ -257,68 +272,57 @@ impl Client {
 
     // T076-T085: Hybrid search that tries CLI first, falls back to BM25
     pub fn search_hybrid(
-        repo: &Path,
+        repo: &str,
         query: &str,
         mode: Mode,
         top_k: Option<usize>,
         content: Option<&str>,
     ) -> Result<String, SembleError> {
+        let (repo_path, _temp_dir) = Self::resolve_repo_path(repo)?;
+
         // Try CLI for hybrid/semantic modes
         if matches!(mode, Mode::Hybrid | Mode::Semantic)
             && Self::cli_available()
-            && let Ok(result) = Self::cli_search(repo, query, mode, top_k, content)
+            && let Ok(result) = Self::cli_search(&repo_path, query, mode, top_k, content)
         {
             return Ok(result);
             // CLI failed, fall back to BM25 with embedder nag
         }
 
         // Fall back to native BM25
-        let mut output = String::new();
-        if matches!(mode, Mode::Hybrid | Mode::Semantic) {
-            output.push_str(&embedder_nag());
-            output.push('\n');
-        }
-
-        let index_dir = Self::index_dir(repo);
-        let mut index = SearchIndex::open_or_create(&index_dir, &SearchConfig::default())
-            .map_err(map_search_err)?;
-        if !Self::has_index(repo) {
-            index.update(repo, |_| {}).map_err(map_search_err)?;
-        }
-
-        let results = index
-            .search(&Query {
-                text: query.to_owned(),
-                mode: SearchMode::Bm25,
-                top_k: resolve_top_k(top_k),
-            })
-            .map_err(map_search_err)?;
-
-        output.push_str(&format_results(&results));
-        Ok(output)
+        let request = SearchRequest {
+            repo: repo_path.as_path(),
+            query,
+            mode,
+            top_k,
+            content,
+        };
+        Self::search(&request)
     }
 
     // T079: Hybrid find_related that tries CLI first
     pub fn find_related_hybrid(
-        repo: &Path,
+        repo: &str,
         file_path: &str,
         line: usize,
         top_k: Option<usize>,
     ) -> Result<String, SembleError> {
+        let (repo_path, _temp_dir) = Self::resolve_repo_path(repo)?;
+
         // Try CLI first
         if Self::cli_available()
-            && let Ok(result) = Self::cli_find_related(repo, file_path, line, top_k)
+            && let Ok(result) = Self::cli_find_related(&repo_path, file_path, line, top_k)
         {
             return Ok(result);
             // CLI failed, fall back to native
         }
 
         // Fall back to native
-        let index_dir = Self::index_dir(repo);
+        let index_dir = Self::index_dir(&repo_path);
         let mut index = SearchIndex::open_or_create(&index_dir, &SearchConfig::default())
             .map_err(map_search_err)?;
-        if !Self::has_index(repo) {
-            index.update(repo, |_| {}).map_err(map_search_err)?;
+        if !Self::has_index(&repo_path) {
+            index.update(&repo_path, |_| {}).map_err(map_search_err)?;
         }
 
         let results = index
@@ -330,6 +334,12 @@ impl Client {
                 .take(resolve_top_k(top_k))
                 .collect::<Vec<_>>(),
         ))
+    }
+
+    // T080: Public savings function that resolves repo path
+    pub fn savings(repo: &str) -> Result<String, SembleError> {
+        let (repo_path, _temp_dir) = Self::resolve_repo_path(repo)?;
+        Self::cli_savings(&repo_path)
     }
 }
 
@@ -343,6 +353,35 @@ pub fn embedder_nag() -> String {
         "Falling back to BM25 keyword search.",
     ]
     .join("\n")
+}
+
+fn has_extension(path: &str, extensions: &[&str]) -> bool {
+    Path::new(path)
+        .extension()
+        .is_some_and(|ext| extensions.iter().any(|e| ext.eq_ignore_ascii_case(e)))
+}
+
+fn is_docs(path: &str) -> bool {
+    has_extension(path, &["md", "txt", "rst"])
+        || path.contains("/docs/")
+        || path.contains("/site/docs/")
+}
+
+fn is_config(path: &str) -> bool {
+    has_extension(
+        path,
+        &[
+            "toml",
+            "json",
+            "yaml",
+            "yml",
+            "ini",
+            "conf",
+            "nix",
+            "env",
+            "properties",
+        ],
+    )
 }
 
 fn format_results(results: &[SearchResult]) -> String {
@@ -396,6 +435,7 @@ mod tests {
             query: "session_restore",
             mode: Mode::Bm25,
             top_k: Some(3),
+            content: None,
         })
         .expect("search");
         assert!(output.contains("main.rs"));
@@ -413,6 +453,7 @@ mod tests {
             query: "hybrid_query",
             mode: Mode::Hybrid,
             top_k: Some(2),
+            content: None,
         })
         .expect("search");
         assert!(output.contains("No embedder configured"));
@@ -434,6 +475,7 @@ mod tests {
             query: "anchor",
             mode: Mode::Bm25,
             top_k: Some(1),
+            content: None,
         })
         .expect("warm index");
 
@@ -460,7 +502,9 @@ mod tests {
     fn resolve_repo_path_handles_local_path() {
         let result = Client::resolve_repo_path("/tmp");
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), std::path::PathBuf::from("/tmp"));
+        let (path, temp_dir) = result.unwrap();
+        assert_eq!(path, std::path::PathBuf::from("/tmp"));
+        assert!(temp_dir.is_none());
     }
 
     // T074: Test for content filter support
@@ -478,8 +522,14 @@ mod tests {
         let root = repo.path();
         fs::write(root.join("test.rs"), "fn fallback_test() {}").expect("write");
 
-        let output = Client::search_hybrid(root, "fallback_test", Mode::Hybrid, Some(5), None)
-            .expect("search_hybrid");
+        let output = Client::search_hybrid(
+            root.to_str().unwrap(),
+            "fallback_test",
+            Mode::Hybrid,
+            Some(5),
+            None,
+        )
+        .expect("search_hybrid");
         assert!(output.contains("No embedder configured"));
         assert!(output.contains("fallback_test"));
     }

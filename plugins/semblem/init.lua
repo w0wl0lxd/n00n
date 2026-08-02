@@ -48,8 +48,8 @@ Commands:
       top_k = { type = "integer", default = 5 },
       content = {
         type = "string",
-        enum = { "docs", "config", "all" },
-        description = "Content filter for search (docs, config, or all)",
+        enum = { "docs", "config", "code", "all" },
+        description = "Content filter for search (docs, config, code, or all)",
       },
     },
   },
@@ -86,7 +86,8 @@ Commands:
       if not input.query or input.query:match("^%s*$") then
         return { llm_output = "error: query is required for search", is_error = true }
       end
-      ok, output = pcall(semblem.search, repo, input.query, input.mode or "bm25", input.top_k or 5, input.content)
+      local content = input.content or "code"
+      ok, output = pcall(semblem.search, repo, input.query, input.mode or "bm25", input.top_k or 5, content)
     elseif command == "find_related" then
       if not input.file_path or not input.line then
         return { llm_output = "error: file_path and line are required for find_related", is_error = true }
