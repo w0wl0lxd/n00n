@@ -270,7 +270,14 @@ fn tool_telemetry_from_value(value: &JsonValue) -> Option<ToolTelemetry> {
         Err(e) => {
             warn!(
                 error = %e,
-                raw_value = %value,
+                value_type = %match value {
+                    JsonValue::Object(_) => "object",
+                    JsonValue::Array(_) => "array",
+                    JsonValue::String(_) => "string",
+                    JsonValue::Number(_) => "number",
+                    JsonValue::Bool(_) => "boolean",
+                    JsonValue::Null => "null",
+                },
                 "rejected malformed tool telemetry during session restore"
             );
             None
