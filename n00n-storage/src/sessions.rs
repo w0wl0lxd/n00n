@@ -229,7 +229,7 @@ pub struct StoredFusionUsage {
 /// Older session files occasionally wrote `lead_cost` or `sidekick_cost` as objects
 /// (e.g., maps from the model) instead of plain `f64`s. We tolerate those so the
 /// whole meta record is not discarded.
-fn fusion_usage_from_value(value: serde_json::Value) -> Option<StoredFusionUsage> {
+fn fusion_usage_from_value(value: &serde_json::Value) -> Option<StoredFusionUsage> {
     if value.is_null() {
         return None;
     }
@@ -254,7 +254,7 @@ where
     D: serde::Deserializer<'de>,
 {
     let raw = Option::<serde_json::Value>::deserialize(deserializer)?;
-    Ok(raw.and_then(fusion_usage_from_value))
+    Ok(raw.as_ref().and_then(fusion_usage_from_value))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

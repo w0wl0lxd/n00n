@@ -260,7 +260,7 @@ impl ToolTelemetry {
 /// This is used as a fallback for session files written before the `ToolTelemetry`
 /// schema settled, where `cost` or `usage` could be arbitrary objects or `telemetry`
 /// could be an empty map.
-fn tool_telemetry_from_value(value: JsonValue) -> Option<ToolTelemetry> {
+fn tool_telemetry_from_value(value: &JsonValue) -> Option<ToolTelemetry> {
     if value.is_null() {
         return None;
     }
@@ -285,7 +285,7 @@ where
     D: Deserializer<'de>,
 {
     let raw = Option::<JsonValue>::deserialize(deserializer)?;
-    Ok(raw.and_then(tool_telemetry_from_value))
+    Ok(raw.as_ref().and_then(tool_telemetry_from_value))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -378,7 +378,7 @@ impl<'de> Deserialize<'de> for TextOutput {
                             }
                             seen_telemetry = true;
                             let raw: Option<JsonValue> = map.next_value()?;
-                            telemetry = raw.and_then(tool_telemetry_from_value);
+                            telemetry = raw.as_ref().and_then(tool_telemetry_from_value);
                         }
                         _ => {
                             map.next_value::<serde::de::IgnoredAny>()?;
