@@ -30,18 +30,42 @@ Requires a .codegraph/ index in the project root.]],
 
   schema = {
     type = "object",
-    required = { "query" },
+    required = { "command" },
     properties = {
+      command = {
+        type = "string",
+        enum = { "explore", "callers", "callees", "impact", "affected", "node", "query", "sync", "files" },
+        description = "CodeGraph command to run",
+      },
       query = {
         type = "string",
-        description = "Natural language question or symbol/file names to explore (e.g. 'AuthService login', 'GraphTraverser BFS impact')",
+        description = "Natural language question or symbol/file names to explore (for explore/query commands)",
+      },
+      symbol = {
+        type = "string",
+        description = "Symbol name for callers/callees/impact/node commands",
+      },
+      name = {
+        type = "string",
+        description = "Symbol name for node command",
+      },
+      search = {
+        type = "string",
+        description = "Search query for query command",
+      },
+      files = {
+        type = "array",
+        items = { type = "string" },
+        description = "Array of file paths for affected command",
       },
       projectPath = { type = "string", description = "Absolute path to the project (defaults to current workspace)" },
     },
   },
 
   header = function(input)
-    return ExploreResult.header(input.query, input.projectPath)
+    local title = input.command or "codegraph"
+    local subtitle = input.query or input.symbol or input.name or input.search or ""
+    return ExploreResult.header(subtitle, input.projectPath)
   end,
 
   restore = function(_input, output, _is_error, ctx)
@@ -49,8 +73,8 @@ Requires a .codegraph/ index in the project root.]],
   end,
 
   handler = function(input, ctx)
-    if not input.query then
-      return { llm_output = "error: query is required", is_error = true }
+    if not input.command then
+      return { llm_output = "error: command is required", is_error = true }
     end
 
     local project_path = input.projectPath or cwd
@@ -77,9 +101,56 @@ Requires a .codegraph/ index in the project root.]],
       return { llm_output = "error: failed to publish codegraph results: " .. tostring(live_err), is_error = true }
     end
 
-    local output, err = n00n_codegraph.explore(input.query, project_path, CG_TIMEOUT_SECS)
+    local output, err
+    local cmd = input.command
+
+    if cmd == "explore" then
+      if not input.query then
+        return { llm_output = "error: query is required for explore command", is_error = true }
+      end
+      output, err = n00n_codegraph.explore(input.query, project_path, CG_TIMEOUT_SECS)
+    elseif cmd == "callers" then
+      if not input.symbol then
+        return { llm_output = "error: symbol is required for callers command", is_error = true }
+      end
+      output, err = n00n_codegraph.callers(input.symbol, project_path, CG_TIMEOUT_SECS)
+    elseif cmd == "callees" then
+      if not input.symbol then
+        return { llm_output = "error: symbol is required for callees command", is_error = true }
+      end
+      output, err = n00n_codegraph.callees(input.symbol, project_path, CG_TIMEOUT_SECS)
+    elseif cmd == "impact" then
+      if not input.symbol then
+        return { llm_output = "error: symbol is required for impact command", is_error = true }
+      end
+      output, err = n00n_codegraph.impact(input.symbol, project_path, CG_TIMEOUT_SECS)
+    elseif cmd == "affected" then
+      if not input.files or #input.files == 0 then
+        return { llm_output = "error: files array is required for affected command", is_error = true }
+      end
+      output, err = n00n_codegraph.affected(input.files, project_path, CG_TIMEOUT_SECS)
+    elseif cmd == "node" then
+      local name = input.name or input.symbol
+      if not name then
+        return { llm_output = "error: name or symbol is required for node command", is_error = true }
+      end
+      output, err = n00n_codegraph.node(name, project_path, CG_TIMEOUT_SECS)
+    elseif cmd == "query" then
+      local search = input.search or input.query
+      if not search then
+        return { llm_output = "error: search or query is required for query command", is_error = true }
+      end
+      output, err = n00n_codegraph.query(search, project_path, CG_TIMEOUT_SECS)
+    elseif cmd == "sync" then
+      output, err = n00n_codegraph.sync(project_path, CG_TIMEOUT_SECS)
+    elseif cmd == "files" then
+      output, err = n00n_codegraph.files(project_path, CG_TIMEOUT_SECS)
+    else
+      return { llm_output = "error: unknown command: " .. cmd, is_error = true }
+    end
+
     if err then
-      return { llm_output = "error: codegraph explore failed: " .. tostring(err), is_error = true }
+      return { llm_output = "error: codegraph " .. cmd .. " failed: " .. tostring(err), is_error = true }
     end
 
     output = (output or ""):gsub("\n+$", "")
