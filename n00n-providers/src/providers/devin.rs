@@ -1045,6 +1045,22 @@ mod tests {
     }
 
     #[test]
+    fn devin_usage_with_no_cache() {
+        let stats = ModelUsageStats {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+        };
+        let usage = devin_usage_to_token_usage(&stats);
+        assert_eq!(usage.input, 100);
+        assert_eq!(usage.output, 50);
+        assert_eq!(usage.cache_read, 0);
+        assert_eq!(usage.cache_creation, 0);
+        assert_eq!(usage.total_input(), 100);
+    }
+
+    #[test]
     fn encode_devin_tools_uses_input_schema() {
         let tools = serde_json::json!([{
             "name": "read",
