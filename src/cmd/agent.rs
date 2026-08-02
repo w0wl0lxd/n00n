@@ -395,9 +395,8 @@ fn prepare_agent_env(
     if yolo || config.always_yolo {
         config.permissions.yolo = true;
     }
-    if fusion || config.always_fusion {
-        config.agent.fusion.enabled = true;
-    }
+    config.agent.fusion.enabled =
+        super::resolve_fusion_opt_in(fusion, config.always_fusion, config.agent.fusion.enabled);
     config.validate()?;
 
     plugin_host
