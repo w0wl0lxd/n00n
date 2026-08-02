@@ -207,6 +207,20 @@ mod tests {
     }
 
     #[test]
+    fn lua_to_json_empty_table_with_array_metadata_is_array() {
+        let lua = Lua::new();
+        let tbl = lua.create_table().unwrap();
+        let metadata = lua.create_table().unwrap();
+        metadata
+            .raw_set(super::JSON_ARRAY_META_FIELD, true)
+            .unwrap();
+        tbl.set_metatable(Some(metadata)).unwrap();
+
+        let result = lua_to_json(&lua, &Value::Table(tbl)).unwrap();
+        assert_eq!(result, serde_json::json!([]));
+    }
+
+    #[test]
     fn lua_to_json_nested_table() {
         let lua = Lua::new();
 

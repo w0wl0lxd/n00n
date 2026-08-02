@@ -44,6 +44,7 @@ const HISTORY_REPLAY_PERMISSION_ID: &str = "history-replay";
 const HISTORY_REPLAY_TOOL: &str = "history_replay";
 const AMBIGUOUS_REPLAY_PERMISSION_ID: &str = "ambiguous-request-replay";
 const AMBIGUOUS_REPLAY_TOOL: &str = "ambiguous_request_replay";
+const AMBIGUOUS_REPLAY_RESET_MESSAGE: &str = "Resetting partial output before approved replay";
 const MAX_FUSION_PHASE_LABEL_CHARS: usize = 80;
 
 const CACHE_BREAKPOINT_LONG_SESSION: usize = 60;
@@ -601,6 +602,11 @@ impl<'h> Agent<'h> {
                     if !self.approve_ambiguous_request_replay(metadata).await? {
                         break Err(error);
                     }
+                    self.event_tx.send(AgentEvent::Retry {
+                        attempt: 1,
+                        message: AMBIGUOUS_REPLAY_RESET_MESSAGE.into(),
+                        delay_ms: 0,
+                    })?;
                     warn!(
                         delivery_phase = ?metadata.map(|metadata| metadata.phase),
                         response_id_present = metadata.is_some_and(|metadata| metadata.response_id.is_some()),
@@ -1179,6 +1185,8 @@ impl<'h> Agent<'h> {
             match cmd {
                 ExtractedCommand::Interrupt(mut input, _) => {
                     validate_input_message(&input)?;
+                    self.mode = Arc::new(input.mode);
+                    self.workflow = input.workflow;
                     self.restrict_fusion_for_queued_input(&input.message)?;
                     self.event_tx.send(AgentEvent::QueueItemConsumed {
                         text: input.message.clone(),
@@ -1189,7 +1197,6 @@ impl<'h> Agent<'h> {
                     for msg in std::mem::take(&mut input.preamble) {
                         self.history.push(msg);
                     }
-                    self.mode = Arc::new(input.mode);
                     let display = input.message;
                     if input.control {
                         let wrapped = format!(
@@ -1213,7 +1220,9 @@ impl<'h> Agent<'h> {
     }
 
     fn restrict_fusion_for_queued_input(&mut self, prompt: &str) -> Result<(), AgentError> {
-        if crate::fusion::decide_request(prompt) == FusionRequestDecision::Delegate {
+        if self.fusion_delegate_available(&self.tools)
+            && crate::fusion::decide_request(prompt) == FusionRequestDecision::Delegate
+        {
             return Ok(());
         }
         self.remove_fusion_delegate_tool();
@@ -1679,6 +1688,29 @@ mod tests {
                     .count(),
                 1
             );
+            let stale_index = events
+                .iter()
+                .position(|event| {
+                    matches!(
+                        &event.event,
+                        AgentEvent::TextDelta { text } if text == "stale"
+                    )
+                })
+                .unwrap();
+            let reset_index = events
+                .iter()
+                .position(|event| {
+                    matches!(
+                        &event.event,
+                        AgentEvent::Retry {
+                            attempt: 1,
+                            message,
+                            delay_ms: 0,
+                        } if message == AMBIGUOUS_REPLAY_RESET_MESSAGE
+                    )
+                })
+                .unwrap();
+            assert!(stale_index < reset_index);
         });
     }
 
@@ -1761,13 +1793,18 @@ mod tests {
             _: &'a [Message],
             _: &'a System,
             _: &'a Value,
-            _: &'a flume::Sender<ProviderEvent>,
+            event_tx: &'a flume::Sender<ProviderEvent>,
             _: RequestOptions,
             _: Option<&'a SessionRef>,
         ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
             Box::pin(async {
                 let call = self.calls.fetch_add(1, Ordering::Relaxed);
                 if call < self.failures {
+                    event_tx
+                        .send(ProviderEvent::TextDelta {
+                            text: "stale".into(),
+                        })
+                        .unwrap();
                     return Err(AgentError::RequestSent {
                         message: "WebSocket connection reset".into(),
                         metadata: Some(RequestDeliveryMetadata {
@@ -1775,7 +1812,7 @@ mod tests {
                             response_id: None,
                             close_code: None,
                             close_reason: None,
-                            emitted_event: false,
+                            emitted_event: true,
                         }),
                     });
                 }
@@ -2288,6 +2325,46 @@ mod tests {
                     )
                 })
             }));
+        });
+    }
+
+    #[test]
+    fn queued_workflow_interrupt_hides_fusion_delegate() {
+        smol::block_on(async {
+            let (registry, calls) = counting_registry();
+            let (provider, contexts) = MockProvider::recording_context(vec![
+                text_response(StopReason::EndTurn),
+                fusion_tool_response(),
+                text_response(StopReason::EndTurn),
+            ]);
+            let mut history = History::new(Vec::new());
+            let mut config = fusion_enabled_config();
+            config.max_turns = Some(3);
+            let (mut agent, _event_rx) =
+                make_agent_with_registry(provider, &mut history, config, registry);
+            agent.tools = json!([{"name": crate::fusion::FUSION_DELEGATE_TOOL}]);
+            let mut queued = default_input();
+            queued.message = "implement the parser and add focused tests".into();
+            queued.workflow = true;
+            agent = agent.with_interrupt_source(MockInterruptSource::new(vec![
+                ExtractedCommand::Interrupt(queued, 1),
+            ]));
+
+            let mut input = default_input();
+            input.message = "implement the parser and add focused tests".into();
+            agent.run(input).await.unwrap();
+
+            assert!(agent.workflow);
+            assert_eq!(calls.load(Ordering::Relaxed), 0);
+            let contexts = contexts.lock().unwrap();
+            assert!(
+                contexts[1..]
+                    .iter()
+                    .all(|(_, tools)| !crate::tools::has_definition(
+                        tools,
+                        crate::fusion::FUSION_DELEGATE_TOOL
+                    ))
+            );
         });
     }
 

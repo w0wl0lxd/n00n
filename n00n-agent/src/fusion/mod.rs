@@ -44,6 +44,7 @@ const LEAD_ONLY_SIGNALS: &[&str] = &[
     "destructive",
     "rm",
     "git reset --hard",
+    "git clean",
     "wipe",
     "wiping",
     "drop database",
@@ -578,6 +579,7 @@ mod tests {
     #[test_case("delete the production database after review", FusionRequestDecision::LeadOnly ; "destructive overrides review")]
     #[test_case("format files and commit the result", FusionRequestDecision::LeadOnly ; "commit overrides mechanics")]
     #[test_case("run rm -rf on generated files", FusionRequestDecision::LeadOnly ; "destructive shell command")]
+    #[test_case("run git clean -fdx", FusionRequestDecision::LeadOnly ; "destructive git clean")]
     #[test_case("wipe generated files before testing", FusionRequestDecision::LeadOnly ; "destructive wipe")]
     #[test_case("debug the serial authentication failure", FusionRequestDecision::LeadOnly ; "serial debugging")]
     #[test_case("search .env for API keys", FusionRequestDecision::LeadOnly ; "environment secrets")]
