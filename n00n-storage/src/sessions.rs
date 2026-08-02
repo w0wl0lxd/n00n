@@ -37,6 +37,7 @@ const MAX_SCAN_RECORD_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SCAN_DECODED_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ZSTD_WINDOW_LOG: u32 = 27;
 const ZSTD_WINDOW_TOO_LARGE_ERROR_CODE: usize = 16;
+const MAX_LAST_FRAME_DECODER_ATTEMPTS: usize = 1_024;
 const TRANSCRIPT_RECORD_TYPE: &str = "transcript";
 pub const SESSIONS_DIR: &str = "sessions";
 const CWD_INDEX_FILE: &str = "cwd_latest.json";
@@ -1440,7 +1441,7 @@ fn is_zst_data(data: &[u8]) -> bool {
     data.starts_with(&[0x28, 0xb5, 0x2f, 0xfd])
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct DecodeLimits {
     line_bytes: usize,
     decoded_bytes: usize,
@@ -2016,7 +2017,6 @@ where
 const ZSTD_MAGIC: &[u8] = &[0x28, 0xb5, 0x2f, 0xfd];
 const LAST_FRAME_SEARCH_CHUNK: usize = 1024 * 1024;
 const MAX_LAST_FRAME_SEARCH_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_LAST_FRAME_DECODER_ATTEMPTS: usize = 1_024;
 
 struct DecodedWorkBudget {
     remaining: usize,
@@ -2027,13 +2027,14 @@ impl DecodedWorkBudget {
         Self { remaining: limit }
     }
 
-    fn limits(&self, mut limits: DecodeLimits) -> Option<(DecodeLimits, usize)> {
+    fn limits(&self, limits: DecodeLimits) -> Option<(DecodeLimits, usize)> {
         let allowance = limits.decoded_bytes.min(self.remaining);
         if allowance == 0 {
             return None;
         }
-        limits.decoded_bytes = allowance;
-        Some((limits, allowance))
+        let mut adjusted = limits.clone();
+        adjusted.decoded_bytes = allowance;
+        Some((adjusted, allowance))
     }
 
     fn finish_attempt(&mut self, decoded_bytes: usize, allowance: usize, exhausted: bool) {
