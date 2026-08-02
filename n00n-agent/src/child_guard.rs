@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::io;
 use std::process::ExitStatus;
 use std::time::Duration;
@@ -47,17 +48,28 @@ impl ChildGuard {
     }
 
     pub async fn kill_and_reap(&mut self) {
+        self.begin_shutdown();
+        self.reap().await;
+    }
+
+    pub(crate) fn begin_shutdown(&mut self) {
         self.signal_kill();
-        if let Some(mut child) = self.child.take() {
-            futures_lite::future::or(
-                async {
-                    let _ = child.status().await;
-                },
-                async {
-                    async_io::Timer::after(REAP_TIMEOUT).await;
-                },
-            )
-            .await;
+    }
+
+    pub(crate) fn reap(&mut self) -> impl Future<Output = ()> + Send + 'static {
+        let child = self.child.take();
+        async move {
+            if let Some(mut child) = child {
+                futures_lite::future::or(
+                    async {
+                        let _ = child.status().await;
+                    },
+                    async {
+                        async_io::Timer::after(REAP_TIMEOUT).await;
+                    },
+                )
+                .await;
+            }
         }
     }
 
