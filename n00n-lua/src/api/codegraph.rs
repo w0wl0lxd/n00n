@@ -302,7 +302,7 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
         FnDoc {
             name: "node",
             args: "{name}, {project}, {timeout_secs?}",
-            desc: "Get one symbol's source + caller/callee trail using native SQLite when available, otherwise `codegraph node`.",
+            desc: "Get one symbol's source location and signature using native SQLite when available, otherwise `codegraph node` (which may include a caller/callee trail).",
             params: &[
                 ParamDoc {
                     name: "{name}",

@@ -74,6 +74,9 @@ local function dispatch(input)
     return { llm_output = "error: command is required", is_error = true }
   end
   local command = input.command:gsub("-", "_")
+  if command == "trace" then
+    command = "trace_path"
+  end
   local project = input.project or "."
   local symbol = input.symbol
 

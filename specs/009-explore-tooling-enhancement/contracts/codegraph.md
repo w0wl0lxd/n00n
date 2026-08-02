@@ -9,6 +9,7 @@
 ```json
 {
   "type": "object",
+  "required": ["command"],
   "properties": {
     "command": {
       "type": "string",
@@ -17,7 +18,7 @@
     },
     "query": {
       "type": "string",
-      "description": "Natural-language query for explore command."
+      "description": "Natural-language query for explore or query command."
     },
     "symbol": {
       "type": "string",
@@ -87,6 +88,14 @@ Returns sync status and progress.
 ### files
 
 Returns list of indexed files with content_hash, language, size, modified_at.
+
+## Command-Specific Input Rules
+
+- `explore` and `query` require `query`.
+- `callers`, `callees`, and `impact` require `symbol`.
+- `affected` requires `files`.
+- `node` requires one of `node_id`, `name`, or `symbol`.
+- `sync` and `files` require only `projectPath`.
 
 ## Error Handling
 

@@ -344,6 +344,14 @@ impl Client {
 
     // T063: refactor command (mutates source files - use with caution)
     pub fn refactor(operation: &str, project: &Path) -> Result<String, ArborError> {
+        if !operation
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(ArborError::Cli {
+                message: format!("refactor operation contains unsafe characters: {operation}"),
+            });
+        }
         run_arbor_cmd("refactor", [operation.as_ref(), project.as_os_str()])
     }
 

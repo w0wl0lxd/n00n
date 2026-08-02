@@ -5485,7 +5485,7 @@ Accept an array of file paths and compute the affected file set using `codegraph
 n00n.codegraph.node({name}, {project}, {timeout_secs?})
 ```
 
-Get one symbol's source + caller/callee trail using native SQLite when available, otherwise `codegraph node`.
+Get one symbol's source location and signature using native SQLite when available, otherwise `codegraph node` (which may include a caller/callee trail).
 
 **Parameters:**
 

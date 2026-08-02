@@ -24,7 +24,7 @@ n00n.api.register_tool({
 Commands:
 - `search`: ranked snippets for a natural-language or keyword query
 - `find_related`: related chunks for a file location
-- `savings`: show time savings from using semantic search (requires semble CLI; no native fallback)
+- `savings`: show token savings from using semantic search (requires semble CLI; no native fallback)
 
 `mode` defaults to `bm25`. `hybrid` and `semantic` try the upstream semble CLI first and fall back to BM25 with an embedder nag if unavailable.]],
 

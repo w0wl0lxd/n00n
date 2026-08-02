@@ -44,16 +44,16 @@ Expected: Each query routes to the correct backend and returns appropriate resul
 
 ```bash
 # Callers via native SQLite
-codegraph { command = "callers", symbol = "parse_file", project = "." }
+codegraph { command = "callers", symbol = "parse_file", projectPath = "." }
 
 # Sync to re-index
-codegraph { command = "sync", project = "." }
+codegraph { command = "sync", projectPath = "." }
 
 # Node details
-codegraph { command = "node", node_id = "123", project = "." }
+codegraph { command = "node", node_id = "123", projectPath = "." }
 
 # Impact analysis
-codegraph { command = "impact", symbol = "parse_file", project = "." }
+codegraph { command = "impact", symbol = "parse_file", projectPath = "." }
 ```
 
 Expected: Results return from native SQLite queries where supported; CLI fallback for unsupported commands.

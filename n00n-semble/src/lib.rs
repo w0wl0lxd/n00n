@@ -182,7 +182,14 @@ impl Client {
     pub fn resolve_repo_path(
         repo: &str,
     ) -> Result<(PathBuf, Option<tempfile::TempDir>), SembleError> {
-        if repo.starts_with("https://") || repo.starts_with("git@") {
+        if repo.starts_with("git@") || repo.starts_with("http://") {
+            return Err(SembleError::Cli {
+                message: String::from(
+                    "only https:// remote URLs are supported; set N00N_SEMBLE_ALLOWED_REMOTE_REPOS to authorize a prefix",
+                ),
+            });
+        }
+        if repo.starts_with("https://") {
             // Validate remote URL against allowlist
             let allowed = std::env::var("N00N_SEMBLE_ALLOWED_REMOTE_REPOS");
             let allowed = match allowed {
@@ -279,23 +286,32 @@ impl Client {
         Ok(output)
     }
 
-    pub fn find_related(request: &FindRelatedRequest<'_>) -> Result<String, SembleError> {
-        let index_dir = Self::index_dir(request.repo);
+    fn find_related_native(
+        repo: &Path,
+        file_path: &str,
+        line: usize,
+        top_k: Option<usize>,
+    ) -> Result<String, SembleError> {
+        let index_dir = Self::index_dir(repo);
         let mut index = SearchIndex::open_or_create(&index_dir, &SearchConfig::default())
             .map_err(map_search_err)?;
-        if !Self::has_index(request.repo) {
-            index.update(request.repo, |_| {}).map_err(map_search_err)?;
+        if !Self::has_index(repo) {
+            index.update(repo, |_| {}).map_err(map_search_err)?;
         }
 
         let results = index
-            .find_related(request.file_path, request.line)
+            .find_related(file_path, line)
             .map_err(map_search_err)?;
         Ok(format_results(
             &results
                 .into_iter()
-                .take(resolve_top_k(request.top_k))
+                .take(resolve_top_k(top_k))
                 .collect::<Vec<_>>(),
         ))
+    }
+
+    pub fn find_related(request: &FindRelatedRequest<'_>) -> Result<String, SembleError> {
+        Self::find_related_native(request.repo, request.file_path, request.line, request.top_k)
     }
 
     // T076-T085: Hybrid search that tries CLI first, falls back to BM25
@@ -307,6 +323,13 @@ impl Client {
         content: Option<&str>,
     ) -> Result<String, SembleError> {
         let (repo_path, _temp_dir) = Self::resolve_repo_path(repo)?;
+        let request = SearchRequest {
+            repo: repo_path.as_path(),
+            query,
+            mode,
+            top_k,
+            content,
+        };
 
         // Try CLI for hybrid/semantic modes, or when content filter is requested
         let should_try_cli = matches!(mode, Mode::Hybrid | Mode::Semantic) || content.is_some();
@@ -316,13 +339,6 @@ impl Client {
                 Err(e) => {
                     // Prepend warning before falling back
                     let mut fallback_output = format!("[semblem CLI unavailable: {e}]\n");
-                    let request = SearchRequest {
-                        repo: repo_path.as_path(),
-                        query,
-                        mode,
-                        top_k,
-                        content,
-                    };
                     let native_result = Self::search(&request)?;
                     fallback_output.push_str(&native_result);
                     return Ok(fallback_output);
@@ -331,13 +347,6 @@ impl Client {
         }
 
         // Fall back to native BM25
-        let request = SearchRequest {
-            repo: repo_path.as_path(),
-            query,
-            mode,
-            top_k,
-            content,
-        };
         Self::search(&request)
     }
 
@@ -357,24 +366,8 @@ impl Client {
                 Err(e) => {
                     // Prepend warning before falling back
                     let mut fallback_output = format!("[semblem CLI unavailable: {e}]\n");
-
-                    let index_dir = Self::index_dir(&repo_path);
-                    let mut index =
-                        SearchIndex::open_or_create(&index_dir, &SearchConfig::default())
-                            .map_err(map_search_err)?;
-                    if !Self::has_index(&repo_path) {
-                        index.update(&repo_path, |_| {}).map_err(map_search_err)?;
-                    }
-
-                    let results = index
-                        .find_related(file_path, line)
-                        .map_err(map_search_err)?;
-                    let native_result = format_results(
-                        &results
-                            .into_iter()
-                            .take(resolve_top_k(top_k))
-                            .collect::<Vec<_>>(),
-                    );
+                    let native_result =
+                        Self::find_related_native(&repo_path, file_path, line, top_k)?;
                     fallback_output.push_str(&native_result);
                     return Ok(fallback_output);
                 }
@@ -382,22 +375,7 @@ impl Client {
         }
 
         // Fall back to native
-        let index_dir = Self::index_dir(&repo_path);
-        let mut index = SearchIndex::open_or_create(&index_dir, &SearchConfig::default())
-            .map_err(map_search_err)?;
-        if !Self::has_index(&repo_path) {
-            index.update(&repo_path, |_| {}).map_err(map_search_err)?;
-        }
-
-        let results = index
-            .find_related(file_path, line)
-            .map_err(map_search_err)?;
-        Ok(format_results(
-            &results
-                .into_iter()
-                .take(resolve_top_k(top_k))
-                .collect::<Vec<_>>(),
-        ))
+        Self::find_related_native(&repo_path, file_path, line, top_k)
     }
 
     // T080: Public savings function that resolves repo path
