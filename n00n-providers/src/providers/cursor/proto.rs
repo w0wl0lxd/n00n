@@ -26,7 +26,7 @@ pub(crate) const AGENT_MODE_ASK: u64 = AgentMode::Ask as u64;
 /// Model metadata: `{f1: model_id, f3: {f1:"fast", f2:"false"}}`.
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct ModelMeta {
-    #[prost(string, tag = "1")]
+    #[prost(string, required, tag = "1")]
     pub model_id: String,
     #[prost(message, optional, tag = "3")]
     pub options: Option<ModelOptions>,
@@ -34,9 +34,9 @@ pub(crate) struct ModelMeta {
 
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct ModelOptions {
-    #[prost(string, tag = "1")]
+    #[prost(string, required, tag = "1")]
     pub key: String,
-    #[prost(string, tag = "2")]
+    #[prost(string, required, tag = "2")]
     pub value: String,
 }
 
@@ -55,13 +55,13 @@ impl ModelMeta {
 /// User message in the conversation.
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct UserMessage {
-    #[prost(string, tag = "1")]
+    #[prost(string, required, tag = "1")]
     pub prompt: String,
-    #[prost(string, tag = "2")]
+    #[prost(string, required, tag = "2")]
     pub message_id: String,
-    #[prost(string, tag = "3")]
+    #[prost(string, required, tag = "3")]
     pub parent_id: String,
-    #[prost(uint64, tag = "4")]
+    #[prost(uint64, required, tag = "4")]
     pub mode: u64,
 }
 
@@ -75,27 +75,27 @@ pub(crate) struct Action {
 /// Environment context for the agent.
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct Environment {
-    #[prost(string, tag = "1")]
+    #[prost(string, required, tag = "1")]
     pub os: String,
-    #[prost(string, tag = "2")]
+    #[prost(string, required, tag = "2")]
     pub cwd: String,
-    #[prost(string, tag = "3")]
+    #[prost(string, required, tag = "3")]
     pub shell: String,
-    #[prost(string, tag = "10")]
+    #[prost(string, required, tag = "10")]
     pub timezone: String,
-    #[prost(string, tag = "11")]
+    #[prost(string, required, tag = "11")]
     pub home: String,
-    #[prost(uint64, tag = "14")]
+    #[prost(uint64, required, tag = "14")]
     pub field_14: u64,
-    #[prost(uint64, tag = "16")]
+    #[prost(uint64, required, tag = "16")]
     pub field_16: u64,
-    #[prost(uint64, tag = "19")]
+    #[prost(uint64, required, tag = "19")]
     pub field_19: u64,
-    #[prost(uint64, tag = "20")]
+    #[prost(uint64, required, tag = "20")]
     pub field_20: u64,
-    #[prost(string, tag = "21")]
+    #[prost(string, required, tag = "21")]
     pub project_path: String,
-    #[prost(uint64, tag = "22")]
+    #[prost(uint64, required, tag = "22")]
     pub field_22: u64,
 }
 
@@ -134,30 +134,30 @@ pub(crate) struct SessionMeta {
 /// Agent client message sent to the server.
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct AgentClientMessage {
-    #[prost(string, tag = "1")]
+    #[prost(string, required, tag = "1")]
     pub field_1: String,
     #[prost(message, optional, tag = "2")]
     pub action: Option<Action>,
-    #[prost(string, tag = "4")]
+    #[prost(string, required, tag = "4")]
     pub mcp_tools: String,
-    #[prost(string, tag = "5")]
+    #[prost(string, required, tag = "5")]
     pub conversation_id: String,
     #[prost(message, optional, tag = "9")]
     pub model_meta: Option<ModelMeta>,
-    #[prost(uint64, tag = "12")]
+    #[prost(uint64, required, tag = "12")]
     pub field_12: u64,
     #[prost(message, repeated, tag = "14")]
     pub environments: Vec<ModelMeta>,
-    #[prost(string, tag = "16")]
+    #[prost(string, required, tag = "16")]
     pub conversation_id_2: String,
 }
 
 /// Marker message for pacing.
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct MarkerMessage {
-    #[prost(uint64, tag = "1")]
+    #[prost(uint64, required, tag = "1")]
     pub index: u64,
-    #[prost(string, tag = "3")]
+    #[prost(string, required, tag = "3")]
     pub field_3: String,
 }
 
@@ -374,6 +374,7 @@ pub(crate) fn has_kv_server_message(payload: &[u8]) -> Result<bool, String> {
 mod tests {
     use super::*;
     use crate::providers::cursor::connect::FrameBuffer;
+    use crate::providers::proto_test_util::parse_wire_fields;
 
     #[test]
     fn heartbeat_is_single_connect_frame_with_field_7() {
@@ -455,5 +456,126 @@ mod tests {
             kv_server_message: Vec::new(),
         };
         assert!(!has_exec_server_message(&msg_empty.encode_to_vec()).expect("ok"));
+    }
+
+    #[test]
+    fn build_run_frames_agent_client_message_wire_format() {
+        let frames = build_run_frames(&RunFrameParams {
+            prompt: "PROMPT_MARKER",
+            model_id: "default",
+            cwd: "/tmp",
+            conversation_id: "conv-1",
+            message_id: "msg-1",
+            mode: AGENT_MODE_AGENT,
+        })
+        .expect("frames");
+
+        let mut buf = FrameBuffer::default();
+        buf.push(&frames[0]);
+        let frame = buf.next_frame().expect("frame").expect("ok");
+        let client_fields = parse_wire_fields(&frame.payload).expect("valid client message");
+        assert_eq!(
+            client_fields.iter().map(|f| f.number).collect::<Vec<_>>(),
+            vec![1, 2, 4, 5, 9, 12, 14, 14, 16]
+        );
+
+        let action = parse_wire_fields(client_fields[1].as_bytes().unwrap()).expect("action");
+        assert_eq!(action[0].number, 1);
+        let user_msg = parse_wire_fields(action[0].as_bytes().unwrap()).expect("user message");
+        assert_eq!(
+            user_msg.iter().map(|f| f.number).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
+
+        let model_meta =
+            parse_wire_fields(client_fields[4].as_bytes().unwrap()).expect("model meta");
+        assert_eq!(
+            model_meta.iter().map(|f| f.number).collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+
+        let first_env = parse_wire_fields(client_fields[6].as_bytes().unwrap()).expect("first env");
+        assert_eq!(
+            first_env.iter().map(|f| f.number).collect::<Vec<_>>(),
+            vec![1]
+        );
+        let second_env =
+            parse_wire_fields(client_fields[7].as_bytes().unwrap()).expect("second env");
+        assert_eq!(
+            second_env.iter().map(|f| f.number).collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+    }
+
+    #[test]
+    fn environment_includes_zero_fields() {
+        let env = Environment::new("/tmp");
+        let fields = parse_wire_fields(&env.encode_to_vec()).expect("valid environment");
+        assert_eq!(
+            fields.iter().map(|f| f.number).collect::<Vec<_>>(),
+            vec![1, 2, 3, 10, 11, 14, 16, 19, 20, 21, 22]
+        );
+        assert_eq!(fields[7].as_varint(), Some(0));
+        assert_eq!(fields[8].as_varint(), Some(0));
+        assert_eq!(fields[10].as_varint(), Some(0));
+    }
+
+    #[test]
+    fn marker_message_includes_empty_field_3() {
+        let marker = MarkerMessage {
+            index: 1,
+            field_3: String::new(),
+        };
+        let fields = parse_wire_fields(&marker.encode_to_vec()).expect("valid marker");
+        assert_eq!(
+            fields.iter().map(|f| f.number).collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+        assert_eq!(fields[1].as_string().as_deref(), Some(""));
+    }
+
+    #[test]
+    fn agent_client_message_default_encodes_required_fields() {
+        let fields = parse_wire_fields(&AgentClientMessage::default().encode_to_vec())
+            .expect("valid default client message");
+        assert_eq!(
+            fields.iter().map(|f| f.number).collect::<Vec<_>>(),
+            vec![1, 4, 5, 12, 16]
+        );
+    }
+
+    #[test]
+    fn decode_agent_server_message_with_unknown_field() {
+        let mut buf = AgentServerMessage {
+            interaction_update: None,
+            exec_server_message: Vec::new(),
+            field_3: Vec::new(),
+            kv_server_message: Vec::new(),
+        }
+        .encode_to_vec();
+        let mut unknown = Vec::new();
+        prost::encoding::encode_varint((999 << 3) | 2, &mut unknown);
+        prost::encoding::encode_varint(0u64, &mut unknown);
+        buf.extend(unknown);
+        let decoded = AgentServerMessage::decode(&buf[..]).expect("decode with unknown");
+        assert!(decoded.interaction_update.is_none());
+    }
+
+    #[test]
+    fn decode_rejects_truncated_message() {
+        let mut buf = AgentServerMessage {
+            interaction_update: Some(InteractionUpdate {
+                text_delta: Some(TextDelta {
+                    text: "hi".to_string(),
+                }),
+                thinking_delta: None,
+            }),
+            exec_server_message: Vec::new(),
+            field_3: Vec::new(),
+            kv_server_message: Vec::new(),
+        }
+        .encode_to_vec();
+        buf.pop();
+        assert!(AgentServerMessage::decode(&buf[..]).is_err());
     }
 }
