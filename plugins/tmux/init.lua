@@ -351,24 +351,7 @@ local opts = n00n.api.register_options(output_limits.extend({
 n00n.api.register_tool({
   name = "tmux",
   kind = "execute",
-  description = [[Manage tmux sessions, windows, and panes with structured output. Requires a running tmux server on Unix-like systems.
-
-Commands:
-- list_sessions: List all tmux sessions with metadata.
-- list_windows: List windows in a session (requires target/session).
-- list_panes: List panes in a window (requires target/window).
-- new_session: Create a new session (optional session_name).
-- kill_session: Destroy a session (requires target/session).
-- new_window: Create a new window in a session (requires target/session, optional window_name).
-- kill_window: Destroy a window (requires target/window).
-- send_keys: Send keystrokes to a pane (requires target/pane, keys).
-- capture_pane: Capture pane contents as text (requires target/pane).
-- run_command: Run an arbitrary tmux command (requires command_text).
-- resize: Resize a pane (requires target/pane, width or height).
-- break_pane: Break a pane into a new window (requires target/pane).
-- join_pane: Join a pane from another window (requires target/destination, source).
-
-Targets follow tmux syntax: session_name, session_name:window_index, or session_name:window_index.pane_index.]],
+  description = [[Manage tmux sessions, windows, and panes. Requires a running tmux server on Unix-like systems.]],
 
   schema = {
     type = "object",
@@ -392,20 +375,20 @@ Targets follow tmux syntax: session_name, session_name:window_index, or session_
         },
         required = true,
       },
-      target = { type = "string", description = "Tmux target (session_name:window_index.pane_index)" },
-      session = { type = "string", description = "Session name or ID" },
-      session_name = { type = "string", description = "Session name for new_session" },
-      window = { type = "string", description = "Window target" },
-      window_name = { type = "string", description = "Window name for new_window" },
-      pane = { type = "string", description = "Pane target" },
-      keys = { type = "string", description = "Keys to send for send_keys" },
-      command_text = { type = "string", description = "Raw tmux command for run_command" },
-      raw_command = { type = "string", description = "Raw tmux command for run_command (alias)" },
-      width = { type = "integer", description = "Pane width for resize" },
-      height = { type = "integer", description = "Pane height for resize" },
-      source = { type = "string", description = "Source pane for join_pane" },
-      destination = { type = "string", description = "Destination window for join_pane" },
-      timeout = { type = "integer", description = "Timeout in seconds (default 30)" },
+      target = { type = "string" },
+      session = { type = "string" },
+      session_name = { type = "string" },
+      window = { type = "string" },
+      window_name = { type = "string" },
+      pane = { type = "string" },
+      keys = { type = "string" },
+      command_text = { type = "string" },
+      raw_command = { type = "string" },
+      width = { type = "integer" },
+      height = { type = "integer" },
+      source = { type = "string" },
+      destination = { type = "string" },
+      timeout = { type = "integer" },
     },
   },
 
