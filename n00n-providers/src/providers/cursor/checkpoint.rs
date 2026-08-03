@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use prost::Message;
 
-use super::proto::{GetBlobResult, KvClientMessage, KvServerMessage, SetBlobResult};
+use super::proto::{GetBlobResult, KvClientMessage, KvServerMessage, SetBlobResult, field_ld};
 
 #[derive(Debug, Default)]
 pub(crate) struct CheckpointStore {
@@ -54,7 +54,7 @@ pub(crate) fn encode_get_blob_result(request_id: u32, blob_data: Option<&[u8]>) 
         get_blob_result: Some(result),
         set_blob_result: None,
     };
-    kv.encode_to_vec()
+    field_ld(3, &kv.encode_to_vec())
 }
 
 /// Encode `AgentClientMessage.kv_client_message` for a set-blob ack.
@@ -68,7 +68,7 @@ pub(crate) fn encode_set_blob_result(request_id: u32) -> Vec<u8> {
         get_blob_result: None,
         set_blob_result: Some(result),
     };
-    kv.encode_to_vec()
+    field_ld(3, &kv.encode_to_vec())
 }
 
 /// Parse `kv_server_message` payload into get/set ops.
@@ -144,8 +144,13 @@ mod tests {
     #[test]
     fn encode_get_blob_result_wraps_client_message_field_3() {
         let frame = encode_get_blob_result(3, Some(b"payload"));
-        // Check that it's valid protobuf that can be decoded
-        let decoded = KvClientMessage::decode(&frame[..]).expect("decode");
+        // outer field 3 = kv_client_message
+        assert_eq!(frame[0] & 0x07, 2);
+        assert_eq!(frame[0] >> 3, 3);
+        let outer = parse_wire_fields(&frame).expect("valid wrapper");
+        assert_eq!(outer.len(), 1);
+        assert_eq!(outer[0].number, 3);
+        let decoded = KvClientMessage::decode(outer[0].as_bytes().unwrap()).expect("decode kv");
         assert_eq!(decoded.id, 3);
         assert!(decoded.get_blob_result.is_some());
     }
@@ -153,7 +158,9 @@ mod tests {
     #[test]
     fn get_blob_result_wire_format_with_data() {
         let frame = encode_get_blob_result(7, Some(b"payload"));
-        let fields = parse_wire_fields(&frame).expect("valid kv");
+        let outer = parse_wire_fields(&frame).expect("valid wrapper");
+        assert_eq!(outer.iter().map(|f| f.number).collect::<Vec<_>>(), vec![3]);
+        let fields = parse_wire_fields(outer[0].as_bytes().unwrap()).expect("valid kv");
         assert_eq!(
             fields.iter().map(|f| f.number).collect::<Vec<_>>(),
             vec![1, 2]
@@ -166,7 +173,9 @@ mod tests {
     #[test]
     fn get_blob_result_wire_format_without_data() {
         let frame = encode_get_blob_result(7, None);
-        let fields = parse_wire_fields(&frame).expect("valid kv");
+        let outer = parse_wire_fields(&frame).expect("valid wrapper");
+        assert_eq!(outer.iter().map(|f| f.number).collect::<Vec<_>>(), vec![3]);
+        let fields = parse_wire_fields(outer[0].as_bytes().unwrap()).expect("valid kv");
         assert_eq!(
             fields.iter().map(|f| f.number).collect::<Vec<_>>(),
             vec![1, 2]
@@ -178,7 +187,9 @@ mod tests {
     #[test]
     fn set_blob_result_wire_format() {
         let frame = encode_set_blob_result(5);
-        let fields = parse_wire_fields(&frame).expect("valid kv");
+        let outer = parse_wire_fields(&frame).expect("valid wrapper");
+        assert_eq!(outer.iter().map(|f| f.number).collect::<Vec<_>>(), vec![3]);
+        let fields = parse_wire_fields(outer[0].as_bytes().unwrap()).expect("valid kv");
         assert_eq!(
             fields.iter().map(|f| f.number).collect::<Vec<_>>(),
             vec![1, 3]
