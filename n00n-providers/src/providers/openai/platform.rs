@@ -1,10 +1,11 @@
+use std::cmp;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
-use async_lock::Mutex as AsyncMutex;
+use async_lock::{Mutex as AsyncMutex, Semaphore as AsyncSemaphore};
 use flume::Sender;
 use n00n_storage::StateDir;
 use n00n_storage::id::{SessionRef, n00nId};
@@ -60,6 +61,13 @@ fn coding_plan_slot_count(slots: u64) -> u8 {
         Ok(slots) => slots,
         Err(_) => CODING_PLAN_MAX_SLOTS,
     }
+}
+
+fn process_coding_plan_slots(slots: u8) -> usize {
+    // Cap a single n00n process at half the account slots, leaving the
+    // remainder for other n00n sessions. This prevents one long-running
+    // TUI or agent from monopolizing all OpenAI Coding Plan concurrency.
+    cmp::max(1, slots / 2).into()
 }
 
 type ResponseOperationSlot = Arc<AsyncMutex<()>>;
@@ -483,6 +491,7 @@ pub struct OpenAi {
     response_state_storage: Option<StateDir>,
     websocket_connect_timeout: Duration,
     coding_plan_slots: u8,
+    coding_plan_semaphore: Arc<AsyncSemaphore>,
     system_prefix: Option<String>,
     session_state: Arc<Mutex<HashMap<n00nId, OpenAiSessionState>>>,
     response_connections: Arc<Mutex<HashMap<n00nId, ResponseConnectionSlot>>>,
@@ -519,6 +528,9 @@ impl OpenAi {
             response_state_storage: Some(storage),
             websocket_connect_timeout: timeouts.connect,
             coding_plan_slots: options.coding_plan_slots,
+            coding_plan_semaphore: Arc::new(AsyncSemaphore::new(process_coding_plan_slots(
+                options.coding_plan_slots,
+            ))),
             system_prefix: None,
             session_state: Arc::new(Mutex::new(HashMap::new())),
             response_connections: Arc::new(Mutex::new(HashMap::new())),
@@ -553,6 +565,9 @@ impl OpenAi {
             response_state_storage: None,
             websocket_connect_timeout: timeouts.connect,
             coding_plan_slots: options.coding_plan_slots,
+            coding_plan_semaphore: Arc::new(AsyncSemaphore::new(process_coding_plan_slots(
+                options.coding_plan_slots,
+            ))),
             system_prefix: None,
             session_state: Arc::new(Mutex::new(HashMap::new())),
             response_connections: Arc::new(Mutex::new(HashMap::new())),
@@ -1284,6 +1299,9 @@ impl OpenAi {
         auth: &ResolvedAuth,
         attempt_nonce: u64,
     ) -> CodexAttempt {
+        // Backpressure: limit how many Coding Plan attempts this process can run
+        // concurrently, so one long-running n00n session cannot starve all others.
+        let _permit = self.coding_plan_semaphore.acquire().await;
         let state_scope_hash = response_state_scope_hash(auth);
         let socket_credential_hash = credential_hash(auth);
         // Codex keeps continuation state only while its WebSocket stays connected.
