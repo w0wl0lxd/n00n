@@ -1331,6 +1331,9 @@ impl OpenAi {
         // Full-history replay is therefore required after a connection change.
         let mut opts = opts;
         opts.allow_history_replay = true;
+        // The OpenAI Coding Plan endpoint rejects `prompt_cache_options`, so
+        // disable message-cache breakpoints for Codex requests.
+        opts.message_cache_breakpoints = 0;
         let admission = match self
             .acquire_coding_plan_admission(auth, attempt_nonce)
             .await
