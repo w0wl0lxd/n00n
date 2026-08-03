@@ -91,7 +91,21 @@ fn redact_sensitive_values(s: &str) -> String {
             let Some(relative) = lower[search_from..].find(marker) else {
                 break;
             };
-            let after_marker = search_from + relative + marker.len();
+            let marker_start = search_from + relative;
+            let after_marker = marker_start + marker.len();
+            let preceded_by_word = marker_start > 0
+                && redacted[..marker_start]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|ch| ch.is_ascii_alphanumeric());
+            let followed_by_word = redacted[after_marker..]
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_ascii_alphanumeric());
+            if preceded_by_word || followed_by_word {
+                search_from = after_marker;
+                continue;
+            }
             let mut cursor = after_marker;
             cursor += lower[cursor..].len() - lower[cursor..].trim_start().len();
             let whitespace_separated = cursor > after_marker;
@@ -2623,5 +2637,26 @@ mod tests {
         assert!(preview.contains("\\\""));
         assert!(!preview.contains('\n'));
         assert!(!preview.contains('\t'));
+    }
+
+    #[test]
+    fn truncate_for_log_does_not_redact_innocuous_substrings() {
+        const REDACTED: &str = "[REDACTED]";
+        assert!(
+            !truncate_for_log("contoken=abc").contains(REDACTED),
+            "substring inside a word should not match"
+        );
+        assert!(
+            !truncate_for_log("mytoken=abc").contains(REDACTED),
+            "substring at end of word should not match"
+        );
+        assert!(
+            !truncate_for_log("max_tokens=10").contains(REDACTED),
+            "token suffix should not match"
+        );
+        assert!(
+            !truncate_for_log("tokenizer=foo").contains(REDACTED),
+            "token prefix should not match"
+        );
     }
 }

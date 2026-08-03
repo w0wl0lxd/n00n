@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use n00n_providers::provider::Provider;
 use n00n_providers::{
@@ -639,7 +639,7 @@ impl<'h> Agent<'h> {
                 return self.wait_for_reauth(e).await;
             }
             Err(e) if e.is_cancelled() => {
-                warn!(error = %e, model = %self.model.id, self.num_turns, "stream_message cancelled");
+                debug!(error = %e, model = %self.model.id, self.num_turns, "stream_message cancelled");
                 return Err(e);
             }
             Err(e) => {
