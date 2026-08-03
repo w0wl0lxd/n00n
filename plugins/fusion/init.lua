@@ -92,13 +92,19 @@ local function handler(input, ctx)
     auto_tier = opts.auto_tier
   end
 
+  local model_tier = input.model_tier
+  if not input.model and not model_tier then
+    local fusion_config = ctx:config("fusion")
+    model_tier = fusion_config and fusion_config.sidekick_tier or nil
+  end
+
   local prompt = build_prompt(input)
   local result, err, cost, usage, model_spec = subagent.launch(ctx, {
     description = input.description,
     prompt = prompt,
     subagent_type = subagent_type,
     model_spec = input.model,
-    model_tier = input.model_tier,
+    model_tier = model_tier,
     auto_tier = auto_tier,
     audience = "general_sub",
   })
@@ -130,4 +136,6 @@ n00n.api.register_tool({
   schema = schema,
   handler = handler,
   header = header,
+  audiences = { "main" },
+  kind = "execute",
 })

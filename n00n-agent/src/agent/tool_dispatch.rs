@@ -328,6 +328,15 @@ pub async fn run(
 ) -> ToolDoneEvent {
     // GPT-5.6 was likely trained on Codex sessions where tools are `functions.<name>`
     let name = name.strip_prefix("functions.").map_or_else(|| name, |v| v);
+    if name == crate::fusion::FUSION_DELEGATE_TOOL {
+        let authorization = ctx.fusion_guard.as_ref().map_or_else(
+            || Err(crate::fusion::FusionDispatchError::Disabled),
+            |guard| guard.authorize(ctx.fusion_origin),
+        );
+        if let Err(error) = authorization {
+            return tool_done_error(id, Arc::from(name), error.to_string());
+        }
+    }
     if ctx.mode.plan_path().is_some() && name == crate::tools::CODE_EXECUTION_TOOL_NAME {
         return tool_done_error(
             id,
@@ -2180,11 +2189,81 @@ mod tests {
         });
     }
 
+    #[test_case(crate::fusion::FusionInvocationOrigin::Interpreter ; "interpreter")]
+    #[test_case(crate::fusion::FusionInvocationOrigin::Batch ; "batch")]
+    fn fusion_dispatch_denies_indirect_calls_before_execution(
+        origin: crate::fusion::FusionInvocationOrigin,
+    ) {
+        smol::block_on(async {
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counter = Arc::clone(&calls);
+            let mut ctx = local_ctx(crate::fusion::FUSION_DELEGATE_TOOL, move |_| {
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok("executed".into())
+            });
+            ctx.fusion_origin = origin;
+            ctx.fusion_guard = Some(Arc::new(crate::fusion::FusionDispatchGuard::new(
+                true,
+                crate::fusion::DelegationKind::Delegate,
+                crate::tools::ToolAudience::MAIN,
+            )));
+
+            let done = run(
+                ToolRegistry::global(),
+                None,
+                "delegate-1".into(),
+                crate::fusion::FUSION_DELEGATE_TOOL,
+                &serde_json::json!({}),
+                &ctx,
+                Emit::Silent,
+            )
+            .await;
+
+            assert!(done.is_error);
+            assert!(done.output.as_text().contains("indirect"));
+            assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 0);
+        });
+    }
+
+    #[test]
+    fn fusion_dispatch_denies_child_audience_before_execution() {
+        smol::block_on(async {
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counter = Arc::clone(&calls);
+            let mut ctx = local_ctx(crate::fusion::FUSION_DELEGATE_TOOL, move |_| {
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok("executed".into())
+            });
+            ctx.audience = crate::tools::ToolAudience::GENERAL_SUB;
+            ctx.fusion_origin = crate::fusion::FusionInvocationOrigin::Direct;
+            ctx.fusion_guard = Some(Arc::new(crate::fusion::FusionDispatchGuard::new(
+                true,
+                crate::fusion::DelegationKind::Delegate,
+                ctx.audience,
+            )));
+
+            let done = run(
+                ToolRegistry::global(),
+                None,
+                "delegate-1".into(),
+                crate::fusion::FUSION_DELEGATE_TOOL,
+                &serde_json::json!({}),
+                &ctx,
+                Emit::Silent,
+            )
+            .await;
+
+            assert!(done.is_error);
+            assert!(done.output.as_text().contains("main-agent"));
+            assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 0);
+        });
+    }
+
     #[test]
     fn fusion_dispatch_guard_allows_only_one_direct_main_delegate() {
         use crate::fusion::{DelegationKind, FusionDispatchGuard, FusionInvocationOrigin};
 
-        let mut guard = FusionDispatchGuard::new(
+        let guard = FusionDispatchGuard::new(
             true,
             DelegationKind::Delegate,
             crate::tools::ToolAudience::MAIN,
@@ -2204,7 +2283,7 @@ mod tests {
             "Bypass" => DelegationKind::Bypass,
             _ => DelegationKind::LeadOnly,
         };
-        let mut guard =
+        let guard =
             FusionDispatchGuard::new(enabled, classification, crate::tools::ToolAudience::MAIN);
         assert!(guard.authorize(FusionInvocationOrigin::Direct).is_err());
     }
@@ -2214,7 +2293,7 @@ mod tests {
     fn fusion_dispatch_guard_denies_indirect_invocation(
         origin: crate::fusion::FusionInvocationOrigin,
     ) {
-        let mut guard = crate::fusion::FusionDispatchGuard::new(
+        let guard = crate::fusion::FusionDispatchGuard::new(
             true,
             crate::fusion::DelegationKind::Delegate,
             crate::tools::ToolAudience::MAIN,
@@ -2224,7 +2303,7 @@ mod tests {
 
     #[test]
     fn fusion_dispatch_guard_denies_recursive_child_audience() {
-        let mut guard = crate::fusion::FusionDispatchGuard::new(
+        let guard = crate::fusion::FusionDispatchGuard::new(
             true,
             crate::fusion::DelegationKind::Delegate,
             crate::tools::ToolAudience::GENERAL_SUB,

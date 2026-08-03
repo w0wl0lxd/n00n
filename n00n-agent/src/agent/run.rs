@@ -26,6 +26,7 @@ use crate::{
     AgentConfig, AgentError, AgentEvent, AgentInput, AgentMode, EventSender, ExtractedCommand,
     FusionFailure, FusionLane, FusionPhase, FusionRoute, FusionState, InterruptPoint,
     InterruptSource, ToolDoneEvent, TurnCompleteEvent,
+    fusion::{DelegationKind, FusionDispatchGuard, FusionInvocationOrigin},
 };
 use n00n_config::{ToolKey, ToolOutputLines};
 use n00n_storage::id::SessionRef;
@@ -52,6 +53,29 @@ const CACHE_BREAKPOINTS_LONG: usize = 4;
 const CACHE_BREAKPOINTS_MEDIUM: usize = 3;
 const CACHE_BREAKPOINTS_SHORT: usize = 2;
 const CACHE_BREAKPOINTS_MIN: usize = 1;
+
+fn filter_fusion_delegate(
+    tools: &mut Value,
+    visible: bool,
+    curated_definition: &mut Option<Value>,
+) {
+    if let Some(definitions) = tools.as_array_mut() {
+        if curated_definition.is_none() {
+            *curated_definition = definitions.iter().find_map(|definition| {
+                (definition.get("name").and_then(Value::as_str)
+                    == Some(crate::fusion::FUSION_DELEGATE_TOOL))
+                .then(|| definition.clone())
+            });
+        }
+        definitions.retain(|definition| {
+            definition.get("name").and_then(Value::as_str)
+                != Some(crate::fusion::FUSION_DELEGATE_TOOL)
+        });
+        if visible && let Some(definition) = curated_definition.as_ref() {
+            definitions.push(definition.clone());
+        }
+    }
+}
 
 fn filter_tools_for_mode(tools: &mut Value, mode: &AgentMode) {
     if !mode.is_readonly() {
@@ -200,6 +224,8 @@ pub struct Agent<'h> {
     active_tools: ActiveTools,
     supports_tool_examples: bool,
     fusion_state: Option<FusionState>,
+    fusion_classification: DelegationKind,
+    fusion_delegate_definition: Option<Value>,
 }
 
 impl<'h> Agent<'h> {
@@ -212,6 +238,13 @@ impl<'h> Agent<'h> {
         } else {
             None
         };
+        let fusion_delegate_definition = run.tools.as_array().and_then(|definitions| {
+            definitions.iter().find_map(|definition| {
+                (definition.get("name").and_then(Value::as_str)
+                    == Some(crate::fusion::FUSION_DELEGATE_TOOL))
+                .then(|| definition.clone())
+            })
+        });
         let mut agent = Self {
             provider: params.provider,
             model: Arc::new(params.model),
@@ -256,6 +289,8 @@ impl<'h> Agent<'h> {
             active_tools: ActiveTools::default(),
             supports_tool_examples,
             fusion_state,
+            fusion_classification: DelegationKind::LeadOnly,
+            fusion_delegate_definition,
         };
         if fusion_enabled {
             agent
@@ -345,6 +380,10 @@ impl<'h> Agent<'h> {
         self.history.push(msg);
         self.mode = Arc::new(input.mode);
         self.workflow = input.workflow;
+        self.fusion_classification = crate::fusion::classify_delegation(&input.message);
+        if self.config.fusion.enabled {
+            self.fusion_state = Some(FusionState::new_lead());
+        }
         // Filter the caller-supplied tool list in place. Rebuilding from the
         // global registry would replace curated/session-local definitions
         // (e.g. structured_output) and expand restricted ToolFilter sets.
@@ -354,6 +393,12 @@ impl<'h> Agent<'h> {
             mcp.extend_tools(&mut self.tools);
         }
         filter_tools_for_mode(&mut self.tools, &self.mode);
+        let fusion_visible = self.fusion_delegate_visible();
+        filter_fusion_delegate(
+            &mut self.tools,
+            fusion_visible,
+            &mut self.fusion_delegate_definition,
+        );
         self.context_size = estimate_message_tokens(self.history.as_slice(), &self.model.id)
             .saturating_add(estimate_tool_tokens(&self.tools, &self.model.id));
         let user_message_count = self
@@ -386,20 +431,31 @@ impl<'h> Agent<'h> {
         }
         .await;
 
-        if let Some(state) = self.fusion_state.as_mut() {
+        let terminal_phase = if let Some(state) = self.fusion_state.as_mut() {
             match &result {
-                Err(AgentError::Cancelled) => {
-                    if let Err(error) = state.cancel() {
+                Err(AgentError::Cancelled) => match state.cancel() {
+                    Ok(()) => Some(FusionPhase::Cancelled),
+                    Err(error) => {
                         warn!(?error, "fusion: failed to mark run cancelled");
+                        None
                     }
-                }
-                Err(_) => {
-                    if let Err(error) = state.fail() {
+                },
+                Err(_) => match state.fail() {
+                    Ok(()) => Some(FusionPhase::Failed),
+                    Err(error) => {
                         warn!(?error, "fusion: failed to mark run failed");
+                        None
                     }
-                }
-                Ok(()) => {}
+                },
+                Ok(()) => None,
             }
+        } else {
+            None
+        };
+        if let Some(phase) = terminal_phase
+            && let Err(error) = self.emit_fusion_phase(phase)
+        {
+            warn!(?error, "fusion: failed to emit {phase:?} phase");
         }
 
         if matches!(result, Err(AgentError::Cancelled)) {
@@ -551,6 +607,7 @@ impl<'h> Agent<'h> {
         let after_tool_results = self.history.ends_with_tool_results();
 
         if has_tools {
+            self.begin_fusion_execution(&response)?;
             let history_len_before = self.history.len();
             let tool_results = self.process_tool_calls(response).await?;
             if self.config.fusion.enabled
@@ -648,9 +705,12 @@ impl<'h> Agent<'h> {
         } else {
             if let Some(state) = self.fusion_state.as_mut()
                 && !state.phase().is_terminal()
-                && let Err(error) = state.transition(FusionPhase::Complete)
             {
-                warn!(?error, "fusion: failed to mark run complete");
+                if let Err(error) = state.transition(FusionPhase::Complete) {
+                    warn!(?error, "fusion: failed to mark run complete");
+                } else {
+                    self.emit_fusion_phase(FusionPhase::Complete)?;
+                }
             }
             Ok(TurnOutcome::Done(stop_reason))
         }
@@ -745,13 +805,14 @@ impl<'h> Agent<'h> {
             .send(AgentEvent::FusionPhase { phase, label: None })
     }
 
-    fn handle_fusion_results(&mut self, results: &[ToolDoneEvent]) -> Result<(), AgentError> {
-        let Some(result) = results
-            .iter()
-            .find(|result| &*result.tool == crate::fusion::FUSION_DELEGATE_TOOL)
-        else {
+    fn begin_fusion_execution(&mut self, response: &StreamResponse) -> Result<(), AgentError> {
+        let requested = response
+            .message
+            .tool_uses()
+            .any(|(_, name, _)| name == crate::fusion::FUSION_DELEGATE_TOOL);
+        if !requested || !self.fusion_delegate_visible() {
             return Ok(());
-        };
+        }
         let Some(state) = self.fusion_state.as_mut() else {
             return Ok(());
         };
@@ -759,7 +820,23 @@ impl<'h> Agent<'h> {
             warn!(?error, "fusion: rejected delegation transition");
             return Ok(());
         }
-        self.emit_fusion_phase(FusionPhase::Executing)?;
+        self.emit_fusion_phase(FusionPhase::Executing)
+    }
+
+    fn handle_fusion_results(&mut self, results: &[ToolDoneEvent]) -> Result<(), AgentError> {
+        let mut fusion_results = results
+            .iter()
+            .filter(|result| &*result.tool == crate::fusion::FUSION_DELEGATE_TOOL);
+        let successful = fusion_results.clone().find(|result| !result.is_error);
+        let Some(result) = successful.or_else(|| fusion_results.next()) else {
+            return Ok(());
+        };
+        let Some(state) = self.fusion_state.as_mut() else {
+            return Ok(());
+        };
+        if state.phase() != FusionPhase::Executing {
+            return Ok(());
+        }
 
         if result.is_error {
             let failure = fusion_failure_from_result(result);
@@ -783,7 +860,30 @@ impl<'h> Agent<'h> {
                 .push(Message::synthetic(FUSION_REVIEW_PROMPT.into()));
             self.emit_fusion_phase(FusionPhase::Reviewing)?;
         }
+        filter_fusion_delegate(&mut self.tools, false, &mut self.fusion_delegate_definition);
         Ok(())
+    }
+
+    fn fusion_dispatch_eligible(&self) -> bool {
+        self.config.fusion.enabled
+            && self.fusion_classification == DelegationKind::Delegate
+            && self.audience == ToolAudience::MAIN
+            && !self.mode.is_readonly()
+            && !self.workflow
+            && self.fusion_state.as_ref().is_some_and(|state| {
+                matches!(
+                    state.phase(),
+                    FusionPhase::Planning | FusionPhase::Executing
+                )
+            })
+    }
+
+    fn fusion_delegate_visible(&self) -> bool {
+        self.fusion_dispatch_eligible()
+            && self
+                .fusion_state
+                .as_ref()
+                .is_some_and(|state| state.phase() == FusionPhase::Planning)
     }
 
     fn tool_context(&self) -> ToolContext {
@@ -810,6 +910,16 @@ impl<'h> Agent<'h> {
             registry: Arc::clone(&self.registry),
             workflow: self.workflow,
             audience: self.audience,
+            fusion_origin: FusionInvocationOrigin::Direct,
+            fusion_guard: Some(Arc::new(FusionDispatchGuard::new(
+                self.config.fusion.enabled,
+                if self.fusion_dispatch_eligible() {
+                    DelegationKind::Delegate
+                } else {
+                    DelegationKind::LeadOnly
+                },
+                self.audience,
+            ))),
             local_tools: Arc::clone(&self.local_tools),
             active_skill_policy: self.active_skill_policy.clone(),
             live_sink: None,
@@ -844,6 +954,12 @@ impl<'h> Agent<'h> {
             mcp.extend_tools(&mut tools);
         }
         filter_tools_for_mode(&mut tools, &self.mode);
+        let fusion_visible = self.fusion_delegate_visible();
+        filter_fusion_delegate(
+            &mut tools,
+            fusion_visible,
+            &mut self.fusion_delegate_definition,
+        );
         self.tools = tools;
     }
 
@@ -1349,6 +1465,7 @@ mod tests {
     struct MockProvider {
         responses: Mutex<Vec<StreamResponse>>,
         requests: Arc<Mutex<Vec<Vec<Message>>>>,
+        tool_requests: Arc<Mutex<Vec<Value>>>,
         cancel_on_request: Option<usize>,
         calls: AtomicUsize,
     }
@@ -1358,6 +1475,7 @@ mod tests {
             Self {
                 responses: Mutex::new(responses),
                 requests: Arc::new(Mutex::new(Vec::new())),
+                tool_requests: Arc::new(Mutex::new(Vec::new())),
                 cancel_on_request: None,
                 calls: AtomicUsize::new(0),
             }
@@ -1369,6 +1487,7 @@ mod tests {
                 Self {
                     responses: Mutex::new(responses),
                     requests: Arc::clone(&requests),
+                    tool_requests: Arc::new(Mutex::new(Vec::new())),
                     cancel_on_request: None,
                     calls: AtomicUsize::new(0),
                 },
@@ -1380,9 +1499,24 @@ mod tests {
             Self {
                 responses: Mutex::new(responses),
                 requests: Arc::new(Mutex::new(Vec::new())),
+                tool_requests: Arc::new(Mutex::new(Vec::new())),
                 cancel_on_request: Some(request),
                 calls: AtomicUsize::new(0),
             }
+        }
+
+        fn recording_tools(responses: Vec<StreamResponse>) -> (Self, Arc<Mutex<Vec<Value>>>) {
+            let tool_requests = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    responses: Mutex::new(responses),
+                    requests: Arc::new(Mutex::new(Vec::new())),
+                    tool_requests: Arc::clone(&tool_requests),
+                    cancel_on_request: None,
+                    calls: AtomicUsize::new(0),
+                },
+                tool_requests,
+            )
         }
     }
 
@@ -1392,7 +1526,7 @@ mod tests {
             _: &'a Model,
             messages: &'a [Message],
             _: &'a System,
-            _: &'a Value,
+            tools: &'a Value,
             _: &'a flume::Sender<ProviderEvent>,
             _: RequestOptions,
             _: Option<&'a SessionRef>,
@@ -1403,6 +1537,7 @@ mod tests {
                     return Err(AgentError::Cancelled);
                 }
                 self.requests.lock().unwrap().push(messages.to_vec());
+                self.tool_requests.lock().unwrap().push(tools.clone());
                 let mut responses = self.responses.lock().unwrap();
                 assert!(!responses.is_empty(), "MockProvider: no more responses");
                 Ok(responses.remove(0))
@@ -1715,6 +1850,79 @@ mod tests {
     }
 
     #[test]
+    fn fusion_delegate_is_restored_for_a_later_eligible_run() {
+        smol::block_on(async {
+            let (provider, tool_requests) = MockProvider::recording_tools(vec![
+                text_response(StopReason::EndTurn),
+                text_response(StopReason::EndTurn),
+            ]);
+            let mut history = History::new(Vec::new());
+            let mut config = AgentConfig::default();
+            config.fusion.enabled = true;
+            let (mut agent, _event_rx) = make_agent_with_config(provider, &mut history, config);
+            agent.tools = serde_json::json!([{
+                "name": "fusion_delegate",
+                "description": "curated delegate",
+                "input_schema": {"type": "object"}
+            }]);
+
+            let mut first = default_input();
+            first.message = "review the architecture".into();
+            agent.run(first).await.unwrap();
+            let mut second = default_input();
+            second.message = "grep for TODO markers".into();
+            agent.run(second).await.unwrap();
+
+            let requests = tool_requests.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            assert!(!requests[0].as_array().unwrap().iter().any(|tool| {
+                tool.get("name").and_then(Value::as_str) == Some("fusion_delegate")
+            }));
+            assert!(requests[1].as_array().unwrap().iter().any(|tool| {
+                tool.get("name").and_then(Value::as_str) == Some("fusion_delegate")
+                    && tool.get("description").and_then(Value::as_str) == Some("curated delegate")
+            }));
+        });
+    }
+
+    #[test_case(false, "grep for TODO markers", AgentMode::Build, false ; "disabled")]
+    #[test_case(true, "review the architecture", AgentMode::Build, false ; "ineligible")]
+    #[test_case(true, "grep for TODO markers", AgentMode::Plan("plan.md".into()), false ; "plan")]
+    #[test_case(true, "grep for TODO markers", AgentMode::Build, true ; "eligible")]
+    fn provider_request_filters_fusion_delegate_by_eligibility(
+        enabled: bool,
+        prompt: &str,
+        mode: AgentMode,
+        expected_visible: bool,
+    ) {
+        smol::block_on(async {
+            let (provider, tool_requests) =
+                MockProvider::recording_tools(vec![text_response(StopReason::EndTurn)]);
+            let mut history = History::new(Vec::new());
+            let mut config = AgentConfig::default();
+            config.fusion.enabled = enabled;
+            let (mut agent, _event_rx) = make_agent_with_config(provider, &mut history, config);
+            agent.tools = serde_json::json!([{
+                "name": "fusion_delegate",
+                "description": "delegate",
+                "input_schema": {"type": "object"}
+            }]);
+            let mut input = default_input();
+            input.message = prompt.into();
+            input.mode = mode;
+
+            agent.run(input).await.unwrap();
+
+            let requests = tool_requests.lock().unwrap();
+            let visible =
+                requests[0].as_array().unwrap().iter().any(|tool| {
+                    tool.get("name").and_then(Value::as_str) == Some("fusion_delegate")
+                });
+            assert_eq!(visible, expected_visible);
+        });
+    }
+
+    #[test]
     fn disabled_hallucinated_delegate_is_denied_without_subagent_launch() {
         smol::block_on(async {
             let (provider, requests) = MockProvider::recording(vec![
@@ -1843,9 +2051,48 @@ mod tests {
                 [
                     crate::fusion::FusionPhase::Planning,
                     crate::fusion::FusionPhase::Executing,
-                    crate::fusion::FusionPhase::Reviewing
+                    crate::fusion::FusionPhase::Reviewing,
+                    crate::fusion::FusionPhase::Complete
                 ]
             );
+        });
+    }
+
+    #[test]
+    fn only_one_fusion_delegate_executes_per_lead_turn() {
+        smol::block_on(async {
+            let mut delegate_turn = tool_call_response("fusion_delegate", "delegate-1");
+            delegate_turn.message.content.push(ContentBlock::ToolUse {
+                id: "delegate-2".into(),
+                name: "fusion_delegate".into(),
+                input: serde_json::json!({}),
+            });
+            let provider =
+                MockProvider::new(vec![delegate_turn, text_response(StopReason::EndTurn)]);
+            let calls = Arc::new(AtomicUsize::new(0));
+            let call_counter = Arc::clone(&calls);
+            let mut local = std::collections::HashMap::new();
+            local.insert(
+                "fusion_delegate".to_owned(),
+                Arc::new(move |_: &Value| {
+                    call_counter.fetch_add(1, Ordering::Relaxed);
+                    Ok("sidekick completed".to_owned())
+                }) as crate::tools::LocalToolFn,
+            );
+            let mut history = History::new(Vec::new());
+            let (agent, _event_rx) =
+                make_agent_with_config(provider, &mut history, fusion_enabled_config());
+            let mut agent = agent.with_local_tools(Arc::new(local));
+            let mut input = default_input();
+            input.message = "grep for TODO markers".into();
+
+            agent.run(input).await.unwrap();
+
+            assert_eq!(calls.load(Ordering::Relaxed), 1);
+            let state = agent.fusion_state.as_ref().unwrap();
+            assert_eq!(state.review_count(), 1);
+            assert_eq!(state.fallback_count(), 0);
+            assert_eq!(state.sidekick_failures, 0);
         });
     }
 
@@ -1905,11 +2152,37 @@ mod tests {
                 [
                     crate::fusion::FusionPhase::Planning,
                     crate::fusion::FusionPhase::Executing,
-                    crate::fusion::FusionPhase::LeadFallback
+                    crate::fusion::FusionPhase::LeadFallback,
+                    crate::fusion::FusionPhase::Complete
                 ]
             );
         });
     }
+
+    #[test]
+    fn fusion_cancellation_emits_cancelled_terminal_phase() {
+        smol::block_on(async {
+            let provider = MockProvider::cancel_on_request(Vec::new(), 0);
+            let mut history = History::new(Vec::new());
+            let (mut agent, event_rx) =
+                make_agent_with_config(provider, &mut history, fusion_enabled_config());
+            let mut input = default_input();
+            input.message = "grep for TODO markers".into();
+
+            let result = agent.run(input).await;
+
+            assert!(matches!(result, Err(AgentError::Cancelled)));
+            let phases: Vec<_> = drain_events(&event_rx)
+                .into_iter()
+                .filter_map(|envelope| match envelope.event {
+                    AgentEvent::FusionPhase { phase, .. } => Some(phase),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(phases, [FusionPhase::Planning, FusionPhase::Cancelled]);
+        });
+    }
+
     #[test]
     fn charged_usage_survives_event_delivery_failure() {
         smol::block_on(async {

@@ -7,7 +7,8 @@ use crate::markdown::should_truncate;
 use crate::theme;
 
 const COMPACT_BUDGET: usize = 40;
-const LINE_BUDGET: usize = 160;
+const COLLAPSED_LINE_BUDGET: usize = 160;
+const EXPANDED_LINE_BUDGET: usize = n00n_markdown::render::TOOL_OUTPUT_MAX_LINE_BYTES;
 const REDACTED: &str = "[redacted]";
 const INDENT_UNIT: &str = "  ";
 const DASH_PREFIX: &str = "- ";
@@ -17,11 +18,21 @@ pub struct ArgView {
     pub hidden: usize,
 }
 
-pub(crate) fn render_args(input: &serde_json::Value, limit: usize, expanded: bool) -> ArgView {
-    let budget = if expanded { usize::MAX } else { LINE_BUDGET };
+pub(crate) fn render_args(
+    input: &serde_json::Value,
+    collapsed_limit: usize,
+    expanded_limit: usize,
+    expanded: bool,
+) -> ArgView {
+    let (limit, budget, by_chars) = if expanded {
+        (expanded_limit, EXPANDED_LINE_BUDGET, false)
+    } else {
+        (collapsed_limit, COLLAPSED_LINE_BUDGET, true)
+    };
     let mut builder = ArgsBuilder {
         lines: Vec::new(),
         budget,
+        by_chars,
     };
     if let serde_json::Value::Object(map) = input {
         for (key, value) in map {
@@ -60,25 +71,40 @@ pub(crate) fn redacted_json_text(value: &serde_json::Value) -> String {
 }
 
 fn is_secret_key(key: &str) -> bool {
+    let normalized: String = key
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .flat_map(char::to_lowercase)
+        .collect();
     matches!(
-        key.to_ascii_lowercase().as_str(),
+        normalized.as_str(),
         "password"
             | "passwd"
             | "passphrase"
             | "pwd"
             | "secret"
             | "token"
-            | "access_token"
-            | "auth_token"
-            | "api_key"
+            | "accesstoken"
+            | "authtoken"
             | "apikey"
-            | "api-key"
             | "authorization"
             | "cookie"
             | "credential"
             | "credentials"
-            | "private_key"
             | "privatekey"
+            | "clientsecret"
+            | "refreshtoken"
+            | "idtoken"
+            | "sessiontoken"
+            | "secretkey"
+            | "awssecretaccesskey"
+            | "xapikey"
+            | "accesskey"
+            | "authkey"
+            | "passwordhash"
+            | "secrettoken"
+            | "privatetoken"
+            | "apisecret"
     )
 }
 
@@ -123,6 +149,7 @@ fn search_value(value: &serde_json::Value) -> String {
 struct ArgsBuilder {
     lines: Vec<Line<'static>>,
     budget: usize,
+    by_chars: bool,
 }
 
 impl ArgsBuilder {
@@ -261,9 +288,24 @@ impl ArgsBuilder {
                 _ => out.push(ch),
             }
         }
-        if out.chars().count() > self.budget {
-            let head: String = out.chars().take(self.budget.saturating_sub(1)).collect();
-            format!("{head}…")
+        let needs_truncation = if self.by_chars {
+            out.chars().count() > self.budget
+        } else {
+            out.len() > self.budget
+        };
+        if needs_truncation {
+            let ellipsis = '…';
+            let mut head: String = if self.by_chars {
+                out.chars().take(self.budget.saturating_sub(1)).collect()
+            } else {
+                let mut end = self.budget.saturating_sub(ellipsis.len_utf8());
+                while !out.is_char_boundary(end) {
+                    end -= 1;
+                }
+                out[..end].to_owned()
+            };
+            head.push(ellipsis);
+            head
         } else {
             out
         }
@@ -285,7 +327,7 @@ mod tests {
     }
 
     fn render(input: &serde_json::Value) -> ArgView {
-        render_args(input, usize::MAX, false)
+        render_args(input, usize::MAX, usize::MAX, false)
     }
 
     #[test]
@@ -350,23 +392,33 @@ mod tests {
 
     #[test]
     fn collapsed_truncates_lines_and_reports_hidden() {
-        let view = render_args(&json!({ "a": 1, "b": 2, "c": 3, "d": 4, "e": 5 }), 2, false);
+        let view = render_args(
+            &json!({ "a": 1, "b": 2, "c": 3, "d": 4, "e": 5 }),
+            2,
+            usize::MAX,
+            false,
+        );
         assert_eq!(view.hidden, 3);
         assert_eq!(view.lines.len(), 2);
     }
 
     #[test]
     fn single_hidden_line_shows_all() {
-        let view = render_args(&json!({ "a": 1, "b": 2, "c": 3 }), 2, false);
+        let view = render_args(&json!({ "a": 1, "b": 2, "c": 3 }), 2, usize::MAX, false);
         assert_eq!(view.hidden, 0);
         assert_eq!(view.lines.len(), 3);
     }
 
     #[test]
-    fn expanded_keeps_all_lines() {
-        let view = render_args(&json!({ "a": 1, "b": 2, "c": 3 }), usize::MAX, true);
-        assert_eq!(view.hidden, 0);
-        assert_eq!(view.lines.len(), 3);
+    fn expanded_uses_separate_bounded_line_limit() {
+        let view = render_args(
+            &json!({ "a": 1, "b": 2, "c": 3, "d": 4, "e": 5, "f": 6 }),
+            2,
+            4,
+            true,
+        );
+        assert_eq!(view.hidden, 2);
+        assert_eq!(view.lines.len(), 4);
     }
 
     #[test]
@@ -381,10 +433,37 @@ mod tests {
     #[test]
     fn long_string_full_when_expanded() {
         let long = "x".repeat(400);
-        let view = render_args(&json!({ "content": long }), usize::MAX, true);
+        let view = render_args(&json!({ "content": long }), 1, usize::MAX, true);
         let text = lines_text(&view);
         assert!(!text.contains('…'));
         assert_eq!(text.chars().count(), "content: ".chars().count() + 400);
+    }
+
+    #[test]
+    fn expanded_long_string_uses_existing_line_budget() {
+        let long = "x".repeat(EXPANDED_LINE_BUDGET + 100);
+        let view = render_args(&json!({ "content": long }), 1, usize::MAX, true);
+        let text = lines_text(&view);
+        assert!(text.contains('…'));
+        assert!(text.len() <= EXPANDED_LINE_BUDGET + "content: ".len());
+    }
+
+    #[test]
+    fn non_ascii_values_truncate_by_chars_not_bytes() {
+        let long = "汉".repeat(200);
+        let view = render_args(&json!({ "content": long }), 1, usize::MAX, false);
+        let text = lines_text(&view);
+        assert!(text.contains('…'));
+        assert!(
+            text.chars().count() > COLLAPSED_LINE_BUDGET / 2,
+            "char budget must keep ~159 chars, got {}",
+            text.chars().count()
+        );
+        assert!(
+            text.len() > COLLAPSED_LINE_BUDGET,
+            "kept bytes must exceed the byte budget, got {}",
+            text.len()
+        );
     }
 
     #[test]
@@ -406,6 +485,27 @@ mod tests {
         assert!(!text.contains("abc"));
     }
 
+    #[test_case("client_secret" ; "client_secret")]
+    #[test_case("Client-Secret" ; "client_secret_mixed_case_dash")]
+    #[test_case("refresh token" ; "refresh_token_space")]
+    #[test_case("ID_TOKEN" ; "id_token")]
+    #[test_case("session-token" ; "session_token_dash")]
+    #[test_case("Secret.Key" ; "secret_key_dot")]
+    #[test_case("AWS_SECRET_ACCESS_KEY" ; "aws_secret_access_key")]
+    #[test_case("x-api-key" ; "x_api_key")]
+    #[test_case("access_key" ; "access_key")]
+    #[test_case("auth_key" ; "auth_key")]
+    #[test_case("password_hash" ; "password_hash")]
+    #[test_case("secret_token" ; "secret_token")]
+    #[test_case("private_token" ; "private_token")]
+    #[test_case("api_secret" ; "api_secret")]
+    fn normalized_secret_keys_redacted(key: &str) {
+        let view = render(&json!({ key: "sensitive-value" }));
+        let text = lines_text(&view);
+        assert!(text.contains(REDACTED));
+        assert!(!text.contains("sensitive-value"));
+    }
+
     #[test]
     fn secrets_redacted_nested() {
         let view = render(&json!({ "auth": { "access_token": "abc", "user": "bob" } }));
@@ -418,12 +518,16 @@ mod tests {
     fn innocuous_keys_not_redacted() {
         let view = render(&json!({
             "max_tokens": 2048,
+            "max-tokens": 1024,
+            "Max Tokens": 512,
             "tokens": 12,
             "token_count": 5,
             "model": "gpt"
         }));
         let text = lines_text(&view);
         assert!(text.contains("max_tokens: 2048"));
+        assert!(text.contains("max-tokens: 1024"));
+        assert!(text.contains("Max Tokens: 512"));
         assert!(text.contains("tokens: 12"));
         assert!(text.contains("token_count: 5"));
         assert!(text.contains("model: gpt"));
