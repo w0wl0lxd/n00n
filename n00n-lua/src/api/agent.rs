@@ -611,8 +611,7 @@ async fn call_tool(
 /// @param opts table Optional fields:
 ///   `model_spec` (string?) - model spec string to use instead of the parent model.
 ///   `system` (string?) - system prompt. Defaults to empty.
-///   `tools` (table?) - tool definitions array (from `n00n.agent.tools()`). Omit it or
-///   set it to nil to use default tools; pass an empty table to disable tools.
+///   `tools` (table?) - tool definitions array (from `n00n.agent.tools()`). Omit it or set it to nil to use default tools; pass an empty table to disable tools.
 ///   `local_tools` (table?) - map of `name -> spec` for Lua-backed tools. Each spec
 ///     requires `description` (string), `input_schema` (table), and
 ///     `handler` (function). The handler receives the input table and must return
