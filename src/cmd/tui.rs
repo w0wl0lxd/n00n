@@ -260,6 +260,12 @@ pub fn run(cli: Cli) -> Result<()> {
         return run_print_mode(cli, stack, openai_options);
     }
 
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return Err(color_eyre::eyre::eyre!(
+            "n00n must be run from a terminal; use --print for non-interactive output"
+        ));
+    }
+
     run_ui_loop(&cli, stack, &storage, &cwd)
 }
 
