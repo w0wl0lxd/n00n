@@ -800,7 +800,7 @@ pub(super) async fn process_tool_calls(
             && auth.lane == crate::fusion::FusionLane::Lead
     });
 
-    for (position, id, name, input) in tool_uses {
+    for (position, id, name, mut input) in tool_uses {
         debug!(
             tool = %name,
             id = %id,
@@ -811,6 +811,19 @@ pub(super) async fn process_tool_calls(
             .strip_prefix("functions.")
             .map_or(name.as_str(), |value| value);
         let is_fusion_delegate = normalized_name == crate::fusion::FUSION_DELEGATE_TOOL;
+        if is_fusion_delegate
+            && ctx.config.fusion.enabled
+            && let Value::Object(arguments) = &mut input
+            && !arguments.contains_key("model_tier")
+        {
+            let tier = match ctx.config.fusion.sidekick_tier {
+                n00n_config::providers::Tier::Weak => "weak",
+                n00n_config::providers::Tier::Medium => "medium",
+                n00n_config::providers::Tier::Strong => "strong",
+                n00n_config::providers::Tier::Compaction => "compaction",
+            };
+            arguments.insert("model_tier".into(), Value::String(tier.into()));
+        }
         let fusion_delegate_authorized = if is_fusion_delegate {
             fusion_lifecycle_ok
                 && fusion_guard.as_mut().is_some_and(|guard| {

@@ -74,7 +74,6 @@ const IMAGE_PLACEHOLDER: &str = "[image]";
 pub(super) async fn compact_history(
     provider: &dyn n00n_providers::provider::Provider,
     model: &Model,
-    context_model: &Model,
     history: &mut History,
     event_tx: &EventSender,
     cancel: &CancelToken,
@@ -82,7 +81,6 @@ pub(super) async fn compact_history(
     session_id: Option<&n00n_storage::id::SessionRef>,
     cwd: &std::path::Path,
     transcript_path: Option<&std::path::Path>,
-    extra_context_tokens: u32,
 ) -> Result<(TokenUsage, String), AgentError> {
     run_precompact_hooks(trigger, session_id, cwd, transcript_path).await?;
 
@@ -168,27 +166,16 @@ pub(super) async fn compact_history(
 
     run_postcompact_hooks(trigger, session_id, cwd, transcript_path, &summary).await;
 
-    let usage = finish_compact(
-        response,
-        history,
-        event_tx,
-        compact_start,
-        model,
-        context_model,
-        extra_context_tokens,
-    )?;
+    let usage = finish_compact(response, history, compact_start, model);
     Ok((usage, summary))
 }
 
 fn finish_compact(
     response: StreamResponse,
     history: &mut History,
-    event_tx: &EventSender,
     compact_start: std::time::Instant,
     model: &Model,
-    context_model: &Model,
-    extra_context_tokens: u32,
-) -> Result<TokenUsage, AgentError> {
+) -> TokenUsage {
     let StreamResponse {
         message: summary,
         usage,
@@ -199,21 +186,7 @@ fn finish_compact(
     // so the UI meter reflects the compacted conversation, not just the
     // summary output tokens. Callers pass continue-prompt/tool-definition
     // tokens that are part of the agent's full post-compact context.
-    history.compact_boundary(
-        Message::user("What did we do so far?".into()),
-        summary.clone(),
-    );
-    let context_size =
-        crate::agent::run::estimate_message_tokens(history.as_slice(), &context_model.id)
-            .saturating_add(extra_context_tokens);
-
-    event_tx.send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
-        message: summary,
-        usage,
-        model: model.id.clone(),
-        context_size: Some(context_size),
-    })))?;
-
+    history.compact_boundary(Message::user("What did we do so far?".into()), summary);
     let duration_ms =
         u64::try_from(compact_start.elapsed().as_millis()).unwrap_or_else(|_| u64::MAX);
     info!(
@@ -222,7 +195,7 @@ fn finish_compact(
         "compaction completed"
     );
 
-    Ok(usage)
+    usage
 }
 
 /// Compacts the conversation history using the provider.
@@ -237,9 +210,8 @@ pub async fn compact(
 ) -> Result<(), AgentError> {
     let cancel = CancelToken::none();
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
-    let (usage, _summary) = compact_history(
+    let (usage, summary) = compact_history(
         provider,
-        model,
         model,
         history,
         event_tx,
@@ -248,9 +220,15 @@ pub async fn compact(
         None,
         &cwd,
         None,
-        0,
     )
     .await?;
+    let context_size = crate::agent::run::estimate_message_tokens(history.as_slice(), &model.id);
+    event_tx.send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
+        message: Message::synthetic(summary),
+        usage,
+        model: model.id.clone(),
+        context_size: Some(context_size),
+    })))?;
     event_tx.send(AgentEvent::CompactionDone)?;
 
     event_tx.send(AgentEvent::Done {
@@ -531,33 +509,19 @@ mod tests {
     }
 
     #[test]
-    fn finish_compact_emits_resumed_context_size() {
-        const EXTRA_CONTEXT_TOKENS: u32 = 37;
-
+    fn finish_compact_updates_history_before_metering() {
         let compact_model = default_model();
-        let context_model = Model::from_spec("openai/gpt-4o").unwrap();
-        let (raw_tx, raw_rx) = flume::unbounded();
         let mut history = History::new(vec![Message::user("before".into())]);
 
-        finish_compact(
+        let usage = finish_compact(
             text_response(StopReason::EndTurn),
             &mut history,
-            &EventSender::new(raw_tx, 0),
             std::time::Instant::now(),
             &compact_model,
-            &context_model,
-            EXTRA_CONTEXT_TOKENS,
-        )
-        .unwrap();
+        );
 
-        let expected = estimate_message_tokens(history.as_slice(), &context_model.id)
-            .saturating_add(EXTRA_CONTEXT_TOKENS);
-        let envelope = raw_rx.recv().unwrap();
-        let AgentEvent::TurnComplete(event) = envelope.event else {
-            panic!("expected TurnComplete event");
-        };
-        assert_eq!(event.context_size, Some(expected));
-        assert_eq!(event.model, compact_model.id);
+        assert_eq!(usage, TokenUsage::default());
+        assert!(history.len() > 1);
     }
 
     #[test]
@@ -1258,7 +1222,6 @@ mod tests {
             let result = compact_history(
                 &*provider,
                 &model,
-                &model,
                 &mut history,
                 &EventSender::new(raw_tx, 0),
                 &CancelToken::none(),
@@ -1266,7 +1229,6 @@ mod tests {
                 None,
                 &std::env::current_dir().unwrap(),
                 None,
-                0,
             )
             .await;
 
@@ -1312,7 +1274,6 @@ mod tests {
             let result = compact_history(
                 &*provider,
                 &model,
-                &model,
                 &mut history,
                 &EventSender::new(raw_tx, 0),
                 &CancelToken::none(),
@@ -1320,7 +1281,6 @@ mod tests {
                 None,
                 &std::env::current_dir().unwrap(),
                 None,
-                0,
             )
             .await;
 

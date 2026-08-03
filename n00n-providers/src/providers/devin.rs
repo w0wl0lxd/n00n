@@ -164,10 +164,7 @@ fn resolve_api_server_url(configured: String, base_url: Option<&str>) -> String 
             url.to_string()
         }
         Ok(_) | Err(_) => {
-            warn!(
-                base_url = url,
-                "ignoring non-URL devin base_url; using configured API server"
-            );
+            warn!("ignoring invalid devin base_url; using configured API server");
             configured
         }
     }
@@ -372,7 +369,11 @@ fn encode_devin_chat_message_prompts(
                             caption: "",
                         }),
                         ContentBlock::File { source } => {
-                            let identifier = source.identifier().unwrap_or_else(|| "unknown");
+                            let identifier = source
+                                .file_id
+                                .as_deref()
+                                .or(source.filename.as_deref())
+                                .map_or("unnamed", |identifier| identifier);
                             prompt_text.push_str("[file omitted: ");
                             prompt_text.push_str(identifier);
                             prompt_text.push(']');

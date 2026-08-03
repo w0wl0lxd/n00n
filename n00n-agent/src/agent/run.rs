@@ -409,11 +409,7 @@ impl<'h> Agent<'h> {
                         warn!(?error, "fusion: failed to mark run failed");
                     }
                 }
-                Ok(()) => {
-                    if self.fusion_state.is_some() {
-                        self.emit_fusion_phase(FusionPhase::Complete)?;
-                    }
-                }
+                Ok(()) => {}
             }
             if matches!(&result, Err(AgentError::Cancelled)) && self.fusion_state.is_some() {
                 self.emit_fusion_phase(FusionPhase::Cancelled)?;
@@ -443,12 +439,14 @@ impl<'h> Agent<'h> {
             if let Some(max) = self.config.max_turns
                 && self.num_turns >= max
             {
+                self.complete_fusion_phase()?;
                 self.emit_done(None)?;
                 return Ok(());
             }
             match self.turn().await? {
                 TurnOutcome::Continue => {}
                 TurnOutcome::Done(stop_reason) => {
+                    self.complete_fusion_phase()?;
                     self.emit_done(stop_reason)?;
                     return Ok(());
                 }
@@ -776,6 +774,18 @@ impl<'h> Agent<'h> {
             .send(AgentEvent::FusionPhase { phase, label: None })
     }
 
+    fn complete_fusion_phase(&mut self) -> Result<(), AgentError> {
+        let Some(state) = self.fusion_state.as_mut() else {
+            return Ok(());
+        };
+        if !state.phase().is_terminal()
+            && let Err(error) = state.transition(FusionPhase::Complete)
+        {
+            warn!(?error, "fusion: failed to mark run complete");
+        }
+        self.emit_fusion_phase(FusionPhase::Complete)
+    }
+
     fn handle_fusion_results(&mut self, results: &[ToolDoneEvent]) -> Result<(), AgentError> {
         let Some(result) = results.iter().find(|result| {
             &*result.tool == crate::fusion::FUSION_DELEGATE_TOOL
@@ -992,17 +1002,9 @@ impl<'h> Agent<'h> {
             self.openai_options,
         );
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
-        // Match the post-compact agent context (continue prompt + tool defs)
-        // so the TurnComplete meter does not under-report until the next turn.
-        let extra_context_tokens = estimate_message_tokens(
-            std::slice::from_ref(&Message::synthetic(CONTINUE_AFTER_COMPACT.into())),
-            &compact_model.id,
-        )
-        .saturating_add(estimate_tool_tokens(&self.tools, &compact_model.id));
         let (usage, summary) = compaction::compact_history(
             &*compact_provider,
             &compact_model,
-            &self.model,
             self.history,
             &self.event_tx,
             &self.cancel,
@@ -1010,7 +1012,6 @@ impl<'h> Agent<'h> {
             self.session_id.as_ref(),
             &cwd,
             None,
-            extra_context_tokens,
         )
         .await?;
         // Charge compaction to the pre-route lane before any Fusion switch.
@@ -1028,11 +1029,18 @@ impl<'h> Agent<'h> {
             }
         }
         self.rollback_len = Some(self.history.len());
-        self.event_tx.send(AgentEvent::CompactionDone)?;
         self.history
             .push(Message::synthetic(CONTINUE_AFTER_COMPACT.into()));
         self.context_size = estimate_message_tokens(self.history.as_slice(), &self.model.id)
             .saturating_add(estimate_tool_tokens(&self.tools, &self.model.id));
+        self.event_tx
+            .send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
+                message: Message::synthetic(summary),
+                usage,
+                model: self.model.id.clone(),
+                context_size: Some(self.context_size),
+            })))?;
+        self.event_tx.send(AgentEvent::CompactionDone)?;
         Ok(())
     }
 
