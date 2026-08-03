@@ -35,10 +35,10 @@ use super::devin_connect::{
 };
 use super::devin_proto::{
     CHAT_MESSAGE_SOURCE_SYSTEM, CHAT_MESSAGE_SOURCE_TOOL, CHAT_MESSAGE_SOURCE_USER,
-    ChatMessagePromptInput, ChatToolCall, ChatToolDefinition, ImageData, STOP_REASON_MAX_TOKENS,
-    STOP_REASON_TOOL_USE, STOP_REASON_UNSPECIFIED, decode_cli_model_configs,
-    decode_get_chat_message_response, decode_get_user_jwt_response, encode_chat_message_prompt,
-    encode_chat_tool_definition, encode_get_chat_message_request,
+    ChatMessagePromptInput, ChatToolCall, ChatToolDefinition, ImageData, ModelUsageStats,
+    STOP_REASON_MAX_TOKENS, STOP_REASON_TOOL_USE, STOP_REASON_UNSPECIFIED,
+    decode_cli_model_configs, decode_get_chat_message_response, decode_get_user_jwt_response,
+    encode_chat_message_prompt, encode_chat_tool_definition, encode_get_chat_message_request,
     encode_get_cli_model_configs_request, encode_get_user_jwt_request,
 };
 
@@ -209,6 +209,28 @@ fn clamp_tokens(field: &'static str, value: u64) -> u32 {
             value, "Devin usage token count out of range; clamping"
         );
         u32::MAX
+    }
+}
+
+fn devin_usage_to_token_usage(u: &ModelUsageStats) -> TokenUsage {
+    let cached = u.cache_read_tokens.saturating_add(u.cache_write_tokens);
+    let (input, cache_read, cache_creation) = u.input_tokens.checked_sub(cached).map_or_else(
+        || {
+            warn!(
+                input_tokens = u.input_tokens,
+                cache_read_tokens = u.cache_read_tokens,
+                cache_write_tokens = u.cache_write_tokens,
+                "Devin usage categories exceed total input; ignoring cache breakdown"
+            );
+            (u.input_tokens, 0, 0)
+        },
+        |input| (input, u.cache_read_tokens, u.cache_write_tokens),
+    );
+    TokenUsage {
+        input: clamp_tokens("input", input),
+        output: clamp_tokens("output", u.output_tokens),
+        cache_creation: clamp_tokens("cache_write", cache_creation),
+        cache_read: clamp_tokens("cache_read", cache_read),
     }
 }
 
@@ -922,10 +944,7 @@ impl Devin {
                 }
 
                 if let Some(u) = response.usage {
-                    usage.input = clamp_tokens("input", u.input_tokens);
-                    usage.output = clamp_tokens("output", u.output_tokens);
-                    usage.cache_read = clamp_tokens("cache_read", u.cache_read_tokens);
-                    usage.cache_creation = clamp_tokens("cache_write", u.cache_write_tokens);
+                    usage = devin_usage_to_token_usage(&u);
                 }
             }
         }

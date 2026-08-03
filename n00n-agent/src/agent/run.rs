@@ -44,6 +44,8 @@ const HISTORY_REPLAY_TOOL: &str = "history_replay";
 const AMBIGUOUS_REPLAY_PERMISSION_ID: &str = "ambiguous-request-replay";
 const AMBIGUOUS_REPLAY_TOOL: &str = "ambiguous_request_replay";
 const AMBIGUOUS_REPLAY_RESET_MESSAGE: &str = "Resetting partial output before approved replay";
+const HISTORY_REPLAY_CHANNEL_CLOSED_MESSAGE: &str = "History replay approval channel closed";
+const AMBIGUOUS_REPLAY_CHANNEL_CLOSED_MESSAGE: &str = "Ambiguous replay approval channel closed";
 const FUSION_REVIEW_PROMPT: &str = "Review the sidekick result above, verify it against the task, and produce the final lead response.";
 const FUSION_FALLBACK_PROMPT: &str = "The sidekick delegation failed. Continue with exactly one lead fallback attempt and produce the final response without delegating again.";
 
@@ -510,13 +512,16 @@ impl<'h> Agent<'h> {
             tool: ToolKey::native(HISTORY_REPLAY_TOOL),
             scopes: vec![scope.clone()],
         })?;
-        let response = self.cancel.race(response_rx.recv_async()).await;
+        let response = self
+            .cancel
+            .race(response_rx.recv_async())
+            .await
+            .map_err(|_| AgentError::Cancelled)?;
         drop(response_rx);
-        let approved = response
-            .ok()
-            .and_then(Result::ok)
-            .and_then(|answer| PermissionAnswer::decode(&answer))
-            .is_some_and(|answer| answer.is_allow());
+        let answer = response.map_err(|error| AgentError::Config {
+            message: format!("{HISTORY_REPLAY_CHANNEL_CLOSED_MESSAGE}: {error}"),
+        })?;
+        let approved = PermissionAnswer::decode(&answer).is_some_and(|answer| answer.is_allow());
         if approved {
             Ok(())
         } else {
@@ -542,17 +547,15 @@ impl<'h> Agent<'h> {
             tool: ToolKey::native(AMBIGUOUS_REPLAY_TOOL),
             scopes: vec![ambiguous_request_replay_scope(metadata)],
         })?;
-        let response = self.cancel.race(response_rx.recv_async()).await;
+        let response = self
+            .cancel
+            .race(response_rx.recv_async())
+            .await
+            .map_err(|_| AgentError::Cancelled)?;
         drop(response_rx);
-        if self.cancel.is_cancelled() {
-            return Err(AgentError::Cancelled);
-        }
-        let Ok(answer) = response else {
-            return Ok(false);
-        };
-        let Ok(answer) = answer else {
-            return Ok(false);
-        };
+        let answer = response.map_err(|error| AgentError::Config {
+            message: format!("{AMBIGUOUS_REPLAY_CHANNEL_CLOSED_MESSAGE}: {error}"),
+        })?;
         Ok(PermissionAnswer::decode(&answer).is_some_and(|answer| answer.is_allow()))
     }
 
@@ -1314,6 +1317,7 @@ mod tests {
         ContentBlock, ImageMediaType, ImageSource, Message, Model, ProviderEvent, RequestOptions,
         Role, StopReason, StreamResponse, TokenUsage,
     };
+
     use n00n_storage::sessions::TranscriptEntry;
     use serde_json::Value;
     use test_case::test_case;
@@ -1475,6 +1479,7 @@ mod tests {
             let metadata = RequestDeliveryMetadata {
                 phase: RequestDeliveryPhase::SentAwaitingAcceptance,
                 response_id: None,
+                idempotency_key: None,
                 close_code: None,
                 close_reason: None,
                 emitted_event: false,
@@ -1524,6 +1529,7 @@ mod tests {
             let metadata = RequestDeliveryMetadata {
                 phase: RequestDeliveryPhase::SentAwaitingAcceptance,
                 response_id: None,
+                idempotency_key: None,
                 close_code: None,
                 close_reason: None,
                 emitted_event: false,
@@ -1697,6 +1703,11 @@ mod tests {
         assert!(tokens > u32_from_usize_saturating(IMAGE_TOKEN_ESTIMATE));
     }
 
+    struct AmbiguousProvider {
+        calls: Arc<AtomicUsize>,
+        failures: usize,
+    }
+
     impl Provider for AmbiguousProvider {
         fn stream_message<'a>(
             &'a self,
@@ -1721,6 +1732,7 @@ mod tests {
                         metadata: Some(RequestDeliveryMetadata {
                             phase: RequestDeliveryPhase::SentAwaitingAcceptance,
                             response_id: None,
+                            idempotency_key: None,
                             close_code: None,
                             close_reason: None,
                             emitted_event: true,
@@ -1901,10 +1913,11 @@ mod tests {
         make_agent_with_config(provider, history, AgentConfig::default())
     }
 
-    fn make_agent_with_config(
-        provider: MockProvider,
+    fn make_agent_with_registry<P: Provider + 'static>(
+        provider: P,
         history: &mut History,
         config: AgentConfig,
+        registry: Arc<crate::tools::ToolRegistry>,
     ) -> (Agent<'_>, flume::Receiver<Envelope>) {
         let (raw_tx, event_rx) = flume::unbounded();
         let agent = Agent::new(
@@ -1928,7 +1941,7 @@ mod tests {
                 prompt_slots: Arc::new(crate::prompt::ResolvedSlots::default()),
 
                 subagent_cancels: Arc::new(crate::cancel::CancelMap::new()),
-                registry: Arc::new(crate::tools::ToolRegistry::new()),
+                registry,
                 audience: ToolAudience::MAIN,
             },
             AgentRunParams {
@@ -1940,6 +1953,19 @@ mod tests {
             },
         );
         (agent, event_rx)
+    }
+
+    fn make_agent_with_config(
+        provider: MockProvider,
+        history: &mut History,
+        config: AgentConfig,
+    ) -> (Agent<'_>, flume::Receiver<Envelope>) {
+        make_agent_with_registry(
+            provider,
+            history,
+            config,
+            Arc::new(crate::tools::ToolRegistry::new()),
+        )
     }
 
     fn default_input() -> AgentInput {
