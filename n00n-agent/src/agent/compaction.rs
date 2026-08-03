@@ -146,17 +146,28 @@ fn finish_compact(
     compact_start: std::time::Instant,
     model: &Model,
 ) -> TokenUsage {
-    let _ = event_tx.send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
-        message: response.message.clone(),
-        usage: response.usage,
-        model: model.id.clone(),
-        context_size: Some(response.usage.output),
-    })));
+    let StreamResponse {
+        message: summary,
+        usage,
+        stop_reason: _,
+    } = response;
 
+    // Update the history before computing the post-compaction context size
+    // so the UI meter reflects the compacted conversation, not just the
+    // summary output tokens.
     history.compact_boundary(
         Message::user("What did we do so far?".into()),
-        response.message,
+        summary.clone(),
     );
+    let context_size = crate::agent::run::estimate_message_tokens(history.as_slice(), &model.id);
+
+    let _ = event_tx.send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
+        message: summary,
+        usage,
+        model: model.id.clone(),
+        context_size: Some(context_size),
+    })));
+
     let duration_ms =
         u64::try_from(compact_start.elapsed().as_millis()).unwrap_or_else(|_| u64::MAX);
     info!(
@@ -165,7 +176,7 @@ fn finish_compact(
         "compaction completed"
     );
 
-    response.usage
+    usage
 }
 
 /// Compacts the conversation history using the provider.

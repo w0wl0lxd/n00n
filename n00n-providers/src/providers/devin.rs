@@ -35,10 +35,10 @@ use super::devin_connect::{
 };
 use super::devin_proto::{
     CHAT_MESSAGE_SOURCE_SYSTEM, CHAT_MESSAGE_SOURCE_TOOL, CHAT_MESSAGE_SOURCE_USER,
-    ChatMessagePromptInput, ChatToolCall, ChatToolDefinition, ImageData, STOP_REASON_MAX_TOKENS,
-    STOP_REASON_TOOL_USE, STOP_REASON_UNSPECIFIED, decode_cli_model_configs,
-    decode_get_chat_message_response, decode_get_user_jwt_response, encode_chat_message_prompt,
-    encode_chat_tool_definition, encode_get_chat_message_request,
+    ChatMessagePromptInput, ChatToolCall, ChatToolDefinition, ImageData, ModelUsageStats,
+    STOP_REASON_MAX_TOKENS, STOP_REASON_TOOL_USE, STOP_REASON_UNSPECIFIED,
+    decode_cli_model_configs, decode_get_chat_message_response, decode_get_user_jwt_response,
+    encode_chat_message_prompt, encode_chat_tool_definition, encode_get_chat_message_request,
     encode_get_cli_model_configs_request, encode_get_user_jwt_request,
 };
 
@@ -155,8 +155,18 @@ fn optional_env(name: &'static str) -> Result<Option<String>, AgentError> {
     }
 }
 
-fn resolve_api_server_url(configured: String, explicit: Option<&str>) -> String {
-    explicit.map_or(configured, str::to_string)
+fn resolve_api_server_url(configured: String, base_url: Option<&str>) -> String {
+    match base_url.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(url) if url.starts_with("http://") || url.starts_with("https://") => url.to_string(),
+        Some(base_url) => {
+            warn!(
+                base_url,
+                "ignoring non-URL devin base_url; using configured API server"
+            );
+            configured
+        }
+        None => configured,
+    }
 }
 
 fn discover_credentials() -> Result<Option<DevinCredentials>, AgentError> {
@@ -198,6 +208,38 @@ fn clamp_tokens(field: &'static str, value: u64) -> u32 {
             value, "Devin usage token count out of range; clamping"
         );
         u32::MAX
+    }
+}
+
+fn devin_usage_to_token_usage(u: &ModelUsageStats) -> TokenUsage {
+    // Devin gRPC usage reports input_tokens as the total prompt tokens
+    // (including cache reads and writes), with cache fields as details.
+    // TokenUsage.input must be the non-cached portion so that total_input()
+    // and cost() are consistent with the rest of the providers.
+    let cached = u.cache_read_tokens.saturating_add(u.cache_write_tokens);
+    let (input, cache_read, cache_creation) = if u.input_tokens >= cached {
+        (
+            u.input_tokens.saturating_sub(cached),
+            u.cache_read_tokens,
+            u.cache_write_tokens,
+        )
+    } else {
+        // Some Devin responses already report input_tokens as the non-cached
+        // remainder; in that case the cache fields are additive details and
+        // should not be subtracted from input.
+        debug!(
+            input_tokens = u.input_tokens,
+            cache_read_tokens = u.cache_read_tokens,
+            cache_write_tokens = u.cache_write_tokens,
+            "Devin input_tokens is less than cached tokens; treating as non-cached"
+        );
+        (u.input_tokens, u.cache_read_tokens, u.cache_write_tokens)
+    };
+    TokenUsage {
+        input: clamp_tokens("input", input),
+        output: clamp_tokens("output", u.output_tokens),
+        cache_creation: clamp_tokens("cache_write", cache_creation),
+        cache_read: clamp_tokens("cache_read", cache_read),
     }
 }
 
@@ -890,10 +932,14 @@ impl Devin {
                 }
 
                 if let Some(u) = response.usage {
-                    usage.input = clamp_tokens("input", u.input_tokens);
-                    usage.output = clamp_tokens("output", u.output_tokens);
-                    usage.cache_read = clamp_tokens("cache_read", u.cache_read_tokens);
-                    usage.cache_creation = clamp_tokens("cache_write", u.cache_write_tokens);
+                    usage = devin_usage_to_token_usage(&u);
+                    debug!(
+                        input = usage.input,
+                        output = usage.output,
+                        cache_read = usage.cache_read,
+                        cache_creation = usage.cache_creation,
+                        "Devin usage updated"
+                    );
                 }
             }
         }
@@ -1091,6 +1137,56 @@ mod tests {
             resolve_api_server_url("https://configured.example".to_string(), None),
             "https://configured.example"
         );
+    }
+
+    #[test]
+    fn non_url_base_url_falls_back_to_configured() {
+        assert_eq!(
+            resolve_api_server_url("https://configured.example".to_string(), Some("devin2")),
+            "https://configured.example"
+        );
+    }
+
+    #[test]
+    fn empty_base_url_falls_back_to_configured() {
+        assert_eq!(
+            resolve_api_server_url("https://configured.example".to_string(), Some("  ")),
+            "https://configured.example"
+        );
+    }
+
+    #[test]
+    fn devin_usage_maps_total_input_to_non_cached() {
+        let stats = ModelUsageStats {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_read_tokens: 30,
+            cache_write_tokens: 20,
+        };
+        let usage = devin_usage_to_token_usage(&stats);
+        assert_eq!(usage.input, 50);
+        assert_eq!(usage.output, 50);
+        assert_eq!(usage.cache_read, 30);
+        assert_eq!(usage.cache_creation, 20);
+        assert_eq!(usage.total_input(), 100);
+    }
+
+    #[test]
+    fn devin_usage_treats_input_as_non_cached_when_cache_exceeds_total() {
+        // Some Devin responses report input_tokens as the non-cached remainder
+        // with cache fields as additive details; in that case total input is
+        // input_tokens + cache_read + cache_write.
+        let stats = ModelUsageStats {
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_read_tokens: 100,
+            cache_write_tokens: 50,
+        };
+        let usage = devin_usage_to_token_usage(&stats);
+        assert_eq!(usage.input, 10);
+        assert_eq!(usage.cache_read, 100);
+        assert_eq!(usage.cache_creation, 50);
+        assert_eq!(usage.total_input(), 160);
     }
 
     #[test]
