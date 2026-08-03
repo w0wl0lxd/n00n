@@ -102,9 +102,6 @@ pub(super) struct Segment {
     highlight_key: HighlightKey,
     pub spinner_lines: Vec<(usize, usize)>,
     snapshot_base: Option<usize>,
-    /// Number of snapshot lines baked since `snapshot_base`. A live buffer
-    /// that only grew appends its new tail here instead of re-baking.
-    snapshot_count: usize,
     truncation_actions: Vec<TruncationAction>,
     message_actions: Vec<PositionedMessageAction>,
     pub content_indent: &'static str,
@@ -382,7 +379,6 @@ impl Segment {
         self.highlight_key = HighlightKey::from_request(tl.highlight.as_ref());
         self.spinner_lines = tl.spinner_lines;
         self.snapshot_base = tl.snapshot_base;
-        self.snapshot_count = tl.snapshot_count;
         self.content_indent = tl.content_indent;
         self.truncation = tl.truncation;
         self.truncation_actions = tl.truncation_actions;
@@ -405,7 +401,6 @@ impl Segment {
             self.pending_highlight = None;
             self.spinner_lines = tl.spinner_lines;
             self.snapshot_base = tl.snapshot_base;
-            self.snapshot_count = tl.snapshot_count;
             self.content_indent = tl.content_indent;
             self.truncation_actions = tl.truncation_actions;
         } else {
@@ -415,45 +410,6 @@ impl Segment {
 
     pub fn matches_pending_highlight(&self, id: u64) -> bool {
         self.pending_highlight == Some(id)
-    }
-
-    pub fn snapshot_base(&self) -> Option<usize> {
-        self.snapshot_base
-    }
-
-    pub fn snapshot_count(&self) -> usize {
-        self.snapshot_count
-    }
-
-    /// Appends newly baked live-buffer tail lines at `insert_at`, which must
-    /// be the exact end of the current snapshot block. Returns false when the
-    /// invariant does not hold; callers then fall back to a full rebuild.
-    pub fn append_snapshot_lines(
-        &mut self,
-        insert_at: usize,
-        lines: Vec<Line<'static>>,
-        spinners: Vec<(usize, usize)>,
-        new_count: usize,
-        search_tail: &str,
-    ) -> bool {
-        if insert_at != self.lines.len() {
-            return false;
-        }
-        self.lines.extend(lines);
-        self.spinner_lines.extend(
-            spinners
-                .into_iter()
-                .map(|(line, span)| (insert_at + line, span)),
-        );
-        if !search_tail.is_empty() {
-            if !self.search_text.is_empty() {
-                self.search_text.push('\n');
-            }
-            self.search_text.push_str(search_tail);
-        }
-        self.snapshot_count = new_count;
-        self.invalidate_height();
-        true
     }
 
     pub fn apply_highlight_result(&mut self, lines: Vec<Line<'static>>) {
