@@ -1,0 +1,22 @@
+[package]
+name = "n00n-git"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Native git operations using gix/gitoxide for n00n"
+
+[lints]
+workspace = true
+
+[dependencies]
+gix = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
