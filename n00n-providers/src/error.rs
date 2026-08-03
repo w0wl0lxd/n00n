@@ -69,6 +69,8 @@ pub enum AgentError {
     Api { status: u16, message: String },
     #[error("{message}")]
     Config { message: String },
+    #[error("{message}")]
+    MissingCredentials { message: String },
     #[error("tool error in {tool}: {message}")]
     Tool { tool: String, message: String },
     #[error(transparent)]
@@ -142,6 +144,7 @@ impl AgentError {
             Self::Api { status, .. } => *status == 429 || *status >= 500,
             Self::Io(_) | Self::Http(_) | Self::Timeout { .. } => true,
             Self::Config { .. }
+            | Self::MissingCredentials { .. }
             | Self::Tool { .. }
             | Self::Storage
             | Self::Channel
@@ -232,6 +235,7 @@ impl AgentError {
             }
             Self::Api { .. }
             | Self::Config { .. }
+            | Self::MissingCredentials { .. }
             | Self::Tool { .. }
             | Self::Io(_)
             | Self::Http(_)
@@ -273,17 +277,7 @@ impl AgentError {
 
     #[must_use]
     pub fn is_missing_credentials(&self) -> bool {
-        match self {
-            Self::Config { message } => {
-                let msg_lower = message.to_lowercase();
-                // Match actual missing-credential messages, excluding "invalid API key" and unrelated errors
-                (msg_lower.contains("not authenticated") && !msg_lower.contains("invalid"))
-                    || (msg_lower.contains("not set") && !msg_lower.contains("invalid"))
-                    || (msg_lower.contains("is empty") && !msg_lower.contains("invalid"))
-                    || (msg_lower.contains("api key") && !msg_lower.contains("invalid"))
-            }
-            _ => false,
-        }
+        matches!(self, Self::MissingCredentials { .. })
     }
 
     #[must_use]
@@ -294,7 +288,7 @@ impl AgentError {
     #[must_use]
     pub fn user_message(&self) -> String {
         match self {
-            Self::Config { message } => message.clone(),
+            Self::Config { message } | Self::MissingCredentials { message } => message.clone(),
             Self::Api { status: 429, .. } => "rate limited, try again in a moment".into(),
             Self::Api { status: 529, .. } => "provider is overloaded, try again later".into(),
             Self::Api { message, .. } if Self::is_overload_message(message) => {
@@ -592,55 +586,41 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn config_error_is_recognized() {
+    #[test_case("missing API key" ; "config")]
+    fn config_error_is_recognized(message: &str) {
         let err = AgentError::Config {
-            message: "missing API key".into(),
+            message: message.into(),
         };
         assert!(err.is_config());
         assert!(!err.is_cancelled());
         assert!(!err.is_auth_error());
     }
 
-    #[test]
-    fn cancelled_error_is_recognized() {
+    #[test_case("cancelled" ; "cancelled")]
+    fn cancelled_error_is_recognized(_case_name: &str) {
         let err = AgentError::Cancelled;
         assert!(err.is_cancelled());
         assert!(!err.is_config());
         assert!(!err.is_auth_error());
     }
 
-    #[test]
-    fn missing_credentials_error_is_recognized() {
-        let missing_key = AgentError::Config {
-            message: "API key not set".into(),
+    #[test_case("API key not set", true ; "missing_key")]
+    #[test_case("ANTHROPIC_API_KEY is empty", true ; "empty_env_key")]
+    #[test_case("not authenticated, run n00n auth login", true ; "not_authenticated")]
+    #[test_case("invalid API key", false ; "invalid_key")]
+    #[test_case("invalid URL", false ; "other_config")]
+    fn missing_credentials_error_is_recognized(message: &str, expected: bool) {
+        let error = if expected {
+            AgentError::MissingCredentials {
+                message: message.into(),
+            }
+        } else {
+            AgentError::Config {
+                message: message.into(),
+            }
         };
-        assert!(missing_key.is_missing_credentials());
-        assert!(missing_key.is_config());
-
-        let empty_env_key = AgentError::Config {
-            message: "ANTHROPIC_API_KEY is empty".into(),
-        };
-        assert!(empty_env_key.is_missing_credentials());
-        assert!(empty_env_key.is_config());
-
-        let not_authenticated = AgentError::Config {
-            message: "not authenticated, run n00n auth login".into(),
-        };
-        assert!(not_authenticated.is_missing_credentials());
-        assert!(not_authenticated.is_config());
-
-        let invalid_key = AgentError::Config {
-            message: "invalid API key".into(),
-        };
-        assert!(!invalid_key.is_missing_credentials());
-        assert!(invalid_key.is_config());
-
-        let other_config = AgentError::Config {
-            message: "invalid URL".into(),
-        };
-        assert!(!other_config.is_missing_credentials());
-        assert!(other_config.is_config());
+        assert_eq!(error.is_missing_credentials(), expected);
+        assert_eq!(error.is_config(), !expected);
 
         let api_error = AgentError::Api {
             status: 401,

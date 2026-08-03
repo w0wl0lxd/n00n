@@ -64,11 +64,45 @@ fn fusion_brief_is_authorized(input: &Value) -> bool {
 /// Truncates `text` to `TOOL_ERROR_LOG_MAX_CHARS` on a character boundary,
 /// escaping control characters and preserving the total byte count as a trailing hint.
 fn truncate_for_log(text: &str) -> String {
-    let escaped = escape_control_chars(text);
+    let escaped = escape_control_chars(&redact_sensitive_values(text));
     match escaped.char_indices().nth(TOOL_ERROR_LOG_MAX_CHARS) {
         Some((idx, _)) => format!("{}... ({} bytes)", &escaped[..idx], text.len()),
         None => escaped,
     }
+}
+
+fn redact_sensitive_values(s: &str) -> String {
+    let markers = [
+        "api_key", "api-key", "api key", "token", "password", "secret", "bearer",
+    ];
+    let mut redacted = s.to_string();
+    for marker in markers {
+        let mut search_from = 0;
+        while let Some(relative) = redacted.to_ascii_lowercase()[search_from..].find(marker) {
+            let lower = redacted.to_ascii_lowercase();
+            let start = search_from + relative;
+            let after_marker = start + marker.len();
+            let Some(separator) = lower[after_marker..].chars().position(|character| {
+                character == '=' || character == ':' || character.is_whitespace()
+            }) else {
+                break;
+            };
+            let value_start = after_marker + separator + 1;
+            let value_start = value_start
+                + lower[value_start..]
+                    .chars()
+                    .take_while(|character| character.is_whitespace())
+                    .count();
+            let value_end = lower[value_start..]
+                .find(char::is_whitespace)
+                .map_or(redacted.len(), |end| value_start + end);
+            if value_start < value_end {
+                redacted.replace_range(value_start..value_end, "[REDACTED]");
+            }
+            search_from = value_end.max(after_marker);
+        }
+    }
+    redacted
 }
 
 /// Escapes control characters (newlines, tabs, carriage returns, backslashes, quotes)
@@ -2494,6 +2528,12 @@ mod tests {
             assert!(results[0].is_error);
             assert_eq!(results[0].output.as_text(), ERROR_MSG);
         });
+    }
+
+    #[test]
+    fn truncate_for_log_redacts_sensitive_values() {
+        let preview = truncate_for_log("request API_KEY=secret-token password: hunter2");
+        assert_eq!(preview, "request API_KEY=[REDACTED] password: [REDACTED]");
     }
 
     #[test]
