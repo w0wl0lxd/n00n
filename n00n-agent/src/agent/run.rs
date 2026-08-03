@@ -608,6 +608,9 @@ impl<'h> Agent<'h> {
                     if !self.approve_ambiguous_request_replay(metadata).await? {
                         break Err(error);
                     }
+                    if let Some(metadata) = metadata {
+                        opts.idempotency_key = metadata.idempotency_key.clone();
+                    }
                     self.event_tx.send(AgentEvent::Retry {
                         attempt: 1,
                         message: AMBIGUOUS_REPLAY_RESET_MESSAGE.into(),
