@@ -1,0 +1,212 @@
+[
+  {
+    "plugin": "activate_tool",
+    "name": "activate_tool",
+    "kind": null,
+    "description_first_line": "Activate a tool that is not currently available. Use this when you need a tool that is not in the current mode's tool set. The tool will become available in the next turn.",
+    "description_full": "Activate a tool that is not currently available. Use this when you need a tool that is not in the current mode's tool set. The tool will become available in the next turn."
+  },
+  {
+    "plugin": "agent_control",
+    "name": "agent_list",
+    "kind": "execute",
+    "description_first_line": "List live background agents (task/team/workflow sessions).",
+    "description_full": "List live background agents (task/team/workflow sessions)."
+  },
+  {
+    "plugin": "agent_control",
+    "name": "agent_status",
+    "kind": "execute",
+    "description_first_line": "Show status for one live background agent.",
+    "description_full": "Show status for one live background agent."
+  },
+  {
+    "plugin": "agent_control",
+    "name": "agent_control",
+    "kind": "execute",
+    "description_first_line": "Mutate a background agent: message, stop, resume, or manage policy. Prefer agent_list/agent_status for reads. Pause is unsupported on TUI sessions.",
+    "description_full": "Mutate a background agent: message, stop, resume, or manage policy. Prefer agent_list/agent_status for reads. Pause is unsupported on TUI sessions."
+  },
+  {
+    "plugin": "arbor",
+    "name": "arbor",
+    "kind": "read",
+    "description_first_line": "Graph-based code analysis using Arbor. Returns structured, compact",
+    "description_full": "Graph-based code analysis using Arbor. Returns structured, compact\ncaller/callee/project maps; prefer it over broad grep or unfiltered reads\nfor relationship and impact questions.\n\nCommands:\n- callers <symbol>: Who calls this function/class? Returns name, kind, file, and line.\n- callees <symbol>: What does this function/class call?\n- trace_path <from_symbol> <to_symbol>: Shortest call path between two symbols (native graph index).\n- map: Ranked project skeleton with entry points, centrality scores, and symbol coverage.\n- diff: Blast radius of unpushed git changes \u2014 shows direct/indirect callers, entry points affected.\n- query <text>: Free-text search of the code graph.\n- status: Index status (node count, edge count, file count).\n- entry_points: List API entry points and public symbols.\n- file_graph: Show file-level dependency graph.\n- inspect <symbol>: Detailed symbol information with context.\n- path <from_symbol> <to_symbol>: Call path between two symbols (CLI version).\n- refactor <operation>: Run refactoring operations (requires Arbor CLI).\n- check: Run static analysis checks on the codebase.\n- summary: High-level project summary and statistics.\n\nCallers, callees, and trace_path can query .arbor/graph.json natively. Other\ncommands use the Arbor CLI when available.\n\nUse this to understand call relationships, find affected code, and get a\nstructured overview of a codebase. Complements codegraph \u2014 Arbor shows the\nfull set of callers/callees, while codegraph traces the call path between\ntwo symbols."
+  },
+  {
+    "plugin": "bash",
+    "name": "bash",
+    "kind": "execute",
+    "description_first_line": "Execute a bash command.",
+    "description_full": "Execute a bash command.\nCommands run in"
+  },
+  {
+    "plugin": "batch",
+    "name": "batch",
+    "kind": "execute",
+    "description_first_line": "Array of tool calls to execute in parallel",
+    "description_full": "Array of tool calls to execute in parallel"
+  },
+  {
+    "plugin": "blackboard",
+    "name": "blackboard",
+    "kind": "execute",
+    "description_first_line": "Shared coordination for multi-agent sessions. Post observations, claim tasks atomically, query state.",
+    "description_full": "Shared coordination for multi-agent sessions. Post observations, claim tasks atomically, query state."
+  },
+  {
+    "plugin": "code_execution",
+    "name": "code_execution",
+    "kind": "execute",
+    "description_first_line": "Execute Python in sandboxed interpreter with tools as callable functions. Use for chained/dependent tool calls and filtering/processing. Faster than sequential tool calls. Tools are async: `result = await read(path='file.txt')`. Use `asyncio.gather()` for concurrency. Available libs: re, asyncio, sys, os, json. Fresh sandbox each run. 30s script timeout (`timeout` param); tool-call wait excluded. Output truncated beyond 500 lines or 16KB.",
+    "description_full": "Execute Python in sandboxed interpreter with tools as callable functions. Use for chained/dependent tool calls and filtering/processing. Faster than sequential tool calls. Tools are async: `result = await read(path='file.txt')`. Use `asyncio.gather()` for concurrency. Available libs: re, asyncio, sys, os, json. Fresh sandbox each run. 30s script timeout (`timeout` param); tool-call wait excluded. Output truncated beyond 500 lines or 16KB."
+  },
+  {
+    "plugin": "codegraph",
+    "name": "codegraph",
+    "kind": "read",
+    "description_first_line": "Query a pre-indexed semantic codegraph for cross-file structural analysis. Returns verbatim source code grouped by file, plus a dependency impact \"blast radius\" summary with caller counts and test coverage info. Typically uses fewer tokens than broad grep + read for the same cross-file question.",
+    "description_full": "Query a pre-indexed semantic codegraph for cross-file structural analysis. Returns verbatim source code grouped by file, plus a dependency impact \"blast radius\" summary with caller counts and test coverage info. Typically uses fewer tokens than broad grep + read for the same cross-file question.\n\nBest for:\n- Understanding how a system works end-to-end (\"how does X work\")\n- Finding call paths (\"what calls Y\", \"call path from A to B\")\n- Checking blast radius before editing (\"what depends on Z\")\n- Cross-file symbol resolution\n\nPrefer **index** for single-file structure, then **read** for specific sections. codegraph excels at multi-file exploration and impact analysis.\n\nRequires a .codegraph/ index in the project root."
+  },
+  {
+    "plugin": "edit",
+    "name": "edit",
+    "kind": "edit",
+    "description_first_line": "Replace exact string match in a file. `old_string` must match uniquely unless `replace_all` is true. Read file first.",
+    "description_full": "Replace exact string match in a file. `old_string` must match uniquely unless `replace_all` is true. Read file first."
+  },
+  {
+    "plugin": "edit",
+    "name": "edit",
+    "kind": "edit",
+    "description_first_line": "Replace exact string match in a file. `old_string` must match uniquely unless `replace_all` is true. Read file first.",
+    "description_full": "Replace exact string match in a file. `old_string` must match uniquely unless `replace_all` is true. Read file first."
+  },
+  {
+    "plugin": "explore",
+    "name": "explore",
+    "kind": "read",
+    "description_first_line": "Unified codebase exploration router. Picks the best backend for the question:",
+    "description_full": "Unified codebase exploration router. Picks the best backend for the question:\n- **file** or **skeleton** intent (or a file path): compact single-file skeleton via `index`\n- **relations** or **trace** intent: caller/callee maps, trace paths, blast radius via `arbor`\n- **cross_file** intent (default for NL questions): structural cross-file analysis via `codegraph`\n- **search** intent: keyword or natural-language search via `semblem`\n- **symbol** intent: symbol drill-down via `codegraph node`\n- **impact** intent: blast-radius analysis via `codegraph impact`\n\nSet `intent` explicitly when you know the backend. Otherwise the router infers from the query.\nUse `command`, `symbol`, `from_symbol`, and `to_symbol` for precise arbor routing."
+  },
+  {
+    "plugin": "fusion",
+    "name": "fusion_delegate",
+    "kind": null,
+    "description_first_line": "Beta Fusion delegation: the lead plans and reviews while a conservative sidekick executes. Pass goal, constraints, and definition_of_done, not file dumps. Fusion is off by default and delegation is lead-directed.",
+    "description_full": "Beta Fusion delegation: the lead plans and reviews while a conservative sidekick executes. Pass goal, constraints, and definition_of_done, not file dumps. Fusion is off by default and delegation is lead-directed."
+  },
+  {
+    "plugin": "glob",
+    "name": "glob",
+    "kind": "search",
+    "description_first_line": "Find files by glob pattern. Respects .gitignore. Returns matching paths sorted by mtime.",
+    "description_full": "Find files by glob pattern. Respects .gitignore. Returns matching paths sorted by mtime."
+  },
+  {
+    "plugin": "grep",
+    "name": "grep",
+    "kind": "search",
+    "description_first_line": "Search file contents using regex. Respects .gitignore. Results grouped by file, sorted by modification time. Prefer speculative parallel searches over sequential glob+grep. Do NOT wrap pattern in quotes or double-escape (e.g. `\\[` not `\\\\[`). Multi-line matching auto-enabled when pattern contains `\\n`, `(?s)`, or `(?m)`.",
+    "description_full": "Search file contents using regex. Respects .gitignore. Results grouped by file, sorted by modification time. Prefer speculative parallel searches over sequential glob+grep. Do NOT wrap pattern in quotes or double-escape (e.g. `\\[` not `\\\\[`). Multi-line matching auto-enabled when pattern contains `\\n`, `(?s)`, or `(?m)`."
+  },
+  {
+    "plugin": "index",
+    "name": "index",
+    "kind": "read",
+    "description_first_line": "Return a compact overview of a source file: imports, types, function signatures, and structure with line numbers in []. ~70-90% more efficient than reading full file. Use FIRST to understand structure before read with offset/limit. Supports source files and markdown. Falls back with error on unsupported languages.",
+    "description_full": "Return a compact overview of a source file: imports, types, function signatures, and structure with line numbers in []. ~70-90% more efficient than reading full file. Use FIRST to understand structure before read with offset/limit. Supports source files and markdown. Falls back with error on unsupported languages."
+  },
+  {
+    "plugin": "memory",
+    "name": "memory",
+    "kind": null,
+    "description_first_line": "Persistent, project-scoped scratchpad for learnings, patterns, decisions, and gotchas across sessions. Save important context before compaction or to build project knowledge. Use `search` for keyword/tag recall (not semantic paraphrase). Keep entries concise and current. Delete outdated information.",
+    "description_full": "Persistent, project-scoped scratchpad for learnings, patterns, decisions, and gotchas across sessions. Save important context before compaction or to build project knowledge. Use `search` for keyword/tag recall (not semantic paraphrase). Keep entries concise and current. Delete outdated information."
+  },
+  {
+    "plugin": "question",
+    "name": "question",
+    "kind": null,
+    "description_first_line": "Ask the user questions during execution. Supports single/multi-select, custom answers, and tabbed multi-question forms. Put recommended options first with \"(Recommended)\" suffix.",
+    "description_full": "Ask the user questions during execution. Supports single/multi-select, custom answers, and tabbed multi-question forms. Put recommended options first with \"(Recommended)\" suffix."
+  },
+  {
+    "plugin": "read",
+    "name": "read",
+    "kind": "read",
+    "description_first_line": "Read a file or directory. Returns contents with line numbers (1-indexed).",
+    "description_full": "Read a file or directory. Returns contents with line numbers (1-indexed)."
+  },
+  {
+    "plugin": "semblem",
+    "name": "semblem",
+    "kind": "read",
+    "description_first_line": "Search indexed source code with BM25 keyword ranking. Builds a `.n00n/search/` index on first use.",
+    "description_full": "Search indexed source code with BM25 keyword ranking. Builds a `.n00n/search/` index on first use.\n\nCommands:\n- `search`: ranked snippets for a natural-language or keyword query\n- `find_related`: related chunks for a file location\n- `savings`: show token savings from using semantic search (requires semble CLI; no native fallback)\n\n`mode` defaults to `bm25`. `hybrid` and `semantic` try the upstream semble CLI first and fall back to BM25 with an embedder nag if unavailable."
+  },
+  {
+    "plugin": "skill",
+    "name": "skill",
+    "kind": "read",
+    "description_first_line": "Load a skill that provides instructions and workflows for specific tasks. Use `list=true` to enumerate available skills; then call with the exact skill `name`.",
+    "description_full": "Load a skill that provides instructions and workflows for specific tasks. Use `list=true` to enumerate available skills; then call with the exact skill `name`."
+  },
+  {
+    "plugin": "task",
+    "name": "task",
+    "kind": "execute",
+    "description_first_line": "Launch isolated agent; combine independent calls with batch. research (default) = read-only; general = can edit. Each call starts fresh; include context and ask for concise file:line results. Summarize returned results. auto_tier opt-in. background returns agent_id.",
+    "description_full": "Launch isolated agent; combine independent calls with batch. research (default) = read-only; general = can edit. Each call starts fresh; include context and ask for concise file:line results. Summarize returned results. auto_tier opt-in. background returns agent_id."
+  },
+  {
+    "plugin": "team",
+    "name": "team",
+    "kind": "execute",
+    "description_first_line": "Run ALMAS team for SDLC goal. supervised=plan, autonomous=execute, swarm=decentralized rounds. background returns agent_id.",
+    "description_full": "Run ALMAS team for SDLC goal. supervised=plan, autonomous=execute, swarm=decentralized rounds. background returns agent_id."
+  },
+  {
+    "plugin": "todo_write",
+    "name": "todo_write",
+    "kind": null,
+    "description_first_line": "Create or update a structured todo list to track tasks. Use after EACH completed step. Send complete list each time (replace-all semantics). Use ONLY for multi-step work (3+ steps). Skip for trivial tasks.",
+    "description_full": "Create or update a structured todo list to track tasks. Use after EACH completed step. Send complete list each time (replace-all semantics). Use ONLY for multi-step work (3+ steps). Skip for trivial tasks."
+  },
+  {
+    "plugin": "view_image",
+    "name": "view_image",
+    "kind": "read",
+    "description_first_line": "View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read` for images. Paths: absolute, relative, or ~/. Oversized images downscaled automatically (animated gif/webp keep only first frame).",
+    "description_full": "View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read` for images. Paths: absolute, relative, or ~/. Oversized images downscaled automatically (animated gif/webp keep only first frame)."
+  },
+  {
+    "plugin": "webfetch",
+    "name": "webfetch",
+    "kind": "fetch",
+    "description_first_line": "Fetch a URL and return its contents. Supports markdown (default), text, or html. HTTP auto-upgraded to HTTPS. Max 5MB response, 120s timeout. Best used inside code_execution to avoid context bloat.",
+    "description_full": "Fetch a URL and return its contents. Supports markdown (default), text, or html. HTTP auto-upgraded to HTTPS. Max 5MB response, 120s timeout. Best used inside code_execution to avoid context bloat."
+  },
+  {
+    "plugin": "websearch",
+    "name": "websearch",
+    "kind": "fetch",
+    "description_first_line": "Search the web for real-time information using Exa AI.",
+    "description_full": "Search the web for real-time information using Exa AI.\n\n- Use for current events, documentation, APIs, or anything not in local files.\n- Prefer specific, targeted queries over broad ones.\n- Results include page titles, URLs, and content snippets."
+  },
+  {
+    "plugin": "workflow",
+    "name": "workflow",
+    "kind": "execute",
+    "description_first_line": "Run sandboxed Lua workflow for multi-stage agent orchestration.",
+    "description_full": "Run sandboxed Lua workflow for multi-stage agent orchestration.\n\nStart with meta({ name, description, phases }). Globals: agent({ prompt, subagent_type?, model_tier?, label?, output_schema? }) returns agent result; parallel(fns, { concurrency? }) runs branches; pipeline(items, stages, { concurrency? }) runs stages per item; phase(name, fn), log(...), inputs.\n\nNo n00n, os, io, require, print, or load. Scripts must be deterministic for resume replay, must return the final string, and are capped by max_agents_per_run (default 24, no hard maximum) with a runaway guard for repeated prompts and consecutive errors. Use task for one agent."
+  },
+  {
+    "plugin": "write",
+    "name": "write",
+    "kind": "edit",
+    "description_first_line": "Write content to a file. Prefer edit or edit_lines for existing files.",
+    "description_full": "Write content to a file. Prefer edit or edit_lines for existing files."
+  }
+]
