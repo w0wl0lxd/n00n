@@ -3,7 +3,7 @@ local ToolView = require("n00n.tool_view")
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Use **git** for local repository operations: status, log, diff, branches, blame, add, commit, checkout.",
+  content = "- Use **git** for local repository operations: status, log, diff, branches, blame, conflicts, add, commit, checkout.",
 })
 
 local function dispatch(input)
@@ -130,6 +130,31 @@ local function dispatch(input)
     return { llm_output = table.concat(lines, "\n") }
   end
 
+  if command == "conflicts" then
+    local args = { "--include-untracked" }
+    if input.output then
+      table.insert(args, "--output")
+      table.insert(args, input.output)
+    end
+    if input.max_hunk_lines then
+      table.insert(args, "--max-hunk-lines")
+      table.insert(args, tostring(input.max_hunk_lines))
+    end
+    if input.kinds then
+      table.insert(args, "--kinds")
+      table.insert(args, tostring(input.kinds))
+    end
+    local result, err = run_git_subcommand(args)
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
+    end
+    local ok, out = pcall(n00n.json.encode, result)
+    if not ok then
+      return { llm_output = "error: failed to encode conflicts output: " .. tostring(out), is_error = true }
+    end
+    return { llm_output = out }
+  end
+
   if command == "add" then
     if not input.files or #input.files == 0 then
       return { llm_output = "error: files required for add", is_error = true }
@@ -170,14 +195,14 @@ n00n.api.register_tool({
   name = "git",
   kind = "read",
   description = [[
-Local git operations via n00n-git. Set N00N_GIT_BIN to override the binary path.
+Local git operations via n00n-git.
 ]],
   schema = {
     type = "object",
     properties = {
       command = {
         type = "string",
-        enum = { "status", "log", "diff", "branches", "blame", "add", "commit", "checkout" },
+        enum = { "status", "log", "diff", "branches", "blame", "conflicts", "add", "commit", "checkout" },
         required = true,
       },
       path = { type = "string" },
@@ -191,6 +216,7 @@ Local git operations via n00n-git. Set N00N_GIT_BIN to override the binary path.
       },
       message = { type = "string" },
       target = { type = "string" },
+      output = { type = "string" },
     },
   },
   header = function(input)
@@ -210,7 +236,14 @@ Local git operations via n00n-git. Set N00N_GIT_BIN to override the binary path.
   end,
   permission_scopes = function(input)
     local cmd = input.command or ""
-    if cmd == "status" or cmd == "log" or cmd == "diff" or cmd == "branches" or cmd == "blame" then
+    if
+      cmd == "status"
+      or cmd == "log"
+      or cmd == "diff"
+      or cmd == "branches"
+      or cmd == "blame"
+      or cmd == "conflicts"
+    then
       return { scopes = { "git.read" }, force_prompt = false }
     end
     return { scopes = { "git.write" }, force_prompt = true }
