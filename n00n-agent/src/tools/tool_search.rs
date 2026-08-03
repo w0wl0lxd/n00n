@@ -29,11 +29,16 @@ struct ToolSearchInvocation {
 
 impl ToolInvocation for ToolSearchInvocation {
     fn start_header(&self) -> HeaderFuture {
-        HeaderFuture::Ready(HeaderResult::plain(format!("tool_search: {}", self.query)))
+        HeaderFuture::Ready(HeaderResult::plain(format!("search_tools: {}", self.query)))
     }
 
     fn execute(self: Box<Self>, ctx: &ToolContext) -> crate::tools::ExecFuture<'_> {
         Box::pin(async move {
+            if self.query.trim().is_empty() {
+                return ToolExecResult::from(Err::<ToolOutput, _>(
+                    "search query must not be empty".to_string(),
+                ));
+            }
             let results = ctx.registry.search(&self.query);
             let filtered: Vec<_> = if let Some(ns) = &self.namespace {
                 results
@@ -43,17 +48,23 @@ impl ToolInvocation for ToolSearchInvocation {
             } else {
                 results
             };
-            let output = json!(
-                filtered
-                    .iter()
-                    .map(|r| json!({
+            let mut output = filtered
+                .iter()
+                .map(|r| {
+                    json!({
                         "name": r.name,
                         "namespace": r.namespace,
                         "description": r.description
-                    }))
-                    .collect::<Vec<_>>()
-            );
-            ToolExecResult::from(Ok(ToolOutput::Plain(output.to_string().into())))
+                    })
+                })
+                .collect::<Vec<_>>();
+            if let Some(mcp) = &ctx.mcp {
+                match mcp.search_tools(&self.query) {
+                    Ok(result) => output.push(json!({ "mcp": result })),
+                    Err(error) => return ToolExecResult::from(Err::<ToolOutput, _>(error)),
+                }
+            }
+            ToolExecResult::from(Ok(ToolOutput::Plain(json!(output).to_string().into())))
         })
     }
 }

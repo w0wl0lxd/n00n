@@ -16,7 +16,7 @@ This inventory defines n00n's canonical user-facing vocabulary. Runtime aliases 
 - **Execute:** `run_shell`, `run_python`, `run_batch`
 - **Agent:** `list_agents`, `get_agent`, `control_agent`, `run_team`, `run_task`, `run_workflow`, `use_blackboard`
 - **Knowledge:** `update_todo`, `use_memory`, `load_skill`
-- **Meta:** `search_tools`, `load_toolset`, `delegate_fusion`, `activate_tool`
+- **Meta:** `search_tools`, `load_toolset`, `delegate_fusion`
 - **Web:** `fetch_url`, `search_web`
 - **Media:** `view_image`
 - **Control:** `ask_user`
@@ -25,16 +25,24 @@ Descriptions must say when to use the tool and name the better sibling when it s
 
 ## Canonical command labels
 
-Group palette entries under Session, Model, View, Settings, Mode, and Action. Friendly labels describe the outcome. Legacy short forms remain aliases during migration.
+Group palette entries under Session, Model, View, Settings, Mode, and Action. Friendly labels describe the outcome. Legacy short forms and former session-scoped action forms remain aliases during migration.
 
 Examples:
 
-- **Start new session** (`/session:new`, alias `/new`)
+- **Start a new session** (`/session:new`, alias `/new`)
+- **Fork the current session** (`/session:fork`, alias `/fork`)
 - **Switch model** (`/model:pick`, alias `/model`)
 - **View tasks** (`/view:tasks`, alias `/tasks`)
 - **Toggle no-confirm mode** (`/mode:no-confirm`, alias `/yolo`)
 - **Quick question** (`/action:ask`, alias `/btw`)
-- **Show welcome guide** (`/welcome`)
+- **Compact conversation history** (`/action:compact`, aliases `/compact`, `/session:compact`)
+- **Reload plugins and configuration** (`/action:reload`, aliases `/reload`, `/session:reload`)
+- **Exit n00n** (`/action:exit`, aliases `/exit`, `/session:exit`)
+- **Show the welcome guide** (`/welcome`)
+
+## Canonical flags
+
+- **Resume a session** (`--session <id>` or `-s <id>`, alias `--resume <id>`)
 
 ## Writing guidance
 

@@ -995,6 +995,50 @@ fn reset_session_clears_plan() {
 }
 
 #[test]
+fn fork_session_preserves_history_under_new_child_id() {
+    let mut app = test_app();
+    app.state
+        .session
+        .messages
+        .push(Message::user("keep this context".into()));
+    let source_id = app.state.session.id;
+
+    let actions = app.execute_command(cmd("/fork"));
+
+    assert_eq!(
+        app.status_bar.flash_text(),
+        Some("/fork is deprecated; use /session:fork")
+    );
+    assert!(matches!(&actions[..], [Action::LoadSession(_)]));
+    assert_ne!(app.state.session.id, source_id);
+    assert_eq!(app.state.session.meta.parent_id, Some(source_id));
+    assert_eq!(app.state.session.messages.len(), 1);
+    assert_eq!(
+        app.state.session.messages[0].first_text_content(),
+        Some("keep this context")
+    );
+}
+
+#[test]
+fn canonical_session_fork_dispatches_to_handler() {
+    let mut app = test_app();
+    app.state
+        .session
+        .messages
+        .push(Message::user("canonical fork".into()));
+
+    let actions = app.execute_command(cmd("/session:fork"));
+
+    assert!(app.status_bar.flash_text().is_none());
+    assert!(matches!(&actions[..], [Action::LoadSession(_)]));
+    assert_eq!(app.state.session.messages.len(), 1);
+    assert_eq!(
+        app.state.session.messages[0].first_text_content(),
+        Some("canonical fork")
+    );
+}
+
+#[test]
 fn reset_session_assigns_new_plan_path_in_plan_mode() {
     let mut app = test_app();
     app.state.mode = Mode::Plan;
@@ -3589,9 +3633,11 @@ fn btw_empty_flashes_error() {
         args: String::new(),
     });
     assert!(actions.is_empty());
-    assert_eq!(
-        app.status_bar.flash_text().unwrap(),
-        "Usage: /btw <question>"
+    assert!(
+        app.status_bar
+            .flash_text()
+            .unwrap()
+            .starts_with("Usage: /btw <question>")
     );
 }
 
@@ -4262,11 +4308,21 @@ fn fast_toggle_on_off_on_opus() {
 
     app.execute_command(cmd("/fast"));
     assert!(app.state.fast);
-    assert_eq!(app.status_bar.flash_text(), Some(FAST_ON_MSG));
+    assert!(
+        app.status_bar
+            .flash_text()
+            .unwrap()
+            .starts_with(FAST_ON_MSG)
+    );
 
     app.execute_command(cmd("/fast"));
     assert!(!app.state.fast);
-    assert_eq!(app.status_bar.flash_text(), Some(FAST_OFF_MSG));
+    assert!(
+        app.status_bar
+            .flash_text()
+            .unwrap()
+            .starts_with(FAST_OFF_MSG)
+    );
 }
 
 #[test]
@@ -4281,11 +4337,21 @@ fn workflow_toggle_flows_into_agent_input() {
 
     app.execute_command(cmd("/workflow"));
     assert!(app.build_agent_input(&msg).workflow);
-    assert_eq!(app.status_bar.flash_text(), Some(WORKFLOW_ON_MSG));
+    assert!(
+        app.status_bar
+            .flash_text()
+            .unwrap()
+            .starts_with(WORKFLOW_ON_MSG)
+    );
 
     app.execute_command(cmd("/workflow"));
     assert!(!app.build_agent_input(&msg).workflow);
-    assert_eq!(app.status_bar.flash_text(), Some(WORKFLOW_OFF_MSG));
+    assert!(
+        app.status_bar
+            .flash_text()
+            .unwrap()
+            .starts_with(WORKFLOW_OFF_MSG)
+    );
 }
 
 /// Workflow sessions have synthetic ids that no `ToolDone` matches, so
@@ -4323,7 +4389,12 @@ fn fast_flashes_error_on_ineligible_model(spec: &str) {
 
     app.execute_command(cmd("/fast"));
     assert!(!app.state.fast);
-    assert_eq!(app.status_bar.flash_text(), Some(FAST_UNSUPPORTED_MSG));
+    assert!(
+        app.status_bar
+            .flash_text()
+            .unwrap()
+            .starts_with(FAST_UNSUPPORTED_MSG)
+    );
 }
 
 #[test]

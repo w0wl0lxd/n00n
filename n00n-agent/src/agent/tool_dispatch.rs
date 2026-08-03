@@ -1168,6 +1168,44 @@ mod tests {
         });
     }
 
+    #[test]
+    fn native_tool_search_loads_deferred_mcp_matches() {
+        smol::block_on(async {
+            let mcp = crate::mcp::stub_session(&[("srv.fetch_issue", "Fetch a GitHub issue")]);
+            let registry = Arc::new(ToolRegistry::new());
+            let search: Arc<dyn crate::tools::registry::Tool> =
+                Arc::new(crate::tools::tool_search::ToolSearch::new());
+            registry
+                .register(
+                    &search,
+                    &crate::tools::registry::ToolSource::Lua {
+                        plugin: Arc::from("test"),
+                    },
+                )
+                .unwrap();
+            let mut ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
+            ctx.registry = Arc::clone(&registry);
+            ctx.mcp = Some(mcp.clone());
+
+            let done = run(
+                &registry,
+                Some(&mcp),
+                "t1".into(),
+                TOOL_SEARCH_TOOL_NAME,
+                &serde_json::json!({"query": "issue"}),
+                &ctx,
+                Emit::Silent,
+            )
+            .await;
+
+            assert!(!done.is_error, "got: {}", done.output.as_text());
+            assert!(done.output.as_text().contains("srv__fetch_issue"));
+            let mut tools = serde_json::json!([]);
+            mcp.extend_tools(&mut tools);
+            assert!(crate::mcp::tool_names(&tools).contains(&"srv__fetch_issue"));
+        });
+    }
+
     #[test_case(serde_json::json!({"query": "  "}) ; "blank_query")]
     #[test_case(serde_json::json!({}) ; "missing_query")]
     #[allow(clippy::needless_pass_by_value)]

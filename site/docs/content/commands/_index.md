@@ -11,64 +11,65 @@ Type `/` in the input box to open the command palette.
 
 ## Built-in commands
 
-n00n has 23 built-in commands. Project, user, and MCP prompt commands are separate.
+n00n has 24 built-in commands. Project, user, and MCP prompt commands are separate.
 
 ### Session
 
-| Command | Description |
-|---------|-------------|
-| `/session:new` | Start a new session |
-| `/session:list` | Browse and switch sessions |
-| `/session:rename` | Rename the current session |
-| `/session:compact` | Compact conversation history |
-| `/session:exit` | Exit n00n |
-| `/session:reload` | Reload plugins and configuration |
+| Command | Legacy aliases | Description |
+|---------|----------------|-------------|
+| `/session:new` | `/new` | Start a new session |
+| `/session:list` | `/sessions` | Browse and switch sessions |
+| `/session:rename` | `/rename` | Rename the current session |
+| `/session:fork` | `/fork` | Fork the current session |
 
 ### Model
 
-| Command | Description |
-|---------|-------------|
-| `/model:pick` | Switch model |
+| Command | Legacy aliases | Description |
+|---------|----------------|-------------|
+| `/model:pick` | `/model` | Switch model |
 
 ### View
 
-| Command | Description |
-|---------|-------------|
-| `/view:tasks` | View running and completed work |
-| `/view:usage` | View token usage |
-| `/view:memory` | View and edit persistent notes |
+| Command | Legacy aliases | Description |
+|---------|----------------|-------------|
+| `/view:tasks` | `/tasks` | View running and completed work |
+| `/view:usage` | `/usage` | View token usage |
+| `/view:memory` | `/memory` | View and edit persistent notes |
 
 ### Settings
 
-| Command | Description |
-|---------|-------------|
-| `/settings:theme` | Switch color theme |
-| `/settings:mcp` | Configure MCP servers |
-| `/settings:login` | Authenticate with a provider |
+| Command | Legacy aliases | Description |
+|---------|----------------|-------------|
+| `/settings:theme` | `/theme` | Switch color theme |
+| `/settings:mcp` | `/mcp` | Configure MCP servers |
+| `/settings:login` | `/login` | Authenticate with a provider |
 
 ### Mode
 
-| Command | Description |
-|---------|-------------|
-| `/mode:no-confirm` | Toggle permission confirmations |
-| `/mode:fast` | Toggle fast mode when supported |
-| `/mode:workflow` | Toggle workflow mode |
-| `/mode:thinking` | Set thinking level |
+| Command | Legacy aliases | Description |
+|---------|----------------|-------------|
+| `/mode:no-confirm` | `/yolo` | Toggle permission confirmations |
+| `/mode:fast` | `/fast` | Toggle fast mode when supported |
+| `/mode:workflow` | `/workflow` | Toggle workflow mode |
+| `/mode:thinking` | `/thinking` | Set thinking level |
 
 ### Action
 
-| Command | Description |
-|---------|-------------|
-| `/action:queue` | Manage queued prompts |
-| `/action:cd` | Change working directory |
-| `/action:ask` | Ask a quick question without tools |
-| `/action:help` | Show context-aware help |
-| `/welcome` | Show the welcome guide |
-| `/team` | Configure and run an agent team for a goal |
+| Command | Legacy aliases | Description |
+|---------|----------------|-------------|
+| `/action:compact` | `/compact`, `/session:compact` | Compact conversation history |
+| `/action:queue` | `/queue` | Manage queued prompts |
+| `/action:cd` | `/cd` | Change working directory |
+| `/action:ask` | `/btw` | Ask a quick question without tools |
+| `/action:help` | `/help` | Show context-aware help |
+| `/action:reload` | `/reload`, `/session:reload` | Reload plugins and configuration |
+| `/action:exit` | `/exit`, `/session:exit` | Exit n00n |
+| `/welcome` | — | Show the welcome guide |
+| `/team` | — | Configure and run an agent team for a goal |
 
 ## Sessions
 
-Sessions run concurrently. `/session:new` starts a fresh session while the old one keeps working in the background, and `/session:list` shows the live status of each (working, needs input, idle) so you can jump between them. When a background session finishes or needs input, n00n flashes a note in the status bar.
+Sessions run concurrently. `/session:new` starts a fresh session while the old one keeps working in the background, and `/session:list` shows the live status of each (Working, Needs input, Idle) so you can jump between them. When a background session finishes or needs input, n00n flashes a note in the status bar.
 
 ## Custom commands
 

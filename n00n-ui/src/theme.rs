@@ -12,6 +12,18 @@ use syntect::highlighting::{
 };
 
 const DEFAULT_THEME: &str = "dracula";
+const SYN_BLACK: SynColor = SynColor {
+    r: 0,
+    g: 0,
+    b: 0,
+    a: 0xff,
+};
+const SYN_WHITE: SynColor = SynColor {
+    r: 0xff,
+    g: 0xff,
+    b: 0xff,
+    a: 0xff,
+};
 const RESERVED_KEYS: &[&str] = &["palette", "ui", "inherits"];
 
 #[cfg(test)]
@@ -790,6 +802,15 @@ impl Theme {
         } else if high_contrast {
             self.background = Color::Black;
             self.foreground = Color::White;
+            self.syntax.settings.foreground = Some(SYN_WHITE);
+            self.syntax.settings.background = Some(SYN_BLACK);
+            self.syntax.settings.caret = Some(SYN_WHITE);
+            self.syntax.settings.line_highlight = None;
+            self.syntax.settings.selection = None;
+            for item in &mut self.syntax.scopes {
+                item.style.foreground = Some(SYN_WHITE);
+                item.style.background = None;
+            }
             self.accent.fg = Some(Color::Yellow);
             self.tool_success.fg = Some(Color::Green);
             self.tool_error.fg = Some(Color::LightRed);
@@ -1078,6 +1099,7 @@ mod tests {
         assert_eq!(theme.tool_success.fg, None);
         assert_eq!(theme.tool_error.fg, None);
         assert_eq!(theme.accent.fg, None);
+        assert_eq!(theme.progress_bar.fg, None);
     }
 
     #[test]
@@ -1092,6 +1114,14 @@ mod tests {
         assert_eq!(theme.foreground, Color::White);
         assert_eq!(theme.accent.fg, Some(Color::Yellow));
         assert_eq!(theme.tool_error.fg, Some(Color::LightRed));
+        assert_eq!(theme.syntax.settings.foreground, Some(SYN_WHITE));
+        assert_eq!(theme.syntax.settings.background, Some(SYN_BLACK));
+        assert_eq!(theme.syntax.settings.caret, Some(SYN_WHITE));
+        assert_eq!(theme.syntax.settings.line_highlight, None);
+        assert_eq!(theme.syntax.settings.selection, None);
+        assert!(theme.syntax.scopes.iter().all(|item| {
+            item.style.foreground == Some(SYN_WHITE) && item.style.background.is_none()
+        }));
     }
 
     #[test]

@@ -99,20 +99,11 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
         1
     ),
     command!(
-        "/session:compact",
-        "/compact",
-        ["/compact"],
+        "/session:fork",
+        "/fork",
+        ["/fork"],
         Session,
-        "Compact conversation history",
-        0
-    ),
-    command!("/session:exit", "/exit", ["/exit"], Session, "Exit n00n", 0),
-    command!(
-        "/session:reload",
-        "/reload",
-        ["/reload"],
-        Session,
-        "Reload plugins and configuration",
+        "Fork the current session",
         0
     ),
     command!(
@@ -204,6 +195,14 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
         1
     ),
     command!(
+        "/action:compact",
+        "/compact",
+        ["/compact", "/session:compact"],
+        Action,
+        "Compact conversation history",
+        0
+    ),
+    command!(
         "/action:queue",
         "/queue",
         ["/queue"],
@@ -236,6 +235,22 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
         0
     ),
     command!(
+        "/action:reload",
+        "/reload",
+        ["/reload", "/session:reload"],
+        Action,
+        "Reload plugins and configuration",
+        0
+    ),
+    command!(
+        "/action:exit",
+        "/exit",
+        ["/exit", "/session:exit"],
+        Action,
+        "Exit n00n",
+        0
+    ),
+    command!(
         "/welcome",
         "/welcome",
         [],
@@ -245,10 +260,22 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
     ),
 ];
 
-fn conflicts_with_builtin(name: &str) -> bool {
-    BUILTIN_COMMANDS.iter().any(|command| {
+fn builtin_command(name: &str) -> Option<&'static BuiltinCommand> {
+    BUILTIN_COMMANDS.iter().find(|command| {
         command.name == name || command.dispatch_name == name || command.aliases.contains(&name)
     })
+}
+
+pub(crate) fn builtin_dispatch_name(name: &str) -> Option<&'static str> {
+    builtin_command(name).map(|command| command.dispatch_name)
+}
+
+pub(crate) fn builtin_canonical_name(name: &str) -> Option<&'static str> {
+    builtin_command(name).map(|command| command.name)
+}
+
+fn conflicts_with_builtin(name: &str) -> bool {
+    builtin_dispatch_name(name).is_some()
 }
 
 pub struct ParsedCommand {
@@ -589,8 +616,14 @@ impl CommandPalette {
 
     pub fn confirm(&self, input: &str) -> Option<ParsedCommand> {
         let item = self.filtered.get(self.selected)?;
+        let typed_name = input.split_whitespace().next()?;
         let name = match &item.command_type {
-            CommandType::Builtin(command) => command.dispatch_name.to_owned(),
+            CommandType::Builtin(command)
+                if command.dispatch_name == typed_name || command.aliases.contains(&typed_name) =>
+            {
+                typed_name.to_owned()
+            }
+            CommandType::Builtin(command) => command.name.to_owned(),
             _ => self.item_name(item),
         };
         let args = input
@@ -766,6 +799,30 @@ mod tests {
         ])
     }
 
+    #[test_case("/action:compact", "/compact"; "compact")]
+    #[test_case("/action:reload", "/reload"; "reload")]
+    #[test_case("/action:exit", "/exit"; "exit")]
+    #[test_case("/session:fork", "/fork"; "fork")]
+    fn canonical_commands_keep_legacy_dispatch(name: &str, dispatch_name: &str) {
+        let command = BUILTIN_COMMANDS
+            .iter()
+            .find(|command| command.name == name)
+            .expect("canonical command");
+        assert_eq!(command.dispatch_name, dispatch_name);
+        assert!(command.aliases.contains(&dispatch_name));
+    }
+
+    #[test_case("/action:compact", "/compact"; "compact")]
+    #[test_case("/session:compact", "/compact"; "legacy_compact")]
+    #[test_case("/action:reload", "/reload"; "reload")]
+    #[test_case("/session:reload", "/reload"; "legacy_reload")]
+    #[test_case("/action:exit", "/exit"; "exit")]
+    #[test_case("/session:exit", "/exit"; "legacy_exit")]
+    #[test_case("/session:fork", "/fork"; "fork")]
+    fn builtin_dispatch_resolves_canonical_and_legacy_names(name: &str, expected: &str) {
+        assert_eq!(builtin_dispatch_name(name), Some(expected));
+    }
+
     #[test]
     fn builtin_command_names_and_aliases_are_unique() {
         let mut names = std::collections::HashSet::new();
@@ -887,13 +944,15 @@ mod tests {
     }
 
     #[test_case("/cd", "/cd", ""              ; "legacy_no_args")]
-    #[test_case("/action:cd", "/cd", ""       ; "canonical_no_args")]
+    #[test_case("/action:cd", "/action:cd", ""       ; "canonical_no_args")]
     #[test_case("/cd ~/foo", "/cd", "~/foo"   ; "legacy_with_args")]
-    #[test_case("/action:cd ~/foo", "/cd", "~/foo" ; "canonical_with_args")]
-    #[test_case("/CD ~/foo", "/cd", "~/foo"   ; "case_insensitive")]
+    #[test_case("/action:cd ~/foo", "/action:cd", "~/foo" ; "canonical_with_args")]
+    #[test_case("/CD ~/foo", "/action:cd", "~/foo"   ; "case_insensitive")]
     #[test_case("/compact", "/compact", ""    ; "other_command")]
-    #[cfg_attr(not(target_os = "windows"), test_case("/cmp", "/compact", ""    ; "fuzzy-match-1"))]
-    #[cfg_attr(not(target_os = "windows"), test_case("/pct", "/compact", ""    ; "fuzzy-match-2"))]
+    #[cfg_attr(not(target_os = "windows"), test_case("/cmp", "/action:compact", ""    ; "fuzzy-match-1"))]
+    #[cfg_attr(not(target_os = "windows"), test_case("/pct", "/action:compact", ""    ; "fuzzy-match-2"))]
+    #[test_case("/session:fork", "/session:fork", ""       ; "canonical_fork")]
+    #[test_case("/fork", "/fork", ""               ; "legacy_fork")]
     #[test_case("/btw hello world", "/btw", "hello world" ; "btw_multi_word")]
     fn confirm_parses_args(input: &str, expected_name: &str, expected_args: &str) {
         let mut p = CommandPalette::new(Arc::from([]), empty_snapshot(), LuaCommandReader::empty());
@@ -1058,7 +1117,7 @@ mod tests {
         }
     }
 
-    #[test_case("/cmp", "/session:compact" ; "compact_fuzzy")]
+    #[test_case("/cmp", "/action:compact" ; "compact_fuzzy")]
     #[test_case("/new", "/session:new" ; "new_alias")]
     #[test_case("/tsk", "/view:tasks" ; "tasks_fuzzy")]
     fn nucleo_highlights_matching_indices(input: &str, expected_cmd: &str) {

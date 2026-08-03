@@ -2366,12 +2366,12 @@ fn builtin_opts_flow_from_setup_plugins() {
 
 #[test_case::test_case(
     serde_json::json!({}),
-    &["edit", "multiedit", "edit_lines", "insert_lines"], &[]
+    &["edit", "multi_edit", "multiedit", "edit_lines", "insert_lines"], &[]
     ; "all_edit_tools_on_by_default"
 )]
 #[test_case::test_case(
     serde_json::json!({ "multiedit": false, "edit_lines": true, "insert_lines": false }),
-    &["edit", "edit_lines"], &["multiedit", "insert_lines"]
+    &["edit", "edit_lines"], &["multi_edit", "multiedit", "insert_lines"]
     ; "toggles_flip_sub_tools"
 )]
 fn edit_sub_tools_follow_edit_opts(opts: serde_json::Value, on: &[&str], off: &[&str]) {
@@ -2666,6 +2666,20 @@ fn sessions_plugin_rename_persists_kind_prefix_in_stored_title() {
     assert!(
         snippet.contains("stored_title"),
         "in-memory stored title must keep the kind prefix via stored_title, got: {snippet}"
+    );
+}
+
+#[test]
+fn sessions_command_rename_preserves_kind_prefix() {
+    let source = include_str!("../../plugins/sessions/init.lua");
+    let handler = source
+        .find("name = \"/rename\"")
+        .expect("rename command registration");
+    let body = &source[handler..];
+    assert!(body.contains("n00n.session.list()"));
+    assert!(
+        body.contains("stored_session_title(kind, title)"),
+        "command rename must preserve the stored session kind"
     );
 }
 

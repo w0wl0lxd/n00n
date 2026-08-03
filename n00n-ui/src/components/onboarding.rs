@@ -119,7 +119,13 @@ impl Onboarding {
                 Line::raw(""),
             ]
         };
-        let height = match u16::try_from(lines.len()) {
+        let width_percent = if compact { 90 } else { 72 };
+        let content_width =
+            crate::cast::u32_to_u16(u32::from(area.width) * u32::from(width_percent) / 100)
+                .saturating_sub(2)
+                .max(1);
+        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+        let height = match u16::try_from(paragraph.line_count(content_width)) {
             Ok(height) => height,
             Err(error) => {
                 tracing::warn!(%error, "welcome guide height exceeds terminal limits");
@@ -128,11 +134,11 @@ impl Onboarding {
         };
         let modal = Modal {
             title: TITLE,
-            width_percent: if compact { 90 } else { 72 },
+            width_percent,
             max_height_percent: 80,
         };
         let (popup, inner) = modal.render(frame, area, height);
-        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        frame.render_widget(paragraph, inner);
         popup
     }
 }
@@ -162,7 +168,10 @@ fn has_seen(storage: &StateDir) -> bool {
 mod tests {
     use super::*;
     use crossterm::event::KeyEvent;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
     use tempfile::TempDir;
+    use test_case::test_case;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -177,6 +186,32 @@ mod tests {
         assert!(onboarding.handle_key(key(KeyCode::Enter)));
         Onboarding::mark_seen(&storage).expect("marker writes");
         assert!(!Onboarding::new(&storage).is_open());
+    }
+
+    #[test_case(40 ; "narrow_width")]
+    #[test_case(79 ; "compact_width")]
+    #[test_case(80 ; "standard_width")]
+    #[test_case(100 ; "wide_width")]
+    fn wrapped_content_keeps_reopen_hint_visible(width: u16) {
+        let temp = TempDir::new().expect("temp dir");
+        let storage = StateDir::from_path(temp.path().to_path_buf());
+        let onboarding = Onboarding::new(&storage);
+        let mut terminal = Terminal::new(TestBackend::new(width, 40)).expect("terminal");
+
+        terminal
+            .draw(|frame| {
+                onboarding.view(frame, frame.area());
+            })
+            .expect("render");
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(rendered.contains("/welcome"));
     }
 
     #[test]

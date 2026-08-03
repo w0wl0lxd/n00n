@@ -565,6 +565,14 @@ mod tests {
     }
 
     #[test]
+    fn session_and_resume_flags_are_compatible() {
+        let canonical = Cli::parse_from(["n00n", "--session", "session-id"]);
+        let compatibility = Cli::parse_from(["n00n", "--resume", "session-id"]);
+        assert_eq!(canonical.session.as_deref(), Some("session-id"));
+        assert_eq!(compatibility.session, canonical.session);
+    }
+
+    #[test]
     fn sdk_tool_flag_aliases_remain_compatible() {
         let cli = Cli::parse_from([
             "n00n",

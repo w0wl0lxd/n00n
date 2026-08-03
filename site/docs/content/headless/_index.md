@@ -69,7 +69,7 @@ Under the hood it reuses the same `spawn_interactive` driver as the TUI and ACP 
 | `--append-system-prompt` | Append text to the built-in system prompt |
 | `--max-turns` | Cap the number of agent turns |
 | `--session-id <id>` | Set a specific session ID |
-| `--resume <id>` / `-s <id>` | Resume an existing session |
+| `--session <id>` / `-s <id>` | Resume an existing session (`--resume <id>` is a compatibility alias) |
 | `--fork-session` | Load a session's history under a new ID |
 | `--continue` | Resume the most recent session in the current directory |
 | `--permission-mode <mode>` | `default`, `acceptEdits`, `plan`, or `bypassPermissions` |

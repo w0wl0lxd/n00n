@@ -46,7 +46,7 @@ use n00n_lua::{EventHandle, WARM_TOOL_CAP};
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph};
 use ratatui_image::picker::Picker;
@@ -1225,7 +1225,8 @@ impl MessagesPanel {
                     ratio,
                     style: theme::current().progress_bar,
                     cache_ratio: f64::from(pp.cache) / f64::from(pp.total),
-                    cache_style: Style::new().fg(Color::Green),
+                    cache_style: theme::current().tool_success,
+                    unfilled_style: theme::current().tool_dim,
                     label: Some(label),
                     label_style: Some(theme::current().tool_dim),
                     bar_width,

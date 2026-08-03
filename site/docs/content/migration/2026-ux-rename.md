@@ -10,6 +10,7 @@ n00n now presents built-in tools with consistent `verb_noun` names. Existing nam
 | `write` | `write_file` |
 | `edit` | `edit_file` |
 | `multiedit` | `edit_file_bulk` |
+| `multi_edit` | `edit_file_bulk` |
 | `edit_lines` | `edit_file_lines` |
 | `insert_lines` | `insert_file_lines` |
 | `bash` | `run_shell` |
@@ -43,11 +44,43 @@ n00n now presents built-in tools with consistent `verb_noun` names. Existing nam
 
 Aliases work in tool dispatch, permission rules, deferred activation, and tool filters. Model-facing definitions contain canonical names only. New configuration and documentation should use canonical names.
 
-## Slash commands and flags
+## Slash commands
 
-The command palette groups commands by purpose and shows friendly labels. Existing short commands such as `/model`, `/tasks`, `/yolo`, and `/btw` remain compatibility aliases.
+The command palette groups commands by purpose and shows canonical names. Previous short commands and the former session-scoped action paths remain compatibility aliases.
 
-Use `--no-confirm` for non-interactive permission approval. `--yolo` remains a deprecated alias during the migration period.
+| Previous command | Canonical command |
+|---|---|
+| `/new` | `/session:new` |
+| `/fork` | `/session:fork` |
+| `/sessions` | `/session:list` |
+| `/rename` | `/session:rename` |
+| `/model` | `/model:pick` |
+| `/tasks` | `/view:tasks` |
+| `/usage` | `/view:usage` |
+| `/memory` | `/view:memory` |
+| `/theme` | `/settings:theme` |
+| `/mcp` | `/settings:mcp` |
+| `/login` | `/settings:login` |
+| `/yolo` | `/mode:no-confirm` |
+| `/fast` | `/mode:fast` |
+| `/workflow` | `/mode:workflow` |
+| `/thinking` | `/mode:thinking` |
+| `/session:compact` | `/action:compact` |
+| `/compact` | `/action:compact` |
+| `/queue` | `/action:queue` |
+| `/cd` | `/action:cd` |
+| `/btw` | `/action:ask` |
+| `/help` | `/action:help` |
+| `/session:reload` | `/action:reload` |
+| `/reload` | `/action:reload` |
+| `/session:exit` | `/action:exit` |
+| `/exit` | `/action:exit` |
+| `/welcome` | `/welcome` |
+| `/team` | `/team` |
+
+## Flags
+
+Use `--session <id>` (or `-s <id>`) to resume a session. `--resume <id>` remains a compatibility alias. Use `--no-confirm` for non-interactive permission approval. `--yolo` remains a deprecated alias during the migration period.
 
 ## Timeline
 

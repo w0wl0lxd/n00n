@@ -25,7 +25,9 @@ use crate::chat::Chat;
 use crate::chat::{CANCELLED_TEXT, ChatEventResult, DONE_TEXT, ERROR_TEXT, transcript_to_display};
 use crate::clipboard::ClipboardState;
 use crate::components::btw_modal::BtwModal;
-use crate::components::command::{CommandAction, CommandPalette, ParsedCommand};
+use crate::components::command::{
+    CommandAction, CommandPalette, ParsedCommand, builtin_canonical_name, builtin_dispatch_name,
+};
 use crate::components::file_picker::{FilePickerModal, FilePickerModalAction};
 use crate::components::help_modal::HelpModal;
 use crate::components::input::{InputAction, InputBox, Submission};
@@ -1841,7 +1843,11 @@ impl App {
 
     fn execute_command(&mut self, cmd: ParsedCommand) -> Vec<Action> {
         self.input_box.discard();
-        match cmd.name.as_str() {
+        let deprecation = builtin_canonical_name(&cmd.name)
+            .filter(|canonical_name| cmd.name != *canonical_name)
+            .map(|canonical_name| format!("{} is deprecated; use {canonical_name}", cmd.name));
+        let dispatch_name = builtin_dispatch_name(&cmd.name).unwrap_or_else(|| cmd.name.as_str());
+        let actions = match dispatch_name {
             "/tasks" => {
                 self.open_tasks();
                 vec![]
@@ -1849,10 +1855,11 @@ impl App {
             "/compact" => {
                 if self.status == Status::Streaming {
                     self.queue_compact();
-                    return vec![];
+                    vec![]
+                } else {
+                    self.status = Status::Streaming;
+                    vec![Action::Compact]
                 }
-                self.status = Status::Streaming;
-                vec![Action::Compact]
             }
             "/help" => {
                 self.help_modal.toggle();
@@ -1880,6 +1887,7 @@ impl App {
                 }
             }
             "/new" => self.reset_session(),
+            "/fork" => self.fork_session(),
             "/queue" => {
                 self.queue.set_focus();
                 vec![]
@@ -1913,33 +1921,33 @@ impl App {
                 vec![]
             }
             "/thinking" => {
-                if !self.state.model.supports_thinking() {
-                    self.flash("Thinking requires a model that supports it".into());
-                    return vec![];
-                }
-                match ThinkingConfig::parse(cmd.args.trim(), self.state.thinking) {
-                    Ok(thinking) => {
-                        self.state.thinking = thinking;
-                        self.flash(format!("Thinking: {thinking}"));
+                if self.state.model.supports_thinking() {
+                    match ThinkingConfig::parse(cmd.args.trim(), self.state.thinking) {
+                        Ok(thinking) => {
+                            self.state.thinking = thinking;
+                            self.flash(format!("Thinking: {thinking}"));
+                        }
+                        Err(msg) => self.flash(msg.into()),
                     }
-                    Err(msg) => self.flash(msg.into()),
+                } else {
+                    self.flash("Thinking requires a model that supports it".into());
                 }
                 vec![]
             }
             "/fast" => {
-                if !self.state.model.supports_fast() {
+                if self.state.model.supports_fast() {
+                    self.state.fast = !self.state.fast;
+                    self.flash(
+                        if self.state.fast {
+                            FAST_ON_MSG
+                        } else {
+                            FAST_OFF_MSG
+                        }
+                        .into(),
+                    );
+                } else {
                     self.flash(FAST_UNSUPPORTED_MSG.into());
-                    return vec![];
                 }
-                self.state.fast = !self.state.fast;
-                self.flash(
-                    if self.state.fast {
-                        FAST_ON_MSG
-                    } else {
-                        FAST_OFF_MSG
-                    }
-                    .into(),
-                );
                 vec![]
             }
             "/workflow" => {
@@ -1967,7 +1975,11 @@ impl App {
                 vec![]
             }
             _ => vec![],
+        };
+        if let Some(deprecation) = deprecation {
+            self.status_bar.append_flash(&deprecation);
         }
+        actions
     }
 
     fn run_lua_command(&self, name: &str, args: String) {

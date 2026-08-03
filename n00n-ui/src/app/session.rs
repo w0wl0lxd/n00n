@@ -344,6 +344,30 @@ impl App {
         vec![Action::NewSession]
     }
 
+    pub(super) fn fork_session(&mut self) -> Vec<Action> {
+        let source = self.session_snapshot();
+        if session_has_content(&source) {
+            self.storage_writer.send(Box::new(source.clone()));
+        }
+
+        let source_id = source.id;
+        let mut fork = AppSession::new(&source.model, &source.cwd);
+        fork.title = source.title;
+        fork.messages = source.messages;
+        fork.transcript = source.transcript;
+        fork.token_usage = source.token_usage;
+        fork.tool_outputs = source.tool_outputs;
+        fork.subagent_messages = source.subagent_messages;
+        fork.meta = source.meta;
+        fork.meta.parent_id = Some(source_id);
+        fork.meta.input_draft = None;
+        fork.meta.queued_messages.clear();
+        fork.meta.queued_submissions.clear();
+
+        let loaded = self.apply_loaded_session(fork, &self.state.model.clone());
+        vec![Action::LoadSession(Box::new(loaded))]
+    }
+
     pub(super) fn open_rewind_picker(&mut self) -> Vec<Action> {
         self.save_session();
         match self.rewind_picker.open(&self.state.session.messages) {

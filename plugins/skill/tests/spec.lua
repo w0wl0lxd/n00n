@@ -316,6 +316,51 @@ case("skill_policy_matches_mcp_wire_names_to_bare_allowlist", function()
   eq(denied.allowed, false)
 end)
 
+case("skill_policy_matches_canonical_and_legacy_builtin_names", function()
+  local policy = require("skill_policy")
+  for _, names in ipairs({
+    { canonical = "read_file", legacy = "read" },
+    { canonical = "edit_file_bulk", legacy = "multi_edit" },
+    { canonical = "run_shell", legacy = "bash" },
+  }) do
+    local canonical_allowed = policy.evaluate({
+      name = "gated",
+      allowed_tools = { names.canonical },
+    }, names.legacy)
+    eq(canonical_allowed.allowed, true, names.legacy .. " should match " .. names.canonical)
+
+    local legacy_allowed = policy.evaluate({
+      name = "gated",
+      allowed_tools = { names.legacy },
+    }, names.canonical)
+    eq(legacy_allowed.allowed, true, names.canonical .. " should match " .. names.legacy)
+
+    local canonical_denied = policy.evaluate({
+      name = "gated",
+      disallowed_tools = { names.canonical },
+    }, names.legacy)
+    eq(canonical_denied.allowed, false, names.legacy .. " should be denied by " .. names.canonical)
+
+    local legacy_denied = policy.evaluate({
+      name = "gated",
+      disallowed_tools = { names.legacy },
+    }, names.canonical)
+    eq(legacy_denied.allowed, false, names.canonical .. " should be denied by " .. names.legacy)
+  end
+end)
+
+case("skill_policy_always_allows_skill_loader_aliases", function()
+  local policy = require("skill_policy")
+  for _, tool_name in ipairs({ "load_skill", "skill" }) do
+    local decision = policy.evaluate({
+      name = "gated",
+      allowed_tools = { "read_file" },
+      disallowed_tools = { tool_name },
+    }, tool_name)
+    eq(decision.allowed, true, tool_name .. " should remain available")
+  end
+end)
+
 -- ── ranking and plan ──
 
 case("score_skill_prefers_tag_and_name_matches", function()

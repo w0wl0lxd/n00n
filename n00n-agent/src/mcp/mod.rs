@@ -396,15 +396,11 @@ impl McpSession {
             }
         }
         drop(loaded);
-        if !deferred.is_empty() {
-            if existing.contains(TOOL_SEARCH_TOOL_NAME) || existing.contains("tool_search") {
-                warn!(
-                    deferred = deferred.len(),
-                    "a tool named {TOOL_SEARCH_TOOL_NAME} already exists; deferred MCP tools stay hidden"
-                );
-            } else {
-                arr.push(tool_search_definition(&deferred));
-            }
+        if !deferred.is_empty()
+            && !existing.contains(TOOL_SEARCH_TOOL_NAME)
+            && !existing.contains("tool_search")
+        {
+            arr.push(tool_search_definition(&deferred));
         }
     }
 

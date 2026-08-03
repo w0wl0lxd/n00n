@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::manifest::ManifestRegistry;
 use crate::model::Model;
 use crate::provider::{available_model_specs, provider_available};
 
@@ -42,14 +43,26 @@ impl ModelCatalog {
         }
     }
 
-    #[must_use]
-    pub fn with_alias(mut self, alias: impl Into<String>, spec: impl Into<String>) -> Self {
+    /// Add an alias for a model already present in this catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `spec` is malformed or is not present in the catalog.
+    pub fn with_alias(
+        mut self,
+        alias: impl Into<String>,
+        spec: impl Into<String>,
+    ) -> Result<Self, ModelCatalogError> {
         let alias = alias.into();
         let spec = spec.into();
-        if is_spec(&spec) && self.specs.iter().any(|candidate| candidate == &spec) {
-            Arc::make_mut(&mut self.aliases).insert(alias, spec);
+        if !is_spec(&spec) {
+            return Err(ModelCatalogError::InvalidSpec);
         }
-        self
+        if !self.contains(&spec) {
+            return Err(ModelCatalogError::Unavailable(spec));
+        }
+        Arc::make_mut(&mut self.aliases).insert(alias, spec);
+        Ok(self)
     }
 
     #[must_use]
@@ -89,6 +102,7 @@ impl ModelCatalog {
             .specs
             .iter()
             .any(|candidate| matches_catalog_spec(candidate, input))
+            || is_live_discovery_only_spec(input)
         {
             return Ok(input.to_string());
         }
@@ -161,7 +175,7 @@ fn matches_catalog_spec(candidate: &str, input: &str) -> bool {
         .strip_prefix(candidate)
         .and_then(|suffix| suffix.strip_prefix('-'))
         .is_some_and(|version| {
-            version.len() == 8 && version.bytes().all(|byte| byte.is_ascii_digit())
+            !version.is_empty() && version.bytes().all(|byte| byte.is_ascii_digit())
         })
 }
 
@@ -172,6 +186,17 @@ fn is_spec(spec: &str) -> bool {
     !provider.trim().is_empty()
         && !model.trim().is_empty()
         && !model.split('/').any(|segment| segment.trim().is_empty())
+}
+
+fn is_live_discovery_only_spec(spec: &str) -> bool {
+    if !is_spec(spec) {
+        return false;
+    }
+    let Some((provider, _)) = spec.split_once('/') else {
+        return false;
+    };
+    ManifestRegistry::for_slug(provider)
+        .is_some_and(|manifest| manifest.accepts_arbitrary_models && manifest.models.is_empty())
 }
 
 #[cfg(test)]
@@ -190,7 +215,8 @@ mod tests {
     #[test]
     fn aliases_are_explicit_and_target_catalogued_models() {
         let catalog = ModelCatalog::from_specs(["test/canonical".to_string()])
-            .with_alias("friendly", "test/canonical");
+            .with_alias("friendly", "test/canonical")
+            .unwrap();
         assert_eq!(
             catalog.aliases.get("friendly"),
             Some(&"test/canonical".to_string())
@@ -202,7 +228,20 @@ mod tests {
     }
 
     #[test]
-    fn dated_specs_preserve_catalog_compatibility_without_arbitrary_suffixes() {
+    fn aliases_reject_invalid_or_uncatalogued_specs() {
+        let catalog = ModelCatalog::from_specs(["test/canonical".to_string()]);
+        assert!(matches!(
+            catalog.clone().with_alias("malformed", "not-a-model-spec"),
+            Err(ModelCatalogError::InvalidSpec)
+        ));
+        assert!(matches!(
+            catalog.with_alias("missing", "test/missing"),
+            Err(ModelCatalogError::Unavailable(spec)) if spec == "test/missing"
+        ));
+    }
+
+    #[test]
+    fn versioned_specs_require_numeric_suffixes() {
         let catalog = ModelCatalog::from_specs(["anthropic/claude-opus-4-5".to_string()]);
         assert_eq!(
             catalog
@@ -222,6 +261,7 @@ mod tests {
             "anthropic/claude-opus-4-50",
             "anthropic/claude-opus-4-5-arbitrary-suffix",
             "claude-opus-4-5-arbitrary-suffix",
+            "claude-opus-4-5o",
         ] {
             assert!(
                 matches!(
@@ -231,6 +271,41 @@ mod tests {
                 "unexpectedly accepted {invalid}"
             );
         }
+    }
+
+    #[test]
+    fn prefix_compatibility_requires_version_boundary() {
+        let catalog = ModelCatalog::from_specs(["openai/gpt-4".to_string()]);
+
+        assert_eq!(
+            catalog.canonical_spec("openai/gpt-4-0613").unwrap(),
+            "openai/gpt-4-0613"
+        );
+        for invalid in ["openai/gpt-4o", "openai/gpt-4.1", "openai/gpt-4/anything"] {
+            assert!(matches!(
+                catalog.canonical_spec(invalid),
+                Err(ModelCatalogError::Unavailable(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn empty_static_manifest_accepts_live_discovered_model_specs() {
+        let catalog = ModelCatalog::from_specs([]);
+
+        assert!(is_live_discovery_only_spec("opencode/opencode/big-pickle"));
+        assert!(!is_live_discovery_only_spec("openai/not-in-static-catalog"));
+        assert!(!is_live_discovery_only_spec("opencode/"));
+        assert_eq!(
+            catalog
+                .canonical_spec("opencode/opencode/big-pickle")
+                .unwrap(),
+            "opencode/opencode/big-pickle"
+        );
+        assert!(matches!(
+            catalog.canonical_spec("openai/not-in-static-catalog"),
+            Err(ModelCatalogError::Unavailable(_))
+        ));
     }
 
     #[test]

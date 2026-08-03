@@ -1145,6 +1145,29 @@ mod tests {
         assert!(matches!(action, PickerAction::Toggle(1, false)));
     }
 
+    #[test]
+    fn toggleable_row_width_preserves_detail() {
+        let mut entry = Entry::new("a very long server name");
+        entry.detail = Some("end".to_string());
+        let backend = TestBackend::new(20, 1);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        terminal
+            .draw(|frame| {
+                render_list(frame, frame.area(), &[0], &[entry], 0, 0, 1, Some(&[true]));
+            })
+            .expect("render");
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(rendered.contains("end"));
+    }
+
     #[test_case("short", 10 => "short" ; "no_truncation_needed")]
     #[test_case("abcdefghijklmno", 10 => "abcdefghi\u{2026}" ; "long_ascii_truncated")]
     #[test_case("ab\u{4e16}\u{754c}cde", 6 => "ab\u{4e16}\u{2026}" ; "wide_chars_truncated")]

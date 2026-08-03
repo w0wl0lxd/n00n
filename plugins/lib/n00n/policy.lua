@@ -37,7 +37,7 @@ local TOOL_ALIASES = {
   write = "write_file",
 }
 
-local function canonical_tool_name(name)
+function M.canonical_tool_name(name)
   return TOOL_ALIASES[name] or name
 end
 
@@ -82,7 +82,7 @@ local function load_policies()
 end
 
 function M.evaluate_policy(agent_id, session_type, tags, tool_name)
-  tool_name = canonical_tool_name(tool_name)
+  tool_name = M.canonical_tool_name(tool_name)
   local policies = load_policies()
   if not policies or not policies.rules or #policies.rules == 0 then
     return { allowed = true }
@@ -146,7 +146,7 @@ function M.evaluate_policy(agent_id, session_type, tags, tool_name)
 
   if rule.restricted_tools and #rule.restricted_tools > 0 then
     for _, restricted in ipairs(rule.restricted_tools) do
-      if canonical_tool_name(restricted) == tool_name then
+      if M.canonical_tool_name(restricted) == tool_name then
         return { allowed = false, reason = "tool " .. tool_name .. " is restricted by policy" }
       end
     end
@@ -155,7 +155,7 @@ function M.evaluate_policy(agent_id, session_type, tags, tool_name)
   if rule.allowed_tools and #rule.allowed_tools > 0 then
     local allowed = false
     for _, allowed_tool in ipairs(rule.allowed_tools) do
-      if canonical_tool_name(allowed_tool) == tool_name then
+      if M.canonical_tool_name(allowed_tool) == tool_name then
         allowed = true
         break
       end

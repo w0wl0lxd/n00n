@@ -71,22 +71,33 @@ fn write_builtin_commands(out: &mut String) {
         let builtins = BUILTIN_COMMANDS
             .iter()
             .filter(|command| command.category == category)
-            .map(|command| (command.name, command.description));
+            .collect::<Vec<_>>();
         let plugins = plugin_commands
             .iter()
             .filter(|command| plugin_category(&command.name) == Some(category))
-            .map(|command| (command.name.as_str(), command.description.as_str()));
-        let entries = builtins.chain(plugins).collect::<Vec<_>>();
-        if entries.is_empty() {
+            .collect::<Vec<_>>();
+        if builtins.is_empty() && plugins.is_empty() {
             continue;
         }
         let _ = writeln!(out);
         let _ = writeln!(out, "### {}", category.label());
         let _ = writeln!(out);
-        let _ = writeln!(out, "| Command | Description |");
-        let _ = writeln!(out, "|---------|-------------|");
-        for (name, description) in entries {
-            let _ = writeln!(out, "| `{name}` | {description} |");
+        let _ = writeln!(out, "| Command | Legacy aliases | Description |");
+        let _ = writeln!(out, "|---------|----------------|-------------|");
+        for command in builtins {
+            let aliases = if command.aliases.is_empty() {
+                "—".to_owned()
+            } else {
+                format!("`{}`", command.aliases.join("`, `"))
+            };
+            let _ = writeln!(
+                out,
+                "| `{}` | {aliases} | {} |",
+                command.name, command.description
+            );
+        }
+        for command in plugins {
+            let _ = writeln!(out, "| `{}` | — | {} |", command.name, command.description);
         }
     }
 }
@@ -97,7 +108,7 @@ fn write_sessions(out: &mut String) {
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "Sessions run concurrently. `/session:new` starts a fresh session while the old one keeps working in the background, and `/session:list` shows the live status of each (working, needs input, idle) so you can jump between them. When a background session finishes or needs input, n00n flashes a note in the status bar."
+        "Sessions run concurrently. `/session:new` starts a fresh session while the old one keeps working in the background, and `/session:list` shows the live status of each (Working, Needs input, Idle) so you can jump between them. When a background session finishes or needs input, n00n flashes a note in the status bar."
     );
 }
 
@@ -197,5 +208,13 @@ mod tests {
         assert!(docs.contains("Project, user, and MCP prompt commands are separate."));
         assert!(docs.contains("### Session"));
         assert!(docs.contains("### Settings"));
+    }
+
+    #[test]
+    fn command_reference_lists_legacy_aliases() {
+        let docs = generate();
+        assert!(docs.contains("| Command | Legacy aliases | Description |"));
+        assert!(docs.contains("| `/action:compact` | `/compact`, `/session:compact` |"));
+        assert!(docs.contains("| `/session:fork` | `/fork` |"));
     }
 }

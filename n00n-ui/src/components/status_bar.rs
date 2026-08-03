@@ -82,6 +82,14 @@ impl StatusBar {
         self.flash = Some((msg, Instant::now()));
     }
 
+    pub fn append_flash(&mut self, notice: &str) {
+        let message = self.flash.take().map_or_else(
+            || notice.to_string(),
+            |(current, _)| format!("{current} · {notice}"),
+        );
+        self.flash(message);
+    }
+
     #[cfg(test)]
     pub fn flash_text(&self) -> Option<&str> {
         self.flash.as_ref().map(|(s, _)| s.as_str())
