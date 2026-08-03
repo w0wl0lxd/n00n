@@ -749,6 +749,7 @@ fn server_unix(opts: &AgentRunOptions<'_>, agent_id: Option<String>) -> Result<(
         initial_wd: env.cwd,
         session_id: None,
         initial_history: Vec::new(),
+        initial_transcript: Vec::new(),
         yolo: opts.yolo,
         system_prompt_override: None,
         append_system_prompt: None,

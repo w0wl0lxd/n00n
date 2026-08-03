@@ -22,7 +22,7 @@ use n00n_providers::Message;
 use n00n_providers::provider::fetch_all_models;
 use n00n_providers::{Model, ModelCatalog, TokenUsage};
 use n00n_storage::id::{SessionRef, n00nId};
-use n00n_storage::sessions::Session;
+use n00n_storage::sessions::{Session, TranscriptEntry};
 use serde::Serialize;
 use serde_json::Value;
 use smol::io::AsyncBufReadExt;
@@ -182,7 +182,7 @@ fn handle_request(srv: &mut Server, method: &str, id: RequestId, raw: &Value, pa
         "session/new" => parse_params::<NewSessionRequest>(raw).map(|req| {
             let model = params.model.clone();
             let spec = model.spec();
-            let handle = spawn_session(params, model, req.cwd, None, Vec::new());
+            let handle = spawn_session(params, model, req.cwd, None, Vec::new(), Vec::new());
             let resp = methods::new_session_response(handle.session_id.as_str())
                 .config_options(vec![methods::model_config_option(&spec, &srv.model_specs)]);
             install_session(srv, handle, spec, AgentMode::Build, None, params);
@@ -206,11 +206,19 @@ fn handle_request(srv: &mut Server, method: &str, id: RequestId, raw: &Value, pa
             })?;
             let spec = model.spec();
             let history = stored.messages;
+            let transcript = stored.transcript;
             let sid = SessionId::from(session_ref.to_string());
             for update in translate::replay_history(&history) {
                 session_update(&srv.out_tx, &sid, update);
             }
-            let handle = spawn_session(params, model, req.cwd, Some(session_ref), history);
+            let handle = spawn_session(
+                params,
+                model,
+                req.cwd,
+                Some(session_ref),
+                history,
+                transcript,
+            );
             let resp = methods::load_session_response()
                 .config_options(vec![methods::model_config_option(&spec, &srv.model_specs)]);
             install_session(srv, handle, spec, current_mode, plan_path, params);
@@ -233,6 +241,7 @@ fn spawn_session(
     cwd: PathBuf,
     session_id: Option<SessionRef>,
     history: Vec<Message>,
+    transcript: Vec<TranscriptEntry<Message>>,
 ) -> InteractiveHandle {
     headless::spawn_interactive(InteractiveParams {
         model,
@@ -246,6 +255,7 @@ fn spawn_session(
         initial_wd: cwd,
         session_id,
         initial_history: history,
+        initial_transcript: transcript,
         yolo: params.yolo,
         system_prompt_override: None,
         append_system_prompt: None,

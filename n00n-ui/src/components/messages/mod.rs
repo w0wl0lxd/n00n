@@ -11,8 +11,9 @@ pub(crate) use self::segment::wrapped_line_count;
 
 use super::tool_display::{
     RenderCtx, ToolLines, append_annotation, append_right_info, assistant_style,
-    bake_snapshot_tail, build_instructions_lines, build_tool_lines, control_style, done_style,
-    error_style, format_timestamp_now, thinking_style, truncate_to_header, user_style,
+    bake_snapshot_lines, bake_snapshot_tail, build_instructions_lines, build_tool_lines,
+    control_style, done_style, error_style, format_timestamp_now, thinking_style,
+    truncate_to_header, user_style,
 };
 use super::{
     CompactionDisplay, DisplayMessage, DisplayMetadata, DisplayRole, ToolRole, ToolStatus,
@@ -307,6 +308,7 @@ impl MessagesPanel {
         let split = self.restore_backlog.len() - take;
         let batch = self.restore_backlog.split_off(split);
         self.prepend_messages(batch);
+        self.rebake_stale_snapshots(self.theme_generation);
     }
 
     /// Prepends `msgs` (older history) in front of the existing messages,
@@ -674,18 +676,29 @@ impl MessagesPanel {
         true
     }
 
-    fn segment_position(&self, tool_id: &str) -> (Option<u32>, u16) {
-        let Some(index) = self.cache.find_by_tool_id(tool_id) else {
+    fn cached_segment_position(&self, index: usize) -> (Option<u32>, u16) {
+        let Some(segment) = self.cache.get(index) else {
             return (None, 0);
         };
         let start = self.cache.segments()[..index]
             .iter()
-            .map(|seg| u32::from(seg.height(self.viewport_width)))
+            .map(|candidate| u32::from(candidate.height(self.viewport_width)))
             .sum();
-        (
-            Some(start),
-            self.cache.segments()[index].height(self.viewport_width),
-        )
+        (Some(start), segment.height(self.viewport_width))
+    }
+
+    fn segment_position(&self, tool_id: &str) -> (Option<u32>, u16) {
+        self.cache
+            .find_by_tool_id(tool_id)
+            .map_or((None, 0), |index| self.cached_segment_position(index))
+    }
+
+    fn message_segment_position(&self, message_index: usize) -> (Option<u32>, u16) {
+        self.cache
+            .segments()
+            .iter()
+            .position(|segment| segment.msg_index == Some(message_index))
+            .map_or((None, 0), |index| self.cached_segment_position(index))
     }
 
     fn shift_scroll_for_height_change(&mut self, old_height: u16, new_height: u16) {
@@ -699,14 +712,15 @@ impl MessagesPanel {
         };
     }
 
-    fn preserve_anchor(&mut self, old_start: Option<u32>, old_height: u16, tool_id: &str) {
-        let Some(old_start) = old_start else {
-            return;
-        };
-        let (_, new_height) = self.segment_position(tool_id);
-        if old_start < u32::from(self.scroll_top) {
+    fn preserve_anchor_at(&mut self, old_start: Option<u32>, old_height: u16, new_height: u16) {
+        if old_start.is_some_and(|start| start < u32::from(self.scroll_top)) {
             self.shift_scroll_for_height_change(old_height, new_height);
         }
+    }
+
+    fn preserve_anchor(&mut self, old_start: Option<u32>, old_height: u16, tool_id: &str) {
+        let (_, new_height) = self.segment_position(tool_id);
+        self.preserve_anchor_at(old_start, old_height, new_height);
     }
 
     #[cfg(test)]
@@ -1357,18 +1371,13 @@ impl MessagesPanel {
     }
 
     fn has_snapshot(&self, tool_id: &str) -> bool {
-        self.messages
-            .iter()
-            .rfind(|m| matches!(&m.role, DisplayRole::Tool(t) if t.id == tool_id))
-            .is_some_and(|m| m.render_snapshot.is_some())
+        find_tool_msg(&self.messages, tool_id)
+            .is_some_and(|message| message.render_snapshot.is_some())
     }
 
     fn lua_restore_item(&self, tool_id: &str) -> Option<n00n_lua::RestoreItem> {
-        let msg = self
-            .messages
-            .iter()
-            .rfind(|m| matches!(&m.role, DisplayRole::Tool(t) if t.id == tool_id))?;
-        crate::chat::restore_item_for(msg, self.tool_output_lines, self.theme_generation)
+        let message = find_tool_msg(&self.messages, tool_id)?;
+        crate::chat::restore_item_for(message, self.tool_output_lines, self.theme_generation)
     }
 
     /// Re-restores every snapshot still painted with old-theme colors.
@@ -1381,7 +1390,9 @@ impl MessagesPanel {
         self.rebake_requested.retain(|_, g| *g >= current_gen);
         let tol = self.tool_output_lines;
         let mut requested = Vec::new();
-        for msg in &self.messages {
+        let mut tool_messages = Vec::new();
+        collect_tool_messages(&self.messages, &mut tool_messages);
+        for msg in tool_messages {
             let DisplayRole::Tool(role) = &msg.role else {
                 continue;
             };
@@ -1425,10 +1436,9 @@ impl MessagesPanel {
     }
 
     fn current_snapshot_gen(&self, tool_id: &str) -> Option<u64> {
-        self.messages
-            .iter()
-            .rfind(|m| matches!(&m.role, DisplayRole::Tool(t) if t.id == tool_id))
-            .map(|m| m.snapshot_theme_gen)
+        find_tool_msg(&self.messages, tool_id)
+            .or_else(|| find_tool_msg(&self.restore_backlog, tool_id))
+            .map(|message| message.snapshot_theme_gen)
     }
 
     fn store_snapshot(
@@ -1438,7 +1448,33 @@ impl MessagesPanel {
         is_header: bool,
         theme_gen: Option<u64>,
     ) -> bool {
-        let (old_start, old_height) = self.segment_position(tool_id);
+        let stale_theme = theme_gen.is_some_and(|generation| generation < self.theme_generation);
+        let containing_message = self
+            .messages
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, message)| message_contains_tool(message, tool_id));
+        let Some((message_index, containing_message)) = containing_message else {
+            if theme_gen.is_some() {
+                self.stop_watching(tool_id);
+            }
+            let Some(applied_gen) = self.resolve_snapshot_gen(tool_id, theme_gen) else {
+                return false;
+            };
+            let Some(message) = find_tool_msg_mut(&mut self.restore_backlog, tool_id) else {
+                return false;
+            };
+            apply_snapshot(message, snapshot, is_header, applied_gen);
+            return true;
+        };
+        let nested =
+            !matches!(&containing_message.role, DisplayRole::Tool(tool) if tool.id == tool_id);
+        let (old_start, old_height) = if nested {
+            self.message_segment_position(message_index)
+        } else {
+            self.segment_position(tool_id)
+        };
         let anchor_auto_scroll = self.auto_scroll && self.last_total_lines > self.viewport_height;
         if theme_gen.is_some() {
             // A generation only comes with restore replies. The restore
@@ -1452,27 +1488,31 @@ impl MessagesPanel {
         let Some(msg) = self.find_tool_msg_mut(tool_id) else {
             return false;
         };
-        if is_header {
-            msg.text = snapshot.first_line_text();
-            msg.render_header = Some(snapshot);
+        apply_snapshot(msg, snapshot, is_header, applied_gen);
+        if nested {
+            self.cache.invalidate_from_msg_count();
+            self.rebuild_line_cache();
         } else {
-            msg.render_snapshot = Some(snapshot);
+            self.rebuild_tool_segment(tool_id);
         }
-        msg.snapshot_theme_gen = applied_gen;
-        self.rebuild_tool_segment(tool_id);
-        let (_, new_height) = self.segment_position(tool_id);
+        let (_, new_height) = if nested {
+            self.message_segment_position(message_index)
+        } else {
+            self.segment_position(tool_id)
+        };
         if anchor_auto_scroll {
             self.shift_scroll_for_height_change(old_height, new_height);
         } else {
-            self.preserve_anchor(old_start, old_height, tool_id);
+            self.preserve_anchor_at(old_start, old_height, new_height);
+        }
+        if stale_theme {
+            self.rebake_stale_snapshots(self.theme_generation);
         }
         true
     }
 
     fn find_tool_msg_mut(&mut self, tool_id: &str) -> Option<&mut DisplayMessage> {
-        self.messages
-            .iter_mut()
-            .rfind(|m| matches!(&m.role, DisplayRole::Tool(t) if t.id == tool_id))
+        find_tool_msg_mut(&mut self.messages, tool_id)
     }
 
     fn rctx(&self) -> RenderCtx<'_> {
@@ -2039,6 +2079,75 @@ impl MessagesPanel {
     }
 }
 
+fn message_contains_tool(message: &DisplayMessage, tool_id: &str) -> bool {
+    matches!(&message.role, DisplayRole::Tool(tool) if tool.id == tool_id)
+        || matches!(
+            &message.metadata,
+            Some(DisplayMetadata::Compaction(compaction))
+                if compaction
+                    .entries
+                    .iter()
+                    .any(|entry| message_contains_tool(entry, tool_id))
+        )
+}
+
+fn find_tool_msg<'a>(messages: &'a [DisplayMessage], tool_id: &str) -> Option<&'a DisplayMessage> {
+    messages.iter().rev().find_map(|message| {
+        if matches!(&message.role, DisplayRole::Tool(tool) if tool.id == tool_id) {
+            return Some(message);
+        }
+        match &message.metadata {
+            Some(DisplayMetadata::Compaction(compaction)) => {
+                find_tool_msg(&compaction.entries, tool_id)
+            }
+            Some(DisplayMetadata::CompactionPending) | None => None,
+        }
+    })
+}
+
+fn apply_snapshot(
+    message: &mut DisplayMessage,
+    snapshot: BufferSnapshot,
+    is_header: bool,
+    theme_gen: u64,
+) {
+    if is_header {
+        message.text = snapshot.first_line_text();
+        message.render_header = Some(snapshot);
+    } else {
+        message.render_snapshot = Some(snapshot);
+    }
+    message.snapshot_theme_gen = theme_gen;
+}
+
+fn find_tool_msg_mut<'a>(
+    messages: &'a mut [DisplayMessage],
+    tool_id: &str,
+) -> Option<&'a mut DisplayMessage> {
+    messages.iter_mut().rev().find_map(|message| {
+        if matches!(&message.role, DisplayRole::Tool(tool) if tool.id == tool_id) {
+            return Some(message);
+        }
+        match &mut message.metadata {
+            Some(DisplayMetadata::Compaction(compaction)) => {
+                find_tool_msg_mut(&mut compaction.entries, tool_id)
+            }
+            Some(DisplayMetadata::CompactionPending) | None => None,
+        }
+    })
+}
+
+fn collect_tool_messages<'a>(messages: &'a [DisplayMessage], tools: &mut Vec<&'a DisplayMessage>) {
+    for message in messages {
+        if matches!(message.role, DisplayRole::Tool(_)) {
+            tools.push(message);
+        }
+        if let Some(DisplayMetadata::Compaction(compaction)) = &message.metadata {
+            collect_tool_messages(&compaction.entries, tools);
+        }
+    }
+}
+
 fn build_compaction_segment(
     compaction: &CompactionDisplay,
     msg_index: usize,
@@ -2131,21 +2240,41 @@ fn append_compaction_entry(
     lines: &mut Vec<Line<'static>>,
 ) {
     let label = role_name(&message.role);
-    let mut text_lines = message.text.lines();
-    if let Some(first) = text_lines.next() {
-        lines.push(Line::from(vec![
-            Span::raw(" ".repeat(indent)),
-            Span::styled(format!("{label}> "), theme::current().tool_dim),
-            Span::raw(first.to_owned()),
-        ]));
-        for line in text_lines {
+    let continuation_indent = " ".repeat(indent + label.len() + 2);
+    if let Some(header) = message.render_header.as_ref()
+        && !header.lines.is_empty()
+    {
+        let mut header_lines = bake_snapshot_lines(header, &continuation_indent);
+        if let Some(first) = header_lines.first_mut() {
+            first.spans[0] = Span::raw(" ".repeat(indent));
+            first.spans.insert(
+                1,
+                Span::styled(format!("{label}> "), theme::current().tool_dim),
+            );
+        }
+        lines.extend(header_lines);
+    } else {
+        let mut text_lines = message.text.lines();
+        if let Some(first) = text_lines.next() {
             lines.push(Line::from(vec![
-                Span::raw(" ".repeat(indent + label.len() + 2)),
-                Span::raw(line.to_owned()),
+                Span::raw(" ".repeat(indent)),
+                Span::styled(format!("{label}> "), theme::current().tool_dim),
+                Span::raw(first.to_owned()),
             ]));
+            for line in text_lines {
+                lines.push(Line::from(vec![
+                    Span::raw(continuation_indent.clone()),
+                    Span::raw(line.to_owned()),
+                ]));
+            }
         }
     }
-    if let Some(output) = message.tool_output.as_deref() {
+    if let Some(snapshot) = message.render_snapshot.as_ref() {
+        lines.extend(bake_snapshot_lines(
+            snapshot,
+            &" ".repeat(indent + label.len() + 2),
+        ));
+    } else if let Some(output) = message.tool_output.as_deref() {
         let output = output.as_display_text();
         let tool_name = message.role.tool_name().unwrap_or_else(|| "");
         let truncated = truncate_output(&output, tool_output_lines.get(tool_name));

@@ -45,20 +45,21 @@ const PROGRESS_MAX_RECENT: usize = 5;
 const ACTIVITY_MESSAGE_MAX_CHARS: usize = 80;
 const REDACTED: &str = "[REDACTED]";
 const SAFE_ACTIVITY_DESCRIPTION_TOOLS: &[&str] = &[
-    "batch",
-    "code_execution",
-    "edit",
-    "glob",
-    "grep",
-    "index",
-    "memory",
-    "multiedit",
-    "question",
-    "read",
-    "skill",
-    "todo_write",
+    "ask_user",
+    "edit_file",
+    "edit_file_bulk",
+    "index_file",
+    "load_skill",
+    "read_file",
+    "run_batch",
+    "run_python",
+    "run_task",
+    "search_code",
+    "search_files",
+    "update_todo",
+    "use_memory",
     "view_image",
-    "write",
+    "write_file",
 ];
 const PROGRESS_TIMEOUT_MS: u64 = 500;
 const STEERING_QUEUE_CAPACITY: usize = 32;
@@ -987,7 +988,8 @@ async fn dispatch_racing_live(
 }
 
 fn activity_message(event: &ToolStartEvent) -> Option<String> {
-    if !SAFE_ACTIVITY_DESCRIPTION_TOOLS.contains(&event.tool.as_ref()) {
+    let canonical_tool = n00n_agent::tools::canonical_tool_name(&event.tool);
+    if !SAFE_ACTIVITY_DESCRIPTION_TOOLS.contains(&canonical_tool) {
         return None;
     }
     let rendered_header = event

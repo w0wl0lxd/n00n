@@ -80,7 +80,8 @@ impl ModelCatalog {
     ///
     /// # Errors
     ///
-    /// Returns an error when the identifier is malformed, unavailable, or has invalid metadata.
+    /// Returns an error when the identifier is unavailable, its provider is
+    /// not configured, or its catalog metadata is invalid.
     pub fn resolve(&self, input: &str) -> Result<Model, ModelCatalogError> {
         let spec = self.canonical_spec(input)?;
         let (provider, _) = spec.split_once('/').ok_or(ModelCatalogError::InvalidSpec)?;
@@ -100,7 +101,7 @@ impl ModelCatalog {
         if self
             .specs
             .iter()
-            .any(|candidate| is_compatible_spec(input, candidate))
+            .any(|candidate| matches_catalog_spec(candidate, input))
             || is_live_discovery_only_spec(input)
         {
             return Ok(input.to_string());
@@ -112,7 +113,7 @@ impl ModelCatalog {
             if self
                 .specs
                 .iter()
-                .any(|candidate| is_compatible_spec(&spec, candidate))
+                .any(|candidate| matches_catalog_spec(candidate, &spec))
             {
                 return Ok(spec);
             }
@@ -149,11 +150,12 @@ impl ModelResolver {
         &self.catalog
     }
 
-    /// Resolve a model through the configured catalog.
+    /// Resolve a model identifier against the current catalog snapshot.
     ///
     /// # Errors
     ///
-    /// Returns an error when the model is malformed, unavailable, or has invalid metadata.
+    /// Returns an error when the identifier is unavailable, its provider is
+    /// not configured, or its catalog metadata is invalid.
     pub fn resolve(&self, input: &str) -> Result<Model, ModelCatalogError> {
         self.catalog.resolve(input)
     }
@@ -165,6 +167,18 @@ impl ModelResolver {
     }
 }
 
+fn matches_catalog_spec(candidate: &str, input: &str) -> bool {
+    if input == candidate {
+        return true;
+    }
+    input
+        .strip_prefix(candidate)
+        .and_then(|suffix| suffix.strip_prefix('-'))
+        .is_some_and(|version| {
+            !version.is_empty() && version.bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
 fn is_spec(spec: &str) -> bool {
     let Some((provider, model)) = spec.split_once('/') else {
         return false;
@@ -172,13 +186,6 @@ fn is_spec(spec: &str) -> bool {
     !provider.trim().is_empty()
         && !model.trim().is_empty()
         && !model.split('/').any(|segment| segment.trim().is_empty())
-}
-
-fn is_compatible_spec(input: &str, catalogued: &str) -> bool {
-    input == catalogued
-        || input
-            .strip_prefix(catalogued)
-            .is_some_and(|suffix| suffix.starts_with('-'))
 }
 
 fn is_live_discovery_only_spec(spec: &str) -> bool {
@@ -234,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn versioned_specs_preserve_catalog_prefix_compatibility() {
+    fn versioned_specs_require_numeric_suffixes() {
         let catalog = ModelCatalog::from_specs(["anthropic/claude-opus-4-5".to_string()]);
         assert_eq!(
             catalog
@@ -250,10 +257,20 @@ mod tests {
             catalog.canonical_spec("openai/claude-opus-4-5-20251101"),
             Err(ModelCatalogError::Unavailable(_))
         ));
-        assert!(matches!(
-            catalog.canonical_spec("claude-opus-4-5o"),
-            Err(ModelCatalogError::Unavailable(_))
-        ));
+        for invalid in [
+            "anthropic/claude-opus-4-50",
+            "anthropic/claude-opus-4-5-arbitrary-suffix",
+            "claude-opus-4-5-arbitrary-suffix",
+            "claude-opus-4-5o",
+        ] {
+            assert!(
+                matches!(
+                    catalog.canonical_spec(invalid),
+                    Err(ModelCatalogError::Unavailable(_))
+                ),
+                "unexpectedly accepted {invalid}"
+            );
+        }
     }
 
     #[test]
@@ -264,18 +281,12 @@ mod tests {
             catalog.canonical_spec("openai/gpt-4-0613").unwrap(),
             "openai/gpt-4-0613"
         );
-        assert!(matches!(
-            catalog.canonical_spec("openai/gpt-4o"),
-            Err(ModelCatalogError::Unavailable(_))
-        ));
-        assert!(matches!(
-            catalog.canonical_spec("openai/gpt-4.1"),
-            Err(ModelCatalogError::Unavailable(_))
-        ));
-        assert!(matches!(
-            catalog.canonical_spec("openai/gpt-4/anything"),
-            Err(ModelCatalogError::Unavailable(_))
-        ));
+        for invalid in ["openai/gpt-4o", "openai/gpt-4.1", "openai/gpt-4/anything"] {
+            assert!(matches!(
+                catalog.canonical_spec(invalid),
+                Err(ModelCatalogError::Unavailable(_))
+            ));
+        }
     }
 
     #[test]
