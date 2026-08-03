@@ -137,15 +137,20 @@ struct ServerEntry {
 }
 
 impl ServerEntry {
-    async fn clear_connection(&mut self) {
-        if let Some(old) = self.transport.take() {
-            // A live tool call can still be holding an `Arc` to this transport via the
-            // `ToolIndex`, so we cannot rely on `Drop` to reap the child in time.
-            kill_process_groups(&old.child_pids());
-            old.shutdown().await;
+    fn begin_clear_connection(&mut self) -> Option<Arc<dyn McpTransport>> {
+        let transport = self.transport.take();
+        if let Some(transport) = &transport {
+            transport.begin_shutdown();
         }
         self.tools.clear();
         self.prompts.clear();
+        transport
+    }
+
+    async fn clear_connection(&mut self) {
+        if let Some(transport) = self.begin_clear_connection() {
+            transport.shutdown().await;
+        }
     }
 
     fn populate(&mut self, result: StartResult) {
@@ -251,6 +256,7 @@ pub struct McpPromptArg {
 pub struct McpSnapshot {
     pub infos: Vec<McpServerInfo>,
     pub prompts: Vec<McpPromptInfo>,
+    #[deprecated(note = "MCP child PIDs are no longer published; this is always empty")]
     pub pids: Vec<u32>,
     pub generation: u64,
 }
@@ -812,11 +818,26 @@ async fn handle_reconnect(inner: &mut McpManagerInner, server_name: &str) {
 }
 
 async fn shutdown_all(inner: &mut McpManagerInner) {
-    for entry in &mut inner.entries {
-        entry.clear_connection().await;
-        if entry.status != McpServerStatus::Disabled {
-            entry.status = McpServerStatus::Failed("shutdown".into());
-        }
+    let transports: Vec<_> = inner
+        .entries
+        .iter_mut()
+        .filter_map(|entry| {
+            let transport = entry.begin_clear_connection();
+            if entry.status != McpServerStatus::Disabled {
+                entry.status = McpServerStatus::Failed("shutdown".into());
+            }
+            transport
+        })
+        .collect();
+
+    // Run cleanup concurrently: stdio reaps are bounded by REAP_TIMEOUT each, and HTTP
+    // session DELETE must not sit behind a slow earlier transport during process exit.
+    let tasks: Vec<_> = transports
+        .into_iter()
+        .map(|transport| smol::spawn(async move { transport.shutdown().await }))
+        .collect();
+    for task in tasks {
+        task.await;
     }
     demoted!("MCP command loop shutting down");
 }
@@ -1014,7 +1035,6 @@ fn publish(
     let mut descriptors: Vec<ToolDescriptor> = Vec::new();
     let mut server_infos = Vec::with_capacity(inner.entries.len());
     let mut prompt_infos = Vec::new();
-    let mut pids = Vec::new();
 
     for entry in &inner.entries {
         let url = entry
@@ -1073,7 +1093,6 @@ fn publish(
                 );
                 prompt_infos.push(p.to_info(&entry.name));
             }
-            pids.extend(transport.child_pids());
         }
 
         server_infos.push(McpServerInfo {
@@ -1092,10 +1111,11 @@ fn publish(
         prompts,
         descriptors: descriptors.into(),
     }));
+    #[allow(deprecated)]
     snapshot.store(Arc::new(McpSnapshot {
         infos: server_infos,
         prompts: prompt_infos,
-        pids,
+        pids: Vec::new(),
         generation: inner.generation,
     }));
 }
@@ -1270,24 +1290,6 @@ fn spawn_persist_enabled(path: PathBuf, name: String, enabled: bool) {
     .detach();
 }
 
-#[cfg(unix)]
-#[allow(unsafe_code)]
-pub fn kill_process_groups(pids: &[u32]) {
-    for &pid in pids {
-        if let Ok(pid_i32) = i32::try_from(pid) {
-            // SAFETY: pid_i32 is a valid pid_t value, and killpg only
-            // signals the process group; callers already hold the PID
-            // list from a child they own.
-            unsafe { libc::killpg(pid_i32, libc::SIGKILL) };
-        } else {
-            warn!(pid = %pid, "process ID out of i32 range; skipping killpg");
-        }
-    }
-}
-
-#[cfg(not(unix))]
-pub fn kill_process_groups(_pids: &[u32]) {}
-
 /// Dedup cache for qualified MCP tool names. The set is bounded (finite per session)
 /// and `Arc<str>` means entries get freed when the cache drops, unlike the old `Box::leak`.
 fn intern(name: String) -> Arc<str> {
@@ -1406,6 +1408,82 @@ mod tests {
 
         fn shutdowns(&self) -> usize {
             self.shutdowns.load(Ordering::SeqCst)
+        }
+    }
+
+    struct OrderedShutdownTransport {
+        name: Arc<str>,
+        events: Arc<Mutex<Vec<String>>>,
+        gate: Option<Arc<AsyncMutex<()>>>,
+        completed: Option<flume::Sender<()>>,
+    }
+
+    impl OrderedShutdownTransport {
+        fn new(name: &str, events: Arc<Mutex<Vec<String>>>) -> Arc<Self> {
+            Self::with_gate(name, events, None, None)
+        }
+
+        fn with_gate(
+            name: &str,
+            events: Arc<Mutex<Vec<String>>>,
+            gate: Option<Arc<AsyncMutex<()>>>,
+            completed: Option<flume::Sender<()>>,
+        ) -> Arc<Self> {
+            Arc::new(Self {
+                name: Arc::from(name),
+                events,
+                gate,
+                completed,
+            })
+        }
+
+        fn record(&self, phase: &str) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("{phase}:{}", self.name));
+        }
+    }
+
+    impl McpTransport for OrderedShutdownTransport {
+        fn send_request<'a>(
+            &'a self,
+            _method: &'a str,
+            _params: Option<Value>,
+        ) -> transport::BoxFuture<'a, Result<Value, McpError>> {
+            Box::pin(async { Ok(Value::Null) })
+        }
+
+        fn send_notification<'a>(
+            &'a self,
+            _method: &'a str,
+            _params: Option<Value>,
+        ) -> transport::BoxFuture<'a, Result<(), McpError>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn begin_shutdown(&self) {
+            self.record("begin");
+        }
+
+        fn shutdown(&self) -> transport::BoxFuture<'_, ()> {
+            Box::pin(async move {
+                if let Some(gate) = &self.gate {
+                    let _held = gate.lock().await;
+                }
+                self.record("complete");
+                if let Some(completed) = &self.completed {
+                    let _ = completed.try_send(());
+                }
+            })
+        }
+
+        fn server_name(&self) -> &Arc<str> {
+            &self.name
+        }
+
+        fn transport_kind(&self) -> &'static str {
+            "ordered"
         }
     }
 
@@ -2026,6 +2104,99 @@ mod tests {
 
             drop(held);
             call_handle.await;
+        });
+    }
+
+    #[test]
+    fn shutdown_all_begins_every_transport_before_awaiting_cleanup() {
+        smol::block_on(async {
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let first = OrderedShutdownTransport::new("a", Arc::clone(&events));
+            let second = OrderedShutdownTransport::new("b", Arc::clone(&events));
+            let mut inner = McpManagerInner {
+                entries: vec![fake_entry("a", first as _), fake_entry("b", second as _)],
+                generation: 0,
+                max_desc_chars: n00n_config::DEFAULT_MCP_TOOL_DESC_MAX_CHARS,
+            };
+
+            shutdown_all(&mut inner).await;
+
+            let events = events.lock().unwrap().clone();
+            let first_complete = events
+                .iter()
+                .position(|e| e.starts_with("complete:"))
+                .expect("expected a complete event");
+            assert!(
+                events[..first_complete]
+                    .iter()
+                    .all(|e| e.starts_with("begin:")),
+                "every begin must precede any complete: {events:?}"
+            );
+            assert!(events.contains(&"begin:a".to_string()));
+            assert!(events.contains(&"begin:b".to_string()));
+            assert!(events.contains(&"complete:a".to_string()));
+            assert!(events.contains(&"complete:b".to_string()));
+        });
+    }
+
+    #[test]
+    fn shutdown_all_runs_cleanup_concurrently() {
+        smol::block_on(async {
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let gate = Arc::new(AsyncMutex::new(()));
+            let held = gate.lock().await;
+            let (fast_done_tx, fast_done_rx) = flume::bounded(1);
+            let first = OrderedShutdownTransport::with_gate(
+                "slow",
+                Arc::clone(&events),
+                Some(Arc::clone(&gate)),
+                None,
+            );
+            let second = OrderedShutdownTransport::with_gate(
+                "fast",
+                Arc::clone(&events),
+                None,
+                Some(fast_done_tx),
+            );
+            let mut inner = McpManagerInner {
+                entries: vec![
+                    fake_entry("slow", first as _),
+                    fake_entry("fast", second as _),
+                ],
+                generation: 0,
+                max_desc_chars: n00n_config::DEFAULT_MCP_TOOL_DESC_MAX_CHARS,
+            };
+
+            let shutdown = smol::spawn(async move {
+                shutdown_all(&mut inner).await;
+            });
+
+            let finished = futures_lite::future::or(
+                async {
+                    fast_done_rx
+                        .recv_async()
+                        .await
+                        .expect("fast cleanup signal");
+                    true
+                },
+                async {
+                    smol::Timer::after(Duration::from_secs(1)).await;
+                    false
+                },
+            )
+            .await;
+            assert!(
+                finished,
+                "fast transport cleanup stayed blocked behind slow shutdown: {:?}",
+                events.lock().unwrap()
+            );
+            assert!(
+                !events.lock().unwrap().iter().any(|e| e == "complete:slow"),
+                "slow transport should still be gated"
+            );
+            drop(held);
+            shutdown.await;
+            assert!(events.lock().unwrap().iter().any(|e| e == "complete:slow"));
         });
     }
 

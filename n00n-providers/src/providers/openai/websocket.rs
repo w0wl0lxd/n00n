@@ -316,16 +316,9 @@ impl ResponsesWebSocket {
         body: &Value,
         event_tx: &Sender<ProviderEvent>,
         stream_timeout: Duration,
-        idempotency_key: Option<&str>,
     ) -> Result<(Option<String>, StreamResponse), WebSocketAttemptError> {
-        self.stream_message_with_keepalive(
-            body,
-            event_tx,
-            stream_timeout,
-            KEEPALIVE_INTERVAL,
-            idempotency_key,
-        )
-        .await
+        self.stream_message_with_keepalive(body, event_tx, stream_timeout, KEEPALIVE_INTERVAL)
+            .await
     }
 
     #[allow(clippy::too_many_lines)]
@@ -335,10 +328,8 @@ impl ResponsesWebSocket {
         event_tx: &Sender<ProviderEvent>,
         stream_timeout: Duration,
         keepalive_interval: Duration,
-        idempotency_key: Option<&str>,
     ) -> Result<(Option<String>, StreamResponse), WebSocketAttemptError> {
         let mut delivery = RequestDeliveryMetadata::new(RequestDeliveryPhase::NotSent);
-        delivery.idempotency_key = idempotency_key.map(String::from);
         if self.should_retire_before_send(stream_timeout) {
             return Err(WebSocketAttemptError::transport(
                 IoError::new(
@@ -372,7 +363,7 @@ impl ResponsesWebSocket {
             ));
         }
 
-        let mut acc = ResponseAccumulator::new(idempotency_key.map(String::from));
+        let mut acc = ResponseAccumulator::new();
         let mut keepalive_deadline = Instant::now() + keepalive_interval;
         loop {
             let now = Instant::now();
@@ -1006,7 +997,7 @@ mod tests {
     fn accumulator_captures_response_id_from_websocket_event() {
         smol::block_on(async {
             let (event_tx, _) = flume::unbounded();
-            let mut accumulator = ResponseAccumulator::new(None);
+            let mut accumulator = ResponseAccumulator::new();
             let completed = accumulator
                 .handle_event(
                     "response.created",
@@ -1154,7 +1145,6 @@ mod tests {
                     &json!({"model":"test","input":[]}),
                     &event_tx,
                     Duration::from_secs(2),
-                    None,
                 )
                 .await
                 .unwrap_err();
@@ -1195,7 +1185,6 @@ mod tests {
                     &json!({"model":"test","input":[]}),
                     &event_tx,
                     Duration::from_secs(2),
-                    None,
                 )
                 .await
                 .unwrap_err();
@@ -1252,7 +1241,6 @@ mod tests {
                     &json!({"model":"test","input":[]}),
                     &event_tx,
                     Duration::from_secs(2),
-                    None,
                 )
                 .await
                 .unwrap_err();
@@ -1325,7 +1313,6 @@ mod tests {
                     &event_tx,
                     Duration::from_secs(2),
                     Duration::from_millis(10),
-                    None,
                 )
                 .await
                 .unwrap();
@@ -1371,7 +1358,6 @@ mod tests {
                     &event_tx,
                     Duration::from_millis(40),
                     Duration::from_millis(10),
-                    None,
                 )
                 .await
                 .unwrap_err();
@@ -1424,7 +1410,6 @@ mod tests {
                     &event_tx,
                     Duration::from_millis(100),
                     Duration::from_secs(1),
-                    None,
                 )
                 .await
                 .unwrap_err();
@@ -1484,7 +1469,6 @@ mod tests {
                     &event_tx,
                     Duration::from_millis(20),
                     Duration::from_secs(1),
-                    None,
                 )
                 .await
                 .unwrap_err();
