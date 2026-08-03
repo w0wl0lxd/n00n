@@ -221,6 +221,7 @@ pub struct Agent<'h> {
     prompt_slots: Arc<crate::prompt::ResolvedSlots>,
     subagent_cancels: Arc<crate::cancel::CancelMap<String>>,
     registry: Arc<crate::tools::ToolRegistry>,
+    admission_scope: Arc<str>,
     audience: ToolAudience,
     workflow: bool,
     local_tools: LocalTools,
@@ -237,6 +238,12 @@ impl<'h> Agent<'h> {
     pub fn new(params: AgentParams, run: AgentRunParams<'h>) -> Self {
         let supports_tool_examples = params.model.supports_tool_examples();
         let fusion_enabled = params.config.fusion.enabled;
+        let admission_scope = params
+            .session_id
+            .as_ref()
+            .map_or_else(crate::tools::ToolAdmission::new_scope, |id| {
+                Arc::<str>::from(id.to_string())
+            });
         let fusion_state = if fusion_enabled {
             Some(FusionState::new())
         } else {
@@ -278,6 +285,7 @@ impl<'h> Agent<'h> {
             prompt_slots: params.prompt_slots,
             subagent_cancels: params.subagent_cancels,
             registry: params.registry,
+            admission_scope,
             audience: params.audience,
             workflow: false,
             local_tools: LocalTools::default(),
@@ -887,6 +895,7 @@ impl<'h> Agent<'h> {
             opts: self.opts.clone(),
             subagent_cancels: Arc::clone(&self.subagent_cancels),
             registry: Arc::clone(&self.registry),
+            admission_scope: Arc::clone(&self.admission_scope),
             workflow: self.workflow,
             audience: self.audience,
             tool_filter: self.effective_tool_filter(),
