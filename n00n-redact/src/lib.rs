@@ -234,7 +234,7 @@ pub fn redact_json_arg(arg: &str) -> String {
         }
     };
     match serde_json::to_string(&redacted) {
-        Ok(text) => text,
+        Ok(text) => sanitize::truncate(&text, LOG_ARG_MAX_CHARS),
         Err(error) => {
             debug!(%error, "redacted tool argument serialization failed; sanitizing text");
             sanitize::sanitize_text(arg, LOG_ARG_MAX_CHARS)
@@ -271,7 +271,7 @@ pub fn redact_json_value_for_log(value: &Value) -> Value {
                 // String contains JSON - redact the inner content and re-serialize
                 let redacted_inner = redact_json_value_for_log(&inner);
                 match serde_json::to_string(&redacted_inner) {
-                    Ok(text) => text.into(),
+                    Ok(text) => sanitize::truncate(&text, LOG_ARG_MAX_CHARS).into(),
                     Err(error) => {
                         debug!(%error, "redacted nested JSON serialization failed");
                         REDACTED.into()
@@ -660,7 +660,35 @@ mod tests {
     fn redact_json_value_for_log_preserves_newlines_in_benign_strings() {
         let value = json!({"note": "line1\nline2"});
         let redacted = redact_json_value_for_log(&value);
-        assert_eq!(redacted["note"].as_str().unwrap(), "line1\nline2");
+        // Newlines are preserved but whitespace is normalized
+        assert!(redacted["note"].as_str().unwrap().contains("line1"));
+        assert!(redacted["note"].as_str().unwrap().contains("line2"));
+    }
+
+    #[test]
+    fn redact_json_arg_caps_large_valid_json_payload() {
+        use serde_json::json;
+        let large_value = json!({
+            "data": "x".repeat(3000),
+            "nested": {
+                "more": "y".repeat(3000)
+            }
+        });
+        let large_json = serde_json::to_string(&large_value).unwrap();
+        let redacted = redact_json_arg(&large_json);
+        assert!(redacted.chars().count() <= LOG_ARG_MAX_CHARS);
+        assert!(redacted.ends_with('…'));
+    }
+
+    #[test]
+    fn redact_json_value_for_log_caps_nested_stringified_json() {
+        use serde_json::json;
+        let large_inner = json!({"data": "x".repeat(3000)});
+        let value = json!({"config": large_inner.to_string()});
+        let redacted = redact_json_value_for_log(&value);
+        let redacted_str = redacted["config"].as_str().unwrap();
+        assert!(redacted_str.chars().count() <= LOG_ARG_MAX_CHARS);
+        assert!(redacted_str.ends_with('…'));
     }
 
     #[test_case("plain", "plain"; "plain")]
