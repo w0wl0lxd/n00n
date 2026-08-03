@@ -362,9 +362,16 @@ impl Provider for CustomOpenAiProvider {
             if matches!(opts.thinking, ThinkingConfig::Off) {
                 body["thinking"] = serde_json::json!({"type": "disabled"});
             }
-            self.compat
+            let response = self
+                .compat
                 .do_stream(model, &[], &body, event_tx, &auth, &opts)
-                .await
+                .await?;
+
+            self.compat
+                .emit_cache_health(&response.usage, event_tx)
+                .await;
+
+            Ok(response)
         })
     }
 

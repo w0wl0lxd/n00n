@@ -65,6 +65,7 @@ pub(crate) struct OpenAiCompatConfig {
     pub supports_prompt_cache_breakpoint: bool,
     pub emit_reasoning_content: bool,
     pub supports_parallel_tool_calls: bool,
+    pub cache_ttl_seconds: u64,
 }
 
 pub(crate) struct OpenAiCompatProvider {
@@ -410,6 +411,40 @@ impl OpenAiCompatProvider {
     ) -> Result<Vec<crate::model::ModelInfo>, AgentError> {
         self.fetch_and_parse_models(auth, Self::default_model_parser)
             .await
+    }
+
+    pub(crate) async fn emit_cache_health(
+        &self,
+        usage: &crate::TokenUsage,
+        event_tx: &Sender<ProviderEvent>,
+    ) {
+        use crate::{CacheHealth, CacheKind};
+
+        let ttl = self.config.cache_ttl_seconds;
+        let hit = usage.cache_read > 0;
+        let cached = hit || usage.cache_creation > 0;
+        let valid_until = if cached {
+            n00n_storage::now_epoch().saturating_add(ttl)
+        } else {
+            0
+        };
+        let ttl_seconds = if cached { ttl } else { 0 };
+        let health = CacheHealth {
+            kind: CacheKind::Prompt,
+            valid_until,
+            ttl_seconds,
+            hit,
+        };
+        if let Err(error) = event_tx
+            .send_async(ProviderEvent::CacheHealth { cache: health })
+            .await
+        {
+            warn!(
+                error = %error,
+                provider = self.config.provider_name,
+                "failed to send cache health event"
+            );
+        }
     }
 }
 
@@ -1052,6 +1087,7 @@ mod tests {
         supports_prompt_cache_breakpoint: true,
         emit_reasoning_content: false,
         supports_parallel_tool_calls: false,
+        cache_ttl_seconds: 0,
     };
 
     #[test]
@@ -1687,6 +1723,7 @@ data: [DONE]\n";
             supports_prompt_cache_breakpoint: false,
             emit_reasoning_content: false,
             supports_parallel_tool_calls: false,
+            cache_ttl_seconds: 0,
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
@@ -1721,6 +1758,7 @@ data: [DONE]\n";
             supports_prompt_cache_breakpoint: false,
             emit_reasoning_content: false,
             supports_parallel_tool_calls: false,
+            cache_ttl_seconds: 0,
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
@@ -1755,6 +1793,7 @@ data: [DONE]\n";
             supports_prompt_cache_breakpoint: true,
             emit_reasoning_content: false,
             supports_parallel_tool_calls: false,
+            cache_ttl_seconds: 0,
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
@@ -1842,6 +1881,7 @@ data: [DONE]\n";
             supports_prompt_cache_breakpoint: true,
             emit_reasoning_content: false,
             supports_parallel_tool_calls: false,
+            cache_ttl_seconds: 0,
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
@@ -1907,6 +1947,7 @@ data: [DONE]\n";
             supports_prompt_cache_breakpoint: true,
             emit_reasoning_content: false,
             supports_parallel_tool_calls: false,
+            cache_ttl_seconds: 0,
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
@@ -1941,6 +1982,7 @@ data: [DONE]\n";
             supports_prompt_cache_breakpoint: true,
             emit_reasoning_content: false,
             supports_parallel_tool_calls: false,
+            cache_ttl_seconds: 0,
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
@@ -1976,6 +2018,7 @@ data: [DONE]\n";
             supports_prompt_cache_breakpoint: true,
             emit_reasoning_content: false,
             supports_parallel_tool_calls: false,
+            cache_ttl_seconds: 0,
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
@@ -2065,6 +2108,7 @@ data: [DONE]\n";
             supports_prompt_cache_breakpoint: false,
             emit_reasoning_content: false,
             supports_parallel_tool_calls: true,
+            cache_ttl_seconds: 0,
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
@@ -2102,6 +2146,7 @@ data: [DONE]\n";
             supports_prompt_cache_breakpoint: false,
             emit_reasoning_content: false,
             supports_parallel_tool_calls: false,
+            cache_ttl_seconds: 0,
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
@@ -2140,6 +2185,7 @@ data: [DONE]\n";
             supports_prompt_cache_breakpoint: false,
             emit_reasoning_content: false,
             supports_parallel_tool_calls: false,
+            cache_ttl_seconds: 0,
         };
         let provider =
             OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default()).unwrap();
