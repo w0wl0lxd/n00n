@@ -1358,6 +1358,30 @@ mod tests {
     }
 
     #[test]
+    fn file_reference_never_uses_signed_url_as_identifier() {
+        let messages = [Message {
+            role: Role::User,
+            content: vec![ContentBlock::File {
+                source: crate::types::FileSource {
+                    file_id: None,
+                    file_url: Some("https://files.example/signed?token=secret".into()),
+                    file_data: None,
+                    filename: None,
+                    detail: None,
+                },
+            }],
+            ..Default::default()
+        }];
+
+        let prompts = encode_devin_chat_message_prompts(&messages, CASCADE_ID)
+            .expect("encode message prompts");
+        let prompt = prompt_string_field(&prompts[0], 3).expect("file marker prompt");
+        assert_eq!(prompt, "[file omitted: unnamed]");
+        assert!(!prompt.contains("signed"));
+        assert!(!prompt.contains("secret"));
+    }
+
+    #[test]
     fn ordered_tool_call_blocks_follow_first_arrival_order() {
         let tool_calls = HashMap::from([
             (
