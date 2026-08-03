@@ -120,6 +120,10 @@ pub struct ToolLines {
     /// Index of the first live-buffer snapshot line, recorded in the same
     /// pass that lays out `lines`, so click rows can never drift from them.
     pub snapshot_base: Option<usize>,
+    /// Number of snapshot lines baked into `lines`, starting at
+    /// `snapshot_base`. Together the two let a live buffer append its newly
+    /// received tail without re-baking the whole snapshot.
+    pub snapshot_count: usize,
     pub content_indent: &'static str,
     pub truncation: SectionFlags,
     pub truncation_actions: Vec<TruncationAction>,
@@ -367,6 +371,7 @@ struct ToolLineBuilder {
     search_text: String,
     spinner_lines: Vec<(usize, usize)>,
     snapshot_base: Option<usize>,
+    snapshot_count: usize,
     content_range: (usize, usize),
     width: u16,
     truncation: SectionFlags,
@@ -383,6 +388,7 @@ impl ToolLineBuilder {
             search_text: String::new(),
             spinner_lines: Vec::new(),
             snapshot_base: None,
+            snapshot_count: 0,
             content_range: (0, 0),
             width,
             truncation: SectionFlags::default(),
@@ -443,6 +449,18 @@ impl ToolLineBuilder {
         let mut copy = format!("{tool_name}> {header}");
         if let Some(ann) = annotation {
             let _ = write!(copy, " ({ann})");
+        }
+        if let Some(snapshot) = render_header {
+            let rest: Vec<String> = snapshot
+                .lines
+                .iter()
+                .skip(1)
+                .map(|line| line.spans.iter().map(|span| span.text.as_str()).collect())
+                .collect();
+            if !rest.is_empty() {
+                copy.push('\n');
+                copy.push_str(&rest.join("\n"));
+            }
         }
         self.search_text = copy;
     }
@@ -572,6 +590,7 @@ impl ToolLineBuilder {
         let base = self.lines.len();
         self.snapshot_base = Some(base);
         let total = snapshot.lines.len();
+        self.snapshot_count = total;
         let frame = spinner_str(started_at.elapsed().as_millis());
         let (lines, spinners) =
             snapshot_to_lines_range(snapshot, TOOL_BODY_INDENT, 0..total, frame);
@@ -597,6 +616,7 @@ impl ToolLineBuilder {
             highlight,
             spinner_lines: self.spinner_lines,
             snapshot_base: self.snapshot_base,
+            snapshot_count: self.snapshot_count,
             content_indent,
             truncation: self.truncation,
             truncation_actions: self.truncation_actions,
@@ -655,6 +675,23 @@ fn snapshot_to_lines_range(
         })
         .collect();
     (lines, spinners)
+}
+
+/// Bakes only `snapshot.lines[from..]`, the tail a live buffer gained since
+/// the segment last rendered. The panel splices this onto the existing
+/// snapshot block instead of re-baking the whole buffer.
+pub(crate) fn bake_snapshot_tail(
+    snapshot: &BufferSnapshot,
+    from: usize,
+    started_at: Instant,
+) -> (Vec<Line<'static>>, Vec<(usize, usize)>) {
+    let frame = spinner_str(started_at.elapsed().as_millis());
+    snapshot_to_lines_range(
+        snapshot,
+        TOOL_BODY_INDENT,
+        from..snapshot.lines.len(),
+        frame,
+    )
 }
 
 pub(crate) fn resolve_span_style(style: &SpanStyle) -> Style {
@@ -726,9 +763,18 @@ pub fn build_tool_lines(
         && msg.render_header.is_none()
         && let Some(input) = msg.tool_raw_input.as_deref()
     {
-        let view = args_view::render_args(input, b.limits.output, b.limits.is_output_expanded());
-        let arg_lines = view.lines.len();
-        if arg_lines >= 2 {
+        let search = args_view::arg_search_text(input);
+        if !search.is_empty() {
+            b.push_search_text(&search);
+        }
+        let view = args_view::render_args(
+            input,
+            rctx.tool_output_lines.get(tool_name),
+            b.limits.output,
+            b.limits.is_output_expanded(),
+        );
+        let show_args = view.lines.len() >= 2 || view.hidden > 0;
+        if show_args {
             b.lines.push(Line::from(vec![
                 Span::raw(TOOL_BODY_INDENT),
                 Span::styled("Arguments:", theme::current().tool_annotation),
@@ -737,7 +783,6 @@ pub fn build_tool_lines(
                 line.spans.insert(0, Span::raw(TOOL_BODY_INDENT));
                 b.lines.push(line);
             }
-            b.push_search_text(&args_view::arg_search_text(input));
             b.push_truncation_count(view.hidden);
         }
     }
@@ -1052,6 +1097,10 @@ mod tests {
         let text = lines_text(&tl);
         assert!(!text.contains("Arguments:"));
         assert!(!text.contains("needle"));
+        assert!(
+            tl.search_text.contains("needle"),
+            "suppressed args must stay searchable"
+        );
     }
 
     #[test]
@@ -1086,6 +1135,71 @@ mod tests {
     }
 
     #[test]
+    fn one_line_cap_keeps_args_and_expand_notice_visible() {
+        let mut msg = bash_msg("Search", ToolStatus::Success, None, None);
+        msg.role = DisplayRole::Tool(Box::new(ToolRole {
+            id: "t1".into(),
+            status: ToolStatus::Success,
+            name: "generic".into(),
+        }));
+        msg.tool_raw_input = Some(Arc::new(serde_json::json!({
+            "a": 1,
+            "b": 2,
+            "c": 3,
+        })));
+        let tol = ToolOutputLines { other: 1, ..TOL };
+        let rctx = RenderCtx {
+            started_at: Instant::now(),
+            width: 80,
+            tool_output_lines: &tol,
+        };
+
+        let tl = build_tool_lines(&msg, ToolStatus::Success, &rctx, SectionFlags::default());
+        let text = lines_text(&tl);
+        assert!(text.contains("Arguments:"));
+        assert!(text.contains("a: 1"));
+        assert!(text.contains(TRUNCATION_PREFIX));
+    }
+
+    #[test]
+    fn expanded_args_reveal_lines_beyond_collapsed_cap() {
+        let mut msg = bash_msg("Search", ToolStatus::Success, None, None);
+        msg.role = DisplayRole::Tool(Box::new(ToolRole {
+            id: "t1".into(),
+            status: ToolStatus::Success,
+            name: "generic".into(),
+        }));
+        msg.tool_raw_input = Some(Arc::new(serde_json::json!({
+            "a": 1,
+            "b": 2,
+            "c": 3,
+            "d": 4,
+        })));
+        let tol = ToolOutputLines { other: 2, ..TOL };
+        let rctx = RenderCtx {
+            started_at: Instant::now(),
+            width: 80,
+            tool_output_lines: &tol,
+        };
+
+        let collapsed = build_tool_lines(&msg, ToolStatus::Success, &rctx, SectionFlags::default());
+        let expanded = build_tool_lines(
+            &msg,
+            ToolStatus::Success,
+            &rctx,
+            SectionFlags {
+                output: true,
+                ..SectionFlags::default()
+            },
+        );
+        let collapsed_text = lines_text(&collapsed);
+        let expanded_text = lines_text(&expanded);
+        assert!(!collapsed_text.contains("d: 4"));
+        assert!(expanded_text.contains("d: 4"));
+        assert!(!expanded_text.contains(TRUNCATION_PREFIX));
+    }
+
+    #[test]
     fn multi_line_header_renders_all_lines_indented() {
         let mut msg = bash_msg("first line", ToolStatus::Success, None, None);
         msg.render_header = Some(make_snapshot(vec![
@@ -1113,6 +1227,7 @@ mod tests {
             .collect();
         assert_eq!(second, "    second line");
         assert!(tl.search_text.contains("first line"));
+        assert!(tl.search_text.contains("second line"));
     }
 
     fn line_has_styled(tl: &ToolLines, text: &str, style: Style) -> bool {

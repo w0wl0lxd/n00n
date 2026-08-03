@@ -2,6 +2,7 @@
 #![allow(clippy::new_without_default)]
 #![allow(clippy::must_use_candidate)]
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -12,7 +13,10 @@ mod graph_query;
 mod index_health;
 
 pub use graph_json::{GraphIndex, GraphNode, SymbolQuery, SymbolRef};
-pub use graph_query::{graph_callees, graph_callers, graph_index_available, graph_trace_path};
+pub use graph_query::{
+    graph_callees, graph_callers, graph_entry_points, graph_index_available, graph_map,
+    graph_trace_path,
+};
 pub use index_health::{
     ensure_fresh_index, graph_index_available as graph_file_available, graph_json_path,
     graph_modified_at, status_is_stale, status_needs_index,
@@ -80,6 +84,28 @@ struct DiffResponse {
     impact: DiffImpact,
 }
 
+fn run_arbor_cmd<I, S>(subcommand: &str, args: I) -> Result<String, ArborError>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let output = Command::new("arbor")
+        .arg(subcommand)
+        .arg("--")
+        .args(args)
+        .output()
+        .map_err(|source| ArborError::Exec { source })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ArborError::Cli {
+            message: stderr.to_string(),
+        });
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
 pub struct Client;
 
 impl Client {
@@ -105,9 +131,10 @@ impl Client {
     pub fn callers(symbol: &str, project: &Path) -> Result<Vec<Relation>, ArborError> {
         let output = Command::new("arbor")
             .arg("callers")
+            .arg("--json")
+            .arg("--")
             .arg(symbol)
             .arg(project.as_os_str())
-            .arg("--json")
             .output()
             .map_err(|e| ArborError::Exec { source: e })?;
 
@@ -126,9 +153,10 @@ impl Client {
     pub fn callees(symbol: &str, project: &Path) -> Result<Vec<Relation>, ArborError> {
         let output = Command::new("arbor")
             .arg("callees")
+            .arg("--json")
+            .arg("--")
             .arg(symbol)
             .arg(project.as_os_str())
-            .arg("--json")
             .output()
             .map_err(|e| ArborError::Exec { source: e })?;
 
@@ -146,10 +174,11 @@ impl Client {
 
     pub fn map(project: &Path, token_budget: Option<u64>) -> Result<Vec<MapEntry>, ArborError> {
         let mut cmd = Command::new("arbor");
-        cmd.arg("map").arg(project.as_os_str()).arg("--json");
+        cmd.arg("map").arg("--json");
         if let Some(budget) = token_budget {
             cmd.arg("--tokens").arg(budget.to_string());
         }
+        cmd.arg("--").arg(project.as_os_str());
 
         let output = cmd.output().map_err(|e| ArborError::Exec { source: e })?;
 
@@ -168,6 +197,7 @@ impl Client {
     pub fn query(query: &str, project: &Path) -> Result<String, ArborError> {
         let output = Command::new("arbor")
             .arg("query")
+            .arg("--")
             .arg(query)
             .arg(project.as_os_str())
             .output()
@@ -186,6 +216,7 @@ impl Client {
     pub fn status(project: &Path) -> Result<String, ArborError> {
         let output = Command::new("arbor")
             .arg("status")
+            .arg("--")
             .arg(project.as_os_str())
             .output()
             .map_err(|e| ArborError::Exec { source: e })?;
@@ -203,8 +234,9 @@ impl Client {
     pub fn diff(project: &Path) -> Result<DiffImpact, ArborError> {
         let output = Command::new("arbor")
             .arg("diff")
-            .arg(project.as_os_str())
             .arg("--json")
+            .arg("--")
+            .arg(project.as_os_str())
             .output()
             .map_err(|e| ArborError::Exec { source: e })?;
 
@@ -223,6 +255,7 @@ impl Client {
     pub fn ensure_indexed(project: &Path) -> Result<(), ArborError> {
         let output = Command::new("arbor")
             .arg("status")
+            .arg("--")
             .arg(project.as_os_str())
             .output()
             .map_err(|e| ArborError::Exec { source: e })?;
@@ -238,6 +271,7 @@ impl Client {
         if index_health::status_needs_index(&status) {
             let output = Command::new("arbor")
                 .arg("index")
+                .arg("--")
                 .arg(project.as_os_str())
                 .output()
                 .map_err(|e| ArborError::Exec { source: e })?;
@@ -259,6 +293,7 @@ impl Client {
     pub fn reindex(project: &Path) -> Result<(), ArborError> {
         let output = Command::new("arbor")
             .arg("index")
+            .arg("--")
             .arg(project.as_os_str())
             .output()
             .map_err(|source| ArborError::Exec { source })?;
@@ -281,6 +316,53 @@ impl Client {
             });
         }
         GraphIndex::from_graph_json_path(&graph_path)
+    }
+
+    // T059: entry-points command
+    pub fn entry_points(project: &Path) -> Result<String, ArborError> {
+        run_arbor_cmd("entry-points", [project.as_os_str()])
+    }
+
+    // T060: file-graph command
+    pub fn file_graph(project: &Path, file: Option<&str>) -> Result<String, ArborError> {
+        if let Some(f) = file {
+            run_arbor_cmd("file-graph", [project.as_os_str(), f.as_ref()])
+        } else {
+            run_arbor_cmd("file-graph", [project.as_os_str()])
+        }
+    }
+
+    // T061: inspect command
+    pub fn inspect(symbol: &str, project: &Path) -> Result<String, ArborError> {
+        run_arbor_cmd("inspect", [symbol.as_ref(), project.as_os_str()])
+    }
+
+    // T062: path command
+    pub fn path(from: &str, to: &str, project: &Path) -> Result<String, ArborError> {
+        run_arbor_cmd("path", [from.as_ref(), to.as_ref(), project.as_os_str()])
+    }
+
+    // T063: refactor command (mutates source files - use with caution)
+    pub fn refactor(operation: &str, project: &Path) -> Result<String, ArborError> {
+        if !operation
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(ArborError::Cli {
+                message: format!("refactor operation contains unsafe characters: {operation}"),
+            });
+        }
+        run_arbor_cmd("refactor", [operation.as_ref(), project.as_os_str()])
+    }
+
+    // T064: check command
+    pub fn check(project: &Path) -> Result<String, ArborError> {
+        run_arbor_cmd("check", [project.as_os_str()])
+    }
+
+    // T065: summary command
+    pub fn summary(project: &Path) -> Result<String, ArborError> {
+        run_arbor_cmd("summary", [project.as_os_str()])
     }
 }
 
@@ -456,5 +538,54 @@ mod tests {
         assert!(s.centrality.is_none());
         assert!(s.callers.is_none());
         assert!(s.is_entry_point.is_none());
+    }
+
+    // T052-T058: Test helper for CLI commands that require Arbor binary
+    fn assert_cli_requires_cli<F>(fn_name: &str, f: F)
+    where
+        F: FnOnce(&Path) -> Result<String, ArborError>,
+    {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let result = f(dir.path());
+        assert!(result.is_err(), "{fn_name} should fail without Arbor CLI");
+        match result.unwrap_err() {
+            ArborError::Exec { .. } | ArborError::Cli { .. } => (),
+            other => panic!("{fn_name}: expected Exec or Cli error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn entry_points_requires_cli() {
+        assert_cli_requires_cli("entry_points", Client::entry_points);
+    }
+
+    #[test]
+    fn file_graph_requires_cli() {
+        assert_cli_requires_cli("file_graph", |p| Client::file_graph(p, None));
+    }
+
+    #[test]
+    fn inspect_requires_cli() {
+        assert_cli_requires_cli("inspect", |p| Client::inspect("main", p));
+    }
+
+    #[test]
+    fn path_requires_cli() {
+        assert_cli_requires_cli("path", |p| Client::path("main", "helper", p));
+    }
+
+    #[test]
+    fn refactor_requires_cli() {
+        assert_cli_requires_cli("refactor", |p| Client::refactor("rename", p));
+    }
+
+    #[test]
+    fn check_requires_cli() {
+        assert_cli_requires_cli("check", Client::check);
+    }
+
+    #[test]
+    fn summary_requires_cli() {
+        assert_cli_requires_cli("summary", Client::summary);
     }
 }

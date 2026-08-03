@@ -14,7 +14,7 @@ use smol::Timer;
 use tracing::{debug, warn};
 
 use super::responses::{
-    ResponseAccumulator, build_body, is_semantic_progress_event, response_in_flight_timeout,
+    ResponseAccumulator, is_semantic_progress_event, response_in_flight_timeout,
 };
 use crate::model::Model;
 use crate::providers::ResolvedAuth;
@@ -93,6 +93,12 @@ impl WebSocketAttemptError {
     }
 
     pub(crate) fn into_agent_error(self) -> AgentError {
+        if !self.delivery.emitted_event
+            && matches!(self.error, AgentError::Api { .. })
+            && self.error.is_retryable()
+        {
+            return self.error;
+        }
         if self.request_sent() && (self.transport_failure || self.delivery.emitted_or_accepted()) {
             AgentError::RequestSent {
                 message: self.error.to_string(),
@@ -124,13 +130,13 @@ pub(crate) fn build_request_body(
     messages: &[Message],
     system: &System,
     tools: &Value,
-    opts: RequestOptions,
     previous_response_id: Option<&str>,
     prompt_cache_key: Option<&str>,
     store: bool,
+    opts: &RequestOptions,
     parallel_tool_calls: bool,
 ) -> Value {
-    build_body(
+    super::responses::build_body(
         model,
         messages,
         system,
@@ -138,7 +144,7 @@ pub(crate) fn build_request_body(
         previous_response_id,
         prompt_cache_key,
         store,
-        opts.thinking,
+        opts,
         parallel_tool_calls,
     )
 }
@@ -767,12 +773,17 @@ mod tests {
     use std::pin::Pin;
     use std::task::{Context, Poll};
 
+    use super::super::responses::MODERATION_MODEL;
     use super::*;
+    use crate::ContentBlock;
+    use crate::types::{FileSource, ImageDetail, ImageSource, Message};
     use async_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
     use async_tungstenite::tungstenite::protocol::{CloseFrame, Role};
     use futures_lite::io::{AsyncRead, AsyncWrite};
     use serde_json::json;
     use test_case::test_case;
+
+    const CONNECTION_RESET_MESSAGE: &str = "connection reset";
 
     struct PendingIo;
 
@@ -881,6 +892,9 @@ mod tests {
         let model = Model::from_spec("openai/gpt-5.6").unwrap();
         let opts = RequestOptions {
             thinking: crate::ThinkingConfig::Effort(crate::Effort::High),
+            fast: true,
+            safety_identifier: Some("test-id".to_string()),
+            moderation: true,
             ..Default::default()
         };
         let body = build_request_body(
@@ -888,10 +902,10 @@ mod tests {
             &[],
             &System::from("system"),
             &json!([]),
-            opts,
             None,
             None,
             true,
+            &opts,
             true,
         );
         let event = build_create_event(&body);
@@ -904,6 +918,79 @@ mod tests {
         assert_eq!(event["store"], true);
         assert!(event.get("stream").is_none());
         assert!(event.get("background").is_none());
+        // Verify new fields are preserved
+        assert_eq!(event["service_tier"], "fast");
+        assert_eq!(event["safety_identifier"], "test-id");
+        assert_eq!(event["moderation"], json!({"model": MODERATION_MODEL}));
+    }
+
+    #[test]
+    fn create_event_includes_image_detail_and_file_input() {
+        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let opts = RequestOptions::default();
+        let mut message = Message::user_with_images(
+            "test".to_string(),
+            vec![ImageSource::url(
+                "https://example.com/image.png",
+                Some(ImageDetail::High),
+            )],
+        );
+        message.content.push(ContentBlock::File {
+            source: FileSource::file_id("file_123", None),
+        });
+        let messages = vec![message];
+        let body = build_request_body(
+            &model,
+            &messages,
+            &System::default(),
+            &json!([]),
+            None,
+            None,
+            true,
+            &opts,
+            true,
+        );
+        let event = build_create_event(&body);
+        // Verify image detail is preserved in input
+        let input = event["input"].as_array().unwrap();
+        let content = input[0]["content"].as_array().unwrap();
+        let image = content[0].as_object().unwrap();
+        assert_eq!(image["type"], "input_image");
+        assert_eq!(image["detail"], "high");
+        assert_eq!(image["image_url"], "https://example.com/image.png");
+        let file = content[2].as_object().unwrap();
+        assert_eq!(file["type"], "input_file");
+        assert_eq!(file["file_id"], "file_123");
+    }
+
+    #[test]
+    fn create_event_includes_builtin_tool_config() {
+        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let opts = RequestOptions::default();
+        let tools = json!([{
+            "origin": "openai",
+            "name": "file_search",
+            "input_schema": {"type": "object"},
+            "vector_store_ids": ["vs_123"],
+            "max_num_results": 5
+        }]);
+        let body = build_request_body(
+            &model,
+            &[],
+            &System::default(),
+            &tools,
+            None,
+            None,
+            true,
+            &opts,
+            true,
+        );
+        let event = build_create_event(&body);
+        let wire_tools = event["tools"].as_array().unwrap();
+        assert_eq!(wire_tools.len(), 1);
+        assert_eq!(wire_tools[0]["type"], "file_search");
+        assert_eq!(wire_tools[0]["vector_store_ids"], json!(["vs_123"]));
+        assert_eq!(wire_tools[0]["max_num_results"], 5);
     }
 
     #[test]
@@ -962,6 +1049,77 @@ mod tests {
         assert_eq!(error.is_retryable(), retryable);
         assert_eq!(error.is_auth_error(), auth_error);
     }
+
+    #[test]
+    fn server_overload_after_send_is_not_wrapped_in_request_sent() {
+        let error = WebSocketAttemptError::response(
+            AgentError::Api {
+                status: 400,
+                message: "server_is_overloaded: Our servers are currently overloaded".into(),
+            },
+            false,
+            RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance),
+        )
+        .into_agent_error();
+
+        assert!(!matches!(error, AgentError::RequestSent { .. }));
+        assert!(error.is_server_overloaded());
+        assert!(error.is_retryable());
+        assert_eq!(
+            error.user_message(),
+            "provider is overloaded, try again later"
+        );
+    }
+
+    #[test]
+    fn server_error_500_after_accepted_response_id_is_not_wrapped_in_request_sent() {
+        let mut delivery =
+            RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance);
+        delivery.phase = RequestDeliveryPhase::Accepted;
+        delivery.response_id = Some("resp_close".into());
+
+        let error = WebSocketAttemptError::response(
+            AgentError::Api {
+                status: 500,
+                message: "WebSocket protocol error: Connection reset without closing handshake"
+                    .into(),
+            },
+            false,
+            delivery,
+        )
+        .into_agent_error();
+
+        assert!(matches!(error, AgentError::Api { status, .. } if status == 500));
+        assert!(error.is_retryable());
+        assert!(!matches!(error, AgentError::RequestSent { .. }));
+    }
+
+    #[test_case(
+        RequestDeliveryPhase::SentAwaitingAcceptance,
+        None;
+        "after_send"
+    )]
+    #[test_case(RequestDeliveryPhase::Accepted, Some("resp_close"); "after_acceptance")]
+    fn transport_failure_after_send_is_wrapped_in_request_sent(
+        phase: RequestDeliveryPhase,
+        response_id: Option<&str>,
+    ) {
+        let mut delivery = RequestDeliveryMetadata::new(phase);
+        delivery.response_id = response_id.map(String::from);
+        let error = WebSocketAttemptError::transport(
+            AgentError::Io(IoError::new(
+                ErrorKind::ConnectionReset,
+                CONNECTION_RESET_MESSAGE,
+            )),
+            false,
+            delivery,
+        )
+        .into_agent_error();
+
+        assert!(matches!(error, AgentError::RequestSent { .. }));
+        assert!(!error.is_retryable());
+    }
+
     #[test]
     #[allow(clippy::large_futures)]
     fn fake_transport_close_after_send_is_not_synthetic_422() {
@@ -1095,8 +1253,9 @@ mod tests {
                 error.delivery.close_reason.as_deref(),
                 Some("proxy restart request details removed")
             );
+            let agent_error = error.into_agent_error();
             assert!(matches!(
-                error.into_agent_error(),
+                agent_error,
                 AgentError::RequestSent { metadata: Some(metadata), .. }
                     if metadata.close_code == Some(1012)
                         && metadata.response_id.as_deref() == Some("resp_close")
@@ -1490,10 +1649,10 @@ mod tests {
             &[],
             &System::from("system"),
             &tools,
-            opts,
             None,
             None,
             true,
+            &opts,
             true,
         );
         assert_eq!(body["parallel_tool_calls"], true);
@@ -1516,10 +1675,10 @@ mod tests {
             &[],
             &System::from("system"),
             &tools,
-            opts,
             None,
             None,
             true,
+            &opts,
             false,
         );
         assert!(body.get("parallel_tool_calls").is_none());

@@ -30,8 +30,6 @@ struct ViewLayout {
 
 impl App {
     pub fn view(&mut self, frame: &mut Frame) {
-        self.status_bar.clear_expired_hint();
-
         let form_visible = self.permission_prompt.is_open() || self.plan_form_active();
         let layout = self.compute_layout(frame.area(), form_visible);
         let render_chat = self.resolve_render_chat();
@@ -323,6 +321,11 @@ impl App {
             chat_name,
             retry_info: self.retry_info.as_ref(),
             thinking_label: self.state.thinking.status_label(),
+            fusion_phase: if render_chat == 0 {
+                self.fusion_phase
+            } else {
+                None
+            },
             fast: self.state.fast,
             workflow: self.state.workflow,
             restoring: self.restoring.load(Ordering::Relaxed),

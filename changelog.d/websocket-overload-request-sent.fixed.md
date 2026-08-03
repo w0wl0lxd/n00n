@@ -1,0 +1,1 @@
+Don't convert retryable WebSocket API errors (including `server_is_overloaded` and 5xx `server_error`) into `RequestSent` before any output is emitted, so they are retried with the correct user-facing message instead of "not retrying".

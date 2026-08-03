@@ -12,6 +12,8 @@ use n00n_providers::{
 use serde::de::Error as DeError;
 use serde::de::{Deserializer, MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
+use tracing::warn;
 
 pub const NO_FILES_FOUND: &str = "No files found";
 
@@ -246,6 +248,51 @@ impl ToolTelemetry {
         }
         Ok((cost.is_some() || usage.is_some()).then_some(Self { cost, usage }))
     }
+
+    #[must_use]
+    fn is_empty(&self) -> bool {
+        self.cost.is_none() && self.usage.is_none()
+    }
+}
+
+/// Parses a JSON `Value` into `ToolTelemetry`, dropping corrupt/empty records.
+///
+/// This is used as a fallback for session files written before the `ToolTelemetry`
+/// schema settled, where `cost` or `usage` could be arbitrary objects or `telemetry`
+/// could be an empty map.
+fn tool_telemetry_from_value(value: &JsonValue) -> Option<ToolTelemetry> {
+    if value.is_null() {
+        return None;
+    }
+    match serde_json::from_value::<ToolTelemetry>(value.clone()) {
+        Ok(telemetry) if !telemetry.is_empty() => Some(telemetry),
+        Ok(_) => None,
+        Err(e) => {
+            warn!(
+                error = %e,
+                value_type = %match value {
+                    JsonValue::Object(_) => "object",
+                    JsonValue::Array(_) => "array",
+                    JsonValue::String(_) => "string",
+                    JsonValue::Number(_) => "number",
+                    JsonValue::Bool(_) => "boolean",
+                    JsonValue::Null => "null",
+                },
+                "rejected malformed tool telemetry during session restore"
+            );
+            None
+        }
+    }
+}
+
+fn deserialize_tool_telemetry_option<'de, D>(
+    deserializer: D,
+) -> Result<Option<ToolTelemetry>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Option::<JsonValue>::deserialize(deserializer)?;
+    Ok(raw.as_ref().and_then(tool_telemetry_from_value))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -337,7 +384,8 @@ impl<'de> Deserialize<'de> for TextOutput {
                                 return Err(A::Error::duplicate_field("telemetry"));
                             }
                             seen_telemetry = true;
-                            telemetry = map.next_value()?;
+                            let raw: Option<JsonValue> = map.next_value()?;
+                            telemetry = raw.as_ref().and_then(tool_telemetry_from_value);
                         }
                         _ => {
                             map.next_value::<serde::de::IgnoredAny>()?;
@@ -376,7 +424,11 @@ pub enum ToolOutput {
         before: String,
         after: String,
         summary: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            deserialize_with = "deserialize_tool_telemetry_option",
+            skip_serializing_if = "Option::is_none"
+        )]
         telemetry: Option<ToolTelemetry>,
     },
     TodoList(Vec<TodoItem>),
@@ -403,7 +455,11 @@ pub enum ToolOutput {
         /// Caption for the `tool_result` block, e.g. "[image: slack.jpeg 222KB]";
         /// the pixels ride separately as a `ContentBlock::Image`.
         text: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            deserialize_with = "deserialize_tool_telemetry_option",
+            skip_serializing_if = "Option::is_none"
+        )]
         telemetry: Option<ToolTelemetry>,
     },
 }
@@ -889,6 +945,11 @@ pub enum AgentEvent {
     },
     AutoCompacting,
     CompactionDone,
+    FusionPhaseChanged {
+        phase: crate::fusion::FusionPhase,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
     Retry {
         attempt: u32,
         message: String,
@@ -942,7 +1003,7 @@ pub enum AgentEvent {
 /// Append-only buffer for streaming tool output to the UI. Writers append
 /// under a Mutex, readers get a cheap Arc clone via `read_if_dirty()`.
 pub struct SharedBuf {
-    committed: Mutex<Arc<Vec<SnapshotLine>>>,
+    state: Mutex<SharedBufState>,
     dirty: AtomicBool,
     on_change: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     /// Opaque click handler owned by the Lua layer. It lives on the buffer
@@ -952,11 +1013,23 @@ pub struct SharedBuf {
     notifying: AtomicBool,
 }
 
+struct SharedBufState {
+    lines: Arc<Vec<SnapshotLine>>,
+    consumed: usize,
+    replaced: bool,
+    revision: u64,
+}
+
 impl SharedBuf {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            committed: Mutex::new(Arc::new(Vec::new())),
+            state: Mutex::new(SharedBufState {
+                lines: Arc::new(Vec::new()),
+                consumed: 0,
+                replaced: false,
+                revision: 0,
+            }),
             dirty: AtomicBool::new(false),
             on_change: Mutex::new(None),
             click: Mutex::new(None),
@@ -1021,31 +1094,35 @@ impl SharedBuf {
     }
 
     pub fn append(&self, line: SnapshotLine) {
-        let mut guard = self
-            .committed
+        let mut state = self
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Arc::make_mut(&mut guard).push(line);
-        drop(guard);
+        Arc::make_mut(&mut state.lines).push(line);
+        state.revision = state.revision.wrapping_add(1);
+        drop(state);
         self.dirty.store(true, Ordering::Release);
         self.notify_change();
     }
 
     pub fn set_lines(&self, lines: Vec<SnapshotLine>) {
-        let mut guard = self
-            .committed
+        let mut state = self
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *guard = Arc::new(lines);
-        drop(guard);
+        state.lines = Arc::new(lines);
+        state.replaced = true;
+        state.revision = state.revision.wrapping_add(1);
+        drop(state);
         self.dirty.store(true, Ordering::Release);
         self.notify_change();
     }
 
     pub fn len(&self) -> usize {
-        self.committed
+        self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lines
             .len()
     }
 
@@ -1054,32 +1131,87 @@ impl SharedBuf {
     }
 
     pub fn read(&self) -> Arc<Vec<SnapshotLine>> {
-        let guard = self
-            .committed
+        let state = self
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Arc::clone(&guard)
+        Arc::clone(&state.lines)
     }
 
     pub fn read_if_dirty(&self) -> Option<Arc<Vec<SnapshotLine>>> {
         if !self.dirty.swap(false, Ordering::AcqRel) {
             return None;
         }
-        let guard = self
-            .committed
+        let mut state = self
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Some(Arc::clone(&guard))
+        state.consumed = state.lines.len();
+        state.replaced = false;
+        Some(Arc::clone(&state.lines))
+    }
+
+    /// Delta read for append-heavy streaming: tells the caller where the new
+    /// lines start and whether the buffer was replaced wholesale.
+    pub fn read_incremental(&self) -> Option<SharedBufIncremental> {
+        if !self.dirty.swap(false, Ordering::AcqRel) {
+            return None;
+        }
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let new_start = if state.replaced {
+            0
+        } else {
+            state.consumed.min(state.lines.len())
+        };
+        Some(SharedBufIncremental {
+            lines: Arc::clone(&state.lines),
+            new_start,
+            replaced: state.replaced,
+            revision: state.revision,
+        })
+    }
+
+    pub fn finish_incremental(&self, read: &SharedBufIncremental, applied: bool) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.revision != read.revision {
+            return;
+        }
+        if applied {
+            state.consumed = read.lines.len();
+            state.replaced = false;
+        } else {
+            self.dirty.store(true, Ordering::Release);
+        }
     }
 
     pub fn take(&self) -> BufferSnapshot {
         self.dirty.store(false, Ordering::Release);
-        let guard = self
-            .committed
+        let mut state = self
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        BufferSnapshot::from_arc(Arc::clone(&guard))
+        state.consumed = state.lines.len();
+        state.replaced = false;
+        BufferSnapshot::from_arc(Arc::clone(&state.lines))
     }
+}
+
+/// Result of `SharedBuf::read_incremental`.
+pub struct SharedBufIncremental {
+    /// The full buffer contents at read time.
+    pub lines: Arc<Vec<SnapshotLine>>,
+    /// Index of the first line that has not been consumed by an earlier read.
+    pub new_start: usize,
+    /// True when the buffer was replaced wholesale since the last read;
+    /// callers must re-render everything, not just the tail.
+    pub replaced: bool,
+    revision: u64,
 }
 
 impl Default for SharedBuf {
@@ -1395,6 +1527,81 @@ mod tests {
     }
 
     #[test]
+    fn incremental_read_advances_watermark() {
+        let buf = SharedBuf::new();
+        let line = |n: usize| SnapshotLine::plain(n.to_string());
+        buf.append(line(1));
+        let first = buf.read_incremental().expect("first read");
+        assert!(!first.replaced);
+        assert_eq!(first.new_start, 0);
+        assert_eq!(first.lines.len(), 1);
+        buf.finish_incremental(&first, true);
+
+        buf.append(line(2));
+        buf.append(line(3));
+        let second = buf.read_incremental().expect("second read");
+        assert!(!second.replaced);
+        assert_eq!(second.new_start, 1);
+        assert_eq!(second.lines.len(), 3);
+        assert_eq!(second.lines[1].spans[0].text, "2");
+        assert_eq!(second.lines[2].spans[0].text, "3");
+        buf.finish_incremental(&second, true);
+
+        assert!(buf.read_incremental().is_none(), "no new appends");
+    }
+
+    #[test]
+    fn rejected_incremental_read_is_retried() {
+        let buf = SharedBuf::new();
+        buf.append(SnapshotLine::plain("a".into()));
+        let rejected = buf.read_incremental().expect("first read");
+        buf.finish_incremental(&rejected, false);
+
+        let retried = buf.read_incremental().expect("retry");
+        assert_eq!(retried.new_start, 0);
+        assert_eq!(retried.lines.len(), 1);
+    }
+
+    #[test]
+    fn incremental_read_after_set_lines_requires_full_rerender() {
+        let buf = SharedBuf::new();
+        buf.append(SnapshotLine::plain("a".into()));
+        assert!(buf.read_incremental().is_some());
+
+        buf.set_lines(vec![
+            SnapshotLine::plain("x".into()),
+            SnapshotLine::plain("y".into()),
+        ]);
+        let read = buf.read_incremental().expect("replacement read");
+        assert!(read.replaced);
+        assert_eq!(read.new_start, 0);
+        assert_eq!(read.lines.len(), 2);
+    }
+
+    #[test]
+    fn take_and_read_if_dirty_advance_the_watermark() {
+        let buf = SharedBuf::new();
+        buf.set_lines(vec![
+            SnapshotLine::plain("a".into()),
+            SnapshotLine::plain("b".into()),
+        ]);
+        assert_eq!(buf.take().lines.len(), 2);
+        buf.append(SnapshotLine::plain("c".into()));
+        let read = buf.read_incremental().expect("after take");
+        assert!(!read.replaced);
+        assert_eq!(read.new_start, 2, "take already consumed lines 0..2");
+        assert_eq!(read.lines.len(), 3);
+
+        let other = SharedBuf::new();
+        other.set_lines(vec![SnapshotLine::plain("d".into())]);
+        let _ = other.read_if_dirty().expect("first read");
+        other.append(SnapshotLine::plain("e".into()));
+        let read = other.read_incremental().expect("after read_if_dirty");
+        assert!(!read.replaced);
+        assert_eq!(read.new_start, 1);
+    }
+
+    #[test]
     fn as_display_text_diff_renders_unified_text() {
         let output = ToolOutput::Diff {
             path: "src/main.rs".into(),
@@ -1686,7 +1893,7 @@ mod tests {
         let buf = Arc::new(SharedBuf::new());
         let buf2 = Arc::clone(&buf);
         let h = std::thread::spawn(move || {
-            let _guard = buf2.committed.lock().unwrap();
+            let _guard = buf2.state.lock().unwrap();
             panic!("intentional poison");
         });
         let _ = h.join();
@@ -1798,6 +2005,46 @@ mod tests {
 
         assert!(serde_json::from_str::<ToolTelemetry>(nonconserving).is_err());
         assert!(serde_json::from_str::<ToolTelemetry>(negative_cost).is_err());
+    }
+
+    #[test]
+    fn tool_output_tolerates_malformed_telemetry() {
+        // Legacy/corrupt session records may have `telemetry.cost` or `telemetry.usage`
+        // as objects instead of an f64 / ToolUsage. The whole output must still load
+        // with telemetry dropped rather than the entire record skipped.
+        let diff_json = r#"{"Diff":{"path":"a.rs","before":"old","after":"new","summary":"changed","telemetry":{"cost":{"currency":"USD","value":0.12}}}}"#;
+        let diff: ToolOutput = serde_json::from_str(diff_json).unwrap();
+        assert!(matches!(
+            diff,
+            ToolOutput::Diff {
+                telemetry: None,
+                ..
+            }
+        ));
+
+        let plain_json = r#"{"Plain":{"text":"hello","telemetry":{"cost":{"foo":0.1}}}}"#;
+        let plain: ToolOutput = serde_json::from_str(plain_json).unwrap();
+        assert!(matches!(
+            plain,
+            ToolOutput::Plain(TextOutput {
+                telemetry: None,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn tool_output_tolerates_empty_telemetry() {
+        // Empty `telemetry: {}` from older compacted sessions should be treated as absent.
+        let image_json = r#"{"Image":{"source":{"media_type":"image/png","data":"aGVsbG8="},"text":"caption","telemetry":{}}}"#;
+        let image: ToolOutput = serde_json::from_str(image_json).unwrap();
+        assert!(matches!(
+            image,
+            ToolOutput::Image {
+                telemetry: None,
+                ..
+            }
+        ));
     }
 
     #[test]

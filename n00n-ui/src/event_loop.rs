@@ -674,32 +674,50 @@ impl<'t> EventLoop<'t> {
     }
 
     fn handle_wake(&mut self, wake: Wake) -> Result<()> {
-        self.dirty = true;
         match wake {
             Wake::Input(ev) => self.handle_input(ev),
             Wake::InputGone => return Err(eyre!("terminal input reader stopped")),
-            Wake::Ui(action) => self.handle_ui_action(action),
-            Wake::Agent(i, envelope) => self.handle_agent(i, envelope),
-            Wake::Shell(i, event) => self.sessions[i].app.handle_shell_event(event),
-            Wake::SubmissionPersisted(completion) => self.handle_submission_persisted(completion),
-            Wake::Warn(warning) => self.focused_app().flash(warning),
+            Wake::Ui(action) => {
+                self.handle_ui_action(action);
+                self.dirty = true;
+            }
+            Wake::Agent(i, envelope) => {
+                self.handle_agent(i, envelope);
+                self.dirty = true;
+            }
+            Wake::Shell(i, event) => {
+                self.sessions[i].app.handle_shell_event(event);
+                self.dirty = true;
+            }
+            Wake::SubmissionPersisted(completion) => {
+                self.handle_submission_persisted(completion);
+                self.dirty = true;
+            }
+            Wake::Warn(warning) => {
+                self.focused_app().flash(warning);
+                self.dirty = true;
+            }
         }
         Ok(())
     }
 
     fn tick(&mut self) {
+        let mut focused_changed = false;
         for (i, rt) in self.sessions.iter_mut().enumerate() {
             rt.app.float_mgr.tick();
             if i != self.focused {
                 continue;
             }
             rt.app.tick_edge_scroll();
-            rt.app.tick_error_expiry();
+            focused_changed |= rt.app.tick_error_expiry();
+            focused_changed |= !rt.app.image_paste_rx.is_empty();
             rt.app.poll_image_paste();
             rt.app.btw_modal.poll();
-            rt.app.status_bar.poll_branch_update();
+            focused_changed |= rt.app.status_bar.clear_expired_hint();
+            focused_changed |= rt.app.status_bar.poll_branch_update();
             rt.app.mcp_picker.refresh();
         }
+        self.dirty |= focused_changed;
         self.tick_periodic_save();
     }
 
@@ -1109,8 +1127,14 @@ impl<'t> EventLoop<'t> {
                 self.dirty = true;
                 (None, None)
             }
-            Event::Key(key) if key.kind == KeyEventKind::Press => (Some(Msg::Key(key)), None),
-            Event::Paste(text) => (Some(Msg::Paste(text)), None),
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                self.dirty = true;
+                (Some(Msg::Key(key)), None)
+            }
+            Event::Paste(text) => {
+                self.dirty = true;
+                (Some(Msg::Paste(text)), None)
+            }
             Event::Mouse(mouse) => self.translate_mouse(mouse),
             _ => (None, None),
         }
@@ -1119,15 +1143,24 @@ impl<'t> EventLoop<'t> {
     fn translate_mouse(&mut self, mouse: CtMouseEvent) -> (Option<Msg>, Option<Event>) {
         match mouse.kind {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                self.dirty = true;
                 let scroll_lines = self.focused_app().ui_config.mouse_scroll_lines;
                 let (msg, leftover) = self.aggregate_scroll(mouse, scroll_lines);
                 (Some(msg), leftover)
             }
             MouseEventKind::Drag(MouseButton::Left) => {
+                self.dirty = true;
                 let (drag, leftover) = self.coalesce_drag(mouse);
                 (Some(Msg::Mouse(drag)), leftover)
             }
-            _ => (Some(Msg::Mouse(mouse)), None),
+            MouseEventKind::Moved => {
+                self.dirty |= self.focused_app().ui_config.mascot;
+                (Some(Msg::Mouse(mouse)), None)
+            }
+            _ => {
+                self.dirty = true;
+                (Some(Msg::Mouse(mouse)), None)
+            }
         }
     }
 

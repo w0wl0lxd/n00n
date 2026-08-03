@@ -101,26 +101,29 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
             continue;
         }
 
-        let raw: Value = match serde_json::from_str(trimmed) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!(error = %e, "invalid JSON on stdin");
-                server.respond(RequestId::Null, Err(AcpError::parse_error()));
-                continue;
-            }
-        };
+        let mut stream = serde_json::Deserializer::from_str(trimmed).into_iter::<Value>();
+        for result in &mut stream {
+            let raw = match result {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(error = %e, "invalid JSON on stdin");
+                    server.respond(RequestId::Null, Err(AcpError::parse_error()));
+                    break;
+                }
+            };
 
-        let id = raw.get("id").map(request_id);
+            let id = raw.get("id").map(request_id);
 
-        if raw.get("result").is_some() || raw.get("error").is_some() {
-            handle_incoming_response(&server, &raw);
-        } else if let Some(method) = raw.get("method").and_then(Value::as_str) {
-            match id {
-                Some(id) => handle_request(&mut server, method, id, &raw, &params),
-                None => handle_notification(&server, method),
+            if raw.get("result").is_some() || raw.get("error").is_some() {
+                handle_incoming_response(&server, &raw);
+            } else if let Some(method) = raw.get("method").and_then(Value::as_str) {
+                match id {
+                    Some(id) => handle_request(&mut server, method, id, &raw, &params),
+                    None => handle_notification(&server, method),
+                }
+            } else if let Some(id) = id {
+                server.respond(id, Err(AcpError::invalid_request()));
             }
-        } else if let Some(id) = id {
-            server.respond(id, Err(AcpError::invalid_request()));
         }
     }
 
@@ -376,10 +379,10 @@ fn extract_prompt_content(blocks: &[ContentBlock]) -> (String, Vec<ImageSource>)
             ContentBlock::Text(TextContent { text: t, .. }) => append(&mut text, t),
             ContentBlock::Image(ImageContent {
                 data, mime_type, ..
-            }) => images.push(ImageSource {
-                media_type: image_media_type(mime_type),
-                data: Arc::from(data.as_str()),
-            }),
+            }) => images.push(ImageSource::new(
+                image_media_type(mime_type),
+                Arc::from(data.as_str()),
+            )),
             ContentBlock::Resource(res) => {
                 if let EmbeddedResourceResource::TextResourceContents(trc) = &res.resource {
                     append(&mut text, &format!("--- {} ---\n{}", trc.uri, trc.text));

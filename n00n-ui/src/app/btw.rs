@@ -55,6 +55,7 @@ async fn run_btw(
     let (event_tx, event_rx) = flume::unbounded();
     let tools = Value::Array(vec![]);
     let messages = n00n_providers::adapt_images_for_model(&model, &messages);
+    let messages = n00n_providers::adapt_files_for_model(&model, &messages);
 
     let stream_fut = provider.stream_message(
         &model,

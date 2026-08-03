@@ -15,7 +15,7 @@ use std::sync::Arc;
 use crate::selection::Selection;
 use n00n_agent::tools::{ToolInvocation, ToolRegistry, WRITE_TOOL_NAME};
 use n00n_agent::{
-    AgentEvent, BufferSnapshot, ImageSource, ToolDoneEvent, ToolOutput, ToolStartEvent,
+    AgentEvent, BufferSnapshot, FusionPhase, ImageSource, ToolDoneEvent, ToolOutput, ToolStartEvent,
 };
 use n00n_config::{ToolKey, ToolOutputLines, UiConfig};
 use n00n_providers::{CacheHealth, ContentBlock, Message, Role, TokenUsage};
@@ -32,6 +32,7 @@ pub(crate) const ERROR_TEXT: &str = "Error";
 pub(crate) const CANCELLED_TEXT: &str = "Cancelled";
 /// Messages rendered per frame when backfilling older history on resume.
 pub(crate) const RESTORE_BATCH_SIZE: usize = 32;
+const MAX_FUSION_PHASE_LABEL_CHARS: usize = 80;
 
 pub enum ChatEventResult {
     Continue,
@@ -206,7 +207,12 @@ impl Chat {
                     control,
                 };
             }
-            AgentEvent::Retry { .. } => unreachable!("handled before handle_event"),
+            AgentEvent::Retry { .. } => {
+                tracing::warn!(
+                    "retry event reached chat handling; expected to be intercepted by the app layer"
+                );
+                return ChatEventResult::Continue;
+            }
             AgentEvent::Done { .. } => {
                 self.messages_panel.flush();
                 return ChatEventResult::Done;
@@ -246,6 +252,9 @@ impl Chat {
                     "Model stalled after tool calls, nudging...".into(),
                 ));
             }
+            AgentEvent::FusionPhaseChanged { phase, label } => {
+                self.push_fusion_phase(phase, label.as_deref());
+            }
             AgentEvent::SubagentHistory { .. } => {}
             AgentEvent::LiveToolBuf { id, body } => {
                 self.messages_panel.register_live_buf(id, body);
@@ -267,6 +276,32 @@ impl Chat {
             }
         }
         ChatEventResult::Continue
+    }
+
+    fn push_fusion_phase(&mut self, phase: FusionPhase, label: Option<&str>) {
+        let phase = match phase {
+            FusionPhase::Idle => "Idle",
+            FusionPhase::Planning => "Planning",
+            FusionPhase::Executing => "Executing",
+            FusionPhase::Reviewing => "Reviewing",
+            FusionPhase::LeadFallback => "Lead fallback",
+            FusionPhase::Complete => "Complete",
+            FusionPhase::Cancelled => "Cancelled",
+            FusionPhase::Failed => "Failed",
+        };
+        let label = label
+            .map(str::split_whitespace)
+            .map(|parts| parts.collect::<Vec<_>>().join(" "))
+            .filter(|label| !label.is_empty())
+            .map(|label| {
+                label
+                    .chars()
+                    .take(MAX_FUSION_PHASE_LABEL_CHARS)
+                    .collect::<String>()
+            });
+        let text = label.map_or_else(|| phase.to_owned(), |label| format!("{phase}: {label}"));
+        self.messages_panel
+            .push(DisplayMessage::new(DisplayRole::Control, text));
     }
 
     pub fn scroll(&mut self, delta: i32) {
@@ -769,7 +804,7 @@ pub fn history_to_display<S: std::hash::BuildHasher>(
                                 reg.get(name).and_then(|entry| entry.try_parse(input));
                             let summary = reg.resolve_header(name, input);
                             let (status, result_text) = results.get(id.as_str()).map_or(
-                                (ToolStatus::Success, None),
+                                (ToolStatus::Error, None),
                                 |(err, text)| {
                                     let s = if *err {
                                         ToolStatus::Error
@@ -1305,6 +1340,22 @@ mod tests {
         let display = history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default()).0;
         assert_eq!(display.len(), 1);
         assert!(matches!(&display[0].role, DisplayRole::Tool(t) if t.status == expected));
+    }
+
+    #[test]
+    fn history_unmatched_tool_use_is_error_not_success() {
+        let msgs = vec![Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: "t1".into(),
+                name: "bash".into(),
+                input: serde_json::json!({"command": "ls"}),
+            }],
+            ..Default::default()
+        }];
+        let display = history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default()).0;
+        assert_eq!(display.len(), 1);
+        assert!(matches!(&display[0].role, DisplayRole::Tool(t) if t.status == ToolStatus::Error));
     }
 
     #[test]
