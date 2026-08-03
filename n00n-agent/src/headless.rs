@@ -281,7 +281,8 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                 },
             )
             .with_loaded_instructions(instructions.loaded)
-            .with_mcp(params.mcp_handle.clone().map(|h| McpSession::new(h, &[])));
+            .with_mcp(params.mcp_handle.clone().map(|h| McpSession::new(h, &[])))
+            .with_dynamic_mcp_tools(true);
 
             let plan_path = mode.plan_path().map(PathBuf::from);
             if let Some(store) = &mut session_store
@@ -538,7 +539,8 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                 .with_loaded_instructions(instructions.loaded.clone())
                 .with_user_response_rx(Arc::clone(&answer_rx))
                 .with_cancel(cancel)
-                .with_mcp(params.mcp_handle.clone().map(|h| McpSession::new(h, &[])));
+                .with_mcp(params.mcp_handle.clone().map(|h| McpSession::new(h, &[])))
+                .with_dynamic_mcp_tools(true);
 
                 let result = agent.run(input).await;
                 drop(agent);
