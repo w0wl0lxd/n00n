@@ -273,6 +273,25 @@ impl App {
         }
     }
 
+    pub(crate) fn prepare_new_session_prompt(
+        &mut self,
+        prompt: Option<String>,
+    ) -> Result<Vec<Action>, &'static str> {
+        let Some(text) = prompt else {
+            return Ok(Vec::new());
+        };
+        let outcome = self.submit_background_prompt(QueuedMessage {
+            text,
+            images: Vec::new(),
+            control: false,
+        });
+        match outcome {
+            SubmitOutcome::Started(actions) => Ok(actions),
+            SubmitOutcome::Queued => Ok(Vec::new()),
+            SubmitOutcome::Rejected(error) => Err(error),
+        }
+    }
+
     pub(super) fn submit_or_queue(&mut self, msg: QueuedMessage) -> Vec<Action> {
         match self.submit_prompt(msg) {
             SubmitOutcome::Started(actions) => actions,

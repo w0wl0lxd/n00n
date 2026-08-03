@@ -288,6 +288,34 @@ fn rapid_submissions_keep_fifo_while_first_waits_for_persistence() {
 }
 
 #[test]
+fn new_session_prompt_rejection_leaves_blank_app_unchanged() {
+    let mut app = test_app();
+    let session_id = app.state.session.id;
+
+    let Err(error) = app.prepare_new_session_prompt(Some("   ".into())) else {
+        panic!("blank new-session prompt must be rejected");
+    };
+
+    assert_eq!(error, queue::EMPTY_PROMPT_ERR);
+    assert_eq!(app.state.session.id, session_id);
+    assert!(!app.has_content());
+    assert!(matches!(app.status, Status::Idle));
+}
+
+#[test]
+fn new_session_without_prompt_allows_blank_app() {
+    let mut app = test_app();
+
+    let actions = app
+        .prepare_new_session_prompt(None)
+        .expect("missing prompt must allow blank session creation");
+
+    assert!(actions.is_empty());
+    assert!(!app.has_content());
+    assert!(matches!(app.status, Status::Idle));
+}
+
+#[test]
 fn session_api_prompt_is_explicitly_non_paint_gated() {
     let mut app = test_app();
     let outcome = app.submit_background_prompt(crate::app::queue::QueuedMessage {
