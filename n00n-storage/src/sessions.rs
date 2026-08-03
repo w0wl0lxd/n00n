@@ -1500,7 +1500,7 @@ fn is_zst_data(data: &[u8]) -> bool {
     data.starts_with(&[0x28, 0xb5, 0x2f, 0xfd])
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 struct DecodeLimits {
     line_bytes: usize,
     decoded_bytes: usize,
@@ -1648,7 +1648,7 @@ impl BoundedZstdLines {
 fn classify_decoder_error(error: IoError) -> LineReadError {
     let window_too_large_code = 0usize.wrapping_sub(ZSTD_WINDOW_TOO_LARGE_ERROR_CODE);
     let window_too_large = zstd::zstd_safe::get_error_name(window_too_large_code);
-    if error.kind() == ErrorKind::Other && error.to_string() == window_too_large {
+    if error.to_string() == window_too_large {
         LineReadError::DecoderWindowLimitExceeded
     } else {
         LineReadError::Io(error)
@@ -2091,7 +2091,7 @@ impl DecodedWorkBudget {
         if allowance == 0 {
             return None;
         }
-        let mut adjusted = limits.clone();
+        let mut adjusted = limits;
         adjusted.decoded_bytes = allowance;
         Some((adjusted, allowance))
     }

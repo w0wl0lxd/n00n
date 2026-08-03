@@ -722,7 +722,8 @@ async fn session(
             model.supports_tool_examples(),
             &n00n_agent::tools::default_active_tools(),
         );
-        let tools_json = serde_json::to_value(tools).map_err(|e| mlua::Error::runtime(e.to_string()))?;
+        let tools_json =
+            serde_json::to_value(tools).map_err(|e| mlua::Error::runtime(e.to_string()))?;
         (tools_json, filter)
     };
 

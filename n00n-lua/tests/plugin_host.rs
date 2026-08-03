@@ -4059,7 +4059,7 @@ fn session_rejects_nonempty_lua_tools_object() {
     let error = exec_tool(&reg, "session_nonempty_tools_probe", serde_json::json!({}))
         .expect_err("non-empty tools object must be rejected");
 
-    assert!(error.contains("tools must be an array"), "got: {error}");
+    assert!(error.contains(TOOLS_MUST_BE_ARRAY_ERR), "got: {error}");
 }
 
 #[test]
