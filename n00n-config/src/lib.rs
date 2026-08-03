@@ -2763,7 +2763,7 @@ mod tests {
     }
 
     #[test]
-    fn append_permission_rule_writes_to_permissions_file() {
+    fn append_permission_rule_writes_canonical_tool_name() {
         let dir = TempDir::new().unwrap();
         let global = global_config_dir(dir.path());
         fs::create_dir_all(&global).unwrap();
@@ -2786,7 +2786,8 @@ mod tests {
         .unwrap();
 
         let content = fs::read_to_string(global.join("permissions.toml")).unwrap();
-        assert!(content.contains("[bash]"));
+        assert!(content.contains("[run_shell]"));
+        assert!(!content.contains("[bash]"));
         assert!(content.contains("cargo *"));
         assert!(content.contains("rm -rf *"));
         assert!(!content.contains("[permissions]"));
