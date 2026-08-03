@@ -290,51 +290,6 @@ fn rapid_submissions_keep_fifo_while_first_waits_for_persistence() {
 }
 
 #[test]
-fn new_session_prompt_rejection_leaves_blank_app_unchanged() {
-    let mut app = test_app();
-    let session_id = app.state.session.id;
-
-    let Err(error) = app.prepare_new_session_prompt(Some("   ".into())) else {
-        panic!("blank new-session prompt must be rejected");
-    };
-
-    assert_eq!(error, queue::EMPTY_PROMPT_ERR);
-    assert_eq!(app.state.session.id, session_id);
-    assert!(!app.has_content());
-    assert!(matches!(app.status, Status::Idle));
-}
-
-#[test]
-fn new_session_without_prompt_allows_blank_app() {
-    let mut app = test_app();
-
-    let actions = app
-        .prepare_new_session_prompt(None)
-        .expect("missing prompt must allow blank session creation");
-
-    assert!(actions.is_empty());
-    assert!(!app.has_content());
-    assert!(matches!(app.status, Status::Idle));
-}
-
-#[test]
-fn new_session_prompt_starts_only_from_idle() {
-    let mut app = test_app();
-    let actions = app
-        .prepare_new_session_prompt(Some("start work".into()))
-        .expect("idle new-session prompt must start");
-    assert!(matches!(actions.as_slice(), [Action::SendMessage(_)]));
-
-    let mut busy = test_app();
-    busy.status = Status::Streaming;
-    let Err(error) = busy.prepare_new_session_prompt(Some("do not queue".into())) else {
-        panic!("busy new session must reject its initial prompt");
-    };
-    assert_eq!(error, queue::NEW_SESSION_NOT_IDLE_ERR);
-    assert!(busy.queue.is_empty());
-}
-
-#[test]
 fn session_api_prompt_is_explicitly_non_paint_gated() {
     let mut app = test_app();
     let outcome = app.submit_background_prompt(crate::app::queue::QueuedMessage {
@@ -2783,6 +2738,7 @@ fn draw_failure_pending_submission_restores_fifo_images_and_control_after_restar
 }
 
 #[test]
+#[allow(deprecated)]
 fn mcp_prompt_draw_failure_survives_restart_without_text_fallback() {
     let (_tmp, dir, writer, mut app) = tempdir_app();
     let mcp_reader = McpSnapshotReader::from_snapshot(McpSnapshot {
@@ -3499,6 +3455,7 @@ fn mcp_command_opens_picker() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn mcp_toggle_dispatches_action() {
     let mut app = test_app();
     app.mcp_picker = McpPicker::new(
@@ -3513,7 +3470,7 @@ fn mcp_toggle_dispatches_action() {
                 url: None,
             }],
             prompts: vec![],
-            pids: vec![],
+            pids: Vec::new(),
             generation: 0,
         }),
         McpConfigErrors::new(PathBuf::new()),

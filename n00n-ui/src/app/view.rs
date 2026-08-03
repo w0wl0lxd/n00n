@@ -30,6 +30,8 @@ struct ViewLayout {
 
 impl App {
     pub fn view(&mut self, frame: &mut Frame) {
+        self.status_bar.clear_expired_hint();
+
         let form_visible = self.permission_prompt.is_open() || self.plan_form_active();
         let layout = self.compute_layout(frame.area(), form_visible);
         let render_chat = self.resolve_render_chat();

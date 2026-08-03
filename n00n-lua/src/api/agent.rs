@@ -707,7 +707,11 @@ async fn session(
 
     let explicit_tools = tools_val.is_some();
     let (mut tools_json, mut tool_filter) = if let Some(val) = tools_val {
-        let tools = lua_to_json(&lua, &val)?;
+        let empty_lua_table = matches!(&val, LuaValue::Table(table) if table.is_empty());
+        let mut tools = lua_to_json(&lua, &val)?;
+        if empty_lua_table && matches!(&tools, JsonValue::Object(object) if object.is_empty()) {
+            tools = JsonValue::Array(Vec::new());
+        }
         if !tools.is_array() {
             return Err(mlua::Error::runtime("tools must be an array"));
         }
@@ -726,8 +730,14 @@ async fn session(
             model.supports_tool_examples(),
             &n00n_agent::tools::default_active_tools(),
         );
-        (tools, filter)
+        let tools_json =
+            serde_json::to_value(tools).map_err(|e| mlua::Error::runtime(e.to_string()))?;
+        (tools_json, filter)
     };
+
+    if explicit_tools {
+        tool_filter = ToolFilter::All;
+    }
 
     let mut local_map: HashMap<String, LocalToolFn> = HashMap::new();
     if let Some(tbl) = local_tools_tbl {
