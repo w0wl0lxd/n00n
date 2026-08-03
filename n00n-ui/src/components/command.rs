@@ -14,6 +14,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::cast;
 use crate::theme;
@@ -290,6 +291,35 @@ pub enum CommandAction {
     Passthrough,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CommandGroup {
+    Session,
+    Model,
+    View,
+    Settings,
+    Mode,
+    Action,
+    Custom,
+    Mcp,
+    Lua,
+}
+
+impl CommandGroup {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Session => "Session",
+            Self::Model => "Model",
+            Self::View => "View",
+            Self::Settings => "Settings",
+            Self::Mode => "Mode",
+            Self::Action => "Action",
+            Self::Custom => "Custom",
+            Self::Mcp => "MCP prompts",
+            Self::Lua => "Plugins",
+        }
+    }
+}
+
 #[derive(Clone)]
 enum CommandType {
     Builtin(&'static BuiltinCommand),
@@ -298,8 +328,26 @@ enum CommandType {
     Lua(usize),
 }
 
+impl CommandType {
+    const fn group(&self) -> CommandGroup {
+        match self {
+            Self::Builtin(command) => match command.category {
+                CommandCategory::Session => CommandGroup::Session,
+                CommandCategory::Model => CommandGroup::Model,
+                CommandCategory::View => CommandGroup::View,
+                CommandCategory::Settings => CommandGroup::Settings,
+                CommandCategory::Mode => CommandGroup::Mode,
+                CommandCategory::Action => CommandGroup::Action,
+            },
+            Self::Custom(_) => CommandGroup::Custom,
+            Self::McpPrompt(_) => CommandGroup::Mcp,
+            Self::Lua(_) => CommandGroup::Lua,
+        }
+    }
+}
+
 struct CommandItem {
-    name: String,
+    search_text: String,
     max_args: usize,
     command_type: CommandType,
 }
@@ -307,6 +355,11 @@ struct CommandItem {
 struct Match {
     command_type: CommandType,
     indices: Vec<u32>,
+}
+
+enum PaletteRow {
+    Header(CommandGroup),
+    Item(usize),
 }
 
 pub struct CommandPalette {
@@ -322,6 +375,43 @@ pub struct CommandPalette {
     nucleo: Nucleo<CommandItem>,
     matcher: Matcher,
     current_arg_count: usize,
+}
+
+fn span_style(kind: Option<(bool, bool)>, base: Style, alias_base: Style) -> Style {
+    let (is_alias, matched) = kind.unwrap_or_else(|| (false, false));
+    let style = if is_alias { alias_base } else { base };
+    if matched {
+        let t = theme::current();
+        style
+            .fg(t.accent.fg.or(style.fg).unwrap_or_else(|| Color::Reset))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        style
+    }
+}
+
+fn truncate_to_width(text: &str, max_width: usize) -> String {
+    let width = UnicodeWidthStr::width(text);
+    if width <= max_width {
+        return text.to_owned();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+
+    let limit = max_width.saturating_sub(1);
+    let mut output = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let char_width = ch.width().unwrap_or_else(|| 0);
+        if used + char_width > limit {
+            break;
+        }
+        used += char_width;
+        output.push(ch);
+    }
+    output.push('…');
+    output
 }
 
 impl CommandPalette {
@@ -366,17 +456,18 @@ impl CommandPalette {
 
         for cmd in BUILTIN_COMMANDS {
             let aliases = cmd.aliases.join(" ");
+            let search_text = if aliases.is_empty() {
+                cmd.name.to_owned()
+            } else {
+                format!("{} {aliases}", cmd.name)
+            };
             let item = CommandItem {
-                name: if aliases.is_empty() {
-                    cmd.name.to_owned()
-                } else {
-                    format!("{} {aliases}", cmd.name)
-                },
+                search_text,
                 max_args: cmd.max_args,
                 command_type: CommandType::Builtin(cmd),
             };
             injector.push(item, |item, cols| {
-                cols[0] = Utf32String::from(item.name.as_str());
+                cols[0] = Utf32String::from(item.search_text.as_str());
             });
         }
 
@@ -386,12 +477,12 @@ impl CommandPalette {
                 continue;
             }
             let item = CommandItem {
-                name,
+                search_text: name,
                 max_args: if cmd.has_args() { usize::MAX } else { 0 },
                 command_type: CommandType::Custom(i),
             };
             injector.push(item, |item, cols| {
-                cols[0] = Utf32String::from(item.name.as_str());
+                cols[0] = Utf32String::from(item.search_text.as_str());
             });
         }
 
@@ -401,7 +492,7 @@ impl CommandPalette {
                 continue;
             }
             let item = CommandItem {
-                name,
+                search_text: name,
                 max_args: if prompt.arguments.is_empty() {
                     0
                 } else {
@@ -410,7 +501,7 @@ impl CommandPalette {
                 command_type: CommandType::McpPrompt(i),
             };
             injector.push(item, |item, cols| {
-                cols[0] = Utf32String::from(item.name.as_str());
+                cols[0] = Utf32String::from(item.search_text.as_str());
             });
         }
 
@@ -419,12 +510,12 @@ impl CommandPalette {
                 continue;
             }
             let item = CommandItem {
-                name: cmd.name.to_string(),
+                search_text: cmd.name.to_string(),
                 max_args: cmd.max_args,
                 command_type: CommandType::Lua(i),
             };
             injector.push(item, |item, cols| {
-                cols[0] = Utf32String::from(item.name.as_str());
+                cols[0] = Utf32String::from(item.search_text.as_str());
             });
         }
 
@@ -605,13 +696,26 @@ impl CommandPalette {
 
     fn item_description<'a>(&'a self, m: &'a Match) -> Cow<'a, str> {
         match &m.command_type {
-            CommandType::Builtin(cmd) => {
-                Cow::Owned(format!("{} · {}", cmd.category.label(), cmd.description))
-            }
+            CommandType::Builtin(cmd) => Cow::Borrowed(cmd.description),
             CommandType::Custom(i) => Cow::Borrowed(&self.custom[*i].description),
             CommandType::McpPrompt(i) => Cow::Borrowed(&self.mcp_prompts[*i].description),
             CommandType::Lua(i) => Cow::Borrowed(&self.lua_commands[*i].description),
         }
+    }
+
+    fn item_aliases(m: &Match) -> &'static [&'static str] {
+        match &m.command_type {
+            CommandType::Builtin(cmd) => cmd.aliases,
+            CommandType::Custom(_) | CommandType::McpPrompt(_) | CommandType::Lua(_) => &[],
+        }
+    }
+
+    fn item_display_name(&self, m: &Match) -> String {
+        let aliases = Self::item_aliases(m);
+        if aliases.is_empty() {
+            return self.item_name(m);
+        }
+        format!("{}  {}", self.item_name(m), aliases.join("  "))
     }
 
     pub fn confirm(&self, input: &str) -> Option<ParsedCommand> {
@@ -655,61 +759,80 @@ impl CommandPalette {
         const GAP: usize = 2;
         const PAD: usize = 1;
 
-        let filtered = &self.filtered;
-        if filtered.is_empty() {
+        if self.filtered.is_empty() || input_area.width == 0 || input_area.y == 0 {
             return None;
         }
 
-        let popup_height = cast::usize_to_u16(filtered.len()).min(input_area.y);
+        let rows = self.display_rows();
+        let selected_row = rows
+            .iter()
+            .position(|row| matches!(row, PaletteRow::Item(i) if *i == self.selected))
+            .unwrap_or_else(|| 0);
+        let popup_height = rows.len().min(usize::from(input_area.y));
         if popup_height == 0 {
             return None;
         }
+        let first_row = selected_row
+            .saturating_add(1)
+            .saturating_sub(popup_height)
+            .min(selected_row);
+        let last_row = first_row + popup_height;
 
-        let max_name = filtered
+        let max_name = self
+            .filtered
             .iter()
-            .map(|item| self.item_name(item).len())
+            .map(|item| UnicodeWidthStr::width(self.item_display_name(item).as_str()))
             .max()
-            .map_or(0, |v| v);
-        let max_desc = filtered
+            .unwrap_or_else(|| 0);
+        let max_desc = self
+            .filtered
             .iter()
-            .map(|item| self.item_description(item).len())
+            .map(|item| UnicodeWidthStr::width(self.item_description(item).as_ref()))
             .max()
-            .map_or(0, |v| v);
-        let popup_width = cast::usize_to_u16(PAD + max_name + GAP + max_desc + PAD);
-
+            .unwrap_or_else(|| 0);
+        let available = usize::from(input_area.width).saturating_sub(PAD * 2);
+        let name_width = max_name.min(available.saturating_sub(GAP));
+        let gap = GAP.min(available.saturating_sub(name_width));
+        let desc_width = available.saturating_sub(name_width + gap);
+        let desired_width = PAD + max_name + GAP + max_desc + PAD;
+        let popup_width = cast::usize_to_u16(desired_width.max(PAD * 2)).min(input_area.width);
         let popup = Rect {
             x: input_area.x,
-            y: input_area.y.saturating_sub(popup_height),
-            width: popup_width.min(input_area.width),
-            height: popup_height,
+            y: input_area
+                .y
+                .saturating_sub(cast::usize_to_u16(popup_height)),
+            width: popup_width,
+            height: cast::usize_to_u16(popup_height),
         };
 
         let t = theme::current();
-        let lines: Vec<Line> = filtered
+        let lines: Vec<Line> = rows[first_row..last_row]
             .iter()
-            .enumerate()
-            .map(|(i, m)| {
-                let name = self.item_name(m);
-                let desc = self.item_description(m);
-                let selected = i == self.selected;
-                let name_pad = max_name - name.len() + GAP;
-
-                if selected {
-                    let s = t.item_selected;
-                    let highlighted_name = Self::build_highlighted_spans(&name, &m.indices, s);
-                    let mut spans = vec![Span::styled(" ".repeat(PAD), s)];
-                    spans.extend(highlighted_name);
-                    spans.push(Span::styled(" ".repeat(name_pad), s));
-                    spans.push(Span::styled(desc, s));
-                    spans.push(Span::styled(" ".repeat(PAD), s));
-                    Line::from(spans)
-                } else {
-                    let highlighted_name = Self::build_highlighted_spans(&name, &m.indices, t.item);
-                    let mut spans = vec![Span::raw(" ".repeat(PAD))];
-                    spans.extend(highlighted_name);
-                    spans.push(Span::raw(" ".repeat(name_pad)));
-                    spans.push(Span::styled(desc, t.item_desc));
-                    spans.push(Span::raw(" ".repeat(PAD)));
+            .map(|row| match row {
+                PaletteRow::Header(group) => Line::from(Span::styled(
+                    group.label(),
+                    t.item_desc.add_modifier(Modifier::BOLD),
+                )),
+                PaletteRow::Item(i) => {
+                    let item = &self.filtered[*i];
+                    let selected = *i == self.selected;
+                    let row_style = if selected { t.item_selected } else { t.item };
+                    let alias_style = if selected {
+                        t.item_desc.bg(row_style.bg.unwrap_or_else(|| t.background))
+                    } else {
+                        t.item_desc
+                    };
+                    let name = self.item_display_name(item);
+                    let clipped_name = truncate_to_width(&name, name_width);
+                    let name_pad = name_width
+                        .saturating_sub(UnicodeWidthStr::width(clipped_name.as_str()))
+                        + gap;
+                    let desc = truncate_to_width(self.item_description(item).as_ref(), desc_width);
+                    let mut spans = vec![Span::styled(" ".repeat(PAD), row_style)];
+                    spans.extend(self.name_spans(item, name_width, row_style, alias_style));
+                    spans.push(Span::styled(" ".repeat(name_pad), row_style));
+                    spans.push(Span::styled(desc, row_style));
+                    spans.push(Span::styled(" ".repeat(PAD), row_style));
                     Line::from(spans)
                 }
             })
@@ -724,36 +847,84 @@ impl CommandPalette {
         Some(popup)
     }
 
-    fn build_highlighted_spans(text: &str, indices: &[u32], base: Style) -> Vec<Span<'static>> {
-        if indices.is_empty() {
-            return vec![Span::styled(text.to_string(), base)];
+    fn display_rows(&self) -> Vec<PaletteRow> {
+        let mut rows = Vec::with_capacity(self.filtered.len() * 2);
+        let mut group = None;
+        for (index, item) in self.filtered.iter().enumerate() {
+            let item_group = item.command_type.group();
+            if group != Some(item_group) {
+                rows.push(PaletteRow::Header(item_group));
+                group = Some(item_group);
+            }
+            rows.push(PaletteRow::Item(index));
+        }
+        rows
+    }
+
+    fn name_spans(
+        &self,
+        m: &Match,
+        max_width: usize,
+        base: Style,
+        alias_base: Style,
+    ) -> Vec<Span<'static>> {
+        let name = self.item_name(m);
+        let aliases = Self::item_aliases(m);
+        let mut chars = Vec::new();
+        let mut search_index = 0_usize;
+        for ch in name.chars() {
+            let matched = m
+                .indices
+                .binary_search(&cast::usize_to_u32(search_index))
+                .is_ok();
+            chars.push((ch, false, matched));
+            search_index += 1;
+        }
+        for alias in aliases {
+            chars.extend([(' ', true, false), (' ', true, false)]);
+            search_index += 1;
+            for ch in alias.chars() {
+                let matched = m
+                    .indices
+                    .binary_search(&cast::usize_to_u32(search_index))
+                    .is_ok();
+                chars.push((ch, true, matched));
+                search_index += 1;
+            }
         }
 
-        let t = theme::current();
-        let highlight = base
-            .fg(t.accent.fg.or(base.fg).unwrap_or_else(|| Color::Reset))
-            .add_modifier(Modifier::BOLD);
-
+        let source_width: usize = chars
+            .iter()
+            .map(|(ch, _, _)| ch.width().unwrap_or_else(|| 0))
+            .sum();
+        let truncated = source_width > max_width;
+        let limit = max_width.saturating_sub(usize::from(truncated));
         let mut spans = Vec::new();
-        let mut in_match = false;
         let mut run = String::new();
-
-        for (i, ch) in text.chars().enumerate() {
-            let matched = indices.binary_search(&cast::usize_to_u32(i)).is_ok();
-            if matched != in_match && !run.is_empty() {
+        let mut run_kind = None;
+        let mut width = 0;
+        for (ch, is_alias, matched) in chars {
+            let char_width = ch.width().unwrap_or_else(|| 0);
+            if width + char_width > limit {
+                break;
+            }
+            width += char_width;
+            let kind = (is_alias, matched);
+            if run_kind != Some(kind) && !run.is_empty() {
                 spans.push(Span::styled(
                     mem::take(&mut run),
-                    if in_match { highlight } else { base },
+                    span_style(run_kind, base, alias_base),
                 ));
             }
-            in_match = matched;
+            run_kind = Some(kind);
             run.push(ch);
         }
-
         if !run.is_empty() {
-            spans.push(Span::styled(run, if in_match { highlight } else { base }));
+            spans.push(Span::styled(run, span_style(run_kind, base, alias_base)));
         }
-
+        if truncated {
+            spans.push(Span::styled("…", alias_base));
+        }
         spans
     }
 }
@@ -762,6 +933,7 @@ impl CommandPalette {
 mod tests {
     use super::*;
     use n00n_agent::{McpPromptArg, McpSnapshot};
+    use ratatui::{Terminal, backend::TestBackend};
     use test_case::test_case;
 
     fn empty_snapshot() -> McpSnapshotReader {
@@ -885,6 +1057,82 @@ mod tests {
         assert!(p.is_active());
         assert_eq!(p.filtered.len(), 1);
         assert!(matches!(p.filtered[0].command_type, CommandType::Custom(0)));
+    }
+    #[test]
+    fn palette_uses_canonical_group_headers() {
+        let p = synced("/");
+        let headers: Vec<_> = p
+            .display_rows()
+            .into_iter()
+            .filter_map(|row| match row {
+                PaletteRow::Header(group) => Some(group.label()),
+                PaletteRow::Item(_) => None,
+            })
+            .collect();
+        assert_eq!(
+            headers,
+            vec!["Session", "Model", "View", "Settings", "Mode", "Action"]
+        );
+    }
+
+    #[test]
+    fn aliases_are_searchable_and_visible_without_category_prefix() {
+        let p = synced("/new");
+        let item = p
+            .filtered
+            .iter()
+            .find(|item| p.item_name(item) == "/session:new")
+            .expect("alias match");
+        assert!(p.item_display_name(item).contains("/new"));
+        assert!(item.indices.iter().any(|index| {
+            usize::try_from(*index).unwrap_or_else(|_| usize::MAX) > "/session:new".chars().count()
+        }));
+        assert_eq!(p.item_description(item), "Start a new session");
+    }
+
+    #[test]
+    fn tab_completes_canonical_name_after_alias_search() {
+        let mut p = synced("/new");
+        assert!(matches!(
+            p.handle_key(KeyEvent::from(KeyCode::Tab), "/new"),
+            CommandAction::Complete(text) if text == "/session:new"
+        ));
+    }
+
+    #[test]
+    fn confirming_typed_alias_keeps_alias_dispatch_name() {
+        let p = synced("/new");
+        let command = p.confirm("/new").expect("alias match");
+        assert_eq!(command.name, "/new");
+    }
+
+    #[test]
+    fn selected_item_stays_visible_below_headers() {
+        let mut p = synced("/");
+        p.selected = p.filtered.len() - 1;
+        let mut terminal = Terminal::new(TestBackend::new(80, 5)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                p.view(frame, Rect::new(0, 4, 80, 1));
+            })
+            .expect("draw palette");
+        let rendered: String = (0..5)
+            .flat_map(|y| (0..80).map(move |x| (x, y)))
+            .filter_map(|position| terminal.backend().buffer().cell(position))
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        assert!(rendered.contains("/welcome"));
+        assert!(matches!(
+            p.display_rows().last(),
+            Some(PaletteRow::Item(index)) if *index == p.selected
+        ));
+    }
+
+    #[test_case("é漢字", 1, "…"; "narrow_unicode")]
+    #[test_case("é漢字", 3, "é…"; "mixed_width")]
+    #[test_case("hello", 0, ""; "zero_width")]
+    fn truncates_by_terminal_width(text: &str, width: usize, expected: &str) {
+        assert_eq!(truncate_to_width(text, width), expected);
     }
 
     #[test]
