@@ -123,19 +123,31 @@ pub(crate) const DEFAULT_TOOL_DESCRIPTION_MAX_CHARS: usize = 256;
 /// Trim a tool description to `max` characters, preferring sentence and then
 /// word boundaries so the result remains readable.
 pub(crate) fn trim_tool_description(desc: &str, max: usize) -> Cow<'_, str> {
-    if desc.len() <= max {
+    if desc.chars().count() <= max {
         return Cow::Borrowed(desc);
     }
-    // Include as many full sentences as fit, leaving room for the trailing period.
-    if let Some(idx) = desc[..desc.floor_char_boundary(max.saturating_sub(1))].rfind(". ") {
-        return Cow::Owned(format!("{}.", &desc[..idx]));
+
+    let char_boundary = |limit| {
+        desc.char_indices()
+            .nth(limit)
+            .map_or(desc.len(), |(index, _)| index)
+    };
+    if max <= 3 {
+        return Cow::Owned(desc.chars().take(max).collect());
     }
-    // Otherwise break at the last word that leaves room for an ellipsis.
-    let boundary = desc.floor_char_boundary(max.saturating_sub(3));
-    if let Some(idx) = desc[..boundary].rfind(' ') {
-        return Cow::Owned(format!("{}...", &desc[..idx]));
+
+    let sentence_boundary = char_boundary(max - 1);
+    if let Some(index) = desc[..sentence_boundary].rfind(". ")
+        && desc[..index].contains(". ")
+    {
+        return Cow::Owned(format!("{}.", &desc[..index]));
     }
-    Cow::Owned(format!("{}...", &desc[..boundary]))
+
+    let word_boundary = char_boundary(max - 3);
+    if let Some(index) = desc[..word_boundary].rfind(' ') {
+        return Cow::Owned(format!("{}...", &desc[..index]));
+    }
+    Cow::Owned(format!("{}...", &desc[..word_boundary]))
 }
 
 #[derive(Deserialize)]
@@ -446,6 +458,14 @@ mod tests {
         20,
         "one two three..." ; "trim_at_word"
     )]
+    #[test_case("日本語の説明", 8, "日本語の説明" ; "keep_unicode_within_character_limit")]
+    #[test_case("日本語の説明", 5, "日本..." ; "trim_unicode_by_character_limit")]
+    #[test_case(
+        "A. alpha beta gamma delta epsilon zeta eta theta",
+        24,
+        "A. alpha beta gamma..." ; "ignore_short_opening_sentence"
+    )]
+    #[test_case("abcdef", 3, "abc" ; "small_limit_without_ellipsis")]
     fn trim_tool_description_respects_boundaries(input: &str, max: usize, expected: &str) {
         assert_eq!(trim_tool_description(input, max).as_ref(), expected);
     }
