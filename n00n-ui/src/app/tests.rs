@@ -2715,6 +2715,7 @@ fn draw_failure_pending_submission_restores_fifo_images_and_control_after_restar
 }
 
 #[test]
+#[allow(deprecated)]
 fn mcp_prompt_draw_failure_survives_restart_without_text_fallback() {
     let (_tmp, dir, writer, mut app) = tempdir_app();
     let mcp_reader = McpSnapshotReader::from_snapshot(McpSnapshot {
@@ -3431,6 +3432,7 @@ fn mcp_command_opens_picker() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn mcp_toggle_dispatches_action() {
     let mut app = test_app();
     app.mcp_picker = McpPicker::new(
@@ -3445,7 +3447,7 @@ fn mcp_toggle_dispatches_action() {
                 url: None,
             }],
             prompts: vec![],
-            pids: vec![],
+            pids: Vec::new(),
             generation: 0,
         }),
         McpConfigErrors::new(PathBuf::new()),
