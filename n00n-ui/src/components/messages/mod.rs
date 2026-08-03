@@ -308,6 +308,7 @@ impl MessagesPanel {
         let split = self.restore_backlog.len() - take;
         let batch = self.restore_backlog.split_off(split);
         self.prepend_messages(batch);
+        self.rebake_stale_snapshots(self.theme_generation);
     }
 
     /// Prepends `msgs` (older history) in front of the existing messages,
@@ -1434,7 +1435,9 @@ impl MessagesPanel {
     }
 
     fn current_snapshot_gen(&self, tool_id: &str) -> Option<u64> {
-        find_tool_msg(&self.messages, tool_id).map(|message| message.snapshot_theme_gen)
+        find_tool_msg(&self.messages, tool_id)
+            .or_else(|| find_tool_msg(&self.restore_backlog, tool_id))
+            .map(|message| message.snapshot_theme_gen)
     }
 
     fn store_snapshot(
@@ -1444,14 +1447,25 @@ impl MessagesPanel {
         is_header: bool,
         theme_gen: Option<u64>,
     ) -> bool {
-        let Some((message_index, containing_message)) = self
+        let stale_theme = theme_gen.is_some_and(|generation| generation < self.theme_generation);
+        let containing_message = self
             .messages
             .iter()
             .enumerate()
             .rev()
-            .find(|(_, message)| message_contains_tool(message, tool_id))
-        else {
-            return false;
+            .find(|(_, message)| message_contains_tool(message, tool_id));
+        let Some((message_index, containing_message)) = containing_message else {
+            if theme_gen.is_some() {
+                self.stop_watching(tool_id);
+            }
+            let Some(applied_gen) = self.resolve_snapshot_gen(tool_id, theme_gen) else {
+                return false;
+            };
+            let Some(message) = find_tool_msg_mut(&mut self.restore_backlog, tool_id) else {
+                return false;
+            };
+            apply_snapshot(message, snapshot, is_header, applied_gen);
+            return true;
         };
         let nested =
             !matches!(&containing_message.role, DisplayRole::Tool(tool) if tool.id == tool_id);
@@ -1473,13 +1487,7 @@ impl MessagesPanel {
         let Some(msg) = self.find_tool_msg_mut(tool_id) else {
             return false;
         };
-        if is_header {
-            msg.text = snapshot.first_line_text();
-            msg.render_header = Some(snapshot);
-        } else {
-            msg.render_snapshot = Some(snapshot);
-        }
-        msg.snapshot_theme_gen = applied_gen;
+        apply_snapshot(msg, snapshot, is_header, applied_gen);
         if nested {
             self.cache.invalidate_from_msg_count();
             self.rebuild_line_cache();
@@ -1495,6 +1503,9 @@ impl MessagesPanel {
             self.shift_scroll_for_height_change(old_height, new_height);
         } else {
             self.preserve_anchor_at(old_start, old_height, new_height);
+        }
+        if stale_theme {
+            self.rebake_stale_snapshots(self.theme_generation);
         }
         true
     }
@@ -2091,6 +2102,21 @@ fn find_tool_msg<'a>(messages: &'a [DisplayMessage], tool_id: &str) -> Option<&'
             Some(DisplayMetadata::CompactionPending) | None => None,
         }
     })
+}
+
+fn apply_snapshot(
+    message: &mut DisplayMessage,
+    snapshot: BufferSnapshot,
+    is_header: bool,
+    theme_gen: u64,
+) {
+    if is_header {
+        message.text = snapshot.first_line_text();
+        message.render_header = Some(snapshot);
+    } else {
+        message.render_snapshot = Some(snapshot);
+    }
+    message.snapshot_theme_gen = theme_gen;
 }
 
 fn find_tool_msg_mut<'a>(

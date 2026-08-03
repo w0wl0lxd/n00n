@@ -2935,6 +2935,61 @@ fn incremental_restore_first_frame_shows_only_recent() {
 }
 
 #[test]
+fn incremental_restore_applies_nested_snapshot_while_compaction_is_backlogged() {
+    let mut tool = DisplayMessage::new(
+        DisplayRole::Tool(Box::new(ToolRole {
+            id: "tool-1".into(),
+            status: ToolStatus::Success,
+            name: Arc::from("bash"),
+        })),
+        "Run command".into(),
+    );
+    tool.tool_raw_input = Some(Arc::new(serde_json::json!({ "command": "echo" })));
+    tool.tool_output = Some(Arc::new(ToolOutput::Plain("stale fallback".into())));
+    let mut messages = vec![DisplayMessage::compaction(CompactionDisplay {
+        id: "compaction:0".into(),
+        depth: 1,
+        message_count: 1,
+        summary: Some("summary".into()),
+        entries: vec![tool],
+    })];
+    messages.extend(
+        (0..32).map(|index| DisplayMessage::new(DisplayRole::User, format!("recent {index}"))),
+    );
+    let mut panel = test_panel();
+    panel.begin_restore(messages, 32);
+    panel.rebuild_line_cache();
+    panel.set_restore_channel(
+        Some(n00n_lua::EventHandle::disconnected_for_test()),
+        Some(test_event_sender()),
+    );
+    let current_generation = panel.theme_generation.saturating_add(1);
+    panel.theme_generation = current_generation;
+
+    panel.tool_snapshot(
+        "tool-1",
+        BufferSnapshot::from_arc(Arc::new(vec![snap_line("restored body")])),
+        Some(current_generation.saturating_sub(1)),
+    );
+    while panel.is_restoring() {
+        panel.drain_restore_backlog();
+    }
+
+    assert_eq!(
+        panel.rebake_requested_gen("tool-1"),
+        Some(current_generation)
+    );
+    let restored = panel.find_tool_msg_mut("tool-1").unwrap();
+    assert_eq!(
+        restored
+            .render_snapshot
+            .as_ref()
+            .map(BufferSnapshot::first_line_text),
+        Some("restored body".into())
+    );
+}
+
+#[test]
 fn incremental_restore_below_batch_loads_all_at_once() {
     let msgs = mixed_messages(3);
     let mut panel = test_panel();
