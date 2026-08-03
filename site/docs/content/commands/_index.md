@@ -11,58 +11,64 @@ Type `/` in the input box to open the command palette.
 
 ## Built-in commands
 
-n00n has 22 built-in commands. Project, user, and MCP prompt commands are separate.
+n00n has 23 built-in commands. Project, user, and MCP prompt commands are separate.
 
 ### Session
 
 | Command | Description |
 |---------|-------------|
-| `/new` | Start a new session |
-| `/sessions` | Browse and switch sessions |
-| `/rename` | Rename the current session |
-| `/exit` | Exit the application |
+| `/session:new` | Start a new session |
+| `/session:list` | Browse and switch sessions |
+| `/session:rename` | Rename the current session |
+| `/session:compact` | Compact conversation history |
+| `/session:exit` | Exit n00n |
+| `/session:reload` | Reload plugins and configuration |
 
-### Agent work
+### Model
 
 | Command | Description |
 |---------|-------------|
-| `/tasks` | Browse running and completed agents and teams |
+| `/model:pick` | Switch model |
+
+### View
+
+| Command | Description |
+|---------|-------------|
+| `/view:tasks` | View running and completed work |
+| `/view:usage` | View token usage |
+| `/view:memory` | View and edit persistent notes |
+
+### Settings
+
+| Command | Description |
+|---------|-------------|
+| `/settings:theme` | Switch color theme |
+| `/settings:mcp` | Configure MCP servers |
+| `/settings:login` | Authenticate with a provider |
+
+### Mode
+
+| Command | Description |
+|---------|-------------|
+| `/mode:no-confirm` | Toggle permission confirmations |
+| `/mode:fast` | Toggle fast mode when supported |
+| `/mode:workflow` | Toggle workflow mode |
+| `/mode:thinking` | Set thinking level |
+
+### Action
+
+| Command | Description |
+|---------|-------------|
+| `/action:queue` | Manage queued prompts |
+| `/action:cd` | Change working directory |
+| `/action:ask` | Ask a quick question without tools |
+| `/action:help` | Show context-aware help |
+| `/welcome` | Show the welcome guide |
 | `/team` | Configure and run an agent team for a goal |
-| `/queue` | Remove items from queue |
-| `/workflow` | Toggle workflow mode (task callable inside code_execution) |
-
-### Conversation
-
-| Command | Description |
-|---------|-------------|
-| `/compact` | Summarize and compact conversation history |
-| `/btw` | Ask a quick question (no tools, no history pollution) |
-| `/thinking` | Toggle extended thinking (off, adaptive, effort level, or budget) |
-| `/fast` | Toggle Anthropic fast mode (Opus only) |
-
-### Settings and access
-
-| Command | Description |
-|---------|-------------|
-| `/help` | Show keybindings |
-| `/usage` | Show token usage breakdown |
-| `/model` | Switch model |
-| `/theme` | Switch color theme |
-| `/mcp` | Configure MCP servers |
-| `/login` | Authenticate with an LLM provider |
-| `/cd` | Change working directory |
-| `/yolo` | Toggle YOLO mode (skip all permission prompts) |
-| `/reload` | Reload plugins and config |
-
-### Plugin
-
-| Command | Description |
-|---------|-------------|
-| `/memory` | View, edit, and delete memory files |
 
 ## Sessions
 
-Sessions run concurrently. `/new` starts a fresh session while the old one keeps working in the background, and `/sessions` shows the live status of each (working, needs input, idle) so you can jump between them. When a background session finishes or needs input, n00n flashes a note in the status bar.
+Sessions run concurrently. `/session:new` starts a fresh session while the old one keeps working in the background, and `/session:list` shows the live status of each (working, needs input, idle) so you can jump between them. When a background session finishes or needs input, n00n flashes a note in the status bar.
 
 ## Custom commands
 

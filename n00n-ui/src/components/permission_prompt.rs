@@ -146,6 +146,26 @@ impl PermissionPrompt {
         }
     }
 
+    #[must_use]
+    pub fn is_editing(&self) -> bool {
+        matches!(
+            self,
+            Self::Open {
+                state: PromptState::DenyEditing,
+                ..
+            }
+        )
+    }
+
+    #[must_use]
+    pub fn is_confirming(&self) -> bool {
+        matches!(
+            self,
+            Self::Open { state, .. }
+                if !matches!(state, PromptState::Normal | PromptState::DenyEditing)
+        )
+    }
+
     fn action_hint(tool: &ToolKey) -> &'static str {
         let name = match tool {
             ToolKey::Native(name) | ToolKey::McpTool { tool: name, .. } => name.as_ref(),

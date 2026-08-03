@@ -16,17 +16,17 @@ Use `explore_code` first for a general codebase question. Choose `index_file` fo
 ### `explore_code` *(lua plugin)*
 
 Unified codebase exploration router. Picks the best backend for the question:
-- **file** or **skeleton** intent (or a file path): compact single-file skeleton via `index`
-- **relations** or **trace** intent: caller/callee maps, trace paths, blast radius via `arbor`
-- **cross_file** intent (default for NL questions): structural cross-file analysis via `codegraph`
-- **search** intent: keyword or natural-language search via `semblem`
-- **symbol** intent: symbol drill-down via `codegraph node`
-- **impact** intent: blast-radius analysis via `codegraph impact`
+- **file** or **skeleton** intent (or a file path): compact single-file skeleton via `index_file`
+- **relations** or **trace** intent: caller/callee maps, trace paths, blast radius via `map_code`
+- **cross_file** intent (default for NL questions): structural cross-file analysis via `map_codegraph`
+- **search** intent: keyword or natural-language search via `search_text`
+- **symbol** intent: symbol drill-down via `map_codegraph node`
+- **impact** intent: blast-radius analysis via `map_codegraph impact`
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `token_budget` | integer | no |  |
-| `path` | string | no | File path for skeleton queries. A file extension selects the index backend in auto mode. |
+| `path` | string | no | File path for skeleton queries. A file extension selects the index_file backend in auto mode. |
 | `from_symbol` | string | no |  |
 | `symbol` | string | no |  |
 | `use_cache` | boolean | no |  |
@@ -34,8 +34,8 @@ Unified codebase exploration router. Picks the best backend for the question:
 | `to_symbol` | string | no |  |
 | `query` | string | no | Question, symbol, or file path to explore. Required unless `command` is provided. |
 | `command` | string | no |  |
-| `mode` | string | no | Search mode for semblem (bm25, hybrid, or semantic). |
-| `project` | string | no | Project root for arbor/codegraph queries (defaults to cwd). |
+| `mode` | string | no | Search mode for search_text (bm25, hybrid, or semantic). |
+| `project` | string | no | Project root for map_code/map_codegraph queries (defaults to cwd). |
 
 ### `index_file` *(lua plugin)*
 
@@ -129,7 +129,7 @@ Read a file or directory. Returns contents with line numbers (1-indexed).
 
 ### `write_file` *(lua plugin)*
 
-Write content to a file. Prefer edit or edit_lines for existing files.
+Write content to a file. Prefer edit_file or edit_file_lines for existing files.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -179,7 +179,7 @@ Insert lines before `line` number. Existing lines shift down.
 
 ### `view_image` *(lua plugin)*
 
-View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read` for images. Paths: absolute, relative, or ~/. Oversized images downscaled automatically (animated gif/webp keep only first frame).
+View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read_file` for images. Paths: absolute, relative, or ~/. Oversized images downscaled automatically (animated gif/webp keep only first frame).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -217,7 +217,7 @@ Execute Python in sandboxed interpreter with tools as callable functions. Use fo
 
 ### `run_batch` *(lua plugin)*
 
-Execute multiple independent tool calls concurrently. ALWAYS use batch for multiple independent calls. 1-25 tools per batch. Parallel execution, order not guaranteed. Partial failures don't stop others. Do NOT nest batch. Use code_execution for dependent operations.
+Execute multiple independent tool calls concurrently. ALWAYS use run_batch for multiple independent calls. 1-25 tools per batch. Parallel execution, order not guaranteed. Partial failures don't stop others. Do NOT nest run_batch. Use run_python for dependent operations.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -250,7 +250,7 @@ Show status for one live background agent.
 
 ### `control_agent` *(lua plugin)*
 
-Mutate a background agent: message, stop, resume, or manage policy. Prefer agent_list/agent_status for reads. Pause is unsupported on TUI sessions.
+Mutate a background agent: message, stop, resume, or manage policy. Prefer list_agents/get_agent for reads. Pause is unsupported on TUI sessions.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -403,7 +403,7 @@ Search deferred tools by name or description when the needed capability is not a
 | `query` | string | yes | Search query to match tool names or descriptions |
 | `namespace` | string | no | Optional namespace filter |
 
-### `load_namespace` *(lua plugin)*
+### `load_toolset` *(lua plugin)*
 
 Load all deferred tools from a namespace when several sibling tools are needed. Do not use this for one known tool; use search_tools instead.
 
@@ -415,7 +415,7 @@ Load all deferred tools from a namespace when several sibling tools are needed. 
 
 ### `fetch_url` *(lua plugin)*
 
-Fetch a URL and return its contents. Supports markdown (default), text, or html. HTTP auto-upgraded to HTTPS. Max 5MB response, 120s timeout. Best used inside code_execution to avoid context bloat.
+Fetch a URL and return its contents. Supports markdown (default), text, or html. HTTP auto-upgraded to HTTPS. Max 5MB response, 120s timeout. Best used inside run_python to avoid context bloat.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|

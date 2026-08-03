@@ -26,6 +26,7 @@ pub(super) const fn resolve_fusion_opt_in(
 }
 
 pub fn dispatch(cli: Cli) -> Result<()> {
+    cli.warn_ignored_flags();
     match cli.command {
         Some(Command::Auth { action }) => {
             let storage = StateDir::resolve().context("resolve data directory")?;
@@ -56,8 +57,16 @@ pub fn dispatch(cli: Cli) -> Result<()> {
         Some(Command::Rollback) => {
             update::rollback().map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
         }
-        Some(Command::Acp { model, yolo }) => {
-            acp::run(model.as_deref(), yolo, cli.plugin_flags.no_jit)?;
+        Some(Command::Acp {
+            model,
+            no_confirm,
+            legacy_yolo,
+        }) => {
+            acp::run(
+                model.as_deref(),
+                no_confirm || legacy_yolo,
+                cli.plugin_flags.no_jit,
+            )?;
         }
         Some(Command::Prompt {
             variant,
@@ -100,7 +109,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     waves,
                     workflow_inputs: workflow_inputs.as_deref(),
                     task_description: task_description.as_deref(),
-                    yolo: cli.permission_flags.yolo,
+                    yolo: cli.permission_flags.no_confirm(),
                     no_jit: cli.plugin_flags.no_jit,
                     fusion: cli.fusion,
                 };

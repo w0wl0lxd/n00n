@@ -275,8 +275,8 @@ fn skill_policy_denied(name: &str, ctx: &ToolContext) -> Option<String> {
 }
 
 fn is_skill_tool_call(name: &str) -> bool {
-    name.strip_prefix("functions.").map_or(name, |value| value)
-        == crate::skill_policy::SKILL_TOOL_NAME
+    let name = name.strip_prefix("functions.").map_or(name, |value| value);
+    crate::tools::canonical_tool_name(name) == crate::skill_policy::SKILL_TOOL_NAME
 }
 
 fn is_subagent_failure(event: &ToolDoneEvent, ctx: &ToolContext) -> bool {
@@ -836,7 +836,8 @@ pub(super) async fn process_tool_calls(
         let normalized_name = name
             .strip_prefix("functions.")
             .map_or(name.as_str(), |value| value);
-        let is_fusion_delegate = normalized_name == crate::fusion::FUSION_DELEGATE_TOOL;
+        let is_fusion_delegate = crate::tools::canonical_tool_name(normalized_name)
+            == crate::fusion::FUSION_DELEGATE_TOOL;
         if is_fusion_delegate
             && (!fusion_delegate_allowed
                 || fusion_delegate_seen

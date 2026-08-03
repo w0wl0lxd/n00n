@@ -4942,7 +4942,7 @@ fn team_launcher_collects_goal_and_submits_configured_prompt() {
         "submitted prompt: {text}"
     );
     assert!(
-        text.contains("Use the team tool now"),
+        text.contains("Use the run_team tool now"),
         "submitted prompt: {text}"
     );
     assert!(text.contains("thinking: max"), "submitted prompt: {text}");

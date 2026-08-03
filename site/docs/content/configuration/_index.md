@@ -55,7 +55,7 @@ All fields are optional. Typos in field names cause an error right away.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `always_yolo` | bool | `false` | Start every session with YOLO mode (skip permission prompts, deny rules still apply) |
+| `always_yolo` | bool | `false` | Start every session in no-confirm mode (skip prompts; deny rules still apply) |
 | `always_fast` | bool | `false` | Start every session with Anthropic fast mode (Opus only; ignored otherwise) |
 | `always_workflow` | bool | `false` | Start every session with workflow mode (task callable inside code_execution) |
 | `always_fusion` | bool | `false` | Start every session with beta Fusion orchestration (off by default) |
@@ -183,9 +183,9 @@ n00n.setup({
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
-| `edit_lines` | boolean | `true` | - | Provide the line-based `edit_lines` tool. |
-| `insert_lines` | boolean | `true` | - | Provide the line-based `insert_lines` tool. |
-| `multiedit` | boolean | `true` | - | Provide the `multiedit` tool. |
+| `edit_lines` | boolean | `true` | - | Provide the line-based `edit_file_lines` tool. |
+| `insert_lines` | boolean | `true` | - | Provide the line-based `insert_file_lines` tool. |
+| `multiedit` | boolean | `true` | - | Provide the `edit_file_bulk` tool. |
 
 ### `plugins.fusion`
 
@@ -268,6 +268,10 @@ n00n.setup({
 | `max_concurrent_agents` | integer | `4` | 1 | Concurrency per parallel()/pipeline() (default 4, hard max 8). |
 | `max_concurrent_workflows` | integer | `2` | 1 | Concurrent workflows (default 2, hard max 4). |
 | `timeout_secs` | integer | `600` | 60 | Maximum deadline for one workflow run; per-run timeout_secs may only shorten it. |
+
+## Accessibility
+
+Set `NO_COLOR` to any value to disable terminal colors. Set `N00N_HIGH_CONTRAST=1` to use high-contrast semantic colors and stronger selection emphasis. Both modes retain text and glyph indicators so status never depends on color alone.
 
 ## Validation
 

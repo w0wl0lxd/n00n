@@ -26,7 +26,7 @@ The installer uses `N00N_INSTALL_DIR` when set and otherwise installs to `$HOME/
 
 Run the same `install.sh` from WSL or Git Bash after downloading and reviewing it. PowerShell users can use the Cargo or release options below; this repository does not ship a PowerShell installer.
 
-> **Note for Windows users:** The `bash` tool requires Git for Windows or WSL. Install one before using the shell-based installer.
+> **Note for Windows users:** The `run_shell` tool requires Git for Windows or WSL. Install one before using the shell-based installer.
 
 
 ### Living on the edge (main branch)
@@ -84,7 +84,7 @@ n00n.setup({
 })
 ```
 
-Switch models mid-session with the `/model` command.
+Switch models mid-session with the `/model:pick` command.
 
 ## Project Configuration
 
@@ -102,6 +102,6 @@ AGENTS.local.md        # Personal per-project instructions (gitignored)
 
 n00n also recognizes `CLAUDE.md`, `COPILOT.md`, `.cursorrules`, `CONVENTIONS.md`, `GEMINI.md`, and others as instruction files (first match wins).
 
-`AGENTS.md` is loaded at the start of every session. Put coding conventions, repo quirks & gotchas, or off-limits directories in here. n00n will automatically load instruction files inside subdirs when doing a `read` in the subdir.
+`AGENTS.md` is loaded at the start of every session. Put coding conventions, repo quirks & gotchas, or off-limits directories in here. n00n will automatically load instruction files inside subdirs when `read_file` accesses the subdirectory.
 
 See [Configuration](/docs/configuration/) for all options.

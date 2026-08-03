@@ -51,6 +51,9 @@ pub fn fallback_span(text: &str) -> Span<'static> {
 
 #[must_use]
 pub fn highlight_ansi(lang: &str, code: &str) -> String {
+    if theme::no_color() {
+        return code.to_owned();
+    }
     let theme = theme::current();
     n00n_highlight::set_theme(theme.syntax.clone());
     let bg = match theme.background {
@@ -61,7 +64,15 @@ pub fn highlight_ansi(lang: &str, code: &str) -> String {
 }
 
 fn convert_segment(seg: &StyledSegment) -> Style {
-    let mut style = Style::new().fg(Color::Rgb(seg.fg.0, seg.fg.1, seg.fg.2));
+    convert_segment_with_color(seg, !theme::no_color())
+}
+
+fn convert_segment_with_color(seg: &StyledSegment, use_color: bool) -> Style {
+    let mut style = if use_color {
+        Style::new().fg(Color::Rgb(seg.fg.0, seg.fg.1, seg.fg.2))
+    } else {
+        Style::default()
+    };
     if seg.bold {
         style = style.add_modifier(Modifier::BOLD);
     }
@@ -87,7 +98,7 @@ mod tests {
             italic: true,
             underline: true,
         };
-        let style = convert_segment(&all_mods);
+        let style = convert_segment_with_color(&all_mods, true);
         assert_eq!(style.fg, Some(Color::Rgb(255, 0, 128)));
         assert!(style.add_modifier.contains(Modifier::BOLD));
         assert!(style.add_modifier.contains(Modifier::ITALIC));
@@ -100,9 +111,13 @@ mod tests {
             italic: false,
             underline: false,
         };
-        let style = convert_segment(&no_mods);
+        let style = convert_segment_with_color(&no_mods, true);
         assert_eq!(style.fg, Some(Color::Rgb(100, 100, 100)));
         assert!(style.add_modifier.is_empty());
+
+        let plain = convert_segment_with_color(&all_mods, false);
+        assert_eq!(plain.fg, None);
+        assert!(plain.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]

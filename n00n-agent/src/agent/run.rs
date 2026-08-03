@@ -5,8 +5,9 @@ use tracing::{error, info, warn};
 
 use n00n_providers::provider::Provider;
 use n00n_providers::{
-    ContentBlock, HistoryReplayReason, Message, Model, OpenAiOptions, RequestDeliveryMetadata,
-    RequestDeliveryPhase, RequestOptions, Role, StopReason, StreamResponse, System, TokenUsage,
+    ContentBlock, HistoryReplayReason, Message, Model, ModelResolver, OpenAiOptions,
+    RequestDeliveryMetadata, RequestDeliveryPhase, RequestOptions, Role, StopReason,
+    StreamResponse, System, TokenUsage,
 };
 
 use super::compaction::{self, CONTINUE_AFTER_COMPACT};
@@ -20,7 +21,7 @@ use crate::mcp::McpSession;
 use crate::permissions::{PermissionAnswer, PermissionManager};
 use crate::tools::{
     ActiveTools, Deadline, FileReadTracker, LocalTools, ToolAudience, ToolContext, ToolFilter,
-    ToolRegistry,
+    ToolRegistry, canonical_tool_name,
 };
 use crate::{
     AgentConfig, AgentError, AgentEvent, AgentInput, AgentMode, EventSender, ExtractedCommand,
@@ -148,7 +149,7 @@ pub fn resolve_compaction_model(
 ) -> (Arc<dyn Provider>, Model) {
     if let Ok(registry) = n00n_providers::model_registry::model_registry().read()
         && let Some(spec) = registry.spec_for_tier_any(n00n_providers::ModelTier::Compaction)
-        && let Ok(mut m) = Model::from_spec(&spec)
+        && let Ok(mut m) = ModelResolver::current().resolve(&spec)
         && let Ok(p) = n00n_providers::provider::from_model_with_openai_options(
             &mut m,
             timeouts,
@@ -962,7 +963,7 @@ impl<'h> Agent<'h> {
     fn apply_tool_search_results(&mut self, results: &[ToolDoneEvent]) -> bool {
         let mut dirty = false;
         for done in results {
-            match crate::tools::canonical_tool_name(done.tool.as_ref()) {
+            match canonical_tool_name(done.tool.as_ref()) {
                 "search_tools" => {
                     let text = done.output.as_text();
                     if let Ok(Value::Array(items)) = serde_json::from_str::<Value>(&text) {
@@ -974,7 +975,7 @@ impl<'h> Agent<'h> {
                         }
                     }
                 }
-                "load_namespace" => {
+                "load_toolset" => {
                     let text = done.output.as_text();
                     if let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(&text)
                         && let Some(ns) = obj.get("namespace").and_then(|v| v.as_str())

@@ -56,7 +56,7 @@ const TOOL_GROUPS: &[(&str, &[&str])] = &[
     ),
     (
         "Context & Discovery",
-        &["use_memory", "load_skill", "search_tools", "load_namespace"],
+        &["use_memory", "load_skill", "search_tools", "load_toolset"],
     ),
     ("Web", &["fetch_url", "search_web"]),
 ];
@@ -427,7 +427,7 @@ mod tests {
         assert!(cleaned.starts_with(remaining_prefix), "cleaned: {cleaned}");
     }
 
-    // Room for fusion_delegate + skill-system + memory-system + explore-stack tools; keep definitions lean.
+    // Room for delegate_fusion + skill-system + memory-system + explore-stack tools; keep definitions lean.
     const MAX_TOOL_DEFINITION_BYTES: usize = 46_000;
 
     #[test]
@@ -473,6 +473,11 @@ mod tests {
             .iter()
             .map(n00n_agent::tools::RegisteredTool::name)
             .collect();
+        let canonical: HashSet<&str> = n00n_agent::tools::CANONICAL_BUILTIN_TOOL_NAMES
+            .iter()
+            .copied()
+            .collect();
+        assert_eq!(registered, canonical);
 
         let mut sectioned: HashSet<&str> = HashSet::new();
         for (_, names) in TOOL_GROUPS {

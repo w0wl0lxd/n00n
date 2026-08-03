@@ -265,6 +265,16 @@ n00n.setup({{
 
     write_plugin_options(&mut out, &collect_plugin_options());
 
+    writeln!(out, "## Accessibility\n").unwrap();
+    writeln!(
+        out,
+        "Set `NO_COLOR` to any value to disable terminal colors. Set \
+         `N00N_HIGH_CONTRAST=1` to use high-contrast semantic colors and stronger \
+         selection emphasis. Both modes retain text and glyph indicators so status \
+         never depends on color alone.\n"
+    )
+    .unwrap();
+
     writeln!(out, "## Validation\n").unwrap();
     writeln!(
         out,

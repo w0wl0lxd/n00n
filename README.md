@@ -21,7 +21,7 @@ Type a prompt and press **Enter** — the agent reads, edits, searches, and runs
 ## Why n00n
 
 **Context efficiency first.** n00n spends tokens on the work, not on repeating your codebase back
-to the model. The `index` tool uses tree-sitter to produce a compact skeleton (imports, type defs,
+to the model. The `index_file` tool uses tree-sitter to produce a compact skeleton (imports, type defs,
 function signatures with exact line ranges) — the model reads structure first and only the lines it
 needs. 
 
@@ -35,9 +35,9 @@ smooth at 60 FPS, light on memory. Even the splash animation uses SIMD.
 
 ### Context efficiency
 
-- **`index`** — tree-sitter parses supported languages into a compact skeleton, so the model reads
+- **`index_file`** — tree-sitter parses supported languages into a compact skeleton, so the model reads
   structure first and only the lines it needs. Saves ~165 tok/turn on reads.
-- **`code_execution`** — sandboxed interpreter (monty) that exposes every other tool as an async
+- **`run_python`** — sandboxed interpreter (monty) that exposes every other tool as an async
   function. The model filters, summarizes, and pipes data inside the sandbox; intermediate results
   never reach your context window. Bounded by time and memory.
 - **`tooned`** — lossless conversion of JSON-shaped tool data to
@@ -45,8 +45,8 @@ smooth at 60 FPS, light on memory. Even the splash animation uses SIMD.
   payloads (API responses, config files, DB rows).
 - **`toon-lsp`** — interact with TOON-compatible data at a symbol level via
   [toon-lsp](https://github.com/w0wl0lxd/toon-lsp).
-- **`task`** — subagents pick a model tier (weak / medium / strong) per job, like haiku / sonnet / opus.
-- **`team`** — [ALMAS](https://arxiv.org/abs/2510.03463)-based team workflow for sub-agent loop engineering.
+- **`run_task`** — subagents pick a model tier (weak / medium / strong) per job, like haiku / sonnet / opus.
+- **`run_team`** — [ALMAS](https://arxiv.org/abs/2510.03463)-based team workflow for sub-agent loop engineering.
 - Concise system prompt, tool descriptions, and examples — tuned to avoid bloating context.
 - Optional [rtk](https://github.com/rtk-ai/rtk) integration to compress bash output (~50% savings).
   Disable with `--no-rtk`.
@@ -59,13 +59,13 @@ smooth at 60 FPS, light on memory. Even the splash animation uses SIMD.
   [Lua API reference](https://github.com/w0wl0lxd/n00n/docs/lua-api/).
 - Nothing hidden — token count, cost, and requested permissions are shown, not buried.
 - Sensible permissions — when the agent runs `git diff && rm -rf /`, tree-sitter parses the bash
-  and understands the real commands are `git *` and `rm *`, not a single `git *`. Disable with `--yolo`.
-- SSRF protection on `webfetch` calls.
-- `memory` tool for long-term context, managed via `/memory`.
+  and understands the real commands are `git *` and `rm *`, not a single `git *`. Disable with `--no-confirm`.
+- SSRF protection on `fetch_url` calls.
+- `use_memory` tool for long-term context, managed via `/view:memory`.
 - Subagent visibility — each subagent gets its own chat window, switch with `/tasks` (Ctrl-X) or
   Ctrl-N/P.
 - Fuzzy search (Ctrl-F), `/btw` to run a command with chat history, rewind on Escape-Escape, image
-  attachments, 26 themes, session resume.
+  attachments, 29 themes, session resume.
 - Skills & MCPs, plan mode, `!` / `!!` bash, `/cd`.
 - `--print --output-format stream-json` for headless use; output is Claude Code-compatible.
 

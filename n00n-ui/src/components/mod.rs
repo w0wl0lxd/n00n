@@ -1,8 +1,10 @@
+pub(crate) mod activity_shelf;
 pub(crate) mod args_view;
 pub(crate) mod btw_modal;
 pub(crate) mod code_view;
 pub mod command;
 pub(crate) mod file_picker;
+pub(crate) mod footer;
 pub(crate) mod form;
 pub(crate) mod help_modal;
 pub mod input;

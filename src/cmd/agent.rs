@@ -51,6 +51,21 @@ use smol::net::unix::{UnixListener, UnixStream};
 use crate::cli::AgentMode as CliAgentMode;
 use crate::setup;
 
+fn status_label(status: &str) -> &str {
+    match status {
+        "working" => "Working",
+        "needs_input" => "Needs input",
+        "idle" => "Idle",
+        "running" => "Running",
+        "paused" => "Paused",
+        "stopping" => "Stopping…",
+        "stopped" => "Stopped",
+        "done" => "Done",
+        "failed" => "Failed",
+        _ => status,
+    }
+}
+
 fn try_daemon(
     state_dir: &std::path::Path,
     req: &ControlRequest,
@@ -99,7 +114,7 @@ fn print_control_response(resp: &ControlResponse, json: bool) -> Result<()> {
                     "{}\t{}\t{}\t{}",
                     a.id,
                     a.backend,
-                    a.status,
+                    status_label(&a.status),
                     a.title.as_deref().map_or("", |t| t)
                 );
             }
@@ -107,7 +122,7 @@ fn print_control_response(resp: &ControlResponse, json: bool) -> Result<()> {
         ControlResponse::Ok { agent: Some(a), .. } => {
             println!("id:\t{}", a.id);
             println!("backend:\t{}", a.backend);
-            println!("status:\t{}", a.status);
+            println!("status:\t{}", status_label(&a.status));
             if let Some(t) = &a.title {
                 println!("title:\t{t}");
             }
@@ -1309,7 +1324,7 @@ fn print_agent_table(agents: &[AgentRecord]) {
             "{}\t{}\t{}\t{}",
             agent.id,
             agent.backend,
-            agent.status,
+            status_label(&agent.status),
             agent.title.as_deref().map_or("", |title| title)
         );
     }
@@ -1365,7 +1380,7 @@ pub fn list_client(
         println!(
             "  {} - {} - {} - {}",
             agent.id,
-            agent.status,
+            status_label(&agent.status),
             agent.model.as_deref().map_or("?", |m| m),
             agent.title.as_deref().map_or("", |t| t)
         );
@@ -1421,7 +1436,7 @@ pub fn status_client(id: &str, json: bool, state_dir_override: Option<PathBuf>) 
     } else {
         println!("Agent: {}", state.id);
         println!("  session:  {}", state.session_id);
-        println!("  status:   {}", state.status);
+        println!("  status:   {}", status_label(&state.status));
         println!("  model:    {}", state.model);
         println!("  prompt:   {}", state.prompt);
         println!("  socket:   {}", state.socket_path);

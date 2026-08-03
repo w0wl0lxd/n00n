@@ -10,6 +10,7 @@ use n00n_config::{
 use thiserror::Error;
 use tracing::{info, warn};
 
+use crate::tools::canonical_tool_name;
 use crate::{AgentEvent, EventSender};
 
 pub const DEFAULT_DENY_GUIDANCE: &str =
@@ -330,6 +331,11 @@ impl PermissionManager {
                     })
                     .copied()
             })
+            .or_else(|| {
+                self.tool_defaults
+                    .iter()
+                    .find_map(|(key, effect)| matches_rule(key, tool).then_some(*effect))
+            })
             .unwrap_or_else(|| self.default);
         match eff {
             DefaultEffect::Deny => {
@@ -539,7 +545,7 @@ fn matches_rule(rule_key: &ToolKey, actual: &ToolKey) -> bool {
     match (rule_key, actual) {
         (ToolKey::Wildcard, _) => true,
         (ToolKey::Native(a), ToolKey::Native(b)) => {
-            crate::tools::canonical_tool_name(a) == crate::tools::canonical_tool_name(b)
+            canonical_tool_name(a) == canonical_tool_name(b)
         }
         (
             ToolKey::McpServer { server: rs },
@@ -662,9 +668,7 @@ pub fn generalized_scopes(tool: &ToolKey, scopes: &[String]) -> Vec<String> {
 
 fn generalize_scope(tool: &ToolKey, scope: &str) -> String {
     match tool {
-        ToolKey::Native(name)
-            if crate::tools::canonical_tool_name(name) == crate::tools::BASH_TOOL_NAME =>
-        {
+        ToolKey::Native(name) if canonical_tool_name(name) == crate::tools::BASH_TOOL_NAME => {
             generalize_bash_segment(scope)
         }
         ToolKey::Native(_) if is_file_write_tool(tool) => {
@@ -1119,9 +1123,11 @@ mod tests {
             .unwrap()
     }
 
-    #[test]
-    fn generalize_edit_uses_parent_dir() {
-        let result = generalize_scope(&ToolKey::native("edit"), "/home/user/project/src/main.rs");
+    #[test_case("edit" ; "legacy_edit")]
+    #[test_case("multi_edit" ; "legacy_multi_edit")]
+    #[test_case("edit_file_bulk" ; "canonical_bulk_edit")]
+    fn generalize_file_write_uses_parent_dir(tool: &str) {
+        let result = generalize_scope(&ToolKey::native(tool), "/home/user/project/src/main.rs");
         let expected = format!(
             "{}/**",
             Path::new("/home/user/project/src/main.rs")

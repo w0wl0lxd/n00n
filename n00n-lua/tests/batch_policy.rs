@@ -231,20 +231,21 @@ fn invalid_input_errors_without_dispatch(tool_calls: Value, expected_err: &str) 
     );
 }
 
-#[test]
-fn nested_batch_rejected_without_dispatch() {
+#[test_case::test_case("batch" ; "legacy_alias")]
+#[test_case::test_case("run_batch" ; "canonical_name")]
+fn nested_batch_rejected_without_dispatch(nested_tool: &str) {
     let (reg, _host) = load_batch_host();
     let out = run_batch(
         &reg,
         json!([
-            { "tool": "batch", "parameters": { "tool_calls": [] } },
+            { "tool": nested_tool, "parameters": { "tool_calls": [] } },
             { "tool": "ok", "parameters": { "tag": "a" } },
         ]),
     )
     .expect("batch failed");
     let expected = format!(
         "{}{}{}",
-        section("batch", &format!("{ERROR_PREFIX}{NESTED_ERROR}")),
+        section(nested_tool, &format!("{ERROR_PREFIX}{NESTED_ERROR}")),
         section("ok", "ok:a"),
         summary_mixed(1, 2, 1)
     );

@@ -18,8 +18,16 @@ use crate::theme;
 const TITLE: &str = " Models ";
 const RECENT_SECTION: &str = "Recent";
 
-fn footer_line() -> Line<'static> {
+fn footer_line(width: u16) -> Line<'static> {
     let t = theme::current();
+    if width < 72 {
+        return Line::from(vec![
+            Span::styled("  Enter", t.keybind_key),
+            Span::styled(" select", t.tool_dim),
+            Span::styled("  1–4", t.keybind_key),
+            Span::styled(" tier", t.tool_dim),
+        ]);
+    }
     Line::from(vec![
         Span::styled("  Enter", t.keybind_key),
         Span::styled(" select", t.tool_dim),

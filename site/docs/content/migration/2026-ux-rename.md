@@ -39,7 +39,7 @@ n00n now presents built-in tools with consistent `verb_noun` names. Existing nam
 | `load_namespace` | `load_toolset` |
 | `fusion_delegate` | `delegate_fusion` |
 
-`view_image` and `activate_tool` are already canonical and do not change.
+`view_image` is already canonical and does not change.
 
 Aliases work in tool dispatch, permission rules, deferred activation, and tool filters. Model-facing definitions contain canonical names only. New configuration and documentation should use canonical names.
 
@@ -53,6 +53,6 @@ Use `--no-confirm` for non-interactive permission approval. `--yolo` remains a d
 
 - **Current release:** canonical names are shown; previous names continue to work with a deprecation warning.
 - **At least one minor release:** aliases remain supported while scripts and permission rules migrate.
-- **Before alias removal:** release notes will announce the exact version and `n00n doctor` will report remaining legacy names.
+- **Before alias removal:** release notes will announce the exact version and provide a migration check.
 
 MCP server-qualified names and SDK protocol translations are unchanged.

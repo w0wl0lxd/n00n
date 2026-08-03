@@ -134,7 +134,7 @@ pub const TOP_LEVEL_FIELDS: &[ConfigField] = &[
         ty: "bool",
         default: ConfigValue::Bool(false),
         min: None,
-        description: "Start every session with YOLO mode (skip permission prompts, deny rules still apply)",
+        description: "Start every session in no-confirm mode (skip prompts; deny rules still apply)",
     },
     ConfigField {
         name: "always_fast",
@@ -1073,13 +1073,15 @@ impl ToolOutputLines {
             "task" | "run_task" => self.task,
             "workflow" | "run_workflow" => self.workflow,
             "index" | "index_file" => self.index,
-            "grep" | "glob" | "search_code" | "search_files" => self.grep,
+            "grep" | "glob" | "search_code" | "search_files" | "search_text" => self.grep,
             "arbor" | "codegraph" | "explore" | "map_code" | "map_codegraph" | "explore_code" => {
                 self.explore
             }
             "read" | "read_file" => self.read,
-            "memory" | "use_memory" | "write" | "edit" | "multiedit" | "edit_lines"
-            | "insert_lines" => self.write,
+            "memory" | "use_memory" => self.write,
+            "write" | "edit" | "multi_edit" | "multiedit" | "edit_lines" | "insert_lines" => {
+                self.write
+            }
             name if FILE_WRITE_TOOLS.contains(&name) => self.write,
             "webfetch" | "websearch" | "fetch_url" | "search_web" => self.web,
             _ => self.other,
@@ -3071,6 +3073,7 @@ mod tests {
     #[test_case("code_execution", "run_python" ; "code_execution")]
     #[test_case("task", "run_task" ; "task")]
     #[test_case("read", "read_file" ; "read")]
+    #[test_case("multi_edit", "edit_file_bulk" ; "multi_edit")]
     #[test_case("multiedit", "edit_file_bulk" ; "multiedit")]
     fn tool_output_lines_aliases_match_canonical(alias: &str, canonical: &str) {
         let limits = ToolOutputLines::default();
@@ -3078,9 +3081,17 @@ mod tests {
     }
 
     #[test]
-    fn file_write_tools_use_canonical_bulk_edit_name() {
-        assert!(FILE_WRITE_TOOLS.contains(&"edit_file_bulk"));
-        assert!(!FILE_WRITE_TOOLS.contains(&"edit_files"));
+    fn file_write_tools_are_canonical_names() {
+        assert_eq!(
+            FILE_WRITE_TOOLS,
+            &[
+                "write_file",
+                "edit_file",
+                "edit_file_bulk",
+                "edit_file_lines",
+                "insert_file_lines",
+            ]
+        );
     }
 
     #[test]

@@ -364,6 +364,7 @@ impl AgentLoop {
         .with_interrupt_source(Arc::clone(&self.queue) as Arc<dyn n00n_agent::InterruptSource>)
         .with_cancel(cancel)
         .with_mcp(self.mcp.clone())
+        .with_dynamic_mcp_tools(true)
         .with_pre_dispatch_gate(pre_dispatch_gate)
         .with_pre_dispatch_rollback_len(rollback_len);
 

@@ -37,14 +37,17 @@ impl SessionState {
         fallback_model: &Model,
         storage: &StateDir,
     ) -> Self {
-        let model = if let Ok(model) = ModelResolver::current().resolve(&session.model) {
-            model
-        } else {
-            tracing::warn!(
-                "saved session model is no longer configured or available; using current model"
-            );
-            session.model = fallback_model.spec();
-            fallback_model.clone()
+        let model = match ModelResolver::current().resolve(&session.model) {
+            Ok(model) => model,
+            Err(error) => {
+                tracing::warn!(
+                    saved_model = %session.model,
+                    %error,
+                    "saved session model is unavailable; using current model"
+                );
+                session.model = fallback_model.spec();
+                fallback_model.clone()
+            }
         };
 
         let mode = match session.meta.mode {

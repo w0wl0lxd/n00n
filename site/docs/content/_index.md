@@ -15,12 +15,13 @@ New to n00n? Two pages get you going:
 
 - [Quick Start](/docs/quick-start/) installs n00n and connects your first provider. Takes a few minutes.
 - [Configuration](/docs/configuration/) covers `init.lua`, the small Lua script where all settings live.
+- [2026 UX migration](/docs/migration/2026-ux-rename/) maps legacy tool names, commands, and flags to their canonical forms.
 
 ## Everyday use
 
 Answers to the "how do I..." questions once n00n is running:
 
-- [Commands](/docs/commands/): everything behind the `/` palette, from `/model` to `/btw`.
+- [Commands](/docs/commands/): everything behind the `/` palette, from `/model:pick` to `/action:ask`.
 - [Agent Control](/docs/agent/): `n00n agent` for background workers and the shared control plane.
 - [Keybindings](/docs/keybindings/): move around the TUI without touching the mouse.
 - [Tools](/docs/tools/): the full reference for n00n's 33 built-in tools, including opt-in edit sub-tools.

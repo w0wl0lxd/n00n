@@ -47,7 +47,7 @@ local INDICATOR = {
 }
 
 local description = string.format(
-  [[Execute multiple independent tool calls concurrently. ALWAYS use batch for multiple independent calls. 1-%d tools per batch. Parallel execution, order not guaranteed. Partial failures don't stop others. Do NOT nest batch. Use code_execution for dependent operations.]],
+  [[Execute multiple independent tool calls concurrently. ALWAYS use run_batch for multiple independent calls. 1-%d tools per batch. Parallel execution, order not guaranteed. Partial failures don't stop others. Do NOT nest run_batch. Use run_python for dependent operations.]],
   MAX_BATCH_SIZE
 )
 
@@ -148,7 +148,7 @@ local function prepare_children(tool_calls)
     c.status = STATUS.PENDING
     if i > MAX_BATCH_SIZE then
       c.status, c.output = STATUS.ERROR, DISCARDED_ERROR
-    elseif c.tool == "batch" then
+    elseif c.tool == "run_batch" or c.tool == "batch" then
       c.status, c.output = STATUS.ERROR, NESTED_ERROR
     end
     c.header = header_spans(c.tool, c.params)

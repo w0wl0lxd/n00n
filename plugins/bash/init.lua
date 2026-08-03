@@ -620,7 +620,7 @@ Commands run in ]] .. cwd .. [[ by default.
 - Interactive commands fail immediately. Truncated beyond 500 lines or 16KB.]]
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Reserve `bash` for system CLI (git, cargo, rg, grep, gh, podman, docker, npm, pip, python, find, ls, builds, tests). Auto-rewrites via `rtk` when installed. Use rtk-wrapped bash for verbose commands. Do NOT use `bash` for file modifications.",
+  content = "- Reserve `run_shell` for system CLI (git, cargo, rg, grep, gh, podman, docker, npm, pip, python, find, ls, builds, tests). Auto-rewrites via `rtk` when installed. Use rtk-wrapped run_shell for verbose commands. Do NOT use `run_shell` for file modifications.",
 })
 
 local opts = n00n.api.register_options(output_limits.extend({

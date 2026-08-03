@@ -91,7 +91,7 @@ fn load_config(plugin_host: &PluginHost, cli: &Cli, cwd: &Path) -> Result<Config
         .context("invalid config")?;
     config.permissions = load_permissions(cwd);
 
-    if cli.permission_flags.yolo || config.always_yolo {
+    if cli.permission_flags.no_confirm() || config.always_yolo {
         config.permissions.yolo = true;
     }
     if !cli.allowed_tools.is_empty() {
@@ -102,11 +102,12 @@ fn load_config(plugin_host: &PluginHost, cli: &Cli, cwd: &Path) -> Result<Config
             .collect::<Result<Vec<_>>>()?;
     }
     if !cli.disallowed_tools.is_empty() {
-        config.agent.disabled_tools.extend(
-            cli.disallowed_tools
-                .iter()
-                .filter_map(|t| normalize_tool_name(t).ok()),
-        );
+        let disabled = cli
+            .disallowed_tools
+            .iter()
+            .map(|tool| normalize_tool_name(tool))
+            .collect::<Result<Vec<_>>>()?;
+        config.agent.disabled_tools.extend(disabled);
     }
     config.agent.fusion.enabled = super::resolve_fusion_opt_in(
         cli.fusion,

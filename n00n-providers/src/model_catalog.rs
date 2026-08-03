@@ -27,6 +27,11 @@ impl ModelCatalog {
     }
 
     #[must_use]
+    pub fn current_with_specs(specs: impl IntoIterator<Item = String>) -> Self {
+        Self::from_specs(available_model_specs().into_iter().chain(specs))
+    }
+
+    #[must_use]
     pub fn from_specs(specs: impl IntoIterator<Item = String>) -> Self {
         let mut unique: Vec<String> = specs.into_iter().filter(|s| is_spec(s)).collect();
         unique.sort();
@@ -80,14 +85,22 @@ impl ModelCatalog {
         if let Some(spec) = self.aliases.get(input) {
             return Ok(spec.clone());
         }
-        if self.contains(input) {
+        if self
+            .specs
+            .iter()
+            .any(|candidate| matches_catalog_spec(candidate, input))
+        {
             return Ok(input.to_string());
         }
         // This is the only built-in shorthand. It is deliberately an explicit
         // alias family, not a fallback to arbitrary provider/model parsing.
         if input.starts_with("claude-") {
             let spec = format!("anthropic/{input}");
-            if self.contains(&spec) {
+            if self
+                .specs
+                .iter()
+                .any(|candidate| matches_catalog_spec(candidate, &spec))
+            {
                 return Ok(spec);
             }
         }
@@ -140,11 +153,25 @@ impl ModelResolver {
     }
 }
 
+fn matches_catalog_spec(candidate: &str, input: &str) -> bool {
+    if input == candidate {
+        return true;
+    }
+    input
+        .strip_prefix(candidate)
+        .and_then(|suffix| suffix.strip_prefix('-'))
+        .is_some_and(|version| {
+            version.len() == 8 && version.bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
 fn is_spec(spec: &str) -> bool {
     let Some((provider, model)) = spec.split_once('/') else {
         return false;
     };
-    !provider.trim().is_empty() && !model.trim().is_empty() && !model.contains('/')
+    !provider.trim().is_empty()
+        && !model.trim().is_empty()
+        && !model.split('/').any(|segment| segment.trim().is_empty())
 }
 
 #[cfg(test)]
@@ -175,14 +202,62 @@ mod tests {
     }
 
     #[test]
+    fn dated_specs_preserve_catalog_compatibility_without_arbitrary_suffixes() {
+        let catalog = ModelCatalog::from_specs(["anthropic/claude-opus-4-5".to_string()]);
+        assert_eq!(
+            catalog
+                .canonical_spec("anthropic/claude-opus-4-5-20251101")
+                .unwrap(),
+            "anthropic/claude-opus-4-5-20251101"
+        );
+        assert_eq!(
+            catalog.canonical_spec("claude-opus-4-5-20251101").unwrap(),
+            "anthropic/claude-opus-4-5-20251101"
+        );
+        assert!(matches!(
+            catalog.canonical_spec("openai/claude-opus-4-5-20251101"),
+            Err(ModelCatalogError::Unavailable(_))
+        ));
+        for invalid in [
+            "anthropic/claude-opus-4-50",
+            "anthropic/claude-opus-4-5-arbitrary-suffix",
+            "claude-opus-4-5-arbitrary-suffix",
+        ] {
+            assert!(
+                matches!(
+                    catalog.canonical_spec(invalid),
+                    Err(ModelCatalogError::Unavailable(_))
+                ),
+                "unexpectedly accepted {invalid}"
+            );
+        }
+    }
+
+    #[test]
     fn malformed_specs_never_enter_catalog() {
         let catalog = ModelCatalog::from_specs([
             "no-provider".to_string(),
             "provider/".to_string(),
             "/model".to_string(),
-            "provider/model/extra".to_string(),
+            "provider//model".to_string(),
+            "provider/model/".to_string(),
             "provider/model".to_string(),
         ]);
         assert_eq!(catalog.specs(), &["provider/model".to_string()]);
+    }
+
+    #[test]
+    fn nested_model_ids_enter_catalog() {
+        let catalog = ModelCatalog::from_specs([
+            "openrouter/vendor/model".to_string(),
+            "opencode/vendor/model".to_string(),
+        ]);
+        assert_eq!(
+            catalog.specs(),
+            &[
+                "opencode/vendor/model".to_string(),
+                "openrouter/vendor/model".to_string(),
+            ]
+        );
     }
 }

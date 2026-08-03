@@ -61,7 +61,8 @@ pub fn parse_lua_commands(source: &str) -> Vec<LuaPluginCommand> {
 }
 
 pub fn load_builtin_plugin_commands() -> Vec<LuaPluginCommand> {
-    let Ok(entries) = std::fs::read_dir("plugins") else {
+    let plugins_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins");
+    let Ok(entries) = std::fs::read_dir(plugins_dir) else {
         return Vec::new();
     };
     let mut commands: Vec<LuaPluginCommand> = entries

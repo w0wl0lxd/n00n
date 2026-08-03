@@ -558,9 +558,8 @@ impl Chat {
         self.messages_panel.truncate_messages(len);
     }
 
-    #[cfg(test)]
     #[must_use]
-    pub fn in_progress_count(&self) -> usize {
+    pub(crate) fn in_progress_count(&self) -> usize {
         self.messages_panel.in_progress_count()
     }
 

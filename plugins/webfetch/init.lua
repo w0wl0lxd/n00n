@@ -82,7 +82,7 @@ n00n.api.register_tool({
   aliases = { "webfetch" },
   kind = "fetch",
   modes = { "default", "research" },
-  description = [[Fetch a URL and return its contents. Supports markdown (default), text, or html. HTTP auto-upgraded to HTTPS. Max 5MB response, 120s timeout. Best used inside code_execution to avoid context bloat.]],
+  description = [[Fetch a URL and return its contents. Supports markdown (default), text, or html. HTTP auto-upgraded to HTTPS. Max 5MB response, 120s timeout. Best used inside run_python to avoid context bloat.]],
 
   schema = {
     type = "object",

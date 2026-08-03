@@ -12,6 +12,10 @@ local running_order = {}
 local activity_expanded = false
 local render_panel
 
+local function is_todo_tool(name)
+  return name == "update_todo" or name == "todo_write"
+end
+
 local STATUS_MARKERS = {
   completed = { "[✓]", "todo_completed" },
   in_progress = { "[•]", "todo_in_progress" },
@@ -48,7 +52,7 @@ end
 local function running_count()
   local count = 0
   for _, activity in pairs(running) do
-    if activity.tool ~= "todo_write" then
+    if not is_todo_tool(activity.tool) then
       count = count + 1
     end
   end
@@ -58,7 +62,7 @@ end
 local function current_activity()
   for i = #running_order, 1, -1 do
     local activity = running[running_order[i]]
-    if activity and activity.tool ~= "todo_write" then
+    if activity and not is_todo_tool(activity.tool) then
       local label = compact_text(activity.summary ~= "" and activity.summary or activity.tool)
       if activity.subagent and activity.subagent ~= "" then
         label = activity.subagent .. ": " .. label
@@ -141,7 +145,7 @@ local function build_lines()
     if activity_expanded then
       for _, id in ipairs(running_order) do
         local detail = running[id]
-        if detail and detail.tool ~= "todo_write" then
+        if detail and not is_todo_tool(detail.tool) then
           local summary = compact_text(detail.summary ~= "" and detail.summary or detail.tool)
           local owner = detail.subagent and detail.subagent ~= "" and (detail.subagent .. " · ") or ""
           lines[#lines + 1] = {
@@ -176,7 +180,7 @@ end
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Use todo_write to plan and track multi-step tasks (must be 3+ steps). Update after EACH step, not only all at once.",
+  content = "- Use update_todo to plan and track multi-step tasks (must be 3+ steps). Update after EACH step, not only all at once.",
 })
 
 n00n.api.register_tool({
@@ -278,7 +282,7 @@ end
 n00n.api.create_autocmd("ToolStart", {
   callback = function(ev)
     local data = ev.data or {}
-    if not data.id or data.tool == "todo_write" then
+    if not data.id or is_todo_tool(data.tool) then
       return
     end
     if running[data.id] then

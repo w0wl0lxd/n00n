@@ -85,8 +85,12 @@ pub struct PluginFlags {
 #[derive(Args)]
 pub struct PermissionFlags {
     /// Skip all permission prompts (allow everything)
-    #[arg(long, alias = "dangerously-skip-permissions")]
-    pub yolo: bool,
+    #[arg(long = "no-confirm")]
+    pub no_confirm: bool,
+
+    /// Deprecated alias for --no-confirm.
+    #[arg(long = "yolo", alias = "dangerously-skip-permissions", hide = true)]
+    pub legacy_yolo: bool,
 
     /// Accepted but ignored, so Claude Code SDK callers don't break.
     #[arg(long, hide = true)]
@@ -131,11 +135,11 @@ pub struct Cli {
     pub plugin_flags: PluginFlags,
 
     /// Pre-approve tools (comma-separated). Accepts `PascalCase` (Claude Code) or `snake_case`.
-    #[arg(long, value_delimiter = ',', visible_alias = "allowedTools")]
+    #[arg(long, alias = "allowedTools", value_delimiter = ',')]
     pub allowed_tools: Vec<String>,
 
     /// Disallowed tools (comma-separated).
-    #[arg(long, value_delimiter = ',', visible_alias = "disallowedTools")]
+    #[arg(long, alias = "disallowedTools", value_delimiter = ',')]
     pub disallowed_tools: Vec<String>,
 
     /// Session ID for SDK mode
@@ -202,6 +206,13 @@ pub struct Cli {
     pub initial_prompt: Option<String>,
 }
 
+impl PermissionFlags {
+    #[must_use]
+    pub fn no_confirm(&self) -> bool {
+        self.no_confirm || self.legacy_yolo
+    }
+}
+
 impl Cli {
     pub fn warn_ignored_flags(&self) {
         let ignored = [
@@ -224,10 +235,44 @@ impl Cli {
             ("thinking", self.thinking.is_some()),
             ("thinking-display", self.thinking_display.is_some()),
         ];
-        for (flag, set) in &ignored {
-            if *set {
-                eprintln!("warning: --{flag} is accepted but ignored");
-            }
+        let ignored = ignored
+            .into_iter()
+            .filter_map(|(flag, set)| set.then_some(format!("--{flag}")))
+            .collect::<Vec<_>>();
+        let mut warnings = Vec::new();
+        let legacy_acp_no_confirm = matches!(
+            self.command.as_ref(),
+            Some(Command::Acp {
+                legacy_yolo: true,
+                ..
+            })
+        );
+        if self.permission_flags.legacy_yolo || legacy_acp_no_confirm {
+            warnings.push("a legacy permission flag is deprecated; use --no-confirm".to_owned());
+        }
+        let mut legacy_tool_names = self
+            .allowed_tools
+            .iter()
+            .chain(&self.disallowed_tools)
+            .filter(|name| canonical_tool_name(name) != name.as_str())
+            .cloned()
+            .collect::<Vec<_>>();
+        legacy_tool_names.sort_unstable();
+        legacy_tool_names.dedup();
+        if !legacy_tool_names.is_empty() {
+            warnings.push(format!(
+                "legacy tool names are deprecated: {}; use canonical names",
+                legacy_tool_names.join(", ")
+            ));
+        }
+        if !ignored.is_empty() {
+            warnings.push(format!(
+                "ignored compatibility flags: {}",
+                ignored.join(", ")
+            ));
+        }
+        if !warnings.is_empty() {
+            eprintln!("warning: {}", warnings.join("; "));
         }
     }
 
@@ -239,20 +284,25 @@ impl Cli {
 #[derive(Subcommand)]
 pub enum Command {
     /// Manage API authentication
+    #[command(after_help = "Example: n00n auth status")]
     Auth {
         #[command(subcommand)]
         action: AuthAction,
     },
     /// List all available models
+    #[command(after_help = "Example: n00n models")]
     Models,
-    /// Run the index tool on a file to see how it looks like
+    /// Summarize a source file
+    #[command(after_help = "Example: n00n index src/main.rs")]
     Index { path: String },
     /// Manage MCP server authentication
+    #[command(after_help = "Example: n00n mcp auth github")]
     Mcp {
         #[command(subcommand)]
         action: McpAction,
     },
     /// Update n00n to the latest version
+    #[command(after_help = "Example: n00n update --yes")]
     Update {
         /// Skip confirmation prompt
         #[arg(short = 'y', long)]
@@ -262,17 +312,23 @@ pub enum Command {
         no_color: bool,
     },
     /// Rollback to the previous version
+    #[command(after_help = "Example: n00n rollback")]
     Rollback,
     /// Run as an ACP (Agent Client Protocol) server over stdio
+    #[command(after_help = "Example: n00n acp --model anthropic/claude-sonnet-4-6")]
     Acp {
         /// Model spec (provider/model-id)
         #[arg(short, long)]
         model: Option<String>,
         /// Skip all permission prompts
-        #[arg(long)]
-        yolo: bool,
+        #[arg(long = "no-confirm")]
+        no_confirm: bool,
+        /// Deprecated alias for --no-confirm.
+        #[arg(long = "yolo", hide = true)]
+        legacy_yolo: bool,
     },
     /// Show the rendered system prompt or tool definitions
+    #[command(after_help = "Example: n00n prompt system --tools --names")]
     Prompt {
         /// Prompt variant: system (default), research, general
         #[arg(value_enum, default_value_t = PromptVariant::System)]
@@ -288,6 +344,7 @@ pub enum Command {
         names: bool,
     },
     /// Run agent commands (foreground/background workers + control plane)
+    #[command(after_help = "Example: n00n agent run --prompt 'Review src/main.rs'")]
     Agent {
         #[command(subcommand)]
         action: AgentCommand,
@@ -297,6 +354,7 @@ pub enum Command {
 #[derive(Subcommand)]
 pub enum AgentCommand {
     /// Run a one-shot agent prompt
+    #[command(after_help = "Example: n00n agent run --prompt 'Fix the failing test' --background")]
     Run {
         /// Prompt to send to the agent; for workflow mode this is the Lua script
         #[arg(short, long)]
@@ -336,6 +394,7 @@ pub enum AgentCommand {
         id: Option<String>,
     },
     /// List background agents
+    #[command(after_help = "Example: n00n agent list --all")]
     List {
         /// Emit a JSON array for scripting (`claude agents --json` parity)
         #[arg(long)]
@@ -351,6 +410,7 @@ pub enum AgentCommand {
         state_dir: Option<PathBuf>,
     },
     /// Show agent status
+    #[command(after_help = "Example: n00n agent status agent-id --json")]
     Status {
         id: String,
         /// Emit a JSON object for scripting
@@ -360,6 +420,7 @@ pub enum AgentCommand {
         state_dir: Option<PathBuf>,
     },
     /// Send message to agent
+    #[command(after_help = "Example: n00n agent message agent-id 'Focus on tests'")]
     Message {
         id: String,
         text: String,
@@ -367,24 +428,28 @@ pub enum AgentCommand {
         state_dir: Option<PathBuf>,
     },
     /// Pause agent
+    #[command(after_help = "Example: n00n agent pause agent-id")]
     Pause {
         id: String,
         #[arg(long)]
         state_dir: Option<PathBuf>,
     },
     /// Resume agent
+    #[command(after_help = "Example: n00n agent resume agent-id")]
     Resume {
         id: String,
         #[arg(long)]
         state_dir: Option<PathBuf>,
     },
     /// Stop agent
+    #[command(after_help = "Example: n00n agent stop agent-id")]
     Stop {
         id: String,
         #[arg(long)]
         state_dir: Option<PathBuf>,
     },
     /// Start a foreground control-plane listener (worker backend only)
+    #[command(after_help = "Example: n00n agent daemon")]
     Daemon {
         /// Override state directory
         #[arg(long)]
@@ -395,11 +460,13 @@ pub enum AgentCommand {
 #[derive(Subcommand)]
 pub enum McpAction {
     /// Authenticate with an MCP server
+    #[command(after_help = "Example: n00n mcp auth github")]
     Auth {
         /// Server name from config
         server: String,
     },
     /// Remove stored OAuth credentials for an MCP server
+    #[command(after_help = "Example: n00n mcp logout github")]
     Logout {
         /// Server name from config
         server: String,
@@ -409,16 +476,19 @@ pub enum McpAction {
 #[derive(Subcommand)]
 pub enum AuthAction {
     /// Authenticate with a provider (interactive if no provider specified)
+    #[command(after_help = "Example: n00n auth login openai")]
     Login {
         /// Provider slug (e.g. zai, openai). Omit for interactive selection.
         provider: Option<String>,
     },
     /// Remove stored credentials for a provider
+    #[command(after_help = "Example: n00n auth logout openai")]
     Logout {
         /// Provider slug (e.g. openai)
         provider: String,
     },
     /// Show authentication status for all providers
+    #[command(after_help = "Example: n00n auth status")]
     Status,
 }
 
@@ -452,7 +522,8 @@ mod tests {
     #[test_case("Read", "read_file")]
     #[test_case("Bash", "run_shell")]
     #[test_case("CodeExecution", "run_python")]
-    #[test_case("code_execution", "run_python"; "snake_passthrough")]
+    #[test_case("code_execution", "run_python"; "legacy_snake_alias")]
+    #[test_case("MultiEdit", "edit_file_bulk"; "pascal_case_alias")]
     fn normalize_tool_name_valid_inputs(input: &str, expected: &str) {
         assert_eq!(normalize_tool_name(input).unwrap(), expected);
     }
@@ -465,8 +536,45 @@ mod tests {
     }
 
     #[test]
-    fn normalize_tool_name_multi_edit_rejects_snake_variant() {
-        assert!(normalize_tool_name("MultiEdit").is_err());
+    fn no_confirm_and_legacy_yolo_are_equivalent() {
+        let canonical = Cli::parse_from(["n00n", "--no-confirm"]);
+        let legacy = Cli::parse_from(["n00n", "--yolo"]);
+        assert!(canonical.permission_flags.no_confirm());
+        assert!(legacy.permission_flags.no_confirm());
+        assert!(!canonical.permission_flags.legacy_yolo);
+        assert!(legacy.permission_flags.legacy_yolo);
+
+        let canonical_acp = Cli::parse_from(["n00n", "acp", "--no-confirm"]);
+        let legacy_acp = Cli::parse_from(["n00n", "acp", "--yolo"]);
+        assert!(matches!(
+            canonical_acp.command,
+            Some(Command::Acp {
+                no_confirm: true,
+                legacy_yolo: false,
+                ..
+            })
+        ));
+        assert!(matches!(
+            legacy_acp.command,
+            Some(Command::Acp {
+                no_confirm: false,
+                legacy_yolo: true,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn sdk_tool_flag_aliases_remain_compatible() {
+        let cli = Cli::parse_from([
+            "n00n",
+            "--allowedTools",
+            "Read,Bash",
+            "--disallowedTools",
+            "Write",
+        ]);
+        assert_eq!(cli.allowed_tools, ["Read", "Bash"]);
+        assert_eq!(cli.disallowed_tools, ["Write"]);
     }
 
     #[test]

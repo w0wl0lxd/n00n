@@ -4327,15 +4327,17 @@ fn fast_flashes_error_on_ineligible_model(spec: &str) {
 }
 
 #[test]
-fn fast_restored_from_session_meta() {
+fn unavailable_saved_model_uses_fallback_and_drops_fast_mode() {
     let tmp = TempDir::new().unwrap();
     let storage = StateDir::from_path(tmp.path().to_path_buf());
-    let mut session = AppSession::new("anthropic/claude-opus-4-8", "/tmp/test");
+    let mut session = AppSession::new("anthropic/unavailable-opus", "/tmp/test");
     session.meta.fast = true;
+    let fallback = test_model();
 
-    let fallback = Model::from_spec("anthropic/claude-opus-4-8").unwrap();
     let state = SessionState::from_session(session, &fallback, &storage);
-    assert!(state.fast);
+    assert_eq!(state.model.spec(), fallback.spec());
+    assert_eq!(state.session.model, fallback.spec());
+    assert!(!state.fast);
 }
 
 #[test]

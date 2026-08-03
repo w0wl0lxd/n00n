@@ -53,7 +53,7 @@ local function post_blackboard_status(ctx, event_type, step, run_id, extra)
   end
 
   pcall(function()
-    call_tool_with_policy(ctx, "blackboard", { action = "write", post = post })
+    call_tool_with_policy(ctx, "use_blackboard", { action = "write", post = post })
   end)
 end
 
@@ -802,7 +802,7 @@ local function run_team(input, ctx)
       forwarded[key] = value
     end
     forwarded.background = false
-    local prompt = "Use the team tool now. Do not only describe this request.\n\n" .. n00n.json.encode(forwarded)
+    local prompt = "Use the run_team tool now. Do not only describe this request.\n\n" .. n00n.json.encode(forwarded)
     local id, err = n00n.session.new({ prompt = prompt, focus = false })
     if not id then
       return { llm_output = err, is_error = true }
@@ -921,7 +921,7 @@ local function run_team(input, ctx)
     end
     return {
       llm_output = table.concat(plan, "\n")
-        .. '\n\nReview the plan, then run `team` again with `mode = "autonomous"` or `mode = "swarm"` to execute it.',
+        .. '\n\nReview the plan, then run `run_team` again with `mode = "autonomous"` or `mode = "swarm"` to execute it.',
       format = "markdown",
       cost = supervisor_cost,
       usage = supervisor_usage,
@@ -1084,7 +1084,7 @@ end
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- For multi-step work, use **team** (ALMAS-led agent team) with `compact=true` and `use_retrieval=true` to save tokens. Use **workflow** when you need a sandboxed supervisor script to orchestrate agents at scale.",
+  content = "- For multi-step work, use **run_team** (ALMAS-led agent team) with `compact=true` and `use_retrieval=true` to save tokens. Use **run_workflow** when you need a sandboxed supervisor script to orchestrate agents at scale.",
 })
 
 n00n.api.register_tool({
@@ -1139,7 +1139,7 @@ local function agent_prompt(goal, prefs)
     table.insert(config, 2, { "model", prefs.model })
   end
   local lines = {
-    "Use the team tool now. Do not only describe the team or restate this request.",
+    "Use the run_team tool now. Do not only describe the team or restate this request.",
     "",
     "Goal:",
     goal,

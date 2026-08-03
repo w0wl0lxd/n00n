@@ -35,7 +35,7 @@ pub struct RenderCtx<'a> {
     pub tool_output_lines: &'a ToolOutputLines,
 }
 
-pub const TOOL_INDICATOR: &str = "  ✓ done ";
+pub const TOOL_INDICATOR: &str = "  ✓ ";
 pub const TOOL_BODY_INDENT: &str = "    ";
 pub(crate) const SPINNER_STYLE_NAME: &str = "spinner";
 pub(crate) const SPINNER_STYLE_PREFIX: &str = "spinner:";
@@ -508,10 +508,19 @@ impl ToolLineBuilder {
         let (text, style) = match indicator {
             Indicator::InProgress => {
                 let ch = spinner_frame(started_at.elapsed().as_millis());
-                (format!("{ch} running "), theme::current().spinner)
+                (
+                    format!("{ch} running "),
+                    theme::semantic_style(theme::SemanticRole::Activity),
+                )
             }
-            Indicator::Success => (TOOL_INDICATOR.into(), theme::current().tool_success),
-            Indicator::Error => ("  × error ".into(), theme::current().tool_error),
+            Indicator::Success => (
+                TOOL_INDICATOR.into(),
+                theme::semantic_style(theme::SemanticRole::Success),
+            ),
+            Indicator::Error => (
+                "  ✗ ".into(),
+                theme::semantic_style(theme::SemanticRole::Error),
+            ),
         };
         for (line, span) in &mut self.spinner_lines {
             if *line == 0 {
@@ -732,12 +741,19 @@ pub(crate) fn resolve_span_style(style: &SpanStyle) -> Style {
         SpanStyle::Default => theme::current().tool,
         SpanStyle::Named(name) => theme::style_by_name(name),
         SpanStyle::Inline(inline) => {
-            let mut s = Style::default();
-            if let Some((r, g, b)) = inline.fg {
-                s = s.fg(Color::Rgb(r, g, b));
-            }
-            if let Some((r, g, b)) = inline.bg {
-                s = s.bg(Color::Rgb(r, g, b));
+            let accessible = theme::no_color() || theme::high_contrast();
+            let mut s = if theme::high_contrast() {
+                theme::current().tool
+            } else {
+                Style::default()
+            };
+            if !accessible {
+                if let Some((r, g, b)) = inline.fg {
+                    s = s.fg(Color::Rgb(r, g, b));
+                }
+                if let Some((r, g, b)) = inline.bg {
+                    s = s.bg(Color::Rgb(r, g, b));
+                }
             }
             if inline.bold {
                 s = s.bold();
