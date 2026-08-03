@@ -1,13 +1,15 @@
 use crate::animation::Typewriter;
 use crate::components::messages::wrapped_line_count;
-use crate::markdown::{paint_semantic, prefix_line, prefix_span};
+use crate::markdown::paint_semantic;
 use crate::theme;
 
 use n00n_markdown::render::Renderer;
 use ratatui::style::Style;
-use ratatui::text::{Line, Span};
+use ratatui::text::Line;
+use std::time::{Duration, Instant};
 
 const STREAMING_MAX_LINE_BYTES: usize = 5_000;
+const STREAMING_RENDER_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Block-level streaming markdown cache.
 ///
@@ -53,6 +55,13 @@ impl StreamingCache {
         self.rendered_height = None;
     }
 
+    fn requires_immediate_refresh(&self, tw: &Typewriter, width: u16) -> bool {
+        let theme_gen = theme::generation();
+        self.key.is_none_or(|key| {
+            key.generation != tw.generation() || key.width != width || key.theme_gen != theme_gen
+        })
+    }
+
     /// Returns `true` when the cache was repopulated. The caller passes a
     /// renderer so the highlighter/table-width state persists across calls
     /// for a stable streamed view.
@@ -80,125 +89,14 @@ impl StreamingCache {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RenderMode {
-    Plain,
-    Markdown,
-}
-
-/// Incremental plain-text builder for streaming output.
-///
-/// Builds a `Vec<Line>` one character at a time as the typewriter reveals
-/// text, avoiding a full resplit/rescopy of the visible buffer on every
-/// 16ms tick. Completed lines are left untouched; only the last partial
-/// line is mutated in place.
-#[derive(Debug)]
-struct PlainState {
-    completed_count: usize,
-    rendered_byte_offset: usize,
-    prefix: &'static str,
-    text_style: Style,
-    prefix_style: Style,
-    snapshot: Vec<Line<'static>>,
-    rendered_height: Option<(u16, u16)>,
-}
-
-impl PlainState {
-    fn new(prefix: &'static str, text_style: Style, prefix_style: Style) -> Self {
-        Self {
-            completed_count: 0,
-            rendered_byte_offset: 0,
-            prefix,
-            text_style,
-            prefix_style,
-            snapshot: Vec::new(),
-            rendered_height: None,
-        }
-    }
-
-    fn clear(&mut self) {
-        self.completed_count = 0;
-        self.rendered_byte_offset = 0;
-        self.snapshot.clear();
-        self.rendered_height = None;
-    }
-
-    fn set_style(&mut self, prefix: &'static str, text_style: Style, prefix_style: Style) {
-        self.prefix = prefix;
-        self.text_style = text_style;
-        self.prefix_style = prefix_style;
-        self.clear();
-    }
-
-    fn ensure_current(&mut self) {
-        if self.snapshot.len() > self.completed_count {
-            return;
-        }
-        let line = if self.completed_count == 0 && !self.prefix.is_empty() {
-            Line::from(vec![
-                prefix_span(self.prefix, self.prefix_style),
-                Span::styled(String::new(), self.text_style),
-            ])
-        } else {
-            Line::from(vec![Span::styled(String::new(), self.text_style)])
-        };
-        self.snapshot.push(line);
-    }
-
-    fn current_text_span(&mut self) -> Option<&mut Span<'static>> {
-        self.ensure_current();
-        let line = self.snapshot.last_mut()?;
-        if line.spans.is_empty() {
-            line.spans
-                .push(Span::styled(String::new(), self.text_style));
-        }
-        line.spans.last_mut()
-    }
-
-    fn finalize_current(&mut self) {
-        if self.snapshot.len() == self.completed_count {
-            if self.completed_count == 0 {
-                // Leading newline before any text; skip it (mirrors plain_lines trim).
-                return;
-            }
-            self.snapshot.push(Line::raw(""));
-        }
-        self.completed_count += 1;
-    }
-
-    fn update(&mut self, typewriter: &Typewriter) {
-        let visible = typewriter.visible();
-        let new_start = self.rendered_byte_offset;
-        let new_end = typewriter.visible_byte_offset();
-        if new_start < new_end {
-            for c in visible[new_start..new_end].chars() {
-                if c == '\n' {
-                    self.finalize_current();
-                } else if let Some(span) = self.current_text_span() {
-                    span.content.to_mut().push(c);
-                }
-            }
-        }
-        self.rendered_byte_offset = new_end;
-
-        if self.snapshot.is_empty() {
-            self.snapshot
-                .push(prefix_line(self.prefix, self.prefix_style));
-        } else if visible.ends_with('\n') && self.snapshot.len() == self.completed_count {
-            self.snapshot.push(Line::raw(""));
-        }
-    }
-}
-
 pub(crate) struct StreamingContent {
     typewriter: Typewriter,
     cache: StreamingCache,
-    plain: PlainState,
     renderer: Renderer,
     prefix: &'static str,
     text_style: Style,
     prefix_style: Style,
-    mode: RenderMode,
+    last_rendered_at: Option<Instant>,
 }
 
 impl StreamingContent {
@@ -211,37 +109,29 @@ impl StreamingContent {
         Self {
             typewriter: Typewriter::with_speed(ms_per_char),
             cache: StreamingCache::default(),
-            plain: PlainState::new(prefix, text_style, prefix_style),
             renderer: Renderer::unwrapped(),
             prefix,
             text_style,
             prefix_style,
-            mode: RenderMode::Plain,
+            last_rendered_at: None,
         }
     }
 
     pub fn push(&mut self, text: &str) {
         self.typewriter.push(text);
-        if self.mode == RenderMode::Markdown {
-            self.mode = RenderMode::Plain;
-            self.cache.invalidate();
-            self.plain.clear();
-        }
     }
 
     pub fn clear(&mut self) {
         self.typewriter.clear();
-        self.plain.clear();
         self.cache.invalidate();
         self.renderer = Renderer::unwrapped();
-        self.mode = RenderMode::Plain;
+        self.last_rendered_at = None;
     }
 
     pub fn take_all(&mut self) -> String {
-        self.plain.clear();
         self.cache.invalidate();
         self.renderer = Renderer::unwrapped();
-        self.mode = RenderMode::Plain;
+        self.last_rendered_at = None;
         self.typewriter.take_all()
     }
 
@@ -261,74 +151,54 @@ impl StreamingContent {
         self.prefix = prefix;
         self.text_style = text_style;
         self.prefix_style = prefix_style;
-        self.plain.set_style(prefix, text_style, prefix_style);
         self.cache.invalidate();
-        self.mode = RenderMode::Plain;
+        self.last_rendered_at = None;
+    }
+
+    fn should_refresh(&self, width: u16, now: Instant) -> bool {
+        self.cache
+            .requires_immediate_refresh(&self.typewriter, width)
+            || !self.typewriter.is_animating()
+            || self
+                .last_rendered_at
+                .is_none_or(|last| now.saturating_duration_since(last) >= STREAMING_RENDER_INTERVAL)
     }
 
     pub fn render_lines(&mut self, width: u16) -> &[Line<'static>] {
         self.typewriter.tick();
-
-        if self.mode == RenderMode::Markdown && self.typewriter.is_animating() {
-            self.mode = RenderMode::Plain;
-            self.cache.invalidate();
-            self.plain.clear();
-        }
-
-        if self.mode == RenderMode::Plain && !self.typewriter.is_animating() {
-            self.mode = RenderMode::Markdown;
-            self.plain.clear();
-            self.cache.get_or_update(
+        let now = Instant::now();
+        if self.should_refresh(width, now)
+            && self.cache.get_or_update(
                 &mut self.renderer,
                 &self.typewriter,
                 self.prefix,
                 self.text_style,
                 self.prefix_style,
                 width,
-            );
+            )
+        {
+            self.last_rendered_at = Some(now);
         }
-
-        let (lines, rendered_height) = match self.mode {
-            RenderMode::Plain => {
-                self.plain.update(&self.typewriter);
-                let plain = &mut self.plain;
-                (&*plain.snapshot, &mut plain.rendered_height)
-            }
-            RenderMode::Markdown => {
-                let cache = &mut self.cache;
-                (&*cache.lines, &mut cache.rendered_height)
-            }
-        };
-
-        if rendered_height.is_none_or(|(w, _)| w != width) {
-            let height = wrapped_line_count(lines, width);
-            *rendered_height = Some((width, height));
+        if self.cache.rendered_height.is_none_or(|(w, _)| w != width) {
+            let height = wrapped_line_count(&self.cache.lines, width);
+            self.cache.rendered_height = Some((width, height));
         }
-
-        lines
+        &self.cache.lines
     }
 
     pub fn cached_lines(&self) -> &[Line<'static>] {
-        match self.mode {
-            RenderMode::Plain => &self.plain.snapshot,
-            RenderMode::Markdown => &self.cache.lines,
-        }
+        &self.cache.lines
     }
 
     pub fn height(&mut self, width: u16) -> u16 {
         self.render_lines(width);
-        match self.mode {
-            RenderMode::Plain => self.plain.rendered_height.map_or(0, |(_, h)| h),
-            RenderMode::Markdown => self.cache.rendered_height.map_or(0, |(_, h)| h),
-        }
+        self.cache.rendered_height.map_or(0, |(_, h)| h)
     }
 
     #[cfg(test)]
     pub fn set_buffer(&mut self, text: &str) {
         self.typewriter.set_buffer(text);
-        self.plain.clear();
         self.cache.invalidate();
-        self.mode = RenderMode::Plain;
     }
 }
 
@@ -343,12 +213,11 @@ impl std::fmt::Debug for StreamingContent {
         f.debug_struct("StreamingContent")
             .field("typewriter", &self.typewriter)
             .field("cache", &self.cache)
-            .field("plain", &self.plain)
             .field("renderer", &self.renderer)
             .field("prefix", &self.prefix)
             .field("text_style", &self.text_style)
             .field("prefix_style", &self.prefix_style)
-            .field("mode", &self.mode)
+            .field("last_rendered_at", &self.last_rendered_at)
             .finish()
     }
 }
@@ -593,18 +462,77 @@ mod tests {
     }
 
     #[test]
-    fn plain_state_accepts_text_after_empty_snapshot() {
+    fn active_stream_reparses_only_after_render_interval() {
         let style = Style::default();
-        let mut state = PlainState::new("", style, style);
-        state.update(&typewriter_for_text(""));
-        state.update(&typewriter_for_text("hello"));
+        let width = 80;
+        let mut content = StreamingContent::new("", style, style, 4);
+        content.push(&"x".repeat(1_000));
+        let now = Instant::now();
+        content.cache.key = Some(CacheKey::for_typewriter(
+            &content.typewriter,
+            width,
+            theme::generation(),
+        ));
+        content.last_rendered_at = Some(now);
 
-        let rendered: String = state.snapshot[0]
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        assert_eq!(rendered, "hello");
+        assert!(!content.should_refresh(width, now));
+        assert!(content.should_refresh(width, now + STREAMING_RENDER_INTERVAL));
+    }
+
+    #[test]
+    fn chunk_boundary_renders_match_full_markdown_each_step() {
+        let style = Style::default();
+        let width = 80;
+        let mut sc = StreamingContent::new("p> ", style, style, 0);
+        let chunks = [
+            "**bold",
+            " text**\n",
+            "- item one\n",
+            "- item two\n",
+            "```rust\nfn main() {}\n```\n",
+            "after\n",
+        ];
+        let mut full = String::new();
+        for chunk in chunks {
+            sc.push(chunk);
+            full.push_str(chunk);
+            sc.render_lines(width);
+            assert_eq!(
+                cache_lines_text(&sc.cache),
+                full_render_lines(&full, "p> ", width),
+                "render diverged from markdown after pushing {chunk:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn streaming_height_tracks_growing_content() {
+        let style = Style::default();
+        let width = 80;
+        let mut sc = StreamingContent::new("", style, style, 0);
+        let chunks = [
+            "line one\nline two\n",
+            "line three\nline four\nline five\n",
+            "tail",
+        ];
+        let mut full = String::new();
+        let mut prev = 0u16;
+        for chunk in chunks {
+            sc.push(chunk);
+            full.push_str(chunk);
+            let h = sc.height(width);
+            assert!(
+                h >= prev,
+                "height regressed from {prev} to {h} after pushing {chunk:?}"
+            );
+            prev = h;
+        }
+        let expected =
+            u16::try_from(full_render_lines(&full, "", width).len()).unwrap_or_else(|_| u16::MAX);
+        assert_eq!(
+            prev, expected,
+            "final streaming height must match the full markdown render"
+        );
     }
 
     #[test]
