@@ -93,7 +93,7 @@ fn activity_lines<'a>(
             let left = if prefix.width() >= left_width {
                 truncate_end(&prefix, left_width)
             } else {
-                let detail_width = left_width - prefix.width() - 3;
+                let detail_width = left_width.saturating_sub(prefix.width().saturating_add(3));
                 let detail = truncate_tail(activity.detail, detail_width);
                 if detail.is_empty() {
                     prefix
@@ -181,5 +181,16 @@ mod tests {
     fn empty_width_is_safe() {
         let lines = activity_lines(&[activity("tail")], 0, 2);
         assert_eq!(line_text(&lines[0]), "");
+    }
+
+    #[test]
+    fn detail_separator_width_cannot_underflow() {
+        let mut activity = activity("tail");
+        activity.status = "";
+        let prefix_width = "◈ task · tools · 12s".width();
+
+        let lines = activity_lines(&[activity], u16::try_from(prefix_width + 2).unwrap(), 1);
+
+        assert!(line_text(&lines[0]).width() <= prefix_width + 2);
     }
 }

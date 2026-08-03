@@ -266,6 +266,9 @@ static THEME: LazyLock<ArcSwap<Theme>> =
     LazyLock::new(|| ArcSwap::from_pointee(Theme::load_or_bundled()));
 
 static GENERATION: AtomicU64 = AtomicU64::new(0);
+static NO_COLOR: LazyLock<bool> = LazyLock::new(|| env::var_os("NO_COLOR").is_some());
+static HIGH_CONTRAST: LazyLock<bool> =
+    LazyLock::new(|| env::var_os("N00N_HIGH_CONTRAST").is_some_and(|value| value != "0"));
 
 pub fn current() -> Guard<Arc<Theme>> {
     THEME.load()
@@ -317,12 +320,12 @@ pub enum SemanticRole {
 
 #[must_use]
 pub fn no_color() -> bool {
-    env::var_os("NO_COLOR").is_some()
+    *NO_COLOR
 }
 
 #[must_use]
 pub fn high_contrast() -> bool {
-    env::var_os("N00N_HIGH_CONTRAST").is_some_and(|value| value != "0")
+    *HIGH_CONTRAST
 }
 
 #[must_use]

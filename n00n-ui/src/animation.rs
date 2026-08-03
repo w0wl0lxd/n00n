@@ -9,6 +9,8 @@ const SPINNER_FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '�
 const SPINNER_STRS: [&str; 10] = ["⠋ ", "⠙ ", "⠹ ", "⠸ ", "⠼ ", "⠴ ", "⠦ ", "⠧ ", "⠇ ", "⠏ "];
 const SPINNER_FRAME_MS: u128 = 80;
 static REDUCED_MOTION: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+pub(crate) static REDUCED_MOTION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub fn set_reduced_motion(enabled: bool) {
     REDUCED_MOTION.store(enabled, Ordering::Relaxed);
@@ -250,6 +252,9 @@ mod tests {
 
     #[test]
     fn reduced_motion_freezes_spinners_and_reveals_text() {
+        let _guard = REDUCED_MOTION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         set_reduced_motion(true);
         assert_eq!(spinner_frame(SPINNER_FRAME_MS), SPINNER_FRAMES[0]);
         assert_eq!(spinner_str(SPINNER_FRAME_MS), SPINNER_STRS[0]);
@@ -263,6 +268,9 @@ mod tests {
 
     #[test]
     fn spinner_wraps_around() {
+        let _guard = REDUCED_MOTION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let first = spinner_frame(0);
         let wrapped = spinner_frame(SPINNER_FRAME_MS * SPINNER_FRAMES.len() as u128);
         assert_eq!(first, wrapped);
@@ -271,6 +279,9 @@ mod tests {
 
     #[test]
     fn push_animates_and_empty_push_is_noop() {
+        let _guard = REDUCED_MOTION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         set_reduced_motion(false);
         let mut tw = Typewriter::new();
         tw.push("");
@@ -292,6 +303,9 @@ mod tests {
 
     #[test]
     fn extend_preserves_visible_and_animates_new() {
+        let _guard = REDUCED_MOTION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut tw = Typewriter::new();
         tw.set_buffer("ab");
         tw.push("cdefghijklmnop");
@@ -352,6 +366,9 @@ mod tests {
 
     #[test]
     fn partial_eq_compares_full_buffer() {
+        let _guard = REDUCED_MOTION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut tw = Typewriter::new();
         tw.push("hello world, this is enough text");
         assert_eq!(tw, "hello world, this is enough text");

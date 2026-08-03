@@ -4574,6 +4574,50 @@ fn closing_split_restores_layout() {
 }
 
 #[test]
+fn onboarding_footer_context_precedes_permission_context() {
+    let mut app = test_app();
+    app.onboarding.open();
+    app.permission_prompt.open(
+        n00n_config::ToolKey::native("bash"),
+        vec!["ls".into()],
+        None,
+    );
+
+    assert_eq!(
+        app.footer_context(),
+        crate::components::footer::FooterContext::Welcome
+    );
+}
+
+#[test]
+fn activity_shelf_excludes_current_main_chat() {
+    let mut app = test_app();
+    app.chats[0].shell_tool_start(ToolStartEvent {
+        id: "main-tool".into(),
+        tool: "bash".into(),
+        summary: "running".into(),
+        annotation: None,
+        input: None,
+        raw_input: None,
+        output: None,
+        render_header: None,
+    });
+
+    assert_eq!(app.activity_shelf_height(TEST_AREA), 0);
+}
+
+#[test]
+fn activity_shelf_only_reserves_rows_on_main_chat() {
+    let mut app = app_with_subagent();
+
+    assert_eq!(app.activity_shelf_height(TEST_AREA), 1);
+
+    app.update(Msg::Key(kb::NEXT_CHAT.to_key_event()));
+
+    assert_eq!(app.activity_shelf_height(TEST_AREA), 0);
+}
+
+#[test]
 fn permission_prompt_takes_bottom_precedence_over_below_split() {
     let mut app = test_app();
     open_split_window(&mut app, n00n_lua::Split::Below);

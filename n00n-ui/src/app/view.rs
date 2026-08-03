@@ -39,14 +39,29 @@ impl App {
         let layout = self.compute_layout(frame.area(), form_visible);
         let render_chat = self.resolve_render_chat();
 
-        let footer_context = if self.permission_prompt.is_editing() {
+        let footer_context = self.footer_context();
+
+        Self::render_background(frame);
+        self.render_messages(frame, &layout, render_chat);
+        self.render_bottom_panel(frame, &layout);
+        footer::view(frame, layout.footer_area, footer_context);
+        self.render_splits(frame, &layout);
+        let mut overlay_rect = self.render_picker_overlays(frame, &layout);
+        self.render_status_bar(frame, layout.status_area, render_chat);
+        overlay_rect = self.render_top_modals(frame, overlay_rect);
+        self.register_zones(&layout, overlay_rect);
+        self.apply_selection(frame, render_chat);
+    }
+
+    pub(super) fn footer_context(&self) -> footer::FooterContext {
+        if self.onboarding.is_open() {
+            footer::FooterContext::Welcome
+        } else if self.permission_prompt.is_editing() {
             footer::FooterContext::PermissionEdit
         } else if self.permission_prompt.is_confirming() {
             footer::FooterContext::PermissionConfirm
         } else if self.permission_prompt.is_open() {
             footer::FooterContext::Permission
-        } else if self.onboarding.is_open() {
-            footer::FooterContext::Welcome
         } else if self.help_modal.is_open() {
             footer::FooterContext::Help
         } else if self.plan_form_active() {
@@ -65,18 +80,7 @@ impl App {
             footer::FooterContext::Modal
         } else {
             footer::FooterContext::Default
-        };
-
-        Self::render_background(frame);
-        self.render_messages(frame, &layout, render_chat);
-        self.render_bottom_panel(frame, &layout);
-        footer::view(frame, layout.footer_area, footer_context);
-        self.render_splits(frame, &layout);
-        let mut overlay_rect = self.render_picker_overlays(frame, &layout);
-        self.render_status_bar(frame, layout.status_area, render_chat);
-        overlay_rect = self.render_top_modals(frame, overlay_rect);
-        self.register_zones(&layout, overlay_rect);
-        self.apply_selection(frame, render_chat);
+        }
     }
 
     fn compute_layout(&self, area: Rect, form_visible: bool) -> ViewLayout {
@@ -106,7 +110,12 @@ impl App {
         let below_active = splits.rect(Split::Below).is_some();
         let bottom_takeover = form_visible || below_active;
         let max_bottom = inner.height.saturating_sub(MIN_CHAT_ROWS);
-        let activity_count = self.chats.iter().filter(|chat| chat.is_working()).count();
+        let activity_count = self
+            .chats
+            .iter()
+            .skip(1)
+            .filter(|chat| chat.is_working())
+            .count();
         let activity_height = if !bottom_takeover && self.is_main_chat() && activity_count > 0 {
             cast::usize_to_u16(activity_count.clamp(1, 4))
         } else {
@@ -175,6 +184,11 @@ impl App {
             splits,
             bottom_takeover,
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn activity_shelf_height(&self, area: Rect) -> u16 {
+        self.compute_layout(area, false).activity_area.height
     }
 
     pub(crate) fn resolve_render_chat(&self) -> usize {
@@ -254,6 +268,7 @@ impl App {
             let activities = self
                 .chats
                 .iter()
+                .skip(1)
                 .filter(|chat| chat.is_working())
                 .map(|chat| Activity {
                     name: &chat.name,

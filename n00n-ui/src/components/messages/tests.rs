@@ -80,6 +80,17 @@ fn finish_with_live_buf(
     buf
 }
 
+#[test]
+fn activity_elapsed_resets_when_idle_panel_starts_working() {
+    let mut panel = test_panel();
+    panel.activity_started_at = Instant::now().checked_sub(Duration::from_secs(60));
+    assert!(!panel.is_working());
+
+    panel.tool_start(start("t1", BASH_TOOL_NAME));
+
+    assert!(panel.activity_elapsed() < Duration::from_secs(1));
+}
+
 #[test_case(false, ToolStatus::Success ; "success_updates_start_to_success")]
 #[test_case(true,  ToolStatus::Error   ; "error_updates_start_to_error")]
 fn tool_done_updates_start_status(is_error: bool, expected: ToolStatus) {
