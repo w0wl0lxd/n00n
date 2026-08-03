@@ -816,6 +816,7 @@ and tool set.
   - `fast` (`boolean?`) use fast mode. Inherits parent setting if omitted.
   - `include_mcp` (`boolean?`) inherit the parent MCP handle. Default: `true`.
   - `except` (`string[]?`) tool names that remain unavailable if loaded later.
+  - `delegation_policy` (`string?`) internal delegation gate. Defaults to `"configured"`.
 
 **Returns:** ([`Session?`](#n00n-agent-Session), `string?`) Session handle, or `(nil, err)` on failure.
 
