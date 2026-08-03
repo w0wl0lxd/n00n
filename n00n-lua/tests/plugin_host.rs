@@ -4262,6 +4262,107 @@ fn plugin_state_capture_services_nested_lua_tool_calls() {
 }
 
 #[test]
+fn plugin_state_capture_services_lua_session_tool_calls() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let source = format!(
+        r#"
+        n00n.api.register_tool({{
+            name = "session_state_writer", description = "test", schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main", "general_sub" }},
+            handler = function(input, ctx)
+                local _, err = ctx:state_replace("root", {{ value = "session-nested" }})
+                return err or "written"
+            end,
+        }})
+        n00n.api.register_tool({{
+            name = "session_state_parent", description = "test", schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                local buf = n00n.ui.buf()
+                buf:set_lines({{ "waiting" }})
+                ctx:live_buf(buf)
+                local id = n00n.fn.jobstart("sleep 0.5")
+                n00n.fn.jobwait(id)
+                local session, session_err = n00n.agent.session(ctx, {{}})
+                if session_err then return session_err end
+                local result, prompt_err = session:prompt("write state")
+                session:close()
+                if prompt_err then return prompt_err end
+                local state, state_err = ctx:state_get("root")
+                if state_err then return state_err end
+                return state and state.value or result.text
+            end,
+        }})
+        "#
+    );
+    host.load_source("session_nested_state", &source).unwrap();
+    let provider = ScriptedSessionProvider::new([
+        Ok(session_response(
+            vec![ContentBlock::ToolUse {
+                id: "session-state-call".to_owned(),
+                name: "session_state_writer".to_owned(),
+                input: serde_json::json!({}),
+            }],
+            TokenUsage::default(),
+            StopReason::ToolUse,
+        )),
+        Ok(session_response(
+            vec![ContentBlock::Text {
+                text: "finished".to_owned(),
+            }],
+            TokenUsage::default(),
+            StopReason::EndTurn,
+        )),
+    ]);
+    let identity = SessionIdentity::root(SessionRef::generate());
+    let entry = reg.get("session_state_parent").unwrap();
+    let invocation = entry.tool.parse(&serde_json::json!({})).unwrap();
+    let (event_tx, event_rx) = flume::unbounded();
+    let sender = n00n_agent::EventSender::new(event_tx, 0);
+    let mut ctx = n00n_agent::tools::test_support::stub_ctx_with(
+        &n00n_agent::AgentMode::Build,
+        Some(&sender),
+        Some("session-nested-state"),
+    );
+    ctx.identity = Some(identity.clone());
+    ctx.registry = Arc::clone(&reg);
+    ctx.provider = Arc::new(provider);
+    ctx.model = Arc::new(Model::from_spec("anthropic/claude-opus-4-8").unwrap());
+    let worker = std::thread::spawn(move || smol::block_on(invocation.execute(&ctx)));
+
+    loop {
+        let event = event_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        if matches!(
+            event.event,
+            n00n_agent::AgentEvent::LiveToolBuf { ref id, .. } if id == "session-nested-state"
+        ) {
+            break;
+        }
+    }
+
+    let snapshot = host
+        .event_handle()
+        .unwrap()
+        .capture_state(&identity, 1)
+        .unwrap();
+    assert_eq!(
+        worker.join().unwrap().output.unwrap().as_text(),
+        "session-nested"
+    );
+    assert_eq!(
+        snapshot
+            .plugin_payload_for_apply(
+                "session_nested_state",
+                1,
+                n00n_storage::sessions::StoredStateScope::Root,
+            )
+            .unwrap(),
+        Some(&serde_json::json!({"value": "session-nested"}))
+    );
+}
+
+#[test]
 fn plugin_state_isolates_namespaces_and_session_scope_while_sharing_root_scope() {
     let reg = fresh_registry();
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();

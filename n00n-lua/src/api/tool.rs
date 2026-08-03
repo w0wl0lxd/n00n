@@ -1,7 +1,7 @@
 #![allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 
 use std::borrow::Cow;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -71,24 +71,6 @@ type ToolHandlesFn = Box<dyn Fn(&str) -> Option<ToolHandles>>;
 
 thread_local! {
     static LOCAL_TOOL_HANDLES: RefCell<Option<ToolHandlesFn>> = const { RefCell::new(None) };
-    static NESTED_DISPATCH_DEPTH: Cell<usize> = const { Cell::new(0) };
-}
-
-pub(crate) struct NestedDispatchGuard;
-
-pub(crate) fn enter_nested_dispatch() -> NestedDispatchGuard {
-    NESTED_DISPATCH_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
-    NestedDispatchGuard
-}
-
-fn nested_dispatch_active() -> bool {
-    NESTED_DISPATCH_DEPTH.with(|depth| depth.get() > 0)
-}
-
-impl Drop for NestedDispatchGuard {
-    fn drop(&mut self) {
-        NESTED_DISPATCH_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
-    }
 }
 
 pub(crate) fn set_local_tool_handles(f: impl Fn(&str) -> Option<ToolHandles> + 'static) {
@@ -265,7 +247,6 @@ impl Tool for LuaTool {
             input: validated,
             tx: self.tx.clone(),
             permission_state,
-            nested: nested_dispatch_active(),
             mutable_path_field: self.mutable_path_field.clone(),
             timeout: self.timeout,
             start_annotation: self.start_annotation.clone(),
@@ -286,7 +267,6 @@ struct LuaToolInvocation {
     input: Value,
     tx: Sender<Request>,
     permission_state: PermissionState,
-    nested: bool,
     mutable_path_field: Option<Arc<str>>,
     timeout: Option<Duration>,
     start_annotation: Option<StartAnnotation>,
@@ -302,7 +282,6 @@ impl ToolInvocation for LuaToolInvocation {
         let plugin = Arc::clone(&self.plugin);
         let input = self.input.clone();
         let tx = self.tx.clone();
-        let nested = self.nested;
         let fallback = tool.to_string();
         HeaderFuture::Pending {
             fallback: fallback.clone(),
@@ -312,7 +291,6 @@ impl ToolInvocation for LuaToolInvocation {
                         plugin: Arc::clone(&plugin),
                         tool: Arc::clone(&tool),
                         input,
-                        nested,
                         reply: reply_tx,
                     })
                     .await;
@@ -362,7 +340,6 @@ impl ToolInvocation for LuaToolInvocation {
                 tool_use_id: id.clone(),
             },
             ctx: Box::new(LuaCtx::start(ctx)),
-            nested: self.nested,
             reply: reply_tx,
         };
         let tx = self.tx.clone();
@@ -382,7 +359,6 @@ impl ToolInvocation for LuaToolInvocation {
                 let plugin = Arc::clone(&self.plugin);
                 let tool = Arc::clone(&self.tool);
                 let input = self.input.clone();
-                let nested = self.nested;
                 let fallback = input.to_string();
                 Box::pin(async move {
                     if tx
@@ -390,7 +366,6 @@ impl ToolInvocation for LuaToolInvocation {
                             plugin,
                             tool,
                             input,
-                            nested,
                             reply: reply_tx,
                         })
                         .await
@@ -421,7 +396,6 @@ impl ToolInvocation for LuaToolInvocation {
         let input = self.input;
         let tx = self.tx;
         let tool_timeout = self.timeout;
-        let nested = self.nested;
 
         Box::pin(async move {
             let effective_secs: Option<u64> = match tool_timeout {
@@ -455,7 +429,6 @@ impl ToolInvocation for LuaToolInvocation {
                         Deadline::At(t) => Some(t),
                         Deadline::None => None,
                     },
-                    nested,
                     reply: reply_tx,
                     live,
                 })
@@ -1699,7 +1672,6 @@ mod tests {
             input,
             tx,
             permission_state: PermissionState::Ready(None),
-            nested: false,
             mutable_path_field: None,
             timeout: Some(Duration::from_mins(1)),
             start_annotation: None,
@@ -1859,7 +1831,6 @@ mod tests {
             input: serde_json::json!({"command": "ls"}),
             tx,
             permission_state: PermissionState::NeedsCompute,
-            nested: false,
             mutable_path_field: None,
             timeout: None,
             start_annotation: None,
@@ -1878,7 +1849,6 @@ mod tests {
             input: serde_json::json!({"command": "echo hi"}),
             tx: tx2,
             permission_state: PermissionState::NeedsCompute,
-            nested: false,
             mutable_path_field: None,
             timeout: None,
             start_annotation: None,
@@ -1903,7 +1873,6 @@ mod tests {
             input: serde_json::json!({"command": "cargo test"}),
             tx,
             permission_state: PermissionState::NeedsCompute,
-            nested: false,
             mutable_path_field: None,
             timeout: None,
             start_annotation: None,

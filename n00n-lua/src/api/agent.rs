@@ -577,7 +577,6 @@ async fn call_tool(
         on_buf,
         on_ann,
     };
-    let _nested_dispatch = crate::api::tool::enter_nested_dispatch();
     let done = dispatch_racing_live(&tctx, &name, &input_json, rx, &cbs).await;
     // Same fallback the UI applies on tool completion, so a batch child's
     // header carries the annotation its standalone run would get.
@@ -721,7 +720,7 @@ async fn session(
             audience,
             workflow: false,
         };
-        let tools = n00n_agent::tools::ToolRegistry::global().definitions_active(
+        let tools = agent_ctx.registry.definitions_active(
             &vars,
             &ctx,
             model.supports_tool_examples(),
@@ -862,7 +861,7 @@ async fn session(
             file_tracker: FileReadTracker::fresh(),
             prompt_slots: Arc::clone(&agent_ctx.prompt_slots),
             subagent_cancels: Arc::new(CancelMap::new()),
-            registry: Arc::clone(n00n_agent::tools::ToolRegistry::global_arc()),
+            registry: Arc::clone(&agent_ctx.registry),
             audience,
         },
         system: system.unwrap_or_else(String::new),
