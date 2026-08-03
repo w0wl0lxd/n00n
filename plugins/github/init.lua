@@ -3,7 +3,7 @@ local ToolView = require("n00n.tool_view")
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Use **github** for GitHub API operations: list_issues, create_issue, list_prs, get_repo, create_pr, add_comment.",
+  content = "- Use **github** for GitHub API operations: list_issues, create_issue, list_prs, get_repo, get_issue, get_pr, create_pr, add_comment.",
 })
 
 local function dispatch(input)
@@ -19,7 +19,7 @@ local function dispatch(input)
   end
 
   if command == "list_issues" then
-    local ok, result = pcall(n00n_github.list_issues, owner, repo)
+    local ok, result = pcall(n00n_github.list_issues, owner, repo, input.token)
     if not ok then
       return { llm_output = "error: " .. tostring(result), is_error = true }
     end
@@ -37,7 +37,7 @@ local function dispatch(input)
     if not input.title or not input.body then
       return { llm_output = "error: title and body required for create_issue", is_error = true }
     end
-    local ok, result = pcall(n00n_github.create_issue, owner, repo, input.title, input.body)
+    local ok, result = pcall(n00n_github.create_issue, owner, repo, input.title, input.body, input.token)
     if not ok then
       return { llm_output = "error: " .. tostring(result), is_error = true }
     end
@@ -45,7 +45,7 @@ local function dispatch(input)
   end
 
   if command == "list_prs" then
-    local ok, result = pcall(n00n_github.list_prs, owner, repo)
+    local ok, result = pcall(n00n_github.list_prs, owner, repo, input.token)
     if not ok then
       return { llm_output = "error: " .. tostring(result), is_error = true }
     end
@@ -60,7 +60,7 @@ local function dispatch(input)
   end
 
   if command == "get_repo" then
-    local ok, result = pcall(n00n_github.get_repo, owner, repo)
+    local ok, result = pcall(n00n_github.get_repo, owner, repo, input.token)
     if not ok then
       return { llm_output = "error: " .. tostring(result), is_error = true }
     end
@@ -75,11 +75,51 @@ local function dispatch(input)
     return { llm_output = table.concat(lines, "\n") }
   end
 
+  if command == "get_issue" then
+    if not input.issue_number or type(input.issue_number) ~= "number" then
+      return { llm_output = "error: issue_number is required and must be a number", is_error = true }
+    end
+    local ok, result = pcall(n00n_github.get_issue, owner, repo, input.issue_number, input.token)
+    if not ok then
+      return { llm_output = "error: " .. tostring(result), is_error = true }
+    end
+    local lines = {
+      string.format("#%d %s (%s)", result.number, result.title, result.state),
+      "  Author: " .. result.user.login,
+      "  URL: " .. result.html_url,
+    }
+    if result.body then
+      table.insert(lines, "  Body: " .. result.body)
+    end
+    return { llm_output = table.concat(lines, "\n") }
+  end
+
+  if command == "get_pr" then
+    if not input.pr_number or type(input.pr_number) ~= "number" then
+      return { llm_output = "error: pr_number is required and must be a number", is_error = true }
+    end
+    local ok, result = pcall(n00n_github.get_pr, owner, repo, input.pr_number, input.token)
+    if not ok then
+      return { llm_output = "error: " .. tostring(result), is_error = true }
+    end
+    local lines = {
+      string.format("#%d %s (%s)", result.number, result.title, result.state),
+      "  Author: " .. result.user.login,
+      "  Head: " .. result.head.ref_field,
+      "  Base: " .. result.base.ref_field,
+      "  URL: " .. result.html_url,
+    }
+    if result.body then
+      table.insert(lines, "  Body: " .. result.body)
+    end
+    return { llm_output = table.concat(lines, "\n") }
+  end
+
   if command == "create_pr" then
     if not input.head or not input.base or not input.title or not input.body then
       return { llm_output = "error: head, base, title, and body required for create_pr", is_error = true }
     end
-    local ok, result = pcall(n00n_github.create_pr, owner, repo, input.head, input.base, input.title, input.body)
+    local ok, result = pcall(n00n_github.create_pr, owner, repo, input.head, input.base, input.title, input.body, input.token)
     if not ok then
       return { llm_output = "error: " .. tostring(result), is_error = true }
     end
@@ -90,7 +130,7 @@ local function dispatch(input)
     if not input.issue_number or not input.body then
       return { llm_output = "error: issue_number and body required for add_comment", is_error = true }
     end
-    local ok, result = pcall(n00n_github.add_comment, owner, repo, input.issue_number, input.body)
+    local ok, result = pcall(n00n_github.add_comment, owner, repo, input.issue_number, input.body, input.token)
     if not ok then
       return { llm_output = "error: " .. tostring(result), is_error = true }
     end
@@ -104,14 +144,14 @@ n00n.api.register_tool({
   name = "github",
   kind = "read",
   description = [[
-Query GitHub repositories, issues, and pull requests using the REST API. Requires GITHUB_TOKEN.
+Query GitHub repositories, issues, and pull requests using the REST API. Token sources: GITHUB_TOKEN env var, optional token parameter, or gh CLI fallback.
 ]],
   schema = {
     type = "object",
     properties = {
       command = {
         type = "string",
-        enum = { "list_issues", "create_issue", "list_prs", "get_repo", "create_pr", "add_comment" },
+        enum = { "list_issues", "create_issue", "list_prs", "get_repo", "get_issue", "get_pr", "create_pr", "add_comment" },
         required = true,
       },
       owner = { type = "string" },
@@ -121,6 +161,8 @@ Query GitHub repositories, issues, and pull requests using the REST API. Require
       head = { type = "string" },
       base = { type = "string" },
       issue_number = { type = "number" },
+      pr_number = { type = "number" },
+      token = { type = "string" },
     },
   },
   header = function(input)
@@ -138,7 +180,13 @@ Query GitHub repositories, issues, and pull requests using the REST API. Require
   end,
   permission_scopes = function(input)
     local command = input.command or ""
-    if command == "list_issues" or command == "list_prs" or command == "get_repo" then
+    if
+      command == "list_issues"
+      or command == "list_prs"
+      or command == "get_repo"
+      or command == "get_issue"
+      or command == "get_pr"
+    then
       return { scopes = { "github.read" }, force_prompt = false }
     elseif command == "create_issue" or command == "create_pr" or command == "add_comment" then
       return { scopes = { "github.write" }, force_prompt = true }
