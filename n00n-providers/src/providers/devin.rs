@@ -35,10 +35,10 @@ use super::devin_connect::{
 };
 use super::devin_proto::{
     CHAT_MESSAGE_SOURCE_SYSTEM, CHAT_MESSAGE_SOURCE_TOOL, CHAT_MESSAGE_SOURCE_USER,
-    ChatMessagePromptInput, ChatToolCall, ChatToolDefinition, ImageData, STOP_REASON_MAX_TOKENS,
-    STOP_REASON_TOOL_USE, STOP_REASON_UNSPECIFIED, decode_cli_model_configs,
-    decode_get_chat_message_response, decode_get_user_jwt_response, encode_chat_message_prompt,
-    encode_chat_tool_definition, encode_get_chat_message_request,
+    ChatMessagePromptInput, ChatToolCall, ChatToolDefinition, ImageData, ModelUsageStats,
+    STOP_REASON_MAX_TOKENS, STOP_REASON_TOOL_USE, STOP_REASON_UNSPECIFIED,
+    decode_cli_model_configs, decode_get_chat_message_response, decode_get_user_jwt_response,
+    encode_chat_message_prompt, encode_chat_tool_definition, encode_get_chat_message_request,
     encode_get_cli_model_configs_request, encode_get_user_jwt_request,
 };
 
@@ -201,6 +201,18 @@ fn clamp_tokens(field: &'static str, value: u64) -> u32 {
     }
 }
 
+fn devin_usage_to_token_usage(u: &ModelUsageStats) -> TokenUsage {
+    // Devin responses use both total and non-cached interpretations of
+    // input_tokens. Preserve the reported value rather than guessing from
+    // magnitudes, which can silently undercount fresh input.
+    TokenUsage {
+        input: clamp_tokens("input", u.input_tokens),
+        output: clamp_tokens("output", u.output_tokens),
+        cache_creation: clamp_tokens("cache_write", u.cache_write_tokens),
+        cache_read: clamp_tokens("cache_read", u.cache_read_tokens),
+    }
+}
+
 fn sanitize_trailer_code(code: &str) -> &str {
     if !code.is_empty()
         && code.len() <= MAX_TRAILER_CODE_LEN
@@ -281,9 +293,9 @@ fn encode_devin_tools(tools: &serde_json::Value) -> Result<Vec<Vec<u8>>, AgentEr
             .and_then(serde_json::Value::as_bool)
             .map_or(false, std::convert::identity);
         encoded.push(encode_chat_tool_definition(&ChatToolDefinition {
-            name,
-            description: description.map_or("", std::convert::identity),
-            json_schema_string: &schema_string,
+            name: name.to_string(),
+            description: description.map_or(String::new(), std::string::ToString::to_string),
+            json_schema_string: schema_string,
             strict,
         }));
     }
@@ -344,9 +356,9 @@ fn encode_devin_chat_message_prompts(
                     match block {
                         ContentBlock::Text { text } => prompt_text.push_str(text),
                         ContentBlock::Image { source } => images.push(ImageData {
-                            base64_data: source.data.as_ref(),
-                            mime_type: source.media_type.mime(),
-                            caption: "",
+                            base64_data: source.data.to_string(),
+                            mime_type: source.media_type.mime().to_string(),
+                            caption: String::new(),
                         }),
                         ContentBlock::File { source } => {
                             let identifier = source.identifier().unwrap_or_else(|| "unknown");
@@ -897,22 +909,26 @@ impl Devin {
                     }
                 }
 
-                if response.stop_reason != STOP_REASON_UNSPECIFIED {
-                    stop_reason = match response.stop_reason {
-                        STOP_REASON_MAX_TOKENS => StopReason::MaxTokens,
-                        STOP_REASON_TOOL_USE => StopReason::ToolUse,
-                        unknown => {
+                if response.stop_reason != u64::from(STOP_REASON_UNSPECIFIED) {
+                    stop_reason = match u32::try_from(response.stop_reason) {
+                        Ok(STOP_REASON_MAX_TOKENS) => StopReason::MaxTokens,
+                        Ok(STOP_REASON_TOOL_USE) => StopReason::ToolUse,
+                        Ok(unknown) => {
                             debug!(stop_reason = unknown, "unknown Devin stop reason");
+                            StopReason::EndTurn
+                        }
+                        Err(_) => {
+                            debug!(
+                                stop_reason = response.stop_reason,
+                                "Devin stop reason exceeds supported range"
+                            );
                             StopReason::EndTurn
                         }
                     };
                 }
 
                 if let Some(u) = response.usage {
-                    usage.input = clamp_tokens("input", u.input_tokens);
-                    usage.output = clamp_tokens("output", u.output_tokens);
-                    usage.cache_read = clamp_tokens("cache_read", u.cache_read_tokens);
-                    usage.cache_creation = clamp_tokens("cache_write", u.cache_write_tokens);
+                    usage = devin_usage_to_token_usage(&u);
                 }
             }
         }
@@ -996,6 +1012,7 @@ impl Provider for Devin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use prost::Message as ProstMessage;
 
     #[test]
     fn normalize_session_token_adds_prefix() {
@@ -1011,6 +1028,55 @@ mod tests {
             normalize_session_token("devin-session-token$abc123"),
             "devin-session-token$abc123"
         );
+    }
+
+    #[test]
+    fn devin_usage_preserves_reported_input() {
+        let stats = ModelUsageStats {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_read_tokens: 30,
+            cache_write_tokens: 20,
+        };
+        let usage = devin_usage_to_token_usage(&stats);
+        assert_eq!(usage.input, 100);
+        assert_eq!(usage.output, 50);
+        assert_eq!(usage.cache_read, 30);
+        assert_eq!(usage.cache_creation, 20);
+        assert_eq!(usage.total_input(), 150);
+    }
+
+    #[test]
+    fn devin_usage_preserves_input_when_cache_exceeds_total() {
+        // Some responses report input_tokens as the non-cached remainder.
+        // Keep the reported value instead of saturating to zero.
+        let stats = ModelUsageStats {
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_read_tokens: 100,
+            cache_write_tokens: 50,
+        };
+        let usage = devin_usage_to_token_usage(&stats);
+        assert_eq!(usage.input, 10);
+        assert_eq!(usage.cache_read, 100);
+        assert_eq!(usage.cache_creation, 50);
+        assert_eq!(usage.total_input(), 160);
+    }
+
+    #[test]
+    fn devin_usage_with_no_cache() {
+        let stats = ModelUsageStats {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+        };
+        let usage = devin_usage_to_token_usage(&stats);
+        assert_eq!(usage.input, 100);
+        assert_eq!(usage.output, 50);
+        assert_eq!(usage.cache_read, 0);
+        assert_eq!(usage.cache_creation, 0);
+        assert_eq!(usage.total_input(), 100);
     }
 
     #[test]
@@ -1082,10 +1148,14 @@ mod tests {
     const TRAILER_JSON_ERROR: &str = "invalid Devin end-stream trailer JSON";
 
     fn prompt_string_field(prompt: &[u8], field_number: u64) -> Option<String> {
-        crate::providers::devin_proto::iter_fields(prompt)
-            .map(|field| field.expect("valid prompt field"))
-            .find(|(field, wire, _)| *field == field_number && *wire == 2)
-            .map(|(_, _, value)| String::from_utf8(value.to_vec()).expect("UTF-8 prompt field"))
+        let msg = crate::providers::devin_proto::ChatMessagePrompt::decode(prompt)
+            .expect("invalid Devin ChatMessagePrompt data");
+        match field_number {
+            1 => Some(msg.message_id),
+            3 => Some(msg.prompt),
+            7 => Some(msg.tool_call_id),
+            _ => None,
+        }
     }
 
     #[test]
