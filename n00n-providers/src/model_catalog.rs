@@ -59,6 +59,11 @@ impl ModelCatalog {
 
     /// Resolve an externally supplied model identifier without allowing the
     /// permissive model parser to create an unconfigured model.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the identifier is unavailable, its provider is
+    /// not configured, or its catalog metadata is invalid.
     pub fn resolve(&self, input: &str) -> Result<Model, ModelCatalogError> {
         let spec = self.canonical_spec(input)?;
         let (provider, _) = spec.split_once('/').ok_or(ModelCatalogError::InvalidSpec)?;
@@ -118,6 +123,12 @@ impl ModelResolver {
         &self.catalog
     }
 
+    /// Resolve a model identifier against the current catalog snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the identifier is unavailable, its provider is
+    /// not configured, or its catalog metadata is invalid.
     pub fn resolve(&self, input: &str) -> Result<Model, ModelCatalogError> {
         self.catalog.resolve(input)
     }

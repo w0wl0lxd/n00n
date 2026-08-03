@@ -15,46 +15,46 @@ const SECTIONS: &[(&str, &[&str])] = &[
     (
         "File Operations",
         &[
-            "bash",
-            "read",
-            "write",
-            "edit",
-            "multiedit",
-            "edit_lines",
-            "insert_lines",
-            "explore",
-            "glob",
-            "grep",
-            "index",
+            "run_shell",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "edit_file_bulk",
+            "edit_file_lines",
+            "insert_file_lines",
+            "explore_code",
+            "search_files",
+            "search_code",
+            "index_file",
             "view_image",
-            "codegraph",
-            "semblem",
-            "arbor",
+            "map_codegraph",
+            "search_text",
+            "map_code",
         ],
     ),
     (
         "Execution & Control",
-        &["batch", "code_execution", "question"],
+        &["run_batch", "run_python", "ask_user"],
     ),
     (
         "Agent & Knowledge",
         &[
-            "agent_list",
-            "agent_status",
-            "agent_control",
-            "blackboard",
-            "team",
-            "task",
-            "workflow",
-            "todo_write",
-            "memory",
-            "skill",
-            "tool_search",
+            "list_agents",
+            "get_agent",
+            "control_agent",
+            "use_blackboard",
+            "run_team",
+            "run_task",
+            "run_workflow",
+            "update_todo",
+            "use_memory",
+            "load_skill",
+            "search_tools",
             "load_namespace",
-            "fusion_delegate",
+            "delegate_fusion",
         ],
     ),
-    ("Web", &["webfetch", "websearch"]),
+    ("Web", &["fetch_url", "search_web"]),
 ];
 
 struct ToolInfo {
@@ -273,7 +273,7 @@ fn load_registry_with_builtins() -> (Arc<ToolRegistry>, HashSet<String>) {
 
     let mut plugins = HashMap::new();
     let mut edit = PluginFileConfig::default();
-    for &sub in n00n_config::EDIT_SUB_TOOLS {
+    for &sub in n00n_config::EDIT_SUB_TOOL_OPTIONS {
         edit.opts.insert(sub.to_owned(), Value::Bool(true));
     }
     plugins.insert("edit".to_owned(), edit);

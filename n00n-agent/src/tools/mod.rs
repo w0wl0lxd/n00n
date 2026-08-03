@@ -246,6 +246,7 @@ pub const TOOL_ALIASES: &[(&str, &str)] = &[
     ("agent_control", AGENT_CONTROL_TOOL_NAME),
     ("agent_list", "list_agents"),
     ("agent_status", "get_agent"),
+    ("arbor", "map_code"),
     ("batch", BATCH_TOOL_NAME),
     ("bash", BASH_TOOL_NAME),
     ("blackboard", "use_blackboard"),
@@ -254,6 +255,7 @@ pub const TOOL_ALIASES: &[(&str, &str)] = &[
     ("edit", EDIT_TOOL_NAME),
     ("edit_lines", "edit_file_lines"),
     ("explore", "explore_code"),
+    ("fusion_delegate", "delegate_fusion"),
     ("glob", GLOB_TOOL_NAME),
     ("grep", GREP_TOOL_NAME),
     ("index", "index_file"),
@@ -276,10 +278,13 @@ pub const TOOL_ALIASES: &[(&str, &str)] = &[
 
 #[must_use]
 pub fn canonical_tool_name(name: &str) -> &str {
-    TOOL_ALIASES
+    match TOOL_ALIASES
         .iter()
         .find_map(|(alias, canonical)| (*alias == name).then_some(*canonical))
-        .unwrap_or(name)
+    {
+        Some(canonical) => canonical,
+        None => name,
+    }
 }
 
 pub(crate) const PLAN_WRITE_RESTRICTED: &str = "write restricted to plan file in plan mode";
@@ -539,7 +544,9 @@ pub fn truncate_output(text: &str, max_lines: usize, max_bytes: usize) -> String
 #[must_use]
 pub fn is_builtin_tool(name: &str) -> bool {
     let canonical = canonical_tool_name(name);
-    n00n_config::DEFAULT_BUILTINS.contains(&canonical)
+    n00n_config::DEFAULT_BUILTINS
+        .iter()
+        .any(|builtin| canonical_tool_name(builtin) == canonical)
         || n00n_config::EDIT_SUB_TOOLS.contains(&canonical)
 }
 
@@ -547,8 +554,8 @@ pub fn is_builtin_tool(name: &str) -> bool {
 pub fn all_builtin_tool_names() -> Vec<&'static str> {
     n00n_config::DEFAULT_BUILTINS
         .iter()
-        .chain(n00n_config::EDIT_SUB_TOOLS.iter())
-        .copied()
+        .map(|name| canonical_tool_name(name))
+        .chain(n00n_config::EDIT_SUB_TOOLS.iter().copied())
         .collect()
 }
 
@@ -1214,6 +1221,22 @@ mod tests {
             err.contains("invalid glob pattern"),
             "expected 'invalid glob pattern', got: {err}"
         );
+    }
+
+    #[test_case("arbor", "map_code" ; "arbor")]
+    #[test_case("edit_lines", "edit_file_lines" ; "edit_lines")]
+    #[test_case("fusion_delegate", "delegate_fusion" ; "fusion_delegate")]
+    #[test_case("insert_lines", "insert_file_lines" ; "insert_lines")]
+    #[test_case("multiedit", "edit_file_bulk" ; "multiedit")]
+    fn legacy_tool_aliases_resolve(alias: &str, canonical: &str) {
+        assert_eq!(canonical_tool_name(alias), canonical);
+    }
+
+    #[test_case("edit_file_lines" ; "edit_lines")]
+    #[test_case("insert_file_lines" ; "insert_lines")]
+    #[test_case("edit_file_bulk" ; "multiedit")]
+    fn canonical_edit_sub_tools_are_builtins(name: &str) {
+        assert!(is_builtin_tool(name));
     }
 
     #[test]

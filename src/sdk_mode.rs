@@ -40,22 +40,22 @@ use uuid::Uuid;
 use crate::cli::Cli;
 
 const TOOL_NAME_MAP: &[(&str, &str)] = &[
-    ("bash", "Bash"),
-    ("read", "Read"),
-    ("edit", "Edit"),
-    ("write", "Write"),
-    ("grep", "Grep"),
-    ("glob", "Glob"),
-    ("todo_write", "TodoWrite"),
-    ("webfetch", "WebFetch"),
-    ("websearch", "WebSearch"),
-    ("task", "Task"),
-    ("multiedit", "MultiEdit"),
-    ("code_execution", "CodeExecution"),
-    ("index", "Index"),
-    ("memory", "Memory"),
-    ("question", "Question"),
-    ("skill", "Skill"),
+    ("run_shell", "Bash"),
+    ("read_file", "Read"),
+    ("edit_file", "Edit"),
+    ("write_file", "Write"),
+    ("search_code", "Grep"),
+    ("search_files", "Glob"),
+    ("update_todo", "TodoWrite"),
+    ("fetch_url", "WebFetch"),
+    ("search_web", "WebSearch"),
+    ("run_task", "Task"),
+    ("edit_file_bulk", "MultiEdit"),
+    ("run_python", "CodeExecution"),
+    ("index_file", "Index"),
+    ("use_memory", "Memory"),
+    ("ask_user", "Question"),
+    ("load_skill", "Skill"),
 ];
 
 /// Emits a hyphenated-hex `UUIDv7` string for Claude Code SDK wire ids
@@ -394,10 +394,11 @@ impl StreamSynth {
 }
 
 fn n00n_to_claude_tool_name(name: &str) -> &str {
+    let canonical = n00n_agent::tools::canonical_tool_name(name);
     TOOL_NAME_MAP
         .iter()
-        .find(|(m, _)| *m == name)
-        .map_or(name, |(_, c)| *c)
+        .find(|(n00n, _)| *n00n == canonical)
+        .map_or(canonical, |(_, claude)| *claude)
 }
 
 #[derive(Clone)]
@@ -934,24 +935,17 @@ fn handle_control_request(
 fn resolve_set_model(model_val: Option<&Value>, startup_model: &Model) -> Option<Model> {
     let resolver = ModelResolver::current();
     match model_val? {
-        Value::Null => match resolver.resolve(&startup_model.spec()) {
-            Ok(model) => Some(model),
-            Err(_) => {
-                eprintln!(
-                    "warning: startup model is no longer configured or available; keeping current model"
-                );
-                None
-            }
-        },
-        Value::String(model_str) => match resolver.resolve(model_str) {
-            Ok(model) => Some(model),
-            Err(_) => {
+        Value::Null => Some(startup_model.clone()),
+        Value::String(model_str) => {
+            if let Ok(model) = resolver.resolve(model_str) {
+                Some(model)
+            } else {
                 eprintln!(
                     "warning: requested model is not configured or available; keeping current model"
                 );
                 None
             }
-        },
+        }
         _ => None,
     }
 }
@@ -1284,21 +1278,21 @@ mod tests {
             .map_or(name, |(m, _)| *m)
     }
 
-    #[test_case("bash", "Bash")]
-    #[test_case("read", "Read")]
-    #[test_case("edit", "Edit")]
-    #[test_case("write", "Write")]
-    #[test_case("grep", "Grep")]
-    #[test_case("glob", "Glob")]
-    #[test_case("todo_write", "TodoWrite")]
-    #[test_case("webfetch", "WebFetch")]
-    #[test_case("websearch", "WebSearch")]
-    #[test_case("task", "Task")]
-    #[test_case("multiedit", "MultiEdit")]
-    #[test_case("code_execution", "CodeExecution")]
-    #[test_case("index", "Index")]
-    #[test_case("memory", "Memory")]
-    #[test_case("question", "Question")]
+    #[test_case("run_shell", "Bash")]
+    #[test_case("read_file", "Read")]
+    #[test_case("edit_file", "Edit")]
+    #[test_case("write_file", "Write")]
+    #[test_case("search_code", "Grep")]
+    #[test_case("search_files", "Glob")]
+    #[test_case("update_todo", "TodoWrite")]
+    #[test_case("fetch_url", "WebFetch")]
+    #[test_case("search_web", "WebSearch")]
+    #[test_case("run_task", "Task")]
+    #[test_case("edit_file_bulk", "MultiEdit")]
+    #[test_case("run_python", "CodeExecution")]
+    #[test_case("index_file", "Index")]
+    #[test_case("use_memory", "Memory")]
+    #[test_case("ask_user", "Question")]
     fn n00n_to_claude_roundtrip(n00n: &str, claude: &str) {
         assert_eq!(n00n_to_claude_tool_name(n00n), claude);
         assert_eq!(claude_to_n00n_tool_name(claude), n00n);
