@@ -59,6 +59,8 @@ const SAFE_ACTIVITY_DESCRIPTION_TOOLS: &[&str] = &[
     "write",
 ];
 const PROGRESS_TIMEOUT_MS: u64 = 500;
+const LIVE_EVENT_QUEUE_CAPACITY: usize = 256;
+const SUBAGENT_EVENT_QUEUE_CAPACITY: usize = 1024;
 const STEERING_QUEUE_CAPACITY: usize = 32;
 const TOOL_EXCLUSIONS_META_FIELD: &str = "__n00n_tool_exclusions";
 
@@ -116,6 +118,16 @@ fn parse_session_mode(
 type Pair<T> = (Option<T>, Option<String>);
 
 #[allow(clippy::needless_pass_by_value)]
+fn normalize_tool_definitions(tools: JsonValue) -> Result<JsonValue, String> {
+    if tools.is_array() {
+        return Ok(tools);
+    }
+    if tools.as_object().is_some_and(serde_json::Map::is_empty) {
+        return Ok(JsonValue::Array(Vec::new()));
+    }
+    Err("tools must be an array".to_owned())
+}
+
 fn explicit_tool_filter(tools: &JsonValue) -> Result<ToolFilter, String> {
     let definitions = tools
         .as_array()
@@ -563,7 +575,7 @@ async fn call_tool(
         on_buf = o.get::<Option<Function>>("on_live_buf")?;
         on_ann = o.get::<Option<Function>>("on_annotation")?;
         if on_buf.is_some() || on_ann.is_some() {
-            let (tx, r) = flume::unbounded();
+            let (tx, r) = flume::bounded(LIVE_EVENT_QUEUE_CAPACITY);
             tctx.live_sink = Some(tx);
             rx = Some(r);
         }
@@ -694,19 +706,12 @@ async fn session(
     // A standalone task shows its model via SubagentInfo on the header;
     // a dispatching caller (batch) gets the same thing as a live annotation.
     if let Some(sink) = &agent_ctx.live_sink {
-        let _ = sink.send(ToolLive::Annotation(model.spec()));
+        let _ = sink.try_send(ToolLive::Annotation(model.spec()));
     }
 
     let explicit_tools = tools_val.is_some();
     let (mut tools_json, mut tool_filter) = if let Some(val) = tools_val {
-        let empty_lua_table = matches!(&val, LuaValue::Table(table) if table.is_empty());
-        let mut tools = lua_to_json(&lua, &val)?;
-        if empty_lua_table && matches!(&tools, JsonValue::Object(object) if object.is_empty()) {
-            tools = JsonValue::Array(Vec::new());
-        }
-        if !tools.is_array() {
-            return Err(mlua::Error::runtime("tools must be an array"));
-        }
+        let tools = try_pair!(normalize_tool_definitions(lua_to_json(&lua, &val)?));
         (tools, ToolFilter::All)
     } else {
         let vars = n00n_agent::template::Vars::new();
@@ -726,10 +731,6 @@ async fn session(
             serde_json::to_value(tools).map_err(|e| mlua::Error::runtime(e.to_string()))?;
         (tools_json, filter)
     };
-
-    if explicit_tools {
-        tool_filter = ToolFilter::All;
-    }
 
     let mut local_map: HashMap<String, LocalToolFn> = HashMap::new();
     if let Some(tbl) = local_tools_tbl {
@@ -792,7 +793,7 @@ async fn session(
     let child_id = session_id.to_string();
     let parent_tool_use_id = child_id.clone();
     let start = Instant::now();
-    let (sub_tx, sub_rx) = flume::unbounded::<Envelope>();
+    let (sub_tx, sub_rx) = flume::bounded::<Envelope>(SUBAGENT_EVENT_QUEUE_CAPACITY);
     let sub_event_tx = EventSender::new(sub_tx, agent_ctx.event_tx.run_id());
     let parent_tx = agent_ctx.event_tx.clone();
     let (answer_tx, answer_rx) = flume::unbounded::<String>();
@@ -1750,6 +1751,15 @@ mod tests {
         filter_appended_definitions(&mut definitions, base_count, &only);
 
         assert_eq!(definitions, json!([{"name": "read"}]));
+    }
+
+    #[test]
+    fn empty_explicit_tools_are_normalized_to_an_array() {
+        assert_eq!(
+            normalize_tool_definitions(json!({})).unwrap(),
+            JsonValue::Array(Vec::new())
+        );
+        assert!(normalize_tool_definitions(json!({"name": "read"})).is_err());
     }
 
     #[test]
