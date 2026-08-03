@@ -1,7 +1,7 @@
 use std::any::Any;
 use std::fmt::Write;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use flume::Sender;
@@ -998,7 +998,7 @@ pub enum AgentEvent {
 /// Append-only buffer for streaming tool output to the UI. Writers append
 /// under a Mutex, readers get a cheap Arc clone via `read_if_dirty()`.
 pub struct SharedBuf {
-    committed: Mutex<Arc<Vec<SnapshotLine>>>,
+    state: Mutex<SharedBufState>,
     dirty: AtomicBool,
     on_change: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     /// Opaque click handler owned by the Lua layer. It lives on the buffer
@@ -1006,27 +1006,29 @@ pub struct SharedBuf {
     /// even a foreign wrapper in another task, reaches the same handler.
     click: Mutex<Option<Arc<dyn Any + Send + Sync>>>,
     notifying: AtomicBool,
-    /// Number of leading lines already handed out through `read_if_dirty`,
-    /// `read_incremental`, or `take`. Lets incremental readers render only
-    /// the newly appended tail instead of the whole buffer.
-    consumed: AtomicUsize,
-    /// Set by `set_lines`: the buffer was replaced wholesale, so the
-    /// consumed watermark is meaningless and the next read must re-render
-    /// from line 0.
-    replaced_since_read: AtomicBool,
+}
+
+struct SharedBufState {
+    lines: Arc<Vec<SnapshotLine>>,
+    consumed: usize,
+    replaced: bool,
+    revision: u64,
 }
 
 impl SharedBuf {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            committed: Mutex::new(Arc::new(Vec::new())),
+            state: Mutex::new(SharedBufState {
+                lines: Arc::new(Vec::new()),
+                consumed: 0,
+                replaced: false,
+                revision: 0,
+            }),
             dirty: AtomicBool::new(false),
             on_change: Mutex::new(None),
             click: Mutex::new(None),
             notifying: AtomicBool::new(false),
-            consumed: AtomicUsize::new(0),
-            replaced_since_read: AtomicBool::new(false),
         }
     }
 
@@ -1087,32 +1089,35 @@ impl SharedBuf {
     }
 
     pub fn append(&self, line: SnapshotLine) {
-        let mut guard = self
-            .committed
+        let mut state = self
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Arc::make_mut(&mut guard).push(line);
-        drop(guard);
+        Arc::make_mut(&mut state.lines).push(line);
+        state.revision = state.revision.wrapping_add(1);
+        drop(state);
         self.dirty.store(true, Ordering::Release);
         self.notify_change();
     }
 
     pub fn set_lines(&self, lines: Vec<SnapshotLine>) {
-        let mut guard = self
-            .committed
+        let mut state = self
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *guard = Arc::new(lines);
-        drop(guard);
-        self.replaced_since_read.store(true, Ordering::Release);
+        state.lines = Arc::new(lines);
+        state.replaced = true;
+        state.revision = state.revision.wrapping_add(1);
+        drop(state);
         self.dirty.store(true, Ordering::Release);
         self.notify_change();
     }
 
     pub fn len(&self) -> usize {
-        self.committed
+        self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lines
             .len()
     }
 
@@ -1121,24 +1126,24 @@ impl SharedBuf {
     }
 
     pub fn read(&self) -> Arc<Vec<SnapshotLine>> {
-        let guard = self
-            .committed
+        let state = self
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Arc::clone(&guard)
+        Arc::clone(&state.lines)
     }
 
     pub fn read_if_dirty(&self) -> Option<Arc<Vec<SnapshotLine>>> {
         if !self.dirty.swap(false, Ordering::AcqRel) {
             return None;
         }
-        let guard = self
-            .committed
+        let mut state = self
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.consumed.store(guard.len(), Ordering::Relaxed);
-        self.replaced_since_read.store(false, Ordering::Release);
-        Some(Arc::clone(&guard))
+        state.consumed = state.lines.len();
+        state.replaced = false;
+        Some(Arc::clone(&state.lines))
     }
 
     /// Delta read for append-heavy streaming: tells the caller where the new
@@ -1147,34 +1152,48 @@ impl SharedBuf {
         if !self.dirty.swap(false, Ordering::AcqRel) {
             return None;
         }
-        let guard = self
-            .committed
+        let state = self
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let len = guard.len();
-        let replaced = self.replaced_since_read.swap(false, Ordering::AcqRel);
-        let new_start = if replaced {
+        let new_start = if state.replaced {
             0
         } else {
-            self.consumed.load(Ordering::Relaxed).min(len)
+            state.consumed.min(state.lines.len())
         };
-        self.consumed.store(len, Ordering::Relaxed);
         Some(SharedBufIncremental {
-            lines: Arc::clone(&guard),
+            lines: Arc::clone(&state.lines),
             new_start,
-            replaced,
+            replaced: state.replaced,
+            revision: state.revision,
         })
+    }
+
+    pub fn finish_incremental(&self, read: &SharedBufIncremental, applied: bool) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.revision != read.revision {
+            return;
+        }
+        if applied {
+            state.consumed = read.lines.len();
+            state.replaced = false;
+        } else {
+            self.dirty.store(true, Ordering::Release);
+        }
     }
 
     pub fn take(&self) -> BufferSnapshot {
         self.dirty.store(false, Ordering::Release);
-        let guard = self
-            .committed
+        let mut state = self
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.consumed.store(guard.len(), Ordering::Relaxed);
-        self.replaced_since_read.store(false, Ordering::Release);
-        BufferSnapshot::from_arc(Arc::clone(&guard))
+        state.consumed = state.lines.len();
+        state.replaced = false;
+        BufferSnapshot::from_arc(Arc::clone(&state.lines))
     }
 }
 
@@ -1187,6 +1206,7 @@ pub struct SharedBufIncremental {
     /// True when the buffer was replaced wholesale since the last read;
     /// callers must re-render everything, not just the tail.
     pub replaced: bool,
+    revision: u64,
 }
 
 impl Default for SharedBuf {
@@ -1510,6 +1530,7 @@ mod tests {
         assert!(!first.replaced);
         assert_eq!(first.new_start, 0);
         assert_eq!(first.lines.len(), 1);
+        buf.finish_incremental(&first, true);
 
         buf.append(line(2));
         buf.append(line(3));
@@ -1519,8 +1540,21 @@ mod tests {
         assert_eq!(second.lines.len(), 3);
         assert_eq!(second.lines[1].spans[0].text, "2");
         assert_eq!(second.lines[2].spans[0].text, "3");
+        buf.finish_incremental(&second, true);
 
         assert!(buf.read_incremental().is_none(), "no new appends");
+    }
+
+    #[test]
+    fn rejected_incremental_read_is_retried() {
+        let buf = SharedBuf::new();
+        buf.append(SnapshotLine::plain("a".into()));
+        let rejected = buf.read_incremental().expect("first read");
+        buf.finish_incremental(&rejected, false);
+
+        let retried = buf.read_incremental().expect("retry");
+        assert_eq!(retried.new_start, 0);
+        assert_eq!(retried.lines.len(), 1);
     }
 
     #[test]
@@ -1854,7 +1888,7 @@ mod tests {
         let buf = Arc::new(SharedBuf::new());
         let buf2 = Arc::clone(&buf);
         let h = std::thread::spawn(move || {
-            let _guard = buf2.committed.lock().unwrap();
+            let _guard = buf2.state.lock().unwrap();
             panic!("intentional poison");
         });
         let _ = h.join();

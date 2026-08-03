@@ -603,12 +603,9 @@ pub fn extract_selected_text(
 
         let region_end = region.area.bottom();
         let fully_selected = ss.covers_rect(region.area);
-
-        if !out.is_empty() {
-            out.push('\n');
-        }
+        let mut chunk = String::new();
         if fully_selected && !region.raw_text.is_empty() {
-            out.push_str(region.raw_text);
+            chunk.push_str(region.raw_text);
         } else {
             let chunk_end = region_end.min(ss.end_row.saturating_add(1));
             append_rows(
@@ -617,14 +614,17 @@ pub fn extract_selected_text(
                 ss,
                 row,
                 chunk_end,
-                &mut out,
+                &mut chunk,
                 &region.line_breaks,
             );
         }
+        if !chunk.is_empty() {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&chunk);
+        }
         row = region_end;
-    }
-    while out.ends_with('\n') {
-        out.pop();
     }
     out
 }
@@ -1103,6 +1103,21 @@ mod tests {
         };
         let text = extract_selected_text(&buf, ss(0, 0, 0, 0), &[region]);
         assert_eq!(text, "H");
+    }
+
+    #[test]
+    fn fully_selected_raw_text_preserves_trailing_newlines() {
+        let buf = Buffer::empty(Rect::new(0, 0, 10, 2));
+        let region = ContentRegion {
+            area: Rect::new(0, 0, 10, 2),
+            raw_text: "Line A\n\n",
+            ..Default::default()
+        };
+
+        assert_eq!(
+            extract_selected_text(&buf, ss(0, 0, 1, 9), &[region]),
+            "Line A\n\n"
+        );
     }
 
     #[test]

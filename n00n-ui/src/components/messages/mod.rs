@@ -1436,7 +1436,7 @@ impl MessagesPanel {
         snapshot: BufferSnapshot,
         is_header: bool,
         theme_gen: Option<u64>,
-    ) {
+    ) -> bool {
         let (old_start, old_height) = self.segment_position(tool_id);
         let anchor_auto_scroll = self.auto_scroll && self.last_total_lines > self.viewport_height;
         if theme_gen.is_some() {
@@ -1446,24 +1446,26 @@ impl MessagesPanel {
             self.stop_watching(tool_id);
         }
         let Some(applied_gen) = self.resolve_snapshot_gen(tool_id, theme_gen) else {
-            return;
+            return false;
         };
-        if let Some(msg) = self.find_tool_msg_mut(tool_id) {
-            if is_header {
-                msg.text = snapshot.first_line_text();
-                msg.render_header = Some(snapshot);
-            } else {
-                msg.render_snapshot = Some(snapshot);
-            }
-            msg.snapshot_theme_gen = applied_gen;
-            self.rebuild_tool_segment(tool_id);
-            let (_, new_height) = self.segment_position(tool_id);
-            if anchor_auto_scroll {
-                self.shift_scroll_for_height_change(old_height, new_height);
-            } else {
-                self.preserve_anchor(old_start, old_height, tool_id);
-            }
+        let Some(msg) = self.find_tool_msg_mut(tool_id) else {
+            return false;
+        };
+        if is_header {
+            msg.text = snapshot.first_line_text();
+            msg.render_header = Some(snapshot);
+        } else {
+            msg.render_snapshot = Some(snapshot);
         }
+        msg.snapshot_theme_gen = applied_gen;
+        self.rebuild_tool_segment(tool_id);
+        let (_, new_height) = self.segment_position(tool_id);
+        if anchor_auto_scroll {
+            self.shift_scroll_for_height_change(old_height, new_height);
+        } else {
+            self.preserve_anchor(old_start, old_height, tool_id);
+        }
+        true
     }
 
     fn find_tool_msg_mut(&mut self, tool_id: &str) -> Option<&mut DisplayMessage> {
@@ -1489,13 +1491,21 @@ impl MessagesPanel {
             .live_bufs
             .iter()
             .chain(self.watched_bufs.iter().map(|(id, buf)| (id, buf)))
-            .filter_map(|(id, buf)| buf.read_incremental().map(|inc| (id.clone(), inc)))
+            .filter_map(|(id, buf)| {
+                buf.read_incremental()
+                    .map(|read| (id.clone(), Arc::clone(buf), read))
+            })
             .collect();
-        for (tool_id, inc) in dirty {
-            if !inc.replaced && self.append_snapshot_tail(&tool_id, &inc.lines, inc.new_start) {
-                continue;
-            }
-            self.store_snapshot(&tool_id, BufferSnapshot::from_arc(inc.lines), false, None);
+        for (tool_id, buf, read) in dirty {
+            let applied = (!read.replaced
+                && self.append_snapshot_tail(&tool_id, &read.lines, read.new_start))
+                || self.store_snapshot(
+                    &tool_id,
+                    BufferSnapshot::from_arc(Arc::clone(&read.lines)),
+                    false,
+                    None,
+                );
+            buf.finish_incremental(&read, applied);
         }
     }
 

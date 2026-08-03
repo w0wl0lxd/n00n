@@ -6,8 +6,10 @@ use crate::theme;
 use n00n_markdown::render::Renderer;
 use ratatui::style::Style;
 use ratatui::text::Line;
+use std::time::{Duration, Instant};
 
 const STREAMING_MAX_LINE_BYTES: usize = 5_000;
+const STREAMING_RENDER_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Block-level streaming markdown cache.
 ///
@@ -53,6 +55,13 @@ impl StreamingCache {
         self.rendered_height = None;
     }
 
+    fn requires_immediate_refresh(&self, tw: &Typewriter, width: u16) -> bool {
+        let theme_gen = theme::generation();
+        self.key.is_none_or(|key| {
+            key.generation != tw.generation() || key.width != width || key.theme_gen != theme_gen
+        })
+    }
+
     /// Returns `true` when the cache was repopulated. The caller passes a
     /// renderer so the highlighter/table-width state persists across calls
     /// for a stable streamed view.
@@ -87,6 +96,7 @@ pub(crate) struct StreamingContent {
     prefix: &'static str,
     text_style: Style,
     prefix_style: Style,
+    last_rendered_at: Option<Instant>,
 }
 
 impl StreamingContent {
@@ -103,6 +113,7 @@ impl StreamingContent {
             prefix,
             text_style,
             prefix_style,
+            last_rendered_at: None,
         }
     }
 
@@ -114,11 +125,13 @@ impl StreamingContent {
         self.typewriter.clear();
         self.cache.invalidate();
         self.renderer = Renderer::unwrapped();
+        self.last_rendered_at = None;
     }
 
     pub fn take_all(&mut self) -> String {
         self.cache.invalidate();
         self.renderer = Renderer::unwrapped();
+        self.last_rendered_at = None;
         self.typewriter.take_all()
     }
 
@@ -139,18 +152,33 @@ impl StreamingContent {
         self.text_style = text_style;
         self.prefix_style = prefix_style;
         self.cache.invalidate();
+        self.last_rendered_at = None;
+    }
+
+    fn should_refresh(&self, width: u16, now: Instant) -> bool {
+        self.cache
+            .requires_immediate_refresh(&self.typewriter, width)
+            || !self.typewriter.is_animating()
+            || self
+                .last_rendered_at
+                .is_none_or(|last| now.saturating_duration_since(last) >= STREAMING_RENDER_INTERVAL)
     }
 
     pub fn render_lines(&mut self, width: u16) -> &[Line<'static>] {
         self.typewriter.tick();
-        self.cache.get_or_update(
-            &mut self.renderer,
-            &self.typewriter,
-            self.prefix,
-            self.text_style,
-            self.prefix_style,
-            width,
-        );
+        let now = Instant::now();
+        if self.should_refresh(width, now)
+            && self.cache.get_or_update(
+                &mut self.renderer,
+                &self.typewriter,
+                self.prefix,
+                self.text_style,
+                self.prefix_style,
+                width,
+            )
+        {
+            self.last_rendered_at = Some(now);
+        }
         if self.cache.rendered_height.is_none_or(|(w, _)| w != width) {
             let height = wrapped_line_count(&self.cache.lines, width);
             self.cache.rendered_height = Some((width, height));
@@ -189,6 +217,7 @@ impl std::fmt::Debug for StreamingContent {
             .field("prefix", &self.prefix)
             .field("text_style", &self.text_style)
             .field("prefix_style", &self.prefix_style)
+            .field("last_rendered_at", &self.last_rendered_at)
             .finish()
     }
 }
@@ -430,6 +459,24 @@ mod tests {
             has_complete_content,
             "complete cell content should be rendered"
         );
+    }
+
+    #[test]
+    fn active_stream_reparses_only_after_render_interval() {
+        let style = Style::default();
+        let width = 80;
+        let mut content = StreamingContent::new("", style, style, 4);
+        content.push(&"x".repeat(1_000));
+        let now = Instant::now();
+        content.cache.key = Some(CacheKey::for_typewriter(
+            &content.typewriter,
+            width,
+            theme::generation(),
+        ));
+        content.last_rendered_at = Some(now);
+
+        assert!(!content.should_refresh(width, now));
+        assert!(content.should_refresh(width, now + STREAMING_RENDER_INTERVAL));
     }
 
     #[test]
