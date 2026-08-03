@@ -5921,24 +5921,18 @@ function M.route_tier(prompt)
 ### `require("n00n.secret_check")`
 
 ```lua
-local secret_check = require("n00n.secret_check")
-
 -- Heuristic secret pattern detection for tool content validation.
 --
 -- This is intentionally conservative: it flags common secret-bearing keywords and
 -- patterns so tools can surface a warning or require a justification. It does not
 -- attempt to be exhaustive, and it may false-positive on example keys in docs.
---
--- Checks for:
--- - Secret-keyword/token patterns (e.g., api_key, secret, token, password)
--- - Authorization headers (Basic and Bearer schemes)
---
+
 -- Returns (ok, reason). If ok is false, reason explains what triggered.
-function secret_check.check(text)
+function M.check(text)
 
 -- Convenience: returns a warning string if triggered, nil otherwise.
-function secret_check.reason(text)
-function secret_check.require_justification(text, justification, tool_name)
+function M.reason(text)
+function M.require_justification(text, justification, tool_name)
 ```
 
 ### `require("n00n.shorten_path")`
