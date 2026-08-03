@@ -4185,10 +4185,10 @@ fn session_explicit_empty_tools_sends_no_tools() {
 }
 
 #[test]
-fn session_explicit_nil_tools_sends_no_tools() {
+fn session_nil_tools_matches_omitted_tools() {
     assert_eq!(
         captured_session_tools("{ tools = nil }"),
-        serde_json::json!([])
+        captured_session_tools("{}")
     );
 }
 

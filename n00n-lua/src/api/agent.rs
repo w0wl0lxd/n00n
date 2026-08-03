@@ -611,7 +611,8 @@ async fn call_tool(
 /// @param opts table Optional fields:
 ///   `model_spec` (string?) - model spec string to use instead of the parent model.
 ///   `system` (string?) - system prompt. Defaults to empty.
-///   `tools` (table?) - tool definitions array (from `n00n.agent.tools()`).
+///   `tools` (table?) - tool definitions array (from `n00n.agent.tools()`). Omit it or
+///   set it to nil to use default tools; pass an empty table to disable tools.
 ///   `local_tools` (table?) - map of `name -> spec` for Lua-backed tools. Each spec
 ///     requires `description` (string), `input_schema` (table), and
 ///     `handler` (function). The handler receives the input table and must return
@@ -652,12 +653,9 @@ async fn session(
     drop(ctx);
     let model_spec: Option<String> = opts.get("model_spec")?;
     let system: Option<String> = opts.get("system")?;
-    let explicit_tools = opts.contains_key("tools")?;
-    let tools_val = if explicit_tools {
-        Some(opts.get::<LuaValue>("tools")?)
-    } else {
-        None
-    };
+    // Lua nil removes a table key, so nil intentionally has omitted semantics.
+    let tools_val: Option<LuaValue> = opts.get("tools")?;
+    let explicit_tools = tools_val.is_some();
     let local_tools_tbl: Option<Table> = opts.get("local_tools")?;
     let include_mcp = opts
         .get::<Option<bool>>("include_mcp")?

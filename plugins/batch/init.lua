@@ -73,10 +73,7 @@ local schema = {
 }
 
 --- Input normalization (pure) ---------------------------------------------
-
--- Batch entries are strictly { tool = string, parameters = object }.
--- The normalization code still tolerates flat fields for backward
--- compatibility, but new schemas should use the nested 'parameters' form.
+--- Batch entries must be { tool = string, parameters = object }.
 local function normalize_entry(entry)
   if type(entry) ~= "table" then
     return nil, "batch entry must be an object"
@@ -85,35 +82,10 @@ local function normalize_entry(entry)
   if type(tool) ~= "string" then
     return nil, "batch entry missing 'tool'"
   end
-  local rest = {}
-  local has_rest = false
-  for k, v in pairs(entry) do
-    if k ~= "tool" and k ~= "parameters" then
-      rest[k] = v
-      has_rest = true
-    end
+  if type(entry.parameters) ~= "table" then
+    return nil, "batch entry missing 'parameters'"
   end
-  local nested = entry.parameters
-  local params
-  if nested == nil then
-    if not has_rest then
-      return nil, "batch entry missing 'parameters'"
-    end
-    params = rest
-  elseif not has_rest then
-    params = nested
-  elseif type(nested) ~= "table" then
-    return nil, "'parameters' must be an object when flat fields are also present"
-  else
-    params = rest
-    for k, v in pairs(nested) do
-      if params[k] ~= nil then
-        return nil, "duplicate parameter '" .. k .. "' in both 'parameters' and flat fields"
-      end
-      params[k] = v
-    end
-  end
-  return { tool = tool, params = params }
+  return { tool = tool, params = entry.parameters }
 end
 
 --- Child presentation ------------------------------------------------------
