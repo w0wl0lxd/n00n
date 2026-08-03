@@ -92,8 +92,15 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
 
     loop {
         line.clear();
-        if reader.read_line(&mut line).await.context("read stdin")? == 0 {
-            break;
+        match reader.read_line(&mut line).await {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                warn!(error = %e, "invalid UTF-8 on stdin");
+                server.respond(RequestId::Null, Err(AcpError::parse_error()));
+                continue;
+            }
+            Err(e) => return Err(e).context("read stdin"),
         }
 
         let trimmed = line.trim();
@@ -110,7 +117,16 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
             }
         };
 
-        let id = raw.get("id").map(request_id);
+        let id = match raw.get("id") {
+            Some(v) => match request_id(v) {
+                Ok(id) => Some(id),
+                Err(()) => {
+                    server.respond(RequestId::Null, Err(AcpError::invalid_request()));
+                    continue;
+                }
+            },
+            None => None,
+        };
 
         if raw.get("result").is_some() || raw.get("error").is_some() {
             handle_incoming_response(&server, &raw);
@@ -130,8 +146,8 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
     Ok(())
 }
 
-fn request_id(v: &Value) -> RequestId {
-    serde_json::from_value(v.clone()).map_or(RequestId::Null, std::convert::identity)
+fn request_id(v: &Value) -> Result<RequestId, ()> {
+    serde_json::from_value(v.clone()).map_err(|_| ())
 }
 
 fn handle_request(srv: &mut Server, method: &str, id: RequestId, raw: &Value, params: &AcpParams) {
@@ -537,6 +553,7 @@ mod tests {
     use n00n_providers::{ContentBlock as MsgBlock, Role, TokenUsage};
     use n00n_storage::StateDir;
     use n00n_storage::sessions::Session;
+    use serde_json::json;
     use tempfile::TempDir;
 
     use super::*;
@@ -575,5 +592,20 @@ mod tests {
         let dir = StateDir::from_path(tmp.path().to_path_buf());
         let err = load_history_from(&dir, n00nId::generate()).unwrap_err();
         assert_eq!(err.code, AcpError::resource_not_found(None).code);
+    }
+
+    #[test]
+    fn request_id_parses_valid_ids() {
+        assert_eq!(request_id(&json!(5)), Ok(RequestId::Number(5)));
+        assert_eq!(request_id(&json!("abc")), Ok(RequestId::Str("abc".into())));
+        assert_eq!(request_id(&json!(null)), Ok(RequestId::Null));
+    }
+
+    #[test]
+    fn request_id_rejects_unparseable_ids() {
+        assert!(request_id(&json!({})).is_err());
+        assert!(request_id(&json!([])).is_err());
+        assert!(request_id(&json!(true)).is_err());
+        assert!(request_id(&json!(99999999999999999999999999999999_u64)).is_err());
     }
 }
