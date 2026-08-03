@@ -176,9 +176,11 @@ fn is_spec(spec: &str) -> bool {
 
 fn is_compatible_spec(input: &str, catalogued: &str) -> bool {
     input == catalogued
-        || input
-            .strip_prefix(catalogued)
-            .is_some_and(|suffix| suffix.starts_with('-'))
+        || input.strip_prefix(catalogued).is_some_and(|suffix| {
+            suffix.len() == 9
+                && suffix.starts_with('-')
+                && suffix[1..].bytes().all(|byte| byte.is_ascii_digit())
+        })
 }
 
 fn is_live_discovery_only_spec(spec: &str) -> bool {
@@ -257,12 +259,33 @@ mod tests {
     }
 
     #[test]
+    fn compatible_suffix_rejects_non_date_versions() {
+        let catalog = ModelCatalog::from_specs(["openai/gpt-4".to_string()]);
+
+        for spec in [
+            "openai/gpt-4-0613",
+            "openai/gpt-4-2025010",
+            "openai/gpt-4-202501011",
+            "openai/gpt-4-2025abcd",
+            "openai/gpt-4-20250101-preview",
+        ] {
+            assert!(
+                matches!(
+                    catalog.canonical_spec(spec),
+                    Err(ModelCatalogError::Unavailable(_))
+                ),
+                "unexpectedly accepted {spec}"
+            );
+        }
+    }
+
+    #[test]
     fn prefix_compatibility_requires_version_boundary() {
         let catalog = ModelCatalog::from_specs(["openai/gpt-4".to_string()]);
 
         assert_eq!(
-            catalog.canonical_spec("openai/gpt-4-0613").unwrap(),
-            "openai/gpt-4-0613"
+            catalog.canonical_spec("openai/gpt-4-20250101").unwrap(),
+            "openai/gpt-4-20250101"
         );
         assert!(matches!(
             catalog.canonical_spec("openai/gpt-4o"),

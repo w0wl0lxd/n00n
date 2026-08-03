@@ -238,48 +238,11 @@ pub const TODOWRITE_TOOL_NAME: &str = "update_todo";
 pub const VIEW_IMAGE_TOOL_NAME: &str = "view_image";
 pub const WRITE_TOOL_NAME: &str = "write_file";
 
-pub const TOOL_ALIASES: &[(&str, &str)] = &[
-    ("agent_control", AGENT_CONTROL_TOOL_NAME),
-    ("agent_list", "list_agents"),
-    ("agent_status", "get_agent"),
-    ("arbor", "map_code"),
-    ("batch", BATCH_TOOL_NAME),
-    ("bash", BASH_TOOL_NAME),
-    ("blackboard", "use_blackboard"),
-    ("code_execution", CODE_EXECUTION_TOOL_NAME),
-    ("codegraph", "map_codegraph"),
-    ("edit", EDIT_TOOL_NAME),
-    ("edit_lines", "edit_file_lines"),
-    ("explore", "explore_code"),
-    ("fusion_delegate", "delegate_fusion"),
-    ("glob", GLOB_TOOL_NAME),
-    ("grep", GREP_TOOL_NAME),
-    ("index", "index_file"),
-    ("insert_lines", "insert_file_lines"),
-    ("load_namespace", "load_toolset"),
-    ("memory", "use_memory"),
-    ("multi_edit", MULTIEDIT_TOOL_NAME),
-    ("multiedit", MULTIEDIT_TOOL_NAME),
-    ("question", QUESTION_TOOL_NAME),
-    ("read", READ_TOOL_NAME),
-    ("semblem", "search_text"),
-    ("skill", "load_skill"),
-    ("task", TASK_TOOL_NAME),
-    ("team", "run_team"),
-    ("todo_write", TODOWRITE_TOOL_NAME),
-    ("tool_search", "search_tools"),
-    ("webfetch", "fetch_url"),
-    ("websearch", "search_web"),
-    ("workflow", "run_workflow"),
-    ("write", WRITE_TOOL_NAME),
-];
+pub use n00n_config::TOOL_ALIASES;
 
 #[must_use]
 pub fn canonical_tool_name(name: &str) -> &str {
-    TOOL_ALIASES
-        .iter()
-        .find_map(|(alias, canonical)| (*alias == name).then_some(*canonical))
-        .map_or(name, |canonical| canonical)
+    n00n_config::canonical_tool_name(name)
 }
 
 fn same_tool(left: &str, right: &str) -> bool {

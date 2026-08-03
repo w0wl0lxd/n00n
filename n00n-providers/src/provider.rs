@@ -8,6 +8,7 @@ use serde_json::Value;
 use strum::{Display, EnumIter, EnumString};
 use tracing::{debug, info, warn};
 
+use n00n_config::providers::ProvidersConfig;
 use n00n_storage::id::SessionRef;
 
 use crate::model::{Model, ModelFamily, ModelInfo};
@@ -333,17 +334,30 @@ pub fn provider_for_slug(slug: &str, timeouts: Timeouts) -> Result<Box<dyn Provi
 
 #[must_use]
 pub fn provider_available(slug: &str) -> bool {
+    provider_available_with_config(slug, None)
+}
+
+fn provider_available_with_config(slug: &str, config: Option<&ProvidersConfig>) -> bool {
+    let loaded_config;
+    let config = match config {
+        Some(config) => config,
+        None => {
+            loaded_config = ProvidersConfig::load();
+            &loaded_config
+        }
+    };
+
     if matches!(slug, "ollama" | "llama-cpp") {
-        return local_provider_configured(slug);
+        return local_provider_configured(slug, config);
     }
     if slug == "cursor" {
-        return crate::providers::cursor::Cursor::has_credentials();
+        return crate::providers::cursor::Cursor::has_credentials()
+            && crate::providers::cursor::Cursor::has_required_settings();
     }
     if slug == "devin" {
         return crate::providers::devin::has_credentials();
     }
     if slug == "opencode" {
-        let config = n00n_config::providers::ProvidersConfig::load();
         let has_key = crate::providers::KeyPool::resolve(
             slug,
             &n00n_config::providers::resolve_api_key_env(slug, config.get(slug)),
@@ -358,8 +372,7 @@ pub fn provider_available(slug: &str) -> bool {
     provider_for_slug(slug, Timeouts::default()).is_ok()
 }
 
-fn local_provider_configured(slug: &str) -> bool {
-    let config = n00n_config::providers::ProvidersConfig::load();
+fn local_provider_configured(slug: &str, config: &ProvidersConfig) -> bool {
     let def = config.get(slug);
     let host_env = match slug {
         "ollama" => "OLLAMA_HOST",
@@ -480,9 +493,10 @@ pub struct ModelBatch {
 /// and configured dynamic providers. See [`fetch_all_models`] for live lookups.
 #[must_use]
 pub fn available_model_specs() -> Vec<String> {
+    let providers_config = ProvidersConfig::load();
     let mut specs: Vec<String> = crate::manifest::ManifestRegistry::builtins()
         .iter()
-        .filter(|m| provider_available(m.slug))
+        .filter(|m| provider_available_with_config(m.slug, Some(&providers_config)))
         .flat_map(|m| {
             m.models
                 .iter()
@@ -491,14 +505,14 @@ pub fn available_model_specs() -> Vec<String> {
         })
         .collect();
     for slug in dynamic::discovered_slugs() {
-        if provider_available(slug) {
+        if provider_available_with_config(slug, Some(&providers_config)) {
             specs.extend(dynamic::dynamic_model_specs_for(slug));
         }
     }
     for spec in crate::providers::custom::declared_model_specs() {
         let configured = spec
             .split_once('/')
-            .is_some_and(|(slug, _)| provider_available(slug));
+            .is_some_and(|(slug, _)| provider_available_with_config(slug, Some(&providers_config)));
         if configured && !specs.contains(&spec) {
             specs.push(spec);
         }
