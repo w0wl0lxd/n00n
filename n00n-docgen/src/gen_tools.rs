@@ -11,47 +11,56 @@ use n00n_lua::{OptionType, PluginHost};
 
 const DATE_PLACEHOLDER: &str = "YYYY-MM-DD";
 
-const SECTIONS: &[(&str, &[&str])] = &[
+const TOOL_GROUPS: &[(&str, &[&str])] = &[
     (
-        "File Operations",
+        "Explore & Search",
         &[
-            "bash",
+            "explore",
+            "index",
+            "glob",
+            "grep",
+            "semblem",
+            "codegraph",
+            "arbor",
+        ],
+    ),
+    (
+        "Files & Images",
+        &[
             "read",
             "write",
             "edit",
             "multiedit",
             "edit_lines",
             "insert_lines",
-            "explore",
-            "glob",
-            "grep",
-            "index",
             "view_image",
-            "codegraph",
-            "semblem",
-            "arbor",
         ],
     ),
     (
-        "Execution & Control",
-        &["batch", "code_execution", "question"],
+        "Shell & Execution",
+        &["bash", "code_execution", "batch", "question"],
     ),
     (
-        "Agent & Knowledge",
+        "Agents & Coordination",
         &[
             "agent_list",
             "agent_status",
             "agent_control",
-            "blackboard",
-            "team",
             "task",
+            "team",
             "workflow",
             "todo_write",
+            "fusion_delegate",
+        ],
+    ),
+    (
+        "Context & Discovery",
+        &[
             "memory",
             "skill",
             "tool_search",
             "load_namespace",
-            "fusion_delegate",
+            "blackboard",
         ],
     ),
     ("Web", &["webfetch", "websearch"]),
@@ -334,13 +343,19 @@ pub fn generate() -> String {
     writeln!(out).unwrap();
     writeln!(
         out,
-        "n00n ships with {total} built-in tools. This is the full reference."
+        "n00n ships with {total} built-in tools in this full reference, including opt-in edit sub-tools."
+    )
+    .unwrap();
+    writeln!(out).unwrap();
+    writeln!(
+        out,
+        "Use `explore` first for a general codebase question. Choose `index` for one-file structure, `arbor` for graph relationships, `codegraph` for cross-file structure or impact, and `semblem` for ranked search. Do not treat `explore` intents as separate tools."
     )
     .unwrap();
 
     let mut rendered: HashSet<&str> = HashSet::new();
 
-    for (section_name, tool_names) in SECTIONS {
+    for (section_name, tool_names) in TOOL_GROUPS {
         let present: Vec<&str> = tool_names
             .iter()
             .copied()
@@ -425,6 +440,16 @@ mod tests {
     const MAX_TOOL_DEFINITION_BYTES: usize = 46_000;
 
     #[test]
+    fn generated_reference_uses_canonical_guidance_and_count() {
+        let docs = generate();
+        assert!(docs.contains("n00n ships with 33 built-in tools"));
+        assert!(docs.contains("Use `explore` first for a general codebase question."));
+        assert!(docs.contains("## Explore & Search"));
+        assert!(docs.contains("## Context & Discovery"));
+        assert!(!docs.contains("## File Operations"));
+    }
+
+    #[test]
     fn tool_definitions_fit_byte_budget() {
         let vars = Vars::new()
             .set("{cwd}", "<cwd>")
@@ -450,7 +475,7 @@ mod tests {
     }
 
     #[test]
-    fn sections_partition_registered_tools() {
+    fn tool_groups_partition_registered_tools() {
         let (registry, _) = load_registry_with_builtins();
         let snapshot = registry.snapshot();
         let registered: HashSet<&str> = snapshot
@@ -459,11 +484,11 @@ mod tests {
             .collect();
 
         let mut sectioned: HashSet<&str> = HashSet::new();
-        for (_, names) in SECTIONS {
+        for (_, names) in TOOL_GROUPS {
             for &n in *names {
                 assert!(
                     registered.contains(n),
-                    "SECTIONS references \"{n}\" which isn't a registered tool"
+                    "TOOL_GROUPS references \"{n}\" which isn't a registered tool"
                 );
                 assert!(sectioned.insert(n), "\"{n}\" appears in multiple sections");
             }
@@ -472,7 +497,7 @@ mod tests {
         let unsectioned: Vec<&str> = registered.difference(&sectioned).copied().collect();
         assert!(
             unsectioned.is_empty(),
-            "registered tools missing from SECTIONS: {unsectioned:?}"
+            "registered tools missing from TOOL_GROUPS: {unsectioned:?}"
         );
     }
 }
