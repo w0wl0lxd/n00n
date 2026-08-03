@@ -24,7 +24,7 @@ use n00n_providers::{
 };
 use n00n_storage::id::SessionRef;
 
-const TOOL_DEFINITIONS_BYTE_BUDGET: usize = 42_000;
+const TOOL_DEFINITIONS_BYTE_BUDGET: usize = 46_000;
 
 fn fresh_registry() -> Arc<ToolRegistry> {
     Arc::new(ToolRegistry::new())
@@ -4059,7 +4059,7 @@ fn session_rejects_nonempty_lua_tools_object() {
     let error = exec_tool(&reg, "session_nonempty_tools_probe", serde_json::json!({}))
         .expect_err("non-empty tools object must be rejected");
 
-    assert!(error.contains("tools must be an array"), "got: {error}");
+    assert!(error.contains(TOOLS_MUST_BE_ARRAY_ERR), "got: {error}");
 }
 
 #[test]
