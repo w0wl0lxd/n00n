@@ -222,13 +222,13 @@ function handlers.new_session(input, _ctx)
   if name ~= "" then
     args = "new-session -d -s " .. shell_quote(name)
   else
-    args = "new-session -d"
+    args = "new-session -d -P -F '#{session_name}'"
   end
   local output, err = run_tmux(args, input.timeout_ms)
   if not output then
     return nil, err
   end
-  local session_name = name ~= "" and name or output:match("^%$%d+ (.+)$") or "unknown"
+  local session_name = name ~= "" and name or (output and output:match("^(.-)%s*$")) or "unknown"
   return { success = true, session_name = session_name }
 end
 
