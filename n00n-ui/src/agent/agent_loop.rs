@@ -477,7 +477,7 @@ impl AgentLoop {
                 });
             }
             e if e.is_history_replay_required() => {
-                info!(error = %e, "agent error: history replay required");
+                info!(run_id, error = %e, "agent error: history replay required");
                 let _ = event_tx.send(AgentEvent::Error {
                     message: e.user_message(),
                 });
