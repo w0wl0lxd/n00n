@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use n00n_git::conflicts::{ConflictsOptions, FindingKind, OutputMode};
 use n00n_git::git;
 use serde_json::json;
 use std::path::PathBuf;
@@ -70,6 +71,34 @@ enum Commands {
         /// Branch, tag, or ref to checkout
         target: String,
     },
+    /// Find conflict markers, TODO/FIXME/HACK, and placeholder comments
+    Conflicts {
+        /// Path to the git repository
+        repo: PathBuf,
+        /// Output mode: compact, full, or both (default)
+        #[arg(short, long, default_value = "both")]
+        output: OutputMode,
+        /// Maximum hunk lines before switching to compact output in 'both' mode
+        #[arg(long, default_value = "8")]
+        max_hunk_lines: usize,
+        /// Maximum bytes to read from any single file
+        #[arg(long, default_value = "1048576")]
+        max_file_bytes: usize,
+        /// Finding kinds to include (comma-separated)
+        #[arg(
+            short,
+            long,
+            value_delimiter = ',',
+            default_value = "conflict,todo,fixme,hack,placeholder"
+        )]
+        kinds: Vec<FindingKind>,
+        /// Include untracked files
+        #[arg(long)]
+        include_untracked: bool,
+        /// Include ignored files
+        #[arg(long)]
+        include_ignored: bool,
+    },
 }
 
 fn main() {
@@ -106,6 +135,27 @@ fn main() {
         Commands::Checkout { repo, target } => git::checkout(&repo, &target)
             .map_err(Into::into)
             .and_then(|()| serde_json::to_string(&json!({ "ok": true })).map_err(Into::into)),
+        Commands::Conflicts {
+            repo,
+            output,
+            max_hunk_lines,
+            max_file_bytes,
+            kinds,
+            include_untracked,
+            include_ignored,
+        } => n00n_git::conflicts::find(
+            &repo,
+            &ConflictsOptions {
+                kinds,
+                output,
+                max_hunk_lines,
+                max_file_bytes,
+                include_untracked,
+                include_ignored,
+            },
+        )
+        .map_err(Into::into)
+        .and_then(|v| serde_json::to_string(&v).map_err(Into::into)),
     };
 
     match result {
