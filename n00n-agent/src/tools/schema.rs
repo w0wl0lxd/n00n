@@ -280,6 +280,21 @@ pub fn try_from_json(v: &Value) -> Result<&'static ParamSchema, String> {
             variants,
             description,
         }
+    } else if let Some(any_of) = v.get("anyOf").and_then(Value::as_array) {
+        if any_of.is_empty() {
+            return Err("anyOf variants must not be empty".to_string());
+        }
+        let variants = Box::leak(
+            any_of
+                .iter()
+                .map(try_from_json)
+                .collect::<Result<Vec<_>, String>>()?
+                .into_boxed_slice(),
+        );
+        ParamSchema::Union {
+            variants,
+            description,
+        }
     } else {
         match type_str {
             Some("string") if v.get("enum").is_some() => {
@@ -795,17 +810,14 @@ fn validate_object(
     }
     if !additional_properties && !map.is_empty() {
         let names: Vec<String> = map.keys().cloned().collect();
-        return Err(path.with_field("", |p| {
-            ToolInputError::at(p, ToolInputErrorKind::UnexpectedProperties { names })
-        }));
+        return Err(ToolInputError::at(
+            path,
+            ToolInputErrorKind::UnexpectedProperties { names },
+        ));
     }
     if additional_properties {
         for (extra_key, extra_val) in map {
             out.insert(extra_key, extra_val);
-        }
-    } else {
-        for (extra_key, _) in map {
-            warn!(path = %path, key = %extra_key, "dropped unknown tool parameter");
         }
     }
     Ok(Value::Object(out))
@@ -1496,6 +1508,20 @@ mod tests {
     }
 
     #[test]
+    fn unexpected_properties_error_uses_current_path() {
+        const SCHEMA: ParamSchema = ParamSchema::Object {
+            properties: &[("name", &STR_PRIM, true, &[])],
+            additional_properties: false,
+            description: "",
+        };
+        let rendered = validate(&SCHEMA, json!({"name": "x", "extra": 42}))
+            .unwrap_err()
+            .to_string();
+        assert!(rendered.starts_with("invalid tool input: unexpected parameter: 'extra'"));
+        assert!(!rendered.contains("parameter ''"));
+    }
+
+    #[test]
     fn unexpected_property_names_are_escaped_and_bounded() {
         const SCHEMA: ParamSchema = ParamSchema::Object {
             properties: &[("name", &STR_PRIM, true, &[])],
@@ -1573,7 +1599,24 @@ mod tests {
         assert_eq!(validate(schema, json!(4096)).unwrap(), json!(4096));
         assert!(validate(schema, json!(true)).is_err());
         assert_eq!(to_json_schema(schema)["anyOf"][0]["type"], "string");
-        assert_eq!(to_json_schema(schema)["anyOf"][1]["type"], "integer");
+    }
+
+    #[test]
+    fn any_of_schema_round_trips_and_validates_variants() {
+        let schema = try_from_json(&json!({
+            "anyOf": [
+                {"type": "string", "enum": ["research", "general"]},
+                {"type": "null"},
+            ],
+        }))
+        .unwrap();
+        assert_eq!(
+            validate(schema, json!("research")).unwrap(),
+            json!("research")
+        );
+        assert_eq!(validate(schema, Value::Null).unwrap(), Value::Null);
+        assert!(validate(schema, json!("bogus")).is_err());
+        assert_eq!(to_json_schema(schema)["anyOf"].as_array().unwrap().len(), 2);
     }
 
     #[test]
