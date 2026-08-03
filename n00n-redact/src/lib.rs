@@ -101,7 +101,6 @@ pub const SECRET_KEYS: &[&str] = &[
 const SECRET_KEY_LAST_WORDS: &[&str] = &[
     "token",
     "secret",
-    "key",
     "password",
     "passwd",
     "passphrase",
@@ -117,6 +116,26 @@ const SECRET_KEY_LAST_WORDS: &[&str] = &[
     "secretkey",
 ];
 
+const SECRET_KEY_QUALIFIERS: &[&str] = &[
+    "api",
+    "auth",
+    "access",
+    "secret",
+    "private",
+    "oauth",
+    "signing",
+    "encryption",
+    "credential",
+    "client",
+    "github",
+    "openai",
+    "google",
+    "anthropic",
+    "ssh",
+    "database",
+    "db",
+];
+
 /// Returns true when the key name matches a known secret key after
 /// normalizing away separators and case, or when its final word is a secret
 /// marker (covers compound keys like `slack_token` or `db_password`).
@@ -126,7 +145,18 @@ pub fn is_secret_key(key: &str) -> bool {
     if SECRET_KEYS.contains(&normalized.as_str()) {
         return true;
     }
-    last_word(key).is_some_and(|word| SECRET_KEY_LAST_WORDS.contains(&word.as_str()))
+    last_word(key).is_some_and(|word| {
+        SECRET_KEY_LAST_WORDS.contains(&word.as_str())
+            || (word == "key" && has_secret_key_qualifier(&normalized))
+    })
+}
+
+fn has_secret_key_qualifier(normalized: &str) -> bool {
+    normalized.strip_suffix("key").is_some_and(|prefix| {
+        SECRET_KEY_QUALIFIERS
+            .iter()
+            .any(|qualifier| prefix.ends_with(qualifier))
+    })
 }
 
 /// Returns the last separator- or case-delimited word of `key`, lowercased.
@@ -292,7 +322,14 @@ pub fn looks_like_secret_value(value: &str) -> bool {
     {
         return bearer.trim().len() >= BEARER_VALUE_MIN_CHARS;
     }
-    is_jwt_like(trimmed) || is_prefixed_token(trimmed) || is_aws_access_key_id(trimmed)
+    is_private_key(trimmed)
+        || is_jwt_like(trimmed)
+        || is_prefixed_token(trimmed)
+        || is_aws_access_key_id(trimmed)
+}
+
+fn is_private_key(value: &str) -> bool {
+    value.starts_with("-----BEGIN ") && value.contains(" PRIVATE KEY-----")
 }
 
 fn is_jwt_like(value: &str) -> bool {
@@ -410,6 +447,8 @@ mod tests {
     #[test_case("x"; "x")]
     #[test_case("keyname"; "keyname merged")]
     #[test_case("publickey"; "publickey merged")]
+    #[test_case("object_key"; "object key")]
+    #[test_case("cacheKey"; "cache key")]
     fn secret_key_ignores_benign_names(raw: &str) {
         assert!(!is_secret_key(raw));
     }
@@ -459,6 +498,21 @@ mod tests {
         assert!(looks_like_secret_value(
             "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.abc-DEF_ghi",
         ));
+        let private_key = format!(
+            "-----BEGIN {kind} PRIVATE KEY-----\nplaceholder\n-----END {kind} PRIVATE KEY-----",
+            kind = "OPENSSH",
+        );
+        assert!(looks_like_secret_value(&private_key));
+    }
+
+    #[test]
+    fn log_redaction_covers_private_keys_under_benign_keys() {
+        let private_key = format!(
+            "-----BEGIN {kind} PRIVATE KEY-----\nplaceholder\n-----END {kind} PRIVATE KEY-----",
+            kind = "RSA",
+        );
+        let value = json!({ "content": private_key });
+        assert_eq!(redact_json_value_for_log(&value)["content"], REDACTED);
     }
 
     #[test]

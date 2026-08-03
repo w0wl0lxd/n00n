@@ -826,8 +826,11 @@ pub(super) async fn process_tool_calls(
 
     for (position, id, name, input) in tool_uses {
         debug!(
-            tool = %name,
-            id = %id,
+            tool_index = position,
+            has_tool_name = !name.is_empty(),
+            tool_name_length = name.len(),
+            has_call_id = !id.is_empty(),
+            call_id_length = id.len(),
             input_preview = %crate::tools::schema::preview(&redact_json_value_for_log(&input).to_string()),
             "parsing tool call"
         );
