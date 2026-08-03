@@ -144,7 +144,6 @@ pub enum Request {
         input: Value,
         ctx: Box<LuaCtx>,
         deadline: Option<Instant>,
-        nested: bool,
         reply: flume::Sender<ToolCallReply>,
         live: Option<LiveCtx>,
     },
@@ -152,14 +151,12 @@ pub enum Request {
         plugin: Arc<str>,
         tool: Arc<str>,
         input: Value,
-        nested: bool,
         reply: flume::Sender<HeaderResult>,
     },
     ComputePermissionScopes {
         plugin: Arc<str>,
         tool: Arc<str>,
         input: Value,
-        nested: bool,
         reply: flume::Sender<Option<PermissionScopes>>,
     },
     ClearPlugin {
@@ -246,7 +243,6 @@ pub enum Request {
         input: Value,
         live: LiveCtx,
         ctx: Box<LuaCtx>,
-        nested: bool,
         reply: flume::Sender<()>,
     },
 }
@@ -1015,19 +1011,7 @@ fn spawn_runtime_request(
     gate: &Rc<InflightGate>,
     lifecycle: &Rc<LifecycleGate>,
     request: Request,
-    nested_only: bool,
 ) -> Option<Request> {
-    if nested_only
-        && !matches!(
-            &request,
-            Request::CallTool { nested: true, .. }
-                | Request::ComputeHeader { nested: true, .. }
-                | Request::ComputePermissionScopes { nested: true, .. }
-                | Request::StartTool { nested: true, .. }
-        )
-    {
-        return Some(request);
-    }
     match request {
         Request::CallTool {
             plugin,
@@ -1035,7 +1019,6 @@ fn spawn_runtime_request(
             input,
             mut ctx,
             deadline,
-            nested: _,
             reply,
             live,
         } => {
@@ -1062,7 +1045,6 @@ fn spawn_runtime_request(
             plugin,
             tool,
             input,
-            nested: _,
             reply,
         } => {
             let lua = rt.lua.clone();
@@ -1080,7 +1062,6 @@ fn spawn_runtime_request(
             plugin,
             tool,
             input,
-            nested: _,
             reply,
         } => {
             let lua = rt.lua.clone();
@@ -1102,7 +1083,6 @@ fn spawn_runtime_request(
             input,
             live,
             ctx,
-            nested: _,
             reply,
         } => {
             let func = {
@@ -1134,10 +1114,12 @@ fn spawn_runtime_request(
 enum RuntimeWake {
     Lifecycle,
     Spawn(PendingAsyncTask),
-    Request(Request),
+    Request(Box<Request>),
     Closed,
 }
 
+// Reentrant agents may dispatch Lua tools from another executor thread. Service every tool
+// request while a lifecycle is active; thread-local origin markers cannot classify them safely.
 async fn drain_runtime(
     rt: &LuaRuntime,
     ex: &Rc<smol::LocalExecutor<'_>>,
@@ -1152,7 +1134,7 @@ async fn drain_runtime(
             spawn_async_task(&rt.lua, ex, gate, task);
         }
         while let Ok(request) = request_rx.try_recv() {
-            if let Some(request) = spawn_runtime_request(rt, ex, gate, lifecycle, request, true) {
+            if let Some(request) = spawn_runtime_request(rt, ex, gate, lifecycle, request) {
                 deferred.push_back(request);
             }
         }
@@ -1172,10 +1154,10 @@ async fn drain_runtime(
                         .map_or(RuntimeWake::Closed, RuntimeWake::Spawn)
                 },
                 async {
-                    request_rx
-                        .recv_async()
-                        .await
-                        .map_or(RuntimeWake::Closed, RuntimeWake::Request)
+                    request_rx.recv_async().await.map_or_else(
+                        |_| RuntimeWake::Closed,
+                        |request| RuntimeWake::Request(Box::new(request)),
+                    )
                 },
             ),
         )
@@ -1183,8 +1165,7 @@ async fn drain_runtime(
         match wake {
             RuntimeWake::Spawn(task) => spawn_async_task(&rt.lua, ex, gate, task),
             RuntimeWake::Request(request) => {
-                if let Some(request) = spawn_runtime_request(rt, ex, gate, lifecycle, request, true)
-                {
+                if let Some(request) = spawn_runtime_request(rt, ex, gate, lifecycle, *request) {
                     deferred.push_back(request);
                 }
             }
@@ -2587,9 +2568,9 @@ pub fn spawn(
                             let res = rt.load_source(Arc::clone(&name), &source, plugin_dir, &permissions, opts, None).await;
                             let _ = reply.send(res);
                         }
-                        request @ Request::CallTool { .. } => {
+                        request @ (Request::CallTool { .. } | Request::StartTool { .. }) => {
                             let deferred_request =
-                                spawn_runtime_request(&rt, &ex, &gate, &lifecycle, request, false);
+                                spawn_runtime_request(&rt, &ex, &gate, &lifecycle, request);
                             debug_assert!(deferred_request.is_none());
                         }
                         Request::ClearPlugin { plugin, reply } => {
@@ -2635,7 +2616,6 @@ pub fn spawn(
                             plugin,
                             tool,
                             input,
-                            nested: _,
                             reply,
                         } => {
                             let res =
@@ -2646,7 +2626,6 @@ pub fn spawn(
                             plugin,
                             tool,
                             input,
-                            nested: _,
                             reply,
                         } => {
                             let res = LuaRuntime::compute_permission_scopes(
@@ -2854,11 +2833,6 @@ pub fn spawn(
                         } => {
                             let _ = reply
                                 .send(run_describe(&rt.lua, &rt.plugins, &plugin, &tool, &dctx));
-                        }
-                        request @ Request::StartTool { .. } => {
-                            let deferred_request =
-                                spawn_runtime_request(&rt, &ex, &gate, &lifecycle, request, false);
-                            debug_assert!(deferred_request.is_none());
                         }
                         Request::RunKeybindCallback { id } => {
                             let func = rt.lua.app_data_ref::<KeymapStore>().and_then(|store| {
