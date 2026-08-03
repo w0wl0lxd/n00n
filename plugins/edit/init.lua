@@ -243,7 +243,7 @@ n00n.api.register_tool({
     additionalProperties = false,
     required = { "path", "old_string", "new_string", "replace_all" },
     properties = {
-      path = { type = "string", required = true },
+      path = { type = "string", required = true, alias = "file_path" },
       old_string = { type = "string", required = true },
       new_string = { type = { "string", "null" }, required = true },
       replace_all = { type = { "boolean", "null" }, required = true },
@@ -282,7 +282,7 @@ register_tool_if(opts.multiedit, {
     additionalProperties = false,
     required = { "path", "edits" },
     properties = {
-      path = { type = "string", required = true },
+      path = { type = "string", required = true, alias = "file_path" },
       edits = {
         type = "array",
         required = true,
@@ -355,7 +355,7 @@ register_tool_if(opts.edit_lines, {
     additionalProperties = false,
     required = { "path", "start", "end", "new_string" },
     properties = {
-      path = { type = "string", required = true },
+      path = { type = "string", required = true, alias = "file_path" },
       start = { type = "integer", required = true },
       ["end"] = { type = "integer", required = true },
       new_string = { type = "string", required = true },
@@ -395,7 +395,7 @@ register_tool_if(opts.insert_lines, {
     additionalProperties = false,
     required = { "path", "line", "new_string" },
     properties = {
-      path = { type = "string", required = true },
+      path = { type = "string", required = true, alias = "file_path" },
       line = { type = "integer", required = true },
       new_string = { type = "string", required = true },
     },

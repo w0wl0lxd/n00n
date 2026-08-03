@@ -5919,7 +5919,7 @@ fn live_debloat_tool_invocation_suite() {
         &reg,
         "edit_lines",
         serde_json::json!({
-            "path": test_path,
+            "file_path": test_path,
             "start": 2,
             "end": 2,
             "new_string": "line 2 modified"
@@ -5933,7 +5933,7 @@ fn live_debloat_tool_invocation_suite() {
         &reg,
         "insert_lines",
         serde_json::json!({
-            "path": test_path,
+            "file_path": test_path,
             "line": 2,
             "new_string": "inserted line"
         }),
@@ -5946,7 +5946,7 @@ fn live_debloat_tool_invocation_suite() {
         &reg,
         "edit",
         serde_json::json!({
-            "path": test_path,
+            "file_path": test_path,
             "old_string": "line 1",
             "new_string": "line 1 updated",
             "replace_all": false
@@ -5955,10 +5955,26 @@ fn live_debloat_tool_invocation_suite() {
     .unwrap();
     assert!(edit_out.as_text().contains("edited"));
 
+    // 6. Live multiedit call through the legacy path alias
+    let multiedit_out = exec_tool_output(
+        &reg,
+        "multiedit",
+        serde_json::json!({
+            "file_path": test_path,
+            "edits": [{
+                "old_string": "line 3",
+                "new_string": "line three",
+                "replace_all": false
+            }]
+        }),
+    )
+    .unwrap();
+    assert!(multiedit_out.as_text().contains("applied 1 edit"));
+
     let final_content = std::fs::read_to_string(&test_file).unwrap();
     assert_eq!(
         final_content,
-        "line 1 updated\ninserted line\nline 2 modified\nline 3\n"
+        "line 1 updated\ninserted line\nline 2 modified\nline three\n"
     );
 }
 

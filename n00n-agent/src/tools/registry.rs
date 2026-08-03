@@ -343,6 +343,7 @@ impl<'a> IntoIterator for &'a ToolsSnapshot {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct DefinitionsCacheKey {
     generation: u64,
+    snapshot_id: usize,
     vars_hash: u64,
     supports_examples: bool,
     filter: super::ToolFilter,
@@ -727,8 +728,10 @@ impl ToolRegistry {
         supports_examples: bool,
         active: &ActiveTools,
     ) -> Value {
+        let snapshot = self.tools.load_full();
         let key = DefinitionsCacheKey {
             generation: self.generation.load(Ordering::Acquire),
+            snapshot_id: Arc::as_ptr(&snapshot).cast::<()>() as usize,
             vars_hash: vars.content_hash(),
             supports_examples,
             filter: normalize_filter(ctx.filter),
@@ -748,7 +751,6 @@ impl ToolRegistry {
             }
         }
 
-        let snapshot = self.tools.load();
         let mut out = Vec::with_capacity(snapshot.len());
         for entry in snapshot.iter() {
             if !entry.tool.audience().contains(ctx.audience) {
@@ -1245,6 +1247,34 @@ mod tests {
 
         let results = reg.search("active");
         assert_eq!(results.len(), 0);
+    }
+
+    #[test]
+    fn definitions_cache_tracks_registry_snapshot_before_generation_bump() {
+        let reg = ToolRegistry::new();
+        reg.register(&mock("old_tool"), &lua_source("p")).unwrap();
+        let filter = crate::tools::ToolFilter::All;
+        let context = DescriptionContext {
+            filter: &filter,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        };
+        let vars = Vars::new();
+        let active = ActiveTools::default();
+        let initial = reg.definitions_active(&vars, &context, false, &active);
+        assert_eq!(initial[0]["name"], "old_tool");
+
+        let replacement = RegisteredTool {
+            tool: mock("new_tool"),
+            source: lua_source("p"),
+            defer_loading: false,
+            namespace: None,
+        };
+        reg.tools
+            .store(Arc::new(ToolsSnapshot::from_tools(vec![replacement])));
+
+        let refreshed = reg.definitions_active(&vars, &context, false, &active);
+        assert_eq!(refreshed[0]["name"], "new_tool");
     }
 
     #[test]
