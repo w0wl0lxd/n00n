@@ -44,7 +44,7 @@ const GREP_OUT: &str =
 
 const BATCH_INPUT_GREP_BASH: &str = r#"{ "tool_calls": [
     { "tool": "grep", "parameters": { "pattern": "fn" } },
-    { "tool": "bash", "parameters": { "command": "echo hello-from-bash" } }
+    { "tool": "bash", "parameters": { "command": "echo hello-from-bash", "timeout": null, "workdir": null, "description": null, "justification": null } }
 ]}"#;
 const WORKFLOW_TOOL: &str = "workflow";
 const LIVE_PREVIEW_ID: &str = "live-preview";
@@ -147,7 +147,7 @@ fn assert_publishes_live_buf(tool: &str, source: &str, input: Value, expected: &
 #[test_case::test_case(
     "bash",
     BASH_SRC,
-    json!({ "command": "printf live-preview" }),
+    json!({ "command": "printf live-preview", "timeout": null, "workdir": null, "description": null, "justification": null }),
     "live-preview";
     "bash"
 )]
@@ -231,7 +231,10 @@ fn fusion_failed_delegate_preserves_charged_telemetry() {
         json!({
             "description": "charged failure",
             "goal": "exercise the error path",
+            "constraints": null,
             "definition_of_done": "the failure keeps its telemetry",
+            "escalation_triggers": null,
+            "subagent_type": null
         }),
         Tier::Weak,
         true,
@@ -632,7 +635,7 @@ fn task_restore_rebuilds_old_plain_persisted_output() {
 )]
 #[test_case::test_case(
     "semblem",
-    json!({ "command": "search", "query": "session restore", "repo": "/tmp/project" }),
+    json!({ "command": "search", "repo": "/tmp/project", "query": "session restore", "file_path": null, "line": null, "mode": null, "top_k": null, "content": null }),
     "session restore",
     "/tmp/project";
     "semblem"
@@ -695,7 +698,7 @@ fn bash_restore_renders_real_view() {
     let r = restore(
         &host,
         "bash",
-        json!({ "command": "echo hi", "description": "print hi" }),
+        json!({ "command": "echo hi", "timeout": null, "workdir": null, "description": "print hi", "justification": null }),
         "hi",
         None,
         Vec::new(),
@@ -859,7 +862,10 @@ fn fusion_and_blackboard_headers_render_prose() {
         .parse(&json!({
             "description": "brief label",
             "goal": "g",
+            "constraints": null,
             "definition_of_done": "d",
+            "escalation_triggers": null,
+            "subagent_type": null
         }))
         .unwrap();
     assert_eq!(
@@ -873,7 +879,10 @@ fn fusion_and_blackboard_headers_render_prose() {
         .parse(&json!({
             "description": unicode_description,
             "goal": "g",
+            "constraints": null,
             "definition_of_done": "d",
+            "escalation_triggers": null,
+            "subagent_type": null
         }))
         .unwrap();
     assert_eq!(
@@ -893,7 +902,7 @@ fn fusion_and_blackboard_headers_render_prose() {
 #[test_case::test_case(Tier::Weak, "resolved/weak\n\n[sidekick cost: $0.0000 · resolved/weak]"; "weak_fallback")]
 fn fusion_uses_configured_or_weak_tier(tier: Tier, expected: &str) {
     let output = execute_fusion_with_tier(
-        json!({"description":"test brief", "goal":"do it", "definition_of_done":"it works"}),
+        json!({"description":"test brief", "goal":"do it", "constraints": null, "definition_of_done":"it works", "escalation_triggers": null, "subagent_type": null}),
         tier,
     )
     .unwrap();
@@ -917,7 +926,7 @@ fn fusion_rejects_model_selection_arguments() {
 #[test]
 fn fusion_is_rejected_when_disabled() {
     let error = execute_fusion(
-        json!({"description":"test brief", "goal":"do it", "definition_of_done":"it works"}),
+        json!({"description":"test brief", "goal":"do it", "constraints": null, "definition_of_done":"it works", "escalation_triggers": null, "subagent_type": null}),
         Tier::Weak,
         false,
         FUSION_MODEL_MOCK,
@@ -929,7 +938,7 @@ fn fusion_is_rejected_when_disabled() {
 #[test]
 fn fusion_rejects_compaction_sidekick_tier() {
     let error = execute_fusion(
-        json!({"description":"test brief", "goal":"do it", "definition_of_done":"it works"}),
+        json!({"description":"test brief", "goal":"do it", "constraints": null, "definition_of_done":"it works", "escalation_triggers": null, "subagent_type": null}),
         Tier::Compaction,
         true,
         FUSION_MODEL_MOCK,
@@ -941,7 +950,7 @@ fn fusion_rejects_compaction_sidekick_tier() {
 #[test]
 fn fusion_model_resolution_failure_is_sanitized() {
     let error = execute_fusion(
-        json!({"description":"test brief", "goal":"do it", "definition_of_done":"it works"}),
+        json!({"description":"test brief", "goal":"do it", "constraints": null, "definition_of_done":"it works", "escalation_triggers": null, "subagent_type": null}),
         Tier::Weak,
         true,
         r#"n00n.agent.resolve_model = function() return nil, "model unavailable" end"#,

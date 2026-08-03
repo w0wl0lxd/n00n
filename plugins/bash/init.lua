@@ -635,15 +635,23 @@ n00n.api.register_tool({
   name = "bash",
   kind = "execute",
   description = description,
+  strict = true,
   schema = {
     type = "object",
+    additionalProperties = false,
+    required = { "command", "timeout", "workdir", "description", "justification" },
     properties = {
-      command = { type = "string", description = "Bash command to execute", required = true },
-      timeout = { type = "integer", description = "Timeout seconds (default 120)" },
-      workdir = { type = "string", description = "Working directory (default: cwd)" },
-      description = { type = "string", description = "Short description (3-5 words) of what the command does" },
+      command = { type = "string", required = true, description = "Bash command to execute" },
+      timeout = { type = { "integer", "null" }, required = true, description = "Timeout seconds (default 120)" },
+      workdir = { type = { "string", "null" }, required = true, description = "Working directory (default: cwd)" },
+      description = {
+        type = { "string", "null" },
+        required = true,
+        description = "Short description (3-5 words) of what the command does",
+      },
       justification = {
-        type = "string",
+        type = { "string", "null" },
+        required = true,
         description = "Required when command is broad/unbounded. Explain scope and bound assumptions.",
       },
     },

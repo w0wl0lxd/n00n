@@ -82,13 +82,25 @@ n00n.api.register_tool({
   kind = "fetch",
   modes = { "default", "research" },
   description = [[Fetch a URL and return its contents. Supports markdown (default), text, or html. HTTP auto-upgraded to HTTPS. Max 5MB response, 120s timeout. Best used inside code_execution to avoid context bloat.]],
+  strict = true,
 
   schema = {
     type = "object",
+    additionalProperties = false,
+    required = { "url", "format", "timeout" },
     properties = {
-      url = { type = "string", description = "URL to fetch (http:// or https://)", required = true },
-      format = { type = "string", description = "Output format: markdown (default), text, or html" },
-      timeout = { type = "integer", description = "Timeout in seconds (default 30, max 120)" },
+      url = { type = "string", required = true, description = "URL to fetch (http:// or https://)" },
+      format = {
+        type = { "string", "null" },
+        enum = { "markdown", "text", "html" },
+        required = true,
+        description = "Output format: markdown (default), text, or html",
+      },
+      timeout = {
+        type = { "integer", "null" },
+        required = true,
+        description = "Timeout in seconds (default 30, max 120)",
+      },
     },
   },
   permission_scopes = "url",
