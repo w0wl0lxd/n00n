@@ -143,7 +143,7 @@ end
 
 n00n.api.register_tool({
   name = "github",
-  kind = "read",
+  kind = "edit",
   description = [[
 GitHub REST API (read/write). Tokens: GITHUB_TOKEN, optional token param, or gh CLI.
 ]],

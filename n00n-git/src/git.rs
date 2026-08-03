@@ -501,14 +501,20 @@ pub fn branches(path: &Path) -> Result<Vec<GitBranch>, GitError> {
 pub fn blame(path: &Path, file: &str) -> Result<GitBlame, GitError> {
     let repo = gix::open(path)
         .map_err(|e| GitError::GitOperation(format!("failed to open repository: {e}")))?;
+    let worktree = repo.worktree().ok_or(GitError::BareRepo)?;
+    let repo_root = worktree.base().canonicalize().map_err(|e| {
+        GitError::GitOperation(format!("failed to canonicalize repository root: {e}"))
+    })?;
 
     let file_path = path
         .join(file)
         .canonicalize()
         .map_err(|e| GitError::FileNotFound(format!("failed to resolve file path: {e}")))?;
 
-    if !file_path.exists() {
-        return Err(GitError::FileNotFound(format!("file not found: {file}")));
+    if !file_path.starts_with(&repo_root) {
+        return Err(GitError::FileNotFound(format!(
+            "file is outside repository: {file}"
+        )));
     }
 
     let head_commit = repo
