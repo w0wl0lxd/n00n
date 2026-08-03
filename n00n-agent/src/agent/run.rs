@@ -925,15 +925,15 @@ impl<'h> Agent<'h> {
         if self.fusion_state.is_none() {
             return;
         }
-        match route {
-            FusionRoute::Stay(_) => {}
-            FusionRoute::EscalateToLead | FusionRoute::Switch(_) => {
-                if let Some(state) = self.fusion_state.as_mut() {
-                    state.lane = FusionLane::Lead;
-                }
-                self.apply_fusion_lane_context(FusionLane::Lead);
-            }
+        let lane = match route {
+            FusionRoute::Stay(lane) => lane,
+            FusionRoute::EscalateToLead => FusionLane::Lead,
+            FusionRoute::Switch(lane) => lane,
+        };
+        if let Some(state) = self.fusion_state.as_mut() {
+            state.lane = lane;
         }
+        self.apply_fusion_lane_context(lane);
     }
 
     fn apply_fusion_lane_context(&mut self, lane: FusionLane) {
@@ -1772,7 +1772,7 @@ mod tests {
     }
 
     #[test]
-    fn fusion_routing_never_replaces_the_lead_model_or_provider() {
+    fn fusion_routing_switches_lane_without_replacing_lead_model_or_provider() {
         let mut history = History::new(Vec::new());
         let (mut agent, _event_rx) = make_agent_with_config(
             MockProvider::new(Vec::new()),
@@ -1786,7 +1786,10 @@ mod tests {
 
         assert_eq!(agent.model.id, model_before);
         assert!(Arc::ptr_eq(&agent.provider, &provider_before));
-        assert_eq!(agent.fusion_state.as_ref().unwrap().lane, FusionLane::Lead);
+        assert_eq!(
+            agent.fusion_state.as_ref().unwrap().lane,
+            FusionLane::Sidekick
+        );
     }
 
     #[test]
