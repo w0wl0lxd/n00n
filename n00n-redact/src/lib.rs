@@ -141,9 +141,9 @@ fn last_word(key: &str) -> Option<String> {
             .and_then(|position| characters.get(position));
         let next = characters.get(index + 1);
         let case_boundary = character.is_ascii_uppercase()
-            && (previous.is_some_and(|value| value.is_ascii_lowercase())
-                || (previous.is_some_and(|value| value.is_ascii_uppercase())
-                    && next.is_some_and(|value| value.is_ascii_lowercase())));
+            && (previous.is_some_and(char::is_ascii_lowercase)
+                || (previous.is_some_and(char::is_ascii_uppercase)
+                    && next.is_some_and(char::is_ascii_lowercase)));
         if separator || case_boundary {
             if !current.is_empty() {
                 last = Some(mem::take(&mut current));
