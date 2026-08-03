@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785790121916,
+  "lastUpdate": 1785792740340,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -13495,6 +13495,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 168397,
             "range": "± 17574",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b36e9296bd617b5dd9859e2ad36a12c3c63b4036",
+          "message": "fix(n00n-lua): demote glob permission-denied walk errors to debug (#232)\n\n* fix(n00n-lua): demote glob permission-denied walk errors to debug\n\n* fix(lua): surface unexpected glob walk errors",
+          "timestamp": "2026-08-03T21:16:31Z",
+          "tree_id": "e7453cbd052ececaf610642f20e20a11ab7a8c3c",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/b36e9296bd617b5dd9859e2ad36a12c3c63b4036"
+        },
+        "date": 1785792739820,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6455055,
+            "range": "± 172769",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2494875,
+            "range": "± 4312",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2493442,
+            "range": "± 15255",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7718671,
+            "range": "± 72364",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4073914,
+            "range": "± 16857",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3956463,
+            "range": "± 10333",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 554260,
+            "range": "± 1328",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 167782,
+            "range": "± 628",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 167759,
+            "range": "± 338",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1044457,
+            "range": "± 12359",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 629318,
+            "range": "± 4016",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 639390,
+            "range": "± 4827",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 66065,
+            "range": "± 4263",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 149400,
+            "range": "± 22243",
             "unit": "ns/iter"
           }
         ]
