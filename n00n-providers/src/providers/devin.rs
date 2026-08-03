@@ -307,10 +307,14 @@ fn ordered_tool_call_blocks(
             status: 0,
             message: "Devin tool-call ordering state is inconsistent".to_string(),
         })?;
-        let input = serde_json::from_str(&arguments_json).map_err(|error| AgentError::Api {
-            status: 0,
-            message: format!("invalid Devin tool arguments for {name}: {error}"),
-        })?;
+        let input = if arguments_json.is_empty() {
+            serde_json::Value::Object(serde_json::Map::new())
+        } else {
+            serde_json::from_str(&arguments_json).map_err(|error| AgentError::Api {
+                status: 0,
+                message: format!("invalid Devin tool arguments for {name}: {error}"),
+            })?
+        };
         blocks.push(ContentBlock::ToolUse { id, name, input });
     }
     Ok(blocks)
@@ -1044,6 +1048,24 @@ mod tests {
                 String::from("{\"path\":\"src/lib.rs\"}")
             ))
         );
+    }
+
+    #[test]
+    fn ordered_tool_call_blocks_treats_empty_args_as_empty_object() {
+        let mut tool_calls = std::collections::HashMap::new();
+        tool_calls.insert("call-1".to_string(), ("bash".to_string(), String::new()));
+        let blocks = ordered_tool_call_blocks(tool_calls, vec!["call-1".to_string()])
+            .expect("empty args parse");
+
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(
+            &blocks[0],
+            ContentBlock::ToolUse {
+                name,
+                input,
+                ..
+            } if name == "bash" && input.as_object().is_some_and(serde_json::Map::is_empty)
+        ));
     }
 
     const CASCADE_ID: &str = "cascade-1";
