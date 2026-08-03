@@ -142,7 +142,7 @@ impl Provider for TensorX {
             }
 
             self.compat
-                .do_stream(model, &[], &body, event_tx, &auth)
+                .do_stream(model, &[], &body, event_tx, &auth, &opts)
                 .await
         })
     }
