@@ -233,6 +233,9 @@ const WORKFLOW_TIMEOUT_CONFIG_ERR_SUBSTR: &str = "below minimum (60)";
 const ALREADY_CALLED_ERR: &str = "already called";
 const UNKNOWN_FIELD_ERR: &str = "unknown field";
 const PERMISSION_DENIED_MSG: &str = "permission denied";
+const VALIDATION_PROMPT_NO_PROVIDER_ERR: &str =
+    "validation prompt error: no provider configured — run /login or `n00n auth login`";
+const TOOLS_MUST_BE_ARRAY_ERR: &str = "tools must be an array";
 
 #[test]
 fn stdlib_globals_accessible() {
@@ -3967,6 +3970,96 @@ fn session_close_idempotent_and_prompt_after_close_errors() {
     host.load_source("session_plugin", &src).unwrap();
     let out = exec_tool(&reg, "session_probe", serde_json::json!({})).unwrap();
     assert_eq!(out, SESSION_CLOSED_ERR);
+}
+
+#[test]
+fn session_accepts_empty_lua_tools_table() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "session_empty_tools_probe",
+            description = "test",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                local sess, err = n00n.agent.session(ctx, {{ tools = {{}} }})
+                if err then return err end
+                sess:close()
+                return "opened"
+            end
+        }})"#
+    );
+    host.load_source("session_empty_tools_plugin", &src)
+        .unwrap();
+
+    let out = exec_tool(&reg, "session_empty_tools_probe", serde_json::json!({})).unwrap();
+
+    assert_eq!(out, "opened");
+}
+
+#[test]
+fn team_validation_wave_reaches_session_boundary_with_empty_tools_table() {
+    let registry = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&registry)).unwrap();
+    let validation_source = include_str!("../../plugins/team/validation.lua");
+    let source = format!(
+        r#"local validation = (function()
+{validation_source}
+end)()
+
+n00n.api.register_tool({{
+    name = "team_validation_wave_probe",
+    description = "test",
+    schema = {MINIMAL_SCHEMA},
+    audiences = {{ "main" }},
+    handler = function(input, ctx)
+        local passed, err = validation.validate_wave(ctx, {{
+            wave_name = "implementation",
+            steps = {{ {{ index = 1, step = {{ role = "developer" }} }} }},
+            step_outputs = {{ [1] = "implemented" }},
+        }}, "implement it", {{ model = "anthropic/claude-opus-4-8" }})
+        if err then return err end
+        return passed and "PASS" or "FAIL"
+    end,
+}})"#,
+    );
+    host.load_source("team_validation_wave_probe", &source)
+        .unwrap();
+
+    let entry = registry.get("team_validation_wave_probe").unwrap();
+    let invocation = entry.tool.parse(&serde_json::json!({})).unwrap();
+    let ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
+
+    let output = smol::block_on(invocation.execute(&ctx))
+        .output
+        .expect("team validation wave should complete");
+
+    assert_eq!(output.as_text(), VALIDATION_PROMPT_NO_PROVIDER_ERR);
+}
+
+#[test]
+fn session_rejects_nonempty_lua_tools_object() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "session_nonempty_tools_probe",
+            description = "test",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                return n00n.agent.session(ctx, {{ tools = {{ unexpected = true }} }})
+            end
+        }})"#
+    );
+    host.load_source("session_nonempty_tools_plugin", &src)
+        .unwrap();
+
+    let error = exec_tool(&reg, "session_nonempty_tools_probe", serde_json::json!({}))
+        .expect_err("non-empty tools object must be rejected");
+
+    assert!(error.contains(TOOLS_MUST_BE_ARRAY_ERR), "got: {error}");
 }
 
 #[test]

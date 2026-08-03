@@ -193,7 +193,7 @@ impl Provider for DeepSeek {
             }
 
             self.compat
-                .do_stream(model, &[], &body, event_tx, &auth, &opts)
+                .do_stream(model, &[], &body, event_tx, &auth)
                 .await
         })
     }
