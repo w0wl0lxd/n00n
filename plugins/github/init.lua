@@ -113,6 +113,15 @@ Use this for GitHub-aware queries, tracking issues, and understanding repository
     end
     return "github " .. label
   end,
+  permission_scopes = function(input)
+    local command = input.command or ""
+    if command == "list_issues" or command == "list_prs" or command == "get_repo" then
+      return { scopes = { "github.read" }, force_prompt = false }
+    elseif command == "create_issue" then
+      return { scopes = { "github.write" }, force_prompt = true }
+    end
+    return { scopes = { "github.read" }, force_prompt = false }
+  end,
   handler = function(input, _ctx)
     return dispatch(input)
   end,

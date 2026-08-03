@@ -14,7 +14,6 @@ pub(crate) mod env;
 pub(crate) mod firecrawl;
 pub(crate) mod r#fn;
 pub(crate) mod fs;
-pub(crate) mod git;
 pub(crate) mod github;
 pub(crate) mod image;
 pub(crate) mod interpreter;
@@ -97,7 +96,6 @@ pub(crate) fn create_n00n_global(
     n00n.set("workflow", workflow::create_workflow_table(lua)?)?;
     n00n.set("arbor", arbor::create_arbor_table(lua)?)?;
     n00n.set("codegraph", codegraph::create_codegraph_table(lua)?)?;
-    n00n.set("git", git::create_git_table(lua)?)?;
     n00n.set("github", github::create_github_table(lua)?)?;
     n00n.set("semblem", semblem::create_semblem_table(lua)?)?;
     n00n.set(

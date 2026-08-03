@@ -22,7 +22,6 @@ n00n-lua-macro = { workspace = true }
 n00n-markdown = { workspace = true }
 n00n-arbor = { workspace = true }
 n00n-codegraph = { workspace = true }
-n00n-git = { workspace = true }
 n00n-semble = { workspace = true }
 n00n-providers = { workspace = true }
 mlua = { workspace = true }
