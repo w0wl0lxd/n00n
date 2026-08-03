@@ -85,6 +85,9 @@ pub async fn list_tools(transport: &dyn McpTransport) -> Result<Vec<ToolInfo>, M
 }
 
 const METHOD_NOT_FOUND: i64 = -32601;
+const MAX_MCP_ARGUMENT_BYTES: usize = 64 * 1024;
+const MAX_MCP_OUTPUT_BYTES: usize = 256 * 1024;
+const MAX_MCP_OUTPUT_LINES: usize = 8192;
 
 /// List prompts available on the MCP server.
 ///
@@ -132,6 +135,14 @@ pub async fn call_tool(
     args: &Value,
 ) -> Result<String, McpError> {
     let server = &**transport.server_name();
+    let argument_bytes = serde_json::to_vec(args).map_err(|error| {
+        McpError::Config(format!("MCP arguments could not be serialized: {error}"))
+    })?;
+    if argument_bytes.len() > MAX_MCP_ARGUMENT_BYTES {
+        return Err(McpError::Config(format!(
+            "MCP arguments exceed the {MAX_MCP_ARGUMENT_BYTES} byte limit"
+        )));
+    }
     let start = Instant::now();
     let params = serde_json::json!({
         "name": tool_name,
@@ -141,7 +152,11 @@ pub async fn call_tool(
     let call_result: CallToolResult =
         serde_json::from_value(result).map_err(|e| invalid_response(transport.server_name(), e))?;
 
-    let text = call_result.joined_text();
+    let text = crate::tools::truncate_output(
+        &call_result.joined_text(),
+        MAX_MCP_OUTPUT_LINES,
+        MAX_MCP_OUTPUT_BYTES,
+    );
 
     if call_result.is_error {
         return Err(McpError::RpcError {

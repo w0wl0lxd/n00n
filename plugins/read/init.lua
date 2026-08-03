@@ -206,6 +206,7 @@ n00n.api.register_prompt_hint({
 n00n.api.register_tool({
   name = "read",
   kind = "read",
+  workload = "cheap",
   modes = { "default", "research", "build", "compact" },
   description = DESCRIPTION,
 
