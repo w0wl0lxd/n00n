@@ -7,6 +7,7 @@ use ratatui::widgets::Wrap;
 
 use n00n_config::providers::{self, Protocol, ProviderDef, ProvidersConfig, slugify};
 use n00n_providers::catalog_providers_if_available;
+use n00n_providers::provider;
 use n00n_storage::StateDir;
 use n00n_storage::auth::{
     ProviderCredentials, load_provider_credentials, save_provider_credentials,
@@ -186,7 +187,8 @@ impl LoginPicker {
         let mut items: Vec<ProviderItem> = builtins
             .iter()
             .map(|b| {
-                let has_key = load_provider_credentials(&storage, b.slug).is_some();
+                let has_key = load_provider_credentials(&storage, b.slug).is_some()
+                    || (b.slug == "codex" && provider::provider_available("codex"));
                 let has_env = env_key_populated(b.default_api_key_env);
                 let configured = !has_key
                     && !has_env
@@ -310,7 +312,7 @@ impl LoginPicker {
                                     display_name,
                                     custom: None,
                                     builtin_url: None,
-                                    api_key_optional: false,
+                                    api_key_optional: item.has_key || item.has_env,
                                 }
                             }
                         }
