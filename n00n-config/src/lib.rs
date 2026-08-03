@@ -36,6 +36,9 @@ pub const DEFAULT_LOW_SPEED_TIMEOUT_SECS: u64 = 120;
 pub const DEFAULT_STREAM_TIMEOUT_SECS: u64 = 300;
 pub const DEFAULT_OPENAI_CODING_PLAN_SLOTS: u64 = 8;
 pub const MAX_OPENAI_CODING_PLAN_SLOTS: u64 = 8;
+pub const DEFAULT_FUSION_LEAD_MODEL: &str = "codex/gpt-5.6-sol";
+pub const DEFAULT_FUSION_SIDEKICK_MODEL: &str = "codex/gpt-5.6-luna";
+pub const DEFAULT_FUSION_SIDEKICK_THINKING: &str = "max";
 
 pub const DEFAULT_MAX_LOG_BYTES_MB: u64 = 200;
 pub const DEFAULT_MAX_LOG_FILES: u32 = 10;
@@ -177,6 +180,8 @@ pub enum ConfigError {
     },
     #[error("invalid config: always_thinking: {0}")]
     Thinking(#[from] ThinkingParseError),
+    #[error("invalid config: agent.fusion.sidekick_thinking: {0}")]
+    InvalidFusionSidekickThinking(ThinkingParseError),
     #[error(
         "invalid config: plugins.{tool} was removed; {tool} is provided by the edit plugin, \
          set plugins.edit = {{ {tool} = true|false }} instead"
@@ -502,6 +507,9 @@ pub struct AgentFileConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct FusionFileConfig {
     pub enabled: Option<bool>,
+    pub lead_model: Option<String>,
+    pub sidekick_model: Option<String>,
+    pub sidekick_thinking: Option<String>,
     pub sidekick_tier: Option<Tier>,
 }
 
@@ -539,6 +547,15 @@ impl AgentFileConfig {
             (Some(base), Some(over)) => {
                 if over.enabled.is_some() {
                     base.enabled = over.enabled;
+                }
+                if over.lead_model.is_some() {
+                    base.lead_model.clone_from(&over.lead_model);
+                }
+                if over.sidekick_model.is_some() {
+                    base.sidekick_model.clone_from(&over.sidekick_model);
+                }
+                if over.sidekick_thinking.is_some() {
+                    base.sidekick_thinking.clone_from(&over.sidekick_thinking);
                 }
                 if over.sidekick_tier.is_some() {
                     base.sidekick_tier = over.sidekick_tier;
@@ -1123,6 +1140,9 @@ pub struct AgentConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FusionConfig {
     pub enabled: bool,
+    pub lead_model: String,
+    pub sidekick_model: String,
+    pub sidekick_thinking: String,
     pub sidekick_tier: Tier,
 }
 
@@ -1130,6 +1150,9 @@ impl Default for FusionConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            lead_model: DEFAULT_FUSION_LEAD_MODEL.to_owned(),
+            sidekick_model: DEFAULT_FUSION_SIDEKICK_MODEL.to_owned(),
+            sidekick_thinking: DEFAULT_FUSION_SIDEKICK_THINKING.to_owned(),
             sidekick_tier: Tier::Weak,
         }
     }
@@ -1176,6 +1199,15 @@ impl AgentConfig {
         let fusion = if let Some(ff) = file.fusion {
             FusionConfig {
                 enabled: ff.enabled.map_or(false, |enabled| enabled),
+                lead_model: ff
+                    .lead_model
+                    .unwrap_or_else(|| DEFAULT_FUSION_LEAD_MODEL.to_owned()),
+                sidekick_model: ff
+                    .sidekick_model
+                    .unwrap_or_else(|| DEFAULT_FUSION_SIDEKICK_MODEL.to_owned()),
+                sidekick_thinking: ff
+                    .sidekick_thinking
+                    .unwrap_or_else(|| DEFAULT_FUSION_SIDEKICK_THINKING.to_owned()),
                 sidekick_tier: ff.sidekick_tier.map_or(Tier::Weak, |tier| tier),
             }
         } else {
@@ -1385,6 +1417,8 @@ impl Config {
                 tier: self.agent.fusion.sidekick_tier,
             });
         }
+        StoredThinking::parse_setting(&self.agent.fusion.sidekick_thinking)
+            .map_err(ConfigError::InvalidFusionSidekickThinking)?;
         self.provider.validate()?;
         self.provider.validate_openai_coding_plan_slots()?;
         self.storage.validate()?;
@@ -2260,6 +2294,15 @@ mod tests {
             !config.agent.fusion.enabled,
             "agent Fusion must default off independently"
         );
+        assert_eq!(config.agent.fusion.lead_model, DEFAULT_FUSION_LEAD_MODEL);
+        assert_eq!(
+            config.agent.fusion.sidekick_model,
+            DEFAULT_FUSION_SIDEKICK_MODEL
+        );
+        assert_eq!(
+            config.agent.fusion.sidekick_thinking,
+            DEFAULT_FUSION_SIDEKICK_THINKING
+        );
     }
 
     #[test]
@@ -2287,6 +2330,15 @@ mod tests {
         assert!(merged.agent.fusion.enabled);
         assert_eq!(merged.agent.fusion.sidekick_tier, Tier::Medium);
         assert!(!merged.always_fusion);
+
+        let explicit: RawConfig = toml::from_str(
+            "[agent.fusion]\nlead_model = \"anthropic/lead\"\nsidekick_model = \"openai/sidekick\"\nsidekick_thinking = \"high\"\n",
+        )
+        .unwrap();
+        let explicit = explicit.into_config(false).unwrap();
+        assert_eq!(explicit.agent.fusion.lead_model, "anthropic/lead");
+        assert_eq!(explicit.agent.fusion.sidekick_model, "openai/sidekick");
+        assert_eq!(explicit.agent.fusion.sidekick_thinking, "high");
     }
 
     #[test]
@@ -2300,6 +2352,18 @@ mod tests {
             error.to_string().contains(UNKNOWN_FUSION_FIELD),
             "unexpected parse error: {error}"
         );
+    }
+
+    #[test]
+    fn fusion_invalid_sidekick_thinking_is_rejected() {
+        let raw: RawConfig =
+            toml::from_str("[agent.fusion]\nsidekick_thinking = \"impossible\"\n").unwrap();
+        let config = raw.into_config(false).unwrap();
+
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::InvalidFusionSidekickThinking(_))
+        ));
     }
 
     #[test]
