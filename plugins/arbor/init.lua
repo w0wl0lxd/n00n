@@ -3,7 +3,7 @@ local n00n_arbor = n00n.arbor
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Use **arbor** for caller/callee relationships, project map, and blast-radius diff before broad grep or read (native graph queries use .arbor/graph.json; other commands require the Arbor CLI).",
+  content = "- Use **arbor** for caller/callee relationships, project map, and blast-radius diff before broad grep or read.",
 })
 
 local function format_list(items)
@@ -70,7 +70,13 @@ local function native_trace_path(from_symbol, to_symbol, project)
 end
 
 local function dispatch(input)
-  local command = input.command
+  if not input.command or input.command == "" then
+    return { llm_output = "error: command is required", is_error = true }
+  end
+  local command = input.command:gsub("-", "_")
+  if command == "trace" then
+    command = "trace_path"
+  end
   local project = input.project or "."
   local symbol = input.symbol
 
@@ -139,18 +145,36 @@ local function dispatch(input)
   end
 
   if command == "map" then
-    if not n00n_arbor.available() then
-      return missing_cli(command)
-    end
     local token_budget = input.token_budget or 1024
-    local fresh_ok, fresh_err = pcall(n00n_arbor.ensure_fresh_index, project)
-    if not fresh_ok then
-      return {
-        llm_output = "error: failed to refresh graph index: " .. tostring(fresh_err),
-        is_error = true,
-      }
+    local ready, ready_err = native_index_ready(project)
+    local entries
+    if ready then
+      local ok, result = pcall(n00n_arbor.graph_map, project, token_budget)
+      if ok then
+        entries = result
+      else
+        entries = nil
+      end
     end
-    local entries = n00n_arbor.map(project, token_budget)
+    if not entries then
+      if not n00n_arbor.available() then
+        return missing_cli(command)
+      end
+      if ready_err then
+        return {
+          llm_output = "error: native graph query failed: " .. ready_err,
+          is_error = true,
+        }
+      end
+      local fresh_ok, fresh_err = pcall(n00n_arbor.ensure_fresh_index, project)
+      if not fresh_ok then
+        return {
+          llm_output = "error: failed to refresh graph index: " .. tostring(fresh_err),
+          is_error = true,
+        }
+      end
+      entries = n00n_arbor.map(project, token_budget)
+    end
     local lines = {}
     for _, entry in ipairs(entries) do
       table.insert(lines, entry.file)
@@ -199,14 +223,181 @@ local function dispatch(input)
         is_error = true,
       }
     end
-    return { llm_output = n00n_arbor.query(symbol, project) }
+    local result, err = n00n_arbor.query(symbol, project)
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
+    end
+    return { llm_output = result }
   end
 
   if command == "status" then
     if not n00n_arbor.available() then
       return missing_cli(command)
     end
-    return { llm_output = n00n_arbor.status(project) }
+    local output, err = n00n_arbor.status(project)
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
+    end
+    return { llm_output = output }
+  end
+
+  -- T070: Add new commands that require CLI
+  if command == "entry_points" then
+    local ready, ready_err = native_index_ready(project)
+    local results
+    if ready then
+      local ok, result = pcall(n00n_arbor.graph_entry_points, project)
+      if ok then
+        results = result
+      else
+        results = nil
+      end
+    end
+    if not results then
+      if not n00n_arbor.available() then
+        return missing_cli(command)
+      end
+      if ready_err then
+        return {
+          llm_output = "error: native graph query failed: " .. ready_err,
+          is_error = true,
+        }
+      end
+      local fresh_ok, fresh_err = pcall(n00n_arbor.ensure_fresh_index, project)
+      if not fresh_ok then
+        return {
+          llm_output = "error: failed to refresh graph index: " .. tostring(fresh_err),
+          is_error = true,
+        }
+      end
+      local output, err = n00n_arbor.entry_points(project)
+      if err then
+        return { llm_output = "error: " .. tostring(err), is_error = true }
+      end
+      return { llm_output = output }
+    end
+    if #results == 0 then
+      return { llm_output = "No entry points found" }
+    end
+    return { llm_output = "Entry points\n" .. format_list(results) }
+  end
+
+  if command == "file_graph" then
+    if not n00n_arbor.available() then
+      return missing_cli(command)
+    end
+    local fresh_ok, fresh_err = pcall(n00n_arbor.ensure_fresh_index, project)
+    if not fresh_ok then
+      return {
+        llm_output = "error: failed to refresh graph index: " .. tostring(fresh_err),
+        is_error = true,
+      }
+    end
+    local path = input.path
+    local output, err = n00n_arbor.file_graph(project, path)
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
+    end
+    return { llm_output = output }
+  end
+
+  if command == "inspect" then
+    if not symbol then
+      return { llm_output = "error: symbol required for inspect", is_error = true }
+    end
+    if not n00n_arbor.available() then
+      return missing_cli(command)
+    end
+    local fresh_ok, fresh_err = pcall(n00n_arbor.ensure_fresh_index, project)
+    if not fresh_ok then
+      return {
+        llm_output = "error: failed to refresh graph index: " .. tostring(fresh_err),
+        is_error = true,
+      }
+    end
+    local output, err = n00n_arbor.inspect(symbol, project)
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
+    end
+    return { llm_output = output }
+  end
+
+  if command == "path" then
+    if not input.from_symbol or not input.to_symbol then
+      return { llm_output = "error: from_symbol and to_symbol required for path", is_error = true }
+    end
+    if not n00n_arbor.available() then
+      return missing_cli(command)
+    end
+    local fresh_ok, fresh_err = pcall(n00n_arbor.ensure_fresh_index, project)
+    if not fresh_ok then
+      return {
+        llm_output = "error: failed to refresh graph index: " .. tostring(fresh_err),
+        is_error = true,
+      }
+    end
+    local output, err = n00n_arbor.path(input.from_symbol, input.to_symbol, project)
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
+    end
+    return { llm_output = output }
+  end
+
+  if command == "refactor" then
+    if not input.operation then
+      return { llm_output = "error: operation required for refactor", is_error = true }
+    end
+    if not n00n_arbor.available() then
+      return missing_cli(command)
+    end
+    local fresh_ok, fresh_err = pcall(n00n_arbor.ensure_fresh_index, project)
+    if not fresh_ok then
+      return {
+        llm_output = "error: failed to refresh graph index: " .. tostring(fresh_err),
+        is_error = true,
+      }
+    end
+    local output, err = n00n_arbor.refactor(input.operation, project)
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
+    end
+    return { llm_output = output }
+  end
+
+  if command == "check" then
+    if not n00n_arbor.available() then
+      return missing_cli(command)
+    end
+    local fresh_ok, fresh_err = pcall(n00n_arbor.ensure_fresh_index, project)
+    if not fresh_ok then
+      return {
+        llm_output = "error: failed to refresh graph index: " .. tostring(fresh_err),
+        is_error = true,
+      }
+    end
+    local output, err = n00n_arbor.check(project)
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
+    end
+    return { llm_output = output }
+  end
+
+  if command == "summary" then
+    if not n00n_arbor.available() then
+      return missing_cli(command)
+    end
+    local fresh_ok, fresh_err = pcall(n00n_arbor.ensure_fresh_index, project)
+    if not fresh_ok then
+      return {
+        llm_output = "error: failed to refresh graph index: " .. tostring(fresh_err),
+        is_error = true,
+      }
+    end
+    local output, err = n00n_arbor.summary(project)
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
+    end
+    return { llm_output = output }
   end
 
   return { llm_output = "error: unknown command: " .. tostring(command), is_error = true }
@@ -228,9 +419,16 @@ Commands:
 - diff: Blast radius of unpushed git changes — shows direct/indirect callers, entry points affected.
 - query <text>: Free-text search of the code graph.
 - status: Index status (node count, edge count, file count).
+- entry_points: List API entry points and public symbols.
+- file_graph: Show file-level dependency graph.
+- inspect <symbol>: Detailed symbol information with context.
+- path <from_symbol> <to_symbol>: Call path between two symbols (CLI version).
+- refactor <operation>: Run refactoring operations (requires Arbor CLI).
+- check: Run static analysis checks on the codebase.
+- summary: High-level project summary and statistics.
 
-Callers, callees, and trace_path can query .arbor/graph.json natively. Map,
-diff, query, and status require the Arbor CLI.
+Callers, callees, and trace_path can query .arbor/graph.json natively. Other
+commands use the Arbor CLI when available.
 
 Use this to understand call relationships, find affected code, and get a
 structured overview of a codebase. Complements codegraph — Arbor shows the
@@ -241,13 +439,30 @@ two symbols.]],
     properties = {
       command = {
         type = "string",
-        enum = { "callers", "callees", "trace_path", "map", "diff", "query", "status" },
+        enum = {
+          "callers",
+          "callees",
+          "trace_path",
+          "map",
+          "diff",
+          "query",
+          "status",
+          "entry_points",
+          "file_graph",
+          "inspect",
+          "path",
+          "refactor",
+          "check",
+          "summary",
+        },
         required = true,
       },
       symbol = { type = "string" },
       from_symbol = { type = "string" },
       to_symbol = { type = "string" },
+      operation = { type = "string" },
       project = { type = "string" },
+      path = { type = "string" },
       token_budget = { type = "integer", default = 1024 },
     },
   },
@@ -257,6 +472,14 @@ two symbols.]],
       if input.from_symbol and input.to_symbol then
         label = label .. " " .. input.from_symbol .. " -> " .. input.to_symbol
       end
+    elseif input.command == "path" then
+      if input.from_symbol and input.to_symbol then
+        label = label .. " " .. input.from_symbol .. " -> " .. input.to_symbol
+      end
+    elseif input.command == "inspect" and input.symbol then
+      label = label .. " " .. input.symbol
+    elseif input.command == "refactor" and input.operation then
+      label = label .. " " .. input.operation
     elseif input.symbol then
       label = label .. " " .. input.symbol
     end

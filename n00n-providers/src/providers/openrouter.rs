@@ -194,6 +194,8 @@ impl Provider for OpenRouter {
                 tools,
                 session_id.map(n00n_storage::id::SessionRef::as_str),
                 self.system_prefix.as_deref(),
+                opts.message_cache_breakpoints,
+                opts.fast,
             );
 
             body["cache_control"] = json!({"type": "ephemeral"});
@@ -363,6 +365,7 @@ mod tests {
             supports_tool_examples_override: None,
             supports_thinking_override: None,
             supports_vision_override: None,
+            supports_files_override: None,
             pricing: ModelPricing::default(),
             max_output_tokens: Some(8192),
             context_window: 200_000,

@@ -845,6 +845,12 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
                         parts.push(part);
                     }
                 }
+                ContentBlock::File { source } => {
+                    // Gemini doesn't support file input, emit a note
+                    #[allow(clippy::format_push_string)]
+                    let identifier = source.identifier().unwrap_or_else(|| "unknown");
+                    parts.push(json!({"text": format!("[file omitted: {identifier}]")}));
+                }
             }
         }
 
@@ -1074,6 +1080,7 @@ mod tests {
             supports_vision_override: Some(true),
             supports_tool_examples_override: None,
             supports_thinking_override: None,
+            supports_files_override: None,
             pricing: ModelPricing::default(),
             max_output_tokens: Some(8192),
             context_window: 1_048_576,

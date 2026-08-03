@@ -8,7 +8,7 @@
 //! 4. Parse Connect frames, gunzip, decode protobuf, emit `ProviderEvents`
 
 use std::collections::HashMap;
-use std::io::{ErrorKind, Write};
+use std::io::{ErrorKind, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -401,6 +401,12 @@ fn encode_devin_chat_message_prompts(
                             mime_type: source.media_type.mime(),
                             caption: "",
                         }),
+                        ContentBlock::File { source } => {
+                            let identifier = source.identifier().unwrap_or_else(|| "unknown");
+                            prompt_text.push_str("[file omitted: ");
+                            prompt_text.push_str(identifier);
+                            prompt_text.push(']');
+                        }
                         ContentBlock::ToolResult {
                             tool_use_id,
                             content,
@@ -1382,6 +1388,25 @@ mod tests {
         assert_eq!(
             prompt_string_field(&prompts[2], 3).as_deref(),
             Some("after")
+        );
+    }
+
+    #[test]
+    fn file_reference_is_rendered_as_omitted_marker() {
+        let messages = [Message {
+            role: Role::User,
+            content: vec![ContentBlock::File {
+                source: crate::types::FileSource::file_id("file-123", None),
+            }],
+            ..Default::default()
+        }];
+
+        let prompts = encode_devin_chat_message_prompts(&messages, CASCADE_ID)
+            .expect("encode message prompts");
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(
+            prompt_string_field(&prompts[0], 3).as_deref(),
+            Some("[file omitted: file-123]")
         );
     }
 

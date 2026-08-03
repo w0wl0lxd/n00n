@@ -66,6 +66,21 @@ impl ToolFilter {
     }
 
     #[must_use]
+    pub fn including(self, names: impl IntoIterator<Item = String>) -> Self {
+        match self {
+            Self::Only(mut allowed) => {
+                for name in names {
+                    if !allowed.contains(&name) {
+                        allowed.push(name);
+                    }
+                }
+                Self::Only(allowed)
+            }
+            other => other,
+        }
+    }
+
+    #[must_use]
     pub fn excluding(self, names: &[&str]) -> Self {
         if names.is_empty() {
             return self;
@@ -154,6 +169,27 @@ impl ToolFilter {
         );
         base.excluding(&exclude)
     }
+}
+
+pub fn filter_definitions(definitions: &mut Value, filter: &ToolFilter) {
+    let Some(definitions) = definitions.as_array_mut() else {
+        return;
+    };
+    definitions.retain(|definition| {
+        definition
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|name| filter.matches(name))
+    });
+}
+
+#[must_use]
+pub fn has_definition(definitions: &Value, name: &str) -> bool {
+    definitions.as_array().is_some_and(|definitions| {
+        definitions
+            .iter()
+            .any(|definition| definition.get("name").and_then(Value::as_str) == Some(name))
+    })
 }
 
 /// One gate for every definitions builder (main loop, headless, Lua): a model
@@ -286,6 +322,7 @@ pub struct ToolContext {
     pub opts: RequestOptions,
     pub subagent_cancels: Arc<CancelMap<String>>,
     pub registry: Arc<ToolRegistry>,
+    pub tool_filter: ToolFilter,
     pub workflow: bool,
     pub audience: ToolAudience,
     pub local_tools: LocalTools,
@@ -507,6 +544,7 @@ fn fallback_model() -> Model {
         supports_tool_examples_override: None,
         supports_thinking_override: None,
         supports_vision_override: None,
+        supports_files_override: None,
         pricing: ModelPricing::ZERO,
         max_output_tokens: None,
         context_window: FALLBACK_CONTEXT_WINDOW,
@@ -551,6 +589,7 @@ pub fn interpreter_ctx(
         opts: RequestOptions::default(),
         subagent_cancels: Arc::new(CancelMap::new()),
         registry,
+        tool_filter: ToolFilter::All,
         workflow: false,
         audience: ToolAudience::MAIN,
         local_tools: LocalTools::default(),
