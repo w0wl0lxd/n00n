@@ -146,7 +146,7 @@ pub(crate) fn prefix_span(prefix: &'static str, style: Style) -> Span<'static> {
 }
 
 /// Returns a blank line when the prefix is empty. Uses `Line::raw("")` so
-/// the line has a span vector that callers can mutate.
+/// the line has a span vector that callers such as `PlainState` can mutate.
 pub(crate) fn prefix_line(prefix: &'static str, style: Style) -> Line<'static> {
     if prefix.is_empty() {
         Line::raw("")
