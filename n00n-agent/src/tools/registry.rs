@@ -247,6 +247,9 @@ pub trait Tool: Send + Sync + 'static {
     fn namespace(&self) -> Option<&str> {
         None
     }
+    fn aliases(&self) -> &[Arc<str>] {
+        &[]
+    }
     /// Parse tool input into an invocation.
     ///
     /// # Errors
@@ -279,6 +282,7 @@ impl RegisteredTool {
 pub struct ToolsSnapshot {
     tools: Vec<RegisteredTool>,
     by_name: HashMap<String, usize>,
+    aliases: HashMap<String, String>,
 }
 
 impl ToolsSnapshot {
@@ -287,6 +291,7 @@ impl ToolsSnapshot {
         Self {
             tools: Vec::new(),
             by_name: HashMap::new(),
+            aliases: HashMap::new(),
         }
     }
 
@@ -296,17 +301,49 @@ impl ToolsSnapshot {
         for (i, tool) in tools.iter().enumerate() {
             by_name.insert(tool.name().to_owned(), i);
         }
-        Self { tools, by_name }
+        let mut candidates: Vec<(String, String)> = tools
+            .iter()
+            .flat_map(|tool| {
+                tool.tool
+                    .aliases()
+                    .iter()
+                    .map(move |alias| (alias.to_string(), tool.name().to_owned()))
+            })
+            .collect();
+        candidates.sort();
+        let mut aliases = HashMap::new();
+        for (alias, canonical) in candidates {
+            if !by_name.contains_key(&alias) {
+                aliases.entry(alias).or_insert(canonical);
+            }
+        }
+        Self {
+            tools,
+            by_name,
+            aliases,
+        }
     }
 
     #[must_use]
     pub fn get(&self, name: &str) -> Option<RegisteredTool> {
-        self.by_name.get(name).map(|&idx| self.tools[idx].clone())
+        let canonical = self.aliases.get(name).map_or(name, String::as_str);
+        self.by_name
+            .get(canonical)
+            .map(|&idx| self.tools[idx].clone())
+    }
+
+    #[must_use]
+    pub fn resolve_name(&self, name: &str) -> Option<&str> {
+        if self.by_name.contains_key(name) {
+            Some(name)
+        } else {
+            self.aliases.get(name).map(String::as_str)
+        }
     }
 
     #[must_use]
     pub fn has(&self, name: &str) -> bool {
-        self.by_name.contains_key(name)
+        self.resolve_name(name).is_some()
     }
 
     pub fn iter(&self) -> std::slice::Iter<'_, RegisteredTool> {
@@ -579,7 +616,13 @@ impl ToolRegistry {
             if !entry.tool.audience().contains(ctx.audience) {
                 continue;
             }
-            if !ctx.filter.matches(entry.name()) {
+            if !ctx.filter.matches(entry.name())
+                && !entry
+                    .tool
+                    .aliases()
+                    .iter()
+                    .any(|alias| ctx.filter.matches(alias))
+            {
                 continue;
             }
             let description = vars.apply(&entry.tool.description(ctx)).into_owned();
@@ -622,8 +665,13 @@ impl ToolRegistry {
                 workflow: false,
             });
             let name_matches = name.to_lowercase().contains(&query_lower);
+            let alias_matches = entry
+                .tool
+                .aliases()
+                .iter()
+                .any(|alias| alias.to_lowercase().contains(&query_lower));
             let desc_matches = description.to_lowercase().contains(&query_lower);
-            if name_matches || desc_matches {
+            if name_matches || alias_matches || desc_matches {
                 let truncated = if description.len() > 120 {
                     format!(
                         "{}...",
@@ -656,11 +704,22 @@ impl ToolRegistry {
             if !entry.tool.audience().contains(ctx.audience) {
                 continue;
             }
-            if !ctx.filter.matches(entry.name()) {
+            if !ctx.filter.matches(entry.name())
+                && !entry
+                    .tool
+                    .aliases()
+                    .iter()
+                    .any(|alias| ctx.filter.matches(alias))
+            {
                 continue;
             }
             if entry.defer_loading {
-                let name_matches = active.names.contains(entry.name());
+                let name_matches = active.names.contains(entry.name())
+                    || entry
+                        .tool
+                        .aliases()
+                        .iter()
+                        .any(|alias| active.names.contains(alias.as_ref()));
                 let namespace_matches = entry
                     .namespace
                     .as_ref()

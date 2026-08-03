@@ -58,10 +58,13 @@ pub enum ToolFilter {
 impl ToolFilter {
     #[must_use]
     pub fn matches(&self, name: &str) -> bool {
+        let canonical = canonical_tool_name(name);
         match self {
             Self::All => true,
-            Self::Only(allowed) => allowed.iter().any(|n| n == name),
-            Self::AllExcept(blocked) => !blocked.iter().any(|n| n == name),
+            Self::Only(allowed) => allowed.iter().any(|n| canonical_tool_name(n) == canonical),
+            Self::AllExcept(blocked) => {
+                !blocked.iter().any(|n| canonical_tool_name(n) == canonical)
+            }
         }
     }
 
@@ -218,23 +221,46 @@ pub fn default_active_tools() -> ActiveTools {
 /// list a Lua caller holds, e.g. `n00n.api.get_tools`).
 #[must_use]
 pub fn is_tool_enabled(disabled_tools: &[String], name: &str) -> bool {
-    !disabled_tools.iter().any(|s| s == name)
+    let canonical = canonical_tool_name(name);
+    !disabled_tools
+        .iter()
+        .any(|configured| canonical_tool_name(configured) == canonical)
 }
 
 pub const AGENT_CONTROL_TOOL_NAME: &str = "agent_control";
-pub const BATCH_TOOL_NAME: &str = "batch";
-pub const BASH_TOOL_NAME: &str = "bash";
-pub const CODE_EXECUTION_TOOL_NAME: &str = "code_execution";
-pub const EDIT_TOOL_NAME: &str = "edit";
-pub const GLOB_TOOL_NAME: &str = "glob";
-pub const GREP_TOOL_NAME: &str = "grep";
-pub const MULTIEDIT_TOOL_NAME: &str = "multiedit";
-pub const QUESTION_TOOL_NAME: &str = "question";
-pub const READ_TOOL_NAME: &str = "read";
-pub const TASK_TOOL_NAME: &str = "task";
-pub const TODOWRITE_TOOL_NAME: &str = "todo_write";
+pub const BATCH_TOOL_NAME: &str = "run_batch";
+pub const BASH_TOOL_NAME: &str = "run_command";
+pub const CODE_EXECUTION_TOOL_NAME: &str = "execute_code";
+pub const EDIT_TOOL_NAME: &str = "edit_file";
+pub const GLOB_TOOL_NAME: &str = "find_files";
+pub const GREP_TOOL_NAME: &str = "search_text";
+pub const MULTIEDIT_TOOL_NAME: &str = "edit_files";
+pub const QUESTION_TOOL_NAME: &str = "ask_question";
+pub const READ_TOOL_NAME: &str = "read_file";
+pub const TASK_TOOL_NAME: &str = "run_task";
+pub const TODOWRITE_TOOL_NAME: &str = "update_todo";
 pub const VIEW_IMAGE_TOOL_NAME: &str = "view_image";
-pub const WRITE_TOOL_NAME: &str = "write";
+pub const WRITE_TOOL_NAME: &str = "write_file";
+
+/// Resolve built-in names accepted before the verb-noun migration.
+#[must_use]
+pub fn canonical_tool_name(name: &str) -> &str {
+    match name {
+        "batch" => BATCH_TOOL_NAME,
+        "bash" => BASH_TOOL_NAME,
+        "code_execution" => CODE_EXECUTION_TOOL_NAME,
+        "edit" => EDIT_TOOL_NAME,
+        "glob" => GLOB_TOOL_NAME,
+        "grep" => GREP_TOOL_NAME,
+        "multiedit" => MULTIEDIT_TOOL_NAME,
+        "question" => QUESTION_TOOL_NAME,
+        "read" => READ_TOOL_NAME,
+        "task" => TASK_TOOL_NAME,
+        "todo_write" => TODOWRITE_TOOL_NAME,
+        "write" => WRITE_TOOL_NAME,
+        _ => name,
+    }
+}
 
 pub(crate) const PLAN_WRITE_RESTRICTED: &str = "write restricted to plan file in plan mode";
 pub(crate) const DEADLINE_EXCEEDED: &str = "timeout exceeded";
@@ -492,7 +518,11 @@ pub fn truncate_output(text: &str, max_lines: usize, max_bytes: usize) -> String
 
 #[must_use]
 pub fn is_builtin_tool(name: &str) -> bool {
-    n00n_config::DEFAULT_BUILTINS.contains(&name) || n00n_config::EDIT_SUB_TOOLS.contains(&name)
+    let canonical = canonical_tool_name(name);
+    n00n_config::DEFAULT_BUILTINS
+        .iter()
+        .chain(n00n_config::EDIT_SUB_TOOLS.iter())
+        .any(|configured| canonical_tool_name(configured) == canonical)
 }
 
 #[must_use]
@@ -500,7 +530,7 @@ pub fn all_builtin_tool_names() -> Vec<&'static str> {
     n00n_config::DEFAULT_BUILTINS
         .iter()
         .chain(n00n_config::EDIT_SUB_TOOLS.iter())
-        .copied()
+        .map(|name| canonical_tool_name(name))
         .collect()
 }
 

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use flume::Sender;
 use serde_json::Value;
 use strum::{Display, EnumIter, EnumString};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use n00n_storage::id::SessionRef;
 
@@ -439,29 +439,11 @@ pub struct ModelBatch {
     pub warnings: Vec<String>,
 }
 
-/// Offline version of model discovery: returns specs from static tables
-/// and configured dynamic providers. See [`fetch_all_models`] for live lookups.
+/// Return the current authenticated model catalog for presentation and ACP
+/// schemas. Failed providers contribute no static fallback.
 #[must_use]
 pub fn available_model_specs() -> Vec<String> {
-    let mut specs: Vec<String> = crate::manifest::ManifestRegistry::builtins()
-        .iter()
-        .filter(|m| provider_available(m.slug))
-        .flat_map(|m| {
-            m.models
-                .iter()
-                .flat_map(|entry| entry.prefixes.iter())
-                .map(move |p| format!("{}/{}", m.slug, p))
-        })
-        .collect();
-    for slug in dynamic::discovered_slugs() {
-        specs.extend(dynamic::dynamic_model_specs_for(slug));
-    }
-    for spec in crate::providers::custom::declared_model_specs() {
-        if !specs.contains(&spec) {
-            specs.push(spec);
-        }
-    }
-    specs
+    crate::model_catalog::discover_model_catalog_sync().specs()
 }
 
 #[cfg(test)]
@@ -474,135 +456,18 @@ fn llama_cpp_is_configured(has_host: bool, has_api_key: bool, has_provider_confi
     has_host || has_api_key || has_provider_config
 }
 
-/// Fetches all available models from all providers asynchronously.
-#[allow(clippy::too_many_lines)]
+/// Fetch the current authenticated model catalog for presentation.
 pub async fn fetch_all_models(
     mut on_ready: impl FnMut(ModelBatch),
     on_done: Option<Box<dyn FnOnce() + Send>>,
 ) {
-    let (tx, rx) = flume::unbounded();
-    let timeouts = Timeouts::default();
-
-    for manifest in crate::manifest::ManifestRegistry::builtins() {
-        let slug = manifest.slug;
-        let provider = match smol::unblock(move || provider_for_slug(slug, timeouts)).await {
-            Ok(provider) => provider,
-            Err(crate::AgentError::Config { message }) => {
-                debug!(provider = slug, %message, "provider not configured, skipping");
-                continue;
-            }
-            Err(error) => {
-                warn!(provider = slug, %error, "failed to create provider, skipping");
-                continue;
-            }
-        };
-        let display_name = manifest.display_name;
-        let tx = tx.clone();
-        smol::spawn(async move {
-            let batch = match provider.list_models().await {
-                Ok(models) => {
-                    if manifest.accepts_arbitrary_models {
-                        let slug: Arc<str> = Arc::from(slug);
-                        crate::model_registry::model_registry()
-                            .write()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .set_known_models(&slug, models.clone());
-                    }
-                    let mut specs: Vec<String> =
-                        models.iter().map(|m| format!("{slug}/{}", m.id)).collect();
-                    for entry in manifest.models {
-                        for prefix in entry.prefixes {
-                            let spec = format!("{slug}/{prefix}");
-                            if !specs.contains(&spec) {
-                                specs.push(spec);
-                            }
-                        }
-                    }
-                    ModelBatch {
-                        models: specs,
-                        warnings: Vec::new(),
-                    }
-                }
-                Err(e) => {
-                    info!(provider = slug, error = %e, "failed to list models, using static fallback");
-                    let fallback: Vec<String> = manifest
-                        .models
-                        .iter()
-                        .flat_map(|entry| entry.prefixes.iter())
-                        .map(|p| format!("{slug}/{p}"))
-                        .collect();
-                    ModelBatch {
-                        models: fallback,
-                        warnings: vec![format!(
-                            "{display_name}: {e} (using static fallback)"
-                        )],
-                    }
-                }
-            };
-            let _ = tx.send_async(batch).await;
-        })
-        .detach();
-    }
-
-    for slug in dynamic::discovered_slugs() {
-        let tx = tx.clone();
-        let slug = slug.to_string();
-        smol::spawn(async move {
-            let static_fallback = |reason: String| {
-                warn!(
-                    slug,
-                    error = reason,
-                    "dynamic model listing failed, using static fallback"
-                );
-                ModelBatch {
-                    models: dynamic::dynamic_model_specs_for(&slug),
-                    warnings: vec![format!("{slug}: {reason} (using static fallback)")],
-                }
-            };
-            let batch = match dynamic::create(&slug, timeouts) {
-                Ok(provider) => match provider.list_models().await {
-                    Ok(models) => ModelBatch {
-                        models: models.iter().map(|m| format!("{slug}/{}", m.id)).collect(),
-                        warnings: Vec::new(),
-                    },
-                    Err(e) => static_fallback(e.to_string()),
-                },
-                Err(e) => static_fallback(e.to_string()),
-            };
-            let _ = tx.send_async(batch).await;
-        })
-        .detach();
-    }
-
-    let custom_timeouts = timeouts;
-    let tx_custom = tx.clone();
-    smol::spawn(async move {
-        let declared = crate::providers::custom::declared_model_specs();
-        if !declared.is_empty() {
-            let _ = tx_custom
-                .send_async(ModelBatch {
-                    models: declared,
-                    warnings: Vec::new(),
-                })
-                .await;
-        }
-        let custom_specs =
-            smol::unblock(move || crate::providers::custom::discover_models(custom_timeouts)).await;
-        if !custom_specs.is_empty() {
-            let _ = tx_custom
-                .send_async(ModelBatch {
-                    models: custom_specs,
-                    warnings: Vec::new(),
-                })
-                .await;
-        }
-    })
-    .detach();
-
-    drop(tx);
-
-    while let Ok(batch) = rx.recv_async().await {
-        on_ready(batch);
+    let catalog = crate::model_catalog::discover_model_catalog().await;
+    let models = catalog.specs();
+    if !models.is_empty() {
+        on_ready(ModelBatch {
+            models,
+            warnings: Vec::new(),
+        });
     }
     if let Some(done) = on_done {
         done();

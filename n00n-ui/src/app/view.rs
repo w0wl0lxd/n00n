@@ -1,7 +1,8 @@
 use std::sync::atomic::Ordering;
 
 use crate::components::Overlay;
-#[cfg(test)]
+use crate::components::activity_shelf::{ActivityItem, ActivityShelf, ActivityState};
+use crate::components::footer::Footer;
 use crate::components::keybindings::KeybindContext;
 use crate::components::queue_panel;
 use crate::components::split_layout::{MIN_CHAT_ROWS, SplitLayout, carve};
@@ -21,6 +22,8 @@ struct ViewLayout {
     msg_area: Rect,
     bottom_area: Rect,
     status_area: Rect,
+    footer_area: Rect,
+    activity_area: Rect,
     queue_area: Rect,
     panel_windows: Vec<(usize, Rect)>,
     input_area: Rect,
@@ -39,8 +42,10 @@ impl App {
         Self::render_background(frame);
         self.render_messages(frame, &layout, render_chat);
         self.render_bottom_panel(frame, &layout);
+        self.render_activity_shelf(frame, layout.activity_area);
         self.render_splits(frame, &layout);
         let mut overlay_rect = self.render_picker_overlays(frame, &layout);
+        self.render_footer(frame, layout.footer_area);
         self.render_status_bar(frame, layout.status_area, render_chat);
         overlay_rect = self.render_top_modals(frame, overlay_rect);
         self.register_zones(&layout, overlay_rect);
@@ -50,10 +55,17 @@ impl App {
     fn compute_layout(&self, area: Rect, form_visible: bool) -> ViewLayout {
         let permission_open = self.permission_prompt.is_open();
 
-        // Carve the full-width status bar first so the split carving below only
-        // ever deals with the content region above it.
-        let [content, status_area] =
-            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+        // Reserve chrome before carving splits so content, activity, footer,
+        // and status always have disjoint rows.
+        let activity_count = self.activity_items().len();
+        let activity_height = ActivityShelf::height(activity_count, area.width);
+        let [content, activity_area, footer_area, status_area] = Layout::vertical([
+            Constraint::Min(1),
+            Constraint::Length(activity_height),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(area);
 
         // The permission prompt owns the bottom area, so drop any `below` split
         // here at the source. That keeps "prompt wins bottom" in one filter
@@ -122,6 +134,8 @@ impl App {
             msg_area,
             bottom_area,
             status_area,
+            footer_area,
+            activity_area,
             queue_area,
             panel_windows,
             input_area,
@@ -214,6 +228,57 @@ impl App {
             );
             self.command_palette.view(frame, layout.input_area);
         }
+    }
+
+    fn render_activity_shelf(&self, frame: &mut Frame, area: Rect) {
+        let items = self.activity_items();
+        ActivityShelf::view(frame, area, &items);
+    }
+
+    fn render_footer(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
+        let contexts = self.active_keybind_contexts();
+        Footer::view(frame, area, &contexts);
+    }
+
+    fn activity_items(&self) -> Vec<ActivityItem> {
+        let mut items = Vec::new();
+        if self.restoring.load(Ordering::Relaxed) {
+            items.push(ActivityItem {
+                label: "Session".into(),
+                detail: "restoring history".into(),
+                state: ActivityState::Running,
+            });
+        } else if self.status == Status::Streaming {
+            items.push(ActivityItem {
+                label: "Agent".into(),
+                detail: "processing request".into(),
+                state: ActivityState::Running,
+            });
+        } else if matches!(self.status, Status::Error { .. }) {
+            items.push(ActivityItem {
+                label: "Agent".into(),
+                detail: "request failed".into(),
+                state: ActivityState::Error,
+            });
+        }
+        if let Some(phase) = self
+            .fusion_phase
+            .and_then(crate::components::status_bar::fusion_phase_label)
+        {
+            items.push(ActivityItem {
+                label: "Fusion".into(),
+                detail: phase.into(),
+                state: ActivityState::Running,
+            });
+        }
+        for chat in self.chats.iter().skip(1).filter(|chat| chat.is_working()) {
+            items.push(ActivityItem {
+                label: format!("Agent: {}", chat.name),
+                detail: "processing".into(),
+                state: ActivityState::Running,
+            });
+        }
+        items
     }
 
     fn render_splits(&mut self, frame: &mut Frame, layout: &ViewLayout) {
@@ -448,8 +513,7 @@ impl App {
         Some(Line::from(spans))
     }
 
-    #[cfg(test)]
-    pub(super) fn active_keybind_contexts(&self) -> Vec<KeybindContext> {
+    pub(crate) fn active_keybind_contexts(&self) -> Vec<KeybindContext> {
         let mut contexts = vec![KeybindContext::General];
         if self.plan_form_active() {
             contexts.push(KeybindContext::FormInput);

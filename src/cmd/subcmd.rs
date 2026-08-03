@@ -15,6 +15,7 @@ use n00n_config::providers::{
 };
 use n00n_config::{load_env_files, load_permissions};
 use n00n_lua::PluginHost;
+use n00n_providers::model_catalog::resolve_configured_model;
 use n00n_providers::provider::fetch_all_models;
 use n00n_providers::{ProviderData, catalog_providers};
 use n00n_providers::{copilot_auth, dynamic, openai_auth};
@@ -733,7 +734,8 @@ pub fn prompt(variant: &crate::cli::PromptVariant, flags: PromptFlags) -> Result
                 .default_model
                 .as_deref()
                 .unwrap_or_else(|| "anthropic/claude-sonnet-4-20250514");
-            let model = Model::from_spec(model_spec).context("invalid default model")?;
+            let model = resolve_configured_model(model_spec)
+                .context("invalid or unavailable default model")?;
             build_system_prompt(&vars, &mode, &instructions, &slots, &model)
         }
         PromptVariant::Research => assemble(PromptId::Research, &slots, &instructions).into(),

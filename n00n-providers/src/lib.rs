@@ -9,6 +9,7 @@
 pub(crate) mod error;
 pub mod manifest;
 pub mod model;
+pub mod model_catalog;
 pub mod model_registry;
 pub mod provider;
 pub(crate) mod providers;
@@ -19,6 +20,10 @@ pub use error::{AgentError, HistoryReplayReason, RequestDeliveryMetadata, Reques
 pub use model::{
     FastPricing, Model, ModelEntry, ModelError, ModelFamily, ModelInfo, ModelPricing, ModelTier,
     TokenUsage,
+};
+pub use model_catalog::{
+    ModelCatalog, ModelResolver, discover_model_catalog, discover_model_catalog_sync,
+    discover_model_catalog_with, resolve_configured_model,
 };
 pub use providers::Timeouts;
 pub use providers::copilot::auth as copilot_auth;

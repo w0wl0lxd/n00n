@@ -31,6 +31,8 @@ pub enum ModelError {
     UnsupportedProvider(String),
     #[error("unknown model '{0}'")]
     UnknownModel(String),
+    #[error("model '{0}' is not available from a configured, authenticated provider")]
+    Unavailable(String),
     #[error("invalid model tier '{0}' (expected: strong, medium, weak)")]
     InvalidTier(String),
     #[error("no default model for {0}/{1}")]

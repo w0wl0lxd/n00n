@@ -26,6 +26,7 @@ use n00n_lua::{
     EventHandle, HintReader, KeymapReader, LuaCommandReader, SessionReply, SessionRequest, UiAction,
 };
 use n00n_providers::Timeouts;
+use n00n_providers::model_catalog::resolve_configured_model;
 use n00n_providers::provider::{
     Provider, fetch_all_models, from_model_fallback_with_openai_options,
     from_model_with_openai_options,
@@ -1306,7 +1307,7 @@ impl<'t> EventLoop<'t> {
             Action::LoadSession(loaded) => {
                 let loaded = *loaded;
                 if loaded.model_spec != self.ctx.model_slot.load().model.spec()
-                    && let Ok(mut new_model) = Model::from_spec(&loaded.model_spec)
+                    && let Ok(mut new_model) = resolve_configured_model(&loaded.model_spec)
                     && let Ok(new_provider) = from_model_with_openai_options(
                         &mut new_model,
                         self.ctx.timeouts,
@@ -1394,7 +1395,7 @@ impl<'t> EventLoop<'t> {
     }
 
     fn change_model(&mut self, spec: &str) {
-        match Model::from_spec(spec) {
+        match resolve_configured_model(spec) {
             Ok(mut new_model) => match from_model_with_openai_options(
                 &mut new_model,
                 self.ctx.timeouts,

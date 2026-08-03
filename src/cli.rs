@@ -85,7 +85,11 @@ pub struct PluginFlags {
 #[derive(Args)]
 pub struct PermissionFlags {
     /// Skip all permission prompts (allow everything)
-    #[arg(long, alias = "dangerously-skip-permissions")]
+    #[arg(long)]
+    pub no_confirm: bool,
+
+    /// Deprecated compatibility spelling for `--no-confirm`.
+    #[arg(long, hide = true, alias = "dangerously-skip-permissions")]
     pub yolo: bool,
 
     /// Accepted but ignored, so Claude Code SDK callers don't break.
@@ -203,7 +207,15 @@ pub struct Cli {
 }
 
 impl Cli {
+    #[must_use]
+    pub fn no_confirm(&self) -> bool {
+        self.permission_flags.no_confirm || self.permission_flags.yolo
+    }
+
     pub fn warn_ignored_flags(&self) {
+        if self.permission_flags.yolo {
+            eprintln!("warning: --yolo is deprecated; use --no-confirm");
+        }
         let ignored = [
             ("fallback-model", self.fallback_model.is_some()),
             ("settings", self.settings.is_some()),
@@ -226,7 +238,7 @@ impl Cli {
         ];
         for (flag, set) in &ignored {
             if *set {
-                eprintln!("warning: --{flag} is accepted but ignored");
+                eprintln!("warning: --{flag} is accepted for compatibility but ignored");
             }
         }
     }
@@ -239,20 +251,25 @@ impl Cli {
 #[derive(Subcommand)]
 pub enum Command {
     /// Manage API authentication
+    #[command(after_help = "Example: n00n auth login openai")]
     Auth {
         #[command(subcommand)]
         action: AuthAction,
     },
     /// List all available models
+    #[command(after_help = "Example: n00n models")]
     Models,
     /// Run the index tool on a file to see how it looks like
+    #[command(after_help = "Example: n00n index src/main.rs")]
     Index { path: String },
     /// Manage MCP server authentication
+    #[command(after_help = "Example: n00n mcp auth github")]
     Mcp {
         #[command(subcommand)]
         action: McpAction,
     },
     /// Update n00n to the latest version
+    #[command(after_help = "Example: n00n update --yes")]
     Update {
         /// Skip confirmation prompt
         #[arg(short = 'y', long)]
@@ -262,17 +279,23 @@ pub enum Command {
         no_color: bool,
     },
     /// Rollback to the previous version
+    #[command(after_help = "Example: n00n rollback")]
     Rollback,
     /// Run as an ACP (Agent Client Protocol) server over stdio
+    #[command(after_help = "Example: n00n acp --model anthropic/claude-sonnet-4-20250514")]
     Acp {
         /// Model spec (provider/model-id)
         #[arg(short, long)]
         model: Option<String>,
         /// Skip all permission prompts
         #[arg(long)]
+        no_confirm: bool,
+        /// Deprecated compatibility spelling for `--no-confirm`.
+        #[arg(long, hide = true)]
         yolo: bool,
     },
     /// Show the rendered system prompt or tool definitions
+    #[command(after_help = "Example: n00n prompt system --tools --names")]
     Prompt {
         /// Prompt variant: system (default), research, general
         #[arg(value_enum, default_value_t = PromptVariant::System)]
@@ -288,6 +311,7 @@ pub enum Command {
         names: bool,
     },
     /// Run agent commands (foreground/background workers + control plane)
+    #[command(after_help = "Example: n00n agent run --prompt 'review the latest diff'")]
     Agent {
         #[command(subcommand)]
         action: AgentCommand,
@@ -297,6 +321,7 @@ pub enum Command {
 #[derive(Subcommand)]
 pub enum AgentCommand {
     /// Run a one-shot agent prompt
+    #[command(after_help = "Example: n00n agent run --prompt 'review the latest diff'")]
     Run {
         /// Prompt to send to the agent; for workflow mode this is the Lua script
         #[arg(short, long)]
@@ -336,6 +361,7 @@ pub enum AgentCommand {
         id: Option<String>,
     },
     /// List background agents
+    #[command(after_help = "Example: n00n agent list --all")]
     List {
         /// Emit a JSON array for scripting (`claude agents --json` parity)
         #[arg(long)]
@@ -351,6 +377,7 @@ pub enum AgentCommand {
         state_dir: Option<PathBuf>,
     },
     /// Show agent status
+    #[command(after_help = "Example: n00n agent status agent-123")]
     Status {
         id: String,
         /// Emit a JSON object for scripting
@@ -360,6 +387,7 @@ pub enum AgentCommand {
         state_dir: Option<PathBuf>,
     },
     /// Send message to agent
+    #[command(after_help = "Example: n00n agent message agent-123 'please continue'")]
     Message {
         id: String,
         text: String,
@@ -367,24 +395,28 @@ pub enum AgentCommand {
         state_dir: Option<PathBuf>,
     },
     /// Pause agent
+    #[command(after_help = "Example: n00n agent pause agent-123")]
     Pause {
         id: String,
         #[arg(long)]
         state_dir: Option<PathBuf>,
     },
     /// Resume agent
+    #[command(after_help = "Example: n00n agent resume agent-123")]
     Resume {
         id: String,
         #[arg(long)]
         state_dir: Option<PathBuf>,
     },
     /// Stop agent
+    #[command(after_help = "Example: n00n agent stop agent-123")]
     Stop {
         id: String,
         #[arg(long)]
         state_dir: Option<PathBuf>,
     },
     /// Start a foreground control-plane listener (worker backend only)
+    #[command(after_help = "Example: n00n agent daemon")]
     Daemon {
         /// Override state directory
         #[arg(long)]
@@ -395,11 +427,13 @@ pub enum AgentCommand {
 #[derive(Subcommand)]
 pub enum McpAction {
     /// Authenticate with an MCP server
+    #[command(after_help = "Example: n00n mcp auth github")]
     Auth {
         /// Server name from config
         server: String,
     },
     /// Remove stored OAuth credentials for an MCP server
+    #[command(after_help = "Example: n00n mcp logout github")]
     Logout {
         /// Server name from config
         server: String,
@@ -409,29 +443,40 @@ pub enum McpAction {
 #[derive(Subcommand)]
 pub enum AuthAction {
     /// Authenticate with a provider (interactive if no provider specified)
+    #[command(after_help = "Example: n00n auth login openai")]
     Login {
         /// Provider slug (e.g. zai, openai). Omit for interactive selection.
         provider: Option<String>,
     },
     /// Remove stored credentials for a provider
+    #[command(after_help = "Example: n00n auth logout openai")]
     Logout {
         /// Provider slug (e.g. openai)
         provider: String,
     },
     /// Show authentication status for all providers
+    #[command(after_help = "Example: n00n auth status")]
     Status,
 }
 
 pub fn normalize_tool_name(name: &str) -> Result<String> {
     let mut result = String::with_capacity(name.len() + 4);
+    let mut previous_separator = false;
     for (i, c) in name.chars().enumerate() {
-        if c.is_ascii_uppercase() {
-            if i > 0 {
+        if c == '-' || c == '_' {
+            if !result.is_empty() && !previous_separator {
+                result.push('_');
+            }
+            previous_separator = true;
+        } else if c.is_ascii_uppercase() {
+            if i > 0 && !previous_separator {
                 result.push('_');
             }
             result.push(c.to_ascii_lowercase());
+            previous_separator = false;
         } else {
             result.push(c);
+            previous_separator = false;
         }
     }
     if !is_builtin_tool(&result) {
@@ -452,6 +497,7 @@ mod tests {
     #[test_case("Read", "read")]
     #[test_case("Bash", "bash")]
     #[test_case("CodeExecution", "code_execution")]
+    #[test_case("code-execution", "code_execution"; "kebab_alias")]
     #[test_case("code_execution", "code_execution"; "snake_passthrough")]
     fn normalize_tool_name_valid_inputs(input: &str, expected: &str) {
         assert_eq!(normalize_tool_name(input).unwrap(), expected);
@@ -467,6 +513,26 @@ mod tests {
     #[test]
     fn normalize_tool_name_multi_edit_rejects_snake_variant() {
         assert!(normalize_tool_name("MultiEdit").is_err());
+    }
+
+    #[test]
+    fn no_confirm_is_canonical_and_yolo_is_compatible() {
+        let canonical = Cli::parse_from(["n00n", "--no-confirm"]);
+        assert!(canonical.no_confirm());
+        let legacy = Cli::parse_from(["n00n", "--yolo"]);
+        assert!(legacy.no_confirm());
+    }
+
+    #[test]
+    fn command_help_includes_example() {
+        use clap::CommandFactory;
+
+        let help = Cli::command()
+            .find_subcommand("agent")
+            .expect("agent command")
+            .render_help()
+            .to_string();
+        assert!(help.contains("Example:"));
     }
 
     #[test]

@@ -125,11 +125,12 @@ impl StatusBar {
         let mut left_spans = Vec::new();
 
         if ctx.restoring || matches!(ctx.status, Status::Streaming) {
-            let ch = spinner_frame(animation_elapsed_ms());
-            left_spans.push(Span::styled(
-                format!(" {ch}"),
-                theme::current().status_notice,
-            ));
+            let ch = if theme::reduced_motion() {
+                '*'
+            } else {
+                spinner_frame(animation_elapsed_ms())
+            };
+            left_spans.push(Span::styled(format!(" {ch}"), theme::current().info));
         }
 
         left_spans.push(Span::styled(format!(" {}", ctx.mode_label), ctx.mode_style));
@@ -137,7 +138,7 @@ impl StatusBar {
         if let Some(label) = ctx.fusion_phase.and_then(fusion_phase_label) {
             left_spans.push(Span::styled(
                 format!(" · Fusion {label}"),
-                theme::current().status_notice,
+                theme::current().info,
             ));
         }
 
@@ -174,7 +175,7 @@ impl StatusBar {
         let mut usage_parts = Vec::new();
 
         if let Status::Error { message: e, .. } = ctx.status {
-            left_spans.push(Span::styled(format!(" {e}"), theme::current().error));
+            left_spans.push(Span::styled(format!(" {e}"), theme::current().danger));
         } else {
             let pct = if ctx.stats.context_window > 0 {
                 cast::f64_to_u32(
@@ -212,11 +213,12 @@ impl StatusBar {
                 let remaining = valid_until.saturating_duration_since(CacheInstant::now());
                 if !remaining.is_zero() {
                     let label = format_cache_remaining(remaining);
-                    let color = cache_color(remaining, health.ttl_seconds);
-                    right_spans.push(Span::styled(
-                        format!(" {CACHE_ICON} {label}"),
-                        Style::new().fg(color),
-                    ));
+                    let cache_style = if theme::plain_text() {
+                        theme::current().text_secondary
+                    } else {
+                        Style::new().fg(cache_color(remaining, health.ttl_seconds))
+                    };
+                    right_spans.push(Span::styled(format!(" {CACHE_ICON} {label}"), cache_style));
                 }
             }
 
@@ -243,10 +245,7 @@ impl StatusBar {
         }
 
         if let Some((ref msg, _)) = self.flash {
-            left_spans.push(Span::styled(
-                format!(" {msg}"),
-                theme::current().status_notice,
-            ));
+            left_spans.push(Span::styled(format!(" {msg}"), theme::current().info));
         }
 
         let spans_width = |spans: &[Span<'_>]| {
@@ -257,6 +256,12 @@ impl StatusBar {
         let left_width = spans_width(&left_spans).min(area.width);
         let max_right_width = area.width.saturating_sub(left_width);
         let mut right_width = spans_width(&right_spans);
+        if right_width > max_right_width {
+            // Optional model/path badges are never allowed to paint over the
+            // left status. Usage is reconsidered below in the remaining space.
+            right_spans.clear();
+            right_width = 0;
+        }
         for (index, part) in usage_parts.into_iter().enumerate() {
             let separator = if index == 0 { "  " } else { " · " };
             let span = Span::styled(
@@ -283,7 +288,7 @@ impl StatusBar {
     }
 }
 
-fn fusion_phase_label(phase: FusionPhase) -> Option<&'static str> {
+pub(crate) fn fusion_phase_label(phase: FusionPhase) -> Option<&'static str> {
     match phase {
         FusionPhase::Planning => Some("planning"),
         FusionPhase::Executing => Some("executing"),

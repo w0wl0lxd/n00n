@@ -154,7 +154,8 @@ impl ModelPicker {
         let mut entries: Vec<ModelEntry> = Vec::new();
         let recent_specs = self.recents.clone();
         for spec in &recent_specs {
-            if let Some(mut e) = parse_model_entry(spec) {
+            let listed = specs.is_some_and(|models| models.contains(spec));
+            if listed && let Some(mut e) = parse_model_entry(spec) {
                 e.suffix = Some(std::mem::take(&mut e.provider_display));
                 e.provider_display = RECENT_SECTION.to_string();
                 entries.push(e);

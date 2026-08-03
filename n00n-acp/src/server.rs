@@ -20,7 +20,7 @@ use n00n_agent::{
 };
 use n00n_providers::Message;
 use n00n_providers::TokenUsage;
-use n00n_providers::model::Model;
+use n00n_providers::model_catalog::resolve_configured_model;
 use n00n_providers::provider::available_model_specs;
 use n00n_storage::id::{SessionRef, n00nId};
 use n00n_storage::sessions::Session;
@@ -320,8 +320,8 @@ fn handle_set_config(srv: &mut Server, raw: &Value) -> Result<AgentResponse, Acp
     }
 
     let spec = req.value.0.to_string();
-    let model =
-        Model::from_spec(&spec).map_err(|e| AcpError::invalid_params().data(json_str(&e)))?;
+    let model = resolve_configured_model(&spec)
+        .map_err(|e| AcpError::invalid_params().data(json_str(&e)))?;
 
     let session = srv.session.as_mut().ok_or_else(no_session)?;
     session

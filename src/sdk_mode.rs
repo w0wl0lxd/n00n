@@ -26,6 +26,7 @@ use n00n_agent::{
     AgentConfig, AgentEvent, AgentInput, AgentMode, Envelope, PermissionsConfig, ToolOutput,
 };
 use n00n_providers::model::Model;
+use n00n_providers::model_catalog::resolve_configured_model;
 use n00n_providers::{ImageSource, Message, OpenAiOptions, StopReason, Timeouts, TokenUsage};
 use n00n_storage::StateDir;
 use n00n_storage::id::{SessionRef, n00nId};
@@ -474,8 +475,7 @@ pub fn run(params: SdkParams) -> Result<()> {
         config.max_turns = Some(max);
     }
     let config = Arc::new(config);
-    let permission_mode =
-        PermissionMode::resolve(cli.permission_mode.as_deref(), cli.permission_flags.yolo);
+    let permission_mode = PermissionMode::resolve(cli.permission_mode.as_deref(), cli.no_confirm());
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let working_dir = cwd.to_string_lossy().into_owned();
@@ -920,15 +920,17 @@ fn handle_control_request(
 fn resolve_set_model(model_val: Option<&Value>, startup_model: &Model) -> Option<Model> {
     match model_val? {
         Value::Null => Some(startup_model.clone()),
-        Value::String(model_str) => match Model::from_spec(&resolve_model_spec(model_str)) {
-            Ok(m) => Some(m),
-            Err(e) => {
-                eprintln!(
-                    "warning: failed to resolve model '{model_str}': {e}, keeping current model"
-                );
-                None
+        Value::String(model_str) => {
+            match resolve_configured_model(&resolve_model_spec(model_str)) {
+                Ok(m) => Some(m),
+                Err(e) => {
+                    eprintln!(
+                        "warning: failed to resolve model '{model_str}': {e}, keeping current model"
+                    );
+                    None
+                }
             }
-        },
+        }
         _ => None,
     }
 }

@@ -292,6 +292,20 @@ pub fn current_theme_name() -> String {
     read_theme_name().unwrap_or_else(|| DEFAULT_THEME.to_owned())
 }
 
+pub fn plain_text() -> bool {
+    std::env::var_os("NO_COLOR").is_some()
+}
+
+pub fn high_contrast() -> bool {
+    std::env::var("N00N_HIGH_CONTRAST")
+        .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+}
+
+pub fn reduced_motion() -> bool {
+    std::env::var("N00N_REDUCED_MOTION")
+        .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+}
+
 pub fn style_by_name(name: &str) -> Style {
     let t = current();
     match name {
@@ -327,12 +341,26 @@ pub fn style_by_name(name: &str) -> Style {
         "item_match_selected" | "match_selected" => t.item_match_selected,
         "cursor" => t.cursor,
         "foreground" => Style::new().fg(t.foreground),
+        "text_primary" => t.text_primary,
+        "text_secondary" => t.text_secondary,
+        "text_muted" => t.text_muted,
+        "surface" => t.surface,
+        "surface_alt" => t.surface_alt,
+        "border" => t.border,
+        "focus" => t.focus,
+        "info" => t.info,
+        "success" => t.success,
+        "warning" => t.warning,
+        "danger" => t.danger,
+        "activity_running" => t.activity_running,
+        "activity_success" => t.activity_success,
+        "activity_error" => t.activity_error,
         "accent" => t.accent,
         "active" => t.active,
         "keybind_key" => t.keybind_key,
         "keybind_desc" => t.keybind_desc,
-        "success" | "todo_completed" => t.todo_completed,
-        "warning" | "todo_in_progress" => t.todo_in_progress,
+        "todo_completed" => t.todo_completed,
+        "todo_in_progress" => t.todo_in_progress,
         "todo_pending" | "pending" => t.todo_pending,
         "todo_cancelled" | "cancelled" => t.todo_cancelled,
         _ => Style::default(),
@@ -343,6 +371,22 @@ pub fn style_by_name(name: &str) -> Style {
 pub struct Theme {
     pub background: Color,
     pub foreground: Color,
+
+    // Semantic roles keep new chrome readable across bundled themes.
+    pub text_primary: Style,
+    pub text_secondary: Style,
+    pub text_muted: Style,
+    pub surface: Style,
+    pub surface_alt: Style,
+    pub border: Style,
+    pub focus: Style,
+    pub info: Style,
+    pub success: Style,
+    pub warning: Style,
+    pub danger: Style,
+    pub activity_running: Style,
+    pub activity_success: Style,
+    pub activity_error: Style,
 
     pub user: Style,
     pub control: Style,
@@ -653,7 +697,8 @@ impl Theme {
             &ui,
             &palette,
             syntax,
-        ))
+        )
+        .with_accessibility())
     }
 
     fn parse_raw_palette(full_table: &toml::Table) -> HashMap<String, String> {
@@ -742,6 +787,28 @@ impl Theme {
         Self {
             background: Color::default(),
             foreground: Color::default(),
+            text_primary: Self::build_simple_fallback(style, "text_primary", "assistant"),
+            text_secondary: Self::build_simple_fallback(style, "text_secondary", "assistant"),
+            text_muted: Self::build_simple_fallback(style, "text_muted", "status_dim"),
+            surface: Self::build_simple_fallback(style, "surface", "tool_bg"),
+            surface_alt: Self::build_simple_fallback(style, "surface_alt", "tool_bg"),
+            border: Self::build_simple_fallback(style, "border", "input_border"),
+            focus: Self::build_simple_fallback(style, "focus", "active"),
+            info: Self::build_simple_fallback(style, "info", "status_notice"),
+            success: Self::build_simple_fallback(style, "success", "todo_completed"),
+            warning: Self::build_simple_fallback(style, "warning", "todo_in_progress"),
+            danger: Self::build_simple_fallback(style, "danger", "error"),
+            activity_running: Self::build_simple_fallback(
+                style,
+                "activity_running",
+                "status_notice",
+            ),
+            activity_success: Self::build_simple_fallback(
+                style,
+                "activity_success",
+                "todo_completed",
+            ),
+            activity_error: Self::build_simple_fallback(style, "activity_error", "error"),
             user: style("user"),
             control: Self::build_simple_fallback(style, "control", "user"),
             assistant: style("assistant"),
@@ -876,6 +943,138 @@ impl Theme {
         } else {
             s
         }
+    }
+
+    fn with_accessibility(mut self) -> Self {
+        if high_contrast() {
+            self.text_primary = Style::new()
+                .fg(self.foreground)
+                .add_modifier(Modifier::BOLD);
+            self.text_secondary = Style::new().fg(self.foreground);
+            self.text_muted = Style::new().fg(self.foreground);
+            self.surface = Style::new().bg(self.background);
+            self.surface_alt = Style::new().bg(self.background);
+            self.border = Style::new().fg(self.foreground);
+            self.focus = Style::new()
+                .fg(self.background)
+                .bg(self.foreground)
+                .add_modifier(Modifier::BOLD);
+            self.info = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+            self.success = Style::new().fg(Color::Green).add_modifier(Modifier::BOLD);
+            self.warning = Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+            self.danger = Style::new().fg(Color::Red).add_modifier(Modifier::BOLD);
+            self.activity_running = self.info;
+            self.activity_success = self.success;
+            self.activity_error = self.danger;
+        }
+
+        if plain_text() {
+            self.background = Color::Reset;
+            self.foreground = Color::Reset;
+            macro_rules! strip_colors {
+                ($($field:ident),+ $(,)?) => {
+                    $(
+                        self.$field = Style {
+                            fg: None,
+                            bg: None,
+                            underline_color: None,
+                            add_modifier: self.$field.add_modifier,
+                            sub_modifier: self.$field.sub_modifier,
+                        };
+                    )+
+                };
+            }
+            strip_colors!(
+                text_primary,
+                text_secondary,
+                text_muted,
+                surface,
+                surface_alt,
+                border,
+                focus,
+                info,
+                success,
+                warning,
+                danger,
+                activity_running,
+                activity_success,
+                activity_error,
+                user,
+                control,
+                assistant,
+                assistant_prefix,
+                thinking,
+                tool_bg,
+                tool,
+                tool_path,
+                tool_annotation,
+                tool_prefix,
+                tool_success,
+                tool_error,
+                tool_dim,
+                error,
+                status_dim,
+                bold,
+                italic,
+                bold_italic,
+                inline_code,
+                code_block,
+                code_gutter,
+                strikethrough,
+                heading,
+                list_marker,
+                horizontal_rule,
+                plan_rule,
+                table_border,
+                diff_old,
+                diff_new,
+                diff_old_emphasis,
+                diff_new_emphasis,
+                diff_line_nr,
+                todo_completed,
+                todo_in_progress,
+                todo_pending,
+                todo_cancelled,
+                item_selected,
+                item,
+                item_desc,
+                item_match,
+                item_match_selected,
+                panel_border,
+                panel_title,
+                cursor,
+                input_border,
+                accent,
+                active,
+                keybind_key,
+                keybind_desc,
+                keybind_section,
+                queue,
+                plan_path,
+                status_notice,
+                status_retry_error,
+                status_retry_info,
+                input_placeholder,
+                queue_delete,
+                timestamp,
+                spinner,
+                index_section,
+                index_line_nr,
+                index_keyword,
+                shell_prefix,
+                progress_bar,
+            );
+            self.syntax.settings.foreground = None;
+            self.syntax.settings.background = None;
+            self.syntax.settings.caret = None;
+            self.syntax.settings.line_highlight = None;
+            self.syntax.settings.selection = None;
+            for scope in &mut self.syntax.scopes {
+                scope.style.foreground = None;
+                scope.style.background = None;
+            }
+        }
+        self
     }
 }
 

@@ -12,6 +12,7 @@ use n00n_agent::tools::ToolRegistry;
 use n00n_config::{Config, load_env_files, load_permissions};
 use n00n_lua::PluginHost;
 use n00n_providers::model::Model;
+use n00n_providers::model_catalog::resolve_configured_model;
 use n00n_storage::StateDir;
 use n00n_storage::id::n00nId;
 use n00n_ui::{AppSession, RunOutcome};
@@ -91,7 +92,7 @@ fn load_config(plugin_host: &PluginHost, cli: &Cli, cwd: &Path) -> Result<Config
         .context("invalid config")?;
     config.permissions = load_permissions(cwd);
 
-    if cli.permission_flags.yolo || config.always_yolo {
+    if cli.no_confirm() || config.always_yolo {
         config.permissions.yolo = true;
     }
     if !cli.allowed_tools.is_empty() {
@@ -102,11 +103,12 @@ fn load_config(plugin_host: &PluginHost, cli: &Cli, cwd: &Path) -> Result<Config
             .collect::<Result<Vec<_>>>()?;
     }
     if !cli.disallowed_tools.is_empty() {
-        config.agent.disabled_tools.extend(
-            cli.disallowed_tools
-                .iter()
-                .filter_map(|t| normalize_tool_name(t).ok()),
-        );
+        let disallowed = cli
+            .disallowed_tools
+            .iter()
+            .map(|tool| normalize_tool_name(tool))
+            .collect::<Result<Vec<_>>>()?;
+        config.agent.disabled_tools.extend(disallowed);
     }
     config.agent.fusion.enabled = super::resolve_fusion_opt_in(
         cli.fusion,
@@ -348,7 +350,7 @@ fn run_ui_loop(
         let model = if focused_tab.messages.is_empty() {
             stack.model.clone()
         } else {
-            Model::from_spec(&focused_tab.model).unwrap_or_else(|_| stack.model.clone())
+            resolve_configured_model(&focused_tab.model).unwrap_or_else(|_| stack.model.clone())
         };
 
         // Bind daemon.sock for this UI generation so CLI `n00n agent list`

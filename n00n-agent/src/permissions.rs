@@ -10,7 +10,7 @@ use n00n_config::{
 use thiserror::Error;
 use tracing::{info, warn};
 
-use crate::{AgentEvent, EventSender};
+use crate::{AgentEvent, EventSender, tools::canonical_tool_name};
 
 pub const DEFAULT_DENY_GUIDANCE: &str =
     "Do not retry. Try a different approach or ask the user for guidance.";
@@ -30,9 +30,9 @@ fn builtin_rules(cwd: &Path) -> Vec<PermissionRule> {
     };
     let mut rules: Vec<PermissionRule> = FILE_WRITE_TOOLS
         .iter()
-        .map(|tool| allow(tool, &cwd_glob))
+        .map(|tool| allow(canonical_tool_name(tool), &cwd_glob))
         .collect();
-    rules.push(allow("task", "*"));
+    rules.push(allow(canonical_tool_name("task"), "*"));
     rules
 }
 
@@ -303,7 +303,9 @@ impl PermissionManager {
         // A single non-plan scope means we must prompt for the rest.
         if !force_prompt && !pending.is_empty() {
             let is_plan_write = plan_path.is_some_and(|pp| {
-                matches!(tool, ToolKey::Native(name) if FILE_WRITE_TOOLS.contains(&name.as_ref()))
+                matches!(tool, ToolKey::Native(name) if FILE_WRITE_TOOLS
+                    .iter()
+                    .any(|configured| canonical_tool_name(configured) == canonical_tool_name(name)))
                     && {
                         let normalized_plan = normalize_scope_path(&pp.display().to_string());
                         pending
@@ -321,6 +323,16 @@ impl PermissionManager {
             .get(tool)
             .copied()
             .or_else(|| {
+                if let ToolKey::Native(name) = tool {
+                    return self
+                        .tool_defaults
+                        .iter()
+                        .find(|(configured, _)| {
+                            matches!(configured, ToolKey::Native(configured_name)
+                                if canonical_tool_name(configured_name) == canonical_tool_name(name))
+                        })
+                        .map(|(_, effect)| *effect);
+                }
                 // McpTool falls back to McpServer-level default (Arc clone, ~2ns)
                 let ToolKey::McpTool { server, .. } = tool else {
                     return None;
@@ -539,7 +551,9 @@ impl PermissionManager {
 fn matches_rule(rule_key: &ToolKey, actual: &ToolKey) -> bool {
     match (rule_key, actual) {
         (ToolKey::Wildcard, _) => true,
-        (ToolKey::Native(a), ToolKey::Native(b)) => a == b,
+        (ToolKey::Native(a), ToolKey::Native(b)) => {
+            canonical_tool_name(a) == canonical_tool_name(b)
+        }
         (
             ToolKey::McpServer { server: rs },
             ToolKey::McpServer { server: as_ } | ToolKey::McpTool { server: as_, .. },
@@ -653,8 +667,14 @@ pub fn generalized_scopes(tool: &ToolKey, scopes: &[String]) -> Vec<String> {
 
 fn generalize_scope(tool: &ToolKey, scope: &str) -> String {
     match tool {
-        ToolKey::Native(name) if name.as_ref() == "bash" => generalize_bash_segment(scope),
-        ToolKey::Native(name) if FILE_WRITE_TOOLS.contains(&name.as_ref()) => {
+        ToolKey::Native(name) if canonical_tool_name(name) == "run_command" => {
+            generalize_bash_segment(scope)
+        }
+        ToolKey::Native(name)
+            if FILE_WRITE_TOOLS
+                .iter()
+                .any(|configured| canonical_tool_name(configured) == canonical_tool_name(name)) =>
+        {
             let p = Path::new(scope);
             match p.parent() {
                 Some(parent) if !parent.as_os_str().is_empty() => {

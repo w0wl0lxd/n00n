@@ -3,7 +3,9 @@ use std::sync::Mutex;
 use color_eyre::Result;
 use color_eyre::eyre::Context;
 
-use n00n_providers::model::{Model, ModelTier};
+use n00n_providers::ModelTier;
+use n00n_providers::model::Model;
+use n00n_providers::model_catalog::resolve_configured_model;
 use n00n_storage::StateDir;
 use n00n_storage::log::RotatingFileWriter;
 use n00n_storage::model::read_model;
@@ -24,17 +26,19 @@ pub fn resolve_model(
     storage: &StateDir,
 ) -> Result<Model> {
     if let Some(spec) = explicit {
-        let model = Model::from_spec(spec).context("invalid --model spec")?;
+        let model =
+            resolve_configured_model(spec).context("invalid or unavailable --model spec")?;
         return Ok(model);
     }
     if let Some(spec) = read_model(storage) {
-        if let Ok(m) = Model::from_spec(&spec) {
+        if let Ok(m) = resolve_configured_model(&spec) {
             return Ok(m);
         }
         tracing::warn!(spec, "saved model no longer valid, falling back to default");
     }
     if let Some(spec) = provider_config.default_model.as_deref() {
-        return Model::from_spec(spec).context("invalid default_model in config");
+        return resolve_configured_model(spec)
+            .context("invalid or unavailable default_model in config");
     }
     auto_detect_model().ok_or_else(|| {
         color_eyre::eyre::eyre!(

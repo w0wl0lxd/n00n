@@ -16,104 +16,177 @@ use ratatui::widgets::{Clear, Paragraph};
 use crate::cast;
 use crate::theme;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandCategory {
+    Agents,
+    Session,
+    Workspace,
+    Preferences,
+    Permissions,
+    System,
+}
+
 pub struct BuiltinCommand {
     pub name: &'static str,
+    pub aliases: &'static [&'static str],
+    pub category: CommandCategory,
     pub description: &'static str,
     pub max_args: usize,
 }
 
 pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
     BuiltinCommand {
-        name: "/tasks",
+        name: "/agents:tasks",
+        aliases: &["/tasks", "/agents-tasks"],
+        category: CommandCategory::Agents,
         description: "Browse running and completed agents and teams",
         max_args: 0,
     },
     BuiltinCommand {
-        name: "/compact",
+        name: "/session:compact",
+        aliases: &["/compact", "/session-compact"],
+        category: CommandCategory::Session,
         description: "Summarize and compact conversation history",
         max_args: 0,
     },
     BuiltinCommand {
-        name: "/new",
+        name: "/session:new",
+        aliases: &["/new", "/session-new"],
+        category: CommandCategory::Session,
         description: "Start a new session",
         max_args: 0,
     },
     BuiltinCommand {
         name: "/help",
+        aliases: &["/help"],
+        category: CommandCategory::System,
         description: "Show keybindings",
         max_args: 0,
     },
     BuiltinCommand {
         name: "/usage",
+        aliases: &["/usage"],
+        category: CommandCategory::System,
         description: "Show token usage breakdown",
         max_args: 0,
     },
     BuiltinCommand {
         name: "/queue",
+        aliases: &["/queue"],
+        category: CommandCategory::Session,
         description: "Remove items from queue",
         max_args: 0,
     },
     BuiltinCommand {
-        name: "/model",
+        name: "/model:select",
+        aliases: &["/model", "/model-select"],
+        category: CommandCategory::Preferences,
         description: "Switch model",
         max_args: 0,
     },
     BuiltinCommand {
-        name: "/theme",
+        name: "/theme:select",
+        aliases: &["/theme", "/theme-select"],
+        category: CommandCategory::Preferences,
         description: "Switch color theme",
         max_args: 0,
     },
     BuiltinCommand {
-        name: "/mcp",
+        name: "/mcp:configure",
+        aliases: &["/mcp", "/mcp-configure"],
+        category: CommandCategory::Preferences,
         description: "Configure MCP servers",
         max_args: 0,
     },
     BuiltinCommand {
-        name: "/login",
+        name: "/auth:login",
+        aliases: &["/login", "/auth-login"],
+        category: CommandCategory::Preferences,
         description: "Authenticate with an LLM provider",
         max_args: 0,
     },
     BuiltinCommand {
-        name: "/cd",
+        name: "/workspace:cd",
+        aliases: &["/cd", "/workspace-cd"],
+        category: CommandCategory::Workspace,
         description: "Change working directory",
         max_args: 1,
     },
     BuiltinCommand {
-        name: "/btw",
+        name: "/question:ask",
+        aliases: &["/btw", "/question-ask"],
+        category: CommandCategory::Agents,
         description: "Ask a quick question (no tools, no history pollution)",
         max_args: usize::MAX,
     },
     BuiltinCommand {
-        name: "/yolo",
-        description: "Toggle YOLO mode (skip all permission prompts)",
+        name: "/permissions:toggle",
+        aliases: &["/yolo", "/permissions-toggle"],
+        category: CommandCategory::Permissions,
+        description: "Toggle permission prompts",
         max_args: 0,
     },
     BuiltinCommand {
-        name: "/thinking",
-        description: "Toggle extended thinking (off, adaptive, effort level, or budget)",
+        name: "/thinking:toggle",
+        aliases: &["/thinking", "/thinking-toggle"],
+        category: CommandCategory::Preferences,
+        description: "Toggle extended thinking",
         max_args: 1,
     },
     BuiltinCommand {
-        name: "/fast",
-        description: "Toggle Anthropic fast mode (Opus only)",
+        name: "/performance:fast",
+        aliases: &["/fast", "/performance-fast"],
+        category: CommandCategory::Preferences,
+        description: "Toggle Anthropic fast mode",
         max_args: 0,
     },
     BuiltinCommand {
-        name: "/workflow",
-        description: "Toggle workflow mode (task callable inside code_execution)",
+        name: "/workflow:toggle",
+        aliases: &["/workflow", "/workflow-toggle"],
+        category: CommandCategory::Agents,
+        description: "Toggle workflow mode",
         max_args: 0,
     },
     BuiltinCommand {
-        name: "/exit",
+        name: "/session:exit",
+        aliases: &["/exit", "/session-exit"],
+        category: CommandCategory::Session,
         description: "Exit the application",
         max_args: 0,
     },
     BuiltinCommand {
-        name: "/reload",
+        name: "/session:reload",
+        aliases: &["/reload", "/session-reload"],
+        category: CommandCategory::Session,
         description: "Reload plugins and config",
         max_args: 0,
     },
 ];
+
+#[must_use]
+pub fn builtin_command(name: &str) -> Option<&'static BuiltinCommand> {
+    BUILTIN_COMMANDS.iter().find(|command| {
+        command.name.eq_ignore_ascii_case(name)
+            || command
+                .aliases
+                .iter()
+                .any(|alias| alias.eq_ignore_ascii_case(name))
+    })
+}
+
+fn builtin_alias(name: &str) -> Option<(&'static BuiltinCommand, &'static str)> {
+    BUILTIN_COMMANDS.iter().find_map(|command| {
+        if command.name.eq_ignore_ascii_case(name) {
+            Some((command, command.name))
+        } else {
+            command
+                .aliases
+                .iter()
+                .find(|alias| alias.eq_ignore_ascii_case(name))
+                .map(|alias| (command, *alias))
+        }
+    })
+}
 
 pub struct ParsedCommand {
     pub name: String,
@@ -323,6 +396,17 @@ impl CommandPalette {
             parts.len().saturating_sub(1)
         };
 
+        if let Some(command) = builtin_command(cmd_word)
+            && self.current_arg_count <= command.max_args
+        {
+            self.filtered = vec![Match {
+                command_type: CommandType::Builtin(command),
+                indices: Vec::new(),
+            }];
+            self.selected = 0;
+            return;
+        }
+
         self.nucleo.pattern.reparse(
             0,
             cmd_word,
@@ -435,6 +519,15 @@ impl CommandPalette {
     pub fn confirm(&self, input: &str) -> Option<ParsedCommand> {
         let item = self.filtered.get(self.selected)?;
         let name = self.item_name(item);
+        let word = input.strip_prefix('/').map_or(input, |text| {
+            text.split_whitespace().next().map_or(text, |part| part)
+        });
+        let name = match &item.command_type {
+            CommandType::Builtin(command) => {
+                builtin_alias(word).map_or(name, |(_, spelling)| spelling.to_owned())
+            }
+            _ => name,
+        };
         let args = input
             .strip_prefix('/')
             .and_then(|s| s.split_once(char::is_whitespace))
