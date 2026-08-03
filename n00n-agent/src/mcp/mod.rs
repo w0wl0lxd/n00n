@@ -30,6 +30,7 @@ use std::time::Duration;
 use arc_swap::{ArcSwap, Guard};
 use n00n_providers::{ContentBlock, Message};
 use serde_json::{Value, json};
+use smol::Task;
 use tracing::{debug, info, warn};
 
 use crate::tools::schema::{sanitize_tool_input_schema, truncate_on_word_boundary};
@@ -138,9 +139,11 @@ impl ServerEntry {
     async fn clear_connection(&mut self) {
         if let Some(old) = self.transport.take() {
             // A live tool call can still be holding an `Arc` to this transport via the
-            // `ToolIndex`, so we cannot rely on `Drop` to reap the child in time.
-            kill_process_groups(&old.child_pids());
+            // `ToolIndex`, so explicitly stop and reap the child before releasing this owner.
+            let pids = old.child_pids();
             old.shutdown().await;
+            kill_process_groups(&pids);
+            old.force_shutdown().await;
         }
         self.tools.clear();
         self.prompts.clear();
@@ -300,7 +303,7 @@ pub struct McpHandle {
     defer_tools: usize,
     /// Handle to the command loop task. Held so we can cancel it if shutdown
     /// times out and the ack is never sent.
-    task: Arc<Mutex<Option<smol::Task<()>>>>,
+    task: Arc<Mutex<Option<Task<()>>>>,
 }
 
 /// One session's view of MCP: the shared handle plus the deferred tools
@@ -607,6 +610,37 @@ impl McpHandle {
         transport::get_prompt(transport.as_ref(), &raw_name, arguments).await
     }
 
+    async fn force_shutdown(&self) {
+        let old_index = self.index.swap(Arc::new(ToolIndex::default()));
+        let mut empty_snapshot = (*self.snapshot.load_full()).clone();
+        let mut pids = std::mem::take(&mut empty_snapshot.pids);
+        empty_snapshot.infos.clear();
+        empty_snapshot.prompts.clear();
+        empty_snapshot.generation = empty_snapshot.generation.saturating_add(1);
+        self.snapshot.store(Arc::new(empty_snapshot));
+
+        let mut transports = HashMap::new();
+        for tool in old_index.tools.values() {
+            transports
+                .entry(Arc::clone(tool.transport.server_name()))
+                .or_insert_with(|| Arc::clone(&tool.transport));
+            pids.extend(tool.transport.child_pids());
+        }
+        for prompt in old_index.prompts.values() {
+            transports
+                .entry(Arc::clone(prompt.transport.server_name()))
+                .or_insert_with(|| Arc::clone(&prompt.transport));
+            pids.extend(prompt.transport.child_pids());
+        }
+
+        pids.sort_unstable();
+        pids.dedup();
+        kill_process_groups(&pids);
+        for transport in transports.into_values() {
+            transport.force_shutdown().await;
+        }
+    }
+
     pub async fn shutdown(&self) {
         let (ack_tx, ack_rx) = flume::bounded(1);
         self.send(McpCommand::Shutdown { ack: ack_tx });
@@ -623,11 +657,17 @@ impl McpHandle {
         .await;
         if !finished {
             warn!("MCP shutdown timed out after {MCP_SHUTDOWN_TIMEOUT:?}");
-            let task = self
-                .task
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take();
+            self.force_shutdown().await;
+            let task = {
+                let mut task_guard = match self.task.lock() {
+                    Ok(guard) => guard,
+                    Err(poisoned) => {
+                        warn!("MCP task mutex was poisoned during shutdown; recovering guard");
+                        poisoned.into_inner()
+                    }
+                };
+                task_guard.take()
+            };
             if let Some(task) = task {
                 let _ = task.cancel().await;
             }

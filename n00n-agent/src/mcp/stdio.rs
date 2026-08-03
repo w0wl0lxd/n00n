@@ -43,7 +43,8 @@ pub struct StdioTransport {
     alive: Arc<AtomicBool>,
     _reader_task: smol::Task<()>,
     _stderr_task: smol::Task<()>,
-    child: ChildGuard,
+    pid: u32,
+    child: Mutex<ChildGuard>,
 }
 
 impl StdioTransport {
@@ -79,6 +80,7 @@ impl StdioTransport {
             server: name.into(),
             reason: e.to_string(),
         })?;
+        let pid = child.id();
 
         let stdin = child.stdin.take().ok_or_else(|| McpError::StartFailed {
             server: name.into(),
@@ -151,7 +153,8 @@ impl StdioTransport {
             alive,
             _reader_task: reader_task,
             _stderr_task: stderr_task,
-            child: ChildGuard::new(child),
+            pid,
+            child: Mutex::new(ChildGuard::new(child)),
         })
     }
 
@@ -306,11 +309,14 @@ impl McpTransport for StdioTransport {
 
     fn shutdown(&self) -> BoxFuture<'_, ()> {
         Box::pin(async move {
-            // Flip `alive` so any in-flight reader or writer gives up with a clean error.
-            // We deliberately do not signal the child here: the transport lives behind an
-            // Arc, and once the last clone goes away `ChildGuard::drop` takes care of
-            // killing the whole process group. Doing it twice just raced with itself.
             self.alive.store(false, Ordering::Release);
+        })
+    }
+
+    fn force_shutdown(&self) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            self.alive.store(false, Ordering::Release);
+            self.child.lock().await.kill_and_reap().await;
         })
     }
 
@@ -323,7 +329,7 @@ impl McpTransport for StdioTransport {
     }
 
     fn child_pids(&self) -> Vec<u32> {
-        vec![self.child.id()]
+        vec![self.pid]
     }
 }
 

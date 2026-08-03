@@ -42,7 +42,7 @@ Write content to a file. Prefer edit or edit_lines for existing files.
 |-----------|------|----------|-------------|
 | `path` | string | yes |  |
 | `content` | string | yes |  |
-| `justification` | string | no | Required when content may contain secrets/PII. Explain why this content is safe to write. |
+| `justification` | string | no | Required when content may contain secret patterns or authorization headers. Explain why this content is safe to write. |
 
 ### `edit` *(lua plugin)*
 
@@ -53,7 +53,7 @@ Replace exact string match in a file. `old_string` must match uniquely unless `r
 | `path` | string | yes |  |
 | `new_string` | string | yes |  |
 | `old_string` | string | yes |  |
-| `justification` | string | no | Required when new_string may contain secrets/PII. Explain why this replacement is safe. |
+| `justification` | string | no | Required when new_string may contain secret patterns or authorization headers. Explain why this replacement is safe. |
 | `replace_all` | boolean | no |  |
 
 ### `multiedit` *(lua plugin)*
@@ -63,7 +63,7 @@ Apply multiple non-adjacent string edits to a single file atomically. Applied in
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes |  |
-| `justification` | string | no | Required when any new_string may contain secrets/PII. Explain why these replacements are safe. |
+| `justification` | string | no | Required when any new_string may contain secret patterns or authorization headers. Explain why these replacements are safe. |
 | `edits` | array | yes |  |
 
 ### `edit_lines` *(lua plugin)*
@@ -75,7 +75,7 @@ Replace lines from `start` to `end` (inclusive) with `new_string`. Use empty `ne
 | `path` | string | yes |  |
 | `end` | integer | yes |  |
 | `start` | integer | yes |  |
-| `justification` | string | no | Required when new_string may contain secrets/PII. Explain why this replacement is safe. |
+| `justification` | string | no | Required when new_string may contain secret patterns or authorization headers. Explain why this replacement is safe. |
 | `new_string` | string | yes |  |
 
 ### `insert_lines` *(lua plugin)*
@@ -84,7 +84,7 @@ Insert lines before `line` number. Existing lines shift down.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `justification` | string | no | Required when new_string may contain secrets/PII. Explain why this insertion is safe. |
+| `justification` | string | no | Required when new_string may contain secret patterns or authorization headers. Explain why this insertion is safe. |
 | `path` | string | yes |  |
 | `line` | integer | yes |  |
 | `new_string` | string | yes |  |

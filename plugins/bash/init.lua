@@ -208,6 +208,13 @@ local function broad_bash_command_reason(command)
   return nil
 end
 
+local function has_command(normalized, command, suffix)
+  return normalized:find("^" .. command .. suffix)
+    or normalized:find("[|;&]%s*" .. command .. suffix)
+    or normalized:find("[|;&]%s*[|&]%s*" .. command .. suffix)
+    or normalized:find("\n%s*" .. command .. suffix)
+end
+
 local function exfiltration_command_reason(command)
   local normalized = trim(command):lower()
   if normalized == "" then
@@ -217,58 +224,42 @@ local function exfiltration_command_reason(command)
   -- Common network exfiltration transports.
   local network_cmds = { "curl", "wget", "ftp", "sftp", "tftp", "scp", "rsync" }
   for _, cmd in ipairs(network_cmds) do
-    if
-      normalized:find("^" .. cmd .. "%s")
-      or normalized:find("%|%s*" .. cmd .. "%s")
-      or normalized:find("&&%s*" .. cmd .. "%s")
-    then
+    if has_command(normalized, cmd, "%s") then
       return cmd .. " may send data to a remote host"
     end
   end
 
   -- Netcat / socket tools.
-  if normalized:find("^nc[%s%-]") or normalized:find("%|%s*nc[%s%-]") or normalized:find("&&%s*nc[%s%-]") then
+  if has_command(normalized, "nc", "[%s%-]") then
     return "nc may send data to a remote host"
   end
-  if normalized:find("^ncat%s") or normalized:find("%|%s*ncat%s") or normalized:find("&&%s*ncat%s") then
+  if has_command(normalized, "ncat", "%s") then
     return "ncat may send data to a remote host"
   end
 
   -- DNS exfiltration.
-  if normalized:find("^dig%s") or normalized:find("%|%s*dig%s") or normalized:find("&&%s*dig%s") then
+  if has_command(normalized, "dig", "%s") then
     return "dig may exfiltrate data via DNS"
   end
-  if normalized:find("^nslookup%s") or normalized:find("%|%s*nslookup%s") or normalized:find("&&%s*nslookup%s") then
+  if has_command(normalized, "nslookup", "%s") then
     return "nslookup may exfiltrate data via DNS"
   end
 
   -- Encoded data going to a network command.
-  if
-    (
-      normalized:find("base64", 1, true)
-      or normalized:find("xxd", 1, true)
-      or normalized:find("uuencode", 1, true)
-      or normalized:find("od ", 1, true)
-    )
-    and (
-      normalized:find("curl", 1, true)
-      or normalized:find("wget", 1, true)
-      or normalized:find("nc", 1, true)
-      or normalized:find("ncat", 1, true)
-    )
-  then
+  local encoded = has_command(normalized, "base64", "%s")
+    or has_command(normalized, "xxd", "%s")
+    or has_command(normalized, "uuencode", "%s")
+    or has_command(normalized, "od", "%s")
+  local network = has_command(normalized, "curl", "%s")
+    or has_command(normalized, "wget", "%s")
+    or has_command(normalized, "nc", "[%s%-]")
+    or has_command(normalized, "ncat", "%s")
+  if encoded and network then
     return "encoded data may be sent to a remote host"
   end
 
   -- Shell substitution / command substitution feeding a network command.
-  if
-    (
-      normalized:find("curl", 1, true)
-      or normalized:find("wget", 1, true)
-      or normalized:find("nc", 1, true)
-      or normalized:find("ncat", 1, true)
-    ) and (normalized:find("$(", 1, true) or normalized:find("`", 1, true))
-  then
+  if network and (normalized:find("$(", 1, true) or normalized:find("`", 1, true)) then
     return "command substitution may exfiltrate data"
   end
 
@@ -789,10 +780,10 @@ n00n.api.register_tool({
     end
 
     local command, workdir = parse_cd_hint(input)
-    local reason = broad_command_reason(command) or exfiltration_command_reason(command)
+    local exfiltration_reason = exfiltration_command_reason(command)
+    local reason = broad_command_reason(command) or exfiltration_reason
     if reason and (not input.justification or trim(input.justification) == "") then
-      local prefix = exfiltration_command_reason(command) and EXFILTRATION_JUSTIFICATION_REQUIRED
-        or BROAD_COMMAND_JUSTIFICATION_REQUIRED
+      local prefix = exfiltration_reason and EXFILTRATION_JUSTIFICATION_REQUIRED or BROAD_COMMAND_JUSTIFICATION_REQUIRED
       return { llm_output = prefix .. ": " .. reason, is_error = true }
     end
     local timeout_secs = input.timeout or opts.timeout_secs

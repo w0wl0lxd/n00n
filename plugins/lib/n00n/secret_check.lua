@@ -1,4 +1,4 @@
--- Heuristic secret/PII pattern detection for tool content validation.
+-- Heuristic secret pattern detection for tool content validation.
 --
 -- This is intentionally conservative: it flags common secret-bearing keywords and
 -- patterns so tools can surface a warning or require a justification. It does not
@@ -27,6 +27,7 @@ local SECRET_KEYWORDS = {
   "clientid",
   "client_id",
   "client-id",
+  "credential",
   "consumerkey",
   "consumer_key",
   "consumer-secret",
@@ -74,9 +75,6 @@ local SECRET_KEYWORDS = {
   "passwd=",
 }
 
--- High-entropy-ish token patterns: base64/hex strings that follow `=` or a key word.
-local TOKEN_VALUE_PATTERN = "[=:]%s*[\"']?([A-Za-z0-9+/_%-]+)"
-
 local function lower(s)
   return s:lower()
 end
@@ -91,15 +89,15 @@ local function contains_keyword(s)
   return nil
 end
 
-local function looks_like_secret_value(s)
-  -- A value that is a long alphanumeric + symbols blob after a secret key word.
-  for match in s:gmatch(TOKEN_VALUE_PATTERN) do
-    -- must be at least 16 chars to avoid flagging short examples
-    if #match >= 16 then
-      return true
+local function secret_assignment_keyword(s)
+  local l = lower(s)
+  for key, value in l:gmatch("([%w_%-%.]+)%s*[:=]%s*[\"']?([A-Za-z0-9+/_%-]+)") do
+    local kw = contains_keyword(key)
+    if kw and #value >= 16 then
+      return kw
     end
   end
-  return false
+  return nil
 end
 
 -- Returns (ok, reason). If ok is false, reason explains what triggered.
@@ -108,8 +106,8 @@ function M.check(text)
     return true
   end
 
-  local kw = contains_keyword(text)
-  if kw and looks_like_secret_value(text) then
+  local kw = secret_assignment_keyword(text)
+  if kw then
     return false, "content may contain a secret pattern near '" .. kw .. "'"
   end
 
@@ -127,6 +125,14 @@ function M.reason(text)
   local ok, r = M.check(text)
   if not ok then
     return r
+  end
+  return nil
+end
+
+function M.require_justification(text, justification, tool_name)
+  local reason = M.reason(text)
+  if reason and (not justification or justification:match("^%s*$")) then
+    return { llm_output = "error: " .. reason .. "; provide justification to " .. tool_name, is_error = true }
   end
   return nil
 end

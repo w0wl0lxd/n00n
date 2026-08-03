@@ -259,7 +259,7 @@ n00n.api.register_tool({
       },
       justification = {
         type = "string",
-        description = "Required when new_string may contain secrets/PII. Explain why this replacement is safe.",
+        description = "Required when new_string may contain secret patterns or authorization headers. Explain why this replacement is safe.",
       },
     },
   },
@@ -270,9 +270,9 @@ n00n.api.register_tool({
   end),
 
   handler = function(input, ctx)
-    local secret_reason = secret_check.reason(input.new_string)
-    if secret_reason and (not input.justification or input.justification:match("^%s*$")) then
-      return { llm_output = "error: " .. secret_reason .. "; provide justification to edit", is_error = true }
+    local secret_error = secret_check.require_justification(input.new_string, input.justification, "edit")
+    if secret_error then
+      return secret_error
     end
 
     local result, err = apply_edit(input.path, ctx, function(content)
@@ -325,7 +325,7 @@ register_tool_if(opts.multiedit, {
       },
       justification = {
         type = "string",
-        description = "Required when any new_string may contain secrets/PII. Explain why these replacements are safe.",
+        description = "Required when any new_string may contain secret patterns or authorization headers. Explain why these replacements are safe.",
       },
     },
   },
@@ -346,12 +346,10 @@ register_tool_if(opts.multiedit, {
     end
 
     for i, edit in ipairs(edits) do
-      local secret_reason = secret_check.reason(edit.new_string)
-      if secret_reason and (not input.justification or input.justification:match("^%s*$")) then
-        return {
-          llm_output = "error: edits[" .. i - 1 .. "] " .. secret_reason .. "; provide justification to multiedit",
-          is_error = true,
-        }
+      local secret_error = secret_check.require_justification(edit.new_string, input.justification, "multiedit")
+      if secret_error then
+        secret_error.llm_output = secret_error.llm_output:gsub("^error: ", string.format("error: edits[%d] ", i - 1), 1)
+        return secret_error
       end
     end
 
@@ -411,7 +409,7 @@ register_tool_if(opts.edit_lines, {
       },
       justification = {
         type = "string",
-        description = "Required when new_string may contain secrets/PII. Explain why this replacement is safe.",
+        description = "Required when new_string may contain secret patterns or authorization headers. Explain why this replacement is safe.",
       },
     },
   },
@@ -422,9 +420,9 @@ register_tool_if(opts.edit_lines, {
   end),
 
   handler = function(input, ctx)
-    local secret_reason = secret_check.reason(input.new_string)
-    if secret_reason and (not input.justification or input.justification:match("^%s*$")) then
-      return { llm_output = "error: " .. secret_reason .. "; provide justification to edit_lines", is_error = true }
+    local secret_error = secret_check.require_justification(input.new_string, input.justification, "edit_lines")
+    if secret_error then
+      return secret_error
     end
 
     local result, err = apply_edit(input.path, ctx, function(content)
@@ -466,7 +464,7 @@ register_tool_if(opts.insert_lines, {
       },
       justification = {
         type = "string",
-        description = "Required when new_string may contain secrets/PII. Explain why this insertion is safe.",
+        description = "Required when new_string may contain secret patterns or authorization headers. Explain why this insertion is safe.",
       },
     },
   },
@@ -477,9 +475,9 @@ register_tool_if(opts.insert_lines, {
   end),
 
   handler = function(input, ctx)
-    local secret_reason = secret_check.reason(input.new_string)
-    if secret_reason and (not input.justification or input.justification:match("^%s*$")) then
-      return { llm_output = "error: " .. secret_reason .. "; provide justification to insert_lines", is_error = true }
+    local secret_error = secret_check.require_justification(input.new_string, input.justification, "insert_lines")
+    if secret_error then
+      return secret_error
     end
 
     local result, err = apply_edit(input.path, ctx, function(content)

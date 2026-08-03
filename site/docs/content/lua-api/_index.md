@@ -5921,10 +5921,13 @@ function M.route_tier(prompt)
 ### `require("n00n.secret_check")`
 
 ```lua
--- Heuristic secret/PII pattern detection for tool content validation.
+local M = require("n00n.secret_check")
+
+-- Heuristic secret pattern detection for tool content validation.
 --
--- This is intentionally conservative: it flags common secret-bearing keywords and
--- patterns so tools can surface a warning or require a justification. It does not
+-- This is intentionally conservative: it flags common secret-bearing keywords,
+-- credential-style assignments, token patterns, and Basic/Bearer authorization
+-- headers so tools can surface a warning or require a justification. It does not
 -- attempt to be exhaustive, and it may false-positive on example keys in docs.
 
 -- Returns (ok, reason). If ok is false, reason explains what triggered.

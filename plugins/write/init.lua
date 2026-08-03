@@ -43,7 +43,7 @@ n00n.api.register_tool({
       },
       justification = {
         type = "string",
-        description = "Required when content may contain secrets/PII. Explain why this content is safe to write.",
+        description = "Required when content may contain secret patterns or authorization headers. Explain why this content is safe to write.",
       },
     },
   },
@@ -72,9 +72,9 @@ n00n.api.register_tool({
       return { llm_output = "error: content is required", is_error = true }
     end
 
-    local secret_reason = secret_check.reason(content)
-    if secret_reason and (not input.justification or input.justification:match("^%s*$")) then
-      return { llm_output = "error: " .. secret_reason .. "; provide justification to write", is_error = true }
+    local secret_error = secret_check.require_justification(content, input.justification, "write")
+    if secret_error then
+      return secret_error
     end
 
     local path = n00n.fs.abspath(raw)

@@ -30,6 +30,9 @@ pub trait McpTransport: Send + Sync {
         params: Option<Value>,
     ) -> BoxFuture<'a, Result<(), McpError>>;
     fn shutdown(&self) -> BoxFuture<'_, ()>;
+    fn force_shutdown(&self) -> BoxFuture<'_, ()> {
+        Box::pin(async {})
+    }
     fn server_name(&self) -> &Arc<str>;
     fn transport_kind(&self) -> &'static str;
     fn child_pids(&self) -> Vec<u32> {

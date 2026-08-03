@@ -1,9 +1,16 @@
 use std::process::Command;
 
+const TERMINAL_ERROR: &str =
+    "n00n must be run from a terminal; use --print for non-interactive output";
+
 #[test]
 fn tui_refuses_to_run_without_a_terminal() {
     let state_dir = std::env::temp_dir().join(format!("n00n-non-tty-test-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&state_dir);
+    match std::fs::remove_dir_all(&state_dir) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => panic!("remove temp state dir: {error}"),
+    }
     std::fs::create_dir_all(&state_dir).expect("create temp state dir");
 
     let output = Command::new(env!("CARGO_BIN_EXE_n00n"))
@@ -28,7 +35,11 @@ fn tui_refuses_to_run_without_a_terminal() {
     );
 
     assert!(
-        stderr.contains("terminal") || code == 1,
-        "n00n should report a terminal error or exit code 1 without a TTY:\nstderr:\n{stderr}\nstdout:\n{stdout}"
+        !output.status.success(),
+        "n00n should reject non-TTY startup:\nstderr:\n{stderr}\nstdout:\n{stdout}"
+    );
+    assert!(
+        stderr.contains(TERMINAL_ERROR),
+        "n00n should report the terminal error:\nstderr:\n{stderr}\nstdout:\n{stdout}"
     );
 }

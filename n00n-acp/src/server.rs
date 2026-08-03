@@ -32,6 +32,11 @@ use crate::{AcpParams, methods, permissions, translate};
 
 const FIRST_OUTGOING_REQUEST_ID: i64 = 1000;
 
+enum InputEvent {
+    Line(std::io::Result<usize>),
+    WriterFailed,
+}
+
 type PendingPrompt = Arc<Mutex<PendingPromptState>>;
 
 #[derive(Default)]
@@ -64,19 +69,29 @@ impl Server {
 /// Runs the ACP server.
 ///
 /// # Errors
-/// Returns an error if stdin reading fails or JSON parsing fails.
+/// Returns an error if stdin reading, JSON parsing, or stdout writing fails.
 pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
     let (out_tx, out_rx) = flume::unbounded::<Value>();
+    let (writer_failed_tx, writer_failed_rx) = flume::bounded(1);
 
     let writer_task = smol::spawn(async move {
-        let stdout = std::io::stdout();
-        while let Ok(msg) = out_rx.recv_async().await {
-            let mut handle = stdout.lock();
-            if serde_json::to_writer(&mut handle, &msg).is_ok() {
-                let _ = handle.write_all(b"\n");
-                let _ = handle.flush();
+        let result = async {
+            let stdout = std::io::stdout();
+            while let Ok(msg) = out_rx.recv_async().await {
+                let mut handle = stdout.lock();
+                serde_json::to_writer(&mut handle, &msg)?;
+                handle.write_all(b"\n")?;
+                handle.flush()?;
             }
+            Ok::<(), color_eyre::Report>(())
         }
+        .await;
+        if result.is_err()
+            && let Err(error) = writer_failed_tx.send(())
+        {
+            debug!(error = %error, "writer failure notification receiver closed");
+        }
+        result
     });
 
     let mut server = Server {
@@ -89,19 +104,34 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
     let mut reader = smol::io::BufReader::new(stdin);
     let mut line = String::new();
 
+    let mut read_error = None;
     loop {
         line.clear();
-        match reader.read_line(&mut line).await {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+        let event = smol::future::race(
+            async { InputEvent::Line(reader.read_line(&mut line).await) },
+            async {
+                match writer_failed_rx.recv_async().await {
+                    Ok(()) | Err(_) => InputEvent::WriterFailed,
+                }
+            },
+        )
+        .await;
+        match event {
+            InputEvent::Line(Ok(0)) => break,
+            InputEvent::Line(Ok(_)) => {}
+            InputEvent::Line(Err(e)) if e.kind() == std::io::ErrorKind::InvalidData => {
                 warn!(error = %e, "invalid UTF-8 on stdin");
                 server.respond(RequestId::Null, Err(AcpError::parse_error()));
                 continue;
             }
-            Err(e) => {
+            InputEvent::Line(Err(e)) => {
                 warn!(error = %e, "I/O error reading from stdin");
-                return Err(color_eyre::eyre::eyre!(e));
+                read_error = Some(e);
+                break;
+            }
+            InputEvent::WriterFailed => {
+                drop(server);
+                return writer_task.await;
             }
         }
 
@@ -126,7 +156,7 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
                 Ok(None) => None,
                 Err(e) => {
                     server.respond(RequestId::Null, Err(e));
-                    break;
+                    continue;
                 }
             };
 
@@ -139,12 +169,17 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
                 }
             } else if let Some(id) = id {
                 server.respond(id, Err(AcpError::invalid_request()));
+            } else {
+                server.respond(RequestId::Null, Err(AcpError::invalid_request()));
             }
         }
     }
 
     drop(server);
-    writer_task.await;
+    writer_task.await?;
+    if let Some(error) = read_error {
+        return Err(color_eyre::eyre::eyre!(error));
+    }
 
     Ok(())
 }
