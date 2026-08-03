@@ -148,6 +148,11 @@ impl Cursor {
         })
     }
 
+    pub(crate) fn has_credentials() -> bool {
+        super::KeyPool::resolve("cursor", API_KEY_ENV).is_ok()
+            || auth::read_ide_access_token().is_ok()
+    }
+
     pub(crate) fn new(timeouts: Timeouts) -> Result<Self, AgentError> {
         let api_key = match super::KeyPool::resolve("cursor", API_KEY_ENV) {
             Ok(pool) => Some(pool.current().to_string()),

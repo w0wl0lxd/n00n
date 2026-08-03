@@ -11,7 +11,7 @@ use n00n_agent::command::{self, CustomCommand};
 use n00n_agent::tools::ToolRegistry;
 use n00n_config::{Config, load_env_files, load_permissions};
 use n00n_lua::PluginHost;
-use n00n_providers::model::Model;
+use n00n_providers::{ModelResolver, model::Model};
 use n00n_storage::StateDir;
 use n00n_storage::id::n00nId;
 use n00n_ui::{AppSession, RunOutcome};
@@ -175,12 +175,20 @@ fn build_stack(
     let (model, needs_login) = match (model_result, fallback_model) {
         (Ok(m), _) => (m, false),
         (Err(e), Some(last_model)) => {
-            warnings.push(format!("{MODEL_FALLBACK_WARNING}: {e:#}"));
-            (last_model, false)
+            let resolver = ModelResolver::current();
+            match resolver.resolve(&last_model.spec()) {
+                Ok(model) => {
+                    warnings.push(format!("{MODEL_FALLBACK_WARNING}: {e:#}"));
+                    (model, false)
+                }
+                Err(_) => return Err(e),
+            }
         }
         (Err(e), None) if !cli.run_flags.print => {
-            let placeholder = Model::from_spec(FALLBACK_MODEL_SPEC)
-                .or_else(|_| Model::from_spec("anthropic/claude-sonnet-4-20250514"))
+            let resolver = ModelResolver::current();
+            let placeholder = resolver
+                .resolve(FALLBACK_MODEL_SPEC)
+                .or_else(|_| resolver.resolve("anthropic/claude-sonnet-4-20250514"))
                 .map_err(|_| e)?;
             (placeholder, true)
         }
@@ -348,7 +356,9 @@ fn run_ui_loop(
         let model = if focused_tab.messages.is_empty() {
             stack.model.clone()
         } else {
-            Model::from_spec(&focused_tab.model).unwrap_or_else(|_| stack.model.clone())
+            ModelResolver::current()
+                .resolve(&focused_tab.model)
+                .unwrap_or_else(|_| stack.model.clone())
         };
 
         // Bind daemon.sock for this UI generation so CLI `n00n agent list`

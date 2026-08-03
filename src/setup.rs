@@ -3,7 +3,8 @@ use std::sync::Mutex;
 use color_eyre::Result;
 use color_eyre::eyre::Context;
 
-use n00n_providers::model::{Model, ModelTier};
+use n00n_providers::model::ModelTier;
+use n00n_providers::{Model, ModelResolver};
 use n00n_storage::StateDir;
 use n00n_storage::log::RotatingFileWriter;
 use n00n_storage::model::read_model;
@@ -23,31 +24,38 @@ pub fn resolve_model(
     provider_config: &n00n_config::ProviderConfig,
     storage: &StateDir,
 ) -> Result<Model> {
+    let resolver = ModelResolver::current();
     if let Some(spec) = explicit {
-        let model = Model::from_spec(spec).context("invalid --model spec")?;
-        return Ok(model);
+        return resolver
+            .resolve(spec)
+            .context("model is not configured or available");
     }
     if let Some(spec) = read_model(storage) {
-        if let Ok(m) = Model::from_spec(&spec) {
-            return Ok(m);
+        if let Ok(model) = resolver.resolve(&spec) {
+            return Ok(model);
         }
-        tracing::warn!(spec, "saved model no longer valid, falling back to default");
+        tracing::warn!(
+            spec,
+            "saved model is no longer configured or available, falling back to default"
+        );
     }
     if let Some(spec) = provider_config.default_model.as_deref() {
-        return Model::from_spec(spec).context("invalid default_model in config");
+        return resolver
+            .resolve(spec)
+            .context("default_model is not configured or available");
     }
-    auto_detect_model().ok_or_else(|| {
+    auto_detect_model(&resolver).ok_or_else(|| {
         color_eyre::eyre::eyre!(
             "no provider available - set an API key (e.g. ANTHROPIC_API_KEY), run `n00n auth login`, or use -m to specify a model\n\nSee https://github.com/w0wl0lxd/n00n/docs/providers/ for setup instructions"
         )
     })
 }
 
-fn auto_detect_model() -> Option<Model> {
+fn auto_detect_model(resolver: &ModelResolver) -> Option<Model> {
     for tier in [ModelTier::Strong, ModelTier::Medium] {
         for &slug in PROVIDER_PRIORITY {
-            if n00n_providers::provider::provider_available(slug)
-                && let Ok(model) = Model::from_tier(slug, tier)
+            if let Ok(model) = Model::from_tier(slug, tier)
+                && let Ok(model) = resolver.resolve(&model.spec())
             {
                 return Some(model);
             }

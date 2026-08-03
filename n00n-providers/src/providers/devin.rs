@@ -460,6 +460,10 @@ pub struct Devin {
     timeouts: super::Timeouts,
 }
 
+pub(crate) fn has_credentials() -> bool {
+    discover_credentials().is_ok_and(|credentials| credentials.is_some())
+}
+
 impl Devin {
     pub fn new(timeouts: super::Timeouts) -> Result<Self, AgentError> {
         Ok(Self {
