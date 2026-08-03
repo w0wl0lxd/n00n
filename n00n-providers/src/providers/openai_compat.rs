@@ -659,12 +659,14 @@ pub fn convert_tools(anthropic_tools: &Value) -> Value {
         tools
             .iter()
             .filter_map(|t| {
+                let strict = t.get("strict").and_then(Value::as_bool) == Some(true);
                 Some(json!({
                     "type": "function",
                     "function": {
                         "name": t.get("name")?,
                         "description": t.get("description")?,
                         "parameters": t.get("input_schema")?,
+                        "strict": strict,
                     }
                 }))
             })

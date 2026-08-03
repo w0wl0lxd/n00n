@@ -138,6 +138,7 @@ pub(crate) struct PendingTool {
     pub(crate) describe_key: Option<RegistryKey>,
     pub(crate) defer_loading: bool,
     pub(crate) namespace: Option<Arc<str>>,
+    pub(crate) strict: bool,
 }
 
 pub(crate) type PendingTools = Arc<Mutex<Vec<PendingTool>>>;
@@ -160,6 +161,7 @@ pub(crate) struct LuaTool {
     pub(crate) has_describe_fn: bool,
     pub(crate) defer_loading: bool,
     pub(crate) namespace: Option<Arc<str>>,
+    pub(crate) strict: bool,
 }
 
 impl Tool for LuaTool {
@@ -224,6 +226,10 @@ impl Tool for LuaTool {
 
     fn namespace(&self) -> Option<&str> {
         self.namespace.as_deref()
+    }
+
+    fn strict(&self) -> bool {
+        self.strict
     }
 
     fn parse(&self, input: &Value) -> Result<Box<dyn ToolInvocation>, ParseError> {
@@ -1199,6 +1205,8 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
         .get::<Option<bool>>("defer_loading")?
         .unwrap_or_else(|| false);
 
+    let strict: bool = spec.get::<Option<bool>>("strict")?.unwrap_or_else(|| false);
+
     let namespace: Option<Arc<str>> = spec
         .get("namespace")
         .ok()
@@ -1227,6 +1235,7 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
             describe_key,
             defer_loading,
             namespace,
+            strict,
         });
 
     Ok(())
@@ -1733,6 +1742,7 @@ mod tests {
             has_describe_fn: false,
             defer_loading: false,
             namespace: None,
+            strict: false,
         }
     }
 
