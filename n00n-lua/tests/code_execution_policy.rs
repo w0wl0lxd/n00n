@@ -350,7 +350,7 @@ fn restore_lines_with(code: &str, output: &str, is_error: bool, clicks: Vec<usiz
             tool: Arc::from("code_execution"),
             tool_use_id: SCRIPT_TOOL_ID.into(),
             output: output.into(),
-            input: serde_json::json!({ "code": code }),
+            input: serde_json::json!({ "code": code, "timeout": null }),
             is_error,
             tool_output_lines: n00n_config::ToolOutputLines::default(),
             theme_gen: None,

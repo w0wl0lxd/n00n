@@ -1072,13 +1072,23 @@ fn spec_opt<T: mlua::FromLua>(spec: &Table, key: &str, expected: &str) -> LuaRes
         .map_err(|_| mlua::Error::runtime(format!("register_tool: '{key}' must be {expected}")))
 }
 
+fn schema_field_type_matches(field_schema: &Value, expected: &str) -> bool {
+    match field_schema.get("type").and_then(|t| t.as_array()) {
+        Some(types) => types
+            .iter()
+            .any(|t| t.as_str().is_some_and(|t| t == expected)),
+        None => field_schema
+            .get("type")
+            .and_then(|t| t.as_str())
+            .is_some_and(|t| t == expected),
+    }
+}
+
 fn check_schema_field(schema: &Value, key: &str, field: &str, expected: &str) -> LuaResult<()> {
     let matches = schema
         .get("properties")
         .and_then(|p| p.get(field))
-        .and_then(|s| s.get("type"))
-        .and_then(|t| t.as_str())
-        .is_some_and(|t| t == expected);
+        .is_some_and(|s| schema_field_type_matches(s, expected));
     if matches {
         Ok(())
     } else {
