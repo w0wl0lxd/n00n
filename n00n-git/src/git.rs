@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use gix::bstr::BStr;
+use gix::bstr::{BStr, ByteSlice};
 use gix::object::Kind;
 use gix::object::tree::diff::ChangeDetached as TreeChange;
 use serde::{Deserialize, Serialize};
@@ -491,14 +491,22 @@ pub fn branches(path: &Path) -> Result<Vec<GitBranch>, GitError> {
     Ok(branches)
 }
 
-/// Get blame information for a file.
+/// Get per-edit blame information for a file.
+///
+/// The result contains one line for each line of `file`, attributed to the commit
+/// that introduced that hunk of consecutive lines (or that individual line if it
+/// stands alone). This matches the behaviour of `git blame` and VS Code.
 ///
 /// # Errors
 ///
-/// Returns `GitError` if the repository cannot be opened, the file does not exist,
-/// or blame operations fail.
+/// Returns `GitError` if the repository cannot be opened, is bare, the file is not
+/// in the current commit, or blame operations fail.
 #[instrument(skip(path))]
 pub fn blame(path: &Path, file: &str) -> Result<GitBlame, GitError> {
+    if file.is_empty() {
+        return Err(GitError::FileNotFound("file path is empty".to_string()));
+    }
+
     let repo = gix::open(path)
         .map_err(|e| GitError::GitOperation(format!("failed to open repository: {e}")))?;
     let worktree = repo.worktree().ok_or(GitError::BareRepo)?;
@@ -517,42 +525,89 @@ pub fn blame(path: &Path, file: &str) -> Result<GitBlame, GitError> {
         )));
     }
 
+    if file_path.is_dir() {
+        return Err(GitError::FileNotFound(format!(
+            "path is a directory: {file}"
+        )));
+    }
+
+    let relative_path = file_path
+        .strip_prefix(&repo_root)
+        .map_err(|_| GitError::GitOperation(format!("file is outside repository root: {file}")))?;
+    if relative_path.as_os_str().is_empty() {
+        return Err(GitError::FileNotFound(format!(
+            "file path is a directory: {file}"
+        )));
+    }
+
+    let relative = relative_path
+        .to_str()
+        .ok_or_else(|| GitError::GitOperation(format!("file path is not valid UTF-8: {file}")))?;
+    let file_bstr = gix::path::to_unix_separators(BStr::new(relative.as_bytes()));
+
     let head_commit = repo
         .head_commit()
         .map_err(|e| GitError::GitOperation(format!("failed to get head commit: {e}")))?;
 
-    let commit_id = head_commit.id.to_hex().to_string();
-    let decoded = head_commit
+    let outcome = repo
+        .blame_file(
+            &file_bstr,
+            head_commit.id,
+            gix::repository::blame_file::Options::default(),
+        )
+        .map_err(|e| GitError::GitOperation(format!("blame failed: {e}")))?;
+
+    let mut commit_cache = std::collections::HashMap::new();
+    let mut blame_lines = Vec::new();
+
+    for (entry, lines) in outcome.entries_with_lines() {
+        let (author, time) = blame_commit_info(&repo, entry.commit_id, &mut commit_cache)?;
+        let base = entry.start_in_blamed_file;
+        for (idx, line) in lines.iter().enumerate() {
+            #[allow(clippy::cast_possible_truncation)]
+            let line_number = base + idx as u32 + 1;
+            blame_lines.push(BlameLine {
+                line_number,
+                content: String::from_utf8_lossy(line.as_bytes()).to_string(),
+                commit_id: entry.commit_id.to_hex().to_string(),
+                author: author.clone(),
+                time,
+            });
+        }
+    }
+
+    Ok(GitBlame { lines: blame_lines })
+}
+
+fn blame_commit_info(
+    repo: &gix::Repository,
+    commit_id: gix::hash::ObjectId,
+    cache: &mut std::collections::HashMap<gix::hash::ObjectId, (String, i64)>,
+) -> Result<(String, i64), GitError> {
+    if let Some(info) = cache.get(&commit_id) {
+        return Ok(info.clone());
+    }
+
+    let commit = repo
+        .find_commit(commit_id)
+        .map_err(|e| GitError::GitOperation(format!("failed to find commit {commit_id}: {e}")))?;
+    let decoded = commit
         .decode()
-        .map_err(|e| GitError::GitOperation(format!("failed to decode commit: {e}")))?;
-    let author = decoded
-        .author()
-        .map_err(|e| GitError::GitOperation(format!("failed to decode author: {e}")))?;
+        .map_err(|e| GitError::GitOperation(format!("failed to decode commit {commit_id}: {e}")))?;
+    let author = decoded.author().map_err(|e| {
+        GitError::GitOperation(format!("failed to decode author for {commit_id}: {e}"))
+    })?;
     let author_time = author
         .time()
-        .map_err(|e| GitError::GitOperation(format!("failed to decode author time: {e}")))?
+        .map_err(|e| {
+            GitError::GitOperation(format!("failed to decode author time for {commit_id}: {e}"))
+        })?
         .seconds;
     let author_name = author.name.to_string();
 
-    let content = std::fs::read_to_string(&file_path)
-        .map_err(|e| GitError::FileNotFound(format!("failed to read file: {e}")))?;
-
-    let lines: Vec<String> = content.lines().map(String::from).collect();
-
-    let blame_lines: Vec<BlameLine> = lines
-        .into_iter()
-        .enumerate()
-        .map(|(idx, line)| BlameLine {
-            #[allow(clippy::cast_possible_truncation)]
-            line_number: (idx + 1) as u32,
-            content: line,
-            commit_id: commit_id.clone(),
-            author: author_name.clone(),
-            time: author_time,
-        })
-        .collect();
-
-    Ok(GitBlame { lines: blame_lines })
+    let info = (author_name, author_time);
+    cache.insert(commit_id, info.clone());
+    Ok(info)
 }
 
 fn worktree_root(path: &Path) -> Result<PathBuf, GitError> {
