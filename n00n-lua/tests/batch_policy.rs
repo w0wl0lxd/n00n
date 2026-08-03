@@ -24,6 +24,8 @@ const MAX_BATCH_SIZE: usize = 25;
 const ERROR_PREFIX: &str = "[ERROR] ";
 const EMPTY_ERROR: &str = "provide at least one tool call";
 const NESTED_ERROR: &str = "cannot nest batch inside batch";
+const BACKGROUND_TASK_ERROR: &str = "background task cannot run inside batch";
+const BACKGROUND_TEAM_ERROR: &str = "background team cannot run inside batch";
 const DISCARDED_ERROR: &str = "maximum of 25 tools per batch";
 const SUMMARY_ALL_OK_FMT: &str = "All {} tools executed successfully.";
 const SUMMARY_MIXED_FMT: &str = "Executed {}/{} successfully. {} failed.";
@@ -35,7 +37,7 @@ const BOOM_ERR: &str = "stub tool exploded";
 /// `n00n.agent.call_tool` is stubbed; `n00n.async.gather` and the semaphore
 /// stay real, so the park/release pair proves children genuinely overlap.
 const STUB_PRELUDE: &str = r#"
-recorder = { calls = {} }
+recorder = { calls = {}, active = 0, max_active = 0 }
 local sem = n00n.async.semaphore(1)
 local held = sem:acquire()
 
@@ -57,6 +59,14 @@ n00n.agent.call_tool = function(ctx, name, input, opts)
   elseif name == "release" then
     held:release()
     return "released_done"
+  elseif name == "tracked" then
+    recorder.active = recorder.active + 1
+    recorder.max_active = math.max(recorder.max_active, recorder.active)
+    n00n.async.await(1, function(done)
+      n00n.async.run(function() return true end, function() done() end)
+    end)
+    recorder.active = recorder.active - 1
+    return "tracked_done"
   elseif name == "boom" then
     return nil, "@BOOM_ERR@"
   end
@@ -117,13 +127,25 @@ n00n.api.register_tool({
 })
 "#;
 
-fn load_batch_host() -> (Arc<ToolRegistry>, PluginHost) {
+fn load_batch_host_with_opts(opts: Value) -> (Arc<ToolRegistry>, PluginHost) {
     let reg = Arc::new(ToolRegistry::new());
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
     let prelude = STUB_PRELUDE.replace("@BOOM_ERR@", BOOM_ERR);
-    host.load_source("batch_policy", &format!("{prelude}\n{BATCH_PLUGIN_SRC}"))
-        .unwrap();
+    let opts = opts
+        .as_object()
+        .cloned()
+        .expect("options must be an object");
+    host.load_source_with_opts(
+        "batch_policy",
+        &format!("{prelude}\n{BATCH_PLUGIN_SRC}"),
+        opts,
+    )
+    .unwrap();
     (reg, host)
+}
+
+fn load_batch_host() -> (Arc<ToolRegistry>, PluginHost) {
+    load_batch_host_with_opts(json!({}))
 }
 
 fn exec_tool(reg: &ToolRegistry, name: &str, input: Value) -> Result<String, String> {
@@ -157,10 +179,16 @@ fn run_batch_state(reg: &ToolRegistry, tool_calls: Value) -> Value {
         .expect("no state on batch output")
 }
 
-fn recorded_calls(reg: &ToolRegistry) -> Vec<Value> {
+fn recorded_state(reg: &ToolRegistry) -> Value {
     let out = exec_tool(reg, PROBE_TOOL, json!({})).expect("probe failed");
-    let snap: Value = serde_json::from_str(&out).expect("probe returned invalid json");
-    snap["calls"].as_array().cloned().unwrap_or_else(Vec::new)
+    serde_json::from_str(&out).expect("probe returned invalid json")
+}
+
+fn recorded_calls(reg: &ToolRegistry) -> Vec<Value> {
+    recorded_state(reg)["calls"]
+        .as_array()
+        .cloned()
+        .unwrap_or_else(Vec::new)
 }
 
 fn section(tool: &str, body: &str) -> String {
@@ -255,6 +283,34 @@ fn nested_batch_rejected_without_dispatch() {
 }
 
 #[test]
+fn background_orchestrators_are_rejected_without_blocking_foreground_children() {
+    let (reg, _host) = load_batch_host();
+    let out = run_batch(
+        &reg,
+        json!([
+            { "tool": "task", "parameters": { "background": true } },
+            { "tool": "team", "parameters": { "background": true } },
+            { "tool": "task", "parameters": { "background": false } },
+            { "tool": "team", "parameters": {} },
+            { "tool": "ok", "parameters": { "tag": "still-runs" } },
+        ]),
+    )
+    .expect("batch failed");
+
+    assert!(out.contains(BACKGROUND_TASK_ERROR), "got: {out}");
+    assert!(out.contains(BACKGROUND_TEAM_ERROR), "got: {out}");
+    assert!(out.contains("ok:still-runs"), "got: {out}");
+    let calls = recorded_calls(&reg);
+    assert_eq!(calls.len(), 3);
+    let mut tools: Vec<&str> = calls
+        .iter()
+        .filter_map(|call| call["tool"].as_str())
+        .collect();
+    tools.sort_unstable();
+    assert_eq!(tools, vec!["ok", "task", "team"]);
+}
+
+#[test]
 fn overflow_entries_discarded_with_section() {
     let (reg, _host) = load_batch_host();
     let entries: Vec<Value> = (0..=MAX_BATCH_SIZE)
@@ -324,6 +380,24 @@ fn children_overlap_and_output_keeps_input_order() {
         summary_all_ok(2)
     );
     assert_eq!(out, expected);
+}
+
+#[test_case::test_case(2, 6, 2 ; "configured_limit")]
+#[test_case::test_case(100, 12, 8 ; "hard_limit")]
+fn concurrency_caps_simultaneous_children_without_disabling_batching(
+    configured: usize,
+    call_count: usize,
+    expected_max: usize,
+) {
+    let (reg, _host) = load_batch_host_with_opts(json!({ "max_concurrent": configured }));
+    let calls: Vec<Value> = (0..call_count)
+        .map(|_| json!({ "tool": "tracked", "parameters": {} }))
+        .collect();
+
+    let out = run_batch(&reg, json!(calls)).expect("batch failed");
+
+    assert!(out.ends_with(&summary_all_ok(call_count)), "got: {out}");
+    assert_eq!(recorded_state(&reg)["max_active"], json!(expected_max));
 }
 
 fn restore_snapshot_lines(

@@ -10,6 +10,7 @@ use crate::docs::{FnDoc, ParamDoc};
 use crate::runtime::{TaskHandle, enqueue_async_task, lock_cell};
 
 const AWAIT_MIN_ARGS: usize = 2;
+const MAX_GATHER_TASKS: usize = 64;
 const PERMIT_RELEASED_ERR: &str = "permit already released";
 
 /// Cancel-aware counting semaphore. Permits release on `:release()` or gc.
@@ -122,6 +123,8 @@ fn run(lua: &Lua, r#fn: Function, on_finish: Option<Function>) -> LuaResult<()> 
 /// Each entry in the result array has `ok` (boolean), and either `value`
 /// (on success) or `err` (string, on failure).
 ///
+/// At most 64 functions may be submitted per call.
+///
 /// @param fns table Array of zero-argument functions.
 /// @return (table) Array of result tables, one per function.
 /// @example
@@ -135,6 +138,11 @@ fn run(lua: &Lua, r#fn: Function, on_finish: Option<Function>) -> LuaResult<()> 
 #[lua_fn]
 async fn gather(lua: Lua, fns: Table) -> LuaResult<Table> {
     let count = fns.raw_len();
+    if count > MAX_GATHER_TASKS {
+        return Err(mlua::Error::runtime(format!(
+            "gather: maximum of {MAX_GATHER_TASKS} functions"
+        )));
+    }
     let mut children = Vec::with_capacity(count);
     for i in 1..=count {
         let f: Function = fns
@@ -519,6 +527,54 @@ mod tests {
                 "err should contain the child's message"
             );
             assert_eq!(vals[4].as_integer().unwrap(), 42);
+        });
+    }
+
+    #[test]
+    fn gather_accepts_maximum_functions() {
+        smol::block_on(async {
+            let (lua, _tbl) = setup();
+            let count = lua
+                .load(
+                    r"
+                    local funs = {}
+                    for i = 1, 64 do
+                        funs[i] = function() return i end
+                    end
+                    local results = async_tbl.gather(funs)
+                    return #results, results[1].value, results[64].value
+                    ",
+                )
+                .eval_async::<(usize, usize, usize)>()
+                .await
+                .unwrap();
+            assert_eq!(count, (64, 1, 64));
+        });
+    }
+
+    #[test]
+    fn gather_rejects_oversized_input_before_running_children() {
+        smol::block_on(async {
+            let (lua, _tbl) = setup();
+            let msg = lua
+                .load(
+                    r"
+                    child_runs = 0
+                    local funs = {}
+                    for i = 1, 65 do
+                        funs[i] = function()
+                            child_runs = child_runs + 1
+                        end
+                    end
+                    return async_tbl.gather(funs)
+                    ",
+                )
+                .eval_async::<Value>()
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(msg.contains("maximum of 64 functions"), "got: {msg}");
+            assert_eq!(lua.globals().get::<usize>("child_runs").unwrap(), 0);
         });
     }
 

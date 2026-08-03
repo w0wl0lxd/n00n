@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -908,7 +909,11 @@ pub(super) async fn process_tool_calls(
         runnable_results.push((call.position, done));
     }
 
-    let mut set = TaskSet::new();
+    let max_parallel_tool_calls = NonZeroUsize::new(ctx.config.max_parallel_tool_calls)
+        .ok_or_else(|| AgentError::Config {
+            message: "agent.max_parallel_tool_calls must be at least 1".to_owned(),
+        })?;
+    let mut set = TaskSet::new(max_parallel_tool_calls);
     let mut spawned_meta: Vec<(usize, String)> = Vec::new();
     for call in non_skill_calls {
         spawned_meta.push((call.position, call.id.clone()));

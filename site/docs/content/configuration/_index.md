@@ -162,6 +162,12 @@ n00n.setup({
 | `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
 | `timeout_secs` | integer | `120` | 5 | Kill the command after this many seconds. A call's `timeout` param overrides it. |
 
+### `plugins.batch`
+
+| Field | Type | Default | Min | Description |
+|-------|------|---------|-----|-------------|
+| `max_concurrent` | integer | `4` | 1 | Concurrent child tools across batches (default 4, hard max 8). |
+
 ### `plugins.code_execution`
 
 | Field | Type | Default | Min | Description |

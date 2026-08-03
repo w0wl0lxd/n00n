@@ -14,12 +14,16 @@
 local ToolView = require("n00n.tool_view")
 
 local MAX_BATCH_SIZE = 25
+local DEFAULT_MAX_CONCURRENT = 4
+local HARD_MAX_CONCURRENT = 8
 local SEPARATOR = "──────────────────"
 local BODY_INDENT = "  "
 local ANNOTATION_SEP = " · "
 local ERROR_PREFIX = "[ERROR] "
 local EMPTY_ERROR = "provide at least one tool call"
 local NESTED_ERROR = "cannot nest batch inside batch"
+local BACKGROUND_TASK_ERROR = "background task cannot run inside batch"
+local BACKGROUND_TEAM_ERROR = "background team cannot run inside batch"
 local CANCELLED_ERROR = "cancelled"
 local DISCARDED_ERROR = string.format("maximum of %d tools per batch", MAX_BATCH_SIZE)
 local SECTION_FMT = "## %s\n"
@@ -47,9 +51,19 @@ local INDICATOR = {
 }
 
 local description = string.format(
-  [[Execute multiple independent tool calls concurrently. ALWAYS use batch for multiple independent calls. 1-%d tools per batch. Parallel execution, order not guaranteed. Partial failures don't stop others. Do NOT nest batch. Use code_execution for dependent operations.]],
+  [[Execute multiple independent tool calls with bounded concurrency. ALWAYS use batch for multiple independent calls. 1-%d tools per batch. Completion order is not guaranteed. Partial failures don't stop others. Do NOT nest batch or launch background task/team children. Use code_execution for dependent operations.]],
   MAX_BATCH_SIZE
 )
+
+local opts = n00n.api.register_options({
+  max_concurrent = {
+    default = DEFAULT_MAX_CONCURRENT,
+    min = 1,
+    desc = "Concurrent child tools across batches (default 4, hard max 8).",
+  },
+})
+local max_concurrent = math.min(opts.max_concurrent, HARD_MAX_CONCURRENT)
+local batch_semaphore = n00n.async.semaphore(max_concurrent)
 
 local schema = {
   type = "object",
@@ -150,6 +164,10 @@ local function prepare_children(tool_calls)
       c.status, c.output = STATUS.ERROR, DISCARDED_ERROR
     elseif c.tool == "batch" then
       c.status, c.output = STATUS.ERROR, NESTED_ERROR
+    elseif c.tool == "task" and type(c.params) == "table" and c.params.background == true then
+      c.status, c.output = STATUS.ERROR, BACKGROUND_TASK_ERROR
+    elseif c.tool == "team" and type(c.params) == "table" and c.params.background == true then
+      c.status, c.output = STATUS.ERROR, BACKGROUND_TEAM_ERROR
     end
     c.header = header_spans(c.tool, c.params)
     children[i] = c
@@ -422,7 +440,12 @@ function Batch:run(ctx)
   for _, c in ipairs(self.children) do
     if c.status == STATUS.PENDING then
       funs[#funs + 1] = function()
-        self:run_child(c, ctx)
+        local permit = batch_semaphore:acquire()
+        local ok, run_err = pcall(self.run_child, self, c, ctx)
+        permit:release()
+        if not ok then
+          error(run_err, 0)
+        end
       end
     end
   end

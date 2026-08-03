@@ -58,7 +58,7 @@ const SCENARIO_SLOW: &str = "slow";
 /// Stubs keyed by `opts.name` (the task's `description`). `n00n.json` and
 /// `n00n.async` stay real so schema validation and semaphore behavior are tested.
 const STUB_PRELUDE: &str = r#"
-recorder = { prompts = {}, closed = 0, sessions = 0, acquired = 0, released = 0 }
+recorder = { prompts = {}, closed = 0, sessions = 0, background_sessions = 0, acquired = 0, released = 0 }
 
 -- Spy wrapper: the real semaphore does the work, counters track that every
 -- permit is explicitly released (gc would silently hide a leak).
@@ -166,6 +166,13 @@ behaviors.slow = function(sess, msg)
   return { text = "@PLAIN_TEXT@" }
 end
 
+n00n.session.new = function(opts)
+  recorder.background_sessions = recorder.background_sessions + 1
+  recorder.background_prompt = opts.prompt
+  recorder.background_focus = opts.focus
+  return "background-agent-1"
+end
+
 n00n.agent.session = function(ctx, opts)
   recorder.sessions = recorder.sessions + 1
   recorder.has_local_tools = opts.local_tools ~= nil
@@ -196,6 +203,9 @@ n00n.api.register_tool({
   handler = function(input, ctx)
     local snap = {
       sessions = recorder.sessions,
+      background_sessions = recorder.background_sessions,
+      background_prompt = recorder.background_prompt,
+      background_focus = recorder.background_focus,
       closed = recorder.closed,
       prompt_count = #recorder.prompts,
       has_local_tools = recorder.has_local_tools,
@@ -360,6 +370,43 @@ fn deeply_nested_schema_errors_before_any_session() {
     assert_eq!(err, SCHEMA_DEPTH_ERROR);
     let snap = probe(&reg);
     assert_eq!(snap["sessions"], json!(0));
+}
+
+#[test]
+fn foreground_mode_blocks_for_result_without_starting_background_session() {
+    let (reg, _host) = load_task_host();
+    let out = exec_tool(&reg, TASK_TOOL, task_input(SCENARIO_PLAIN, None))
+        .expect("foreground task failed");
+
+    assert_eq!(out, PLAIN_TEXT);
+    let snap = probe(&reg);
+    assert_eq!(snap["sessions"], json!(1));
+    assert_eq!(snap["closed"], json!(1));
+    assert_eq!(snap["background_sessions"], json!(0));
+}
+
+#[test]
+fn background_mode_returns_immediately_with_agent_id() {
+    let (reg, _host) = load_task_host();
+    let mut input = task_input(SCENARIO_PLAIN, None);
+    input["background"] = json!(true);
+
+    let out = exec_tool(&reg, TASK_TOOL, input).expect("background task failed");
+    let parsed: Value = serde_json::from_str(&out).expect("background status is not json");
+
+    assert_eq!(
+        parsed,
+        json!({ "agent_id": "background-agent-1", "status": "started" })
+    );
+    let snap = probe(&reg);
+    assert_eq!(snap["sessions"], json!(0));
+    assert_eq!(snap["background_sessions"], json!(1));
+    assert_eq!(snap["background_focus"], json!(false));
+    let prompt = snap["background_prompt"]
+        .as_str()
+        .expect("background prompt missing");
+    assert!(prompt.contains("background=false"), "got: {prompt}");
+    assert!(prompt.contains(TASK_PROMPT), "got: {prompt}");
 }
 
 #[test]

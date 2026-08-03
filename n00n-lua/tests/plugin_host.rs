@@ -3666,6 +3666,7 @@ fn interpreter_on_output_streams_lines() {
                 local result, err = n00n.interpreter.run("print('a')\nprint('b')", {{
                     timeout = 10,
                     max_memory_mb = 50,
+                    _max_concurrent = 4,
                     on_output = function(line)
                         table.insert(lines, line)
                     end,
@@ -3694,6 +3695,7 @@ fn interp_tool_plugin(name: &str, python: &str, tools_lua: &str) -> String {
                 local result, err = n00n.interpreter.run("{python}", {{
                     timeout = 10,
                     max_memory_mb = 50,
+                    _max_concurrent = 4,
                     on_output = function(line) table.insert(lines, line) end,
                     tools = {tools_lua},
                 }})

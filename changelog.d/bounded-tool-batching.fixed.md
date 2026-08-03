@@ -1,0 +1,1 @@
+Limited concurrent child tools across batches so large or resource-heavy batches queue excess calls instead of exhausting memory and triggering an OOM kill. Batching remains enabled, defaults to four simultaneous child tools, and can be configured up to a hard limit of eight.

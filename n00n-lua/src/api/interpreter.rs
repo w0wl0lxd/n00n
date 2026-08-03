@@ -4,11 +4,12 @@
 //! the blocked thread unwind instead of leaking.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use futures::future::join_all;
+use futures::stream::{self, StreamExt};
 use mlua::{Function, Lua, Result as LuaResult, Table};
 use n00n_agent::cancel::CancelToken;
 use n00n_agent::tools::interpreter_bridge::build_tool_input;
@@ -23,6 +24,7 @@ use crate::plugin_permissions::PluginPermissions;
 use crate::runtime::{TaskHandle, lock_cell};
 
 const BRIDGE_CLOSED: &str = "tool bridge closed (cancelled)";
+const MAX_CONCURRENT_TOOL_CALLS: usize = 8;
 
 type CallResults = Vec<(u32, Result<Value, String>)>;
 
@@ -77,6 +79,34 @@ fn required<T: mlua::FromLua>(opts: &Table, key: &str) -> LuaResult<T> {
         .ok_or_else(|| mlua::Error::runtime(format!("interpreter.run: '{key}' is required")))
 }
 
+fn validate_max_concurrent(value: usize) -> LuaResult<usize> {
+    if value == 0 {
+        return Err(mlua::Error::runtime(
+            "interpreter.run: '_max_concurrent' must be at least 1",
+        ));
+    }
+    if value > MAX_CONCURRENT_TOOL_CALLS {
+        return Err(mlua::Error::runtime(format!(
+            "interpreter.run: '_max_concurrent' must not exceed {MAX_CONCURRENT_TOOL_CALLS}"
+        )));
+    }
+    Ok(value)
+}
+
+async fn bounded_ordered<F>(futures: Vec<F>, max_concurrent: usize) -> Vec<F::Output>
+where
+    F: Future,
+{
+    let mut completed = stream::iter(futures)
+        .enumerate()
+        .map(|(index, future)| async move { (index, future.await) })
+        .buffer_unordered(max_concurrent)
+        .collect::<Vec<_>>()
+        .await;
+    completed.sort_unstable_by_key(|(index, _)| *index);
+    completed.into_iter().map(|(_, output)| output).collect()
+}
+
 fn forward_calls(
     tx: &flume::Sender<BridgeMsg>,
     calls: Vec<PendingCall>,
@@ -129,6 +159,7 @@ async fn call_lua_tool(lua: Lua, f: Option<Function>, pc: &PendingCall) -> Resul
 /// local result, err = n00n.interpreter.run("print(2 + 2)", {
 ///   timeout = 30,
 ///   max_memory_mb = 256,
+///   _max_concurrent = 4,
 ///   on_output = function(line) print("py: " .. line) end,
 /// })
 /// if err then error(err) end
@@ -143,6 +174,7 @@ async fn interpreter_run(
     let timeout_secs: u64 = required(&opts, "timeout")?;
     let max_memory_mb: usize = required(&opts, "max_memory_mb")?;
     let on_output: Function = required(&opts, "on_output")?;
+    let max_concurrent = validate_max_concurrent(required(&opts, "_max_concurrent")?)?;
     let tools_tbl: Option<Table> = opts.get("tools")?;
     let fix_with_ruff = opts
         .get::<Option<bool>>("ruff_fix")?
@@ -223,7 +255,7 @@ async fn interpreter_run(
                         let lua = lua.clone();
                         async move { (pc.call_id, call_lua_tool(lua, f, &pc).await) }
                     });
-                    let _ = reply.send(join_all(futs).await);
+                    let _ = reply.send(bounded_ordered(futs.collect(), max_concurrent).await);
                 }
             }
         }
@@ -253,7 +285,106 @@ async fn interpreter_run(
 
 #[cfg(test)]
 mod tests {
-    use super::ruff_fix;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::{bounded_ordered, ruff_fix, validate_max_concurrent};
+
+    async fn tracked_call(
+        index: usize,
+        active: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+        started: flume::Sender<usize>,
+        release: flume::Receiver<()>,
+        result: Result<usize, &'static str>,
+    ) -> Result<usize, &'static str> {
+        let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+        peak.fetch_max(current, Ordering::SeqCst);
+        started
+            .send(index)
+            .expect("start receiver should remain open");
+        release.recv_async().await.expect("call should be released");
+        active.fetch_sub(1, Ordering::SeqCst);
+        result
+    }
+
+    #[test]
+    fn bounded_ordered_caps_and_refills_on_completion() {
+        smol::block_on(async {
+            let active = Arc::new(AtomicUsize::new(0));
+            let peak = Arc::new(AtomicUsize::new(0));
+            let (started_tx, started_rx) = flume::unbounded();
+            let mut releases = Vec::new();
+            let futures = (0..4)
+                .map(|index| {
+                    let (release_tx, release_rx) = flume::bounded(1);
+                    releases.push(release_tx);
+                    tracked_call(
+                        index,
+                        Arc::clone(&active),
+                        Arc::clone(&peak),
+                        started_tx.clone(),
+                        release_rx,
+                        Ok(index),
+                    )
+                })
+                .collect();
+
+            let task = smol::spawn(bounded_ordered(futures, 2));
+            assert_eq!(started_rx.recv_async().await.unwrap(), 0);
+            assert_eq!(started_rx.recv_async().await.unwrap(), 1);
+            assert!(started_rx.try_recv().is_err());
+
+            releases[1].send_async(()).await.unwrap();
+            assert_eq!(started_rx.recv_async().await.unwrap(), 2);
+            assert_eq!(peak.load(Ordering::SeqCst), 2);
+
+            releases[2].send_async(()).await.unwrap();
+            assert_eq!(started_rx.recv_async().await.unwrap(), 3);
+            releases[0].send_async(()).await.unwrap();
+            releases[3].send_async(()).await.unwrap();
+            assert_eq!(task.await, vec![Ok(0), Ok(1), Ok(2), Ok(3)]);
+        });
+    }
+
+    #[test]
+    fn bounded_ordered_preserves_errors_in_input_order() {
+        smol::block_on(async {
+            let active = Arc::new(AtomicUsize::new(0));
+            let peak = Arc::new(AtomicUsize::new(0));
+            let (started_tx, _started_rx) = flume::unbounded();
+            let mut releases = Vec::new();
+            let results = [Ok(0), Err("boom"), Ok(2)];
+            let futures = results
+                .into_iter()
+                .enumerate()
+                .map(|(index, result)| {
+                    let (release_tx, release_rx) = flume::bounded(1);
+                    releases.push(release_tx);
+                    tracked_call(
+                        index,
+                        Arc::clone(&active),
+                        Arc::clone(&peak),
+                        started_tx.clone(),
+                        release_rx,
+                        result,
+                    )
+                })
+                .collect();
+
+            let task = smol::spawn(bounded_ordered(futures, 3));
+            releases[2].send_async(()).await.unwrap();
+            releases[1].send_async(()).await.unwrap();
+            releases[0].send_async(()).await.unwrap();
+            assert_eq!(task.await, vec![Ok(0), Err("boom"), Ok(2)]);
+        });
+    }
+
+    #[test]
+    fn zero_max_concurrent_is_rejected() {
+        let err = validate_max_concurrent(0).expect_err("zero must be invalid");
+        assert!(err.to_string().contains("must be at least 1"), "got: {err}");
+    }
 
     #[test]
     fn ruff_fix_removes_unused_import_and_formats() {
@@ -297,6 +428,7 @@ lua_table! {
     /// local r, err = n00n.interpreter.run("print('hello')", {
     ///   timeout = 10,
     ///   max_memory_mb = 128,
+    ///   _max_concurrent = 4,
     ///   on_output = function(line) print(line) end,
     /// })
     /// ```

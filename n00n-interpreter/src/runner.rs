@@ -20,6 +20,7 @@ use crate::convert::{json_to_monty, monty_to_json};
 use crate::error::InterpreterError;
 
 const DEFAULT_MAX_RECURSION: usize = 100;
+const MAX_PENDING_ASYNC_CALLS: usize = 64;
 const SCRIPT_NAME: &str = "agent.py";
 
 pub type ToolFn = Box<dyn Fn(&str, Vec<Value>, Vec<(String, Value)>) -> Result<Value, String>>;
@@ -210,6 +211,11 @@ fn run_inner<S: BuildHasher>(
                 })?;
 
                 let ids = state.pending_call_ids().to_vec();
+                if ids.len() > MAX_PENDING_ASYNC_CALLS {
+                    return Err(InterpreterError::Sandboxed(format!(
+                        "async gather exceeds maximum of {MAX_PENDING_ASYNC_CALLS} tool calls"
+                    )));
+                }
                 let batch: Vec<PendingCall> = ids
                     .iter()
                     .filter_map(|id| pending_calls.remove(id))
@@ -388,6 +394,32 @@ mod tests {
         .unwrap();
         assert_eq!(result.stdout.trim(), "hello\nworld");
         assert!(called);
+    }
+
+    #[test]
+    fn async_gather_rejects_oversized_tool_batch_before_resolver() {
+        let calls = std::iter::repeat_n("tool()", MAX_PENDING_ASYNC_CALLS + 1)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let code = format!("import asyncio\nawait asyncio.gather({calls})");
+        let tools = stub_tools(&["tool"]);
+        let resolver_calls = Arc::new(AtomicUsize::new(0));
+        let resolver_calls_clone = Arc::clone(&resolver_calls);
+        let resolver: AsyncResolver = Box::new(move |_| {
+            resolver_calls_clone.fetch_add(1, Ordering::SeqCst);
+            Ok(Vec::new())
+        });
+
+        let error = run(&code, &tools, Some(&resolver), default_limits())
+            .expect_err("oversized gather must fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("async gather exceeds maximum of 64 tool calls"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(resolver_calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]

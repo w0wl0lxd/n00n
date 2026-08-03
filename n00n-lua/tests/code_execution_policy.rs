@@ -81,6 +81,27 @@ fn setup() -> (Arc<ToolRegistry>, PluginHost) {
     (reg, host)
 }
 
+fn forwarded_max_concurrent(configured: Option<usize>) -> String {
+    let reg = Arc::new(ToolRegistry::new());
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let source = format!(
+        r#"
+n00n.interpreter.run = function(_, options)
+  return {{ stdout = tostring(options._max_concurrent) }}
+end
+{CODE_EXECUTION_SRC}
+"#
+    );
+    let mut options = serde_json::Map::new();
+    if let Some(value) = configured {
+        options.insert("max_concurrent".into(), serde_json::json!(value));
+    }
+    host.load_source_with_opts("code_execution", &source, options)
+        .expect("real plugin should load with interpreter spy");
+    let ctx = stub_ctx_for(&reg, &AgentMode::Build);
+    exec_code(&reg, &ctx, "pass").expect("code execution should succeed")
+}
+
 fn describe(
     reg: &ToolRegistry,
     filter: &ToolFilter,
@@ -118,6 +139,15 @@ fn stub_ctx_for(reg: &Arc<ToolRegistry>, mode: &AgentMode) -> ToolContext {
     let mut ctx = stub_ctx(mode);
     ctx.registry = Arc::clone(reg);
     ctx
+}
+#[test]
+fn forwards_default_host_tool_concurrency() {
+    assert_eq!(forwarded_max_concurrent(None), "4");
+}
+
+#[test]
+fn caps_forwarded_host_tool_concurrency_at_hard_max() {
+    assert_eq!(forwarded_max_concurrent(Some(100)), "8");
 }
 
 #[test]

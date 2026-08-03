@@ -3171,6 +3171,7 @@ dependencies = [
  "bitflags 2.13.1",
  "event-listener",
  "flume",
+ "futures",
  "futures-lite",
  "getrandom 0.3.4",
  "grep-regex",

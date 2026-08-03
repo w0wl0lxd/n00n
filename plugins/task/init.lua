@@ -21,7 +21,7 @@ local DEFAULT_OUTPUT_LINES = 5
 local DEFAULT_MAX_LINE_BYTES = 500
 
 local description =
-  [[Launch isolated agent; combine independent calls with batch. research (default) = read-only; general = can edit. Each call starts fresh; include context and ask for concise file:line results. Summarize returned results. auto_tier opt-in. background returns agent_id.]]
+  [[Launch an isolated agent. Foreground mode (default) blocks for the result; background=true returns an agent_id immediately for agent_status/agent_control. Combine independent foreground calls with batch. research (default) = read-only; general = can edit. Each call starts fresh; include context and ask for concise file:line results. Summarize returned results. auto_tier opt-in.]]
 
 local schema = {
   type = "object",
@@ -58,7 +58,7 @@ local schema = {
     },
     background = {
       type = "boolean",
-      description = "Start in background; return agent_id immediately.",
+      description = "Run non-blocking and return agent_id immediately. Defaults to blocking foreground execution.",
     },
     output_schema = {
       description = "Output JSON schema. Result returned as validated JSON string.",

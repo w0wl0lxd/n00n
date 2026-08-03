@@ -21,6 +21,10 @@ pub mod providers;
 
 pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 16 * 1024;
 pub const DEFAULT_MAX_OUTPUT_LINES: usize = 500;
+pub const DEFAULT_MAX_PARALLEL_TOOL_CALLS: usize = 4;
+pub const MAX_PARALLEL_TOOL_CALLS: usize = 8;
+const MAX_PARALLEL_TOOL_CALLS_U64: u64 = 8;
+pub const MIN_MAX_PARALLEL_TOOL_CALLS: usize = 1;
 pub const DEFAULT_FLASH_DURATION_MS: u64 = 1500;
 pub const DEFAULT_TYPEWRITER_MS_PER_CHAR: u64 = 4;
 pub const DEFAULT_MOUSE_SCROLL_LINES: u32 = 3;
@@ -491,6 +495,7 @@ impl<'de> Deserialize<'de> for CompactionBuffer {
 pub struct AgentFileConfig {
     pub max_output_bytes: Option<usize>,
     pub max_output_lines: Option<usize>,
+    pub max_parallel_tool_calls: Option<usize>,
     pub max_continuation_turns: Option<u32>,
     pub compaction_buffer: Option<CompactionBuffer>,
     pub mcp_tool_desc_max_chars: Option<usize>,
@@ -519,6 +524,7 @@ impl AgentFileConfig {
             overlay,
             max_output_bytes,
             max_output_lines,
+            max_parallel_tool_calls,
             max_continuation_turns,
             compaction_buffer,
             mcp_tool_desc_max_chars
@@ -1092,6 +1098,9 @@ pub struct AgentConfig {
     #[config(default = DEFAULT_MAX_OUTPUT_LINES, min = MIN_OUTPUT_LINES, desc = "Max tool output lines")]
     pub max_output_lines: usize,
 
+    #[config(default = DEFAULT_MAX_PARALLEL_TOOL_CALLS, min = MIN_MAX_PARALLEL_TOOL_CALLS, desc = "Concurrent model-emitted tool calls (hard max 8)")]
+    pub max_parallel_tool_calls: usize,
+
     #[config(default = DEFAULT_MAX_CONTINUATION_TURNS, min = MIN_MAX_CONTINUATION_TURNS, desc = "Max automatic continuation turns")]
     pub max_continuation_turns: u32,
 
@@ -1190,6 +1199,9 @@ impl AgentConfig {
             max_output_lines: file
                 .max_output_lines
                 .map_or(DEFAULT_MAX_OUTPUT_LINES, |v| v),
+            max_parallel_tool_calls: file
+                .max_parallel_tool_calls
+                .map_or(DEFAULT_MAX_PARALLEL_TOOL_CALLS, |value| value),
             max_continuation_turns: file
                 .max_continuation_turns
                 .unwrap_or_else(|| DEFAULT_MAX_CONTINUATION_TURNS),
@@ -1205,6 +1217,22 @@ impl AgentConfig {
             dynamic_tools,
             fusion,
         }
+    }
+
+    fn validate_max_parallel_tool_calls(&self) -> Result<(), ConfigError> {
+        if self.max_parallel_tool_calls > MAX_PARALLEL_TOOL_CALLS {
+            let value = match u64::try_from(self.max_parallel_tool_calls) {
+                Ok(value) => value,
+                Err(_) => u64::MAX,
+            };
+            return Err(ConfigError::AboveMaximum {
+                section: "agent",
+                field: "max_parallel_tool_calls",
+                value,
+                max: MAX_PARALLEL_TOOL_CALLS_U64,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -1380,6 +1408,7 @@ impl Config {
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.ui.validate_all()?;
         self.agent.validate()?;
+        self.agent.validate_max_parallel_tool_calls()?;
         if self.agent.fusion.sidekick_tier == Tier::Compaction {
             return Err(ConfigError::InvalidFusionSidekickTier {
                 tier: self.agent.fusion.sidekick_tier,
@@ -2430,6 +2459,34 @@ mod tests {
         };
         let err = raw.into_config(false).err().expect("expected config error");
         assert!(matches!(err, ConfigError::Thinking(_)));
+    }
+
+    #[test]
+    fn max_parallel_tool_calls_defaults_to_four() {
+        assert_eq!(
+            AgentConfig::default().max_parallel_tool_calls,
+            DEFAULT_MAX_PARALLEL_TOOL_CALLS
+        );
+    }
+
+    #[test_case(0, false ; "below_minimum")]
+    #[test_case(1, true ; "minimum")]
+    #[test_case(8, true ; "maximum")]
+    #[test_case(9, false ; "above_maximum")]
+    fn validates_max_parallel_tool_calls(value: usize, valid: bool) {
+        let mut config = AgentConfig::default();
+        config.max_parallel_tool_calls = value;
+        let result = config
+            .validate()
+            .and_then(|()| config.validate_max_parallel_tool_calls());
+        assert_eq!(result.is_ok(), valid);
+    }
+
+    #[test]
+    fn max_parallel_tool_calls_parses_from_agent_config() {
+        let raw: RawConfig = toml::from_str("[agent]\nmax_parallel_tool_calls = 6\n").unwrap();
+        let config = raw.into_config(false).unwrap();
+        assert_eq!(config.agent.max_parallel_tool_calls, 6);
     }
 
     #[test_case("max_output_bytes",  0 ; "zero_output_bytes")]

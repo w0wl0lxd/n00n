@@ -9,6 +9,8 @@ local output_limits = require("n00n.output_limits")
 
 local DEFAULT_MAX_OUTPUT_LINES = 500
 local DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024
+local DEFAULT_MAX_CONCURRENT = 4
+local HARD_MAX_CONCURRENT = 8
 local MAX_SCRIPT_LINES = 2000
 local NO_OUTPUT = "(no output)"
 local SEPARATOR = "──────"
@@ -26,6 +28,11 @@ local opts = n00n.api.register_options(output_limits.extend({
     desc = "Script execution time budget in seconds; waiting on tool calls does not count. A call's `timeout` param overrides it.",
   },
   max_memory_mb = { default = 50, min = 10, desc = "Memory limit for the Python sandbox (MB)." },
+  max_concurrent = {
+    default = DEFAULT_MAX_CONCURRENT,
+    min = 1,
+    desc = "Concurrent host-tool calls from Python (default 4, hard max 8).",
+  },
   ruff_fix = {
     default = true,
     desc = "Run Ruff --fix --unsafe-fixes and formatting before execution when Ruff is available.",
@@ -227,6 +234,7 @@ local function handler(input, ctx)
   local result, err = n00n.interpreter.run(PREAMBLE .. input.code, {
     timeout = timeout,
     max_memory_mb = opts.max_memory_mb,
+    _max_concurrent = math.min(opts.max_concurrent, HARD_MAX_CONCURRENT),
     on_output = show,
     tools = tools,
     ruff_fix = opts.ruff_fix,
