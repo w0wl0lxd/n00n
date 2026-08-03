@@ -667,12 +667,16 @@ impl ToolRegistry {
                 continue;
             }
             if entry.defer_loading {
+                let explicitly_allowed = matches!(
+                    ctx.filter,
+                    super::ToolFilter::Only(names) if names.iter().any(|name| name == entry.name())
+                );
                 let name_matches = active.names.contains(entry.name());
                 let namespace_matches = entry
                     .namespace
                     .as_ref()
                     .is_some_and(|ns| active.namespaces.contains(ns.as_ref()));
-                if !name_matches && !namespace_matches {
+                if !explicitly_allowed && !name_matches && !namespace_matches {
                     continue;
                 }
             }
@@ -1180,6 +1184,31 @@ mod tests {
         let defs = reg.definitions_active(&vars, &ctx, false, &active_with_deferred);
         let arr = defs.as_array().expect("definitions returns array");
         assert_eq!(arr.len(), 2);
+    }
+
+    #[test]
+    fn definitions_active_includes_explicitly_allowed_deferred_tool() {
+        let reg = ToolRegistry::new();
+        let deferred: Arc<dyn Tool> = Arc::new(MockTool {
+            name: "websearch".to_owned(),
+            audience: ToolAudience::all(),
+            defer_loading: true,
+            namespace: Some("research".to_owned()),
+        });
+        reg.register(&deferred, &lua_source("p")).unwrap();
+
+        let filter = crate::tools::ToolFilter::Only(vec!["websearch".to_owned()]);
+        let ctx = DescriptionContext {
+            filter: &filter,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        };
+        let definitions =
+            reg.definitions_active(&Vars::new(), &ctx, false, &ActiveTools::default());
+
+        let definitions = definitions.as_array().expect("definitions returns array");
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(definitions[0]["name"].as_str(), Some("websearch"));
     }
 
     #[test]
