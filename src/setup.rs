@@ -58,7 +58,15 @@ pub fn resolve_model(
         }
     }
     if let Some(spec) = provider_config.default_model.as_deref() {
-        return Model::from_spec(spec).context("invalid default_model in config");
+        let model = Model::from_spec(spec).context("invalid default_model in config")?;
+        if provider_allowed(&model.provider, configured_slugs.as_deref()) {
+            return Ok(model);
+        }
+        tracing::warn!(
+            spec,
+            provider = %model.provider,
+            "default_model provider is not in providers.toml, falling back to auto-detection"
+        );
     }
     auto_detect_model(configured_slugs.as_deref()).ok_or_else(|| {
         color_eyre::eyre::eyre!(
@@ -76,7 +84,23 @@ pub(crate) fn provider_allowed(provider: &str, configured_slugs: Option<&[&str]>
 
 fn auto_detect_model(configured_slugs: Option<&[&str]>) -> Option<Model> {
     let slugs: Vec<&str> = match configured_slugs {
-        Some(s) => s.to_vec(),
+        Some(s) => {
+            let mut ordered: Vec<&str> = PROVIDER_PRIORITY
+                .iter()
+                .copied()
+                .filter(|p| s.contains(p))
+                .collect();
+            let builtins: std::collections::HashSet<&str> =
+                PROVIDER_PRIORITY.iter().copied().collect();
+            let mut extras: Vec<&str> = s
+                .iter()
+                .copied()
+                .filter(|p| !builtins.contains(p))
+                .collect();
+            extras.sort_unstable();
+            ordered.extend(extras);
+            ordered
+        }
         None => PROVIDER_PRIORITY.to_vec(),
     };
     for tier in [ModelTier::Strong, ModelTier::Medium] {
@@ -174,6 +198,25 @@ mod tests {
         )
         .expect("explicit model should resolve");
         assert_eq!(model.spec(), "anthropic/claude-opus-4-6");
+    }
+
+    #[test]
+    fn resolve_default_model_skips_provider_not_in_providers_toml() {
+        let (_, state) = temp_state();
+        let provider_config = ProviderConfig {
+            default_model: Some("openai/gpt-5.6-sol".into()),
+            ..ProviderConfig::default()
+        };
+        let providers_toml = {
+            let mut c = ProvidersConfig::default();
+            c.upsert("anthropic".into(), ProviderDef::default());
+            c
+        };
+        let result = resolve_model(None, &provider_config, &providers_toml, &state);
+        assert!(
+            result.is_err(),
+            "default_model should be skipped when not in providers.toml"
+        );
     }
 
     #[test]
