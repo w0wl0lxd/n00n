@@ -110,7 +110,7 @@ fn check_rate_limit(response: &reqwest::blocking::Response) -> Result<(), GitHub
 }
 
 fn create_client() -> Result<Client, mlua::Error> {
-    let mut builder = Client::builder();
+    let mut builder = Client::builder().user_agent("n00n");
     if let Ok(timeout) = env::var("GITHUB_TIMEOUT")
         && let Ok(secs) = timeout.parse::<u64>()
     {
@@ -210,7 +210,6 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
             let response = client
                 .post(&url)
                 .header("Authorization", format!("Bearer {token}"))
-                .header("User-Agent", "n00n")
                 .json(&payload)
                 .send()
                 .map_err(map_err)?;
@@ -381,7 +380,6 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
             let response = client
                 .post(&url)
                 .header("Authorization", format!("Bearer {token}"))
-                .header("User-Agent", "n00n")
                 .json(&payload)
                 .send()
                 .map_err(map_err)?;
@@ -429,7 +427,6 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
             let response = client
                 .post(&url)
                 .header("Authorization", format!("Bearer {token}"))
-                .header("User-Agent", "n00n")
                 .json(&payload)
                 .send()
                 .map_err(map_err)?;
