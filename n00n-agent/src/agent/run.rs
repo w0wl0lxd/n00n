@@ -405,6 +405,7 @@ impl<'h> Agent<'h> {
             allow_history_replay: self.permissions.is_yolo(),
             moderation: false,
             safety_identifier: None,
+            idempotency_key: None,
         };
 
         info!(
@@ -1654,6 +1655,7 @@ mod tests {
             let metadata = RequestDeliveryMetadata {
                 phase: RequestDeliveryPhase::SentAwaitingAcceptance,
                 response_id: None,
+                idempotency_key: None,
                 close_code: None,
                 close_reason: None,
                 emitted_event: false,
@@ -1703,6 +1705,7 @@ mod tests {
             let metadata = RequestDeliveryMetadata {
                 phase: RequestDeliveryPhase::SentAwaitingAcceptance,
                 response_id: None,
+                idempotency_key: None,
                 close_code: None,
                 close_reason: None,
                 emitted_event: false,
@@ -1883,6 +1886,7 @@ mod tests {
                         metadata: Some(RequestDeliveryMetadata {
                             phase: RequestDeliveryPhase::SentAwaitingAcceptance,
                             response_id: None,
+                            idempotency_key: None,
                             close_code: None,
                             close_reason: None,
                             emitted_event: true,
