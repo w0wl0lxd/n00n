@@ -111,7 +111,7 @@ pub struct ModelPicker {
     models: Arc<ArcSwapOption<Vec<String>>>,
     recents: Vec<String>,
     current_spec: String,
-    last_spec_count: usize,
+    last_catalog: Option<Arc<Vec<String>>>,
     dirty: bool,
 }
 
@@ -122,7 +122,7 @@ impl ModelPicker {
             models,
             recents: Vec::new(),
             current_spec: String::new(),
-            last_spec_count: 0,
+            last_catalog: None,
             dirty: false,
         }
     }
@@ -143,12 +143,15 @@ impl ModelPicker {
         if !self.picker.is_open() {
             return;
         }
-        let guard = self.models.load();
-        let spec_count = guard.as_deref().map_or(0, Vec::len);
-        if spec_count == self.last_spec_count && !self.dirty {
+        let catalog = self.models.load_full();
+        let unchanged = self
+            .last_catalog
+            .as_ref()
+            .zip(catalog.as_ref())
+            .is_some_and(|(last, current)| Arc::ptr_eq(last, current));
+        if unchanged && !self.dirty {
             return;
         }
-        drop(guard);
         self.dirty = false;
         let (entries, idx) = self.load_entries();
         self.picker.replace_items(entries);
@@ -156,9 +159,9 @@ impl ModelPicker {
     }
 
     fn load_entries(&mut self) -> (Vec<ModelEntry>, usize) {
-        let guard = self.models.load();
-        let specs = guard.as_deref();
-        self.last_spec_count = specs.map_or(0, Vec::len);
+        let catalog = self.models.load_full();
+        self.last_catalog.clone_from(&catalog);
+        let specs = catalog.as_deref();
         let mut entries: Vec<ModelEntry> = Vec::new();
         let recent_specs = self.recents.clone();
         for spec in &recent_specs {
@@ -349,6 +352,19 @@ mod tests {
             matches!(action, ModelPickerAction::Select(ref s) if s.contains("opus")),
             "after refresh, 'op' filter should match opus"
         );
+    }
+
+    #[test]
+    fn refresh_detects_same_length_catalog_replacement() {
+        let models = test_models();
+        let mut picker = ModelPicker::new(Arc::clone(&models));
+        picker.open("");
+
+        models.store(Some(Arc::new(vec!["openai/gpt-5".into(); 3])));
+        picker.try_refresh();
+
+        let action = picker.handle_key(key(KeyCode::Enter));
+        assert!(matches!(action, ModelPickerAction::Select(ref spec) if spec == "openai/gpt-5"));
     }
 
     #[test]

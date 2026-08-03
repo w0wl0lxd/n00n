@@ -257,7 +257,10 @@ impl App {
                 .filter(|chat| chat.is_working())
                 .map(|chat| Activity {
                     name: &chat.name,
-                    in_progress: chat.in_progress_count(),
+                    phase: chat.activity_phase(),
+                    elapsed: chat.activity_elapsed(),
+                    detail: chat.activity_detail().map_or("", |detail| detail),
+                    status: activity_shelf::STATUS,
                 })
                 .collect::<Vec<_>>();
             activity_shelf::view(frame, layout.activity_area, &activities);

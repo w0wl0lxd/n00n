@@ -30,7 +30,7 @@ use n00n_config::{ToolOutputLines, UiConfig};
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use unicode_width::UnicodeWidthStr;
 
@@ -117,6 +117,13 @@ pub struct MessagesPanel {
 struct RestorePlan {
     initial: usize,
     prepend_batches: Vec<usize>,
+}
+
+fn last_non_empty_line(text: &str) -> Option<&str> {
+    text.lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
 }
 
 fn restore_plan(total: usize, batch_size: usize) -> RestorePlan {
@@ -645,6 +652,39 @@ impl MessagesPanel {
             || self.streaming_thinking.is_animating()
             || self.streaming_text.is_animating()
             || !self.live_bufs.is_empty()
+    }
+
+    pub(crate) fn activity_phase(&self) -> &'static str {
+        if self.in_progress_count() > 0 {
+            "tools"
+        } else if !self.streaming_thinking.is_empty() {
+            "thinking"
+        } else if !self.streaming_text.is_empty() {
+            "responding"
+        } else {
+            "working"
+        }
+    }
+
+    pub(crate) fn activity_elapsed(&self) -> Duration {
+        self.started_at.elapsed()
+    }
+
+    pub(crate) fn activity_detail(&self) -> Option<&str> {
+        self.messages.iter().rev().find_map(|message| {
+            let DisplayRole::Tool(tool) = &message.role else {
+                return None;
+            };
+            if tool.status != ToolStatus::InProgress {
+                return None;
+            }
+            message
+                .live_output
+                .as_deref()
+                .and_then(last_non_empty_line)
+                .or_else(|| last_non_empty_line(&message.text))
+                .or(Some(tool.name.as_ref()))
+        })
     }
 
     #[cfg(test)]
