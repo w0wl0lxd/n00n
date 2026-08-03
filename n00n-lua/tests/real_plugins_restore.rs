@@ -178,7 +178,7 @@ const FUSION_MODEL_MOCK: &str = r#"
     n00n.agent.usage_cost = function() return 0, nil end
     n00n.agent.session = function(ctx, opts)
         local sess = {}
-        function sess:prompt() return { text = opts.model_spec } end
+        function sess:prompt() return { text = opts.model_spec .. "|" .. tostring(opts.thinking) } end
         function sess:close() end
         return sess
     end
@@ -890,9 +890,9 @@ fn fusion_and_blackboard_headers_render_prose() {
     );
 }
 
-#[test_case::test_case(Tier::Medium, "resolved/medium\n\n[sidekick cost: $0.0000 · resolved/medium]"; "configured_tier")]
-#[test_case::test_case(Tier::Weak, "resolved/weak\n\n[sidekick cost: $0.0000 · resolved/weak]"; "weak_fallback")]
-fn fusion_uses_configured_or_weak_tier(tier: Tier, expected: &str) {
+#[test_case::test_case(Tier::Medium, "resolved/codex/gpt-5.6-luna|max\n\n[sidekick cost: $0.0000 · resolved/codex/gpt-5.6-luna]"; "configured_tier_cannot_redirect_exact_model")]
+#[test_case::test_case(Tier::Weak, "resolved/codex/gpt-5.6-luna|max\n\n[sidekick cost: $0.0000 · resolved/codex/gpt-5.6-luna]"; "default_exact_model_and_max_thinking")]
+fn fusion_uses_exact_model_and_max_thinking(tier: Tier, expected: &str) {
     let output = execute_fusion_with_tier(
         json!({"description":"test brief", "goal":"do it", "definition_of_done":"it works"}),
         tier,
@@ -928,15 +928,15 @@ fn fusion_is_rejected_when_disabled() {
 }
 
 #[test]
-fn fusion_rejects_compaction_sidekick_tier() {
-    let error = execute_fusion(
+fn fusion_ignores_legacy_compaction_sidekick_tier() {
+    let output = execute_fusion(
         json!({"description":"test brief", "goal":"do it", "definition_of_done":"it works"}),
         Tier::Compaction,
         true,
         FUSION_MODEL_MOCK,
     )
-    .unwrap_err();
-    assert_eq!(error, "Fusion sidekick error: invalid sidekick tier");
+    .unwrap();
+    assert!(output.starts_with("resolved/codex/gpt-5.6-luna|max"));
 }
 
 #[test]
