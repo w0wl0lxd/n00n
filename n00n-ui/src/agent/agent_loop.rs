@@ -468,7 +468,7 @@ impl AgentLoop {
         let event_tx = EventSender::new(self.agent_tx.clone(), run_id);
         match error {
             AgentError::Cancelled => {
-                warn!("agent cancelled");
+                warn!(run_id, "agent cancelled");
                 let _ = event_tx.send(AgentEvent::Done {
                     usage: TokenUsage::default(),
                     num_turns: 0,
