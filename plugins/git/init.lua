@@ -170,8 +170,7 @@ n00n.api.register_tool({
   name = "git",
   kind = "read",
   description = [[
-Query and modify local git repositories (status, log, diff, branches, blame, add, commit, checkout) by spawning the n00n-git binary.
-Set N00N_GIT_BIN to override the binary path.
+Local git operations via n00n-git. Set N00N_GIT_BIN to override the binary path.
 ]],
   schema = {
     type = "object",
