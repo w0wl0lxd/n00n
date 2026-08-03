@@ -321,8 +321,7 @@ fn is_jwt_like(value: &str) -> bool {
     }
     let has_upper = payload.chars().any(char::is_uppercase);
     let has_lower = payload.chars().any(char::is_lowercase);
-    let has_digit = payload.chars().any(|ch| ch.is_ascii_digit());
-    has_upper && has_lower && has_digit
+    has_upper && has_lower
 }
 
 fn is_prefixed_token(value: &str) -> bool {
@@ -446,6 +445,12 @@ mod tests {
         assert!(looks_like_secret_value(
             "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.abc-DEF_ghi",
         ));
+    }
+
+    #[test]
+    fn jwt_payload_without_digits_is_secret_shaped() {
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJTcXhkVnQifQ.abcDEFghiJKLmnopQRSTuv";
+        assert!(looks_like_secret_value(jwt));
     }
 
     #[test]

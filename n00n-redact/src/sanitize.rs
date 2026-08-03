@@ -12,6 +12,10 @@ const SENSITIVE_KEY_FRAGMENTS: &[&str] = &[
     "apikey",
     "accesstoken",
     "authtoken",
+    "token",
+    "cookie",
+    "credential",
+    "refreshtoken",
     "authorization",
     "password",
     "passwd",
@@ -92,7 +96,10 @@ pub fn sanitize_text(raw: &str, max_chars: usize) -> String {
         }
 
         let secret_value = separator.map_or(word, |position| &word[position + 1..]);
-        if is_secret_token(secret_value) {
+        let contains_secret_token = word
+            .split(|character: char| !character.is_ascii_alphanumeric() && character != '-')
+            .any(is_secret_token);
+        if is_secret_token(secret_value) || contains_secret_token {
             let prefix = separator.map_or("", |position| &word[..=position]);
             sanitized.push(format!("{prefix}{REDACTED}"));
         } else {
@@ -233,6 +240,11 @@ mod tests {
         assert_eq!(sanitized, "desk-top risk-taking [REDACTED]");
     }
 
+    #[test]
+    fn redacts_secret_tokens_in_compact_malformed_json() {
+        let sanitized = sanitize_text(r#"{"user":"bob","id":"AKIA0123456789ABCDEF""#, 200);
+        assert!(!sanitized.contains("AKIA0123456789ABCDEF"));
+    }
     #[test]
     fn redacts_jwt_in_malformed_json_text() {
         let jwt = format!("{}.{}.{}", "e".repeat(20), "aA1".repeat(6), "bB2".repeat(6));
