@@ -101,6 +101,7 @@ local function handler(input, ctx)
     model_tier = input.model_tier,
     auto_tier = auto_tier,
     audience = "general_sub",
+    include_mcp = false,
   })
 
   if err then

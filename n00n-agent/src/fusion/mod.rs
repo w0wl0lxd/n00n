@@ -422,6 +422,42 @@ impl FusionState {
     }
 }
 
+/// Returns whether a brief contains work reserved for the lead lane.
+#[must_use]
+pub fn contains_lead_only_signal(prompt: &str) -> bool {
+    const LEAD_SIGNALS: &[&str] = &[
+        "ambiguous",
+        "unclear",
+        "trade-off",
+        "tradeoff",
+        "architect",
+        "design",
+        "plan",
+        "review",
+        "approve",
+        "decide",
+        "judgment",
+        "security",
+        "vulnerab",
+        "credential",
+        "permission",
+        "production",
+        "delete",
+        "database",
+        "root cause",
+        "serial debug",
+        "debug chain",
+        "commit",
+        "merge",
+        "definition of done",
+        "constraints",
+        "edge case",
+        "interpret",
+    ];
+    let prompt = prompt.to_ascii_lowercase();
+    LEAD_SIGNALS.iter().any(|signal| prompt.contains(signal))
+}
+
 /// Lexical classifier aligned with Cognition's delegation guidance: lead owns plan,
 /// ambiguity, and final review; sidekick handles exploration, broad edits, tests, lint.
 #[must_use]

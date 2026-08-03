@@ -1657,7 +1657,16 @@ mod tests {
                 content: vec![ContentBlock::ToolUse {
                     id: tool_id.into(),
                     name: tool_name.into(),
-                    input: serde_json::json!({"pattern": "*.nonexistent_test_xyz", "path": "/tmp"}),
+                    input: if tool_name == "fusion_delegate" {
+                        serde_json::json!({
+                            "description": "Implement parser fix",
+                            "goal": "Implement the parser fix and add focused tests",
+                            "constraints": "Keep the change scoped to parser code",
+                            "definition_of_done": "Run cargo test",
+                        })
+                    } else {
+                        serde_json::json!({"pattern": "*.nonexistent_test_xyz", "path": "/tmp"})
+                    },
                 }],
                 ..Default::default()
             },

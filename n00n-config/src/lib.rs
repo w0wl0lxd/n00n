@@ -185,6 +185,10 @@ pub enum ConfigError {
          (bundled plugins: {valid})"
     )]
     UnknownPlugin { plugin: String, valid: String },
+    #[error(
+        "invalid config: agent.fusion.sidekick_tier must be weak, medium, or strong, got {tier:?}"
+    )]
+    InvalidFusionSidekickTier { tier: crate::providers::Tier },
 }
 
 fn check(
@@ -1378,6 +1382,11 @@ impl Config {
         self.agent.validate()?;
         self.provider.validate()?;
         self.provider.validate_openai_coding_plan_slots()?;
+        if self.agent.fusion.sidekick_tier == crate::providers::Tier::Compaction {
+            return Err(ConfigError::InvalidFusionSidekickTier {
+                tier: self.agent.fusion.sidekick_tier,
+            });
+        }
         self.storage.validate()?;
         Ok(())
     }
@@ -2424,6 +2433,15 @@ mod tests {
         }
         let err = config.validate().unwrap_err();
         assert!(matches!(err, ConfigError::BelowMinimum { field: f, .. } if f == field));
+    }
+    #[test]
+    fn validate_rejects_compaction_as_fusion_sidekick_tier() {
+        let mut config = RawConfig::default().into_config(false).unwrap();
+        config.agent.fusion.sidekick_tier = crate::providers::Tier::Compaction;
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::InvalidFusionSidekickTier { .. })
+        ));
     }
 
     #[test]

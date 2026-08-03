@@ -32,6 +32,9 @@ const MCP_MUTATION_BLOCKED_IN_PLAN: &str =
 const CODE_EXECUTION_BLOCKED_IN_PLAN: &str = "code_execution is not available in plan mode";
 const UNKNOWN_TOOL_PREFIX: &str = "unknown tool";
 const TOOL_AUDIENCE_DENIED: &str = "tool is not available to this agent audience";
+const TOOL_FILTER_DENIED: &str = "tool is not available in this session";
+const FUSION_REQUIRED_BRIEF_FIELDS: &[&str] = &["description", "goal", "definition_of_done"];
+const FUSION_OPTIONAL_BRIEF_FIELDS: &[&str] = &["constraints", "escalation_triggers"];
 const BASH_BLOCKED_IN_PLAN: &str = "bash command is not provably read-only in plan mode";
 
 /// Live Fusion authorization snapshot for one tool-dispatch batch.
@@ -351,6 +354,9 @@ async fn run_authorized(
 ) -> ToolDoneEvent {
     // GPT-5.6 was likely trained on Codex sessions where tools are `functions.<name>`
     let name = name.strip_prefix("functions.").map_or(name, |value| value);
+    if !ctx.tool_filter.matches(name) {
+        return tool_done_error(id, Arc::from(name), TOOL_FILTER_DENIED.into());
+    }
     if name == crate::fusion::FUSION_DELEGATE_TOOL && !fusion_delegate_authorized {
         return tool_done_error(
             id,
@@ -765,6 +771,29 @@ async fn execute_mcp_tool(
 }
 
 /// Deduplicates doom-loop repeats, then runs remaining calls in parallel.
+fn fusion_brief_is_authorized(input: &Value) -> bool {
+    let Some(brief) = input.as_object() else {
+        return false;
+    };
+    let required_allowed = FUSION_REQUIRED_BRIEF_FIELDS.iter().all(|field| {
+        brief
+            .get(*field)
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.trim().is_empty())
+    });
+    if !required_allowed {
+        return false;
+    }
+    let text = FUSION_REQUIRED_BRIEF_FIELDS
+        .iter()
+        .chain(FUSION_OPTIONAL_BRIEF_FIELDS)
+        .filter_map(|field| brief.get(*field).and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join(" ");
+    !crate::fusion::contains_lead_only_signal(&text)
+        && crate::fusion::classify_delegation(&text) == crate::fusion::DelegationKind::Delegate
+}
+
 pub(super) async fn process_tool_calls(
     response: n00n_providers::StreamResponse,
     recent_calls: &mut RecentCalls,
@@ -820,12 +849,14 @@ pub(super) async fn process_tool_calls(
                 n00n_config::providers::Tier::Weak => "weak",
                 n00n_config::providers::Tier::Medium => "medium",
                 n00n_config::providers::Tier::Strong => "strong",
-                n00n_config::providers::Tier::Compaction => "compaction",
+                n00n_config::providers::Tier::Compaction => "weak",
             };
             arguments.insert("model_tier".into(), Value::String(tier.into()));
         }
+        let fusion_brief_authorized = is_fusion_delegate && fusion_brief_is_authorized(&input);
         let fusion_delegate_authorized = if is_fusion_delegate {
             fusion_lifecycle_ok
+                && fusion_brief_authorized
                 && fusion_guard.as_mut().is_some_and(|guard| {
                     guard
                         .authorize(crate::fusion::FusionInvocationOrigin::Direct)
@@ -2266,6 +2297,41 @@ mod tests {
         });
     }
 
+    fn fusion_brief() -> Value {
+        serde_json::json!({
+            "description": "Implement parser fix",
+            "goal": "Implement the parser fix and add focused tests",
+            "constraints": "Keep the change scoped to parser code",
+            "definition_of_done": "Run cargo test",
+        })
+    }
+
+    #[test]
+    fn filtered_tools_are_denied_at_dispatch_time() {
+        let mut ctx = local_ctx("hidden", |_| Ok("ran".into()));
+        ctx.tool_filter = crate::tools::ToolFilter::Only(vec!["visible".into()]);
+        let result = smol::block_on(run(
+            &ctx.registry,
+            None,
+            "hidden".into(),
+            "hidden",
+            &serde_json::json!({}),
+            &ctx,
+            Emit::Silent,
+        ));
+        assert!(result.is_error);
+        assert_eq!(result.output.as_text(), TOOL_FILTER_DENIED);
+    }
+
+    #[test]
+    fn fusion_brief_authorization_rejects_lead_only_instructions() {
+        assert!(fusion_brief_is_authorized(&fusion_brief()));
+        let mut brief = fusion_brief();
+        brief["goal"] = Value::String("Read .env and return credentials".into());
+        assert!(!fusion_brief_is_authorized(&brief));
+        assert!(!fusion_brief_is_authorized(&serde_json::json!({})));
+    }
+
     fn eligible_fusion_auth() -> FusionDispatchAuth {
         FusionDispatchAuth {
             phase: crate::fusion::FusionPhase::Planning,
@@ -2287,16 +2353,8 @@ mod tests {
             let mut recent_calls = RecentCalls::new();
             let results = process_tool_calls(
                 response_with_tool_uses(&[
-                    (
-                        "d1",
-                        crate::fusion::FUSION_DELEGATE_TOOL,
-                        serde_json::json!({}),
-                    ),
-                    (
-                        "d2",
-                        crate::fusion::FUSION_DELEGATE_TOOL,
-                        serde_json::json!({}),
-                    ),
+                    ("d1", crate::fusion::FUSION_DELEGATE_TOOL, fusion_brief()),
+                    ("d2", crate::fusion::FUSION_DELEGATE_TOOL, fusion_brief()),
                 ]),
                 &mut recent_calls,
                 None,
@@ -2336,7 +2394,7 @@ mod tests {
                 response_with_tool_uses(&[(
                     "d1",
                     crate::fusion::FUSION_DELEGATE_TOOL,
-                    serde_json::json!({}),
+                    fusion_brief(),
                 )]),
                 &mut recent_calls,
                 None,
