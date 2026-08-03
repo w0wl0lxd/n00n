@@ -245,24 +245,6 @@ local function exfiltration_command_reason(command)
     return "nslookup may exfiltrate data via DNS"
   end
 
-  -- Encoded data going to a network command.
-  local encoded = has_command(normalized, "base64", "%s")
-    or has_command(normalized, "xxd", "%s")
-    or has_command(normalized, "uuencode", "%s")
-    or has_command(normalized, "od", "%s")
-  local network = has_command(normalized, "curl", "%s")
-    or has_command(normalized, "wget", "%s")
-    or has_command(normalized, "nc", "[%s%-]")
-    or has_command(normalized, "ncat", "%s")
-  if encoded and network then
-    return "encoded data may be sent to a remote host"
-  end
-
-  -- Shell substitution / command substitution feeding a network command.
-  if network and (normalized:find("$(", 1, true) or normalized:find("`", 1, true)) then
-    return "command substitution may exfiltrate data"
-  end
-
   return nil
 end
 

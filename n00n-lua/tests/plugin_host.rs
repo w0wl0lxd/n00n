@@ -6114,6 +6114,35 @@ fn live_write_blocks_secret_content_without_justification() {
 }
 
 #[test]
+fn live_write_allows_non_secret_token_terms_without_justification() {
+    const CONTENT: &str = "token = current_parse_state_identifier\nbearer = bearer_bond_pricing_reference\ntoken_count = 42\nNAME = \"abcdefghijklmnop\"";
+
+    let reg = fresh_registry();
+    let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let config = PluginsConfig {
+        enabled: true,
+        names: vec!["write".into()],
+        opts: HashMap::new(),
+    };
+    host.load_builtins(&config).unwrap();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let test_path = temp_dir.path().join("parser_state.rs");
+    let out = exec_tool(
+        &reg,
+        "write",
+        serde_json::json!({
+            "path": test_path,
+            "content": CONTENT,
+        }),
+    )
+    .unwrap();
+
+    assert!(!out.contains("justification is required"), "got: {out}");
+    assert_eq!(std::fs::read_to_string(test_path).unwrap(), CONTENT);
+}
+
+#[test]
 fn live_followup_schema_debloat_suite() {
     let reg = fresh_registry();
     let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();

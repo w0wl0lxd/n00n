@@ -173,6 +173,16 @@ fn interpreter_calls_advertised_tool_end_to_end() {
 }
 
 #[test]
+fn interpreter_preamble_imports_sys() {
+    let (reg, _host) = setup();
+    let ctx = stub_ctx_for(&reg, &AgentMode::Build);
+    let out = exec_code(&reg, &ctx, "print(sys.version_info.major)")
+        .expect("sys should be available from the interpreter preamble");
+
+    assert!(out.contains('3'), "got: {out}");
+}
+
+#[test]
 fn workflow_tool_not_callable_when_workflow_false() {
     let (reg, _host) = setup();
     let ctx = stub_ctx_for(&reg, &AgentMode::Build);

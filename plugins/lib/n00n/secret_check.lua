@@ -57,8 +57,6 @@ local SECRET_KEYWORDS = {
   "idtoken",
   "id_token",
   "id-token",
-  "token",
-  "bearer",
   "awsaccesskey",
   "aws_access_key",
   "awssecretaccesskey",
