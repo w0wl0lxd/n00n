@@ -1,0 +1,1 @@
+Cap per-process OpenAI Coding Plan concurrency at half of `openai_coding_plan_slots`, preventing a single long-running n00n TUI or agent from holding all account-wide admission slots and starving other sessions.

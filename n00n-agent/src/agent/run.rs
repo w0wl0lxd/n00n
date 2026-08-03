@@ -405,6 +405,7 @@ impl<'h> Agent<'h> {
             allow_history_replay: self.permissions.is_yolo(),
             moderation: false,
             safety_identifier: None,
+            idempotency_key: None,
         };
 
         info!(
@@ -606,6 +607,9 @@ impl<'h> Agent<'h> {
                     };
                     if !self.approve_ambiguous_request_replay(metadata).await? {
                         break Err(error);
+                    }
+                    if let Some(metadata) = metadata {
+                        opts.idempotency_key = metadata.idempotency_key.clone();
                     }
                     self.event_tx.send(AgentEvent::Retry {
                         attempt: 1,
@@ -1654,6 +1658,7 @@ mod tests {
             let metadata = RequestDeliveryMetadata {
                 phase: RequestDeliveryPhase::SentAwaitingAcceptance,
                 response_id: None,
+                idempotency_key: None,
                 close_code: None,
                 close_reason: None,
                 emitted_event: false,
@@ -1703,6 +1708,7 @@ mod tests {
             let metadata = RequestDeliveryMetadata {
                 phase: RequestDeliveryPhase::SentAwaitingAcceptance,
                 response_id: None,
+                idempotency_key: None,
                 close_code: None,
                 close_reason: None,
                 emitted_event: false,
@@ -1883,6 +1889,7 @@ mod tests {
                         metadata: Some(RequestDeliveryMetadata {
                             phase: RequestDeliveryPhase::SentAwaitingAcceptance,
                             response_id: None,
+                            idempotency_key: None,
                             close_code: None,
                             close_reason: None,
                             emitted_event: true,
