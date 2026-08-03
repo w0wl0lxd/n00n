@@ -8,7 +8,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Error as IoError, ErrorKind, Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -31,6 +31,7 @@ const SESSION_VERSION: u32 = 1;
 const LOG_FORMAT_VERSION: u32 = 3;
 const COMPRESS_LEVEL: i32 = 3;
 const MAX_INCREMENTAL_FRAMES: u64 = 16_384;
+const MAX_SESSION_RECORD_BYTES: usize = 16 * 1024 * 1024;
 const TRANSCRIPT_RECORD_TYPE: &str = "transcript";
 pub const SESSIONS_DIR: &str = "sessions";
 const CWD_INDEX_FILE: &str = "cwd_latest.json";
@@ -72,6 +73,8 @@ pub enum SessionError {
     CursorAhead { saved: usize, actual: usize },
     #[error("session log contains an unknown record type")]
     UnknownRecord,
+    #[error("session record exceeds the {maximum}-byte limit")]
+    RecordTooLarge { maximum: usize },
 }
 
 /// Per-model token breakdown entry. Mirrors the four usage counters tracked by
@@ -482,8 +485,8 @@ impl StoredSessionStateSnapshot {
 
     /// Validates persisted state before any plugin can apply it.
     ///
-    /// These limits bound state accepted by plugins. The session record reader remains responsible
-    /// for bounding bytes allocated while deserializing the outer untrusted record.
+    /// These limits bound state accepted by plugins. The session reader separately caps each
+    /// decompressed outer record before JSON deserialization.
     ///
     /// # Errors
     /// Returns a typed error for unsupported envelopes or exceeded bounds.
@@ -1711,8 +1714,54 @@ where
     Ok(())
 }
 
+struct BoundedRecordBuffer {
+    bytes: Vec<u8>,
+    limit: usize,
+    exceeded: bool,
+}
+
+impl BoundedRecordBuffer {
+    fn new(limit: usize) -> Self {
+        Self {
+            bytes: Vec::new(),
+            limit,
+            exceeded: false,
+        }
+    }
+}
+
+impl Write for BoundedRecordBuffer {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let Some(next_len) = self.bytes.len().checked_add(bytes.len()) else {
+            self.exceeded = true;
+            return Err(IoError::other("session record exceeds size limit"));
+        };
+        if next_len > self.limit {
+            self.exceeded = true;
+            return Err(IoError::other("session record exceeds size limit"));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 fn append_record<W: Write, R: Serialize>(writer: &mut W, record: &R) -> Result<(), SessionError> {
-    serde_json::to_writer(&mut *writer, record).map_err(StorageError::from)?;
+    let mut encoded = BoundedRecordBuffer::new(MAX_SESSION_RECORD_BYTES.saturating_sub(1));
+    if let Err(error) = serde_json::to_writer(&mut encoded, record) {
+        if encoded.exceeded {
+            return Err(SessionError::RecordTooLarge {
+                maximum: MAX_SESSION_RECORD_BYTES,
+            });
+        }
+        return Err(StorageError::from(error).into());
+    }
+    writer
+        .write_all(&encoded.bytes)
+        .map_err(StorageError::from)?;
     writer.write_all(b"\n").map_err(StorageError::from)?;
     Ok(())
 }
@@ -1955,6 +2004,29 @@ fn is_zst_data(data: &[u8]) -> bool {
     data.starts_with(&[0x28, 0xb5, 0x2f, 0xfd])
 }
 
+#[derive(Debug)]
+enum BoundedLineError {
+    Io(IoError),
+    TooLarge,
+}
+
+fn read_bounded_line<R: BufRead>(
+    reader: &mut R,
+    line: &mut String,
+    maximum: usize,
+) -> Result<usize, BoundedLineError> {
+    line.clear();
+    let read_limit = u64::try_from(maximum)
+        .map_err(|_| BoundedLineError::TooLarge)?
+        .saturating_add(1);
+    let mut limited = (&mut *reader).take(read_limit);
+    let bytes = limited.read_line(line).map_err(BoundedLineError::Io)?;
+    if bytes > maximum {
+        return Err(BoundedLineError::TooLarge);
+    }
+    Ok(bytes)
+}
+
 fn visit_zstd_lines(
     path: &Path,
     mut visit: impl FnMut(&str) -> Result<(), SessionError>,
@@ -1964,11 +2036,15 @@ fn visit_zstd_lines(
     let mut reader = BufReader::new(decoder);
     let mut line = String::new();
     loop {
-        line.clear();
-        match reader.read_line(&mut line) {
+        match read_bounded_line(&mut reader, &mut line, MAX_SESSION_RECORD_BYTES) {
             Ok(0) => return Ok(false),
             Ok(_) => visit(line.trim_end_matches(['\r', '\n']))?,
-            Err(error) => {
+            Err(BoundedLineError::TooLarge) => {
+                return Err(SessionError::RecordTooLarge {
+                    maximum: MAX_SESSION_RECORD_BYTES,
+                });
+            }
+            Err(BoundedLineError::Io(error)) => {
                 warn!(
                     path = %path.display(),
                     error = %error,
@@ -2356,11 +2432,18 @@ fn try_decode_header_at(path: &Path, offset: u64) -> Option<ZstHeader> {
     let mut reader = BufReader::new(decoder);
     let mut line = String::new();
     loop {
-        line.clear();
-        match reader.read_line(&mut line) {
+        match read_bounded_line(&mut reader, &mut line, MAX_SESSION_RECORD_BYTES) {
             Ok(0) => return None,
             Ok(_) => {}
-            Err(error) => {
+            Err(BoundedLineError::TooLarge) => {
+                warn!(
+                    path = %path.display(),
+                    maximum = MAX_SESSION_RECORD_BYTES,
+                    "zstd header record exceeds size limit"
+                );
+                return None;
+            }
+            Err(BoundedLineError::Io(error)) => {
                 warn!(path = %path.display(), error = %error, "failed to read zstd header");
                 return None;
             }
@@ -2388,8 +2471,7 @@ where
     let mut updated_at = 0u64;
     let mut first_message = None;
     loop {
-        line.clear();
-        match reader.read_line(&mut line) {
+        match read_bounded_line(&mut reader, &mut line, MAX_SESSION_RECORD_BYTES) {
             Ok(0) => break,
             Ok(_) => {}
             Err(_) => return None,
@@ -3398,6 +3480,65 @@ mod tests {
 
         let error = TestSession::load_from(session.id, dir).unwrap_err();
         assert!(matches!(error, SessionError::UnknownRecord));
+    }
+    #[test]
+    fn bounded_record_io_accepts_exact_limit_and_rejects_next_byte() {
+        let mut writer = super::BoundedRecordBuffer::new(3);
+        writer.write_all(b"abc").unwrap();
+        assert!(writer.write_all(b"d").is_err());
+        assert_eq!(writer.bytes, b"abc");
+
+        let mut exact_reader = std::io::BufReader::new(std::io::Cursor::new(b"abc\n"));
+        let mut line = String::new();
+        assert_eq!(
+            super::read_bounded_line(&mut exact_reader, &mut line, 4).unwrap(),
+            4
+        );
+        let mut oversized_reader = std::io::BufReader::new(std::io::Cursor::new(b"abc\n"));
+        assert!(matches!(
+            super::read_bounded_line(&mut oversized_reader, &mut line, 3),
+            Err(super::BoundedLineError::TooLarge)
+        ));
+    }
+
+    #[test]
+    fn append_record_rejects_oversized_records() {
+        let record = serde_json::json!({
+            "t": "msg",
+            "d": "x".repeat(super::MAX_SESSION_RECORD_BYTES),
+        });
+        let error = append_record(&mut Vec::new(), &record).unwrap_err();
+        assert!(matches!(error, SessionError::RecordTooLarge { .. }));
+    }
+
+    #[test]
+    fn session_open_rejects_oversized_decompressed_records_without_repair() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let session: TestSession = Session::new("m", "/project");
+        let log = SessionLog::create(dir, &session).unwrap();
+        drop(log);
+
+        let record = format!(
+            "{{\"t\":\"meta\",\"state_snapshot\":{{\"schema_version\":2,\"opaque\":\"{}\"}}}}\n",
+            "x".repeat(super::MAX_SESSION_RECORD_BYTES)
+        );
+        let mut encoded = Vec::new();
+        encode_frame(&mut encoded, record.as_bytes()).unwrap();
+        let path = jsonl_path(dir, session.id);
+        let original_len = fs::metadata(&path).unwrap().len();
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(&encoded).unwrap();
+        drop(file);
+
+        let Err(error) = SessionLog::open::<Value, Value, Value>(dir, session.id) else {
+            panic!("oversized record unexpectedly loaded");
+        };
+        assert!(matches!(error, SessionError::RecordTooLarge { .. }));
+        assert_eq!(
+            fs::metadata(path).unwrap().len(),
+            original_len + encoded.len() as u64
+        );
     }
 
     #[test]
