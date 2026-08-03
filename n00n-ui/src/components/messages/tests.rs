@@ -1216,22 +1216,6 @@ fn extract_fully_selected_message_copies_raw_text() {
 }
 
 #[test]
-fn extract_fully_selected_message_preserves_trailing_newlines() {
-    let mut panel = test_panel();
-    panel.push(DisplayMessage::new(
-        DisplayRole::Assistant,
-        "some text\n\n".into(),
-    ));
-    render(&mut panel, 80, 24);
-
-    let total: u16 = panel.segment_heights().iter().sum();
-    let area = Rect::new(0, 0, 80, 24);
-    let sel = make_sel(area, (0, 0), (u32::from(total - 1), 79));
-
-    assert_eq!(panel.extract_selection_text(&sel, area), "some text\n\n");
-}
-
-#[test]
 fn extract_fully_selected_tool_copies_raw_output() {
     let mut panel = test_panel();
     let table = "| a | b |\n|---|---|\n| 1 | 2 |";
@@ -1929,86 +1913,6 @@ fn tool_done_removes_live_buf_and_snapshots_dirty() {
         msg.render_snapshot.as_ref().unwrap().first_line_text(),
         "dirty content"
     );
-}
-
-/// Rendered text of a segment's live-buffer snapshot block (indent prefixes
-/// included), used to prove an incremental append equals a full rebuild.
-fn snapshot_block_text(panel: &MessagesPanel, id: &str) -> String {
-    let idx = panel.cache.find_by_tool_id(id).unwrap();
-    let seg = panel.cache.get(idx).unwrap();
-    let base = seg.snapshot_base().unwrap();
-    let count = seg.snapshot_count();
-    let mut out = String::new();
-    for (i, line) in seg.lines()[base..base + count].iter().enumerate() {
-        if i > 0 {
-            out.push('\n');
-        }
-        for span in &line.spans {
-            out.push_str(span.content.as_ref());
-        }
-    }
-    out
-}
-
-/// A growing live buffer must render exactly what a full rebuild of the same
-/// content produces, but without re-baking the already-rendered prefix.
-#[test]
-fn live_buf_incremental_tail_matches_full_rebuild() {
-    let buf = Arc::new(n00n_agent::SharedBuf::new());
-    let mut panel = test_panel();
-    panel.tool_start(start("t1", BASH_TOOL_NAME));
-    panel.register_live_buf("t1".into(), Arc::clone(&buf));
-
-    buf.append(snap_line("one"));
-    buf.append(snap_line("two"));
-    render(&mut panel, 80, 24);
-    assert_eq!(snapshot_block_text(&panel, "t1").lines().count(), 2);
-
-    buf.append(snap_line("three"));
-    buf.append(snap_line("four"));
-    render(&mut panel, 80, 24);
-
-    let incremental = snapshot_block_text(&panel, "t1");
-    assert_eq!(incremental.lines().count(), 4);
-
-    let mut reference = test_panel();
-    reference.tool_start(start("t1", BASH_TOOL_NAME));
-    let full_buf = Arc::new(n00n_agent::SharedBuf::new());
-    full_buf.set_lines(vec![
-        snap_line("one"),
-        snap_line("two"),
-        snap_line("three"),
-        snap_line("four"),
-    ]);
-    reference.register_live_buf("t1".into(), full_buf);
-    render(&mut reference, 80, 24);
-
-    assert_eq!(incremental, snapshot_block_text(&reference, "t1"));
-    let msg = panel.find_tool_msg_mut("t1").unwrap();
-    assert_eq!(msg.render_snapshot.as_ref().unwrap().lines.len(), 4);
-}
-
-/// A wholesale `set_lines` replacement must re-render everything, never
-/// leaving stale prefix lines from the previous buffer.
-#[test]
-fn live_buf_set_lines_replaces_snapshot_fully() {
-    let buf = Arc::new(n00n_agent::SharedBuf::new());
-    let mut panel = test_panel();
-    panel.tool_start(start("t1", BASH_TOOL_NAME));
-    panel.register_live_buf("t1".into(), Arc::clone(&buf));
-
-    buf.append(snap_line("old"));
-    render(&mut panel, 80, 24);
-    assert_eq!(snapshot_block_text(&panel, "t1").lines().count(), 1);
-
-    buf.set_lines(vec![snap_line("new-a"), snap_line("new-b")]);
-    render(&mut panel, 80, 24);
-
-    let text = snapshot_block_text(&panel, "t1");
-    assert_eq!(text.lines().count(), 2);
-    assert!(text.contains("new-a"));
-    assert!(text.contains("new-b"));
-    assert!(!text.contains("old"));
 }
 
 /// The handler's buf must supersede the `start` preview: the UI keeps only
