@@ -120,9 +120,6 @@ fn explicit_tool_filter(tools: &JsonValue) -> Result<ToolFilter, String> {
     let definitions = tools
         .as_array()
         .ok_or_else(|| "tools must be an array".to_owned())?;
-    if definitions.is_empty() {
-        return Ok(ToolFilter::Only(vec![]));
-    }
     let names = definitions
         .iter()
         .enumerate()
@@ -154,10 +151,6 @@ fn attach_tool_exclusions(lua: &Lua, tools: &LuaValue, exclusions: &[String]) ->
         return Ok(());
     }
     let LuaValue::Table(tools) = tools else {
-        // Nil is acceptable as "no tools"
-        if matches!(tools, LuaValue::Nil) {
-            return Ok(());
-        }
         return Err(mlua::Error::runtime("tools must be an array"));
     };
     let metadata = lua.create_table_with_capacity(0, 2)?;
@@ -611,7 +604,7 @@ async fn call_tool(
 /// @param opts table Optional fields:
 ///   `model_spec` (string?) - model spec string to use instead of the parent model.
 ///   `system` (string?) - system prompt. Defaults to empty.
-///   `tools` (table?) - tool definitions array (from `n00n.agent.tools()`). Omit it or set it to nil to use default tools; pass an empty table to disable tools.
+///   `tools` (table?) - tool definitions array (from `n00n.agent.tools()`).
 ///   `local_tools` (table?) - map of `name -> spec` for Lua-backed tools. Each spec
 ///     requires `description` (string), `input_schema` (table), and
 ///     `handler` (function). The handler receives the input table and must return
@@ -652,9 +645,7 @@ async fn session(
     drop(ctx);
     let model_spec: Option<String> = opts.get("model_spec")?;
     let system: Option<String> = opts.get("system")?;
-    // Lua nil removes a table key, so nil intentionally has omitted semantics.
     let tools_val: Option<LuaValue> = opts.get("tools")?;
-    let explicit_tools = tools_val.is_some();
     let local_tools_tbl: Option<Table> = opts.get("local_tools")?;
     let include_mcp = opts
         .get::<Option<bool>>("include_mcp")?
@@ -706,8 +697,13 @@ async fn session(
         let _ = sink.send(ToolLive::Annotation(model.spec()));
     }
 
+    let explicit_tools = tools_val.is_some();
     let (mut tools_json, mut tool_filter) = if let Some(val) = tools_val {
-        let tools = lua_to_json(&lua, &val)?;
+        let empty_lua_table = matches!(&val, LuaValue::Table(table) if table.is_empty());
+        let mut tools = lua_to_json(&lua, &val)?;
+        if empty_lua_table && matches!(&tools, JsonValue::Object(object) if object.is_empty()) {
+            tools = JsonValue::Array(Vec::new());
+        }
         // Accept nil, empty object, or empty array as "no tools"
         if tools.is_null()
             || (tools.is_object() && tools.as_object().map_or(false, serde_json::Map::is_empty))
@@ -732,8 +728,14 @@ async fn session(
             model.supports_tool_examples(),
             &n00n_agent::tools::default_active_tools(),
         );
-        (tools, filter)
+        let tools_json =
+            serde_json::to_value(tools).map_err(|e| mlua::Error::runtime(e.to_string()))?;
+        (tools_json, filter)
     };
+
+    if explicit_tools {
+        tool_filter = ToolFilter::All;
+    }
 
     let mut local_map: HashMap<String, LocalToolFn> = HashMap::new();
     if let Some(tbl) = local_tools_tbl {
