@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use gix::bstr::BStr;
 use gix::object::Kind;
@@ -535,4 +535,69 @@ pub fn blame(path: &Path, file: &str) -> Result<GitBlame, GitError> {
         .collect();
 
     Ok(GitBlame { lines: blame_lines })
+}
+
+fn worktree_root(path: &Path) -> Result<PathBuf, GitError> {
+    let repo = gix::discover(path)
+        .map_err(|e| GitError::GitOperation(format!("failed to discover repository: {e}")))?;
+    repo.work_dir()
+        .map_or_else(|| Err(GitError::BareRepo), |p| Ok(p.to_path_buf()))
+}
+
+fn run_git(path: &Path, args: &[&str]) -> Result<std::process::Output, GitError> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(args)
+        .output()
+        .map_err(|e| GitError::GitOperation(format!("failed to run git: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        return Err(GitError::GitOperation(stderr));
+    }
+    Ok(output)
+}
+
+/// Stage files in a repository.
+///
+/// # Errors
+///
+/// Returns `GitError` if the repository cannot be opened or git add fails.
+#[instrument(skip(path, files))]
+pub fn add(path: &Path, files: &[String]) -> Result<(), GitError> {
+    let root = worktree_root(path)?;
+    if files.is_empty() {
+        return Err(GitError::InvalidReference("no files specified".to_string()));
+    }
+    let mut args = vec!["add", "--"];
+    for file in files {
+        args.push(file);
+    }
+    run_git(&root, &args)?;
+    Ok(())
+}
+
+/// Create a commit with the given message and return the new commit id.
+///
+/// # Errors
+///
+/// Returns `GitError` if the repository cannot be opened or git commit fails.
+#[instrument(skip(path, message))]
+pub fn commit(path: &Path, message: &str) -> Result<String, GitError> {
+    let root = worktree_root(path)?;
+    run_git(&root, &["commit", "-m", message])?;
+    let output = run_git(&root, &["rev-parse", "HEAD"])?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Checkout a branch, tag, or ref in a repository.
+///
+/// # Errors
+///
+/// Returns `GitError` if the repository cannot be opened or git checkout fails.
+#[instrument(skip(path, target))]
+pub fn checkout(path: &Path, target: &str) -> Result<(), GitError> {
+    let root = worktree_root(path)?;
+    run_git(&root, &["checkout", target])?;
+    Ok(())
 }
