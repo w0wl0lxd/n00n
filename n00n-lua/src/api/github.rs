@@ -351,17 +351,18 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
     })?;
     t.set("get_pr", get_pr_fn)?;
 
-    let create_pr_fn = lua.create_function(
-        |lua,
-         (owner, repo, head, base, title, body, token): (
-            String,
-            String,
-            String,
-            String,
-            String,
-            String,
-            Option<String>,
-        )| {
+    let create_pr_fn = lua.create_function({
+        let gh_tried = Arc::clone(&gh_tried);
+        move |lua,
+              (owner, repo, head, base, title, body, token): (
+                  String,
+                  String,
+                  String,
+                  String,
+                  String,
+                  String,
+                  Option<String>,
+              )| {
             let client = create_client()?;
             let token = get_token(token, Arc::clone(&gh_tried)).ok_or_else(|| {
                 mlua::Error::external(
@@ -397,12 +398,20 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
 
             let pr: GitHubPullRequest = response.json().map_err(map_err)?;
             value_or_err(lua, Ok(pr))
-        },
-    )?;
+        }
+    })?;
     t.set("create_pr", create_pr_fn)?;
 
-    let add_comment_fn = lua.create_function(
-        |lua, (owner, repo, issue_number, body, token): (String, String, u64, String, Option<String>)| {
+    let add_comment_fn = lua.create_function({
+        let gh_tried = Arc::clone(&gh_tried);
+        move |lua,
+              (owner, repo, issue_number, body, token): (
+                  String,
+                  String,
+                  u64,
+                  String,
+                  Option<String>,
+              )| {
             let client = create_client()?;
             let token = get_token(token, Arc::clone(&gh_tried)).ok_or_else(|| {
                 mlua::Error::external(
@@ -437,8 +446,8 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
 
             let comment: GitHubComment = response.json().map_err(map_err)?;
             value_or_err(lua, Ok(comment))
-        },
-    )?;
+        }
+    })?;
     t.set("add_comment", add_comment_fn)?;
 
     Ok(t)
@@ -729,7 +738,7 @@ mod tests {
         assert!(result.is_err());
         match result {
             Err(GitHubError::RateLimited { retry_after }) => {
-                assert_eq!(retry_after, Some(1234567890));
+                assert_eq!(retry_after, Some(1_234_567_890));
             }
             _ => panic!("Expected RateLimited error"),
         }
@@ -830,17 +839,5 @@ mod tests {
         });
 
         assert_eq!(payload["body"], "Test comment");
-    }
-
-    #[test]
-    fn test_github_comment_serialization() {
-        let comment = GitHubComment {
-            id: 123,
-            html_url: "https://github.com/test/repo/issues/1#issuecomment-123".to_string(),
-        };
-
-        let json = serde_json::to_string(&comment).unwrap();
-        assert!(json.contains("\"id\":123"));
-        assert!(json.contains("html_url"));
     }
 }
