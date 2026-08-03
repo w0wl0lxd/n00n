@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785712015674,
+  "lastUpdate": 1785730029738,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -12307,6 +12307,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 188567,
             "range": "± 14878",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "95779b20b233112282eabe1daa5ba3c5cea43c2b",
+          "message": "Merge pull request #228 from w0wl0lxd/fix/terminal-try-init\n\nfix(n00n-ui): avoid terminal init panic in non-interactive environments",
+          "timestamp": "2026-08-03T03:50:52Z",
+          "tree_id": "48b9366311303ac61bf47aba3b8ea1f57c1bd61b",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/95779b20b233112282eabe1daa5ba3c5cea43c2b"
+        },
+        "date": 1785730028763,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6424996,
+            "range": "± 164134",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2459080,
+            "range": "± 5695",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2471273,
+            "range": "± 67889",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7596866,
+            "range": "± 72655",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3863438,
+            "range": "± 12736",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3973885,
+            "range": "± 85998",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 554836,
+            "range": "± 12124",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 167986,
+            "range": "± 337",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 168019,
+            "range": "± 362",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1068367,
+            "range": "± 10711",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 633165,
+            "range": "± 9760",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 633381,
+            "range": "± 54960",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 54647,
+            "range": "± 4163",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 184742,
+            "range": "± 3896",
             "unit": "ns/iter"
           }
         ]
