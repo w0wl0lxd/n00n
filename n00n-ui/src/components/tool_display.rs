@@ -120,6 +120,10 @@ pub struct ToolLines {
     /// Index of the first live-buffer snapshot line, recorded in the same
     /// pass that lays out `lines`, so click rows can never drift from them.
     pub snapshot_base: Option<usize>,
+    /// Number of snapshot lines baked into `lines`, starting at
+    /// `snapshot_base`. Together the two let a live buffer append its newly
+    /// received tail without re-baking the whole snapshot.
+    pub snapshot_count: usize,
     pub content_indent: &'static str,
     pub truncation: SectionFlags,
     pub truncation_actions: Vec<TruncationAction>,
@@ -367,6 +371,7 @@ struct ToolLineBuilder {
     search_text: String,
     spinner_lines: Vec<(usize, usize)>,
     snapshot_base: Option<usize>,
+    snapshot_count: usize,
     content_range: (usize, usize),
     width: u16,
     truncation: SectionFlags,
@@ -383,6 +388,7 @@ impl ToolLineBuilder {
             search_text: String::new(),
             spinner_lines: Vec::new(),
             snapshot_base: None,
+            snapshot_count: 0,
             content_range: (0, 0),
             width,
             truncation: SectionFlags::default(),
@@ -584,6 +590,7 @@ impl ToolLineBuilder {
         let base = self.lines.len();
         self.snapshot_base = Some(base);
         let total = snapshot.lines.len();
+        self.snapshot_count = total;
         let frame = spinner_str(started_at.elapsed().as_millis());
         let (lines, spinners) =
             snapshot_to_lines_range(snapshot, TOOL_BODY_INDENT, 0..total, frame);
@@ -609,6 +616,7 @@ impl ToolLineBuilder {
             highlight,
             spinner_lines: self.spinner_lines,
             snapshot_base: self.snapshot_base,
+            snapshot_count: self.snapshot_count,
             content_indent,
             truncation: self.truncation,
             truncation_actions: self.truncation_actions,
@@ -667,6 +675,27 @@ fn snapshot_to_lines_range(
         })
         .collect();
     (lines, spinners)
+}
+
+pub(crate) fn bake_snapshot_lines(snapshot: &BufferSnapshot, indent: &str) -> Vec<Line<'static>> {
+    snapshot_to_lines_range(snapshot, indent, 0..snapshot.lines.len(), spinner_str(0)).0
+}
+
+/// Bakes only `snapshot.lines[from..]`, the tail a live buffer gained since
+/// the segment last rendered. The panel splices this onto the existing
+/// snapshot block instead of re-baking the whole buffer.
+pub(crate) fn bake_snapshot_tail(
+    snapshot: &BufferSnapshot,
+    from: usize,
+    started_at: Instant,
+) -> (Vec<Line<'static>>, Vec<(usize, usize)>) {
+    let frame = spinner_str(started_at.elapsed().as_millis());
+    snapshot_to_lines_range(
+        snapshot,
+        TOOL_BODY_INDENT,
+        from..snapshot.lines.len(),
+        frame,
+    )
 }
 
 pub(crate) fn resolve_span_style(style: &SpanStyle) -> Style {

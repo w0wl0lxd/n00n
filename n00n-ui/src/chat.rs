@@ -192,7 +192,12 @@ impl Chat {
                     control,
                 };
             }
-            AgentEvent::Retry { .. } => unreachable!("handled before handle_event"),
+            AgentEvent::Retry { .. } => {
+                tracing::warn!(
+                    "retry event reached chat handling; expected to be intercepted by the app layer"
+                );
+                return ChatEventResult::Continue;
+            }
             AgentEvent::Done { .. } => {
                 self.messages_panel.flush();
                 return ChatEventResult::Done;
@@ -681,13 +686,14 @@ fn transcript_to_display_at<S: std::hash::BuildHasher>(
                 } else {
                     format!("{parent_id}.{compaction_index}")
                 };
-                let (child_display, _) = transcript_to_display_at(
+                let (child_display, mut child_restore_items) = transcript_to_display_at(
                     children,
                     tool_outputs,
                     tool_output_lines,
                     depth + 1,
                     &id,
                 );
+                restore_items.append(&mut child_restore_items);
                 let summary = generated_summary
                     .as_ref()
                     .and_then(Message::first_text_content)
@@ -784,7 +790,7 @@ pub fn history_to_display<S: std::hash::BuildHasher>(
                                 reg.get(name).and_then(|entry| entry.try_parse(input));
                             let summary = reg.resolve_header(name, input);
                             let (status, result_text) = results.get(id.as_str()).map_or(
-                                (ToolStatus::Success, None),
+                                (ToolStatus::Error, None),
                                 |(err, text)| {
                                     let s = if *err {
                                         ToolStatus::Error
@@ -1098,6 +1104,20 @@ mod tests {
     }
 
     #[test]
+    fn unexpected_retry_event_is_ignored() {
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
+        let result = chat.handle_event(
+            AgentEvent::Retry {
+                attempt: 1,
+                message: "overloaded".into(),
+                delay_ms: 100,
+            },
+            None,
+        );
+        assert!(matches!(result, ChatEventResult::Continue));
+    }
+
+    #[test]
     fn tool_lifecycle() {
         let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
         chat.handle_event(tool_start("t1", "bash"), None);
@@ -1243,6 +1263,41 @@ mod tests {
     }
 
     #[test]
+    fn recursive_transcript_retains_each_nested_restore_item_once() {
+        let deepest = tool_use_pair_with_id(
+            "deep-tool-id",
+            "bash",
+            serde_json::json!({"command": "pwd"}),
+            "/tmp",
+            false,
+        );
+        let child = tool_use_pair_with_id(
+            "child-tool-id",
+            "read",
+            serde_json::json!({"path": "src/main.rs"}),
+            "1: fn main() {}",
+            false,
+        );
+        let transcript = vec![TranscriptEntry::Compaction {
+            entries: vec![
+                TranscriptEntry::Compaction {
+                    entries: deepest.into_iter().map(TranscriptEntry::Message).collect(),
+                    generated_summary: None,
+                },
+                TranscriptEntry::Message(child[0].clone()),
+                TranscriptEntry::Message(child[1].clone()),
+            ],
+            generated_summary: None,
+        }];
+
+        let (_, items) =
+            transcript_to_display(&transcript, &empty_outputs(), &ToolOutputLines::default());
+        let tool_ids: Vec<_> = items.iter().map(|item| item.tool_use_id.as_str()).collect();
+
+        assert_eq!(tool_ids, ["deep-tool-id", "child-tool-id"]);
+    }
+
+    #[test]
     fn legacy_compaction_keeps_following_user_assistant_pair_visible() {
         let transcript = vec![
             TranscriptEntry::Compaction {
@@ -1320,11 +1375,21 @@ mod tests {
         result: &str,
         is_error: bool,
     ) -> Vec<Message> {
+        tool_use_pair_with_id("t1", tool, input, result, is_error)
+    }
+
+    fn tool_use_pair_with_id(
+        id: &str,
+        tool: &str,
+        input: serde_json::Value,
+        result: &str,
+        is_error: bool,
+    ) -> Vec<Message> {
         vec![
             Message {
                 role: Role::Assistant,
                 content: vec![ContentBlock::ToolUse {
-                    id: "t1".into(),
+                    id: id.into(),
                     name: tool.into(),
                     input,
                 }],
@@ -1333,7 +1398,7 @@ mod tests {
             Message {
                 role: Role::User,
                 content: vec![ContentBlock::ToolResult {
-                    tool_use_id: "t1".into(),
+                    tool_use_id: id.into(),
                     content: result.into(),
                     is_error,
                 }],
@@ -1354,6 +1419,22 @@ mod tests {
         let display = history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default()).0;
         assert_eq!(display.len(), 1);
         assert!(matches!(&display[0].role, DisplayRole::Tool(t) if t.status == expected));
+    }
+
+    #[test]
+    fn history_unmatched_tool_use_is_error_not_success() {
+        let msgs = vec![Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: "t1".into(),
+                name: "bash".into(),
+                input: serde_json::json!({"command": "ls"}),
+            }],
+            ..Default::default()
+        }];
+        let display = history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default()).0;
+        assert_eq!(display.len(), 1);
+        assert!(matches!(&display[0].role, DisplayRole::Tool(t) if t.status == ToolStatus::Error));
     }
 
     #[test]
