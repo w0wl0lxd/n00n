@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785772571538,
+  "lastUpdate": 1785783858182,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -13171,6 +13171,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 168252,
             "range": "± 9689",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8bac102409409a2410ebd63fe3fe403c79252dd4",
+          "message": "fix(providers,ui): demote expected agent and provider log noise (#220)\n\n* fix(providers,ui): demote expected agent and provider log noise\n\nBased on log audit of 40.8 MiB n00n.log (2026-07-20 to 2026-08-01):\n\n- P1: 7 ERROR logs for \"Previous response not found\" are now INFO. The OpenAI\n  platform already detects this and returns HistoryReplayRequired, which is a\n  user-approval prompt, not a crash. Added AgentError::is_history_replay_required()\n  and AgentError::is_cancelled() methods with regression tests.\n\n- P2: 1,579 WARN logs for \"failed to create provider, skipping\" are now DEBUG.\n  The manifest loop already demotes Config errors to debug; this extends that to\n  all provider creation failures, which are routine when credentials are missing.\n\n- AgentError::Cancelled now logs at WARN instead of silently, for better visibility\n  of user-initiated cancellations.\n\nSkipped items (no action needed):\n- P0: 369 credential keyword matches are all \"API key not set\" messages or\n  tool output containing the word \"password\" in docs/code. No actual credential\n  values present.\n- P3: 1 \"channel send failed\" occurrence is not a pattern.\n- P4: Unbounded command execution is a model/prompt issue, not a log bug.\n- P5: Session daemon listener errors are all \"daemon already running\" (Unavailable),\n  already logged at debug.\n- P6: Tool output truncation already fixed in PR #218.\n\n* fix(providers,ui): remove duplicate is_cancelled and add missing info import\n\nThe follow-up branch added `is_cancelled()` alongside `is_history_replay_required()`,\nbut `is_cancelled()` is already introduced in PR #218. Remove the duplicate to\navoid a merge conflict, and add the missing `info!` import in `agent_loop.rs`.\n\n* chore: add changelog fragment\n\nAdd the missing changelog.d fragment for this PR.\n\n* fix: preserve review diagnostics\n\n* fix: correlate history replay diagnostics",
+          "timestamp": "2026-08-03T18:40:46Z",
+          "tree_id": "e3309db32c1ff6a744b675823bf308a707e15a1a",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/8bac102409409a2410ebd63fe3fe403c79252dd4"
+        },
+        "date": 1785783856697,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 7509609,
+            "range": "± 514283",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1515904,
+            "range": "± 68761",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1501117,
+            "range": "± 57185",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8617606,
+            "range": "± 449798",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 2910069,
+            "range": "± 97710",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 2936151,
+            "range": "± 146113",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 749697,
+            "range": "± 32747",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 89636,
+            "range": "± 5687",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 85860,
+            "range": "± 4149",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1167152,
+            "range": "± 60258",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 495015,
+            "range": "± 25534",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 478753,
+            "range": "± 26325",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 51788,
+            "range": "± 3900",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 132763,
+            "range": "± 5871",
             "unit": "ns/iter"
           }
         ]
