@@ -11,7 +11,6 @@ use agent_client_protocol_schema::{
     SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, StopReason,
     TextContent, ToolCallId, ToolCallUpdate, ToolCallUpdateFields,
 };
-use color_eyre::eyre::Context;
 use flume::{Receiver, Sender};
 use n00n_agent::headless::{self, InteractiveHandle, InteractiveParams};
 use n00n_agent::types::AgentEvent;
@@ -65,7 +64,9 @@ impl Server {
 /// Runs the ACP server.
 ///
 /// # Errors
-/// Returns an error if stdin reading fails or JSON parsing fails.
+/// Returns an error if the writer task panics or internal setup fails.
+/// Individual line, JSON, or request-id errors are turned into JSON-RPC
+/// error responses and the server keeps running.
 pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
     let (out_tx, out_rx) = flume::unbounded::<Value>();
 
@@ -88,29 +89,16 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
 
     let stdin = smol::Unblock::new(std::io::stdin());
     let mut reader = smol::io::BufReader::new(stdin);
-    let mut line = String::new();
 
     loop {
-        line.clear();
-        if reader.read_line(&mut line).await.context("read stdin")? == 0 {
-            break;
-        }
-
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let raw: Value = match serde_json::from_str(trimmed) {
-            Ok(v) => v,
+        let (id, raw) = match read_request(&mut reader).await {
+            Ok(Some(v)) => v,
+            Ok(None) => break,
             Err(e) => {
-                warn!(error = %e, "invalid JSON on stdin");
-                server.respond(RequestId::Null, Err(AcpError::parse_error()));
+                server.respond(RequestId::Null, Err(e));
                 continue;
             }
         };
-
-        let id = raw.get("id").map(request_id);
 
         if raw.get("result").is_some() || raw.get("error").is_some() {
             handle_incoming_response(&server, &raw);
@@ -130,8 +118,39 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
     Ok(())
 }
 
-fn request_id(v: &Value) -> RequestId {
-    serde_json::from_value(v.clone()).map_or(RequestId::Null, std::convert::identity)
+async fn read_request<R>(reader: &mut R) -> Result<Option<(Option<RequestId>, Value)>, AcpError>
+where
+    R: smol::io::AsyncBufRead + Unpin,
+{
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line).await {
+            Ok(0) => return Ok(None),
+            Ok(_) => {}
+            Err(e) => {
+                warn!(error = %e, "invalid UTF-8 on stdin");
+                return Err(AcpError::parse_error());
+            }
+        }
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let raw: Value = serde_json::from_str(trimmed).map_err(|e| {
+            warn!(error = %e, "invalid JSON on stdin");
+            AcpError::parse_error()
+        })?;
+
+        let id = raw.get("id").map(request_id).transpose()?;
+        return Ok(Some((id, raw)));
+    }
+}
+
+fn request_id(v: &Value) -> Result<RequestId, AcpError> {
+    serde_json::from_value(v.clone()).map_err(|e| AcpError::invalid_request().data(json_str(&e)))
 }
 
 fn handle_request(srv: &mut Server, method: &str, id: RequestId, raw: &Value, params: &AcpParams) {
@@ -575,5 +594,70 @@ mod tests {
         let dir = StateDir::from_path(tmp.path().to_path_buf());
         let err = load_history_from(&dir, n00nId::generate()).unwrap_err();
         assert_eq!(err.code, AcpError::resource_not_found(None).code);
+    }
+
+    #[test]
+    fn request_id_accepts_valid_ids() {
+        assert_eq!(request_id(&Value::Null).unwrap(), RequestId::Null);
+        assert_eq!(
+            request_id(&Value::Number(1.into())).unwrap(),
+            RequestId::Number(1)
+        );
+        assert_eq!(
+            request_id(&Value::String("foo".into())).unwrap(),
+            RequestId::Str("foo".into())
+        );
+    }
+
+    #[test]
+    fn request_id_rejects_invalid_types_and_overflow() {
+        assert!(request_id(&Value::Array(vec![])).is_err());
+        assert!(request_id(&Value::Object(serde_json::Map::new())).is_err());
+
+        let overflow = serde_json::from_str::<Value>("10000000000000000000").unwrap();
+        assert!(request_id(&overflow).is_err());
+    }
+
+    #[test]
+    fn read_request_returns_none_on_eof() {
+        smol::block_on(async {
+            let mut reader = make_reader(b"");
+            assert!(read_request(&mut reader).await.unwrap().is_none());
+        });
+    }
+
+    #[test]
+    fn read_request_returns_parse_error_on_invalid_utf8() {
+        smol::block_on(async {
+            let mut reader = make_reader(b"\xff\xfe\n");
+            let err = read_request(&mut reader).await.unwrap_err();
+            assert_eq!(err.code, AcpError::parse_error().code);
+        });
+    }
+
+    #[test]
+    fn read_request_returns_invalid_request_on_overflow_id() {
+        smol::block_on(async {
+            let mut reader = make_reader(
+                b"{\"jsonrpc\":\"2.0\",\"id\":10000000000000000000,\"method\":\"initialize\"}\n",
+            );
+            let err = read_request(&mut reader).await.unwrap_err();
+            assert_eq!(err.code, AcpError::invalid_request().code);
+        });
+    }
+
+    #[test]
+    fn read_request_parses_null_id() {
+        smol::block_on(async {
+            let mut reader =
+                make_reader(b"{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"initialize\"}\n");
+            let (id, raw) = read_request(&mut reader).await.unwrap().unwrap();
+            assert_eq!(id, Some(RequestId::Null));
+            assert_eq!(raw.get("method").unwrap(), "initialize");
+        });
+    }
+
+    fn make_reader(data: &[u8]) -> smol::io::BufReader<smol::Unblock<std::io::Cursor<Vec<u8>>>> {
+        smol::io::BufReader::new(smol::Unblock::new(std::io::Cursor::new(data.to_vec())))
     }
 }
