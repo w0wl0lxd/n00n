@@ -147,6 +147,7 @@ fn is_secret_token(value: &str) -> bool {
         })
         || lower.starts_with("akia")
         || lower.starts_with("aiza")
+        || super::is_jwt_like(&lower)
 }
 
 fn normalize_key(value: &str) -> String {
