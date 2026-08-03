@@ -143,7 +143,7 @@ pub(super) async fn compact_history(
         compact_start,
         model,
         extra_context_tokens,
-    );
+    )?;
     Ok((usage, summary))
 }
 
@@ -154,7 +154,7 @@ fn finish_compact(
     compact_start: std::time::Instant,
     model: &Model,
     extra_context_tokens: u32,
-) -> TokenUsage {
+) -> Result<TokenUsage, AgentError> {
     let StreamResponse {
         message: summary,
         usage,
@@ -172,12 +172,12 @@ fn finish_compact(
     let context_size = crate::agent::run::estimate_message_tokens(history.as_slice(), &model.id)
         .saturating_add(extra_context_tokens);
 
-    let _ = event_tx.send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
+    event_tx.send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
         message: summary,
         usage,
         model: model.id.clone(),
         context_size: Some(context_size),
-    })));
+    })))?;
 
     let duration_ms =
         u64::try_from(compact_start.elapsed().as_millis()).unwrap_or_else(|_| u64::MAX);
