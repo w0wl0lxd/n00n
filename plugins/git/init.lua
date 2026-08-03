@@ -3,7 +3,7 @@ local ToolView = require("n00n.tool_view")
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Use **git** for local repository operations: status, log, diff, branches, blame.",
+  content = "- Use **git** for local repository operations: status, log, diff, branches, blame, add, commit, checkout.",
 })
 
 local function dispatch(input)
@@ -130,6 +130,39 @@ local function dispatch(input)
     return { llm_output = table.concat(lines, "\n") }
   end
 
+  if command == "add" then
+    if not input.files or #input.files == 0 then
+      return { llm_output = "error: files required for add", is_error = true }
+    end
+    local _, err = run_git_subcommand(input.files)
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
+    end
+    return { llm_output = "staged " .. tostring(#input.files) .. " file(s)" }
+  end
+
+  if command == "commit" then
+    if not input.message or input.message == "" then
+      return { llm_output = "error: message required for commit", is_error = true }
+    end
+    local result, err = run_git_subcommand({ "--message", input.message })
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
+    end
+    return { llm_output = "committed " .. result.commit_id:sub(1, 8) }
+  end
+
+  if command == "checkout" then
+    if not input.target or input.target == "" then
+      return { llm_output = "error: target required for checkout", is_error = true }
+    end
+    local _, err = run_git_subcommand({ input.target })
+    if err then
+      return { llm_output = "error: " .. tostring(err), is_error = true }
+    end
+    return { llm_output = "checked out " .. tostring(input.target) }
+  end
+
   return { llm_output = "error: unknown command: " .. tostring(command), is_error = true }
 end
 
@@ -137,7 +170,7 @@ n00n.api.register_tool({
   name = "git",
   kind = "read",
   description = [[
-Query local git repositories (status, log, diff, branches, blame) by spawning the n00n-git binary.
+Query and modify local git repositories (status, log, diff, branches, blame, add, commit, checkout) by spawning the n00n-git binary.
 Set N00N_GIT_BIN to override the binary path.
 ]],
   schema = {
@@ -145,7 +178,7 @@ Set N00N_GIT_BIN to override the binary path.
     properties = {
       command = {
         type = "string",
-        enum = { "status", "log", "diff", "branches", "blame" },
+        enum = { "status", "log", "diff", "branches", "blame", "add", "commit", "checkout" },
         required = true,
       },
       path = { type = "string" },
@@ -153,6 +186,12 @@ Set N00N_GIT_BIN to override the binary path.
       ref_a = { type = "string" },
       ref_b = { type = "string" },
       file = { type = "string" },
+      files = {
+        type = "array",
+        items = { type = "string" },
+      },
+      message = { type = "string" },
+      target = { type = "string" },
     },
   },
   header = function(input)
@@ -161,6 +200,8 @@ Set N00N_GIT_BIN to override the binary path.
       label = label .. " " .. input.ref_a .. " -> " .. input.ref_b
     elseif input.command == "blame" and input.file then
       label = label .. " " .. input.file
+    elseif input.command == "checkout" and input.target then
+      label = label .. " " .. input.target
     end
     local header = "git " .. label
     if input.path and input.path ~= "." then
