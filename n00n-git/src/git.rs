@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
@@ -68,74 +69,249 @@ pub struct BlameLine {
     pub time: i64,
 }
 
-/// Open a git repository at the given path.
-fn open_repo(path: &Path) -> Result<gix::Repository, GitError> {
-    gix::open(path).map_err(|e| GitError::RepoNotFound(format!("{}: {}", path.display(), e)))
-}
-
 /// Get the current git status of a repository.
+///
+/// Uses git CLI for status operations.
 #[instrument(skip(path))]
 pub fn status(path: &Path) -> Result<GitStatus, GitError> {
-    let _repo = open_repo(path)?;
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("status")
+        .arg("--porcelain")
+        .arg("-b")
+        .output()
+        .map_err(|e| GitError::GitOperation(format!("git status failed: {e}")))?;
 
-    Ok(GitStatus {
-        branch: Some("main".to_string()),
-        files: vec![],
-    })
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GitError::GitOperation(format!(
+            "git status failed: {stderr}"
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut branch = None;
+    let mut files = Vec::new();
+
+    for line in stdout.lines() {
+        if line.starts_with("## ") {
+            let rest = &line[3..];
+            if let Some(branch_name) = rest.split_whitespace().next() {
+                branch = Some(branch_name.to_string());
+            }
+        } else if !line.is_empty() {
+            let chars: Vec<char> = line.chars().collect();
+            let index_status = chars.get(0).unwrap_or(&' ');
+            let worktree_status = chars.get(1).unwrap_or(&' ');
+            let file_path = if chars.len() > 3 { &line[3..] } else { line };
+
+            let staged = *index_status != ' ';
+            let status = if *worktree_status != ' ' {
+                worktree_status.to_string()
+            } else {
+                index_status.to_string()
+            };
+
+            files.push(FileStatus {
+                path: file_path.to_string(),
+                status,
+                staged,
+            });
+        }
+    }
+
+    Ok(GitStatus { branch, files })
 }
 
 /// Get commit history for a repository.
+///
+/// Uses git CLI for log operations.
 #[instrument(skip(path))]
-pub fn log(path: &Path, _count: usize) -> Result<Vec<GitCommit>, GitError> {
-    let _repo = open_repo(path)?;
+pub fn log(path: &Path, count: usize) -> Result<Vec<GitCommit>, GitError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("log")
+        .arg(format!("-{}", count))
+        .arg("--pretty=format:%H|%an|%ae|%at|%s")
+        .output()
+        .map_err(|e| GitError::GitOperation(format!("git log failed: {e}")))?;
 
-    Ok(vec![GitCommit {
-        id: "0000000000000000000000000000000000000000".to_string(),
-        author: "placeholder".to_string(),
-        email: "placeholder@example.com".to_string(),
-        time: 0,
-        message: "placeholder commit".to_string(),
-    }])
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GitError::GitOperation(format!("git log failed: {stderr}")));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut commits = Vec::new();
+
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.split('|').collect();
+        if parts.len() >= 5 {
+            let time = parts[3].parse::<i64>().unwrap_or(0);
+            commits.push(GitCommit {
+                id: parts[0].to_string(),
+                author: parts[1].to_string(),
+                email: parts[2].to_string(),
+                time,
+                message: parts[4].to_string(),
+            });
+        }
+    }
+
+    Ok(commits)
 }
 
 /// Get diff between two references.
+///
+/// Uses git CLI for diff operations.
 #[instrument(skip(path))]
-pub fn diff(path: &Path, _ref_a: &str, _ref_b: &str) -> Result<GitDiff, GitError> {
-    let _repo = open_repo(path)?;
+pub fn diff(path: &Path, ref_a: &str, ref_b: &str) -> Result<GitDiff, GitError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("diff")
+        .arg("--numstat")
+        .arg(format!("{}..{}", ref_a, ref_b))
+        .output()
+        .map_err(|e| GitError::GitOperation(format!("git diff failed: {e}")))?;
 
-    Ok(GitDiff { files: vec![] })
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GitError::GitOperation(format!("git diff failed: {stderr}")));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut files = Vec::new();
+
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 3 {
+            let additions = parts[0].parse::<u64>().unwrap_or(0);
+            let deletions = parts[1].parse::<u64>().unwrap_or(0);
+            let path = parts[2].to_string();
+
+            files.push(FileDiff {
+                path,
+                additions,
+                deletions,
+                changes: Vec::new(),
+            });
+        }
+    }
+
+    Ok(GitDiff { files })
 }
 
 /// List branches in a repository.
+///
+/// Uses git CLI for branch operations.
 #[instrument(skip(path))]
 pub fn branches(path: &Path) -> Result<Vec<GitBranch>, GitError> {
-    let _repo = open_repo(path)?;
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("branch")
+        .arg("--format=%(refname:short)|%(objectname)")
+        .output()
+        .map_err(|e| GitError::GitOperation(format!("git branch failed: {e}")))?;
 
-    Ok(vec![GitBranch {
-        name: "main".to_string(),
-        head: "0000000000000000000000000000000000000000".to_string(),
-        is_current: true,
-    }])
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GitError::GitOperation(format!(
+            "git branch failed: {stderr}"
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut branches = Vec::new();
+
+    let current_output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("rev-parse")
+        .arg("--abbrev-ref")
+        .arg("HEAD")
+        .output()
+        .map_err(|e| GitError::GitOperation(format!("git rev-parse failed: {e}")))?;
+
+    let current_branch = if current_output.status.success() {
+        String::from_utf8_lossy(&current_output.stdout)
+            .trim()
+            .to_string()
+    } else {
+        String::new()
+    };
+
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.split('|').collect();
+        if parts.len() >= 2 {
+            let name = parts[0].to_string();
+            let head = parts[1].to_string();
+            let is_current = name == current_branch;
+
+            branches.push(GitBranch {
+                name,
+                head,
+                is_current,
+            });
+        }
+    }
+
+    Ok(branches)
 }
 
 /// Get blame information for a file.
+///
+/// Uses git CLI for blame operations.
 #[instrument(skip(path))]
 pub fn blame(path: &Path, file: &str) -> Result<GitBlame, GitError> {
-    let _repo = open_repo(path)?;
     let file_path = path.join(file);
 
-    let content = std::fs::read_to_string(&file_path)
+    let _content = std::fs::read_to_string(&file_path)
         .map_err(|e| GitError::FileNotFound(format!("{}: {}", file, e)))?;
 
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("blame")
+        .arg("--line-porcelain")
+        .arg(file)
+        .output()
+        .map_err(|e| GitError::GitOperation(format!("git blame failed: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GitError::GitOperation(format!(
+            "git blame failed: {stderr}"
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
     let mut lines = Vec::new();
-    for (i, line) in content.lines().enumerate() {
-        lines.push(BlameLine {
-            line_number: (i + 1) as u32,
-            content: line.to_string(),
-            commit_id: "unknown".to_string(),
-            author: "unknown".to_string(),
-            time: 0,
-        });
+    let mut current_commit_id = String::new();
+    let mut current_author = String::new();
+    let mut current_time = 0i64;
+
+    for line in stdout.lines() {
+        if line.starts_with('\t') {
+            let content = line[1..].to_string();
+            let line_number = (lines.len() + 1) as u32;
+            lines.push(BlameLine {
+                line_number,
+                content,
+                commit_id: current_commit_id.clone(),
+                author: current_author.clone(),
+                time: current_time,
+            });
+        } else if let Some(rest) = line.strip_prefix("author ") {
+            current_author = rest.to_string();
+        } else if let Some(rest) = line.strip_prefix("author-time ") {
+            current_time = rest.parse().unwrap_or(0);
+        } else if !line.contains(' ') && !line.is_empty() {
+            current_commit_id = line.split_whitespace().next().unwrap_or("").to_string();
+        }
     }
 
     Ok(GitBlame { lines })
