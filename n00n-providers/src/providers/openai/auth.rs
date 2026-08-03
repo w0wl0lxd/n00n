@@ -805,6 +805,15 @@ pub fn is_oauth(dir: &StateDir) -> bool {
     load_tokens(dir, PROVIDER).is_some()
 }
 
+/// Checks for Coding Plan authentication, importing Codex CLI credentials when available.
+///
+/// # Errors
+///
+/// Returns an error if credential migration or storage access fails.
+pub fn coding_plan_available(dir: &StateDir) -> Result<bool, AgentError> {
+    Ok(ensure_tokens(dir)?.is_some())
+}
+
 fn ensure_tokens(dir: &StateDir) -> Result<Option<OAuthTokens>, AgentError> {
     if let Some(tokens) = load_tokens(dir, PROVIDER) {
         return Ok(Some(tokens));
@@ -1094,6 +1103,17 @@ mod tests {
             expires: tokens.expires,
             account_id: tokens.account_id.clone(),
         }
+    }
+
+    #[test]
+    fn coding_plan_availability_uses_supplied_storage() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = StateDir::from_path(temp.path().to_path_buf());
+        assert!(!coding_plan_available(&dir).unwrap());
+
+        save_tokens(&dir, PROVIDER, &test_tokens("access", "refresh", 0)).unwrap();
+
+        assert!(coding_plan_available(&dir).unwrap());
     }
 
     #[test]
