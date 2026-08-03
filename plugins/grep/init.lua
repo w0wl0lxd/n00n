@@ -24,6 +24,20 @@ local function unquote(s)
   return s
 end
 
+local function format_input_path(path)
+  if type(path) == "table" then
+    local paths = {}
+    for _, item in ipairs(path) do
+      paths[#paths + 1] = type(item) == "string" and shorten_path(item) or tostring(item)
+    end
+    return table.concat(paths, ", ")
+  end
+  if type(path) == "string" then
+    return shorten_path(path)
+  end
+  return tostring(path)
+end
+
 local function has_context(groups)
   for _, group in ipairs(groups) do
     if #group.lines > 1 then
@@ -235,7 +249,7 @@ n00n.api.register_tool({
       spans[#spans + 1] = { " [" .. input.include .. "]", "dim" }
     end
     if input.path then
-      spans[#spans + 1] = { " " .. shorten_path(input.path), "path" }
+      spans[#spans + 1] = { " " .. format_input_path(input.path), "path" }
     end
     buf:line(spans)
     return buf
