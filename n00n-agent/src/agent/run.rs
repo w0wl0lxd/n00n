@@ -5,8 +5,9 @@ use tracing::{error, info, warn};
 
 use n00n_providers::provider::Provider;
 use n00n_providers::{
-    ContentBlock, HistoryReplayReason, Message, Model, OpenAiOptions, RequestDeliveryMetadata,
-    RequestDeliveryPhase, RequestOptions, Role, StopReason, StreamResponse, System, TokenUsage,
+    ContentBlock, HistoryReplayReason, Message, Model, ModelResolver, OpenAiOptions,
+    RequestDeliveryMetadata, RequestDeliveryPhase, RequestOptions, Role, StopReason,
+    StreamResponse, System, TokenUsage,
 };
 
 use super::compaction::{self, CONTINUE_AFTER_COMPACT};
@@ -61,8 +62,12 @@ const CACHE_BREAKPOINTS_MIN: usize = 1;
 fn remove_fusion_delegate_tool(tools: &mut Value) {
     if let Some(definitions) = tools.as_array_mut() {
         definitions.retain(|definition| {
-            definition.get("name").and_then(Value::as_str)
-                != Some(crate::fusion::FUSION_DELEGATE_TOOL)
+            definition
+                .get("name")
+                .and_then(Value::as_str)
+                .is_none_or(|name| {
+                    crate::tools::canonical_tool_name(name) != crate::fusion::FUSION_DELEGATE_TOOL
+                })
         });
     }
 }
@@ -92,15 +97,16 @@ fn filter_tools_for_mode(tools: &mut Value, mode: &AgentMode) {
             let Some(name) = definition.get("name").and_then(Value::as_str) else {
                 return true;
             };
+            let canonical_name = crate::tools::canonical_tool_name(name);
             // Bash is the only execute-kind tool allowed in plan mode, and only
             // for commands that pass the read-only classifier.
-            if name == crate::tools::BASH_TOOL_NAME {
+            if canonical_name == crate::tools::BASH_TOOL_NAME {
                 return true;
             }
             // Keep the historical name-based guard and extend it to any tool
             // whose kind is "execute", so a renamed code_execution tool is
             // also filtered out.
-            if name == crate::tools::CODE_EXECUTION_TOOL_NAME {
+            if canonical_name == crate::tools::CODE_EXECUTION_TOOL_NAME {
                 return false;
             }
             // Only remove tools we can positively identify as execute-kind.
@@ -143,7 +149,7 @@ pub fn resolve_compaction_model(
 ) -> (Arc<dyn Provider>, Model) {
     if let Ok(registry) = n00n_providers::model_registry::model_registry().read()
         && let Some(spec) = registry.spec_for_tier_any(n00n_providers::ModelTier::Compaction)
-        && let Ok(mut m) = Model::from_spec(&spec)
+        && let Ok(mut m) = ModelResolver::current().resolve(&spec)
         && let Ok(p) = n00n_providers::provider::from_model_with_openai_options(
             &mut m,
             timeouts,
@@ -1061,8 +1067,8 @@ impl<'h> Agent<'h> {
     fn start_fusion_delegate(&mut self, message: &Message) -> Result<(), AgentError> {
         let Some((_, _, input)) = message.tool_uses().find(|(_, name, _)| {
             let name = *name;
-            name.strip_prefix("functions.").map_or(name, |value| value)
-                == crate::fusion::FUSION_DELEGATE_TOOL
+            let normalized = name.strip_prefix("functions.").map_or(name, |value| value);
+            crate::tools::canonical_tool_name(normalized) == crate::fusion::FUSION_DELEGATE_TOOL
         }) else {
             return Ok(());
         };

@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::mem;
 use std::sync::Arc;
 
@@ -16,103 +17,206 @@ use ratatui::widgets::{Clear, Paragraph};
 use crate::cast;
 use crate::theme;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandCategory {
+    Session,
+    Model,
+    View,
+    Settings,
+    Mode,
+    Action,
+}
+
+impl CommandCategory {
+    pub const ALL: [Self; 6] = [
+        Self::Session,
+        Self::Model,
+        Self::View,
+        Self::Settings,
+        Self::Mode,
+        Self::Action,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Session => "Session",
+            Self::Model => "Model",
+            Self::View => "View",
+            Self::Settings => "Settings",
+            Self::Mode => "Mode",
+            Self::Action => "Action",
+        }
+    }
+}
+
 pub struct BuiltinCommand {
     pub name: &'static str,
+    pub dispatch_name: &'static str,
+    pub aliases: &'static [&'static str],
+    pub category: CommandCategory,
     pub description: &'static str,
     pub max_args: usize,
 }
 
+macro_rules! command {
+    ($name:literal, $dispatch:literal, [$($alias:literal),*], $category:ident, $description:literal, $max:expr) => {
+        BuiltinCommand {
+            name: $name,
+            dispatch_name: $dispatch,
+            aliases: &[$($alias),*],
+            category: CommandCategory::$category,
+            description: $description,
+            max_args: $max,
+        }
+    };
+}
+
 pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
-    BuiltinCommand {
-        name: "/tasks",
-        description: "Browse running and completed agents and teams",
-        max_args: 0,
-    },
-    BuiltinCommand {
-        name: "/compact",
-        description: "Summarize and compact conversation history",
-        max_args: 0,
-    },
-    BuiltinCommand {
-        name: "/new",
-        description: "Start a new session",
-        max_args: 0,
-    },
-    BuiltinCommand {
-        name: "/help",
-        description: "Show keybindings",
-        max_args: 0,
-    },
-    BuiltinCommand {
-        name: "/usage",
-        description: "Show token usage breakdown",
-        max_args: 0,
-    },
-    BuiltinCommand {
-        name: "/queue",
-        description: "Remove items from queue",
-        max_args: 0,
-    },
-    BuiltinCommand {
-        name: "/model",
-        description: "Switch model",
-        max_args: 0,
-    },
-    BuiltinCommand {
-        name: "/theme",
-        description: "Switch color theme",
-        max_args: 0,
-    },
-    BuiltinCommand {
-        name: "/mcp",
-        description: "Configure MCP servers",
-        max_args: 0,
-    },
-    BuiltinCommand {
-        name: "/login",
-        description: "Authenticate with an LLM provider",
-        max_args: 0,
-    },
-    BuiltinCommand {
-        name: "/cd",
-        description: "Change working directory",
-        max_args: 1,
-    },
-    BuiltinCommand {
-        name: "/btw",
-        description: "Ask a quick question (no tools, no history pollution)",
-        max_args: usize::MAX,
-    },
-    BuiltinCommand {
-        name: "/yolo",
-        description: "Toggle YOLO mode (skip all permission prompts)",
-        max_args: 0,
-    },
-    BuiltinCommand {
-        name: "/thinking",
-        description: "Toggle extended thinking (off, adaptive, effort level, or budget)",
-        max_args: 1,
-    },
-    BuiltinCommand {
-        name: "/fast",
-        description: "Toggle Anthropic fast mode (Opus only)",
-        max_args: 0,
-    },
-    BuiltinCommand {
-        name: "/workflow",
-        description: "Toggle workflow mode (task callable inside code_execution)",
-        max_args: 0,
-    },
-    BuiltinCommand {
-        name: "/exit",
-        description: "Exit the application",
-        max_args: 0,
-    },
-    BuiltinCommand {
-        name: "/reload",
-        description: "Reload plugins and config",
-        max_args: 0,
-    },
+    command!(
+        "/session:new",
+        "/new",
+        ["/new"],
+        Session,
+        "Start a new session",
+        0
+    ),
+    command!(
+        "/session:compact",
+        "/compact",
+        ["/compact"],
+        Session,
+        "Compact conversation history",
+        0
+    ),
+    command!("/session:exit", "/exit", ["/exit"], Session, "Exit n00n", 0),
+    command!(
+        "/session:reload",
+        "/reload",
+        ["/reload"],
+        Session,
+        "Reload plugins and configuration",
+        0
+    ),
+    command!(
+        "/model:pick",
+        "/model",
+        ["/model"],
+        Model,
+        "Switch model",
+        0
+    ),
+    command!(
+        "/view:tasks",
+        "/tasks",
+        ["/tasks"],
+        View,
+        "View running and completed work",
+        0
+    ),
+    command!(
+        "/view:usage",
+        "/usage",
+        ["/usage"],
+        View,
+        "View token usage",
+        0
+    ),
+    command!(
+        "/settings:theme",
+        "/theme",
+        ["/theme"],
+        Settings,
+        "Switch color theme",
+        0
+    ),
+    command!(
+        "/settings:mcp",
+        "/mcp",
+        ["/mcp"],
+        Settings,
+        "Configure MCP servers",
+        0
+    ),
+    command!(
+        "/settings:login",
+        "/login",
+        ["/login"],
+        Settings,
+        "Authenticate with a provider",
+        0
+    ),
+    command!(
+        "/mode:no-confirm",
+        "/yolo",
+        ["/yolo"],
+        Mode,
+        "Toggle permission confirmations",
+        0
+    ),
+    command!(
+        "/mode:fast",
+        "/fast",
+        ["/fast"],
+        Mode,
+        "Toggle fast mode when supported",
+        0
+    ),
+    command!(
+        "/mode:workflow",
+        "/workflow",
+        ["/workflow"],
+        Mode,
+        "Toggle workflow mode",
+        0
+    ),
+    command!(
+        "/mode:thinking",
+        "/thinking",
+        ["/thinking"],
+        Mode,
+        "Set thinking level",
+        1
+    ),
+    command!(
+        "/action:queue",
+        "/queue",
+        ["/queue"],
+        Action,
+        "Manage queued prompts",
+        0
+    ),
+    command!(
+        "/action:cd",
+        "/cd",
+        ["/cd"],
+        Action,
+        "Change working directory",
+        1
+    ),
+    command!(
+        "/action:ask",
+        "/btw",
+        ["/btw"],
+        Action,
+        "Ask a quick question without tools",
+        usize::MAX
+    ),
+    command!(
+        "/action:help",
+        "/help",
+        ["/help"],
+        Action,
+        "Show context-aware help",
+        0
+    ),
+    command!(
+        "/welcome",
+        "/welcome",
+        [],
+        Action,
+        "Show the welcome guide",
+        0
+    ),
 ];
 
 pub struct ParsedCommand {
@@ -201,8 +305,13 @@ impl CommandPalette {
         let injector = nucleo.injector();
 
         for cmd in BUILTIN_COMMANDS {
+            let aliases = cmd.aliases.join(" ");
             let item = CommandItem {
-                name: cmd.name.to_string(),
+                name: if aliases.is_empty() {
+                    cmd.name.to_owned()
+                } else {
+                    format!("{} {aliases}", cmd.name)
+                },
                 max_args: cmd.max_args,
                 command_type: CommandType::Builtin(cmd),
             };
@@ -423,18 +532,23 @@ impl CommandPalette {
         }
     }
 
-    fn item_description(&self, m: &Match) -> &str {
+    fn item_description<'a>(&'a self, m: &'a Match) -> Cow<'a, str> {
         match &m.command_type {
-            CommandType::Builtin(cmd) => cmd.description,
-            CommandType::Custom(i) => &self.custom[*i].description,
-            CommandType::McpPrompt(i) => &self.mcp_prompts[*i].description,
-            CommandType::Lua(i) => &self.lua_commands[*i].description,
+            CommandType::Builtin(cmd) => {
+                Cow::Owned(format!("{} · {}", cmd.category.label(), cmd.description))
+            }
+            CommandType::Custom(i) => Cow::Borrowed(&self.custom[*i].description),
+            CommandType::McpPrompt(i) => Cow::Borrowed(&self.mcp_prompts[*i].description),
+            CommandType::Lua(i) => Cow::Borrowed(&self.lua_commands[*i].description),
         }
     }
 
     pub fn confirm(&self, input: &str) -> Option<ParsedCommand> {
         let item = self.filtered.get(self.selected)?;
-        let name = self.item_name(item);
+        let name = match &item.command_type {
+            CommandType::Builtin(command) => command.dispatch_name.to_owned(),
+            _ => self.item_name(item),
+        };
         let args = input
             .strip_prefix('/')
             .and_then(|s| s.split_once(char::is_whitespace))
@@ -609,6 +723,27 @@ mod tests {
     }
 
     #[test]
+    fn builtin_command_names_and_aliases_are_unique() {
+        let mut names = std::collections::HashSet::new();
+        for command in BUILTIN_COMMANDS {
+            assert!(
+                names.insert(command.name),
+                "duplicate command: {}",
+                command.name
+            );
+            for alias in command.aliases {
+                assert!(names.insert(*alias), "duplicate command alias: {alias}");
+            }
+            assert!(
+                command.dispatch_name == command.name
+                    || command.aliases.contains(&command.dispatch_name),
+                "dispatch target is not registered for {}",
+                command.name
+            );
+        }
+    }
+
+    #[test]
     fn slash_shows_builtins_plus_extras() {
         let builtin_count = synced("/").filtered.len();
         assert!(builtin_count > 0);
@@ -673,7 +808,7 @@ mod tests {
         assert!(p.is_active());
         assert_eq!(p.filtered.len(), 1);
         let name = p.item_name(&p.filtered[0]);
-        assert_eq!(name, "/cd");
+        assert_eq!(name, "/action:cd");
     }
 
     #[test_case("/compact ", false ; "zero_arg_cmd_with_space")]
@@ -700,8 +835,10 @@ mod tests {
         assert!(!p.is_active());
     }
 
-    #[test_case("/cd", "/cd", ""              ; "no_args")]
-    #[test_case("/cd ~/foo", "/cd", "~/foo"   ; "with_args")]
+    #[test_case("/cd", "/cd", ""              ; "legacy_no_args")]
+    #[test_case("/action:cd", "/cd", ""       ; "canonical_no_args")]
+    #[test_case("/cd ~/foo", "/cd", "~/foo"   ; "legacy_with_args")]
+    #[test_case("/action:cd ~/foo", "/cd", "~/foo" ; "canonical_with_args")]
     #[test_case("/CD ~/foo", "/cd", "~/foo"   ; "case_insensitive")]
     #[test_case("/compact", "/compact", ""    ; "other_command")]
     #[cfg_attr(not(target_os = "windows"), test_case("/cmp", "/compact", ""    ; "fuzzy-match-1"))]
@@ -772,11 +909,11 @@ mod tests {
     fn filter_mcp_prompt_by_substring() {
         let p = synced_with_prompts("/code");
         assert!(p.is_active());
-        assert_eq!(p.filtered.len(), 1);
-        assert!(matches!(
-            p.filtered[0].command_type,
-            CommandType::McpPrompt(0)
-        ));
+        assert!(
+            p.filtered
+                .iter()
+                .any(|item| matches!(item.command_type, CommandType::McpPrompt(0)))
+        );
     }
 
     #[test]
@@ -870,9 +1007,9 @@ mod tests {
         }
     }
 
-    #[test_case("/cmp", "/compact" ; "compact_fuzzy")]
-    #[test_case("/new", "/new" ; "new_exact")]
-    #[test_case("/tsk", "/tasks" ; "tasks_fuzzy")]
+    #[test_case("/cmp", "/session:compact" ; "compact_fuzzy")]
+    #[test_case("/new", "/session:new" ; "new_alias")]
+    #[test_case("/tsk", "/view:tasks" ; "tasks_fuzzy")]
     fn nucleo_highlights_matching_indices(input: &str, expected_cmd: &str) {
         let p = synced(input);
         assert!(p.is_active(), "Input '{input}' should activate palette");

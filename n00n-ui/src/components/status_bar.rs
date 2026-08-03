@@ -18,8 +18,8 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-const FAST_LABEL: &str = " [fast]";
-const WORKFLOW_LABEL: &str = " [workflow]";
+const FAST_LABEL: &str = " F";
+const WORKFLOW_LABEL: &str = " W";
 const CACHE_ICON: &str = "⧉";
 const SECONDS_PER_MINUTE: u64 = 60;
 const SECONDS_PER_HOUR: u64 = 60 * SECONDS_PER_MINUTE;
@@ -187,17 +187,22 @@ impl StatusBar {
                 0
             };
 
+            if area.width >= 80 {
+                right_spans.push(Span::styled(
+                    self.cwd_branch.clone(),
+                    theme::current().status_dim,
+                ));
+                right_spans.push(Span::raw("  "));
+            }
+            let model_limit = if area.width >= 120 { 32 } else { 18 };
             right_spans.push(Span::styled(
-                self.cwd_branch.clone(),
-                theme::current().status_dim,
-            ));
-            right_spans.push(Span::raw("  "));
-            right_spans.push(Span::styled(
-                ctx.model_id.to_string(),
+                truncate_label(ctx.model_id, model_limit),
                 theme::current().status_dim,
             ));
 
-            if let Some(ref label) = ctx.thinking_label {
+            if area.width >= 70
+                && let Some(ref label) = ctx.thinking_label
+            {
                 right_spans.push(Span::styled(
                     format!(" [{label}]"),
                     theme::current().status_dim,
@@ -211,15 +216,18 @@ impl StatusBar {
                 right_spans.push(Span::styled(WORKFLOW_LABEL, theme::current().status_dim));
             }
 
-            if let (Some(health), Some(valid_until)) = (ctx.cache_health, ctx.cache_valid_until) {
+            if area.width >= 70
+                && let (Some(health), Some(valid_until)) = (ctx.cache_health, ctx.cache_valid_until)
+            {
                 let remaining = valid_until.saturating_duration_since(CacheInstant::now());
                 if !remaining.is_zero() {
                     let label = format_cache_remaining(remaining);
-                    let color = cache_color(remaining, health.ttl_seconds);
-                    right_spans.push(Span::styled(
-                        format!(" {CACHE_ICON} {label}"),
-                        Style::new().fg(color),
-                    ));
+                    let style = if theme::no_color() {
+                        Style::default()
+                    } else {
+                        Style::new().fg(cache_color(remaining, health.ttl_seconds))
+                    };
+                    right_spans.push(Span::styled(format!(" {CACHE_ICON} {label}"), style));
                 }
             }
 
@@ -264,7 +272,7 @@ impl StatusBar {
             let separator = if index == 0 { "  " } else { " · " };
             let span = Span::styled(
                 format!("{separator}{part}"),
-                Style::new().fg(theme::current().foreground),
+                theme::semantic_style(theme::SemanticRole::Text),
             );
             let candidate_width = right_width.saturating_add(cast::usize_to_u16(span.width()));
             if candidate_width > max_right_width {
@@ -284,6 +292,14 @@ impl StatusBar {
             right_area,
         );
     }
+}
+
+fn truncate_label(label: &str, max_chars: usize) -> Cow<'_, str> {
+    if label.chars().count() <= max_chars {
+        return Cow::Borrowed(label);
+    }
+    let prefix = label.chars().take(max_chars.saturating_sub(1));
+    Cow::Owned(prefix.chain(std::iter::once('…')).collect())
 }
 
 fn fusion_phase_label(phase: FusionPhase) -> Option<&'static str> {
@@ -397,6 +413,13 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
     use test_case::test_case;
+
+    #[test_case("short", 8, "short" ; "unchanged")]
+    #[test_case("anthropic/claude", 10, "anthropic…" ; "truncated")]
+    #[test_case("abc", 1, "…" ; "one_character")]
+    fn label_truncation(input: &str, width: usize, expected: &str) {
+        assert_eq!(truncate_label(input, width), expected);
+    }
 
     #[test_case(FusionPhase::Planning, Some("planning") ; "planning")]
     #[test_case(FusionPhase::Executing, Some("executing") ; "executing")]

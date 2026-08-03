@@ -1,6 +1,9 @@
 use std::sync::atomic::Ordering;
 
+use crate::cast;
 use crate::components::Overlay;
+use crate::components::activity_shelf::{self, Activity};
+use crate::components::footer;
 #[cfg(test)]
 use crate::components::keybindings::KeybindContext;
 use crate::components::queue_panel;
@@ -21,6 +24,8 @@ struct ViewLayout {
     msg_area: Rect,
     bottom_area: Rect,
     status_area: Rect,
+    footer_area: Rect,
+    activity_area: Rect,
     queue_area: Rect,
     panel_windows: Vec<(usize, Rect)>,
     input_area: Rect,
@@ -37,6 +42,7 @@ impl App {
         Self::render_background(frame);
         self.render_messages(frame, &layout, render_chat);
         self.render_bottom_panel(frame, &layout);
+        footer::view(frame, layout.footer_area, self.any_overlay_open());
         self.render_splits(frame, &layout);
         let mut overlay_rect = self.render_picker_overlays(frame, &layout);
         self.render_status_bar(frame, layout.status_area, render_chat);
@@ -50,8 +56,12 @@ impl App {
 
         // Carve the full-width status bar first so the split carving below only
         // ever deals with the content region above it.
-        let [content, status_area] =
-            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+        let [content, footer_area, status_area] = Layout::vertical([
+            Constraint::Min(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(area);
 
         // The permission prompt owns the bottom area, so drop any `below` split
         // here at the source. That keeps "prompt wins bottom" in one filter
@@ -68,6 +78,12 @@ impl App {
         let below_active = splits.rect(Split::Below).is_some();
         let bottom_takeover = form_visible || below_active;
         let max_bottom = inner.height.saturating_sub(MIN_CHAT_ROWS);
+        let activity_count = self.chats.iter().filter(|chat| chat.is_working()).count();
+        let activity_height = if !bottom_takeover && self.is_main_chat() && activity_count > 0 {
+            cast::usize_to_u16(activity_count.clamp(1, 4))
+        } else {
+            0
+        };
         let bottom_height = if permission_open {
             self.permission_prompt.height(inner.width).min(max_bottom)
         } else if below_active {
@@ -78,6 +94,7 @@ impl App {
             let panel_h: u16 = self.float_mgr.panel_reqs().iter().map(|(_, h)| *h).sum();
             queue_panel::height(self.queue.panel_len())
                 + panel_h
+                + activity_height
                 + self.input_box.height(inner.width)
         } else {
             let panel_h: u16 = self.float_mgr.panel_reqs().iter().map(|(_, h)| *h).sum();
@@ -105,6 +122,7 @@ impl App {
         for &(_, h) in &panel_reqs {
             constraints.push(Constraint::Length(h));
         }
+        constraints.push(Constraint::Length(activity_height));
         constraints.push(Constraint::Min(1));
 
         let areas = Layout::vertical(constraints).split(bottom_area);
@@ -114,12 +132,15 @@ impl App {
             .enumerate()
             .map(|(i, &(idx, _))| (idx, areas[1 + i]))
             .collect();
+        let activity_area = areas[areas.len() - 2];
         let input_area = areas[areas.len() - 1];
 
         ViewLayout {
             msg_area,
             bottom_area,
             status_area,
+            footer_area,
+            activity_area,
             queue_area,
             panel_windows,
             input_area,
@@ -139,9 +160,14 @@ impl App {
     }
 
     fn render_background(frame: &mut Frame) {
-        let bg =
-            Block::default().style(ratatui::style::Style::new().bg(theme::current().background));
-        bg.render(frame.area(), frame.buffer_mut());
+        let style = if theme::no_color() {
+            ratatui::style::Style::default()
+        } else {
+            ratatui::style::Style::new().bg(theme::current().background)
+        };
+        Block::default()
+            .style(style)
+            .render(frame.area(), frame.buffer_mut());
     }
 
     fn render_messages(&mut self, frame: &mut Frame, layout: &ViewLayout, render_chat: usize) {
@@ -197,6 +223,16 @@ impl App {
             for &(idx, rect) in &layout.panel_windows {
                 self.float_mgr.view_panel(frame, idx, rect);
             }
+            let activities = self
+                .chats
+                .iter()
+                .filter(|chat| chat.is_working())
+                .map(|chat| Activity {
+                    name: &chat.name,
+                    in_progress: chat.in_progress_count(),
+                })
+                .collect::<Vec<_>>();
+            activity_shelf::view(frame, layout.activity_area, &activities);
             let streaming = self.status == Status::Streaming;
             let panel_hint = (self.state.mode == Mode::Plan)
                 .then(|| self.plan_form.hint_line())

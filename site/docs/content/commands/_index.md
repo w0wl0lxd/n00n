@@ -11,29 +11,59 @@ Type `/` in the input box to open the command palette.
 
 ## Built-in commands
 
+n00n has 23 built-in commands. Project, user, and MCP prompt commands are separate.
+
+### Session
+
 | Command | Description |
 |---------|-------------|
-| `/tasks` | Browse running and completed agents and teams |
-| `/compact` | Summarize and compact conversation history |
-| `/new` | Start a new session |
-| `/help` | Show keybindings |
-| `/usage` | Show token usage breakdown |
-| `/queue` | Remove items from queue |
-| `/model` | Switch model |
-| `/theme` | Switch color theme |
-| `/mcp` | Configure MCP servers |
-| `/login` | Authenticate with an LLM provider |
-| `/cd` | Change working directory |
-| `/btw` | Ask a quick question (no tools, no history pollution) |
-| `/yolo` | Toggle YOLO mode (skip all permission prompts) |
-| `/thinking` | Toggle extended thinking (off, adaptive, effort level, or budget) |
-| `/fast` | Toggle Anthropic fast mode (Opus only) |
-| `/workflow` | Toggle workflow mode (task callable inside code_execution) |
-| `/exit` | Exit the application |
-| `/reload` | Reload plugins and config |
-| `/memory` | View, edit, and delete memory files |
+| `/session:new` | Start a new session |
+| `/session:compact` | Compact conversation history |
+| `/session:exit` | Exit n00n |
+| `/session:reload` | Reload plugins and configuration |
 | `/rename` | Rename the current session |
 | `/sessions` | Browse and switch sessions |
+
+### Model
+
+| Command | Description |
+|---------|-------------|
+| `/model:pick` | Switch model |
+
+### View
+
+| Command | Description |
+|---------|-------------|
+| `/view:tasks` | View running and completed work |
+| `/view:usage` | View token usage |
+| `/memory` | View, edit, and delete memory files |
+
+### Settings
+
+| Command | Description |
+|---------|-------------|
+| `/settings:theme` | Switch color theme |
+| `/settings:mcp` | Configure MCP servers |
+| `/settings:login` | Authenticate with a provider |
+
+### Mode
+
+| Command | Description |
+|---------|-------------|
+| `/mode:no-confirm` | Toggle permission confirmations |
+| `/mode:fast` | Toggle fast mode when supported |
+| `/mode:workflow` | Toggle workflow mode |
+| `/mode:thinking` | Set thinking level |
+
+### Action
+
+| Command | Description |
+|---------|-------------|
+| `/action:queue` | Manage queued prompts |
+| `/action:cd` | Change working directory |
+| `/action:ask` | Ask a quick question without tools |
+| `/action:help` | Show context-aware help |
+| `/welcome` | Show the welcome guide |
 | `/team` | Configure and run an agent team for a goal |
 
 ## Sessions

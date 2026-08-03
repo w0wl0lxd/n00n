@@ -39,9 +39,11 @@ impl SessionState {
     ) -> Self {
         let model = match ModelResolver::current().resolve(&session.model) {
             Ok(model) => model,
-            Err(_) => {
+            Err(error) => {
                 tracing::warn!(
-                    "saved session model is no longer configured or available; using current model"
+                    saved_model = %session.model,
+                    %error,
+                    "saved session model is unavailable; using current model"
                 );
                 session.model = fallback_model.spec();
                 fallback_model.clone()

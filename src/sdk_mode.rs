@@ -470,14 +470,10 @@ pub fn run(params: SdkParams) -> Result<()> {
         fast,
         workflow,
     } = params;
-    cli.warn_ignored_flags();
-    let mut config = Arc::unwrap_or_clone(config);
-    if let Some(max) = cli.max_turns {
-        config.max_turns = Some(max);
-    }
-    let config = Arc::new(config);
-    let permission_mode =
-        PermissionMode::resolve(cli.permission_mode.as_deref(), cli.permission_flags.yolo);
+    let permission_mode = PermissionMode::resolve(
+        cli.permission_mode.as_deref(),
+        cli.permission_flags.no_confirm(),
+    );
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let working_dir = cwd.to_string_lossy().into_owned();
@@ -902,15 +898,23 @@ fn handle_control_request(
                 ),
             }
         }
-        "set_model" => {
-            if let Some(model) = resolve_set_model(cr.request.extra.get("model"), startup_model) {
-                let _ = handle.model_tx.send(model.clone());
-                if let Ok(mut shared) = shared.lock() {
-                    shared.model = model;
+        "set_model" => match resolve_set_model(cr.request.extra.get("model"), startup_model) {
+            Ok(model) => {
+                if handle.model_tx.send(model.clone()).is_err() {
+                    writer.emit_control_response(
+                        &cr.request_id,
+                        None,
+                        Some("session ended before the model could be changed".to_string()),
+                    )
+                } else {
+                    if let Ok(mut shared) = shared.lock() {
+                        shared.model = model;
+                    }
+                    writer.emit_control_response(&cr.request_id, ok, None)
                 }
             }
-            writer.emit_control_response(&cr.request_id, ok, None)
-        }
+            Err(error) => writer.emit_control_response(&cr.request_id, None, Some(error)),
+        },
         other => writer.emit_control_response(
             &cr.request_id,
             None,
@@ -919,29 +923,16 @@ fn handle_control_request(
     }
 }
 
-fn resolve_set_model(model_val: Option<&Value>, startup_model: &Model) -> Option<Model> {
-    let resolver = ModelResolver::current();
-    match model_val? {
-        Value::Null => match resolver.resolve(&startup_model.spec()) {
-            Ok(model) => Some(model),
-            Err(_) => {
-                eprintln!(
-                    "warning: startup model is no longer configured or available; keeping current model"
-                );
-                None
-            }
-        },
-        Value::String(model_str) => match resolver.resolve(model_str) {
-            Ok(model) => Some(model),
-            Err(_) => {
-                eprintln!(
-                    "warning: requested model is not configured or available; keeping current model"
-                );
-                None
-            }
-        },
-        _ => None,
-    }
+fn resolve_set_model(model_val: Option<&Value>, current_model: &Model) -> Result<Model, String> {
+    let requested = match model_val {
+        Some(Value::Null) => return Ok(current_model.clone()),
+        Some(Value::String(model)) => model.clone(),
+        Some(_) => return Err("model must be a string or null".to_string()),
+        None => return Err("model is required".to_string()),
+    };
+    ModelResolver::current()
+        .resolve(&requested)
+        .map_err(|error| format!("model '{requested}' is unavailable: {error}"))
 }
 
 fn decode_permission_response(data: &Value) -> PermissionAnswer {
@@ -1602,6 +1593,13 @@ mod tests {
         let startup = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
         let result = resolve_set_model(Some(&Value::Null), &startup).unwrap();
         assert_eq!(result.id, startup.id);
+    }
+
+    #[test]
+    fn resolve_set_model_rejects_invalid_value() {
+        let startup = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
+        let error = resolve_set_model(Some(&Value::Bool(true)), &startup).unwrap_err();
+        assert_eq!(error, "model must be a string or null");
     }
 
     #[test]

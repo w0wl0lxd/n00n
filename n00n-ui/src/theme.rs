@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::env;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 
@@ -290,6 +291,47 @@ fn read_theme_name() -> Option<String> {
 
 pub fn current_theme_name() -> String {
     read_theme_name().unwrap_or_else(|| DEFAULT_THEME.to_owned())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SemanticRole {
+    Text,
+    Muted,
+    Accent,
+    Success,
+    Error,
+    Activity,
+}
+
+#[must_use]
+pub fn no_color() -> bool {
+    env::var_os("NO_COLOR").is_some_and(|value| value != "0")
+}
+
+#[must_use]
+pub fn high_contrast() -> bool {
+    env::var_os("N00N_HIGH_CONTRAST").is_some_and(|value| value != "0")
+}
+
+#[must_use]
+pub fn semantic_style(role: SemanticRole) -> Style {
+    if no_color() {
+        return Style::default();
+    }
+    let theme = current();
+    let style = match role {
+        SemanticRole::Text => Style::new().fg(theme.foreground),
+        SemanticRole::Muted => theme.status_dim,
+        SemanticRole::Accent => theme.accent,
+        SemanticRole::Success => theme.tool_success,
+        SemanticRole::Error => theme.tool_error,
+        SemanticRole::Activity => theme.status_notice,
+    };
+    if high_contrast() {
+        style.add_modifier(Modifier::BOLD)
+    } else {
+        style
+    }
 }
 
 pub fn style_by_name(name: &str) -> Style {
@@ -644,7 +686,7 @@ impl Theme {
             Modifier::BOLD,
         );
 
-        Ok(Self::build_theme(
+        let mut theme = Self::build_theme(
             &style,
             &derived_color,
             &derived_style,
@@ -653,7 +695,97 @@ impl Theme {
             &ui,
             &palette,
             syntax,
-        ))
+        );
+        theme.apply_accessibility(no_color(), high_contrast());
+        Ok(theme)
+    }
+
+    fn apply_accessibility(&mut self, no_color: bool, high_contrast: bool) {
+        if !no_color && !high_contrast {
+            return;
+        }
+        let styles = [
+            &mut self.user,
+            &mut self.control,
+            &mut self.assistant,
+            &mut self.assistant_prefix,
+            &mut self.thinking,
+            &mut self.tool_bg,
+            &mut self.tool,
+            &mut self.tool_path,
+            &mut self.tool_annotation,
+            &mut self.tool_prefix,
+            &mut self.tool_success,
+            &mut self.tool_error,
+            &mut self.tool_dim,
+            &mut self.error,
+            &mut self.status_dim,
+            &mut self.bold,
+            &mut self.italic,
+            &mut self.bold_italic,
+            &mut self.inline_code,
+            &mut self.code_block,
+            &mut self.code_gutter,
+            &mut self.strikethrough,
+            &mut self.heading,
+            &mut self.list_marker,
+            &mut self.horizontal_rule,
+            &mut self.plan_rule,
+            &mut self.table_border,
+            &mut self.diff_old,
+            &mut self.diff_new,
+            &mut self.diff_old_emphasis,
+            &mut self.diff_new_emphasis,
+            &mut self.diff_line_nr,
+            &mut self.todo_completed,
+            &mut self.todo_in_progress,
+            &mut self.todo_pending,
+            &mut self.todo_cancelled,
+            &mut self.item_selected,
+            &mut self.item,
+            &mut self.item_desc,
+            &mut self.item_match,
+            &mut self.item_match_selected,
+            &mut self.panel_border,
+            &mut self.panel_title,
+            &mut self.cursor,
+            &mut self.input_border,
+            &mut self.accent,
+            &mut self.active,
+            &mut self.keybind_key,
+            &mut self.keybind_desc,
+            &mut self.keybind_section,
+            &mut self.queue,
+            &mut self.plan_path,
+            &mut self.status_notice,
+            &mut self.status_retry_error,
+            &mut self.status_retry_info,
+            &mut self.input_placeholder,
+            &mut self.queue_delete,
+            &mut self.timestamp,
+            &mut self.spinner,
+            &mut self.index_section,
+            &mut self.index_line_nr,
+            &mut self.index_keyword,
+            &mut self.shell_prefix,
+            &mut self.progress_bar,
+        ];
+        for style in styles {
+            if no_color {
+                style.fg = None;
+                style.bg = None;
+                style.underline_color = None;
+            } else {
+                *style = style.add_modifier(Modifier::BOLD);
+            }
+        }
+        if no_color {
+            self.background = Color::Reset;
+            self.foreground = Color::Reset;
+            self.mode_build = Color::Reset;
+            self.mode_plan = Color::Reset;
+            self.mode_bash = Color::Reset;
+        }
     }
 
     fn parse_raw_palette(full_table: &toml::Table) -> HashMap<String, String> {
@@ -920,6 +1052,28 @@ mod tests {
 
     fn dracula() -> Theme {
         Theme::from_toml(dracula_toml()).unwrap()
+    }
+
+    #[test]
+    fn no_color_accessibility_strips_semantic_colors() {
+        let mut theme = dracula();
+        theme.apply_accessibility(true, false);
+
+        assert_eq!(theme.background, Color::Reset);
+        assert_eq!(theme.foreground, Color::Reset);
+        assert_eq!(theme.tool_success.fg, None);
+        assert_eq!(theme.tool_error.fg, None);
+        assert_eq!(theme.accent.fg, None);
+    }
+
+    #[test]
+    fn high_contrast_accessibility_strengthens_semantic_styles() {
+        let mut theme = dracula();
+        theme.apply_accessibility(false, true);
+
+        assert!(theme.tool_success.add_modifier.contains(Modifier::BOLD));
+        assert!(theme.tool_error.add_modifier.contains(Modifier::BOLD));
+        assert!(theme.status_dim.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]

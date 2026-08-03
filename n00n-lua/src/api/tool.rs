@@ -39,7 +39,7 @@ use crate::api::util::convert::{json_to_lua, lua_to_json};
 use crate::api::util::ctx::LuaCtx;
 use crate::runtime::{HintContent, LiveCtx, PromptHintCallbacks, PromptHintRegistration, Request};
 
-const TOOL_NAME_MAX: usize = 64;
+const TOOL_NAME_MAX: usize = 32;
 const TOOL_HANDLER_RETURN_ERR: &str =
     "tool handler must return string or {output=string, is_error?=bool}";
 const TIMEOUT_PARSE_ERR: &str = "register_tool: 'timeout' must be a positive number, 0, or false";
@@ -1141,7 +1141,7 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
     }
     let aliases = spec
         .get::<Option<Vec<String>>>("aliases")?
-        .unwrap_or_default()
+        .unwrap_or_else(Vec::new)
         .into_iter()
         .map(|alias| {
             if !is_valid_tool_name(&alias) || alias == name {
@@ -1152,7 +1152,11 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
             Ok(Arc::from(alias))
         })
         .collect::<LuaResult<Vec<Arc<str>>>>()?;
-    if aliases.windows(2).any(|pair| pair[0] == pair[1]) {
+    if aliases
+        .iter()
+        .enumerate()
+        .any(|(index, alias)| aliases[..index].contains(alias))
+    {
         return Err(mlua::Error::runtime("register_tool: duplicate aliases"));
     }
     let description: String = spec.get("description").unwrap_or_else(|_| String::new());

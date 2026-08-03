@@ -278,10 +278,9 @@ impl FusionState {
         }
         let mut found_delegate = false;
         let mut has_error = false;
-        for done in results
-            .iter()
-            .filter(|done| done.tool.as_ref() == FUSION_DELEGATE_TOOL)
-        {
+        for done in results.iter().filter(|done| {
+            crate::tools::canonical_tool_name(done.tool.as_ref()) == FUSION_DELEGATE_TOOL
+        }) {
             found_delegate = true;
             self.delegation_count = self.delegation_count.saturating_add(1);
             if done.is_error {

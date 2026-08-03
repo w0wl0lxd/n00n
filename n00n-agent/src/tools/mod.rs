@@ -60,12 +60,8 @@ impl ToolFilter {
     pub fn matches(&self, name: &str) -> bool {
         match self {
             Self::All => true,
-            Self::Only(allowed) => allowed.iter().any(|n| {
-                n == name || n == canonical_tool_name(name) || canonical_tool_name(n) == name
-            }),
-            Self::AllExcept(blocked) => !blocked.iter().any(|n| {
-                n == name || n == canonical_tool_name(name) || canonical_tool_name(n) == name
-            }),
+            Self::Only(allowed) => allowed.iter().any(|candidate| same_tool(candidate, name)),
+            Self::AllExcept(blocked) => !blocked.iter().any(|candidate| same_tool(candidate, name)),
         }
     }
 
@@ -74,7 +70,7 @@ impl ToolFilter {
         match self {
             Self::Only(mut allowed) => {
                 for name in names {
-                    if !allowed.contains(&name) {
+                    if !allowed.iter().any(|candidate| same_tool(candidate, &name)) {
                         allowed.push(name);
                     }
                 }
@@ -90,17 +86,17 @@ impl ToolFilter {
             return self;
         }
         match self {
-            Self::All => Self::AllExcept(names.iter().map(|s| (*s).to_owned()).collect()),
-            Self::Only(allowed) => Self::Only(
-                allowed
-                    .into_iter()
-                    .filter(|n| !names.iter().any(|x| *x == n))
-                    .collect(),
-            ),
+            Self::All => Self::AllExcept(names.iter().map(|name| (*name).to_owned()).collect()),
+            Self::Only(mut allowed) => {
+                allowed.retain(|candidate| {
+                    !names.iter().any(|excluded| same_tool(candidate, excluded))
+                });
+                Self::Only(allowed)
+            }
             Self::AllExcept(mut blocked) => {
-                for &n in names {
-                    if !blocked.iter().any(|b| b == n) {
-                        blocked.push(n.to_owned());
+                for &name in names {
+                    if !blocked.iter().any(|candidate| same_tool(candidate, name)) {
+                        blocked.push(name.to_owned());
                     }
                 }
                 Self::AllExcept(blocked)
@@ -113,36 +109,33 @@ impl ToolFilter {
         match (self, other) {
             (Self::All, other) => other.clone(),
             (current, Self::All) => current,
-            (Self::Only(current_allowed), Self::Only(other_allowed)) => {
-                let intersection: Vec<String> = current_allowed
+            (Self::Only(current_allowed), Self::Only(other_allowed)) => Self::Only(
+                current_allowed
                     .into_iter()
-                    .filter(|n| other_allowed.iter().any(|o| o == n.as_str()))
-                    .collect();
-                if intersection.is_empty() {
-                    Self::Only(vec![]) // No tools allowed
-                } else {
-                    Self::Only(intersection)
+                    .filter(|name| other_allowed.iter().any(|other| same_tool(name, other)))
+                    .collect(),
+            ),
+            (Self::AllExcept(mut current_blocked), Self::AllExcept(other_blocked)) => {
+                for name in other_blocked {
+                    if !current_blocked
+                        .iter()
+                        .any(|current| same_tool(current, name))
+                    {
+                        current_blocked.push(name.clone());
+                    }
                 }
-            }
-            (Self::AllExcept(current_blocked), Self::AllExcept(other_blocked)) => {
-                let union: Vec<String> = current_blocked
-                    .into_iter()
-                    .chain(other_blocked.iter().cloned())
-                    .collect::<std::collections::HashSet<_>>()
-                    .into_iter()
-                    .collect();
-                Self::AllExcept(union)
+                Self::AllExcept(current_blocked)
             }
             (Self::Only(allowed), Self::AllExcept(blocked)) => Self::Only(
                 allowed
                     .into_iter()
-                    .filter(|n| !blocked.iter().any(|b| b == n.as_str()))
+                    .filter(|name| !blocked.iter().any(|other| same_tool(name, other)))
                     .collect(),
             ),
             (Self::AllExcept(blocked), Self::Only(allowed)) => Self::Only(
                 allowed
                     .iter()
-                    .filter(|n| !blocked.iter().any(|b| b == n.as_str()))
+                    .filter(|name| !blocked.iter().any(|other| same_tool(name, other)))
                     .cloned()
                     .collect(),
             ),
@@ -190,9 +183,12 @@ pub fn filter_definitions(definitions: &mut Value, filter: &ToolFilter) {
 #[must_use]
 pub fn has_definition(definitions: &Value, name: &str) -> bool {
     definitions.as_array().is_some_and(|definitions| {
-        definitions
-            .iter()
-            .any(|definition| definition.get("name").and_then(Value::as_str) == Some(name))
+        definitions.iter().any(|definition| {
+            definition
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|candidate| same_tool(candidate, name))
+        })
     })
 }
 
@@ -224,7 +220,7 @@ pub fn default_active_tools() -> ActiveTools {
 pub fn is_tool_enabled(disabled_tools: &[String], name: &str) -> bool {
     !disabled_tools
         .iter()
-        .any(|s| s == name || s == canonical_tool_name(name) || canonical_tool_name(s) == name)
+        .any(|disabled| same_tool(disabled, name))
 }
 
 pub const AGENT_CONTROL_TOOL_NAME: &str = "control_agent";
@@ -246,6 +242,7 @@ pub const TOOL_ALIASES: &[(&str, &str)] = &[
     ("agent_control", AGENT_CONTROL_TOOL_NAME),
     ("agent_list", "list_agents"),
     ("agent_status", "get_agent"),
+    ("arbor", "map_code"),
     ("batch", BATCH_TOOL_NAME),
     ("bash", BASH_TOOL_NAME),
     ("blackboard", "use_blackboard"),
@@ -254,11 +251,14 @@ pub const TOOL_ALIASES: &[(&str, &str)] = &[
     ("edit", EDIT_TOOL_NAME),
     ("edit_lines", "edit_file_lines"),
     ("explore", "explore_code"),
+    ("fusion_delegate", "delegate_fusion"),
     ("glob", GLOB_TOOL_NAME),
     ("grep", GREP_TOOL_NAME),
     ("index", "index_file"),
     ("insert_lines", "insert_file_lines"),
+    ("load_namespace", "load_toolset"),
     ("memory", "use_memory"),
+    ("multi_edit", MULTIEDIT_TOOL_NAME),
     ("multiedit", MULTIEDIT_TOOL_NAME),
     ("question", QUESTION_TOOL_NAME),
     ("read", READ_TOOL_NAME),
@@ -279,7 +279,11 @@ pub fn canonical_tool_name(name: &str) -> &str {
     TOOL_ALIASES
         .iter()
         .find_map(|(alias, canonical)| (*alias == name).then_some(*canonical))
-        .unwrap_or(name)
+        .map_or(name, |canonical| canonical)
+}
+
+fn same_tool(left: &str, right: &str) -> bool {
+    canonical_tool_name(left) == canonical_tool_name(right)
 }
 
 pub(crate) const PLAN_WRITE_RESTRICTED: &str = "write restricted to plan file in plan mode";
@@ -536,20 +540,50 @@ pub fn truncate_output(text: &str, max_lines: usize, max_bytes: usize) -> String
     result
 }
 
+pub const CANONICAL_BUILTIN_TOOL_NAMES: &[&str] = &[
+    "read_file",
+    "write_file",
+    "edit_file",
+    "edit_file_bulk",
+    "edit_file_lines",
+    "insert_file_lines",
+    "run_shell",
+    "run_python",
+    "run_batch",
+    "search_files",
+    "search_code",
+    "index_file",
+    "explore_code",
+    "search_text",
+    "map_code",
+    "map_codegraph",
+    "view_image",
+    "fetch_url",
+    "search_web",
+    "ask_user",
+    "list_agents",
+    "get_agent",
+    "control_agent",
+    "run_team",
+    "run_task",
+    "run_workflow",
+    "use_blackboard",
+    "update_todo",
+    "use_memory",
+    "load_skill",
+    "search_tools",
+    "load_toolset",
+    "delegate_fusion",
+];
+
 #[must_use]
 pub fn is_builtin_tool(name: &str) -> bool {
-    let canonical = canonical_tool_name(name);
-    n00n_config::DEFAULT_BUILTINS.contains(&canonical)
-        || n00n_config::EDIT_SUB_TOOLS.contains(&canonical)
+    CANONICAL_BUILTIN_TOOL_NAMES.contains(&canonical_tool_name(name))
 }
 
 #[must_use]
 pub fn all_builtin_tool_names() -> Vec<&'static str> {
-    n00n_config::DEFAULT_BUILTINS
-        .iter()
-        .chain(n00n_config::EDIT_SUB_TOOLS.iter())
-        .copied()
-        .collect()
+    CANONICAL_BUILTIN_TOOL_NAMES.to_vec()
 }
 
 use n00n_providers::{Message, ProviderEvent, StreamResponse, System};
@@ -1217,12 +1251,25 @@ mod tests {
     }
 
     #[test]
-    fn all_builtin_names_no_duplicates() {
+    fn builtin_names_are_unique_canonical_identifiers() {
         let names = all_builtin_tool_names();
         let mut seen = std::collections::HashSet::new();
         for name in &names {
             assert!(seen.insert(name), "duplicate builtin tool name: {name}");
+            assert_eq!(canonical_tool_name(name), *name);
+            assert!(name.len() <= 32, "builtin tool name is too long: {name}");
         }
+    }
+
+    #[test]
+    fn mixed_alias_filters_apply_restrictions() {
+        let allowed = ToolFilter::Only(vec!["read".to_owned()]);
+        assert!(allowed.matches(READ_TOOL_NAME));
+        assert!(!allowed.clone().excluding(&[READ_TOOL_NAME]).matches("read"));
+
+        let intersected = allowed.intersect(&ToolFilter::Only(vec![READ_TOOL_NAME.to_owned()]));
+        assert!(intersected.matches("read"));
+        assert!(intersected.matches(READ_TOOL_NAME));
     }
 
     #[test]

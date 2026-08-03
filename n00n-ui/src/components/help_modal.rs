@@ -23,6 +23,8 @@ const INPUT_PREFIXES: &[(&str, &str)] = &[
     ("!", "Run shell command (visible to agent)"),
     ("!!", "Run shell command (hidden from agent)"),
 ];
+const STATUS_INDICATORS: &[(&str, &str)] =
+    &[("F", "Fast mode enabled"), ("W", "Workflow mode enabled")];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HelpTab {
@@ -255,7 +257,7 @@ impl HelpModal {
         } else if query.is_empty() {
             "  Search: / to filter keybindings".to_string()
         } else {
-            format!("  Search: {} (press / to edit)", query)
+            format!("  Search: {query} (press / to edit)")
         };
         lines.push(Line::from(Span::styled(search_label, theme.tool_dim)));
 
@@ -345,6 +347,25 @@ impl HelpModal {
                     spans.push(Span::styled(desc, theme.keybind_desc));
                     lines.push(Line::from(spans));
                 }
+            }
+        }
+
+        let status_indicators = STATUS_INDICATORS
+            .iter()
+            .filter(|(_, description)| {
+                matches_help(self.tab, query, KeybindContext::General, description)
+            })
+            .collect::<Vec<_>>();
+        if !status_indicators.is_empty() {
+            lines.push(Line::default());
+            lines.push(Line::from(Span::styled(
+                "  Status indicators",
+                theme.keybind_section,
+            )));
+            for &(label, description) in status_indicators {
+                let mut spans = key_spans(ResolvedLabel::Single(label), key_col_width, PREFIX_TOP);
+                spans.push(Span::styled(description, theme.keybind_desc));
+                lines.push(Line::from(spans));
             }
         }
 

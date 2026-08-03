@@ -10,6 +10,7 @@ use n00n_config::{
 use thiserror::Error;
 use tracing::{info, warn};
 
+use crate::tools::canonical_tool_name;
 use crate::{AgentEvent, EventSender};
 
 pub const DEFAULT_DENY_GUIDANCE: &str =
@@ -331,6 +332,11 @@ impl PermissionManager {
                     })
                     .copied()
             })
+            .or_else(|| {
+                self.tool_defaults
+                    .iter()
+                    .find_map(|(key, effect)| matches_rule(key, tool).then_some(*effect))
+            })
             .unwrap_or_else(|| self.default);
         match eff {
             DefaultEffect::Deny => {
@@ -539,7 +545,9 @@ impl PermissionManager {
 fn matches_rule(rule_key: &ToolKey, actual: &ToolKey) -> bool {
     match (rule_key, actual) {
         (ToolKey::Wildcard, _) => true,
-        (ToolKey::Native(a), ToolKey::Native(b)) => a == b,
+        (ToolKey::Native(a), ToolKey::Native(b)) => {
+            canonical_tool_name(a) == canonical_tool_name(b)
+        }
         (
             ToolKey::McpServer { server: rs },
             ToolKey::McpServer { server: as_ } | ToolKey::McpTool { server: as_, .. },
@@ -653,7 +661,9 @@ pub fn generalized_scopes(tool: &ToolKey, scopes: &[String]) -> Vec<String> {
 
 fn generalize_scope(tool: &ToolKey, scope: &str) -> String {
     match tool {
-        ToolKey::Native(name) if name.as_ref() == "bash" => generalize_bash_segment(scope),
+        ToolKey::Native(name) if canonical_tool_name(name) == crate::tools::BASH_TOOL_NAME => {
+            generalize_bash_segment(scope)
+        }
         ToolKey::Native(name) if FILE_WRITE_TOOLS.contains(&name.as_ref()) => {
             let p = Path::new(scope);
             match p.parent() {

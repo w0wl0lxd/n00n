@@ -7,7 +7,7 @@ local cwd = n00n.uv.cwd() or "."
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Use **semblem** for BM25 code search across the repo; use **explore** for structural graph questions.",
+  content = "- Use **search_text** for BM25 code search across the repo; use **explore_code** for structural graph questions.",
 })
 
 local opts = n00n.api.register_options(output_limits.extend({}))

@@ -39,7 +39,7 @@ n00n now presents built-in tools with consistent `verb_noun` names. Existing nam
 | `load_namespace` | `load_toolset` |
 | `fusion_delegate` | `delegate_fusion` |
 
-`view_image` and `activate_tool` are already canonical and do not change.
+`view_image` is already canonical and does not change.
 
 Aliases work in tool dispatch, permission rules, deferred activation, and tool filters. Model-facing definitions contain canonical names only. New configuration and documentation should use canonical names.
 

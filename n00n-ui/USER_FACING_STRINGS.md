@@ -29,11 +29,11 @@ Group palette entries under Session, Model, View, Settings, Mode, and Action. Fr
 
 Examples:
 
-- **Start new session** (`/session new`, alias `/new`)
-- **Switch model** (`/model pick`, alias `/model`)
-- **View tasks** (`/view tasks`, alias `/tasks`)
-- **Toggle no-confirm mode** (`/mode no-confirm`, alias `/yolo`)
-- **Quick question** (`/action ask`, alias `/btw`)
+- **Start new session** (`/session:new`, alias `/new`)
+- **Switch model** (`/model:pick`, alias `/model`)
+- **View tasks** (`/view:tasks`, alias `/tasks`)
+- **Toggle no-confirm mode** (`/mode:no-confirm`, alias `/yolo`)
+- **Quick question** (`/action:ask`, alias `/btw`)
 - **Show welcome guide** (`/welcome`)
 
 ## Writing guidance

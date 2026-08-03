@@ -94,10 +94,15 @@ pub const EDIT_SUB_TOOLS: &[&str] = &["edit_lines", "insert_lines", "multiedit"]
 
 pub const FILE_WRITE_TOOLS: &[&str] = &[
     "write_file",
+    "write",
     "edit_file",
-    "edit_files",
+    "edit",
+    "edit_file_bulk",
+    "multiedit",
     "edit_file_lines",
+    "edit_lines",
     "insert_file_lines",
+    "insert_lines",
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -1067,17 +1072,19 @@ impl ToolOutputLines {
     #[must_use]
     pub fn get(&self, name: &str) -> usize {
         match name {
-            "bash" => self.bash,
-            "code_execution" => self.code_execution,
-            "task" => self.task,
-            "workflow" => self.workflow,
-            "index" => self.index,
-            "grep" | "glob" => self.grep,
-            "arbor" | "codegraph" | "explore" => self.explore,
-            "read" => self.read,
-            "memory" => self.write,
+            "bash" | "run_shell" => self.bash,
+            "code_execution" | "run_python" => self.code_execution,
+            "task" | "run_task" => self.task,
+            "workflow" | "run_workflow" => self.workflow,
+            "index" | "index_file" => self.index,
+            "grep" | "glob" | "search_code" | "search_files" | "search_text" => self.grep,
+            "arbor" | "codegraph" | "explore" | "map_code" | "map_codegraph" | "explore_code" => {
+                self.explore
+            }
+            "read" | "read_file" => self.read,
+            "memory" | "use_memory" => self.write,
             name if FILE_WRITE_TOOLS.contains(&name) => self.write,
-            "webfetch" | "websearch" => self.web,
+            "webfetch" | "websearch" | "fetch_url" | "search_web" => self.web,
             _ => self.other,
         }
     }

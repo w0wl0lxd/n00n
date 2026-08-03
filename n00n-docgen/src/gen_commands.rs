@@ -1,21 +1,21 @@
 use std::fmt::Write;
 
-use n00n_ui::BUILTIN_COMMANDS;
+use n00n_ui::{BUILTIN_COMMANDS, CommandCategory};
 
 use crate::lua_util;
 
-const COMMAND_GROUPS: &[(&str, &[&str])] = &[
-    ("Session", &["/new", "/sessions", "/rename", "/exit"]),
-    ("Agent work", &["/tasks", "/team", "/queue", "/workflow"]),
-    ("Conversation", &["/compact", "/btw", "/thinking", "/fast"]),
-    (
-        "Settings and access",
-        &[
-            "/help", "/usage", "/model", "/theme", "/mcp", "/login", "/cd", "/yolo", "/reload",
-        ],
-    ),
-    ("Plugin", &["/memory"]),
+const PLUGIN_COMMAND_CATEGORIES: &[(&str, CommandCategory)] = &[
+    ("/memory", CommandCategory::View),
+    ("/rename", CommandCategory::Session),
+    ("/sessions", CommandCategory::Session),
+    ("/team", CommandCategory::Action),
 ];
+
+fn plugin_category(name: &str) -> Option<CommandCategory> {
+    PLUGIN_COMMAND_CATEGORIES
+        .iter()
+        .find_map(|(command, category)| (*command == name).then_some(*category))
+}
 
 pub fn generate() -> String {
     let mut out = String::new();
@@ -49,39 +49,30 @@ fn write_header(out: &mut String) {
 }
 
 fn write_builtin_commands(out: &mut String) {
-    let mut commands: Vec<(&str, &str)> = BUILTIN_COMMANDS
-        .iter()
-        .map(|cmd| (cmd.name, cmd.description))
-        .collect();
     let plugin_commands = lua_util::load_builtin_plugin_commands();
-    commands.extend(
-        plugin_commands
-            .iter()
-            .map(|cmd| (cmd.name.as_str(), cmd.description.as_str())),
-    );
 
     let _ = writeln!(out, "## Built-in commands");
     let _ = writeln!(out);
     let _ = writeln!(
         out,
         "n00n has {} built-in commands. Project, user, and MCP prompt commands are separate.",
-        commands.len()
+        BUILTIN_COMMANDS.len() + plugin_commands.len()
     );
-    for (group, names) in COMMAND_GROUPS {
-        let entries: Vec<(&str, &str)> = names
+    for category in CommandCategory::ALL {
+        let builtins = BUILTIN_COMMANDS
             .iter()
-            .filter_map(|name| {
-                commands
-                    .iter()
-                    .find(|(current, _)| current == name)
-                    .copied()
-            })
-            .collect();
+            .filter(|command| command.category == category)
+            .map(|command| (command.name, command.description));
+        let plugins = plugin_commands
+            .iter()
+            .filter(|command| plugin_category(&command.name) == Some(category))
+            .map(|command| (command.name.as_str(), command.description.as_str()));
+        let entries = builtins.chain(plugins).collect::<Vec<_>>();
         if entries.is_empty() {
             continue;
         }
         let _ = writeln!(out);
-        let _ = writeln!(out, "### {group}");
+        let _ = writeln!(out, "### {}", category.label());
         let _ = writeln!(out);
         let _ = writeln!(out, "| Command | Description |");
         let _ = writeln!(out, "|---------|-------------|");
@@ -175,21 +166,19 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn command_groups_cover_core_commands_once() {
-        let grouped: Vec<&str> = COMMAND_GROUPS
+    fn every_plugin_command_has_one_category() {
+        let commands = lua_util::load_builtin_plugin_commands();
+        let categorized = PLUGIN_COMMAND_CATEGORIES
             .iter()
-            .flat_map(|(_, names)| names.iter().copied())
-            .collect();
-        let expected: Vec<&str> = BUILTIN_COMMANDS.iter().map(|cmd| cmd.name).collect();
-        let unique: HashSet<&str> = grouped.iter().copied().collect();
+            .map(|(name, _)| *name)
+            .collect::<HashSet<_>>();
 
-        assert_eq!(grouped.len(), unique.len());
-        assert_eq!(unique.len(), expected.len() + 4);
-        assert!(expected.iter().all(|name| unique.contains(name)));
+        assert_eq!(categorized.len(), PLUGIN_COMMAND_CATEGORIES.len());
+        assert_eq!(categorized.len(), commands.len());
         assert!(
-            ["/memory", "/rename", "/sessions", "/team"]
+            commands
                 .iter()
-                .all(|name| unique.contains(name))
+                .all(|command| categorized.contains(command.name.as_str()))
         );
     }
 
@@ -198,6 +187,6 @@ mod tests {
         let docs = generate();
         assert!(docs.contains("Project, user, and MCP prompt commands are separate."));
         assert!(docs.contains("### Session"));
-        assert!(docs.contains("### Settings and access"));
+        assert!(docs.contains("### Settings"));
     }
 }

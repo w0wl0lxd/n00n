@@ -10,7 +10,7 @@ pub mod chat;
 mod clipboard;
 mod color_compat;
 mod components;
-pub use components::command::{BUILTIN_COMMANDS, BuiltinCommand};
+pub use components::command::{BUILTIN_COMMANDS, BuiltinCommand, CommandCategory};
 pub use components::keybindings;
 mod highlight;
 pub use highlight::highlight_ansi;

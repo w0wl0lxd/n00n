@@ -345,7 +345,7 @@ fn usage_cost(
     output_tokens: u32,
     breakdown: Option<Table>,
 ) -> LuaResult<Pair<f64>> {
-    let model = try_pair!(ModelResolver::current().resolve(&spec));
+    let model = try_pair!(Model::from_spec(&spec));
     let (fresh, cache_read, cache_write, fast) = match breakdown {
         Some(breakdown) => {
             let fresh =

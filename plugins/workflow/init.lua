@@ -53,7 +53,7 @@ local description = [[Run sandboxed Lua workflow for multi-stage agent orchestra
 
 Start with meta({ name, description, phases }). Globals: agent({ prompt, subagent_type?, model_tier?, label?, output_schema? }) returns agent result; parallel(fns, { concurrency? }) runs branches; pipeline(items, stages, { concurrency? }) runs stages per item; phase(name, fn), log(...), inputs.
 
-No n00n, os, io, require, print, or load. Scripts must be deterministic for resume replay, must return the final string, and are capped by max_agents_per_run (default 24, no hard maximum) with a runaway guard for repeated prompts and consecutive errors. Use task for one agent.]]
+No n00n, os, io, require, print, or load. Scripts must be deterministic for resume replay, must return the final string, and are capped by max_agents_per_run (default 24, no hard maximum) with a runaway guard for repeated prompts and consecutive errors. Use run_task for one agent.]]
 
 local schema = {
   type = "object",
@@ -940,7 +940,7 @@ end
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- For complex, multi-stage orchestration of many agents, use **workflow** (a team of agents led by a supervisor inside the sandboxed runtime).",
+  content = "- For complex, multi-stage orchestration of many agents, use **run_workflow** (a team of agents led by a supervisor inside the sandboxed runtime).",
 })
 
 local function header(input)

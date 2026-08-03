@@ -756,7 +756,7 @@ impl App {
         if self.onboarding.is_open() {
             self.onboarding.handle_key(key);
             if !self.onboarding.is_open()
-                && let Err(error) = self.onboarding.mark_seen(&self.storage)
+                && let Err(error) = Onboarding::mark_seen(&self.storage)
             {
                 tracing::warn!(error = %error, "failed to persist welcome guide dismissal");
             }

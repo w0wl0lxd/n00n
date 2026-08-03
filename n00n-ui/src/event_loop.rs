@@ -357,8 +357,8 @@ fn merge_batch(
         .as_deref()
         .cloned()
         .unwrap_or_else(Vec::new);
-    let catalog = ModelCatalog::current();
-    for spec in &batch.models {
+    let catalog = ModelCatalog::from_specs(batch.models);
+    for spec in catalog.specs() {
         if catalog.allows(spec) && !merged.contains(spec) {
             merged.push(spec.clone());
         }
@@ -1428,7 +1428,13 @@ impl<'t> EventLoop<'t> {
     }
 
     fn change_model(&mut self, spec: &str) {
-        match ModelResolver::current().resolve(spec) {
+        let discovered = self
+            .ctx
+            .available_models
+            .load_full()
+            .map_or_else(Vec::new, |models| models.as_ref().clone());
+        let resolver = ModelResolver::from_catalog(ModelCatalog::current_with_specs(discovered));
+        match resolver.resolve(spec) {
             Ok(mut new_model) => match from_model_with_openai_options(
                 &mut new_model,
                 self.ctx.timeouts,

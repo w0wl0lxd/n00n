@@ -15,55 +15,55 @@ const TOOL_GROUPS: &[(&str, &[&str])] = &[
     (
         "Explore & Search",
         &[
-            "explore",
-            "index",
-            "glob",
-            "grep",
-            "semblem",
-            "codegraph",
-            "arbor",
+            "explore_code",
+            "index_file",
+            "search_files",
+            "search_code",
+            "search_text",
+            "map_codegraph",
+            "map_code",
         ],
     ),
     (
         "Files & Images",
         &[
-            "read",
-            "write",
-            "edit",
-            "multiedit",
-            "edit_lines",
-            "insert_lines",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "edit_file_bulk",
+            "edit_file_lines",
+            "insert_file_lines",
             "view_image",
         ],
     ),
     (
         "Shell & Execution",
-        &["bash", "code_execution", "batch", "question"],
+        &["run_shell", "run_python", "run_batch", "ask_user"],
     ),
     (
         "Agents & Coordination",
         &[
-            "agent_list",
-            "agent_status",
-            "agent_control",
-            "task",
-            "team",
-            "workflow",
-            "todo_write",
-            "fusion_delegate",
+            "list_agents",
+            "get_agent",
+            "control_agent",
+            "run_task",
+            "run_team",
+            "run_workflow",
+            "update_todo",
+            "delegate_fusion",
         ],
     ),
     (
         "Context & Discovery",
         &[
-            "memory",
-            "skill",
-            "tool_search",
-            "load_namespace",
-            "blackboard",
+            "use_memory",
+            "load_skill",
+            "search_tools",
+            "load_toolset",
+            "use_blackboard",
         ],
     ),
-    ("Web", &["webfetch", "websearch"]),
+    ("Web", &["fetch_url", "search_web"]),
 ];
 
 struct ToolInfo {
@@ -349,7 +349,7 @@ pub fn generate() -> String {
     writeln!(out).unwrap();
     writeln!(
         out,
-        "Use `explore` first for a general codebase question. Choose `index` for one-file structure, `arbor` for graph relationships, `codegraph` for cross-file structure or impact, and `semblem` for ranked search. Do not treat `explore` intents as separate tools."
+        "Use `explore_code` first for a general codebase question. Choose `index_file` for one-file structure, `map_code` for graph relationships, `map_codegraph` for cross-file structure or impact, and `search_text` for ranked search. Do not treat `explore_code` intents as separate tools."
     )
     .unwrap();
 
@@ -436,14 +436,14 @@ mod tests {
         assert!(cleaned.starts_with(remaining_prefix), "cleaned: {cleaned}");
     }
 
-    // Room for fusion_delegate + skill-system + memory-system + explore-stack tools; keep definitions lean.
+    // Room for delegate_fusion + skill-system + memory-system + explore-stack tools; keep definitions lean.
     const MAX_TOOL_DEFINITION_BYTES: usize = 46_000;
 
     #[test]
     fn generated_reference_uses_canonical_guidance_and_count() {
         let docs = generate();
         assert!(docs.contains("n00n ships with 33 built-in tools"));
-        assert!(docs.contains("Use `explore` first for a general codebase question."));
+        assert!(docs.contains("Use `explore_code` first for a general codebase question."));
         assert!(docs.contains("## Explore & Search"));
         assert!(docs.contains("## Context & Discovery"));
         assert!(!docs.contains("## File Operations"));
@@ -482,6 +482,11 @@ mod tests {
             .iter()
             .map(n00n_agent::tools::RegisteredTool::name)
             .collect();
+        let canonical: HashSet<&str> = n00n_agent::tools::CANONICAL_BUILTIN_TOOL_NAMES
+            .iter()
+            .copied()
+            .collect();
+        assert_eq!(registered, canonical);
 
         let mut sectioned: HashSet<&str> = HashSet::new();
         for (_, names) in TOOL_GROUPS {

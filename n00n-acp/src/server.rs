@@ -19,8 +19,8 @@ use n00n_agent::{
     AgentInput, AgentMode, Envelope, ImageMediaType, ImageSource, mode_and_plan_from_stored,
 };
 use n00n_providers::Message;
-use n00n_providers::provider::available_model_specs;
-use n00n_providers::{ModelResolver, TokenUsage};
+use n00n_providers::provider::fetch_all_models;
+use n00n_providers::{Model, ModelCatalog, TokenUsage};
 use n00n_storage::id::{SessionRef, n00nId};
 use n00n_storage::sessions::Session;
 use serde::Serialize;
@@ -51,6 +51,7 @@ struct SessionState {
 
 struct Server {
     out_tx: Sender<Value>,
+    model_catalog: ModelCatalog,
     model_specs: Vec<String>,
     session: Option<SessionState>,
 }
@@ -79,9 +80,23 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
         }
     });
 
+    let mut discovered_specs = Vec::new();
+    fetch_all_models(
+        |batch| {
+            for warning in batch.warnings {
+                warn!(%warning, "model discovery warning");
+            }
+            discovered_specs.extend(batch.models);
+        },
+        None,
+    )
+    .await;
+    let model_catalog = ModelCatalog::current_with_specs(discovered_specs);
+    let model_specs = model_catalog.specs().to_vec();
     let mut server = Server {
         out_tx,
-        model_specs: available_model_specs(),
+        model_catalog,
+        model_specs,
         session: None,
     };
 
@@ -142,8 +157,9 @@ fn handle_request(srv: &mut Server, method: &str, id: RequestId, raw: &Value, pa
             methods::initialize_response(),
         )),
         "session/new" => parse_params::<NewSessionRequest>(raw).map(|req| {
-            let handle = spawn_session(params, req.cwd, None, Vec::new());
-            let spec = params.model.spec();
+            let model = params.model.clone();
+            let spec = model.spec();
+            let handle = spawn_session(params, model, req.cwd, None, Vec::new());
             let resp = methods::new_session_response(handle.session_id.as_str())
                 .config_options(vec![methods::model_config_option(&spec, &srv.model_specs)]);
             install_session(srv, handle, spec, AgentMode::Build, None, params);
@@ -159,13 +175,19 @@ fn handle_request(srv: &mut Server, method: &str, id: RequestId, raw: &Value, pa
             let stored = load_session_from(&storage, session_ref.id())?;
             let (current_mode, plan_path) = mode_and_plan_from_stored(&storage, &stored.meta)
                 .map_err(|e| AcpError::internal_error().data(json_str(&e)))?;
+            let model = srv.model_catalog.resolve(&stored.model).map_err(|error| {
+                AcpError::invalid_params().data(json_str(&format!(
+                    "stored session model '{}' is unavailable: {error}",
+                    stored.model
+                )))
+            })?;
+            let spec = model.spec();
             let history = stored.messages;
             let sid = SessionId::from(session_ref.to_string());
             for update in translate::replay_history(&history) {
                 session_update(&srv.out_tx, &sid, update);
             }
-            let handle = spawn_session(params, req.cwd, Some(session_ref), history);
-            let spec = params.model.spec();
+            let handle = spawn_session(params, model, req.cwd, Some(session_ref), history);
             let resp = methods::load_session_response()
                 .config_options(vec![methods::model_config_option(&spec, &srv.model_specs)]);
             install_session(srv, handle, spec, current_mode, plan_path, params);
@@ -184,12 +206,13 @@ fn handle_request(srv: &mut Server, method: &str, id: RequestId, raw: &Value, pa
 
 fn spawn_session(
     params: &AcpParams,
+    model: Model,
     cwd: PathBuf,
     session_id: Option<SessionRef>,
     history: Vec<Message>,
 ) -> InteractiveHandle {
     headless::spawn_interactive(InteractiveParams {
-        model: params.model.clone(),
+        model,
         config: Arc::clone(&params.config),
         permissions_config: params.permissions_config.clone(),
         timeouts: params.timeouts,
@@ -322,7 +345,8 @@ fn handle_set_config(srv: &mut Server, raw: &Value) -> Result<AgentResponse, Acp
     }
 
     let spec = req.value.0.to_string();
-    let model = ModelResolver::current()
+    let model = srv
+        .model_catalog
         .resolve(&spec)
         .map_err(|e| AcpError::invalid_params().data(json_str(&e)))?;
     let spec = model.spec();

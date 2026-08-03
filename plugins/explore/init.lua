@@ -8,14 +8,24 @@ local function trim(text)
 end
 
 local session_cache = {}
+local BACKEND_NAMES = {
+  index = "index_file",
+  semblem = "search_text",
+  arbor = "map_code",
+  codegraph = "map_codegraph",
+}
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Use **explore** first for codebase questions; it routes to index (single-file skeleton), arbor (callers/callees/blast radius), or codegraph (cross-file structure).",
+  content = "- Use **explore_code** first for codebase questions; it routes to index_file (single-file skeleton), map_code (callers/callees/blast radius), or map_codegraph (cross-file structure).",
 })
 
+local function backend_name(name)
+  return BACKEND_NAMES[name] or name
+end
+
 local function route_label(backend, intent)
-  return string.format("%s via %s", intent, backend)
+  return string.format("%s via %s", intent, backend_name(backend))
 end
 
 local function dispatch(input, ctx, use_cache)
@@ -31,10 +41,10 @@ local function dispatch(input, ctx, use_cache)
     return cached, route_label(backend, intent), true
   end
 
-  local output, err = n00n.agent.call_tool(ctx, backend, backend_input)
+  local output, err = n00n.agent.call_tool(ctx, backend_name(backend), backend_input)
   if err then
     return {
-      llm_output = "error: explore dispatch to " .. backend .. " failed: " .. tostring(err),
+      llm_output = "error: explore_code dispatch to " .. backend_name(backend) .. " failed: " .. tostring(err),
       is_error = true,
     },
       route_label(backend, intent),
@@ -55,15 +65,15 @@ n00n.api.register_tool({
   aliases = { "explore" },
   kind = "read",
   description = [[Unified codebase exploration router. Picks the best backend for the question:
-- **file** or **skeleton** intent (or a file path): compact single-file skeleton via `index`
-- **relations** or **trace** intent: caller/callee maps, trace paths, blast radius via `arbor`
-- **cross_file** intent (default for NL questions): structural cross-file analysis via `codegraph`
-- **search** intent: keyword or natural-language search via `semblem`
-- **symbol** intent: symbol drill-down via `codegraph node`
-- **impact** intent: blast-radius analysis via `codegraph impact`
+- **file** or **skeleton** intent (or a file path): compact single-file skeleton via `index_file`
+- **relations** or **trace** intent: caller/callee maps, trace paths, blast radius via `map_code`
+- **cross_file** intent (default for NL questions): structural cross-file analysis via `map_codegraph`
+- **search** intent: keyword or natural-language search via `search_text`
+- **symbol** intent: symbol drill-down via `map_codegraph node`
+- **impact** intent: blast-radius analysis via `map_codegraph impact`
 
 Set `intent` explicitly when you know the backend. Otherwise the router infers from the query.
-Use `command`, `symbol`, `from_symbol`, and `to_symbol` for precise arbor routing.]],
+Use `command`, `symbol`, `from_symbol`, and `to_symbol` for precise map_code routing.]],
 
   schema = {
     type = "object",
@@ -74,11 +84,11 @@ Use `command`, `symbol`, `from_symbol`, and `to_symbol` for precise arbor routin
       },
       path = {
         type = "string",
-        description = "File path for skeleton queries. A file extension selects the index backend in auto mode.",
+        description = "File path for skeleton queries. A file extension selects the index_file backend in auto mode.",
       },
       project = {
         type = "string",
-        description = "Project root for arbor/codegraph queries (defaults to cwd).",
+        description = "Project root for map_code/map_codegraph queries (defaults to cwd).",
       },
       intent = {
         type = "string",
@@ -97,7 +107,7 @@ Use `command`, `symbol`, `from_symbol`, and `to_symbol` for precise arbor routin
       mode = {
         type = "string",
         enum = { "bm25", "hybrid", "semantic" },
-        description = "Search mode for semblem (bm25, hybrid, or semantic).",
+        description = "Search mode for search_text (bm25, hybrid, or semantic).",
       },
     },
   },

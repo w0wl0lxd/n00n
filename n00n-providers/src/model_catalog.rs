@@ -27,6 +27,11 @@ impl ModelCatalog {
     }
 
     #[must_use]
+    pub fn current_with_specs(specs: impl IntoIterator<Item = String>) -> Self {
+        Self::from_specs(available_model_specs().into_iter().chain(specs))
+    }
+
+    #[must_use]
     pub fn from_specs(specs: impl IntoIterator<Item = String>) -> Self {
         let mut unique: Vec<String> = specs.into_iter().filter(|s| is_spec(s)).collect();
         unique.sort();
@@ -59,6 +64,10 @@ impl ModelCatalog {
 
     /// Resolve an externally supplied model identifier without allowing the
     /// permissive model parser to create an unconfigured model.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the identifier is malformed, unavailable, or has invalid metadata.
     pub fn resolve(&self, input: &str) -> Result<Model, ModelCatalogError> {
         let spec = self.canonical_spec(input)?;
         let (provider, _) = spec.split_once('/').ok_or(ModelCatalogError::InvalidSpec)?;
@@ -118,6 +127,11 @@ impl ModelResolver {
         &self.catalog
     }
 
+    /// Resolve a model through the configured catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the model is malformed, unavailable, or has invalid metadata.
     pub fn resolve(&self, input: &str) -> Result<Model, ModelCatalogError> {
         self.catalog.resolve(input)
     }
@@ -133,7 +147,9 @@ fn is_spec(spec: &str) -> bool {
     let Some((provider, model)) = spec.split_once('/') else {
         return false;
     };
-    !provider.trim().is_empty() && !model.trim().is_empty() && !model.contains('/')
+    !provider.trim().is_empty()
+        && !model.trim().is_empty()
+        && !model.split('/').any(|segment| segment.trim().is_empty())
 }
 
 #[cfg(test)]
@@ -169,9 +185,25 @@ mod tests {
             "no-provider".to_string(),
             "provider/".to_string(),
             "/model".to_string(),
-            "provider/model/extra".to_string(),
+            "provider//model".to_string(),
+            "provider/model/".to_string(),
             "provider/model".to_string(),
         ]);
         assert_eq!(catalog.specs(), &["provider/model".to_string()]);
+    }
+
+    #[test]
+    fn nested_model_ids_enter_catalog() {
+        let catalog = ModelCatalog::from_specs([
+            "openrouter/vendor/model".to_string(),
+            "opencode/vendor/model".to_string(),
+        ]);
+        assert_eq!(
+            catalog.specs(),
+            &[
+                "opencode/vendor/model".to_string(),
+                "openrouter/vendor/model".to_string(),
+            ]
+        );
     }
 }
