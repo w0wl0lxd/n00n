@@ -536,7 +536,7 @@ impl McpSession {
 impl McpHandle {
     pub fn send(&self, cmd: McpCommand) {
         if let Err(e) = self.cmd_tx.try_send(cmd) {
-            demoted!(error = %e, "MCP command loop is gone");
+            warn!(error = %e, "MCP command loop is gone");
         }
     }
 
@@ -621,7 +621,7 @@ impl McpHandle {
         )
         .await;
         if !finished {
-            demoted!("MCP shutdown timed out after {MCP_SHUTDOWN_TIMEOUT:?}");
+            warn!("MCP shutdown timed out after {MCP_SHUTDOWN_TIMEOUT:?}");
         }
     }
 }
@@ -805,10 +805,10 @@ async fn handle_reconnect(inner: &mut McpManagerInner, server_name: &str) {
         );
         return;
     }
-    if let Err(e) = refresh_server(inner, server_name).await {
-        demoted!(server = %server_name, error = %e, "reconnect failed");
+    match refresh_server(inner, server_name).await {
+        Ok(()) => demoted!(server = server_name, "MCP reconnect complete"),
+        Err(e) => demoted!(server = %server_name, error = %e, "reconnect failed"),
     }
-    demoted!(server = server_name, "MCP reconnect complete");
 }
 
 async fn shutdown_all(inner: &mut McpManagerInner) {

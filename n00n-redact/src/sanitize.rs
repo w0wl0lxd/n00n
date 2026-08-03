@@ -57,20 +57,33 @@ pub fn sanitize_text(raw: &str, max_chars: usize) -> String {
             } else if inline_value.is_some_and(|value| value.eq_ignore_ascii_case("bearer")) {
                 index = index.saturating_add(1).min(words.len());
             } else if inline_value.is_none_or(str::is_empty) {
-                if words
+                let next_is_separator = words
                     .get(index)
-                    .is_some_and(|next| *next == "=" || *next == ":")
-                {
-                    index += 1;
-                }
-                if words
-                    .get(index)
-                    .is_some_and(|next| next.eq_ignore_ascii_case("bearer"))
-                {
-                    index += 1;
-                }
-                if index < words.len() {
-                    index += 1;
+                    .is_some_and(|next| *next == "=" || *next == ":");
+                if separator.is_some() || next_is_separator || key.starts_with('-') {
+                    if next_is_separator {
+                        index += 1;
+                    }
+                    if words
+                        .get(index)
+                        .is_some_and(|next| next.eq_ignore_ascii_case("bearer"))
+                    {
+                        index += 1;
+                    }
+                    if let Some(quote) = words
+                        .get(index)
+                        .and_then(|value| unterminated_opening_quote(value))
+                    {
+                        index += 1;
+                        while let Some(fragment) = words.get(index) {
+                            index += 1;
+                            if contains_unescaped_quote(fragment, quote) {
+                                break;
+                            }
+                        }
+                    } else if index < words.len() {
+                        index += 1;
+                    }
                 }
             }
             continue;
@@ -120,7 +133,14 @@ fn is_secret_token(value: &str) -> bool {
         .to_ascii_lowercase();
     SECRET_TOKEN_PREFIXES
         .iter()
+        .filter(|prefix| **prefix != "sk-")
         .any(|prefix| lower.contains(prefix))
+        || lower.match_indices("sk-").any(|(position, _)| {
+            lower[..position]
+                .chars()
+                .next_back()
+                .is_none_or(|character| !character.is_alphabetic())
+        })
         || lower.starts_with("akia")
         || lower.starts_with("aiza")
 }
@@ -179,6 +199,26 @@ mod tests {
         assert_eq!(sanitized, r#"{"password":[REDACTED]"#);
         assert!(!sanitized.contains("two"));
         assert!(!sanitized.contains("words"));
+    }
+
+    #[test]
+    fn redacts_complete_multi_word_quoted_value_after_spaced_separator() {
+        let sanitized = sanitize_text(r#"{"password": "two words""#, 80);
+        assert_eq!(sanitized, r#"{"password":[REDACTED]"#);
+        assert!(!sanitized.contains("two"));
+        assert!(!sanitized.contains("words"));
+    }
+
+    #[test]
+    fn preserves_word_after_bare_sensitive_term() {
+        let sanitized = sanitize_text("check authorization header format", 80);
+        assert_eq!(sanitized, "check authorization=[REDACTED] header format");
+    }
+
+    #[test]
+    fn short_secret_prefix_requires_word_boundary() {
+        let sanitized = sanitize_text("desk-top risk-taking sk-visible", 80);
+        assert_eq!(sanitized, "desk-top risk-taking [REDACTED]");
     }
 
     #[test]

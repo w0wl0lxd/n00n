@@ -775,7 +775,7 @@ impl<'h> Agent<'h> {
             return Err(err);
         };
         self.reauth_attempts += 1;
-        demoted!(error = %err, attempt = self.reauth_attempts, "auth error, waiting for re-authentication");
+        warn!(error = %err, attempt = self.reauth_attempts, "auth error, waiting for re-authentication");
         self.event_tx.send(AgentEvent::AuthRequired)?;
         let rx = rx.lock().await;
         match futures_lite::future::race(rx.recv_async(), async {
