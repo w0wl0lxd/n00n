@@ -23,7 +23,7 @@ Answers to the "how do I..." questions once n00n is running:
 - [Commands](/docs/commands/): everything behind the `/` palette, from `/model` to `/btw`.
 - [Agent Control](/docs/agent/): `n00n agent` for background workers and the shared control plane.
 - [Keybindings](/docs/keybindings/): move around the TUI without touching the mouse.
-- [Tools](/docs/tools/): the full reference for the 20 built-in tools the agent works with.
+- [Tools](/docs/tools/): the full reference for n00n's 33 built-in tools, including opt-in edit sub-tools.
 - [Permissions](/docs/permissions/): decide what the agent may do on its own and when it must ask you first.
 
 ## Connecting things
