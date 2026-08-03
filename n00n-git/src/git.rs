@@ -134,12 +134,17 @@ pub fn log(path: &Path, count: usize) -> Result<Vec<GitCommit>, GitError> {
             .decode()
             .map_err(|e| GitError::GitOperation(format!("failed to decode commit: {e}")))?;
 
-        let author = decoded.author();
+        let author = decoded
+            .author()
+            .map_err(|e| GitError::GitOperation(format!("failed to decode author: {e}")))?;
+        let time = author
+            .time()
+            .map_err(|e| GitError::GitOperation(format!("failed to decode author time: {e}")))?;
         commits.push(GitCommit {
             id: commit.id.to_hex().to_string(),
             author: author.name.to_string(),
             email: author.email.to_string(),
-            time: author.time.seconds,
+            time: time.seconds,
             message: decoded.message.to_string(),
         });
 
