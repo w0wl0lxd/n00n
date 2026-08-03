@@ -48,6 +48,7 @@ use crate::components::{
     Action, DisplayMessage, DisplayRole, ExitRequest, Status, SubmissionDispatch,
 };
 use crate::input::InputReader;
+use crate::session_lineage::{LineageLimits, LiveSession, SessionLineageGuard};
 
 use crate::color_compat;
 use crate::storage_writer::StorageWriter;
@@ -270,6 +271,7 @@ pub(crate) struct EventLoop<'t> {
     terminal: &'t mut ratatui::DefaultTerminal,
     sessions: Vec<SessionRuntime>,
     focused: usize,
+    lineage: SessionLineageGuard,
     ctx: SpawnCtx,
     input: InputReader,
     warn_rx: flume::Receiver<String>,
@@ -487,6 +489,19 @@ impl<'t> EventLoop<'t> {
 
         let picker = Arc::new(terminal_image::picker());
 
+        let lineage = SessionLineageGuard::from_live(
+            sessions.iter().map(|session| LiveSession {
+                id: session.id,
+                parent_id: session.meta.parent_id,
+            }),
+            LineageLimits {
+                max_depth: config.max_depth,
+                max_total_descendants: config.max_total_descendants,
+                max_active_descendants: config.max_active_descendants,
+            },
+        )
+        .map_err(|error| eyre!("invalid live session lineage: {error}"))?;
+
         let ctx = SpawnCtx {
             storage,
             config,
@@ -534,6 +549,7 @@ impl<'t> EventLoop<'t> {
             terminal,
             sessions: runtimes,
             focused,
+            lineage,
             ctx,
             input: InputReader::spawn()?,
             warn_rx: bg.warn_rx,
