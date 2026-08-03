@@ -296,12 +296,10 @@ rusqlite = { version = "0.40.1", default-features = false, features = [
   "modern_sqlite",
 ] }
 gix = { version = "0.70", default-features = false, features = [
-  "max-performance",
   "revision",
   "status",
   "blob-diff",
   "blame",
-  "worktree-mutation",
 ] }
 tantivy = "0.26.1"
 fs2 = "0.4.3"
