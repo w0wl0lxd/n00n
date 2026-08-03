@@ -4170,6 +4170,7 @@ dependencies = [
  "gix",
  "serde",
  "serde_json",
+ "similar",
  "tempfile",
  "thiserror 2.0.19",
  "tracing",
