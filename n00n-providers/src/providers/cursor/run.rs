@@ -35,7 +35,8 @@ use super::checksum::{
 use super::connect::{ConnectFrame, FrameBuffer, decode_frame_payload, encode_frame};
 use super::proto::{
     AGENT_MODE_AGENT, AgentServerMessage, RunFrameParams, build_run_frames,
-    exec_message_has_mcp_args, heartbeat_frame,
+    exec_message_has_mcp_args, extract_text_deltas, extract_thinking_deltas,
+    has_exec_server_message, heartbeat_frame, iter_fields,
 };
 use super::wire::{
     CLIENT_TYPE, CLIENT_VERSION, CONNECT_CONTENT_TYPE, CONNECT_PROTOCOL_VERSION, wire_model_id,
@@ -696,11 +697,31 @@ fn handle_data_frame(
         status: 502,
         message,
     })?;
-    let Some(server_msg) = AgentServerMessage::decode(&*payload).ok() else {
+    let Ok(server_msg) = AgentServerMessage::decode(&*payload) else {
+        let mut kv_op = false;
+        for (field, wire, data) in iter_fields(&payload).flatten() {
+            if field == 4
+                && wire == 2
+                && let Ok(Some(op)) = parse_kv_server_message(data)
+            {
+                queue_checkpoint_reply(op, checkpoints, outbound)?;
+                kv_op = true;
+                break;
+            }
+        }
+        let exec_skipped = has_exec_server_message(&payload);
+        let mut text_deltas = 0u32;
+        for delta in extract_text_deltas(&payload) {
+            text.push_str(&delta);
+            text_deltas = text_deltas.saturating_add(1);
+        }
+        for delta in extract_thinking_deltas(&payload) {
+            thinking.push_str(&delta);
+        }
         return Ok(FrameHandleOutcome {
-            exec_skipped: false,
-            text_deltas: 0,
-            kv_op: false,
+            exec_skipped,
+            text_deltas,
+            kv_op,
         });
     };
     if let Ok(Some(op)) = parse_kv_server_message(&server_msg.kv_server_message) {
@@ -711,7 +732,9 @@ fn handle_data_frame(
             kv_op: true,
         });
     }
-    if exec_message_has_mcp_args(&server_msg.exec_server_message) {
+    if exec_message_has_mcp_args(&server_msg.exec_server_message)
+        || exec_message_has_mcp_args(&server_msg.field_3)
+    {
         // Phase 0: n00n owns tools; ignore Cursor-side exec until Phase 1 maps them.
         // Aborting the whole turn drops text deltas that often follow.
         return Ok(FrameHandleOutcome {

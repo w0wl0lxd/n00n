@@ -202,20 +202,11 @@ fn clamp_tokens(field: &'static str, value: u64) -> u32 {
 }
 
 fn devin_usage_to_token_usage(u: &ModelUsageStats) -> TokenUsage {
-    // Devin gRPC usage reports input_tokens as the total prompt tokens
-    // (including cache reads and writes), with cache fields as details.
-    // TokenUsage.input must be the non-cached portion so that total_input()
-    // and cost() are consistent with the rest of the providers. Some
-    // responses already report input_tokens as the non-cached remainder;
-    // keep that reported value instead of saturating to zero.
-    let cached = u.cache_read_tokens.saturating_add(u.cache_write_tokens);
-    let input = if u.input_tokens >= cached {
-        u.input_tokens.saturating_sub(cached)
-    } else {
-        u.input_tokens
-    };
+    // Devin responses use both total and non-cached interpretations of
+    // input_tokens. Preserve the reported value rather than guessing from
+    // magnitudes, which can silently undercount fresh input.
     TokenUsage {
-        input: clamp_tokens("input", input),
+        input: clamp_tokens("input", u.input_tokens),
         output: clamp_tokens("output", u.output_tokens),
         cache_creation: clamp_tokens("cache_write", u.cache_write_tokens),
         cache_read: clamp_tokens("cache_read", u.cache_read_tokens),
@@ -1020,7 +1011,7 @@ mod tests {
     }
 
     #[test]
-    fn devin_usage_maps_total_input_to_non_cached() {
+    fn devin_usage_preserves_reported_input() {
         let stats = ModelUsageStats {
             input_tokens: 100,
             output_tokens: 50,
@@ -1028,11 +1019,11 @@ mod tests {
             cache_write_tokens: 20,
         };
         let usage = devin_usage_to_token_usage(&stats);
-        assert_eq!(usage.input, 50);
+        assert_eq!(usage.input, 100);
         assert_eq!(usage.output, 50);
         assert_eq!(usage.cache_read, 30);
         assert_eq!(usage.cache_creation, 20);
-        assert_eq!(usage.total_input(), 100);
+        assert_eq!(usage.total_input(), 150);
     }
 
     #[test]

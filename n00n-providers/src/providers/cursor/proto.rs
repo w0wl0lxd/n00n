@@ -357,30 +357,162 @@ pub(crate) struct KvClientMessage {
     pub set_blob_result: Option<SetBlobResult>,
 }
 
-/// Extract assistant text deltas from an `AgentServerMessage` payload.
-pub(crate) fn extract_text_deltas(payload: &[u8]) -> Result<Vec<String>, String> {
-    let msg = AgentServerMessage::decode(payload).map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
-    if let Some(update) = msg.interaction_update
-        && let Some(delta) = update.text_delta
-        && !delta.text.is_empty()
-    {
-        out.push(delta.text);
-    }
-    Ok(out)
+/// Decode length-delimited protobuf fields, yielding fields before a malformed tail.
+pub(crate) fn iter_fields(
+    mut buf: &[u8],
+) -> impl Iterator<Item = Result<(u64, u8, &[u8]), String>> + '_ {
+    std::iter::from_fn(move || {
+        while !buf.is_empty() {
+            let (tag, rest) = match decode_varint(buf) {
+                Ok(value) => value,
+                Err(error) => return Some(Err(error)),
+            };
+            buf = rest;
+            let field = tag >> 3;
+            let wire = (tag & 7) as u8;
+            match wire {
+                0 => {
+                    let (_, rest) = match decode_varint(buf) {
+                        Ok(value) => value,
+                        Err(error) => return Some(Err(error)),
+                    };
+                    buf = rest;
+                }
+                2 => {
+                    let (len, rest) = match decode_varint(buf) {
+                        Ok(value) => value,
+                        Err(error) => return Some(Err(error)),
+                    };
+                    let Ok(len) = usize::try_from(len) else {
+                        return Some(Err("protobuf length overflow".into()));
+                    };
+                    if rest.len() < len {
+                        return Some(Err("truncated length-delimited field".into()));
+                    }
+                    let (data, rest) = rest.split_at(len);
+                    buf = rest;
+                    return Some(Ok((field, wire, data)));
+                }
+                other => return Some(Err(format!("unsupported protobuf wire type {other}"))),
+            }
+        }
+        None
+    })
 }
 
-/// Extract thinking deltas from an `AgentServerMessage` payload.
-pub(crate) fn extract_thinking_deltas(payload: &[u8]) -> Result<Vec<String>, String> {
-    let msg = AgentServerMessage::decode(payload).map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
-    if let Some(update) = msg.interaction_update
-        && let Some(delta) = update.thinking_delta
-        && !delta.text.is_empty()
-    {
-        out.push(delta.text);
+pub(crate) fn decode_varint(buf: &[u8]) -> Result<(u64, &[u8]), String> {
+    let mut value = 0u64;
+    let mut shift = 0u32;
+    for (index, byte) in buf.iter().copied().enumerate() {
+        if shift >= 64 {
+            return Err("varint too long".into());
+        }
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return Ok((value, &buf[index + 1..]));
+        }
+        shift += 7;
     }
-    Ok(out)
+    Err("truncated varint".into())
+}
+
+fn nested_has_field(mut buf: &[u8], wanted: u64) -> bool {
+    while let Ok((tag, rest)) = decode_varint(buf) {
+        buf = rest;
+        let field = tag >> 3;
+        match tag & 7 {
+            0 => match decode_varint(buf) {
+                Ok((_, rest)) => buf = rest,
+                Err(_) => return false,
+            },
+            2 => {
+                let Ok((len, rest)) = decode_varint(buf) else {
+                    return false;
+                };
+                let Ok(len) = usize::try_from(len) else {
+                    return false;
+                };
+                if rest.len() < len {
+                    return false;
+                }
+                if field == wanted {
+                    return true;
+                }
+                buf = &rest[len..];
+            }
+            1 if buf.len() >= 8 => buf = &buf[8..],
+            5 if buf.len() >= 4 => buf = &buf[4..],
+            _ => return false,
+        }
+    }
+    false
+}
+
+pub(crate) fn has_exec_server_message(payload: &[u8]) -> bool {
+    for (number, wire, data) in iter_fields(payload).flatten() {
+        if matches!((number, wire), (2 | 3, 2)) && nested_has_field(data, 11) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Extract assistant text deltas, falling back to field scanning for a malformed tail.
+pub(crate) fn extract_text_deltas(payload: &[u8]) -> Vec<String> {
+    if let Ok(msg) = AgentServerMessage::decode(payload) {
+        return msg
+            .interaction_update
+            .and_then(|update| update.text_delta)
+            .filter(|delta| !delta.text.is_empty())
+            .map_or_else(Vec::new, |delta| vec![delta.text]);
+    }
+    let mut out = Vec::new();
+    for (_, _, interaction) in iter_fields(payload)
+        .flatten()
+        .filter(|(n, w, _)| *n == 1 && *w == 2)
+    {
+        for (_, _, update) in iter_fields(interaction)
+            .flatten()
+            .filter(|(n, w, _)| *n == 1 && *w == 2)
+        {
+            for (_, _, text) in iter_fields(update)
+                .flatten()
+                .filter(|(n, w, _)| *n == 1 && *w == 2)
+            {
+                out.push(String::from_utf8_lossy(text).into_owned());
+            }
+        }
+    }
+    out
+}
+
+/// Extract thinking deltas, falling back to field scanning for a malformed tail.
+pub(crate) fn extract_thinking_deltas(payload: &[u8]) -> Vec<String> {
+    if let Ok(msg) = AgentServerMessage::decode(payload) {
+        return msg
+            .interaction_update
+            .and_then(|update| update.thinking_delta)
+            .filter(|delta| !delta.text.is_empty())
+            .map_or_else(Vec::new, |delta| vec![delta.text]);
+    }
+    let mut out = Vec::new();
+    for (_, _, interaction) in iter_fields(payload)
+        .flatten()
+        .filter(|(n, w, _)| *n == 1 && *w == 2)
+    {
+        for (_, _, update) in iter_fields(interaction)
+            .flatten()
+            .filter(|(n, w, _)| *n == 4 && *w == 2)
+        {
+            for (_, _, text) in iter_fields(update)
+                .flatten()
+                .filter(|(n, w, _)| *n == 1 && *w == 2)
+            {
+                out.push(String::from_utf8_lossy(text).into_owned());
+            }
+        }
+    }
+    out
 }
 
 /// True when `exec_server_message` contains an `mcp_args` request (field 11).
@@ -454,10 +586,7 @@ mod tests {
             kv_server_message: Vec::new(),
         };
         let payload = msg.encode_to_vec();
-        assert_eq!(
-            extract_text_deltas(&payload).expect("ok"),
-            vec!["hi".to_string()]
-        );
+        assert_eq!(extract_text_deltas(&payload), vec!["hi".to_string()]);
     }
 
     #[test]
@@ -549,6 +678,32 @@ mod tests {
             vec![1, 3]
         );
         assert_eq!(fields[1].as_string().as_deref(), Some(""));
+    }
+
+    #[test]
+    fn raw_scanner_preserves_text_before_malformed_tail_and_scans_field_three() {
+        let text = TextDelta {
+            text: "hi".to_string(),
+        };
+        let update = InteractionUpdate {
+            text_delta: Some(text),
+            thinking_delta: None,
+        };
+        let mut payload = AgentServerMessage {
+            interaction_update: Some(update),
+            exec_server_message: Vec::new(),
+            field_3: ExecServerMessage {
+                mcp_args: Some(McpArgs {
+                    name: "Read".to_string(),
+                }),
+            }
+            .encode_to_vec(),
+            kv_server_message: Vec::new(),
+        }
+        .encode_to_vec();
+        payload.push(0x80);
+        assert_eq!(extract_text_deltas(&payload), vec!["hi"]);
+        assert!(has_exec_server_message(&payload));
     }
 
     #[test]
