@@ -60,7 +60,9 @@ pub fn sanitize_text(raw: &str, max_chars: usize) -> String {
                 let next_is_separator = words
                     .get(index)
                     .is_some_and(|next| *next == "=" || *next == ":");
-                if separator.is_some() || next_is_separator || key.starts_with('-') {
+                let json_like_key = key.starts_with(['{', '[']);
+                if separator.is_some() || next_is_separator || key.starts_with('-') || json_like_key
+                {
                     if next_is_separator {
                         index += 1;
                     }
@@ -128,9 +130,11 @@ fn is_sensitive_key(value: &str) -> bool {
 }
 
 fn is_secret_token(value: &str) -> bool {
-    let lower = value
-        .trim_matches(|character: char| !character.is_ascii_alphanumeric())
-        .to_ascii_lowercase();
+    let trimmed = value.trim_matches(|character: char| !character.is_ascii_alphanumeric());
+    if super::is_jwt_like(trimmed) {
+        return true;
+    }
+    let lower = trimmed.to_ascii_lowercase();
     SECRET_TOKEN_PREFIXES
         .iter()
         .filter(|prefix| **prefix != "sk-")
@@ -210,6 +214,13 @@ mod tests {
     }
 
     #[test]
+    fn consumes_quoted_value_after_json_like_bare_key() {
+        let sanitized = sanitize_text(r#"{"password" "two words"}"#, 80);
+        assert!(!sanitized.contains("two"));
+        assert!(!sanitized.contains("words"));
+    }
+
+    #[test]
     fn preserves_word_after_bare_sensitive_term() {
         let sanitized = sanitize_text("check authorization header format", 80);
         assert_eq!(sanitized, "check authorization=[REDACTED] header format");
@@ -219,6 +230,13 @@ mod tests {
     fn short_secret_prefix_requires_word_boundary() {
         let sanitized = sanitize_text("desk-top risk-taking sk-visible", 80);
         assert_eq!(sanitized, "desk-top risk-taking [REDACTED]");
+    }
+
+    #[test]
+    fn redacts_jwt_in_malformed_json_text() {
+        let jwt = format!("{}.{}.{}", "e".repeat(20), "aA1".repeat(6), "bB2".repeat(6));
+        let sanitized = sanitize_text(&format!(r#"{{"note":"{jwt}"#), 200);
+        assert!(!sanitized.contains(&jwt));
     }
 
     #[test]
