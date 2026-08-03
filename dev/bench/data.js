@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785734435037,
+  "lastUpdate": 1785738930663,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -12523,6 +12523,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 159398,
             "range": "± 10521",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5c2b718abb5f56c3d2338c73aa8f1d82b3776e94",
+          "message": "Merge pull request #231 from w0wl0lxd/fix/tui-streaming-render\n\nfix(ui): stabilize streaming rendering and redraws",
+          "timestamp": "2026-08-03T02:20:00-04:00",
+          "tree_id": "92ccdc328c6f50f5ffff07db5eb23b24a55eb34e",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/5c2b718abb5f56c3d2338c73aa8f1d82b3776e94"
+        },
+        "date": 1785738929314,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6676415,
+            "range": "± 127975",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2219989,
+            "range": "± 4670",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2219143,
+            "range": "± 38067",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8367732,
+            "range": "± 38788",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4302695,
+            "range": "± 27119",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4272645,
+            "range": "± 17326",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 583776,
+            "range": "± 889",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191464,
+            "range": "± 238",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191651,
+            "range": "± 255",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1048127,
+            "range": "± 9775",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 581904,
+            "range": "± 3481",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 581364,
+            "range": "± 2345",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 79072,
+            "range": "± 3733",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 115971,
+            "range": "± 21335",
             "unit": "ns/iter"
           }
         ]
