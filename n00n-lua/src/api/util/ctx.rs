@@ -278,10 +278,13 @@ impl UserData for LuaCtx {
             None => Ok(LuaValue::Nil),
         });
 
-        methods.add_method("set_deadline", |lua, this, secs: u64| {
+        methods.add_method("set_deadline", |lua, this, secs: Option<u64>| {
             if !matches!(this.caps, Caps::Handler { .. }) {
                 return Ok(this.cap_err_pair("set_deadline"));
             }
+            let Some(secs) = secs else {
+                return Ok((LuaValue::Nil, None));
+            };
             let handle = active_task(lua);
             let cell = handle
                 .lock()
