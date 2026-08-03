@@ -20,8 +20,8 @@ use crate::model::{Model, ModelInfo, ModelPricing};
 use crate::provider::{BoxFuture, Provider};
 use crate::providers::openai_compat::OpenAiCompatProvider;
 use crate::{
-    AgentError, CacheControl, CacheHealth, CacheKind, Message, ProviderEvent, RequestOptions,
-    StreamResponse, System, dialect,
+    AgentError, CacheControl, Message, ProviderEvent, RequestOptions, StreamResponse, System,
+    dialect,
 };
 
 use super::{ResolvedAuth, http_client};
@@ -584,19 +584,6 @@ impl Opencode {
             let result =
                 crate::providers::anthropic::parse_sse(response, event_tx, self.stream_timeout)
                     .await?;
-
-            let health = CacheHealth {
-                kind: CacheKind::Prompt,
-                valid_until: 0,
-                ttl_seconds: 0,
-                hit: false,
-            };
-            if let Err(error) = event_tx
-                .send_async(ProviderEvent::CacheHealth { cache: health })
-                .await
-            {
-                warn!(error = %error, "failed to send catalog cache health event");
-            }
 
             Ok(result)
         } else {

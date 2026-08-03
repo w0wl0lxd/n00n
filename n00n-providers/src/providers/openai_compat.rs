@@ -13,8 +13,9 @@ use tracing::{debug, warn};
 use super::{DEFAULT_TOOL_DESCRIPTION_MAX_CHARS, ResolvedAuth, trim_tool_description};
 use crate::types::{ImageDetail, TOOL_RESULT_ERROR_PREFIX};
 use crate::{
-    AgentError, CacheControl, ContentBlock, Message, ProviderEvent, RequestDeliveryMetadata,
-    RequestDeliveryPhase, Role, StopReason, StreamResponse, System, TokenUsage,
+    AgentError, CacheControl, CacheHealth, CacheKind, ContentBlock, Message, ProviderEvent,
+    RequestDeliveryMetadata, RequestDeliveryPhase, Role, StopReason, StreamResponse, System,
+    TokenUsage,
 };
 
 const STREAM_DONE: &str = "[DONE]";
@@ -73,6 +74,25 @@ pub(crate) struct OpenAiCompatProvider {
     config: &'static OpenAiCompatConfig,
     stream_timeout: Duration,
     cached_tools: Mutex<Option<(u64, Value)>>,
+}
+
+fn cache_health_from_usage(ttl_seconds: u64, usage: &TokenUsage, now: u64) -> Option<CacheHealth> {
+    if ttl_seconds == 0 {
+        return None;
+    }
+
+    let hit = usage.cache_read > 0;
+    let cached = hit || usage.cache_creation > 0;
+    Some(CacheHealth {
+        kind: CacheKind::Prompt,
+        valid_until: if cached {
+            now.saturating_add(ttl_seconds)
+        } else {
+            0
+        },
+        ttl_seconds: if cached { ttl_seconds } else { 0 },
+        hit,
+    })
 }
 
 impl OpenAiCompatProvider {
@@ -413,22 +433,12 @@ impl OpenAiCompatProvider {
         usage: &crate::TokenUsage,
         event_tx: &Sender<ProviderEvent>,
     ) {
-        use crate::{CacheHealth, CacheKind};
-
-        let ttl = self.config.cache_ttl_seconds;
-        let hit = usage.cache_read > 0;
-        let cached = hit || usage.cache_creation > 0;
-        let valid_until = if cached {
-            n00n_storage::now_epoch().saturating_add(ttl)
-        } else {
-            0
-        };
-        let ttl_seconds = if cached { ttl } else { 0 };
-        let health = CacheHealth {
-            kind: CacheKind::Prompt,
-            valid_until,
-            ttl_seconds,
-            hit,
+        let Some(health) = cache_health_from_usage(
+            self.config.cache_ttl_seconds,
+            usage,
+            n00n_storage::now_epoch(),
+        ) else {
+            return;
         };
         if let Err(error) = event_tx
             .send_async(ProviderEvent::CacheHealth { cache: health })
@@ -1084,6 +1094,34 @@ mod tests {
         supports_parallel_tool_calls: false,
         cache_ttl_seconds: 0,
     };
+
+    #[test]
+    fn cache_health_requires_known_ttl() {
+        let usage = TokenUsage {
+            cache_read: 1,
+            ..TokenUsage::default()
+        };
+
+        assert_eq!(cache_health_from_usage(0, &usage, 100), None);
+    }
+
+    #[test]
+    fn cache_health_uses_reported_usage_and_ttl() {
+        let usage = TokenUsage {
+            cache_creation: 2,
+            ..TokenUsage::default()
+        };
+
+        assert_eq!(
+            cache_health_from_usage(300, &usage, 100),
+            Some(CacheHealth {
+                kind: CacheKind::Prompt,
+                valid_until: 400,
+                ttl_seconds: 300,
+                hit: false,
+            })
+        );
+    }
 
     #[test]
     fn post_response_transport_error_is_not_retried() {

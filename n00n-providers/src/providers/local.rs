@@ -11,10 +11,7 @@ use n00n_config::providers::Protocol;
 
 use crate::model::Model;
 use crate::provider::{BoxFuture, Provider};
-use crate::{
-    AgentError, CacheHealth, CacheKind, Message, ProviderEvent, RequestOptions, StreamResponse,
-    System,
-};
+use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, System};
 
 use super::openai::responses;
 use super::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
@@ -187,18 +184,9 @@ impl Provider for LocalEndpoint {
                 .await
                 .map(|(_, response)| response)?;
 
-                let health = CacheHealth {
-                    kind: CacheKind::Prompt,
-                    valid_until: 0,
-                    ttl_seconds: 0,
-                    hit: false,
-                };
-                if let Err(error) = event_tx
-                    .send_async(ProviderEvent::CacheHealth { cache: health })
-                    .await
-                {
-                    warn!(error = %error, "failed to send local cache health event");
-                }
+                self.compat
+                    .emit_cache_health(&response.usage, event_tx)
+                    .await;
 
                 return Ok(response);
             }

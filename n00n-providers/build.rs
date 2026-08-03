@@ -70,12 +70,20 @@ fn main() {
                     ))
                 })
         };
-        let get_u64 = |key: &str, default: u64| -> u64 {
-            table
-                .get(key)
-                .and_then(toml::Value::as_integer)
-                .and_then(|v| u64::try_from(v).ok())
-                .unwrap_or_else(|| default)
+        let get_optional_u64 = |key: &str| -> u64 {
+            let Some(value) = table.get(key) else {
+                return 0;
+            };
+            let integer = value.as_integer().unwrap_or_else(|| {
+                fail(&format!(
+                    "invalid non-negative integer field '{key}' in {stem}.toml"
+                ))
+            });
+            u64::try_from(integer).unwrap_or_else(|_| {
+                fail(&format!(
+                    "invalid non-negative integer field '{key}' in {stem}.toml"
+                ))
+            })
         };
 
         let const_name = get_str("const_name");
@@ -104,7 +112,7 @@ fn main() {
             get_bool("supports_prompt_cache_breakpoint"),
             get_bool("emit_reasoning_content"),
             get_bool("supports_parallel_tool_calls"),
-            get_u64("cache_ttl_seconds", 0),
+            get_optional_u64("cache_ttl_seconds"),
         );
 
         let out_file = out_dir.join(format!("{stem}.rs"));
