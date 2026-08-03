@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785738930663,
+  "lastUpdate": 1785747788755,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -12631,6 +12631,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 115971,
             "range": "± 21335",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e8092e1cdfd603f56da30f9578ad5c857e6843d5",
+          "message": "Merge pull request #241 from w0wl0lxd/hotfix/coding-plan-slots\n\nfix(providers): cap per-process OpenAI Coding Plan concurrency",
+          "timestamp": "2026-08-03T04:33:50-04:00",
+          "tree_id": "01e673c5f567452a29b240089b5ca71562bb2d84",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/e8092e1cdfd603f56da30f9578ad5c857e6843d5"
+        },
+        "date": 1785747732925,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6653547,
+            "range": "± 11064",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2263410,
+            "range": "± 22406",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2215788,
+            "range": "± 18865",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8416935,
+            "range": "± 20772",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4381264,
+            "range": "± 24292",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4400978,
+            "range": "± 18978",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 586377,
+            "range": "± 1962",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191779,
+            "range": "± 374",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 192222,
+            "range": "± 353",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1046901,
+            "range": "± 14246",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 582526,
+            "range": "± 1522",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 582707,
+            "range": "± 4598",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 81485,
+            "range": "± 916",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 109061,
+            "range": "± 9236",
             "unit": "ns/iter"
           }
         ]
