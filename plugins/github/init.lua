@@ -116,10 +116,11 @@ local function dispatch(input)
   end
 
   if command == "create_pr" then
-    if not input.head or not input.base or not input.title or not input.body then
-      return { llm_output = "error: head, base, title, and body required for create_pr", is_error = true }
+    if not input.head or not input.base or not input.title then
+      return { llm_output = "error: head, base, and title required for create_pr", is_error = true }
     end
-    local ok, result = pcall(n00n_github.create_pr, owner, repo, input.head, input.base, input.title, input.body, input.token)
+    local ok, result =
+      pcall(n00n_github.create_pr, owner, repo, input.head, input.base, input.title, input.body, input.token)
     if not ok then
       return { llm_output = "error: " .. tostring(result), is_error = true }
     end
@@ -127,14 +128,14 @@ local function dispatch(input)
   end
 
   if command == "add_comment" then
-    if not input.issue_number or not input.body then
+    if not input.issue_number or type(input.issue_number) ~= "number" or not input.body then
       return { llm_output = "error: issue_number and body required for add_comment", is_error = true }
     end
     local ok, result = pcall(n00n_github.add_comment, owner, repo, input.issue_number, input.body, input.token)
     if not ok then
       return { llm_output = "error: " .. tostring(result), is_error = true }
     end
-    return { llm_output = string.format("Added comment #%d\n%s", result.id, result.html_url) }
+    return { llm_output = string.format("Added comment %s\n%s", result.html_url) }
   end
 
   return { llm_output = "error: unknown command: " .. tostring(command), is_error = true }
@@ -144,24 +145,33 @@ n00n.api.register_tool({
   name = "github",
   kind = "read",
   description = [[
-Query GitHub repositories, issues, and pull requests using the REST API. Token sources: GITHUB_TOKEN env var, optional token parameter, or gh CLI fallback.
+GitHub REST API (read/write). Tokens: GITHUB_TOKEN, optional token param, or gh CLI.
 ]],
   schema = {
     type = "object",
     properties = {
       command = {
         type = "string",
-        enum = { "list_issues", "create_issue", "list_prs", "get_repo", "get_issue", "get_pr", "create_pr", "add_comment" },
+        enum = {
+          "list_issues",
+          "create_issue",
+          "list_prs",
+          "get_repo",
+          "get_issue",
+          "get_pr",
+          "create_pr",
+          "add_comment",
+        },
         required = true,
       },
       owner = { type = "string" },
       repo = { type = "string" },
       title = { type = "string" },
       body = { type = "string" },
-      head = { type = "string" },
-      base = { type = "string" },
       issue_number = { type = "number" },
       pr_number = { type = "number" },
+      head = { type = "string" },
+      base = { type = "string" },
       token = { type = "string" },
     },
   },
