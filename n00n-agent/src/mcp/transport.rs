@@ -29,15 +29,13 @@ pub trait McpTransport: Send + Sync {
         method: &'a str,
         params: Option<Value>,
     ) -> BoxFuture<'a, Result<(), McpError>>;
+    fn begin_shutdown(&self) {}
     fn shutdown(&self) -> BoxFuture<'_, ()>;
     fn force_shutdown(&self) -> BoxFuture<'_, ()> {
         Box::pin(async {})
     }
     fn server_name(&self) -> &Arc<str>;
     fn transport_kind(&self) -> &'static str;
-    fn child_pids(&self) -> Vec<u32> {
-        Vec::new()
-    }
 }
 
 fn invalid_response(name: &Arc<str>, e: impl std::fmt::Display) -> McpError {
