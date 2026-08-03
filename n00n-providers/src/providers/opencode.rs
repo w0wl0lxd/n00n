@@ -511,7 +511,7 @@ impl Opencode {
         opts.thinking
             .apply_reasoning_effort(&mut body, &dialect::PREFER_HIGH, model);
         self.chat_compat
-            .do_stream(model, &[], &body, event_tx, auth)
+            .do_stream(model, &[], &body, event_tx, auth, opts)
             .await
     }
 

@@ -180,6 +180,7 @@ impl Provider for LocalEndpoint {
                     event_tx,
                     &auth,
                     self.compat.stream_timeout(),
+                    &opts,
                 )
                 .await
                 .map(|(_, response)| response);
@@ -201,7 +202,7 @@ impl Provider for LocalEndpoint {
             }
 
             self.compat
-                .do_stream(model, &[], &body, event_tx, &auth)
+                .do_stream(model, &[], &body, event_tx, &auth, &opts)
                 .await
         })
     }
