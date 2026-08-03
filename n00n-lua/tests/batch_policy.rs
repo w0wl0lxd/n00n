@@ -389,6 +389,48 @@ fn lines_text(lines: &[Vec<(String, SpanStyle)>]) -> String {
         .join("\n")
 }
 
+/// History stores the model's raw JSON, so restore/header must accept the
+/// schema alias `tool_uses` the same way live `parse`/`validate` does.
+#[test]
+fn restore_accepts_tool_uses_alias() {
+    let (_reg, host) = load_batch_host();
+    let handle = host.event_handle().expect("event handle available");
+    let (tx, rx) = flume::unbounded();
+    handle.request_restore(
+        n00n_lua::RestoreItem {
+            tool: Arc::from(BATCH_TOOL),
+            tool_use_id: "restore_id".to_owned(),
+            output: "irrelevant".to_owned(),
+            input: json!({ "tool_uses": [{ "tool": "hdrtool", "parameters": { "x": "A" } }] }),
+            is_error: false,
+            tool_output_lines: ToolOutputLines::default(),
+            theme_gen: None,
+            clicks: Vec::new(),
+            state: Some(json!({ "children": [
+                { "tool": "hdrtool", "status": "success", "output": "line one\nline two", "annotation": "12 lines" }
+            ] })),
+        },
+        EventSender::new(tx, 0),
+    );
+    handle.wait_restore_complete_for_test();
+    host.load_source("barrier", "").unwrap();
+
+    let mut body = String::new();
+    let mut header = String::new();
+    for env in rx.drain() {
+        match env.event {
+            AgentEvent::ToolSnapshot { snapshot, .. } => body = snapshot.text(),
+            AgentEvent::ToolHeaderSnapshot { snapshot, .. } => header = snapshot.text(),
+            _ => {}
+        }
+    }
+    assert!(
+        body.contains("line one") && body.contains("H:A"),
+        "tool_uses restore must rebuild children from state: {body}"
+    );
+    assert_eq!(header, "1 tools", "tool_uses header must count children: {header}");
+}
+
 /// Pins the child header contract: indicator span, `{tool}> ` prefix in
 /// `tool_prefix` style, the child's own header spans, then the persisted
 /// annotation like standalone (`push_header` in `tool_display.rs`).
