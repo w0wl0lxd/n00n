@@ -1,5 +1,39 @@
 local router = require("router")
 
+local json = (n00n and n00n.json) or require("n00n.json")
+
+local function try_read_one(path)
+  if n00n and n00n.fs and n00n.fs.read then
+    local content = n00n.fs.read(path)
+    if content then
+      return content
+    end
+  else
+    local f = io.open(path, "r")
+    if f then
+      local content = f:read("*a")
+      f:close()
+      return content
+    end
+  end
+  return nil
+end
+
+local function read_file(name)
+  local candidates = {
+    name,
+    "../" .. name,
+    "../../" .. name,
+  }
+  for _, path in ipairs(candidates) do
+    local content = try_read_one(path)
+    if content then
+      return content
+    end
+  end
+  error("could not read " .. name)
+end
+
 local failures = {}
 
 local function case(name, fn)
@@ -60,6 +94,7 @@ case("build_codegraph_input", function()
     intent = "cross_file",
   }, "cross_file")
   eq(backend, "codegraph")
+  eq(input.command, "explore")
   eq(input.query, "how does auth work")
   eq(input.projectPath, "/tmp/project")
 end)
@@ -89,8 +124,8 @@ case("what_does_call_routes_to_callees", function()
   eq(router.extract_symbol("what does restore_item call", "callees"), "restore_item")
 end)
 
-case("impact_routes_to_cross_file", function()
-  eq(router.normalize_intent({ query = "impact of changing restore_item" }), "cross_file")
+case("impact_query_auto_detects", function()
+  eq(router.normalize_intent({ query = "impact of changing restore_item" }), "impact")
 end)
 
 case("symbol_case_preserved", function()
@@ -110,6 +145,99 @@ case("cache_key_is_injective", function()
   local key_a = router.cache_key("codegraph", { query = "foo", projectPath = "bar" })
   local key_b = router.cache_key("codegraph", { query = "bar", projectPath = "foo" })
   assert(key_a ~= key_b, "swapped query/projectPath must produce different cache keys")
+end)
+
+-- New intent tests (T008-T012)
+case("search_intent_routes_to_semblem", function()
+  eq(router.normalize_intent({ query = "agent loop", intent = "search" }), "search")
+  local backend, input = router.build_backend_input({ query = "agent loop", intent = "search" }, "search")
+  eq(backend, "semblem")
+  eq(input.command, "search")
+  eq(input.query, "agent loop")
+end)
+
+case("skeleton_intent_routes_to_index", function()
+  eq(router.normalize_intent({ query = "skeleton src/main.rs", intent = "skeleton" }), "skeleton")
+  local backend, input = router.build_backend_input({ query = "skeleton src/main.rs", intent = "skeleton" }, "skeleton")
+  eq(backend, "index")
+  eq(input.path, "src/main.rs")
+end)
+
+case("skeleton_intent_requires_file_path", function()
+  local backend, input = router.build_backend_input({ query = "skeleton", intent = "skeleton" }, "skeleton")
+  eq(backend, nil)
+  assert(input.is_error, "should return error when no file path provided")
+end)
+
+case("symbol_intent_routes_to_codegraph", function()
+  eq(router.normalize_intent({ query = "AuthService", intent = "symbol" }), "symbol")
+  local backend, input = router.build_backend_input({ query = "AuthService", intent = "symbol" }, "symbol")
+  eq(backend, "codegraph")
+  eq(input.command, "node")
+  eq(input.name, "AuthService")
+end)
+
+case("impact_intent_routes_to_codegraph", function()
+  eq(router.normalize_intent({ query = "impact of changing restore_item", intent = "impact" }), "impact")
+  local backend, input =
+    router.build_backend_input({ query = "impact of changing restore_item", intent = "impact" }, "impact")
+  eq(backend, "codegraph")
+  eq(input.command, "impact")
+  eq(input.symbol, "restore_item")
+  eq(input.projectPath, ".")
+end)
+
+case("trace_intent_routes_to_arbor", function()
+  eq(router.normalize_intent({ query = "call path from foo to bar", intent = "trace" }), "trace")
+  local backend, input = router.build_backend_input({ query = "call path from foo to bar", intent = "trace" }, "trace")
+  eq(backend, "arbor")
+  eq(input.command, "trace_path")
+  eq(input.from_symbol, "foo")
+  eq(input.to_symbol, "bar")
+end)
+
+case("symbol_intent_extracts_symbol", function()
+  eq(router.extract_symbol("symbol AuthService", "symbol"), "AuthService")
+  eq(router.extract_symbol("AuthService symbol", "symbol"), "AuthService")
+  eq(router.extract_symbol("definition of AuthService", "symbol"), "AuthService")
+  eq(router.extract_symbol("declaration of AuthService", "symbol"), "AuthService")
+end)
+
+case("impact_intent_extracts_symbol_with_slash", function()
+  eq(router.extract_symbol("blast radius of src/main.rs", "impact"), "src/main.rs")
+  eq(router.extract_symbol("affected by change in src/main.rs", "impact"), "src/main.rs")
+  eq(router.extract_symbol("affected by src/main.rs", "impact"), "src/main.rs")
+end)
+
+case("skeleton_intent_extracts_file_path", function()
+  eq(router.extract_file_path("skeleton src/main.rs"), "src/main.rs")
+  eq(router.extract_file_path("structure src/main.rs"), "src/main.rs")
+  eq(router.extract_file_path("src/main.rs"), "src/main.rs")
+  eq(router.extract_file_path("no file here"), nil)
+end)
+
+case("trace_intent_detects_trace_from", function()
+  eq(router.parse_arbor_command({ query = "trace from foo to bar" }), "trace_path")
+  eq(router.parse_arbor_command({ query = "trace foo to bar" }), "trace_path")
+end)
+
+-- T020: Router classification accuracy test (SC-001)
+case("router_classification_accuracy", function()
+  local content = read_file("tests/fixtures/explore-queries.json")
+
+  local queries = json.decode(content)
+  assert(#queries > 0, "fixture must contain at least one query")
+
+  local correct = 0
+  for _, q in ipairs(queries) do
+    local inferred = router.normalize_intent({ query = q.query })
+    if inferred == q.intent then
+      correct = correct + 1
+    end
+  end
+
+  local accuracy = (correct / #queries) * 100
+  assert(accuracy >= 90, "router classification accuracy " .. accuracy .. "% is below 90% threshold")
 end)
 
 if #failures > 0 then

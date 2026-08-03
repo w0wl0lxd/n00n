@@ -428,7 +428,10 @@ fn restore_accepts_tool_uses_alias() {
         body.contains("line one") && body.contains("H:A"),
         "tool_uses restore must rebuild children from state: {body}"
     );
-    assert_eq!(header, "1 tools", "tool_uses header must count children: {header}");
+    assert_eq!(
+        header, "1 tools",
+        "tool_uses header must count children: {header}"
+    );
 }
 
 /// Pins the child header contract: indicator span, `{tool}> ` prefix in
