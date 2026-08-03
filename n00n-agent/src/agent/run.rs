@@ -43,6 +43,7 @@ const HISTORY_REPLAY_PERMISSION_ID: &str = "history-replay";
 const HISTORY_REPLAY_TOOL: &str = "history_replay";
 const AMBIGUOUS_REPLAY_PERMISSION_ID: &str = "ambiguous-request-replay";
 const AMBIGUOUS_REPLAY_TOOL: &str = "ambiguous_request_replay";
+const AMBIGUOUS_REPLAY_RESET_MESSAGE: &str = "Resetting partial output before approved replay";
 const FUSION_REVIEW_PROMPT: &str = "Review the sidekick result above, verify it against the task, and produce the final lead response.";
 const FUSION_FALLBACK_PROMPT: &str = "The sidekick delegation failed. Continue with exactly one lead fallback attempt and produce the final response without delegating again.";
 
@@ -388,6 +389,7 @@ impl<'h> Agent<'h> {
             protect_history_replay,
             allow_history_replay: self.permissions.is_yolo(),
             safety_identifier: None,
+            moderation: false,
         };
 
         info!(
