@@ -243,7 +243,7 @@ pub fn redact_json_value_for_log(value: &Value) -> Value {
                     }
                 }
             } else {
-                text.clone().into()
+                sanitize::sanitize_text(text, LOG_ARG_MAX_CHARS).into()
             }
         }
         other => other.clone(),
@@ -565,6 +565,13 @@ mod tests {
         let redacted = redact_json_value_for_log(&value);
         assert!(!redacted["config"].as_str().unwrap().contains("sk-live"));
         assert_eq!(redacted["plain"], "text");
+    }
+
+    #[test]
+    fn log_redaction_sanitizes_malformed_stringified_json() {
+        let value = json!({"config": r#"{"password":"live-secret"#});
+        let redacted = redact_json_value_for_log(&value);
+        assert!(!redacted["config"].as_str().unwrap().contains("live-secret"));
     }
 
     #[test_case("plain", "plain"; "plain")]
