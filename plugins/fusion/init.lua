@@ -18,8 +18,10 @@ local schema = {
     definition_of_done = { type = "string", required = true, description = "Success checks (tests, artifacts)." },
     escalation_triggers = { type = { "string", "null" }, required = true, description = "When to escalate to lead." },
     subagent_type = {
-      type = { "string", "null" },
-      enum = { "research", "general" },
+      anyOf = {
+        { type = "string", enum = { "research", "general" } },
+        { type = "null" },
+      },
       required = true,
       description = "Sidekick type: research (read-only) or general.",
     },

@@ -2891,6 +2891,10 @@ fn ctx_set_deadline_nil_noops() {
                 if err then
                     return {{ llm_output = "set_deadline(nil) failed: " .. tostring(err), is_error = true }}
                 end
+                local _, second_err = ctx:set_deadline(5)
+                if second_err then
+                    return {{ llm_output = "set_deadline(5) failed: " .. tostring(second_err), is_error = true }}
+                end
                 return "ok"
             end
         }})"#,
@@ -3810,13 +3814,28 @@ fn call_tool_resolves_lua_tool_and_reports_unknown() {
 
 struct ScriptedSessionProvider {
     responses: Mutex<VecDeque<Result<StreamResponse, AgentError>>>,
+    seen_tools: Option<Arc<Mutex<Option<serde_json::Value>>>>,
 }
 
 impl ScriptedSessionProvider {
     fn new(responses: impl IntoIterator<Item = Result<StreamResponse, AgentError>>) -> Self {
         Self {
             responses: Mutex::new(responses.into_iter().collect()),
+            seen_tools: None,
         }
+    }
+
+    fn with_tools_capture(
+        responses: impl IntoIterator<Item = Result<StreamResponse, AgentError>>,
+    ) -> (Self, Arc<Mutex<Option<serde_json::Value>>>) {
+        let seen_tools = Arc::new(Mutex::new(None));
+        (
+            Self {
+                responses: Mutex::new(responses.into_iter().collect()),
+                seen_tools: Some(Arc::clone(&seen_tools)),
+            },
+            seen_tools,
+        )
     }
 }
 
@@ -3826,12 +3845,15 @@ impl Provider for ScriptedSessionProvider {
         _: &'a Model,
         _: &'a [Message],
         _: &'a System,
-        _: &'a serde_json::Value,
+        tools: &'a serde_json::Value,
         _: &'a flume::Sender<ProviderEvent>,
         _: RequestOptions,
         _: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
-        Box::pin(async {
+        Box::pin(async move {
+            if let Some(seen_tools) = &self.seen_tools {
+                *seen_tools.lock().unwrap() = Some(tools.clone());
+            }
             self.responses
                 .lock()
                 .unwrap()
@@ -4080,6 +4102,57 @@ fn session_opts_validation_rejects(opts: &str, expected: &str) {
     assert!(out.contains(expected), "got: {out}");
 }
 
+fn captured_session_tools(opts: &str) -> serde_json::Value {
+    let (provider, seen_tools) =
+        ScriptedSessionProvider::with_tools_capture([Ok(session_response(
+            vec![ContentBlock::Text {
+                text: "finished".to_owned(),
+            }],
+            TokenUsage::default(),
+            StopReason::EndTurn,
+        ))]);
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "session_tools_probe",
+            description = "test",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                local sess, open_err = n00n.agent.session(ctx, {opts})
+                if open_err then return open_err end
+                local _, prompt_err = sess:prompt("check tools")
+                sess:close()
+                return prompt_err or "ok"
+            end
+        }})"#
+    );
+    host.load_source("session_tools_probe", &src).unwrap();
+    let entry = reg.get("session_tools_probe").unwrap();
+    let invocation = entry.tool.parse(&serde_json::json!({})).unwrap();
+    let (event_tx, event_rx) = flume::unbounded();
+    let event_tx = n00n_agent::EventSender::new(event_tx, 0);
+    let mut ctx = n00n_agent::tools::test_support::stub_ctx_with(
+        &n00n_agent::AgentMode::Build,
+        Some(&event_tx),
+        None,
+    );
+    ctx.provider = Arc::new(provider);
+    ctx.model = Arc::new(Model::from_spec("anthropic/claude-opus-4-8").unwrap());
+    ctx.registry = Arc::clone(&reg);
+    let output = smol::block_on(invocation.execute(&ctx))
+        .output
+        .expect("session tools probe failed");
+    drop(event_rx);
+    assert_eq!(output.as_text(), "ok");
+    seen_tools
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("session provider did not receive tool definitions")
+}
+
 #[test]
 fn session_accepts_empty_table_as_no_tools() {
     let reg = fresh_registry();
@@ -4101,6 +4174,22 @@ fn session_accepts_empty_table_as_no_tools() {
     host.load_source("session_empty_tools", &src).unwrap();
     let out = exec_tool(&reg, "session_empty_tools", serde_json::json!({})).unwrap();
     assert_eq!(out, "ok");
+}
+
+#[test]
+fn session_explicit_empty_tools_sends_no_tools() {
+    assert_eq!(
+        captured_session_tools("{ tools = {} }"),
+        serde_json::json!([])
+    );
+}
+
+#[test]
+fn session_nil_tools_matches_omitted_tools() {
+    assert_eq!(
+        captured_session_tools("{ tools = nil }"),
+        captured_session_tools("{}")
+    );
 }
 
 fn load_img_tool(host: &PluginHost) {

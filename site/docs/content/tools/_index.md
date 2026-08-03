@@ -9,6 +9,8 @@ group = "Reference"
 
 n00n ships with 33 built-in tools. This is the full reference.
 
+Required nullable parameters must still be included. Pass `null` to choose the listed default, such as for `bash.workdir` or `bash.timeout`.
+
 ## File Operations
 
 ### `bash` *(lua plugin)*
@@ -18,11 +20,11 @@ Commands run in <cwd> by default.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `workdir` | object | yes | cwd | Working directory |
-| `timeout` | object | yes | 120 | Timeout seconds |
+| `workdir` | string/null | yes | cwd | Working directory |
+| `timeout` | integer/null | yes | 120 | Timeout seconds |
 | `command` | string | yes |  | Bash command to execute |
-| `justification` | object | yes |  | Required when command is broad/unbounded. Explain scope and bound assumptions. |
-| `description` | object | yes |  | Short description (3-5 words) of what the command does |
+| `justification` | string/null | yes |  | Required when command is broad/unbounded. Explain scope and bound assumptions. |
+| `description` | string/null | yes |  | Short description (3-5 words) of what the command does |
 
 ### `read` *(lua plugin)*
 
@@ -30,9 +32,9 @@ Read a file or directory. Returns contents with line numbers (1-indexed).
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `offset` | object | yes |  | Starting line number (1-indexed, default 1) |
+| `offset` | integer/null | yes |  | Starting line number (1-indexed, default 1) |
 | `path` | string | yes |  | File or directory path (absolute, relative, or ~/) |
-| `limit` | object | yes | 500 | Maximum number of lines to read |
+| `limit` | integer/null | yes | 500 | Maximum number of lines to read |
 
 ### `write` *(lua plugin)*
 
@@ -49,10 +51,10 @@ Replace exact string match in a file. `old_string` must match uniquely unless `r
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `replace_all` | object | yes |  |
+| `replace_all` | boolean/null | yes |  |
 | `path` | string | yes |  |
 | `old_string` | string | yes |  |
-| `new_string` | object | yes |  |
+| `new_string` | string/null | yes |  |
 
 ### `multiedit` *(lua plugin)*
 
@@ -115,20 +117,20 @@ Find files by glob pattern. Respects .gitignore. Returns matching paths sorted b
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `pattern` | string | yes |  | Glob pattern (e.g. '*.rs', 'src/**/*.lua') |
-| `path` | object | yes | cwd | Directory to search |
+| `path` | string/null | yes | cwd | Directory to search |
 
 ### `grep` *(lua plugin)*
 
-Search file contents using ripgrep-compatible regex. Respects .gitignore. Results grouped by file, sorted by modification time. This is not a shell: use `pattern` and a single `path`. For multiple paths, search each in a batch call. Do NOT wrap pattern in quotes or double-escape (e.g. `\[` not `\\[`). Multi-line matching auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`.
+Search file contents using ripgrep-compatible regex. This is not a shell. Use `pattern` and one `path`. For multiple paths, put separate calls in a `batch`. Pass the pattern without shell quotes. Escape regex characters once, such as `\[` rather than `\\[`. Searches respect `.gitignore`. Results are grouped by file and sorted by modification time. Multi-line matching turns on when the pattern contains `\n`, `(?s)`, or `(?m)`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `include` | object | yes |  |
-| `path` | object | yes |  |
+| `include` | string/null | yes |  |
+| `path` | string/null | yes |  |
 | `pattern` | string | yes |  |
-| `context_after` | object | yes |  |
-| `limit` | object | yes |  |
-| `context_before` | object | yes |  |
+| `context_after` | integer/null | yes |  |
+| `limit` | integer/null | yes |  |
+| `context_before` | integer/null | yes |  |
 
 ### `index` *(lua plugin)*
 
@@ -146,11 +148,11 @@ View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read`
 |-----------|------|----------|---------|-------------|
 | `crop` | array/null | yes |  | Crop region as [x, y, width, height] |
 | `path` | string | yes |  | Image file path (absolute, relative, or ~/) |
-| `allow_gif_animation` | object | yes |  | Allow GIF animation (provider must support it) |
-| `tile_width` | object | yes | 2000; max 8000 | Tile width in pixels |
-| `tile_index` | object | yes |  | One-based tile index for tiling large images |
-| `static_image` | object | yes |  | Force static PNG (for animated GIF/webp) |
-| `tile_height` | object | yes | 2000; max 8000 | Tile height in pixels |
+| `allow_gif_animation` | boolean/null | yes |  | Allow GIF animation (provider must support it) |
+| `tile_width` | integer/null | yes | 2000; max 8000 | Tile width in pixels |
+| `tile_index` | integer/null | yes |  | One-based tile index for tiling large images |
+| `static_image` | boolean/null | yes |  | Force static PNG (for animated GIF/webp) |
+| `tile_height` | integer/null | yes | 2000; max 8000 | Tile height in pixels |
 
 ### `codegraph` *(lua plugin)*
 
@@ -174,14 +176,14 @@ Search indexed source code with BM25 keyword ranking. Builds a `.n00n/search/` i
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `repo` | object | yes |  | Project root (defaults to cwd) |
-| `line` | object | yes |  | Line number (for find_related command) |
-| `file_path` | object | yes |  | File path (for find_related command) |
-| `query` | object | yes |  | Search query (for search command) |
+| `repo` | string/null | yes |  | Project root (defaults to cwd) |
+| `line` | integer/null | yes |  | Line number (for find_related command) |
+| `file_path` | string/null | yes |  | File path (for find_related command) |
+| `query` | string/null | yes |  | Search query (for search command) |
 | `command` | string | yes |  | Semblem command: search, find_related, or savings |
 | `mode` | string/null | yes |  | Search mode: bm25 (default), hybrid, or semantic |
 | `content` | string/null | yes | code | Content filter: docs, config, code, or all |
-| `top_k` | object | yes | 5 | Number of results to return |
+| `top_k` | integer/null | yes | 5 | Number of results to return |
 
 ### `arbor` *(lua plugin)*
 
@@ -216,7 +218,7 @@ Execute Python in sandboxed interpreter with tools as callable functions. Use fo
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `timeout` | object | yes | 30 | Script timeout seconds |
+| `timeout` | integer/null | yes | 30 | Script timeout seconds |
 | `code` | string | yes |  | Python code. Tools are async functions returning strings. MUST await every call: `result = await read(path='/file')`. Use `await asyncio.gather(...)` for concurrency. |
 
 ### `question` *(lua plugin)*
@@ -399,10 +401,10 @@ Beta Fusion delegation: the lead plans and reviews while a conservative sidekick
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `description` | string | yes | Short label (3-5 words). |
-| `constraints` | object | yes | Scope and patterns. |
+| `constraints` | string/null | yes | Scope and patterns. |
 | `definition_of_done` | string | yes | Success checks (tests, artifacts). |
 | `goal` | string | yes | What to accomplish. |
-| `escalation_triggers` | object | yes | When to escalate to lead. |
+| `escalation_triggers` | string/null | yes | When to escalate to lead. |
 | `subagent_type` | string/null | yes | Sidekick type: research (read-only) or general. |
 
 ## Web
@@ -414,7 +416,7 @@ Fetch a URL and return its contents. Supports markdown (default), text, or html.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `url` | string | yes |  | URL to fetch (http:// or https://) |
-| `timeout` | object | yes | 30, max 120 | Timeout in seconds |
+| `timeout` | integer/null | yes | 30, max 120 | Timeout in seconds |
 | `format` | string/null | yes |  | Output format: markdown (default), text, or html |
 
 ### `websearch` *(lua plugin)*
@@ -423,5 +425,5 @@ Search the web for real-time information using Exa AI.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `num_results` | object | yes | 8 | Number of results to return |
+| `num_results` | integer/null | yes | 8 | Number of results to return |
 | `query` | string | yes |  | Search query |

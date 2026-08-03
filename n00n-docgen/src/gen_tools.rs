@@ -337,7 +337,12 @@ pub fn generate() -> String {
         "n00n ships with {total} built-in tools. This is the full reference."
     )
     .unwrap();
-
+    writeln!(out).unwrap();
+    writeln!(
+        out,
+        "Required nullable parameters must still be included. Pass `null` to choose the listed default, such as for `bash.workdir` or `bash.timeout`."
+    )
+    .unwrap();
     let mut rendered: HashSet<&str> = HashSet::new();
 
     for (section_name, tool_names) in SECTIONS {
