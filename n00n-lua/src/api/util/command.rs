@@ -403,6 +403,47 @@ pub enum WinCommand {
     Close,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionCaller {
+    session_id: Option<String>,
+    tool: Option<String>,
+    host: bool,
+}
+
+impl SessionCaller {
+    #[must_use]
+    pub fn host() -> Self {
+        Self {
+            session_id: None,
+            tool: None,
+            host: true,
+        }
+    }
+
+    pub(crate) fn agent(session_id: Option<String>, tool: Option<String>) -> Self {
+        Self {
+            session_id,
+            tool,
+            host: false,
+        }
+    }
+
+    #[must_use]
+    pub fn is_host(&self) -> bool {
+        self.host
+    }
+
+    #[must_use]
+    pub fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
+    }
+
+    #[must_use]
+    pub fn tool(&self) -> Option<&str> {
+        self.tool.as_deref()
+    }
+}
+
 #[derive(Debug)]
 pub enum SessionRequest {
     List,
@@ -413,6 +454,7 @@ pub enum SessionRequest {
     Current,
     New {
         prompt: Option<String>,
+        title: Option<String>,
         focus: bool,
         parent_id: Option<String>,
     },
@@ -457,6 +499,7 @@ pub enum UiAction {
         reply_tx: flume::Sender<Option<String>>,
     },
     Session {
+        caller: SessionCaller,
         req: SessionRequest,
         reply_tx: flume::Sender<SessionReply>,
     },

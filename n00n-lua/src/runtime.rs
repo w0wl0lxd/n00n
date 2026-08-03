@@ -22,6 +22,7 @@ use n00n_agent::{BufferSnapshot, SharedBuf, SnapshotLine, SnapshotSpan, SpanStyl
 use serde_json::Value;
 
 use n00n_config::RawConfig;
+use n00n_storage::id::SessionRef;
 
 use crate::api::autocmd::AutocmdStore;
 use crate::api::create_n00n_global;
@@ -291,6 +292,8 @@ pub(crate) struct TaskCell {
     pub(crate) jobs: JobStore,
     pub(crate) bufs: BufferStore,
     pub(crate) live: Option<LiveCtx>,
+    pub(crate) caller_session_id: Option<SessionRef>,
+    pub(crate) caller_tool: Option<Arc<str>>,
     /// The buf that owns click routing for this task: the last one passed
     /// to `ctx:live_buf` or returned as a reply/restore `body`. Fallback is
     /// the first buf the task created (`bufs.live_buf()`).
@@ -323,6 +326,8 @@ impl TaskCell {
             jobs: JobStore::new(),
             bufs: BufferStore::new(),
             live,
+            caller_session_id: None,
+            caller_tool: None,
             root_buf: None,
             live_sink: None,
             inline_spawn: None,
@@ -606,14 +611,31 @@ pub(crate) fn with_live_ctx<R>(lua: &Lua, f: impl FnOnce(&LiveCtx) -> R) -> Opti
     lock_cell(&handle).live.as_ref().map(f)
 }
 
+pub(crate) fn active_session_caller(lua: &Lua) -> crate::api::util::command::SessionCaller {
+    let Some(handle) = lua.app_data_ref::<TaskHandle>() else {
+        return crate::api::util::command::SessionCaller::agent(None, None);
+    };
+    let cell = lock_cell(&handle);
+    crate::api::util::command::SessionCaller::agent(
+        cell.caller_session_id.as_ref().map(ToString::to_string),
+        cell.caller_tool.as_ref().map(ToString::to_string),
+    )
+}
+
 pub(crate) fn enqueue_async_task(lua: &Lua, work_fn: RegistryKey) -> Result<(), mlua::Error> {
     let handle = lua.app_data_ref::<TaskHandle>();
-    let (cancel, live_ctx, parent_deadline) = match &handle {
+    let (cancel, live_ctx, parent_deadline, caller_session_id, caller_tool) = match &handle {
         Some(h) => {
             let cell = lock_cell(h);
-            (cell.cancel.clone(), cell.live.clone(), cell.deadline.get())
+            (
+                cell.cancel.clone(),
+                cell.live.clone(),
+                cell.deadline.get(),
+                cell.caller_session_id.clone(),
+                cell.caller_tool.clone(),
+            )
         }
-        None => (CancelToken::none(), None, None),
+        None => (CancelToken::none(), None, None, None, None),
     };
 
     let deadline =
@@ -624,6 +646,8 @@ pub(crate) fn enqueue_async_task(lua: &Lua, work_fn: RegistryKey) -> Result<(), 
         cancel,
         deadline,
         live_ctx,
+        caller_session_id,
+        caller_tool,
         owner: None,
         parent: None,
     };
@@ -788,6 +812,8 @@ pub(crate) struct PendingAsyncTask {
     pub cancel: CancelToken,
     pub deadline: Option<Instant>,
     pub live_ctx: Option<LiveCtx>,
+    pub caller_session_id: Option<SessionRef>,
+    pub caller_tool: Option<Arc<str>>,
     pub owner: Option<Arc<BufsClaim>>,
     /// Parent task that spawned this `noon.async.run` task, if any.
     /// Used to decrement the parent's `async_tasks` counter on completion.
@@ -889,10 +915,12 @@ fn spawn_async_task(
         let _guard = AsyncTaskGuard::new(parent);
         let _gate_guard = g.acquire().await;
 
-        let scope = TaskScope::new(
-            &lua,
-            TaskCell::new(task.cancel.clone(), task.deadline, task.live_ctx.clone()),
-        );
+        let scope = TaskScope::new(&lua, {
+            let mut cell = TaskCell::new(task.cancel.clone(), task.deadline, task.live_ctx.clone());
+            cell.caller_session_id = task.caller_session_id.clone();
+            cell.caller_tool = task.caller_tool.clone();
+            cell
+        });
         let result = scope
             .scope_future(run_work_fn(&lua, &task.work_fn, task.deadline))
             .await;
@@ -1469,6 +1497,7 @@ impl LuaRuntime {
                     schema: t.schema,
                     audience: t.audience,
                     kind: t.kind.clone(),
+                    workload: t.workload,
                     tx: self.tx.clone(),
                     plugin: Arc::clone(&name),
                     has_header_fn: t.header_key.is_some(),
@@ -2070,6 +2099,7 @@ async fn run_tool_call(
         Err(e) => return ToolCallReply::err(strip_traceback(&e)),
     };
     let live_sink = ctx.agent().and_then(|a| a.live_sink.clone());
+    let caller_session_id = ctx.agent().and_then(|agent| agent.session_id.clone());
     let ctx_ud = match lua.create_userdata(*ctx) {
         Ok(u) => u,
         Err(e) => return ToolCallReply::err(strip_traceback(&e)),
@@ -2081,6 +2111,8 @@ async fn run_tool_call(
     };
     let live_id = live.as_ref().map(|l| l.tool_use_id.clone());
     let mut cell = TaskCell::new(cancel, deadline, live);
+    cell.caller_session_id = caller_session_id;
+    cell.caller_tool = Some(Arc::clone(&tool));
     cell.live_sink = live_sink;
     let scope = TaskScope::new(&lua, cell);
     let handle = Arc::clone(scope.handle());

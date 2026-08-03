@@ -181,6 +181,7 @@ impl Chat {
             }
             AgentEvent::FusionPhase { phase, label } => {
                 let phase = match phase {
+                    n00n_agent::FusionPhase::Idle => "Idle",
                     n00n_agent::FusionPhase::Planning => "Planning",
                     n00n_agent::FusionPhase::Executing => "Executing",
                     n00n_agent::FusionPhase::Reviewing => "Reviewing",

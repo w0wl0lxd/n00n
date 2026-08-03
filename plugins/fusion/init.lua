@@ -153,6 +153,7 @@ n00n.api.register_tool({
   name = "fusion_delegate",
   description = description,
   schema = schema,
+  admission = "orchestrator",
   handler = handler,
   header = header,
   audiences = { "main" },

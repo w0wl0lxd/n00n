@@ -17,7 +17,7 @@ use crate::template::Vars;
 use crate::{BufferSnapshot, ToolOutput};
 
 use super::schema::sanitize_tool_input_schema;
-use super::{DescriptionContext, ToolContext};
+use super::{DescriptionContext, ToolAdmission, ToolContext, ToolWorkload};
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -241,6 +241,9 @@ pub trait Tool: Send + Sync + 'static {
     fn tool_kind(&self) -> Option<&str> {
         None
     }
+    fn workload(&self) -> ToolWorkload {
+        ToolWorkload::from_kind(self.tool_kind())
+    }
     fn defer_loading(&self) -> bool {
         false
     }
@@ -258,6 +261,7 @@ pub trait Tool: Send + Sync + 'static {
 pub struct RegisteredTool {
     pub tool: Arc<dyn Tool>,
     pub source: ToolSource,
+    pub workload: ToolWorkload,
     pub defer_loading: bool,
     pub namespace: Option<Arc<str>>,
 }
@@ -336,6 +340,7 @@ impl<'a> IntoIterator for &'a ToolsSnapshot {
 /// Lock-free reads via `ArcSwap`, writes swap in a new snapshot atomically.
 pub struct ToolRegistry {
     tools: ArcSwap<ToolsSnapshot>,
+    admission: Arc<ToolAdmission>,
 }
 
 impl Default for ToolRegistry {
@@ -353,9 +358,24 @@ pub enum RegistryError {
 impl ToolRegistry {
     #[must_use]
     pub fn new() -> Self {
+        Self::with_admission(Arc::new(ToolAdmission::new()))
+    }
+
+    /// Build a registry with an explicitly shared admission scope.
+    ///
+    /// This is useful when several registry views must participate in one
+    /// process and agent budget. Ordinary callers should use [`Self::new`].
+    #[must_use]
+    pub fn with_admission(admission: Arc<ToolAdmission>) -> Self {
         Self {
             tools: ArcSwap::from_pointee(ToolsSnapshot::empty()),
+            admission,
         }
+    }
+
+    #[must_use]
+    pub fn admission(&self) -> Arc<ToolAdmission> {
+        Arc::clone(&self.admission)
     }
 
     /// The process-wide registry. Every tool in it comes from a Lua plugin
@@ -399,6 +419,7 @@ impl ToolRegistry {
             next_tools.push(RegisteredTool {
                 tool: Arc::clone(tool),
                 source: source.clone(),
+                workload: tool.workload(),
                 defer_loading,
                 namespace: namespace.clone(),
             });
@@ -446,6 +467,7 @@ impl ToolRegistry {
                 next_tools.push(RegisteredTool {
                     tool: Arc::clone(tool),
                     source: source.clone(),
+                    workload: tool.workload(),
                     defer_loading: tool.defer_loading(),
                     namespace: tool.namespace().map(Arc::from).clone(),
                 });
@@ -512,6 +534,7 @@ impl ToolRegistry {
                 next_tools.push(RegisteredTool {
                     tool: Arc::clone(tool),
                     source: source.clone(),
+                    workload: tool.workload(),
                     defer_loading: tool.defer_loading(),
                     namespace: tool.namespace().map(Arc::from).clone(),
                 });
@@ -829,6 +852,13 @@ mod tests {
         ToolSource::Lua {
             plugin: plugin.into(),
         }
+    }
+
+    #[test]
+    fn explicit_admission_scope_is_retained_by_registry() {
+        let admission = Arc::new(ToolAdmission::with_limits(1, 1));
+        let registry = ToolRegistry::with_admission(Arc::clone(&admission));
+        assert!(Arc::ptr_eq(&admission, &registry.admission()));
     }
 
     #[test]

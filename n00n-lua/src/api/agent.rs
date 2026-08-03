@@ -15,7 +15,6 @@ use mlua::{Function, IntoLuaMulti, Lua, Result as LuaResult, Table, Value as Lua
 use n00n_agent::agent::tool_dispatch::{self, Emit};
 use n00n_agent::cancel::CancelMap;
 use n00n_agent::tools::interpreter_bridge;
-use n00n_agent::tools::registry::ToolRegistry;
 use n00n_agent::tools::{
     Deadline, DescriptionContext, FileReadTracker, LocalToolFn, LocalTools, ToolAudience,
     ToolContext, ToolFilter, ToolLive,
@@ -114,6 +113,17 @@ fn parse_session_mode(
     }
 }
 type Pair<T> = (Option<T>, Option<String>);
+
+fn normalize_session_tools(tools: JsonValue) -> Result<JsonValue, String> {
+    if matches!(&tools, JsonValue::Object(map) if map.is_empty()) {
+        return Ok(JsonValue::Array(Vec::new()));
+    }
+    if tools.is_array() {
+        Ok(tools)
+    } else {
+        Err("tools must be an array".to_owned())
+    }
+}
 
 #[allow(clippy::needless_pass_by_value)]
 fn explicit_tool_filter(tools: &JsonValue) -> Result<ToolFilter, String> {
@@ -504,8 +514,9 @@ fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pa
         audience,
         workflow,
     };
-    let mut defs =
-        ToolRegistry::global().definitions(&vars, &ctx_desc, model.supports_tool_examples());
+    let mut defs = agent
+        .registry
+        .definitions(&vars, &ctx_desc, model.supports_tool_examples());
 
     n00n_agent::tools::filter_definitions(&mut defs, &filter);
     let base_count = defs.as_array().map_or(0, Vec::len);
@@ -699,14 +710,8 @@ async fn session(
 
     let explicit_tools = tools_val.is_some();
     let (mut tools_json, mut tool_filter) = if let Some(val) = tools_val {
-        let empty_lua_table = matches!(&val, LuaValue::Table(table) if table.is_empty());
-        let mut tools = lua_to_json(&lua, &val)?;
-        if empty_lua_table && matches!(&tools, JsonValue::Object(object) if object.is_empty()) {
-            tools = JsonValue::Array(Vec::new());
-        }
-        if !tools.is_array() {
-            return Err(mlua::Error::runtime("tools must be an array"));
-        }
+        let tools =
+            normalize_session_tools(lua_to_json(&lua, &val)?).map_err(mlua::Error::runtime)?;
         (tools, ToolFilter::All)
     } else {
         let vars = n00n_agent::template::Vars::new();
@@ -716,7 +721,7 @@ async fn session(
             audience,
             workflow: false,
         };
-        let tools = n00n_agent::tools::ToolRegistry::global().definitions_active(
+        let tools = agent_ctx.registry.definitions_active(
             &vars,
             &ctx,
             model.supports_tool_examples(),
@@ -854,7 +859,7 @@ async fn session(
             file_tracker: FileReadTracker::fresh(),
             prompt_slots: Arc::clone(&agent_ctx.prompt_slots),
             subagent_cancels: Arc::new(CancelMap::new()),
-            registry: Arc::clone(n00n_agent::tools::ToolRegistry::global_arc()),
+            registry: Arc::clone(&agent_ctx.registry),
             audience,
         },
         system: system.unwrap_or_else(String::new),
@@ -1750,6 +1755,17 @@ mod tests {
         filter_appended_definitions(&mut definitions, base_count, &only);
 
         assert_eq!(definitions, json!([{"name": "read"}]));
+    }
+
+    #[test]
+    fn empty_session_tools_object_normalizes_to_array() {
+        assert_eq!(normalize_session_tools(json!({})).unwrap(), json!([]));
+    }
+
+    #[test]
+    fn non_empty_session_tools_object_is_rejected() {
+        let error = normalize_session_tools(json!({"read": {}})).unwrap_err();
+        assert_eq!(error, "tools must be an array");
     }
 
     #[test]

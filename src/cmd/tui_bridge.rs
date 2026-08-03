@@ -11,7 +11,7 @@ use n00n_daemon::lock::DaemonRole;
 use n00n_daemon::protocol::{AgentRecord, BackendKind, MessageOpts};
 use n00n_daemon::registry::{ControlPlane, TuiCallbackBackend};
 use n00n_daemon::server;
-use n00n_lua::{SessionRequest, UiAction};
+use n00n_lua::{SessionCaller, SessionRequest, UiAction};
 use serde_json::Value;
 
 const SESSION_ROUNDTRIP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -195,8 +195,12 @@ fn map_not_found(id: &str, err: ControlError) -> ControlError {
 
 fn session_call(tx: &flume::Sender<UiAction>, req: SessionRequest) -> ControlResult<Value> {
     let (reply_tx, reply_rx) = flume::bounded(1);
-    tx.try_send(UiAction::Session { req, reply_tx })
-        .map_err(|_| ControlError::Unavailable(UI_CHANNEL_CLOSED.into()))?;
+    tx.try_send(UiAction::Session {
+        caller: SessionCaller::host(),
+        req,
+        reply_tx,
+    })
+    .map_err(|_| ControlError::Unavailable(UI_CHANNEL_CLOSED.into()))?;
     match reply_rx.recv_timeout(SESSION_ROUNDTRIP_TIMEOUT) {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(e)) => Err(ControlError::Unavailable(e)),

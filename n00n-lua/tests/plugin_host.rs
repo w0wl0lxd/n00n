@@ -13,7 +13,7 @@ use std::time::Duration;
 use n00n_agent::template::env_vars;
 use n00n_agent::tools::{
     ActiveTools, DescriptionContext, ToolAudience, ToolFilter, ToolRegistry, ToolSource,
-    timeout_annotation,
+    ToolWorkload, timeout_annotation,
 };
 use n00n_config::{AlwaysThinking, PluginsConfig, ToolOutputLines};
 use n00n_lua::{PluginError, PluginHost, WARM_TOOL_CAP};
@@ -354,6 +354,34 @@ fn tool_kind_flows_to_trait() {
     host.load_source("kind_plugin", &src).unwrap();
     let entry = reg.get("my_fetcher").expect("tool not registered");
     assert_eq!(entry.tool.tool_kind(), Some("fetch"));
+}
+
+#[test_case::test_case("admission", "cheap", ToolWorkload::Cheap ; "cheap")]
+#[test_case::test_case("admission", "process", ToolWorkload::Process ; "process")]
+#[test_case::test_case("admission", "agent", ToolWorkload::Agent ; "agent")]
+#[test_case::test_case("admission", "orchestrator", ToolWorkload::Orchestrator ; "orchestrator")]
+#[test_case::test_case("workload", "agent", ToolWorkload::Agent ; "workload_alias")]
+fn explicit_admission_flows_to_registered_workload(
+    field: &str,
+    value: &str,
+    expected: ToolWorkload,
+) {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "admission_probe",
+            description = "admission probe",
+            schema = {MINIMAL_SCHEMA},
+            kind = "read",
+            {field} = "{value}",
+            handler = function() return "" end
+        }})"#,
+    );
+    host.load_source("admission_plugin", &src).unwrap();
+    let entry = reg.get("admission_probe").expect("tool not registered");
+    assert_eq!(entry.workload, expected);
 }
 
 /// `get_tool` handles are the boundary between plugins: they never throw
@@ -4975,7 +5003,7 @@ fn team_launcher_uses_native_model_picker_and_amp_labels() {
     let action = rx
         .recv_timeout(Duration::from_secs(5))
         .expect("Team launcher did not submit a session prompt");
-    let n00n_lua::UiAction::Session { req, reply_tx } = action else {
+    let n00n_lua::UiAction::Session { req, reply_tx, .. } = action else {
         panic!("expected Team session prompt");
     };
     let n00n_lua::SessionRequest::Prompt { text, .. } = req else {
@@ -5019,7 +5047,7 @@ fn team_launcher_collects_goal_and_submits_configured_prompt() {
     let action = rx
         .recv_timeout(Duration::from_secs(5))
         .expect("Team launcher did not submit a session prompt");
-    let n00n_lua::UiAction::Session { req, reply_tx } = action else {
+    let n00n_lua::UiAction::Session { req, reply_tx, .. } = action else {
         panic!("expected Team session prompt");
     };
     let n00n_lua::SessionRequest::Prompt { id, text, .. } = req else {
@@ -5059,7 +5087,7 @@ fn agent_control_resume_preserves_paused_team_mode() {
         )
     });
 
-    let n00n_lua::UiAction::Session { req, reply_tx } = rx
+    let n00n_lua::UiAction::Session { req, reply_tx, .. } = rx
         .recv_timeout(Duration::from_secs(5))
         .expect("agent_control did not request session status")
     else {
@@ -5079,7 +5107,7 @@ fn agent_control_resume_preserves_paused_team_mode() {
         })))
         .unwrap();
 
-    let n00n_lua::UiAction::Session { req, reply_tx } = rx
+    let n00n_lua::UiAction::Session { req, reply_tx, .. } = rx
         .recv_timeout(Duration::from_secs(5))
         .expect("agent_control did not submit resume prompt")
     else {

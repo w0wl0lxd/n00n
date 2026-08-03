@@ -803,11 +803,11 @@ local function run_team(input, ctx)
     end
     forwarded.background = false
     local prompt = "Use the team tool now. Do not only describe this request.\n\n" .. n00n.json.encode(forwarded)
-    local id, err = n00n.session.new({ prompt = prompt, focus = false })
+    local title = (input.goal or "background team"):sub(1, 80)
+    local id, err = n00n.session.new({ prompt = prompt, title = title, focus = false })
     if not id then
       return { llm_output = err, is_error = true }
     end
-    local title = "team: " .. (input.goal or ""):sub(1, 60)
     pcall(function()
       n00n.session.set_title({ id = id, title = title })
     end)
@@ -1091,6 +1091,7 @@ n00n.api.register_tool({
   name = "team",
   description = description,
   kind = "execute",
+  admission = "orchestrator",
   audiences = { "main", "workflow" },
   schema = schema,
   timeout = TEAM_TIMEOUT_SECS,

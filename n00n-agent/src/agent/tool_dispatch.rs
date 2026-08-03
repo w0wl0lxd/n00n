@@ -13,7 +13,7 @@ use crate::permissions::PermissionCheckContext;
 use crate::skill_policy::SKILL_POLICY_DENIED_PREFIX;
 use crate::task_set::TaskSet;
 use crate::tools::registry::{ToolInvocation, ToolRegistry, ToolSource};
-use crate::tools::{LocalToolFn, ToolContext};
+use crate::tools::{LocalToolFn, ToolContext, ToolWorkload};
 use crate::{AgentError, AgentEvent, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use n00n_config::ToolKey;
 
@@ -502,6 +502,16 @@ async fn run_authorized(
             return tool_done_error(id.clone(), Arc::clone(&tool_id), e);
         }
 
+        let _admission_guard = match registry
+            .admission()
+            .acquire(entry.workload, &ctx.cancel)
+            .await
+        {
+            Ok(guard) => guard,
+            Err(error) => {
+                return tool_done_error(id.clone(), Arc::clone(&tool_id), error.to_string());
+            }
+        };
         let result = invocation.execute(ctx).await;
 
         let elapsed = started.elapsed();
@@ -552,6 +562,16 @@ async fn run_authorized(
     } else if let Some(mcp) = mcp.filter(|_| name == TOOL_SEARCH_TOOL_NAME) {
         run_tool_search(mcp, id, input, ctx, emit)
     } else if mcp.is_some_and(|m| m.has_tool(&mcp_lookup)) {
+        let _admission_guard = match registry
+            .admission()
+            .acquire(ToolWorkload::Process, &ctx.cancel)
+            .await
+        {
+            Ok(guard) => guard,
+            Err(error) => {
+                return tool_done_error(id, tool_id, error.to_string());
+            }
+        };
         execute_mcp_tool(ctx, &id, tool_id, &mcp_lookup, input, emit).await
     } else {
         let msg = format!("{UNKNOWN_TOOL_PREFIX}: {mcp_lookup}");
@@ -1042,6 +1062,78 @@ mod tests {
         ctx
     }
 
+    struct BlockingInvocation {
+        id: usize,
+        started: flume::Sender<usize>,
+        executed: flume::Sender<usize>,
+        release: flume::Receiver<()>,
+    }
+
+    impl ToolInvocation for BlockingInvocation {
+        fn start_header(&self) -> HeaderFuture {
+            HeaderFuture::Ready(HeaderResult::plain("blocking".into()))
+        }
+
+        fn start<'a>(&'a self, _ctx: &'a ToolContext) -> BoxFuture<'a, ()> {
+            let _ = self.started.send(self.id);
+            Box::pin(std::future::ready(()))
+        }
+
+        fn execute(self: Box<Self>, _ctx: &ToolContext) -> ExecFuture<'_> {
+            let id = self.id;
+            let executed = self.executed;
+            let release = self.release;
+            Box::pin(async move {
+                let _ = executed.send(id);
+                let result = release
+                    .recv_async()
+                    .await
+                    .map(|()| ToolOutput::Plain("done".into()))
+                    .map_err(|error| error.to_string());
+                result.into()
+            })
+        }
+    }
+
+    struct BlockingTool {
+        name: &'static str,
+        workload: ToolWorkload,
+        next_id: std::sync::atomic::AtomicUsize,
+        started: flume::Sender<usize>,
+        executed: flume::Sender<usize>,
+        release: flume::Receiver<()>,
+    }
+
+    impl Tool for BlockingTool {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn description(&self, _ctx: &DescriptionContext) -> Cow<'_, str> {
+            "blocking admission test tool".into()
+        }
+
+        fn workload(&self) -> ToolWorkload {
+            self.workload
+        }
+
+        fn schema(&self) -> Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+
+        fn parse(&self, _input: &Value) -> Result<Box<dyn ToolInvocation>, ParseError> {
+            let id = self
+                .next_id
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(Box::new(BlockingInvocation {
+                id,
+                started: self.started.clone(),
+                executed: self.executed.clone(),
+                release: self.release.clone(),
+            }))
+        }
+    }
+
     fn response_with_tool_uses(calls: &[(&str, &str, Value)]) -> StreamResponse {
         StreamResponse {
             message: Message {
@@ -1059,6 +1151,224 @@ mod tests {
             usage: TokenUsage::default(),
             stop_reason: Some(StopReason::ToolUse),
         }
+    }
+
+    #[test]
+    fn process_admission_blocks_second_dispatch_until_first_finishes() {
+        smol::block_on(async {
+            let (started_tx, started_rx) = flume::bounded(2);
+            let (executed_tx, executed_rx) = flume::bounded(2);
+            let (release_tx, release_rx) = flume::unbounded();
+            let tool: Arc<dyn Tool> = Arc::new(BlockingTool {
+                name: "blocking_process",
+                workload: ToolWorkload::Process,
+                next_id: std::sync::atomic::AtomicUsize::new(0),
+                started: started_tx,
+                executed: executed_tx,
+                release: release_rx,
+            });
+            let registry = Arc::new(ToolRegistry::with_admission(Arc::new(
+                crate::tools::ToolAdmission::with_limits(1, 1),
+            )));
+            registry
+                .register(
+                    &tool,
+                    &ToolSource::Lua {
+                        plugin: "test".into(),
+                    },
+                )
+                .expect("register blocking tool");
+
+            let mut ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
+            ctx.registry = Arc::clone(&registry);
+            let first_ctx = ctx.clone();
+            let first_registry = Arc::clone(&registry);
+            let first = smol::spawn(async move {
+                run(
+                    &first_registry,
+                    None,
+                    "first".into(),
+                    "blocking_process",
+                    &serde_json::json!({}),
+                    &first_ctx,
+                    Emit::Silent,
+                )
+                .await
+            });
+
+            assert_eq!(started_rx.recv_async().await, Ok(0));
+            assert_eq!(executed_rx.recv_async().await, Ok(0));
+
+            let second_ctx = ctx;
+            let second_registry = Arc::clone(&registry);
+            let second = smol::spawn(async move {
+                run(
+                    &second_registry,
+                    None,
+                    "second".into(),
+                    "blocking_process",
+                    &serde_json::json!({}),
+                    &second_ctx,
+                    Emit::Silent,
+                )
+                .await
+            });
+
+            assert_eq!(started_rx.recv_async().await, Ok(1));
+            assert!(executed_rx.try_recv().is_err());
+
+            release_tx.send(()).expect("release first process");
+            assert_eq!(executed_rx.recv_async().await, Ok(1));
+            release_tx.send(()).expect("release second process");
+
+            assert!(!first.await.is_error);
+            assert!(!second.await.is_error);
+        });
+    }
+
+    #[test]
+    fn orchestrator_dispatch_does_not_wait_for_process_budget() {
+        smol::block_on(async {
+            let (started_tx, started_rx) = flume::bounded(1);
+            let (executed_tx, executed_rx) = flume::bounded(1);
+            let (release_tx, release_rx) = flume::unbounded();
+            let tool: Arc<dyn Tool> = Arc::new(BlockingTool {
+                name: "blocking_orchestrator",
+                workload: ToolWorkload::Orchestrator,
+                next_id: std::sync::atomic::AtomicUsize::new(0),
+                started: started_tx,
+                executed: executed_tx,
+                release: release_rx,
+            });
+            let registry = Arc::new(ToolRegistry::with_admission(Arc::new(
+                crate::tools::ToolAdmission::with_limits(1, 1),
+            )));
+            registry
+                .register(
+                    &tool,
+                    &ToolSource::Lua {
+                        plugin: "test".into(),
+                    },
+                )
+                .expect("register orchestrator tool");
+            let held_process = registry
+                .admission()
+                .acquire(ToolWorkload::Process, &crate::CancelToken::none())
+                .await
+                .expect("hold process budget");
+
+            let mut ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
+            ctx.registry = Arc::clone(&registry);
+            let run_registry = Arc::clone(&registry);
+            let run = smol::spawn(async move {
+                run(
+                    &run_registry,
+                    None,
+                    "orchestrator".into(),
+                    "blocking_orchestrator",
+                    &serde_json::json!({}),
+                    &ctx,
+                    Emit::Silent,
+                )
+                .await
+            });
+
+            assert_eq!(started_rx.recv_async().await, Ok(0));
+            let executed =
+                futures_lite::future::race(async { Some(executed_rx.recv_async().await) }, async {
+                    async_io::Timer::after(std::time::Duration::from_secs(1)).await;
+                    None
+                })
+                .await;
+            assert_eq!(executed, Some(Ok(0)));
+            release_tx.send(()).expect("release orchestrator");
+            assert!(!run.await.is_error);
+            drop(held_process);
+        });
+    }
+
+    #[test]
+    fn cancelled_dispatch_wait_does_not_execute_or_leak_a_permit() {
+        smol::block_on(async {
+            let (started_tx, started_rx) = flume::bounded(2);
+            let (executed_tx, executed_rx) = flume::bounded(2);
+            let (release_tx, release_rx) = flume::unbounded();
+            let tool: Arc<dyn Tool> = Arc::new(BlockingTool {
+                name: "blocking_process",
+                workload: ToolWorkload::Process,
+                next_id: std::sync::atomic::AtomicUsize::new(0),
+                started: started_tx,
+                executed: executed_tx,
+                release: release_rx,
+            });
+            let registry = Arc::new(ToolRegistry::with_admission(Arc::new(
+                crate::tools::ToolAdmission::with_limits(1, 1),
+            )));
+            registry
+                .register(
+                    &tool,
+                    &ToolSource::Lua {
+                        plugin: "test".into(),
+                    },
+                )
+                .expect("register blocking tool");
+
+            let mut first_ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
+            first_ctx.registry = Arc::clone(&registry);
+            let first_registry = Arc::clone(&registry);
+            let first = smol::spawn(async move {
+                run(
+                    &first_registry,
+                    None,
+                    "first".into(),
+                    "blocking_process",
+                    &serde_json::json!({}),
+                    &first_ctx,
+                    Emit::Silent,
+                )
+                .await
+            });
+            assert_eq!(started_rx.recv_async().await, Ok(0));
+            assert_eq!(executed_rx.recv_async().await, Ok(0));
+
+            let (cancel_trigger, cancel_token) = crate::CancelToken::new();
+            let mut second_ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
+            second_ctx.registry = Arc::clone(&registry);
+            second_ctx.cancel = cancel_token;
+            let second_registry = Arc::clone(&registry);
+            let second = smol::spawn(async move {
+                run(
+                    &second_registry,
+                    None,
+                    "second".into(),
+                    "blocking_process",
+                    &serde_json::json!({}),
+                    &second_ctx,
+                    Emit::Silent,
+                )
+                .await
+            });
+            assert_eq!(started_rx.recv_async().await, Ok(1));
+            cancel_trigger.cancel();
+            let cancelled = second.await;
+            assert!(cancelled.is_error);
+            assert_eq!(cancelled.output.as_text(), "cancelled");
+            assert!(executed_rx.try_recv().is_err());
+
+            release_tx.send(()).expect("release first process");
+            let completed = first.await;
+            assert!(!completed.is_error);
+            assert!(
+                registry
+                    .admission()
+                    .acquire(
+                        crate::tools::ToolWorkload::Process,
+                        &crate::CancelToken::none()
+                    )
+                    .await
+                    .is_ok()
+            );
+        });
     }
 
     #[test]
