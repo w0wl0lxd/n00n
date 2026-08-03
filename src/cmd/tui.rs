@@ -19,7 +19,6 @@ use n00n_ui::{AppSession, RunOutcome};
 use crate::cli::{Cli, normalize_tool_name};
 use crate::setup;
 
-const FALLBACK_MODEL_SPEC: &str = "anthropic/claude-sonnet-4-20250514";
 const CONFIG_FALLBACK_WARNING: &str = "config reload failed, using previous config";
 const MODEL_FALLBACK_WARNING: &str = "model resolution failed, keeping previous model";
 
@@ -172,17 +171,46 @@ fn build_stack(
     let commands = discover_commands(cli.plugin_flags.no_commands);
 
     let model_result = setup::resolve_model(cli.model.as_deref(), &config.provider, storage);
+    let explicit = cli.model.is_some();
     let (model, needs_login) = match (model_result, fallback_model) {
-        (Ok(m), _) => (m, false),
+        (Ok(m), _) => {
+            if !cli.run_flags.print
+                && !explicit
+                && !n00n_providers::provider::provider_available(&m.provider)
+            {
+                warnings.push(format!(
+                    "provider '{}' is not available, trying fallback",
+                    m.provider
+                ));
+                if let Some(fallback) = setup::fallback_to_recent_model(storage) {
+                    (fallback, false)
+                } else if let Some(detected) = setup::auto_detect_model() {
+                    (detected, false)
+                } else {
+                    (m, true)
+                }
+            } else {
+                (m, false)
+            }
+        }
         (Err(e), Some(last_model)) => {
             warnings.push(format!("{MODEL_FALLBACK_WARNING}: {e:#}"));
             (last_model, false)
         }
-        (Err(e), None) if !cli.run_flags.print => {
-            let placeholder = Model::from_spec(FALLBACK_MODEL_SPEC)
-                .or_else(|_| Model::from_spec("anthropic/claude-sonnet-4-20250514"))
-                .map_err(|_| e)?;
-            (placeholder, true)
+        (Err(e), None) if !cli.run_flags.print && !explicit => {
+            if let Some(fallback) = setup::fallback_to_recent_model(storage) {
+                warnings.push(format!(
+                    "model resolution failed, using fallback from recent models: {e:#}"
+                ));
+                (fallback, false)
+            } else if let Some(detected) = setup::auto_detect_model() {
+                warnings.push(format!(
+                    "model resolution failed, using auto-detected model: {e:#}"
+                ));
+                (detected, false)
+            } else {
+                return Err(e);
+            }
         }
         (Err(e), None) => return Err(e),
     };
