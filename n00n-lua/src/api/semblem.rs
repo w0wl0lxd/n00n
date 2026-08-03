@@ -1,5 +1,5 @@
 use mlua::{Lua, Result as LuaResult, Table};
-use n00n_semble::{Client, FindRelatedRequest, Mode, SearchRequest, SembleError};
+use n00n_semble::{Client, Mode, SembleError};
 
 use crate::docs::{DocKind, FnDoc, ModuleDoc, ParamDoc};
 
@@ -15,35 +15,39 @@ pub(crate) fn create_semblem_table(lua: &Lua) -> LuaResult<Table> {
     })?;
     table.set("has_index", has_index)?;
 
+    // T082-T083: Use hybrid search with CLI fallback
     let search = lua.create_function(
-        |_, (repo, query, mode, top_k): (String, String, Option<String>, Option<usize>)| {
+        |_,
+         (repo, query, mode, top_k, content): (
+            String,
+            String,
+            Option<String>,
+            Option<usize>,
+            Option<String>,
+        )| {
             let mode = match mode.as_deref() {
                 Some(raw) => Mode::parse(raw).map_err(map_err)?,
                 None => Mode::Bm25,
             };
-            Client::search(&SearchRequest {
-                repo: std::path::Path::new(&repo),
-                query: &query,
-                mode,
-                top_k,
-            })
-            .map_err(map_err)
+            Client::search_hybrid(&repo, &query, mode, top_k, content.as_deref()).map_err(map_err)
         },
     )?;
     table.set("search", search)?;
 
+    // T082-T083: Use hybrid find_related with CLI fallback
     let find_related = lua.create_function(
         |_, (repo, file_path, line, top_k): (String, String, usize, Option<usize>)| {
-            Client::find_related(&FindRelatedRequest {
-                repo: std::path::Path::new(&repo),
-                file_path: &file_path,
-                line,
-                top_k,
-            })
-            .map_err(map_err)
+            Client::find_related_hybrid(&repo, &file_path, line, top_k).map_err(map_err)
         },
     )?;
     table.set("find_related", find_related)?;
+
+    // T080: Add savings command
+    let savings = lua.create_function(|_, repo: String| match Client::savings(&repo) {
+        Ok(output) => Ok((Some(output), None::<String>)),
+        Err(e) => Ok((None::<String>, Some(format!("{e:#}")))),
+    })?;
+    table.set("savings", savings)?;
 
     Ok(table)
 }
@@ -67,13 +71,13 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
         },
         FnDoc {
             name: "search",
-            args: "{repo}, {query}, {mode?}, {top_k?}",
-            desc: "Search indexed source chunks. Defaults to BM25; hybrid/semantic modes nag when no embedder is configured.",
+            args: "{repo}, {query}, {mode?}, {top_k?}, {content?}",
+            desc: "Search indexed source chunks. BM25 is native; hybrid/semantic try the upstream semble CLI and fall back to BM25 with an embedder nag if the CLI is unavailable.",
             params: &[
                 ParamDoc {
                     name: "{repo}",
                     ty: "string",
-                    desc: "Path to the project root.",
+                    desc: "Local project root path, or an HTTPS git URL allowed by N00N_SEMBLE_ALLOWED_REMOTE_REPOS.",
                 },
                 ParamDoc {
                     name: "{query}",
@@ -90,6 +94,11 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
                     ty: "integer",
                     desc: "Maximum number of results.",
                 },
+                ParamDoc {
+                    name: "{content}",
+                    ty: "string",
+                    desc: "Content filter: docs, config, code, or all.",
+                },
             ],
             returns: "(string) Ranked snippet output.",
             example: "",
@@ -102,7 +111,7 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
                 ParamDoc {
                     name: "{repo}",
                     ty: "string",
-                    desc: "Path to the project root.",
+                    desc: "Local project root path, or an HTTPS git URL allowed by N00N_SEMBLE_ALLOWED_REMOTE_REPOS.",
                 },
                 ParamDoc {
                     name: "{file_path}",
@@ -121,6 +130,18 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
                 },
             ],
             returns: "(string) Ranked snippet output.",
+            example: "",
+        },
+        FnDoc {
+            name: "savings",
+            args: "{repo}",
+            desc: "Estimate token savings from using a hybrid/semantic embedder. Requires the semble CLI and has no native fallback.",
+            params: &[ParamDoc {
+                name: "{repo}",
+                ty: "string",
+                desc: "Local project root path, or an HTTPS git URL allowed by N00N_SEMBLE_ALLOWED_REMOTE_REPOS.",
+            }],
+            returns: "(string?, string?) savings summary and optional error message.",
             example: "",
         },
     ],
