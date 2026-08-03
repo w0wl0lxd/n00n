@@ -591,7 +591,6 @@ mod tests {
     use n00n_storage::StateDir;
     use n00n_storage::sessions::Session;
     use tempfile::TempDir;
-    use test_case::test_case;
 
     use super::*;
 
@@ -631,7 +630,7 @@ mod tests {
         assert_eq!(err.code, AcpError::resource_not_found(None).code);
     }
 
-    #[test_case]
+    #[test]
     fn request_id_accepts_valid_ids() {
         assert_eq!(request_id(&Value::Null).unwrap(), RequestId::Null);
         assert_eq!(
@@ -644,7 +643,7 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[test]
     fn request_id_rejects_invalid_types_and_overflow() {
         assert!(request_id(&Value::Array(vec![])).is_err());
         assert!(request_id(&Value::Object(serde_json::Map::new())).is_err());
@@ -653,31 +652,31 @@ mod tests {
         assert!(request_id(&overflow).is_err());
     }
 
-    #[test_case]
+    #[test]
     fn read_request_parses_null_id() {
         assert_eq!(request_id(&Value::Null).unwrap(), RequestId::Null);
     }
 
-    #[test_case]
+    #[test]
     fn read_request_returns_none_on_eof() {
         // This test is covered by the serve loop's EOF handling
         // EOF (Ok(0)) breaks the loop and returns Ok(())
     }
 
-    #[test_case]
+    #[test]
     fn read_request_returns_parse_error_on_invalid_utf8() {
         // Invalid UTF-8 is handled in the serve loop with InvalidData error kind
         // It responds with parse_error and continues
     }
 
-    #[test_case]
+    #[test]
     fn read_request_returns_invalid_request_on_overflow_id() {
         // Overflow IDs are rejected by request_id function
         let overflow = serde_json::from_str::<Value>("10000000000000000000").unwrap();
         assert!(request_id(&overflow).is_err());
     }
 
-    #[test_case]
+    #[test]
     fn invalid_id_continues_to_next_value() {
         // Invalid ID should respond with error and continue processing
         let invalid_id = Value::Array(vec![]);
