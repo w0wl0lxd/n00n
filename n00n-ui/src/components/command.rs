@@ -568,6 +568,7 @@ impl CommandPalette {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use n00n_agent::{McpPromptArg, McpSnapshot};
@@ -757,7 +758,7 @@ mod tests {
                     arguments: vec![],
                 },
             ],
-            pids: vec![],
+            pids: Vec::new(),
             generation: 0,
         })
     }
@@ -839,7 +840,7 @@ mod tests {
                 description: "A new prompt".into(),
                 arguments: vec![],
             }],
-            pids: vec![],
+            pids: Vec::new(),
             generation: 1,
         });
 
