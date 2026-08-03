@@ -1002,6 +1002,7 @@ impl<'h> Agent<'h> {
         let (usage, summary) = compaction::compact_history(
             &*compact_provider,
             &compact_model,
+            &self.model,
             self.history,
             &self.event_tx,
             &self.cancel,
@@ -1167,8 +1168,7 @@ pub fn estimate_message_tokens(messages: &[Message], model_id: &str) -> u32 {
                 count_tokens_with_tokenizer(tokenizer, content)
             }
             ContentBlock::ToolUse { input, .. } => count_json_with_tokenizer(tokenizer, input),
-            ContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE,
-            ContentBlock::File { .. } => IMAGE_TOKEN_ESTIMATE,
+            ContentBlock::Image { .. } | ContentBlock::File { .. } => IMAGE_TOKEN_ESTIMATE,
         })
         .sum();
     u32_from_usize_saturating(total)
@@ -1915,7 +1915,8 @@ mod tests {
                 [
                     crate::fusion::FusionPhase::Planning,
                     crate::fusion::FusionPhase::Executing,
-                    crate::fusion::FusionPhase::Reviewing
+                    crate::fusion::FusionPhase::Reviewing,
+                    crate::fusion::FusionPhase::Complete
                 ]
             );
         });
@@ -1977,7 +1978,8 @@ mod tests {
                 [
                     crate::fusion::FusionPhase::Planning,
                     crate::fusion::FusionPhase::Executing,
-                    crate::fusion::FusionPhase::LeadFallback
+                    crate::fusion::FusionPhase::LeadFallback,
+                    crate::fusion::FusionPhase::Complete
                 ]
             );
         });

@@ -194,7 +194,6 @@ impl Chat {
                 self.messages_panel
                     .push(DisplayMessage::new(DisplayRole::Control, text));
             }
-            AgentEvent::FusionPhaseChanged { .. } => {}
             AgentEvent::QueueItemConsumed {
                 text,
                 image_count,
