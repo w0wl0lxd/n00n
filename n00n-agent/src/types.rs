@@ -1,7 +1,7 @@
 use std::any::Any;
 use std::fmt::Write;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use flume::Sender;
@@ -1006,6 +1006,14 @@ pub struct SharedBuf {
     /// even a foreign wrapper in another task, reaches the same handler.
     click: Mutex<Option<Arc<dyn Any + Send + Sync>>>,
     notifying: AtomicBool,
+    /// Number of leading lines already handed out through `read_if_dirty`,
+    /// `read_incremental`, or `take`. Lets incremental readers render only
+    /// the newly appended tail instead of the whole buffer.
+    consumed: AtomicUsize,
+    /// Set by `set_lines`: the buffer was replaced wholesale, so the
+    /// consumed watermark is meaningless and the next read must re-render
+    /// from line 0.
+    replaced_since_read: AtomicBool,
 }
 
 impl SharedBuf {
@@ -1017,6 +1025,8 @@ impl SharedBuf {
             on_change: Mutex::new(None),
             click: Mutex::new(None),
             notifying: AtomicBool::new(false),
+            consumed: AtomicUsize::new(0),
+            replaced_since_read: AtomicBool::new(false),
         }
     }
 
@@ -1094,6 +1104,7 @@ impl SharedBuf {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *guard = Arc::new(lines);
         drop(guard);
+        self.replaced_since_read.store(true, Ordering::Release);
         self.dirty.store(true, Ordering::Release);
         self.notify_change();
     }
@@ -1125,7 +1136,34 @@ impl SharedBuf {
             .committed
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.consumed.store(guard.len(), Ordering::Relaxed);
+        self.replaced_since_read.store(false, Ordering::Release);
         Some(Arc::clone(&guard))
+    }
+
+    /// Delta read for append-heavy streaming: tells the caller where the new
+    /// lines start and whether the buffer was replaced wholesale.
+    pub fn read_incremental(&self) -> Option<SharedBufIncremental> {
+        if !self.dirty.swap(false, Ordering::AcqRel) {
+            return None;
+        }
+        let guard = self
+            .committed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let len = guard.len();
+        let replaced = self.replaced_since_read.swap(false, Ordering::AcqRel);
+        let new_start = if replaced {
+            0
+        } else {
+            self.consumed.load(Ordering::Relaxed).min(len)
+        };
+        self.consumed.store(len, Ordering::Relaxed);
+        Some(SharedBufIncremental {
+            lines: Arc::clone(&guard),
+            new_start,
+            replaced,
+        })
     }
 
     pub fn take(&self) -> BufferSnapshot {
@@ -1134,8 +1172,21 @@ impl SharedBuf {
             .committed
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.consumed.store(guard.len(), Ordering::Relaxed);
+        self.replaced_since_read.store(false, Ordering::Release);
         BufferSnapshot::from_arc(Arc::clone(&guard))
     }
+}
+
+/// Result of `SharedBuf::read_incremental`.
+pub struct SharedBufIncremental {
+    /// The full buffer contents at read time.
+    pub lines: Arc<Vec<SnapshotLine>>,
+    /// Index of the first line that has not been consumed by an earlier read.
+    pub new_start: usize,
+    /// True when the buffer was replaced wholesale since the last read;
+    /// callers must re-render everything, not just the tail.
+    pub replaced: bool,
 }
 
 impl Default for SharedBuf {
@@ -1448,6 +1499,67 @@ mod tests {
         ]));
         assert_eq!(snap.text(), "1 print('hi')\n\nout");
         assert_eq!(BufferSnapshot::from_arc(Arc::new(vec![])).text(), "");
+    }
+
+    #[test]
+    fn incremental_read_advances_watermark() {
+        let buf = SharedBuf::new();
+        let line = |n: usize| SnapshotLine::plain(n.to_string());
+        buf.append(line(1));
+        let first = buf.read_incremental().expect("first read");
+        assert!(!first.replaced);
+        assert_eq!(first.new_start, 0);
+        assert_eq!(first.lines.len(), 1);
+
+        buf.append(line(2));
+        buf.append(line(3));
+        let second = buf.read_incremental().expect("second read");
+        assert!(!second.replaced);
+        assert_eq!(second.new_start, 1);
+        assert_eq!(second.lines.len(), 3);
+        assert_eq!(second.lines[1].spans[0].text, "2");
+        assert_eq!(second.lines[2].spans[0].text, "3");
+
+        assert!(buf.read_incremental().is_none(), "no new appends");
+    }
+
+    #[test]
+    fn incremental_read_after_set_lines_requires_full_rerender() {
+        let buf = SharedBuf::new();
+        buf.append(SnapshotLine::plain("a".into()));
+        assert!(buf.read_incremental().is_some());
+
+        buf.set_lines(vec![
+            SnapshotLine::plain("x".into()),
+            SnapshotLine::plain("y".into()),
+        ]);
+        let read = buf.read_incremental().expect("replacement read");
+        assert!(read.replaced);
+        assert_eq!(read.new_start, 0);
+        assert_eq!(read.lines.len(), 2);
+    }
+
+    #[test]
+    fn take_and_read_if_dirty_advance_the_watermark() {
+        let buf = SharedBuf::new();
+        buf.set_lines(vec![
+            SnapshotLine::plain("a".into()),
+            SnapshotLine::plain("b".into()),
+        ]);
+        assert_eq!(buf.take().lines.len(), 2);
+        buf.append(SnapshotLine::plain("c".into()));
+        let read = buf.read_incremental().expect("after take");
+        assert!(!read.replaced);
+        assert_eq!(read.new_start, 2, "take already consumed lines 0..2");
+        assert_eq!(read.lines.len(), 3);
+
+        let other = SharedBuf::new();
+        other.set_lines(vec![SnapshotLine::plain("d".into())]);
+        let _ = other.read_if_dirty().expect("first read");
+        other.append(SnapshotLine::plain("e".into()));
+        let read = other.read_incremental().expect("after read_if_dirty");
+        assert!(!read.replaced);
+        assert_eq!(read.new_start, 1);
     }
 
     #[test]
