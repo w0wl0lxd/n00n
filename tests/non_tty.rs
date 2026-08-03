@@ -2,7 +2,7 @@ use std::process::Command;
 
 #[test]
 fn tui_refuses_to_run_without_a_terminal() {
-    let state_dir = std::env::temp_dir().join("n00n-non-tty-test");
+    let state_dir = std::env::temp_dir().join(format!("n00n-non-tty-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&state_dir);
     std::fs::create_dir_all(&state_dir).expect("create temp state dir");
 

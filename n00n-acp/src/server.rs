@@ -95,8 +95,11 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
             Ok(Some(v)) => v,
             Ok(None) => break,
             Err(e) => {
-                server.respond(RequestId::Null, Err(e));
-                continue;
+                if let Some(acp_err) = e.downcast_ref::<AcpError>() {
+                    server.respond(RequestId::Null, Err(acp_err.clone()));
+                    continue;
+                }
+                return Err(e);
             }
         };
 
@@ -118,7 +121,7 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
     Ok(())
 }
 
-async fn read_request<R>(reader: &mut R) -> Result<Option<(Option<RequestId>, Value)>, AcpError>
+async fn read_request<R>(reader: &mut R) -> color_eyre::Result<Option<(Option<RequestId>, Value)>>
 where
     R: smol::io::AsyncBufRead + Unpin,
 {
@@ -128,9 +131,13 @@ where
         match reader.read_line(&mut line).await {
             Ok(0) => return Ok(None),
             Ok(_) => {}
-            Err(e) => {
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
                 warn!(error = %e, "invalid UTF-8 on stdin");
-                return Err(AcpError::parse_error());
+                return Err(AcpError::parse_error().into());
+            }
+            Err(e) => {
+                warn!(error = %e, "I/O error reading from stdin");
+                return Err(color_eyre::eyre::eyre!(e));
             }
         }
 
@@ -141,10 +148,14 @@ where
 
         let raw: Value = serde_json::from_str(trimmed).map_err(|e| {
             warn!(error = %e, "invalid JSON on stdin");
-            AcpError::parse_error()
+            color_eyre::Report::from(AcpError::parse_error())
         })?;
 
-        let id = raw.get("id").map(request_id).transpose()?;
+        let id = raw
+            .get("id")
+            .map(request_id)
+            .transpose()
+            .map_err(color_eyre::Report::from)?;
         return Ok(Some((id, raw)));
     }
 }
@@ -630,7 +641,11 @@ mod tests {
     fn read_request_returns_parse_error_on_invalid_utf8() {
         smol::block_on(async {
             let mut reader = make_reader(b"\xff\xfe\n");
-            let err = read_request(&mut reader).await.unwrap_err();
+            let err = read_request(&mut reader)
+                .await
+                .unwrap_err()
+                .downcast::<AcpError>()
+                .unwrap();
             assert_eq!(err.code, AcpError::parse_error().code);
         });
     }
@@ -641,7 +656,11 @@ mod tests {
             let mut reader = make_reader(
                 b"{\"jsonrpc\":\"2.0\",\"id\":10000000000000000000,\"method\":\"initialize\"}\n",
             );
-            let err = read_request(&mut reader).await.unwrap_err();
+            let err = read_request(&mut reader)
+                .await
+                .unwrap_err()
+                .downcast::<AcpError>()
+                .unwrap();
             assert_eq!(err.code, AcpError::invalid_request().code);
         });
     }
