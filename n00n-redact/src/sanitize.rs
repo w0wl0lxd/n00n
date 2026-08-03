@@ -45,9 +45,20 @@ pub(crate) const SECRET_TOKEN_PREFIXES: &[&str] = &[
 /// Sanitizes a free-text string: `Bearer <token>`, `key=value` / `key:value`
 /// with sensitive keys, and token-shaped values are replaced with
 /// `[REDACTED]`, then the result is capped at `max_chars` characters.
-/// Line breaks are preserved so multiline log previews are not collapsed.
+/// Whitespace is collapsed to single spaces, so this is suitable for
+/// one-line activity messages and compact log previews.
 #[must_use]
 pub fn sanitize_text(raw: &str, max_chars: usize) -> String {
+    let words = raw.split_whitespace().collect::<Vec<_>>();
+    let sanitized = sanitize_words(&words);
+    truncate(&sanitized, max_chars)
+}
+
+/// Like `sanitize_text`, but preserves line breaks by sanitizing each line
+/// independently and joining them with `\n`. Use this for multiline log
+/// output and JSON string values where newlines should stay intact.
+#[must_use]
+pub(crate) fn sanitize_text_preserve_newlines(raw: &str, max_chars: usize) -> String {
     let sanitized = raw
         .lines()
         .map(|line| {
