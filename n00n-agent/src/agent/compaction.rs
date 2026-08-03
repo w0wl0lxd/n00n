@@ -224,7 +224,7 @@ pub async fn compact(
     .await?;
     let context_size = crate::agent::run::estimate_message_tokens(history.as_slice(), &model.id);
     event_tx.send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
-        message: Message::synthetic(summary),
+        message: Message::assistant(summary),
         usage,
         model: model.id.clone(),
         context_size: Some(context_size),
@@ -410,6 +410,13 @@ mod tests {
 
     use super::*;
     use crate::AgentConfig;
+
+    #[test]
+    fn compaction_summary_is_an_assistant_message() {
+        let summary = Message::assistant("summary".into());
+        assert!(matches!(summary.role, Role::Assistant));
+        assert_eq!(summary.first_text_content(), Some("summary"));
+    }
 
     struct MockProvider {
         responses: Mutex<Vec<Result<StreamResponse, AgentError>>>,

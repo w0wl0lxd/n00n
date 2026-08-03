@@ -5,8 +5,8 @@ use tracing::{error, info, warn};
 
 use n00n_providers::provider::Provider;
 use n00n_providers::{
-    ContentBlock, HistoryReplayReason, Message, Model, OpenAiOptions, RequestOptions, Role,
-    StopReason, StreamResponse, System, TokenUsage,
+    ContentBlock, HistoryReplayReason, Message, Model, OpenAiOptions, RequestDeliveryMetadata,
+    RequestDeliveryPhase, RequestOptions, Role, StopReason, StreamResponse, System, TokenUsage,
 };
 
 use super::compaction::{self, CONTINUE_AFTER_COMPACT};
@@ -41,6 +41,8 @@ const MAX_TOKENS_CONTINUE_PROMPT: &str = "Continue exactly where you stopped.";
 const IMAGE_TOKEN_ESTIMATE: usize = 2_048;
 const HISTORY_REPLAY_PERMISSION_ID: &str = "history-replay";
 const HISTORY_REPLAY_TOOL: &str = "history_replay";
+const AMBIGUOUS_REPLAY_PERMISSION_ID: &str = "ambiguous-request-replay";
+const AMBIGUOUS_REPLAY_TOOL: &str = "ambiguous_request_replay";
 const FUSION_REVIEW_PROMPT: &str = "Review the sidekick result above, verify it against the task, and produce the final lead response.";
 const FUSION_FALLBACK_PROMPT: &str = "The sidekick delegation failed. Continue with exactly one lead fallback attempt and produce the final response without delegating again.";
 
@@ -514,19 +516,68 @@ impl<'h> Agent<'h> {
         }
     }
 
+    async fn approve_ambiguous_request_replay(
+        &self,
+        metadata: Option<&RequestDeliveryMetadata>,
+    ) -> Result<bool, AgentError> {
+        if self.permissions.is_yolo() {
+            return Ok(true);
+        }
+        let Some(response_rx) = self.user_response_rx.as_deref() else {
+            return Ok(false);
+        };
+        let response_rx = response_rx.lock().await;
+        self.event_tx.send(AgentEvent::PermissionRequest {
+            id: AMBIGUOUS_REPLAY_PERMISSION_ID.to_string(),
+            tool: ToolKey::native(AMBIGUOUS_REPLAY_TOOL),
+            scopes: vec![ambiguous_request_replay_scope(metadata)],
+        })?;
+        let response = self.cancel.race(response_rx.recv_async()).await;
+        drop(response_rx);
+        if self.cancel.is_cancelled() {
+            return Err(AgentError::Cancelled);
+        }
+        let Ok(answer) = response else {
+            return Ok(false);
+        };
+        let Ok(answer) = answer else {
+            return Ok(false);
+        };
+        Ok(PermissionAnswer::decode(&answer).is_some_and(|answer| answer.is_allow()))
+    }
+
     async fn turn(&mut self) -> Result<TurnOutcome, AgentError> {
         if self.cancel.is_cancelled() || !self.commit_pre_dispatch() {
             return Err(AgentError::Cancelled);
         }
-        let initial = self.stream_response(self.opts.clone()).await;
-        let response = match initial {
-            Err(AgentError::HistoryReplayRequired { reason }) => {
-                self.approve_history_replay(reason).await?;
-                let mut approved_opts = self.opts.clone();
-                approved_opts.allow_history_replay = true;
-                self.stream_response(approved_opts).await
+        let mut opts = self.opts.clone();
+        let mut approved_history_replay = false;
+        let mut approved_ambiguous_replay = false;
+        let response = loop {
+            match self.stream_response(opts.clone()).await {
+                Err(AgentError::HistoryReplayRequired { reason }) if !approved_history_replay => {
+                    self.approve_history_replay(reason).await?;
+                    approved_history_replay = true;
+                    opts.allow_history_replay = true;
+                }
+                Err(error @ AgentError::RequestSent { .. }) if !approved_ambiguous_replay => {
+                    let metadata = match &error {
+                        AgentError::RequestSent { metadata, .. } => metadata.as_ref(),
+                        _ => None,
+                    };
+                    if !self.approve_ambiguous_request_replay(metadata).await? {
+                        break Err(error);
+                    }
+                    warn!(
+                        delivery_phase = ?metadata.map(|metadata| metadata.phase),
+                        response_id_present = metadata.is_some_and(|metadata| metadata.response_id.is_some()),
+                        output_emitted = metadata.is_some_and(|metadata| metadata.emitted_event),
+                        "replaying ambiguous provider request after approval"
+                    );
+                    approved_ambiguous_replay = true;
+                }
+                result => break result,
             }
-            result => result,
         };
         let response = match response {
             Ok(r) => {
@@ -1035,7 +1086,7 @@ impl<'h> Agent<'h> {
             .saturating_add(estimate_tool_tokens(&self.tools, &self.model.id));
         self.event_tx
             .send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
-                message: Message::synthetic(summary),
+                message: Message::assistant(summary),
                 usage,
                 model: self.model.id.clone(),
                 context_size: Some(self.context_size),
@@ -1112,6 +1163,28 @@ fn validate_input_message(input: &AgentInput) -> Result<(), AgentError> {
     Ok(())
 }
 
+fn ambiguous_request_replay_scope(metadata: Option<&RequestDeliveryMetadata>) -> String {
+    let phase = match metadata.map(|metadata| metadata.phase) {
+        Some(RequestDeliveryPhase::NotSent) => "not sent",
+        Some(RequestDeliveryPhase::SentAwaitingAcceptance) => "sent; acceptance unknown",
+        Some(RequestDeliveryPhase::Accepted) => "accepted",
+        None => "delivery unknown",
+    };
+    let response_id = metadata
+        .and_then(|metadata| metadata.response_id.as_deref())
+        .map_or("unknown", |_| "known");
+    let output = metadata.map_or("unknown", |metadata| {
+        if metadata.emitted_event {
+            "already emitted"
+        } else {
+            "not observed"
+        }
+    });
+    format!(
+        "Replay one provider request ({phase}; response ID {response_id}; output {output}). This may duplicate output or charges"
+    )
+}
+
 fn history_replay_scope(
     reason: HistoryReplayReason,
     messages: &[Message],
@@ -1176,7 +1249,13 @@ pub fn estimate_message_tokens(messages: &[Message], model_id: &str) -> u32 {
                 count_tokens_with_tokenizer(tokenizer, content)
             }
             ContentBlock::ToolUse { input, .. } => count_json_with_tokenizer(tokenizer, input),
-            ContentBlock::Image { .. } | ContentBlock::File { .. } => IMAGE_TOKEN_ESTIMATE,
+            ContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE,
+            ContentBlock::File { source } => source
+                .file_data
+                .as_ref()
+                .map_or(IMAGE_TOKEN_ESTIMATE, |data| {
+                    count_tokens_with_tokenizer(tokenizer, data)
+                }),
         })
         .sum();
     u32_from_usize_saturating(total)
@@ -1297,6 +1376,16 @@ mod tests {
     }
 
     #[test]
+    fn ambiguous_replay_cancellation_is_not_a_denial() {
+        smol::block_on(async {
+            let (trigger, cancel) = CancelToken::new();
+            trigger.cancel();
+            let result = cancel.race(async { Ok::<_, ()>(()) }).await;
+            assert_eq!(result, Err("cancelled".into()));
+        });
+    }
+
+    #[test]
     fn history_replay_accepts_explicit_user_approval() {
         smol::block_on(async {
             let mut history = History::new(vec![Message::user("restored".into())]);
@@ -1352,6 +1441,40 @@ mod tests {
         assert!(
             tokens >= u32_from_usize_saturating(IMAGE_TOKEN_ESTIMATE),
             "image blocks should add {IMAGE_TOKEN_ESTIMATE} tokens"
+        );
+    }
+
+    #[test]
+    fn estimate_message_tokens_counts_inline_file_data() {
+        let messages = vec![Message {
+            role: Role::User,
+            content: vec![ContentBlock::File {
+                source: n00n_providers::FileSource {
+                    file_data: Some("large inline attachment ".repeat(500)),
+                    ..Default::default()
+                },
+            }],
+            ..Default::default()
+        }];
+        let tokens = estimate_message_tokens(&messages, "");
+        assert!(tokens > u32_from_usize_saturating(IMAGE_TOKEN_ESTIMATE));
+    }
+
+    #[test]
+    fn estimate_message_tokens_uses_attachment_estimate_for_file_reference() {
+        let messages = vec![Message {
+            role: Role::User,
+            content: vec![ContentBlock::File {
+                source: n00n_providers::FileSource {
+                    filename: Some("notes.txt".into()),
+                    ..Default::default()
+                },
+            }],
+            ..Default::default()
+        }];
+        assert_eq!(
+            estimate_message_tokens(&messages, ""),
+            u32_from_usize_saturating(IMAGE_TOKEN_ESTIMATE)
         );
     }
 
