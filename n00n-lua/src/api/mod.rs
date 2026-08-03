@@ -24,6 +24,7 @@ pub(crate) mod options;
 pub(crate) mod semblem;
 pub(crate) mod session;
 pub(crate) mod slot;
+pub(crate) mod smell;
 pub(crate) mod split;
 pub(crate) mod text;
 pub(crate) mod tool;
@@ -89,6 +90,7 @@ pub(crate) fn create_n00n_global(
     n00n.set("codegraph", codegraph::create_codegraph_table(lua)?)?;
     n00n.set("github", github::create_github_table(lua)?)?;
     n00n.set("semblem", semblem::create_semblem_table(lua)?)?;
+    n00n.set("smell", smell::create_smell_table(lua)?)?;
     n00n.set(
         "keymap",
         keymap::create_keymap_table(lua, Arc::clone(&plugin))?,

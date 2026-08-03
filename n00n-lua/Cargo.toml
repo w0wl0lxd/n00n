@@ -23,6 +23,7 @@ n00n-markdown = { workspace = true }
 n00n-arbor = { workspace = true }
 n00n-codegraph = { workspace = true }
 n00n-semble = { workspace = true }
+n00n-smell = { workspace = true }
 n00n-providers = { workspace = true }
 mlua = { workspace = true }
 serde = { workspace = true }
