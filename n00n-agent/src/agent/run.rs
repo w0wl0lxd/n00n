@@ -240,10 +240,10 @@ impl<'h> Agent<'h> {
         let supports_tool_examples = params.model.supports_tool_examples();
         let fusion_enabled = params.config.fusion.enabled;
         let admission_scope = params
-            .session_id
+            .identity
             .as_ref()
-            .map_or_else(crate::tools::ToolAdmission::new_scope, |id| {
-                Arc::<str>::from(id.to_string())
+            .map_or_else(crate::tools::ToolAdmission::new_scope, |identity| {
+                Arc::<str>::from(identity.session_id().to_string())
             });
         let fusion_state = if fusion_enabled {
             Some(FusionState::new())
@@ -366,6 +366,23 @@ impl<'h> Agent<'h> {
     #[must_use]
     pub fn total_cost(&self) -> f64 {
         self.total_cost
+    }
+
+    pub async fn run_tool(&self, id: String, name: &str, input: &Value) -> ToolDoneEvent {
+        let ctx = self.tool_context();
+        let done = tool_dispatch::run(
+            &self.registry,
+            self.mcp.as_ref(),
+            id,
+            name,
+            input,
+            &ctx,
+            tool_dispatch::Emit::Notify,
+        )
+        .await;
+        self.event_tx
+            .try_send(AgentEvent::ToolDone(Box::new(done.clone())));
+        done
     }
 
     /// Runs the agent loop with the given input.
@@ -881,7 +898,6 @@ impl<'h> Agent<'h> {
             event_tx: self.event_tx.clone(),
             mode: Arc::clone(&self.mode),
             tool_use_id: None,
-            session_id: self.session_id.clone(),
             user_response_rx: self.user_response_rx.clone(),
             loaded_instructions: self.loaded_instructions.clone(),
             cancel: self.cancel.clone(),
@@ -2174,15 +2190,15 @@ mod tests {
     }
 
     #[test]
-    fn tool_context_preserves_agent_session_id() {
+    fn tool_context_preserves_agent_session_identity() {
         let mut history = History::new(Vec::new());
         let (mut agent, _event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
-        let session_id = SessionRef::generate();
-        agent.session_id = Some(session_id.clone());
+        let identity = SessionIdentity::root(SessionRef::generate());
+        agent.identity = Some(identity.clone());
 
         let ctx = agent.tool_context();
 
-        assert_eq!(ctx.session_id, Some(session_id));
+        assert_eq!(ctx.identity, Some(identity));
     }
 
     fn make_agent_with_config(
