@@ -54,20 +54,67 @@ pub fn sanitize_text(raw: &str, max_chars: usize) -> String {
     truncate(&sanitized, max_chars)
 }
 
-/// Like `sanitize_text`, but preserves line breaks by sanitizing each line
-/// independently and joining them with `\n`. Use this for multiline log
-/// output and JSON string values where newlines should stay intact.
+/// Like `sanitize_text`, but preserves line breaks by sanitizing across
+/// line boundaries while preserving each original line separator (handles
+/// `\n`, `\r\n`, `\r`). Use this for multiline log output and JSON string
+/// values where newlines should stay intact.
 #[must_use]
 pub(crate) fn sanitize_text_preserve_newlines(raw: &str, max_chars: usize) -> String {
-    let sanitized = raw
-        .lines()
-        .map(|line| {
-            let words = line.split_whitespace().collect::<Vec<_>>();
-            sanitize_words(&words)
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    truncate(&sanitized, max_chars)
+    // Replace line breaks with a placeholder that won't be split by split_whitespace
+    // Use a Unicode Private Use Area character (unlikely to appear in real text)
+    const LINE_BREAK_PLACEHOLDER: char = '\u{E000}';
+    let mut separators: Vec<&str> = Vec::new();
+    let mut normalized = String::new();
+
+    let mut remaining = raw;
+    while !remaining.is_empty() {
+        let (line, separator, rest) = split_line_with_separator(remaining);
+        if !normalized.is_empty() && !separator.is_empty() {
+            normalized.push(LINE_BREAK_PLACEHOLDER);
+            separators.push(separator);
+        }
+        normalized.push_str(line);
+        remaining = rest;
+    }
+
+    // Sanitize the entire text as one block to preserve state across line boundaries
+    // Use split(' ') instead of split_whitespace to preserve the placeholder
+    let words: Vec<&str> = normalized.split(' ').collect();
+    let sanitized = sanitize_words(&words);
+
+    // Restore original line separators
+    let mut result = String::new();
+    let mut separator_iter = separators.into_iter();
+    for part in sanitized.split(LINE_BREAK_PLACEHOLDER) {
+        if !result.is_empty()
+            && let Some(separator) = separator_iter.next()
+        {
+            result.push_str(separator);
+        }
+        result.push_str(part);
+    }
+
+    truncate(&result, max_chars)
+}
+
+/// Splits a string at the first line break, returning (line, separator, rest).
+/// Handles `\n`, `\r\n`, and `\r` separators.
+fn split_line_with_separator(text: &str) -> (&str, &str, &str) {
+    if let Some(pos) = text.find('\n') {
+        if pos > 0 && text.as_bytes()[pos - 1] == b'\r' {
+            // \r\n
+            (&text[..pos - 1], "\r\n", &text[pos + 1..])
+        } else {
+            // \n
+            (&text[..pos], "\n", &text[pos + 1..])
+        }
+    } else if let Some(pos) = text.find('\r') {
+        // \r (not followed by \n)
+        (&text[..pos], "\r", &text[pos + 1..])
+    } else {
+        // No line break
+        (text, "", "")
+    }
 }
 
 fn sanitize_words(words: &[&str]) -> String {
@@ -237,7 +284,7 @@ fn normalize_key(value: &str) -> String {
         .collect()
 }
 
-fn truncate(message: &str, max_chars: usize) -> String {
+pub(crate) fn truncate(message: &str, max_chars: usize) -> String {
     if message.chars().count() <= max_chars {
         return message.to_owned();
     }
@@ -372,5 +419,21 @@ mod tests {
     fn preserves_token_substrings_in_prose() {
         let sanitized = sanitize_text("use max_tokens and tokenizer tokens carefully", 80);
         assert_eq!(sanitized, "use max_tokens and tokenizer tokens carefully");
+    }
+
+    #[test]
+    fn redacts_sensitive_key_value_split_across_lines() {
+        let input = "password:\nplain-value";
+        let sanitized = sanitize_text_preserve_newlines(input, 200);
+        assert!(sanitized.contains("[REDACTED]"));
+        assert!(!sanitized.contains("plain-value"));
+    }
+
+    #[test]
+    fn redacts_sensitive_key_value_split_across_lines_with_colon() {
+        let input = "password:\nplain-value";
+        let sanitized = sanitize_text_preserve_newlines(input, 200);
+        assert!(sanitized.contains("[REDACTED]"));
+        assert!(!sanitized.contains("plain-value"));
     }
 }
