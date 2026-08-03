@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-pub const SKILL_TOOL_NAME: &str = "skill";
+pub const SKILL_TOOL_NAME: &str = "load_skill";
 pub const SKILL_POLICY_DENIED_PREFIX: &str = "tool blocked by active skill policy";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,7 +21,7 @@ pub struct SkillPolicyDecision {
 impl ActiveSkillPolicy {
     #[must_use]
     pub fn evaluate(&self, tool_name: &str) -> SkillPolicyDecision {
-        if tool_name == SKILL_TOOL_NAME {
+        if tool_names_match(SKILL_TOOL_NAME, tool_name) {
             return SkillPolicyDecision {
                 allowed: true,
                 reason: None,
@@ -92,7 +92,7 @@ impl ActiveSkillPolicy {
         is_error: bool,
         state: Option<&Value>,
     ) {
-        if tool_name != SKILL_TOOL_NAME || is_error {
+        if !tool_names_match(SKILL_TOOL_NAME, tool_name) || is_error {
             return;
         }
         let Some(state) = state else {
@@ -118,7 +118,8 @@ pub fn normalize_tool_name(tool_name: &str) -> String {
     } else {
         tool_name.to_owned()
     };
-    as_internal.replace('-', "_").to_ascii_lowercase()
+    let normalized = as_internal.replace('-', "_").to_ascii_lowercase();
+    crate::tools::canonical_tool_name(&normalized).to_owned()
 }
 
 fn bare_tool_name(normalized: &str) -> Option<&str> {
@@ -131,7 +132,7 @@ fn bare_tool_name(normalized: &str) -> Option<&str> {
 fn tool_names_match(policy_entry: &str, tool_name: &str) -> bool {
     let entry = normalize_tool_name(policy_entry);
     let tool = normalize_tool_name(tool_name);
-    entry == tool || bare_tool_name(&tool).is_some_and(|bare| bare == entry)
+    entry == tool || bare_tool_name(&tool).is_some_and(|bare| normalize_tool_name(bare) == entry)
 }
 
 fn string_array(value: &Value) -> Option<Vec<String>> {
@@ -222,7 +223,7 @@ mod tests {
         let mut policy = None;
         ActiveSkillPolicy::apply_from_skill_tool_result(
             &mut policy,
-            "skill",
+            "load_skill",
             false,
             Some(&json!({
                 "active_skill": {
