@@ -2,6 +2,7 @@ use std::process::Command;
 
 const TERMINAL_ERROR: &str =
     "n00n must be run from a terminal; use --print for non-interactive output";
+const FAILURE_EXIT_CODE: i32 = 1;
 
 #[test]
 fn tui_refuses_to_run_without_a_terminal() {
@@ -29,14 +30,9 @@ fn tui_refuses_to_run_without_a_terminal() {
     );
 
     let code = output.status.code().expect("n00n should exit cleanly");
-    assert_ne!(
-        code, 101,
-        "n00n should not panic-exit (101) without a TTY:\nstderr:\n{stderr}\nstdout:\n{stdout}"
-    );
-
-    assert!(
-        !output.status.success(),
-        "n00n should reject non-TTY startup:\nstderr:\n{stderr}\nstdout:\n{stdout}"
+    assert_eq!(
+        code, FAILURE_EXIT_CODE,
+        "n00n should reject non-TTY startup with exit code {FAILURE_EXIT_CODE}:\nstderr:\n{stderr}\nstdout:\n{stdout}"
     );
     assert!(
         stderr.contains(TERMINAL_ERROR),
