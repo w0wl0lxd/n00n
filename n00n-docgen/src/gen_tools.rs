@@ -336,9 +336,9 @@ pub fn generate() -> String {
     writeln!(out).unwrap();
     writeln!(out, "# Tools").unwrap();
     writeln!(out).unwrap();
-    out.push_str(&format!(
-        "n00n ships with {total} built-in tools in this full reference, including opt-in edit sub-tools.\n"
-    ));
+    out.push_str("n00n ships with ");
+    out.push_str(&total.to_string());
+    out.push_str(" built-in tools in this full reference, including opt-in edit sub-tools.\n");
     out.push('\n');
     out.push_str(
         "Use `explore_code` first for a general codebase question. Choose `index_file` for one-file structure, `map_code` for graph relationships, `map_codegraph` for cross-file structure or impact, and `search_text` for ranked search. Do not treat `explore_code` intents as separate tools.\n",

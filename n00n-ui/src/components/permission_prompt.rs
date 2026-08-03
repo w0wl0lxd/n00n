@@ -147,15 +147,19 @@ impl PermissionPrompt {
     }
 
     fn action_hint(tool: &ToolKey) -> &'static str {
-        let name = tool.to_string();
-        if name.contains("write") || name.contains("edit") {
-            "change files"
-        } else if name.contains("bash") || name.contains("shell") {
-            "run a command"
-        } else if name.contains("web") || name.contains("http") {
-            "access the network"
-        } else {
-            "use an external tool"
+        let name = match tool {
+            ToolKey::Native(name) | ToolKey::McpTool { tool: name, .. } => name.as_ref(),
+            ToolKey::Wildcard | ToolKey::McpServer { .. } => return "use an external tool",
+        };
+        match name {
+            "write" | "write_file" | "edit" | "edit_file" | "multiedit" | "edit_file_bulk"
+            | "edit_lines" | "edit_file_lines" | "insert_lines" | "insert_file_lines" => {
+                "change files"
+            }
+            "bash" | "run_shell" => "run a command",
+            "code_execution" | "run_python" => "execute code",
+            "webfetch" | "websearch" | "fetch_url" | "search_web" => "access the network",
+            _ => "use an external tool",
         }
     }
 
@@ -416,10 +420,23 @@ mod tests {
             .iter()
             .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
             .collect();
-        assert!(text.contains("action"));
-        assert!(text.contains("scope"));
-        assert!(text.contains("why"));
-        assert!(prompt.height(24) > 0);
+        assert!(text.contains("run a command"));
+        assert!(text.contains("only the scope(s) listed below"));
+        assert!(text.contains("n00n asks before a tool can affect your work"));
+        assert_eq!(prompt.height(24), 21);
+    }
+
+    #[test]
+    fn action_hint_uses_only_the_local_tool_name() {
+        let mcp_tool = ToolKey::parse("webserver.restart").expect("valid MCP tool");
+        assert_eq!(
+            PermissionPrompt::action_hint(&mcp_tool),
+            "use an external tool"
+        );
+        assert_eq!(
+            PermissionPrompt::action_hint(&ToolKey::native("run_python")),
+            "execute code"
+        );
     }
 
     #[test]

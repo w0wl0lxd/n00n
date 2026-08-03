@@ -725,6 +725,27 @@ fn paste_works_regardless_of_status(status: Status) {
     assert_eq!(app.input_box.buffer.value(), "pasted");
 }
 
+#[test]
+fn onboarding_blocks_pasted_input() {
+    let mut app = test_app();
+    app.onboarding.open();
+    app.update(Msg::Paste("hidden input".into()));
+    assert_eq!(app.input_box.buffer.value(), "");
+}
+
+#[test]
+fn closing_all_overlays_persists_onboarding_dismissal() {
+    let mut app = test_app();
+    let marker = app.storage.path().join("welcome-seen");
+    std::fs::remove_file(&marker).expect("remove existing onboarding marker");
+    app.onboarding.open();
+
+    app.close_all_overlays();
+
+    assert!(marker.is_file());
+    assert!(!app.onboarding.is_open());
+}
+
 #[test_case("a\rb\rc",       "a\nb\nc"       ; "bare_cr")]
 #[test_case("a\r\nb\r\nc",   "a\nb\nc"       ; "crlf")]
 #[test_case("a\r\nb\rc\nd",  "a\nb\nc\nd"    ; "mixed")]

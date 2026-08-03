@@ -11,30 +11,54 @@ Type `/` in the input box to open the command palette.
 
 ## Built-in commands
 
+n00n has 22 built-in commands. Project, user, and MCP prompt commands are separate.
+
+### Session
+
+| Command | Description |
+|---------|-------------|
+| `/new` | Start a new session |
+| `/sessions` | Browse and switch sessions |
+| `/rename` | Rename the current session |
+| `/exit` | Exit the application |
+
+### Agent work
+
 | Command | Description |
 |---------|-------------|
 | `/tasks` | Browse running and completed agents and teams |
+| `/team` | Configure and run an agent team for a goal |
+| `/queue` | Remove items from queue |
+| `/workflow` | Toggle workflow mode (task callable inside code_execution) |
+
+### Conversation
+
+| Command | Description |
+|---------|-------------|
 | `/compact` | Summarize and compact conversation history |
-| `/new` | Start a new session |
+| `/btw` | Ask a quick question (no tools, no history pollution) |
+| `/thinking` | Toggle extended thinking (off, adaptive, effort level, or budget) |
+| `/fast` | Toggle Anthropic fast mode (Opus only) |
+
+### Settings and access
+
+| Command | Description |
+|---------|-------------|
 | `/help` | Show keybindings |
 | `/usage` | Show token usage breakdown |
-| `/queue` | Remove items from queue |
 | `/model` | Switch model |
 | `/theme` | Switch color theme |
 | `/mcp` | Configure MCP servers |
 | `/login` | Authenticate with an LLM provider |
 | `/cd` | Change working directory |
-| `/btw` | Ask a quick question (no tools, no history pollution) |
 | `/yolo` | Toggle YOLO mode (skip all permission prompts) |
-| `/thinking` | Toggle extended thinking (off, adaptive, effort level, or budget) |
-| `/fast` | Toggle Anthropic fast mode (Opus only) |
-| `/workflow` | Toggle workflow mode (task callable inside code_execution) |
-| `/exit` | Exit the application |
 | `/reload` | Reload plugins and config |
+
+### Plugin
+
+| Command | Description |
+|---------|-------------|
 | `/memory` | View, edit, and delete memory files |
-| `/rename` | Rename the current session |
-| `/sessions` | Browse and switch sessions |
-| `/team` | Configure and run an agent team for a goal |
 
 ## Sessions
 

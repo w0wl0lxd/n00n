@@ -255,7 +255,7 @@ impl HelpModal {
         } else if query.is_empty() {
             "  Search: / to filter keybindings".to_string()
         } else {
-            format!("  Search: {} (press / to edit)", query)
+            format!("  Search: {query} (press / to edit)")
         };
         lines.push(Line::from(Span::styled(search_label, theme.tool_dim)));
 

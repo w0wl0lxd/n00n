@@ -46,7 +46,7 @@ impl Onboarding {
             return true;
         }
         match key.code {
-            KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('q') | KeyCode::Esc => {
+            KeyCode::Enter | KeyCode::Char(' ' | 'q') | KeyCode::Esc => {
                 self.close();
                 true
             }
@@ -54,7 +54,7 @@ impl Onboarding {
         }
     }
 
-    pub fn mark_seen(&self, storage: &StateDir) -> Result<(), StorageError> {
+    pub fn mark_seen(storage: &StateDir) -> Result<(), StorageError> {
         atomic_write(&storage.path().join(MARKER), b"welcome version 1\n")
     }
 
@@ -154,7 +154,7 @@ mod tests {
         let mut onboarding = Onboarding::new(&storage);
         assert!(onboarding.is_open());
         assert!(onboarding.handle_key(key(KeyCode::Enter)));
-        onboarding.mark_seen(&storage).expect("marker writes");
+        Onboarding::mark_seen(&storage).expect("marker writes");
         assert!(!Onboarding::new(&storage).is_open());
     }
 

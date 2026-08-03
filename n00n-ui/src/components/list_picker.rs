@@ -732,16 +732,19 @@ fn render_list<T: PickerItem>(
             (false, true) => (t.accent, theme::dim_style(t.accent, 0.4)),
             (false, false) => (t.item, t.item_desc),
         };
-        let checkbox = enabled.map(|en| {
-            let sym = if en[item_idx] { "✓ on " } else { "✗ off " };
-            let sty = if i == selected {
+        let enabled_state = enabled.map(|states| states[item_idx]);
+        let checkbox_symbol =
+            enabled_state.map(|is_enabled| if is_enabled { "✓ on " } else { "✗ off " });
+        let checkbox_width = checkbox_symbol.map_or(0, UnicodeWidthStr::width);
+        let checkbox = checkbox_symbol.map(|symbol| {
+            let checkbox_style = if i == selected {
                 style
-            } else if en[item_idx] {
+            } else if enabled_state == Some(true) {
                 theme::current().item
             } else {
                 theme::current().item_desc
             };
-            Span::styled(sym, sty)
+            Span::styled(symbol, checkbox_style)
         });
         let label = format!("  {}", item.label());
         let suffix = item.suffix();
@@ -754,16 +757,15 @@ fn render_list<T: PickerItem>(
         let suffix_w = suffix.map_or(0, unicode_width::UnicodeWidthStr::width);
         let trailing_gap = suffix_w + if suffix_w > 0 { suffix_gap } else { 0 };
         let line = if let Some(detail) = detail {
-            let max_label = area.width.saturating_sub(
-                u16::try_from(detail.width()).unwrap_or_else(|_| u16::MAX)
-                    + u16::try_from(trailing_gap).unwrap_or_else(|_| u16::MAX)
-                    + 1
-                    + DETAIL_RIGHT_PAD,
-            ) as usize;
+            let reserved_width = checkbox_width
+                .saturating_add(trailing_gap)
+                .saturating_add(detail.width())
+                .saturating_add(usize::from(DETAIL_RIGHT_PAD))
+                .saturating_add(1);
+            let max_label = usize::from(area.width).saturating_sub(reserved_width);
             let label = truncate_label(&label, max_label);
-            let pad = (area.width as usize).saturating_sub(
-                label.width() + trailing_gap + detail.width() + DETAIL_RIGHT_PAD as usize + 1,
-            );
+            let pad = usize::from(area.width)
+                .saturating_sub(label.width().saturating_add(reserved_width));
             let mut spans = Vec::with_capacity(7);
             if let Some(cb) = checkbox {
                 spans.push(cb);
@@ -871,6 +873,29 @@ mod tests {
                 picker.view(frame, frame.area());
             })
             .expect("render");
+    }
+
+    #[test]
+    fn toggle_indicator_leaves_room_for_detail() {
+        let mut item = Entry::new("a very long toggleable item label");
+        item.detail = Some("DETAIL".into());
+        let items = vec![item];
+        let mut terminal = Terminal::new(TestBackend::new(24, 1)).expect("terminal");
+
+        terminal
+            .draw(|frame| {
+                render_list(frame, frame.area(), &[0], &items, 0, 0, 1, Some(&[true]));
+            })
+            .expect("render");
+
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        assert!(rendered.contains("DETAIL"));
     }
 
     #[test]
