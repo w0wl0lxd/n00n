@@ -151,6 +151,7 @@ impl Overlay for McpPicker {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::components::key;
@@ -183,7 +184,7 @@ mod tests {
                 },
             ],
             prompts: vec![],
-            pids: vec![],
+            pids: Vec::new(),
             generation: 0,
         })
     }
