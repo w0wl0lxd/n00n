@@ -35,7 +35,7 @@ use super::checksum::{
 use super::connect::{ConnectFrame, FrameBuffer, decode_frame_payload, encode_frame};
 use super::proto::{
     AGENT_MODE_AGENT, AgentServerMessage, RunFrameParams, build_run_frames,
-    exec_message_has_mcp_args, heartbeat_frame,
+    decode_agent_server_message, exec_message_has_mcp_args, heartbeat_frame,
 };
 use super::wire::{
     CLIENT_TYPE, CLIENT_VERSION, CONNECT_CONTENT_TYPE, CONNECT_PROTOCOL_VERSION, wire_model_id,
@@ -696,13 +696,7 @@ fn handle_data_frame(
         status: 502,
         message,
     })?;
-    let Some(server_msg) = AgentServerMessage::decode(&*payload).ok() else {
-        return Ok(FrameHandleOutcome {
-            exec_skipped: false,
-            text_deltas: 0,
-            kv_op: false,
-        });
-    };
+    let server_msg = decode_agent_server_message(&payload);
     if let Ok(Some(op)) = parse_kv_server_message(&server_msg.kv_server_message) {
         queue_checkpoint_reply(op, checkpoints, outbound)?;
         return Ok(FrameHandleOutcome {
@@ -711,7 +705,9 @@ fn handle_data_frame(
             kv_op: true,
         });
     }
-    if exec_message_has_mcp_args(&server_msg.exec_server_message) {
+    if exec_message_has_mcp_args(&server_msg.exec_server_message)
+        || exec_message_has_mcp_args(&server_msg.field_3)
+    {
         // Phase 0: n00n owns tools; ignore Cursor-side exec until Phase 1 maps them.
         // Aborting the whole turn drops text deltas that often follow.
         return Ok(FrameHandleOutcome {
@@ -784,7 +780,8 @@ fn queue_checkpoint_reply(
 mod tests {
     use super::*;
     use crate::providers::cursor::proto::{
-        AGENT_MODE_ASK, AgentServerMessage, InteractionUpdate, TextDelta,
+        AGENT_MODE_ASK, AgentServerMessage, ExecServerMessage, InteractionUpdate, McpArgs,
+        TextDelta,
     };
     use flate2::Compression;
     use flate2::write::GzEncoder;
@@ -833,6 +830,63 @@ mod tests {
         assert_eq!(text, "pong");
         assert!(thinking.is_empty());
         assert!(outbound.lock().expect("lock").queue.is_empty());
+    }
+
+    #[test]
+    fn handle_data_frame_detects_mcp_args_in_field_three() {
+        let exec = ExecServerMessage {
+            mcp_args: Some(McpArgs {
+                name: "Read".to_string(),
+            }),
+        };
+        let msg = AgentServerMessage {
+            interaction_update: None,
+            exec_server_message: Vec::new(),
+            field_3: exec.encode_to_vec(),
+            kv_server_message: Vec::new(),
+        };
+        let frame = ConnectFrame {
+            end_stream: false,
+            compressed: false,
+            payload: msg.encode_to_vec(),
+        };
+        let store = shared_store();
+        let (outbound, _notify) = new_outbound_queue();
+        let mut text = String::new();
+        let mut thinking = String::new();
+        let outcome =
+            handle_data_frame(&frame, &mut text, &mut thinking, &store, &outbound).expect("handle");
+        assert!(outcome.exec_skipped);
+    }
+
+    #[test]
+    fn handle_data_frame_preserves_fields_before_truncated_tail() {
+        let msg = AgentServerMessage {
+            interaction_update: Some(InteractionUpdate {
+                text_delta: Some(TextDelta {
+                    text: "pong".to_string(),
+                }),
+                thinking_delta: None,
+            }),
+            exec_server_message: Vec::new(),
+            field_3: Vec::new(),
+            kv_server_message: Vec::new(),
+        };
+        let mut payload = msg.encode_to_vec();
+        payload.push(0x80);
+        let frame = ConnectFrame {
+            end_stream: false,
+            compressed: false,
+            payload,
+        };
+        let store = shared_store();
+        let (outbound, _notify) = new_outbound_queue();
+        let mut text = String::new();
+        let mut thinking = String::new();
+        let outcome =
+            handle_data_frame(&frame, &mut text, &mut thinking, &store, &outbound).expect("handle");
+        assert_eq!(outcome.text_deltas, 1);
+        assert_eq!(text, "pong");
     }
 
     #[test]

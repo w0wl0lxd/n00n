@@ -85,6 +85,12 @@ pub(crate) struct UserMessage {
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct Action {
     #[prost(message, optional, tag = "1")]
+    pub payload: Option<ActionPayload>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub(crate) struct ActionPayload {
+    #[prost(message, optional, tag = "1")]
     pub user_message: Option<UserMessage>,
 }
 
@@ -133,18 +139,34 @@ impl Environment {
     }
 }
 
-/// Context wrapper for environment.
 #[derive(Clone, PartialEq, prost::Message)]
-pub(crate) struct Context {
-    #[prost(message, optional, tag = "1")]
+pub(crate) struct EnvironmentContext {
+    #[prost(message, optional, tag = "4")]
     pub environment: Option<Environment>,
 }
 
-/// Session metadata wrapper.
+#[derive(Clone, PartialEq, prost::Message)]
+pub(crate) struct ProjectContext {
+    #[prost(message, optional, tag = "1")]
+    pub environment_context: Option<EnvironmentContext>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub(crate) struct Context {
+    #[prost(message, optional, tag = "1")]
+    pub project_context: Option<ProjectContext>,
+}
+
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct SessionMeta {
-    #[prost(message, optional, tag = "1")]
+    #[prost(message, optional, tag = "10")]
     pub context: Option<Context>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub(crate) struct EnvironmentFrame {
+    #[prost(message, optional, tag = "2")]
+    pub session_meta: Option<SessionMeta>,
 }
 
 /// Agent client message sent to the server.
@@ -166,6 +188,12 @@ pub(crate) struct AgentClientMessage {
     pub environments: Vec<ModelMeta>,
     #[prost(string, required, tag = "16")]
     pub conversation_id_2: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub(crate) struct RunRequest {
+    #[prost(message, optional, tag = "1")]
+    pub client_message: Option<AgentClientMessage>,
 }
 
 /// Marker message for pacing.
@@ -196,7 +224,9 @@ pub(crate) fn build_run_frames(params: &RunFrameParams<'_>) -> Result<Vec<Vec<u8
         mode: params.mode,
     };
     let action = Action {
-        user_message: Some(user_message),
+        payload: Some(ActionPayload {
+            user_message: Some(user_message),
+        }),
     };
 
     let model_meta = ModelMeta::new(params.model_id);
@@ -219,16 +249,23 @@ pub(crate) fn build_run_frames(params: &RunFrameParams<'_>) -> Result<Vec<Vec<u8
         conversation_id_2: params.conversation_id.to_string(),
     };
 
-    let run_frame = encode_frame(0, &client_msg.encode_to_vec())?;
+    let run_request = RunRequest {
+        client_message: Some(client_msg),
+    };
+    let run_frame = encode_frame(0, &run_request.encode_to_vec())?;
 
-    let environment = Environment::new(params.cwd);
-    let context = Context {
-        environment: Some(environment),
+    let environment_frame = EnvironmentFrame {
+        session_meta: Some(SessionMeta {
+            context: Some(Context {
+                project_context: Some(ProjectContext {
+                    environment_context: Some(EnvironmentContext {
+                        environment: Some(Environment::new(params.cwd)),
+                    }),
+                }),
+            }),
+        }),
     };
-    let session_meta = SessionMeta {
-        context: Some(context),
-    };
-    let env_frame = encode_frame(0, &session_meta.encode_to_vec())?;
+    let env_frame = encode_frame(0, &environment_frame.encode_to_vec())?;
 
     let mut out = vec![run_frame, env_frame];
     // Pacing frames: minimal field-5 / field-3 blobs (not full AgentClientMessage).
@@ -289,6 +326,78 @@ pub(crate) struct AgentServerMessage {
     pub field_3: Vec<u8>,
     #[prost(bytes, tag = "4")]
     pub kv_server_message: Vec<u8>,
+}
+
+pub(crate) fn decode_agent_server_message(payload: &[u8]) -> AgentServerMessage {
+    if let Ok(message) = AgentServerMessage::decode(payload) {
+        return message;
+    }
+
+    let mut message = AgentServerMessage::default();
+    let mut remaining = payload;
+    while let Some(tag) = take_varint(&mut remaining) {
+        let field = tag >> 3;
+        match tag & 7 {
+            0 => {
+                if take_varint(&mut remaining).is_none() {
+                    break;
+                }
+            }
+            1 => {
+                if remaining.len() < 8 {
+                    break;
+                }
+                remaining = &remaining[8..];
+            }
+            2 => {
+                let Some(length) =
+                    take_varint(&mut remaining).and_then(|length| usize::try_from(length).ok())
+                else {
+                    break;
+                };
+                if remaining.len() < length {
+                    break;
+                }
+                let (data, rest) = remaining.split_at(length);
+                remaining = rest;
+                match field {
+                    1 => {
+                        if let Ok(update) = InteractionUpdate::decode(data) {
+                            message.interaction_update = Some(update);
+                        }
+                    }
+                    2 => message.exec_server_message = data.to_vec(),
+                    3 => message.field_3 = data.to_vec(),
+                    4 => message.kv_server_message = data.to_vec(),
+                    _ => {}
+                }
+            }
+            5 => {
+                if remaining.len() < 4 {
+                    break;
+                }
+                remaining = &remaining[4..];
+            }
+            _ => break,
+        }
+    }
+    message
+}
+
+fn take_varint(input: &mut &[u8]) -> Option<u64> {
+    let mut value = 0u64;
+    for index in 0..10 {
+        let (&byte, rest) = input.split_first()?;
+        *input = rest;
+        if index == 9 && byte > 1 {
+            return None;
+        }
+        value |= u64::from(byte & 0x7f) << (index * 7);
+        if byte & 0x80 == 0 {
+            return Some(value);
+        }
+    }
+    None
 }
 
 /// Exec message from the server. Field 11 marks an MCP tool request.
@@ -490,7 +599,16 @@ mod tests {
         let mut buf = FrameBuffer::default();
         buf.push(&frames[0]);
         let frame = buf.next_frame().expect("frame").expect("ok");
-        let client_fields = parse_wire_fields(&frame.payload).expect("valid client message");
+        let envelope_fields = parse_wire_fields(&frame.payload).expect("valid run envelope");
+        assert_eq!(
+            envelope_fields
+                .iter()
+                .map(|field| field.number)
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
+        let client_fields = parse_wire_fields(envelope_fields[0].as_bytes().unwrap())
+            .expect("valid client message");
         assert_eq!(
             client_fields.iter().map(|f| f.number).collect::<Vec<_>>(),
             vec![1, 2, 4, 5, 9, 12, 14, 14, 16]
@@ -498,7 +616,11 @@ mod tests {
 
         let action = parse_wire_fields(client_fields[1].as_bytes().unwrap()).expect("action");
         assert_eq!(action[0].number, 1);
-        let user_msg = parse_wire_fields(action[0].as_bytes().unwrap()).expect("user message");
+        let action_payload =
+            parse_wire_fields(action[0].as_bytes().unwrap()).expect("action payload");
+        assert_eq!(action_payload[0].number, 1);
+        let user_msg =
+            parse_wire_fields(action_payload[0].as_bytes().unwrap()).expect("user message");
         assert_eq!(
             user_msg.iter().map(|f| f.number).collect::<Vec<_>>(),
             vec![1, 2, 3, 4]
@@ -522,6 +644,37 @@ mod tests {
             second_env.iter().map(|f| f.number).collect::<Vec<_>>(),
             vec![1, 3]
         );
+
+        buf.push(&frames[1]);
+        let env_frame = buf.next_frame().expect("frame").expect("ok");
+        let level_1 = parse_wire_fields(&env_frame.payload).expect("environment frame");
+        assert_eq!(
+            level_1.iter().map(|field| field.number).collect::<Vec<_>>(),
+            vec![2]
+        );
+        let level_2 = parse_wire_fields(level_1[0].as_bytes().unwrap()).expect("session meta");
+        assert_eq!(
+            level_2.iter().map(|field| field.number).collect::<Vec<_>>(),
+            vec![10]
+        );
+        let level_3 = parse_wire_fields(level_2[0].as_bytes().unwrap()).expect("context");
+        assert_eq!(
+            level_3.iter().map(|field| field.number).collect::<Vec<_>>(),
+            vec![1]
+        );
+        let level_4 = parse_wire_fields(level_3[0].as_bytes().unwrap()).expect("project context");
+        assert_eq!(
+            level_4.iter().map(|field| field.number).collect::<Vec<_>>(),
+            vec![1]
+        );
+        let level_5 =
+            parse_wire_fields(level_4[0].as_bytes().unwrap()).expect("environment context");
+        assert_eq!(
+            level_5.iter().map(|field| field.number).collect::<Vec<_>>(),
+            vec![4]
+        );
+        let environment = parse_wire_fields(level_5[0].as_bytes().unwrap()).expect("environment");
+        assert_eq!(environment[1].as_string().as_deref(), Some("/tmp"));
     }
 
     #[test]
