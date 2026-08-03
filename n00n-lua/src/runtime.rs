@@ -61,7 +61,7 @@ fn register_builtin_tools(registry: &Arc<ToolRegistry>) -> Result<(), PluginErro
         match registry.register(&tool, &source) {
             Ok(()) => {}
             Err(RegistryError::NameConflict { name, .. })
-                if name == "tool_search" || name == "load_namespace" => {}
+                if name == "search_tools" || name == "tool_search" || name == "load_namespace" => {}
             Err(e) => {
                 return Err(PluginError::Lua {
                     plugin: "builtin".to_owned(),
@@ -942,6 +942,7 @@ async fn drain_barrier(
 }
 
 struct ToolKeys {
+    aliases: Vec<Arc<str>>,
     handler: RegistryKey,
     header: Option<RegistryKey>,
     restore: Option<RegistryKey>,
@@ -1465,6 +1466,7 @@ impl LuaRuntime {
             .map(|t| {
                 let tool: Arc<dyn Tool> = Arc::new(LuaTool {
                     name: Arc::clone(&t.name),
+                    aliases: t.aliases.clone(),
                     description: t.description.clone(),
                     schema: t.schema,
                     audience: t.audience,
@@ -1510,6 +1512,7 @@ impl LuaRuntime {
                 (
                     t.name,
                     ToolKeys {
+                        aliases: t.aliases,
                         handler: t.handler_key,
                         header: t.header_key,
                         restore: t.restore_key,
@@ -1623,6 +1626,17 @@ impl LuaRuntime {
     }
 }
 
+fn tool_keys_for_name<'a>(
+    tools: &'a HashMap<Arc<str>, ToolKeys>,
+    name: &str,
+) -> Option<&'a ToolKeys> {
+    tools.get(name).or_else(|| {
+        tools
+            .values()
+            .find(|keys| keys.aliases.iter().any(|alias| alias.as_ref() == name))
+    })
+}
+
 /// Resolves a plugin callback and converts its json input, warning on
 /// failure. `None` when the tool has no such callback registered.
 fn plugin_fn(
@@ -1636,7 +1650,7 @@ fn plugin_fn(
 ) -> Option<(Function, LuaValue)> {
     let func = {
         let plugins = plugins.borrow();
-        let key = key(plugins.get(plugin)?.get(tool)?)?;
+        let key = key(tool_keys_for_name(plugins.get(plugin)?, tool)?)?;
         match lua.registry_value::<Function>(key) {
             Ok(f) => f,
             Err(e) => {
@@ -1701,10 +1715,9 @@ async fn restore_item(
 ) -> Result<Option<RestoreReply>, String> {
     let (func, plugin_name) = {
         let plugins = plugins.borrow();
-        let Some((pname, tk)) = plugins
-            .iter()
-            .find_map(|(pname, tools)| tools.get(&*item.tool).map(|tk| (Arc::clone(pname), tk)))
-        else {
+        let Some((pname, tk)) = plugins.iter().find_map(|(pname, tools)| {
+            tool_keys_for_name(tools, &item.tool).map(|keys| (Arc::clone(pname), keys))
+        }) else {
             return Ok(None);
         };
         let Some(key) = tk.restore.as_ref() else {

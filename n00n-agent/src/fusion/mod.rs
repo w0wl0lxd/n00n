@@ -5,7 +5,7 @@ use n00n_providers::TokenUsage;
 use serde::Serialize;
 use tracing::warn;
 
-pub const FUSION_DELEGATE_TOOL: &str = "fusion_delegate";
+pub const FUSION_DELEGATE_TOOL: &str = "delegate_fusion";
 const TRIVIAL_REQUEST_MAX_WORDS: usize = 4;
 const RECENT_ERROR_ESCALATE_THRESHOLD: u32 = 2;
 const SIDEKICK_FAILURE_ESCALATE_THRESHOLD: u32 = 2;

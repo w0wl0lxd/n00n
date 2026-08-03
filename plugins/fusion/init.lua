@@ -157,7 +157,8 @@ local function header(input)
 end
 
 n00n.api.register_tool({
-  name = "fusion_delegate",
+  name = "delegate_fusion",
+  aliases = { "fusion_delegate" },
   description = description,
   schema = schema,
   handler = handler,

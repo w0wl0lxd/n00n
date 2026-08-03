@@ -972,7 +972,8 @@ local function restore(_input, output, is_error, ctx)
 end
 
 n00n.api.register_tool({
-  name = "workflow",
+  name = "run_workflow",
+  aliases = { "workflow" },
   description = description,
   kind = "execute",
   audiences = { "main" },

@@ -230,7 +230,8 @@ local function register_tool_if(enabled, tool)
 end
 
 n00n.api.register_tool({
-  name = "edit",
+  name = "edit_file",
+  aliases = { "edit" },
   kind = "edit",
   mutable_path = "path",
   permission_scopes = "path",
@@ -277,7 +278,8 @@ n00n.api.register_tool({
 })
 
 register_tool_if(opts.multiedit, {
-  name = "multiedit",
+  name = "edit_file_bulk",
+  aliases = { "multiedit" },
   kind = "edit",
   mutable_path = "path",
   permission_scopes = "path",
@@ -358,7 +360,8 @@ register_tool_if(opts.multiedit, {
 })
 
 register_tool_if(opts.edit_lines, {
-  name = "edit_lines",
+  name = "edit_file_lines",
+  aliases = { "edit_lines" },
   kind = "edit",
   mutable_path = "path",
   permission_scopes = "path",
@@ -408,7 +411,8 @@ register_tool_if(opts.edit_lines, {
 })
 
 register_tool_if(opts.insert_lines, {
-  name = "insert_lines",
+  name = "insert_file_lines",
+  aliases = { "insert_lines" },
   kind = "edit",
   mutable_path = "path",
   permission_scopes = "path",

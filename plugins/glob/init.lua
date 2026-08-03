@@ -15,7 +15,8 @@ local function glob_view_opts(ctx)
 end
 
 n00n.api.register_tool({
-  name = "glob",
+  name = "search_files",
+  aliases = { "glob" },
   kind = "search",
   modes = { "default", "research", "build", "compact" },
   description = "Find files by glob pattern. Respects .gitignore. Returns matching paths sorted by mtime.",

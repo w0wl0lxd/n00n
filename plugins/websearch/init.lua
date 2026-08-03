@@ -27,7 +27,8 @@ local function web_view_opts(ctx)
 end
 
 n00n.api.register_tool({
-  name = "websearch",
+  name = "search_web",
+  aliases = { "websearch" },
   kind = "fetch",
   description = [[Search the web for real-time information using Exa AI.
 

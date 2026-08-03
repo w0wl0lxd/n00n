@@ -46,7 +46,7 @@ use self::transport::McpTransport;
 const SEPARATOR: &str = ".";
 const WIRE_SEPARATOR: &str = "__";
 pub const UNKNOWN_MCP: &str = "unknown_mcp";
-pub const TOOL_SEARCH_TOOL_NAME: &str = "tool_search";
+pub const TOOL_SEARCH_TOOL_NAME: &str = "search_tools";
 /// Below this many deferrable tools, a search round-trip plus its
 /// prompt-cache miss cost more than a handful of upfront definitions.
 /// Overridden by `defer_tools` in mcp.toml.
@@ -397,7 +397,7 @@ impl McpSession {
         }
         drop(loaded);
         if !deferred.is_empty() {
-            if existing.contains(TOOL_SEARCH_TOOL_NAME) {
+            if existing.contains(TOOL_SEARCH_TOOL_NAME) || existing.contains("tool_search") {
                 warn!(
                     deferred = deferred.len(),
                     "a tool named {TOOL_SEARCH_TOOL_NAME} already exists; deferred MCP tools stay hidden"

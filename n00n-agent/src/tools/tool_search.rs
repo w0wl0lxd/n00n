@@ -60,11 +60,15 @@ impl ToolInvocation for ToolSearchInvocation {
 
 impl crate::tools::registry::Tool for ToolSearch {
     fn name(&self) -> &'static str {
-        "tool_search"
+        "search_tools"
+    }
+
+    fn aliases(&self) -> Vec<&str> {
+        vec!["tool_search"]
     }
 
     fn description(&self, _ctx: &DescriptionContext) -> Cow<'_, str> {
-        "Search for deferred tools by name or description. Returns a list of tools that can be loaded on demand.".into()
+        "Search deferred tools by name or description when the needed capability is not already available. Do not use this when a loaded sibling tool already matches the task.".into()
     }
 
     fn schema(&self) -> Value {
@@ -155,7 +159,7 @@ impl crate::tools::registry::Tool for LoadNamespace {
     }
 
     fn description(&self, _ctx: &DescriptionContext) -> Cow<'_, str> {
-        "Load all tools from a namespace. Returns the list of tools that were loaded.".into()
+        "Load all deferred tools from a namespace when several sibling tools are needed. Do not use this for one known tool; use search_tools instead.".into()
     }
 
     fn schema(&self) -> Value {

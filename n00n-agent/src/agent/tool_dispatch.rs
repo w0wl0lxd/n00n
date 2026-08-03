@@ -369,17 +369,21 @@ async fn run_authorized(
 ) -> ToolDoneEvent {
     // GPT-5.6 was likely trained on Codex sessions where tools are `functions.<name>`
     let name = name.strip_prefix("functions.").map_or(name, |value| value);
-    if name == crate::fusion::FUSION_DELEGATE_TOOL && !fusion_delegate_authorized {
+    let entry = registry.get(name);
+    let canonical_name = entry
+        .as_ref()
+        .map_or_else(|| name.to_owned(), |entry| entry.name().to_owned());
+    if canonical_name == crate::fusion::FUSION_DELEGATE_TOOL && !fusion_delegate_authorized {
         return tool_done_error(
             id,
             Arc::from(crate::fusion::FUSION_DELEGATE_TOOL),
             FUSION_DELEGATE_BLOCKED.into(),
         );
     }
-    if !ctx.tool_filter.matches(name) {
-        return tool_done_error(id, Arc::from(name), TOOL_FILTER_DENIED.into());
+    if !ctx.tool_filter.matches(&canonical_name) {
+        return tool_done_error(id, Arc::from(canonical_name), TOOL_FILTER_DENIED.into());
     }
-    if ctx.mode.plan_path().is_some() && name == crate::tools::CODE_EXECUTION_TOOL_NAME {
+    if ctx.mode.plan_path().is_some() && canonical_name == crate::tools::CODE_EXECUTION_TOOL_NAME {
         return tool_done_error(
             id,
             Arc::from(crate::tools::CODE_EXECUTION_TOOL_NAME),
@@ -387,7 +391,7 @@ async fn run_authorized(
         );
     }
     if ctx.mode.plan_path().is_some()
-        && name == crate::tools::BASH_TOOL_NAME
+        && canonical_name == crate::tools::BASH_TOOL_NAME
         && !plan_bash_is_read_only(input)
     {
         return tool_done_error(
@@ -396,13 +400,12 @@ async fn run_authorized(
             BASH_BLOCKED_IN_PLAN.into(),
         );
     }
-    if let Some(reason) = skill_policy_denied(name, ctx) {
-        return tool_done_error(id.clone(), Arc::from(name), reason);
+    if let Some(reason) = skill_policy_denied(&canonical_name, ctx) {
+        return tool_done_error(id.clone(), Arc::from(canonical_name), reason);
     }
     if let Some(local) = ctx.local_tools.get(name) {
         return run_local_tool(local, id, name, input, ctx, emit);
     }
-    let entry = registry.get(name);
     // LLM providers send tool names in wire format (server__tool) but our
     // internal index uses server.tool. Only convert if the name isn't a
     // native tool — avoids mangling native names that happen to contain __.
@@ -413,13 +416,13 @@ async fn run_authorized(
     };
     let tool_id: Arc<str> = entry
         .as_ref()
-        .map(|e| Arc::from(e.tool.name()))
+        .map(|e| Arc::from(e.name()))
         .or_else(|| mcp.map(|m| m.interned_name(&mcp_lookup)))
         .unwrap_or_else(|| Arc::from(UNKNOWN_MCP));
     let started = Instant::now();
 
     if ctx.mode.plan_path().is_some()
-        && name != crate::tools::BASH_TOOL_NAME
+        && canonical_name != crate::tools::BASH_TOOL_NAME
         && entry
             .as_ref()
             .is_some_and(|entry| entry.tool.tool_kind() == Some("execute"))
@@ -498,7 +501,7 @@ async fn run_authorized(
 
         invocation.start(ctx).await;
 
-        if let Err(e) = enforce_permission(invocation.as_ref(), name, ctx, &id).await {
+        if let Err(e) = enforce_permission(invocation.as_ref(), &canonical_name, ctx, &id).await {
             return tool_done_error(id.clone(), Arc::clone(&tool_id), e);
         }
 
@@ -549,7 +552,7 @@ async fn run_authorized(
                 }
             }
         }
-    } else if let Some(mcp) = mcp.filter(|_| name == TOOL_SEARCH_TOOL_NAME) {
+    } else if let Some(mcp) = mcp.filter(|_| canonical_name == TOOL_SEARCH_TOOL_NAME) {
         run_tool_search(mcp, id, input, ctx, emit)
     } else if mcp.is_some_and(|m| m.has_tool(&mcp_lookup)) {
         execute_mcp_tool(ctx, &id, tool_id, &mcp_lookup, input, emit).await

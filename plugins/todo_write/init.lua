@@ -180,7 +180,8 @@ n00n.api.register_prompt_hint({
 })
 
 n00n.api.register_tool({
-  name = "todo_write",
+  name = "update_todo",
+  aliases = { "todo_write" },
   description = DESCRIPTION,
   schema = {
     type = "object",

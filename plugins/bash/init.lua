@@ -632,7 +632,8 @@ local opts = n00n.api.register_options(output_limits.extend({
 }))
 
 n00n.api.register_tool({
-  name = "bash",
+  name = "run_shell",
+  aliases = { "bash" },
   kind = "execute",
   description = description,
   schema = {
