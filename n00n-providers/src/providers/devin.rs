@@ -707,12 +707,23 @@ impl Devin {
             .split('/')
             .next_back()
             .unwrap_or_else(|| model.id.as_str());
-        // Resolve aliases (e.g. "opus") to the canonical model uid before
-        // looking up the server-side wire id.
-        let canonical_id =
-            crate::model::lookup_entry(crate::providers::devin::models(), model_router_uid)
-                .map_or(model_router_uid, |entry| entry.prefixes[0]);
         let cli_configs = self.get_cli_model_configs(&base_url).await?;
+        // Resolve aliases (e.g. "opus") to a canonical model uid that the
+        // server recognizes.  Prefer the first catalog prefix that is present
+        // in the CLI model-config map, so that names like `swe-1-7` and
+        // `swe-1-7-max` both map to the server's wire id.
+        let canonical_id = crate::model::lookup_entry(
+            crate::providers::devin::models(),
+            model_router_uid,
+        )
+        .map_or(model_router_uid, |entry| {
+            entry
+                .prefixes
+                .iter()
+                .find(|p| cli_configs.contains_key(*p))
+                .copied()
+                .unwrap_or(entry.prefixes[0])
+        });
         let chat_model_uid = cli_configs
             .get(canonical_id)
             .map_or(canonical_id, |wire| wire.as_str());

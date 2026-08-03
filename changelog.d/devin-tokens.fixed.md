@@ -1,4 +1,4 @@
-Register the `swe-1-7-max` Devin model alias and correct the `swe-1-7` context window to `262_144` tokens so the catalog matches the provider defaults.
+Register `swe-1-7-max` and `swe-1-7-medium` as the canonical Devin model ids with `swe-1-7` and dot-prefixed variants (`swe-1.7`/`swe-1.7-max`/`swe-1.7-medium`) as aliases, and correct the `swe-1-7` family context window to `262_144` tokens.
 
 Validate the `devin`/`devin2` `base_url` before using it for authentication, falling back to the configured API server when it is missing or is not an `http://`/`https://` URL. This fixes `failed to build auth request: invalid format` errors when a provider name like `devin2` is configured.
 

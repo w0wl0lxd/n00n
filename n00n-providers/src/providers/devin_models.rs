@@ -820,7 +820,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             context_window: 1_048_576,
         },
         ModelEntry {
-            prefixes: &["swe-1-7", "swe-1-7-max"],
+            prefixes: &["swe-1-7-max", "swe-1-7", "swe-1.7", "swe-1.7-max"],
             tier: ModelTier::Weak,
             family: ModelFamily::Generic,
             vision: true,
@@ -836,7 +836,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             context_window: 262_144,
         },
         ModelEntry {
-            prefixes: &["swe-1-7-medium"],
+            prefixes: &["swe-1-7-medium", "swe-1.7-medium"],
             tier: ModelTier::Weak,
             family: ModelFamily::Generic,
             vision: true,
@@ -852,7 +852,7 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
             context_window: 262_144,
         },
         ModelEntry {
-            prefixes: &["swe-1-7-lightning", "swe"],
+            prefixes: &["swe-1-7-lightning", "swe-1.7-lightning", "swe"],
             tier: ModelTier::Medium,
             family: ModelFamily::Generic,
             vision: true,
@@ -2675,7 +2675,12 @@ mod tests {
     #[test_case("haiku", "MODEL_PRIVATE_11" ; "haiku")]
     #[test_case("codex", "gpt-5-3-codex-low" ; "codex")]
     #[test_case("swe", "swe-1-7-lightning" ; "swe")]
-    #[test_case("swe-1-7-max", "swe-1-7" ; "swe_1_7_max")]
+    #[test_case("swe-1-7", "swe-1-7-max" ; "swe_1_7")]
+    #[test_case("swe-1.7", "swe-1-7-max" ; "swe_1_dot_7")]
+    #[test_case("swe-1-7-max", "swe-1-7-max" ; "swe_1_7_max")]
+    #[test_case("swe-1.7-max", "swe-1-7-max" ; "swe_1_dot_7_max")]
+    #[test_case("swe-1-7-medium", "swe-1-7-medium" ; "swe_1_7_medium")]
+    #[test_case("swe-1.7-medium", "swe-1-7-medium" ; "swe_1_dot_7_medium")]
     fn catalog_alias_resolves_to_canonical_id(alias: &str, canonical_id: &str) {
         let entry = lookup_entry(models(), alias).expect("catalog alias should resolve");
 
