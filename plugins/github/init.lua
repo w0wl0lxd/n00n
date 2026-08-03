@@ -3,7 +3,7 @@ local ToolView = require("n00n.tool_view")
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Use **github** for GitHub API operations: list_issues, create_issue, list_prs, get_repo.",
+  content = "- Use **github** for GitHub API operations: list_issues, create_issue, list_prs, get_repo, create_pr, add_comment.",
 })
 
 local function dispatch(input)
@@ -75,6 +75,28 @@ local function dispatch(input)
     return { llm_output = table.concat(lines, "\n") }
   end
 
+  if command == "create_pr" then
+    if not input.head or not input.base or not input.title or not input.body then
+      return { llm_output = "error: head, base, title, and body required for create_pr", is_error = true }
+    end
+    local ok, result = pcall(n00n_github.create_pr, owner, repo, input.head, input.base, input.title, input.body)
+    if not ok then
+      return { llm_output = "error: " .. tostring(result), is_error = true }
+    end
+    return { llm_output = string.format("Created PR #%d: %s\n%s", result.number, result.title, result.html_url) }
+  end
+
+  if command == "add_comment" then
+    if not input.issue_number or not input.body then
+      return { llm_output = "error: issue_number and body required for add_comment", is_error = true }
+    end
+    local ok, result = pcall(n00n_github.add_comment, owner, repo, input.issue_number, input.body)
+    if not ok then
+      return { llm_output = "error: " .. tostring(result), is_error = true }
+    end
+    return { llm_output = string.format("Added comment #%d\n%s", result.id, result.html_url) }
+  end
+
   return { llm_output = "error: unknown command: " .. tostring(command), is_error = true }
 end
 
@@ -89,13 +111,16 @@ Query GitHub repositories, issues, and pull requests using the REST API. Require
     properties = {
       command = {
         type = "string",
-        enum = { "list_issues", "create_issue", "list_prs", "get_repo" },
+        enum = { "list_issues", "create_issue", "list_prs", "get_repo", "create_pr", "add_comment" },
         required = true,
       },
       owner = { type = "string" },
       repo = { type = "string" },
       title = { type = "string" },
       body = { type = "string" },
+      head = { type = "string" },
+      base = { type = "string" },
+      issue_number = { type = "number" },
     },
   },
   header = function(input)
@@ -103,13 +128,19 @@ Query GitHub repositories, issues, and pull requests using the REST API. Require
     if input.owner and input.repo then
       label = label .. " " .. input.owner .. "/" .. input.repo
     end
+    if input.head and input.base then
+      label = label .. " (" .. input.head .. " -> " .. input.base .. ")"
+    end
+    if input.issue_number then
+      label = label .. " #" .. tostring(input.issue_number)
+    end
     return "github " .. label
   end,
   permission_scopes = function(input)
     local command = input.command or ""
     if command == "list_issues" or command == "list_prs" or command == "get_repo" then
       return { scopes = { "github.read" }, force_prompt = false }
-    elseif command == "create_issue" then
+    elseif command == "create_issue" or command == "create_pr" or command == "add_comment" then
       return { scopes = { "github.write" }, force_prompt = true }
     end
     return { scopes = { "github.read" }, force_prompt = false }
