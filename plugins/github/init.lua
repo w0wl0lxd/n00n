@@ -34,8 +34,8 @@ local function dispatch(input)
   end
 
   if command == "create_issue" then
-    if not input.title or not input.body then
-      return { llm_output = "error: title and body required for create_issue", is_error = true }
+    if not input.title then
+      return { llm_output = "error: title required for create_issue", is_error = true }
     end
     local ok, result = pcall(n00n_github.create_issue, owner, repo, input.title, input.body, input.token)
     if not ok then
@@ -135,7 +135,7 @@ local function dispatch(input)
     if not ok then
       return { llm_output = "error: " .. tostring(result), is_error = true }
     end
-    return { llm_output = string.format("Added comment %s\n%s", result.html_url) }
+    return { llm_output = string.format("Added comment\n%s", result.html_url) }
   end
 
   return { llm_output = "error: unknown command: " .. tostring(command), is_error = true }
