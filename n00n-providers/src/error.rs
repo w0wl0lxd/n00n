@@ -306,12 +306,13 @@ impl AgentError {
             Self::Storage => "local storage error, try again".into(),
             Self::Channel => "internal error, try again".into(),
             Self::Cancelled => "cancelled".into(),
-            Self::RequestSent { metadata, .. } => match metadata.as_ref() {
-                Some(m) if m.idempotency_key.is_some() => {
+            Self::RequestSent { .. } => {
+                if self.is_retryable() {
                     "connection failed after the request was sent; retrying with idempotency key".into()
+                } else {
+                    "connection failed after the request was sent; not retrying to avoid duplicate output or charges".into()
                 }
-                _ => "connection failed after the request was sent; not retrying to avoid duplicate output or charges".into(),
-            },
+            }
         }
     }
 
