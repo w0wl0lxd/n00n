@@ -8,7 +8,7 @@ use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::{BufRead, BufReader, Error as IoError, ErrorKind, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Error as IoError, ErrorKind, Read, Seek, SeekFrom, Take, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -36,7 +36,7 @@ const MAX_SESSION_DECODED_BYTES: usize = 512 * 1024 * 1024;
 const MAX_SCAN_RECORD_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SCAN_DECODED_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ZSTD_WINDOW_LOG: u32 = 27;
-const ZSTD_WINDOW_TOO_LARGE_ERROR_CODE: usize = 16;
+const MAX_LAST_FRAME_DECODER_ATTEMPTS: usize = 1_024;
 const TRANSCRIPT_RECORD_TYPE: &str = "transcript";
 pub const SESSIONS_DIR: &str = "sessions";
 const CWD_INDEX_FILE: &str = "cwd_latest.json";
@@ -747,6 +747,7 @@ pub struct SessionLog {
     /// changes (title, draft, `updated_at`) instead of dropping them.
     saved_meta: Vec<u8>,
     saved_title: String,
+    decoded_bytes: usize,
 }
 
 struct MessageCursor {
@@ -790,9 +791,23 @@ impl SessionLog {
         U: Serialize,
         T: Serialize,
     {
-        let file = write_session_file(dir, session)?;
+        Self::create_with_limits(dir, session, DecodeLimits::LOAD)
+    }
+
+    #[allow(clippy::needless_pass_by_value)]
+    fn create_with_limits<M, U, T>(
+        dir: &Path,
+        session: &Session<M, U, T>,
+        limits: DecodeLimits,
+    ) -> Result<Self, SessionError>
+    where
+        M: Serialize + Clone,
+        U: Serialize,
+        T: Serialize,
+    {
+        let (file, decoded_bytes) = write_session_file_with_limits(dir, session, &limits)?;
         update_cwd_index(dir, &session.cwd, session.id)?;
-        Self::cursor_from(dir, session, file, 0)
+        Self::cursor_from(dir, session, file, 0, decoded_bytes)
     }
 
     /// # Errors
@@ -810,6 +825,7 @@ impl SessionLog {
         Self::open_with_limits(dir, session_id, DecodeLimits::LOAD)
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     fn open_with_limits<M, U, T>(
         dir: &Path,
         session_id: n00nId,
@@ -822,8 +838,8 @@ impl SessionLog {
     {
         let path = locate_session_file(dir, session_id)
             .ok_or_else(|| SessionError::from(StorageError::NotFound(session_id.to_string())))?;
-        let (session, saw_legacy_transcript, recovered_tail, log_appends) =
-            parse_records_with_limits::<M, U, T>(&path, limits)?;
+        let (session, saw_legacy_transcript, recovered_tail, log_appends, decoded_bytes) =
+            parse_records_with_limits::<M, U, T>(&path, limits.clone())?;
 
         if session.id != session_id {
             return Err(SessionError::IdMismatch {
@@ -833,17 +849,20 @@ impl SessionLog {
         }
 
         let rewrite = saw_legacy_transcript || recovered_tail;
-        let file = if rewrite {
-            write_session_file(dir, &session)?
+        let (file, decoded_bytes) = if rewrite {
+            write_session_file_with_limits(dir, &session, &limits)?
         } else {
-            OpenOptions::new()
-                .read(true)
-                .append(true)
-                .open(&path)
-                .map_err(StorageError::from)?
+            (
+                OpenOptions::new()
+                    .read(true)
+                    .append(true)
+                    .open(&path)
+                    .map_err(StorageError::from)?,
+                decoded_bytes,
+            )
         };
         let appended_frames = if rewrite { 0 } else { log_appends };
-        let log = Self::cursor_from(dir, &session, file, appended_frames)?;
+        let log = Self::cursor_from(dir, &session, file, appended_frames, decoded_bytes)?;
         update_cwd_index(dir, &session.cwd, session.id)?;
         Ok((session, log))
     }
@@ -862,23 +881,37 @@ impl SessionLog {
         U: Serialize,
         T: Serialize,
     {
+        self.append_with_limits(session, DecodeLimits::LOAD)
+    }
+
+    #[allow(clippy::needless_pass_by_value)]
+    fn append_with_limits<M, U, T>(
+        &mut self,
+        session: &Session<M, U, T>,
+        limits: DecodeLimits,
+    ) -> Result<(), SessionError>
+    where
+        M: Serialize + Clone,
+        U: Serialize,
+        T: Serialize,
+    {
         self.require_same_id(session)?;
 
         if session.title != self.saved_title {
             let dir = self.dir.clone();
-            return self.compact(&dir, session);
+            return self.compact_with_limits(&dir, session, limits);
         }
 
         let current_messages = MessageCursor::capture(&session.messages)?;
         if !self.saved_messages.is_prefix_of(&current_messages) {
             let dir = self.dir.clone();
-            return self.compact(&dir, session);
+            return self.compact_with_limits(&dir, session, limits);
         }
 
         let current_transcript = self.updated_transcript_cursor(session)?;
         if self.transcript_replaced(current_transcript.as_ref()) {
             let dir = self.dir.clone();
-            return self.compact(&dir, session);
+            return self.compact_with_limits(&dir, session, limits);
         }
 
         if self.cursor_ahead(session) {
@@ -890,39 +923,58 @@ impl SessionLog {
 
         if self.appended_frames >= MAX_INCREMENTAL_FRAMES {
             let dir = self.dir.clone();
-            return self.compact(&dir, session);
+            return self.compact_with_limits(&dir, session, limits);
         }
 
+        let path = jsonl_path(&self.dir, self.session_id);
+        let mut next_decoded_bytes = self.decoded_bytes;
         let mut buf = Vec::new();
         let mut new_tool_ids = Vec::new();
 
         for msg in &session.messages[self.saved_messages.len()..] {
-            append_record(&mut buf, &LogRecord::<&M, &U, &T>::Msg { d: msg })?;
+            append_record_with_limits(
+                &mut buf,
+                &LogRecord::<&M, &U, &T>::Msg { d: msg },
+                &path,
+                &limits,
+                &mut next_decoded_bytes,
+            )?;
         }
 
         for (id, output) in &session.tool_outputs {
             if !self.saved_tool_ids.contains(id) {
-                append_record(
+                append_record_with_limits(
                     &mut buf,
                     &LogRecord::<&M, &U, &T>::Out {
                         id: id.clone(),
                         d: output,
                     },
+                    &path,
+                    &limits,
+                    &mut next_decoded_bytes,
                 )?;
                 new_tool_ids.push(id.clone());
             }
         }
 
-        let new_sub_counts =
-            self.append_subagent_records::<M, U, T>(&mut buf, &session.subagent_messages)?;
+        let new_sub_counts = self.append_subagent_records::<M, U, T>(
+            &mut buf,
+            &session.subagent_messages,
+            &path,
+            &limits,
+            &mut next_decoded_bytes,
+        )?;
 
         for entry in &session.transcript[self.saved_transcript.len()..] {
-            append_record(
+            append_record_with_limits(
                 &mut buf,
                 &TranscriptRecord {
                     t: TRANSCRIPT_RECORD_TYPE,
                     d: entry,
                 },
+                &path,
+                &limits,
+                &mut next_decoded_bytes,
             )?;
         }
 
@@ -933,7 +985,21 @@ impl SessionLog {
         }
 
         let next_log_appends = self.appended_frames + 1;
-        let persisted_meta = meta_record_bytes(session, next_log_appends)?;
+        let mut persisted_meta = Vec::new();
+        append_record_with_limits(
+            &mut persisted_meta,
+            &LogRecord::<M, &U, &T>::Meta {
+                title: session.title.clone(),
+                token_usage: &session.token_usage,
+                updated_at: session.updated_at,
+                log_appends: next_log_appends,
+                transcript: None,
+                meta: session.meta.clone(),
+            },
+            &path,
+            &limits,
+            &mut next_decoded_bytes,
+        )?;
         buf.extend_from_slice(&persisted_meta);
 
         let start = self.file.metadata().map_err(StorageError::from)?.len();
@@ -960,6 +1026,7 @@ impl SessionLog {
         }
         self.saved_meta = persisted_meta;
         self.saved_title.clone_from(&session.title);
+        self.decoded_bytes = next_decoded_bytes;
 
         Ok(())
     }
@@ -968,6 +1035,9 @@ impl SessionLog {
         &self,
         buf: &mut Vec<u8>,
         subagent_messages: &HashMap<String, Vec<M>>,
+        path: &Path,
+        limits: &DecodeLimits,
+        decoded_bytes: &mut usize,
     ) -> Result<Vec<(String, usize)>, SessionError>
     where
         M: Serialize,
@@ -982,12 +1052,15 @@ impl SessionLog {
                 .copied()
                 .unwrap_or_else(|| 0);
             for msg in &msgs[saved..] {
-                append_record(
+                append_record_with_limits(
                     buf,
                     &LogRecord::<&M, &U, &T>::SubMsg {
                         sub: sub_id.clone(),
                         d: msg,
                     },
+                    path,
+                    limits,
+                    decoded_bytes,
                 )?;
             }
             if msgs.len() > saved {
@@ -1009,10 +1082,25 @@ impl SessionLog {
         U: Serialize,
         T: Serialize,
     {
+        self.compact_with_limits(dir, session, DecodeLimits::LOAD)
+    }
+
+    #[allow(clippy::needless_pass_by_value)]
+    fn compact_with_limits<M, U, T>(
+        &mut self,
+        dir: &Path,
+        session: &Session<M, U, T>,
+        limits: DecodeLimits,
+    ) -> Result<(), SessionError>
+    where
+        M: Serialize + Clone,
+        U: Serialize,
+        T: Serialize,
+    {
         self.require_same_id(session)?;
 
-        let file = write_session_file(dir, session)?;
-        *self = Self::cursor_from(dir, session, file, 0)?;
+        let (file, decoded_bytes) = write_session_file_with_limits(dir, session, &limits)?;
+        *self = Self::cursor_from(dir, session, file, 0, decoded_bytes)?;
         update_cwd_index(dir, &session.cwd, session.id)?;
 
         Ok(())
@@ -1044,6 +1132,7 @@ impl SessionLog {
         session: &Session<M, U, T>,
         file: File,
         appended_frames: u64,
+        decoded_bytes: usize,
     ) -> Result<Self, SessionError>
     where
         M: Serialize + Clone,
@@ -1062,6 +1151,7 @@ impl SessionLog {
             saved_transcript_revision: session.transcript_revision,
             saved_meta: meta_record_bytes(session, appended_frames)?,
             saved_title: session.title.clone(),
+            decoded_bytes,
         })
     }
 
@@ -1114,34 +1204,47 @@ where
     Ok(buf)
 }
 
-fn write_session_file<M, U, T>(dir: &Path, session: &Session<M, U, T>) -> Result<File, SessionError>
+fn write_session_file_with_limits<M, U, T>(
+    dir: &Path,
+    session: &Session<M, U, T>,
+    limits: &DecodeLimits,
+) -> Result<(File, usize), SessionError>
 where
     M: Serialize + Clone,
     U: Serialize,
     T: Serialize,
 {
-    fs::create_dir_all(dir).map_err(StorageError::from)?;
     let path = jsonl_path(dir, session.id);
-    atomic_write_streaming(&path, |file| write_full_session(file, session))?;
+    fs::create_dir_all(dir).map_err(StorageError::from)?;
+    let mut decoded_bytes = 0;
+    atomic_write_streaming(&path, |file| {
+        let mut encoder = Encoder::new(file, COMPRESS_LEVEL).map_err(StorageError::from)?;
+        decoded_bytes = serialize_full_session(&mut encoder, session, &path, limits)?;
+        encoder.finish().map_err(StorageError::from)?;
+        Ok::<(), SessionError>(())
+    })?;
     let file = OpenOptions::new()
         .append(true)
         .open(&path)
         .map_err(StorageError::from)?;
-    Ok(file)
+    Ok((file, decoded_bytes))
 }
 
-fn write_full_session<M, U, T, W: Write>(
-    file: &mut W,
+fn serialize_full_session<W, M, U, T>(
+    writer: &mut W,
     session: &Session<M, U, T>,
-) -> Result<(), SessionError>
+    path: &Path,
+    limits: &DecodeLimits,
+) -> Result<usize, SessionError>
 where
+    W: Write,
     M: Serialize + Clone,
     U: Serialize,
     T: Serialize,
 {
-    let mut encoder = Encoder::new(file, COMPRESS_LEVEL).map_err(StorageError::from)?;
-    append_record(
-        &mut encoder,
+    let mut decoded_bytes = 0;
+    write_record_with_limits(
+        writer,
         &LogRecord::<&M, &U, &T>::Header {
             v: LOG_FORMAT_VERSION,
             id: session.id,
@@ -1151,41 +1254,59 @@ where
             created_at: session.created_at,
             parent_id: session.meta.parent_id,
         },
+        path,
+        limits,
+        &mut decoded_bytes,
     )?;
     for msg in &session.messages {
-        append_record(&mut encoder, &LogRecord::<&M, &U, &T>::Msg { d: msg })?;
+        write_record_with_limits(
+            writer,
+            &LogRecord::<&M, &U, &T>::Msg { d: msg },
+            path,
+            limits,
+            &mut decoded_bytes,
+        )?;
     }
     for (id, output) in &session.tool_outputs {
-        append_record(
-            &mut encoder,
+        write_record_with_limits(
+            writer,
             &LogRecord::<&M, &U, &T>::Out {
                 id: id.clone(),
                 d: output,
             },
+            path,
+            limits,
+            &mut decoded_bytes,
         )?;
     }
     for (sub_id, msgs) in &session.subagent_messages {
         for msg in msgs {
-            append_record(
-                &mut encoder,
+            write_record_with_limits(
+                writer,
                 &LogRecord::<&M, &U, &T>::SubMsg {
                     sub: sub_id.clone(),
                     d: msg,
                 },
+                path,
+                limits,
+                &mut decoded_bytes,
             )?;
         }
     }
     for entry in &session.transcript {
-        append_record(
-            &mut encoder,
+        write_record_with_limits(
+            writer,
             &TranscriptRecord {
                 t: TRANSCRIPT_RECORD_TYPE,
                 d: entry,
             },
+            path,
+            limits,
+            &mut decoded_bytes,
         )?;
     }
-    append_record(
-        &mut encoder,
+    write_record_with_limits(
+        writer,
         &LogRecord::<M, &U, &T>::Meta {
             title: session.title.clone(),
             token_usage: &session.token_usage,
@@ -1194,8 +1315,93 @@ where
             transcript: None,
             meta: session.meta.clone(),
         },
+        path,
+        limits,
+        &mut decoded_bytes,
     )?;
-    encoder.finish().map_err(StorageError::from)?;
+    Ok(decoded_bytes)
+}
+
+struct RecordLimitWriter<'a, W> {
+    writer: &'a mut W,
+    written: usize,
+    limit: usize,
+    exceeded: bool,
+}
+
+impl<W: Write> Write for RecordLimitWriter<'_, W> {
+    fn write(&mut self, bytes: &[u8]) -> Result<usize, IoError> {
+        let remaining = self.limit.saturating_sub(self.written);
+        if bytes.len() > remaining {
+            self.exceeded = true;
+            return Err(IoError::new(
+                ErrorKind::Other,
+                "serialized session record exceeded its limit",
+            ));
+        }
+        let written = self.writer.write(bytes)?;
+        self.written += written;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> Result<(), IoError> {
+        self.writer.flush()
+    }
+}
+
+fn write_record_with_limits<W: Write, R: Serialize>(
+    writer: &mut W,
+    record: &R,
+    path: &Path,
+    limits: &DecodeLimits,
+    decoded_bytes: &mut usize,
+) -> Result<(), SessionError> {
+    let mut limited = RecordLimitWriter {
+        writer,
+        written: 0,
+        limit: limits.line_bytes,
+        exceeded: false,
+    };
+    let result = serde_json::to_writer(&mut limited, record);
+    if limited.exceeded {
+        return Err(SessionError::RecordTooLarge {
+            path: path.display().to_string(),
+            limit: limits.line_bytes,
+        });
+    }
+    result.map_err(StorageError::from)?;
+    let Some(next_decoded_bytes) = decoded_bytes.checked_add(limited.written + 1) else {
+        return Err(SessionError::DecodedBudgetExceeded {
+            path: path.display().to_string(),
+            limit: limits.decoded_bytes,
+        });
+    };
+    if next_decoded_bytes > limits.decoded_bytes {
+        return Err(SessionError::DecodedBudgetExceeded {
+            path: path.display().to_string(),
+            limit: limits.decoded_bytes,
+        });
+    }
+    limited
+        .writer
+        .write_all(b"\n")
+        .map_err(StorageError::from)?;
+    *decoded_bytes = next_decoded_bytes;
+    Ok(())
+}
+
+fn append_record_with_limits<R: Serialize>(
+    writer: &mut Vec<u8>,
+    record: &R,
+    path: &Path,
+    limits: &DecodeLimits,
+    decoded_bytes: &mut usize,
+) -> Result<(), SessionError> {
+    let record_start = writer.len();
+    if let Err(error) = write_record_with_limits(writer, record, path, limits, decoded_bytes) {
+        writer.truncate(record_start);
+        return Err(error);
+    }
     Ok(())
 }
 
@@ -1216,6 +1422,8 @@ enum RawTag {
     #[serde(other)]
     Other,
 }
+
+type ParsedRecords<M, U, T> = (Session<M, U, T>, bool, bool, u64, usize);
 
 struct SessionBuilder<M, U, T> {
     id: Option<n00nId>,
@@ -1264,13 +1472,16 @@ where
     U: DeserializeOwned + Default,
     T: DeserializeOwned,
 {
-    parse_records_with_limits(path, DecodeLimits::LOAD)
+    let (session, saw_legacy_transcript, recovered_tail, log_appends, _) =
+        parse_records_with_limits(path, DecodeLimits::LOAD)?;
+    Ok((session, saw_legacy_transcript, recovered_tail, log_appends))
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn parse_records_with_limits<M, U, T>(
     path: &Path,
     limits: DecodeLimits,
-) -> Result<(Session<M, U, T>, bool, bool, u64), SessionError>
+) -> Result<ParsedRecords<M, U, T>, SessionError>
 where
     M: DeserializeOwned + Default + Clone,
     U: DeserializeOwned + Default,
@@ -1283,35 +1494,37 @@ where
     };
     let mut got_header = false;
 
-    let recovered_tail = visit_zstd_lines_with_limits(path, limits, |line| {
-        line_count += 1;
-        if line.is_empty() {
-            return Ok(());
-        }
-        let record: LogRecord<M, U, T> = match serde_json::from_str(line) {
-            Ok(record) => record,
-            Err(error) => {
-                if !got_header
-                    && let Ok(RawTag::Header { id: raw_id }) = serde_json::from_str::<RawTag>(line)
-                    && let Err(source) = raw_id.parse::<n00nId>()
-                {
-                    return Err(SessionError::CorruptHeaderId {
-                        path: path.display().to_string(),
-                        raw_id,
-                        source,
-                    });
-                }
-                warn!(
-                    path = %path.display(),
-                    error = %error,
-                    line = line_count,
-                    "skipping unrecognized JSONL record",
-                );
+    let (recovered_tail, decoded_bytes) =
+        visit_zstd_lines_with_decoded_bytes(path, limits, |line| {
+            line_count += 1;
+            if line.is_empty() {
                 return Ok(());
             }
-        };
-        apply_record(&mut builder, record, &mut got_header)
-    })?;
+            let record: LogRecord<M, U, T> = match serde_json::from_str(line) {
+                Ok(record) => record,
+                Err(error) => {
+                    if !got_header
+                        && let Ok(RawTag::Header { id: raw_id }) =
+                            serde_json::from_str::<RawTag>(line)
+                        && let Err(source) = raw_id.parse::<n00nId>()
+                    {
+                        return Err(SessionError::CorruptHeaderId {
+                            path: path.display().to_string(),
+                            raw_id,
+                            source,
+                        });
+                    }
+                    warn!(
+                        path = %path.display(),
+                        error = %error,
+                        line = line_count,
+                        "skipping unrecognized JSONL record",
+                    );
+                    return Ok(());
+                }
+            };
+            apply_record(&mut builder, record, &mut got_header)
+        })?;
 
     let id = builder
         .id
@@ -1359,6 +1572,7 @@ where
         saw_legacy_transcript || hydrated_messages,
         recovered_tail,
         log_appends,
+        decoded_bytes,
     ))
 }
 
@@ -1440,7 +1654,7 @@ fn is_zst_data(data: &[u8]) -> bool {
     data.starts_with(&[0x28, 0xb5, 0x2f, 0xfd])
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct DecodeLimits {
     line_bytes: usize,
     decoded_bytes: usize,
@@ -1471,18 +1685,82 @@ impl DecodeLimits {
 enum DecodedLine {
     Eof,
     Line(String),
+    Unterminated(String),
     Oversized,
 }
 
 enum LineReadError {
     Io(IoError),
-    DecoderWindowLimitExceeded,
     RecordTooLarge,
+    DecoderWindowLimitExceeded,
     BudgetExceeded,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("zstd frame exceeds the configured decoder window limit")]
+struct DecoderWindowLimitError;
+
+type ZstdFrameInput = BufReader<Take<File>>;
+type ZstdFrameDecoder = Decoder<'static, ZstdFrameInput>;
+
+struct ConcatenatedZstdReader {
+    input: Option<ZstdFrameInput>,
+    decoder: Option<ZstdFrameDecoder>,
+    max_window_log: u32,
+}
+
+impl ConcatenatedZstdReader {
+    fn new(input: ZstdFrameInput, max_window_log: u32) -> Self {
+        Self {
+            input: Some(input),
+            decoder: None,
+            max_window_log,
+        }
+    }
+
+    fn start_next_frame(&mut self) -> Result<bool, IoError> {
+        let Some(mut input) = self.input.take() else {
+            return Ok(false);
+        };
+        let frame = input.fill_buf()?;
+        if frame.is_empty() {
+            self.input = Some(input);
+            return Ok(false);
+        }
+        if frame_window_exceeds_limit_in_frame(frame, self.max_window_log) {
+            self.input = Some(input);
+            return Err(IoError::new(
+                ErrorKind::InvalidData,
+                DecoderWindowLimitError,
+            ));
+        }
+
+        let mut decoder = Decoder::with_buffer(input)?.single_frame();
+        decoder.window_log_max(self.max_window_log)?;
+        self.decoder = Some(decoder);
+        Ok(true)
+    }
+}
+
+impl Read for ConcatenatedZstdReader {
+    fn read(&mut self, output: &mut [u8]) -> Result<usize, IoError> {
+        loop {
+            if let Some(mut decoder) = self.decoder.take() {
+                let decoded = decoder.read(output)?;
+                if decoded != 0 {
+                    self.decoder = Some(decoder);
+                    return Ok(decoded);
+                }
+                self.input = Some(decoder.finish());
+            } else if !self.start_next_frame()? {
+                return Ok(0);
+            }
+        }
+    }
+}
+
 struct BoundedZstdLines {
-    reader: BufReader<Decoder<'static, BufReader<File>>>,
+    reader: BufReader<ConcatenatedZstdReader>,
     path: String,
     limits: DecodeLimits,
     decoded_bytes: usize,
@@ -1491,14 +1769,14 @@ struct BoundedZstdLines {
 impl BoundedZstdLines {
     fn open(path: &Path, offset: u64, limits: DecodeLimits) -> Result<Self, SessionError> {
         let mut file = File::open(path).map_err(StorageError::from)?;
+        let snapshot_end = file.metadata().map_err(StorageError::from)?.len();
+        let snapshot_len = snapshot_end.saturating_sub(offset);
         file.seek(SeekFrom::Start(offset))
             .map_err(StorageError::from)?;
-        let mut decoder = Decoder::new(file).map_err(StorageError::from)?;
-        decoder
-            .window_log_max(limits.window_log)
-            .map_err(StorageError::from)?;
+        let input = BufReader::new(file.take(snapshot_len));
+        let reader = ConcatenatedZstdReader::new(input, limits.window_log);
         Ok(Self {
-            reader: BufReader::new(decoder),
+            reader: BufReader::new(reader),
             path: path.display().to_string(),
             limits,
             decoded_bytes: 0,
@@ -1518,7 +1796,7 @@ impl BoundedZstdLines {
                     Ok(DecodedLine::Oversized)
                 } else {
                     String::from_utf8(line)
-                        .map(DecodedLine::Line)
+                        .map(DecodedLine::Unterminated)
                         .map_err(|error| {
                             LineReadError::Io(IoError::new(ErrorKind::InvalidData, error))
                         })
@@ -1569,13 +1847,13 @@ impl BoundedZstdLines {
     fn limit_error(&self, error: LineReadError) -> SessionError {
         match error {
             LineReadError::Io(error) => SessionError::Storage(StorageError::from(error)),
-            LineReadError::DecoderWindowLimitExceeded => SessionError::DecoderWindowLimitExceeded {
-                path: self.path.clone(),
-                window_log: self.limits.window_log,
-            },
             LineReadError::RecordTooLarge => SessionError::RecordTooLarge {
                 path: self.path.clone(),
                 limit: self.limits.line_bytes,
+            },
+            LineReadError::DecoderWindowLimitExceeded => SessionError::DecoderWindowLimitExceeded {
+                path: self.path.clone(),
+                window_log: self.limits.window_log,
             },
             LineReadError::BudgetExceeded => SessionError::DecodedBudgetExceeded {
                 path: self.path.clone(),
@@ -1586,13 +1864,74 @@ impl BoundedZstdLines {
 }
 
 fn classify_decoder_error(error: IoError) -> LineReadError {
-    let window_too_large_code = 0usize.wrapping_sub(ZSTD_WINDOW_TOO_LARGE_ERROR_CODE);
-    let window_too_large = zstd::zstd_safe::get_error_name(window_too_large_code);
-    if error.kind() == ErrorKind::Other && error.to_string() == window_too_large {
+    if error
+        .get_ref()
+        .is_some_and(|cause| cause.is::<DecoderWindowLimitError>())
+    {
         LineReadError::DecoderWindowLimitExceeded
     } else {
         LineReadError::Io(error)
     }
+}
+
+fn frame_window_exceeds_limit_in_frame(frame: &[u8], max_window_log: u32) -> bool {
+    const ZSTD_FRAME_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
+    const ZSTD_HEADER_MAX_BYTES: usize = 18;
+    if frame.len() < 5 || frame[..4] != ZSTD_FRAME_MAGIC {
+        return false;
+    }
+    let mut header = [0_u8; ZSTD_HEADER_MAX_BYTES];
+    let header_len = frame.len().min(ZSTD_HEADER_MAX_BYTES);
+    header[..header_len].copy_from_slice(&frame[..header_len]);
+
+    let descriptor = header[4];
+    let frame_content_size_flag = descriptor >> 6;
+    let single_segment = descriptor & (1 << 5) != 0;
+    let dictionary_id_flag = descriptor & 0b11;
+    let window_size = if single_segment {
+        let content_size_len = match frame_content_size_flag {
+            0 => 1,
+            1 => 2,
+            2 => 4,
+            _ => 8,
+        };
+        let content_size_offset = 5 + match dictionary_id_flag {
+            0 => 0,
+            1 => 1,
+            2 => 2,
+            _ => 4,
+        };
+        let Some(content_size) = header
+            .get(content_size_offset..content_size_offset + content_size_len)
+            .and_then(|bytes| match bytes {
+                [byte] => Some(u64::from(*byte)),
+                [first, second] => Some(u64::from(u16::from_le_bytes([*first, *second])) + 256),
+                [first, second, third, fourth] => Some(u64::from(u32::from_le_bytes([
+                    *first, *second, *third, *fourth,
+                ]))),
+                [first, second, third, fourth, fifth, sixth, seventh, eighth] => {
+                    Some(u64::from_le_bytes([
+                        *first, *second, *third, *fourth, *fifth, *sixth, *seventh, *eighth,
+                    ]))
+                }
+                _ => None,
+            })
+        else {
+            return false;
+        };
+        content_size
+    } else {
+        let Some(window_descriptor) = header.get(5) else {
+            return false;
+        };
+        let window_log = u32::from(*window_descriptor >> 3) + 10;
+        let window_base = 1_u64 << window_log;
+        window_base + (window_base >> 3) * u64::from(*window_descriptor & 7)
+    };
+    let Some(max_window_size) = 1_u64.checked_shl(max_window_log) else {
+        return false;
+    };
+    window_size > max_window_size
 }
 
 fn visit_zstd_lines_for_scan(
@@ -1608,7 +1947,7 @@ fn visit_zstd_lines_for_scan(
         match reader.next(true) {
             Ok(DecodedLine::Eof) => break (Ok(()), false),
             Ok(DecodedLine::Oversized) => {}
-            Ok(DecodedLine::Line(line)) => {
+            Ok(DecodedLine::Line(line) | DecodedLine::Unterminated(line)) => {
                 if let Err(error) = visit(&line) {
                     break (Err(error), false);
                 }
@@ -1623,16 +1962,33 @@ fn visit_zstd_lines_for_scan(
     result
 }
 
+#[cfg(test)]
 fn visit_zstd_lines_with_limits(
     path: &Path,
     limits: DecodeLimits,
-    mut visit: impl FnMut(&str) -> Result<(), SessionError>,
+    visit: impl FnMut(&str) -> Result<(), SessionError>,
 ) -> Result<bool, SessionError> {
+    visit_zstd_lines_with_decoded_bytes(path, limits, visit).map(|(recovered, _)| recovered)
+}
+
+fn visit_zstd_lines_with_decoded_bytes(
+    path: &Path,
+    limits: DecodeLimits,
+    mut visit: impl FnMut(&str) -> Result<(), SessionError>,
+) -> Result<(bool, usize), SessionError> {
     let mut reader = BoundedZstdLines::open(path, 0, limits)?;
     loop {
         match reader.next(false) {
-            Ok(DecodedLine::Eof) => return Ok(false),
+            Ok(DecodedLine::Eof) => return Ok((false, reader.decoded_bytes)),
             Ok(DecodedLine::Line(line)) => visit(&line)?,
+            Ok(DecodedLine::Unterminated(line)) => {
+                visit(&line)?;
+                warn!(
+                    path = %path.display(),
+                    "recovering unterminated JSONL record at end of zstd stream",
+                );
+                return Ok((true, reader.decoded_bytes));
+            }
             Ok(DecodedLine::Oversized) => {
                 return Err(reader.limit_error(LineReadError::RecordTooLarge));
             }
@@ -1642,7 +1998,7 @@ fn visit_zstd_lines_with_limits(
                     error = %error,
                     "recovering records before corrupt zstd tail",
                 );
-                return Ok(true);
+                return Ok((true, reader.decoded_bytes));
             }
             Err(error) => return Err(reader.limit_error(error)),
         }
@@ -2016,8 +2372,6 @@ where
 const ZSTD_MAGIC: &[u8] = &[0x28, 0xb5, 0x2f, 0xfd];
 const LAST_FRAME_SEARCH_CHUNK: usize = 1024 * 1024;
 const MAX_LAST_FRAME_SEARCH_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_LAST_FRAME_DECODER_ATTEMPTS: usize = 1_024;
-
 struct DecodedWorkBudget {
     remaining: usize,
 }
@@ -2050,8 +2404,10 @@ fn try_decode_header_at(path: &Path, offset: u64) -> Option<ZstHeader> {
     let mut reader = BoundedZstdLines::open(path, offset, DecodeLimits::SCAN).ok()?;
     loop {
         match reader.next(false) {
-            Ok(DecodedLine::Line(line)) if line.is_empty() => {}
-            Ok(DecodedLine::Line(line)) => return serde_json::from_str(&line).ok(),
+            Ok(DecodedLine::Line(line) | DecodedLine::Unterminated(line)) if line.is_empty() => {}
+            Ok(DecodedLine::Line(line) | DecodedLine::Unterminated(line)) => {
+                return serde_json::from_str(&line).ok();
+            }
             Ok(DecodedLine::Eof | DecodedLine::Oversized) | Err(_) => return None,
         }
     }
@@ -2106,7 +2462,7 @@ where
                 break (result, false);
             }
             Ok(DecodedLine::Oversized) => continue,
-            Ok(DecodedLine::Line(line)) => line,
+            Ok(DecodedLine::Line(line) | DecodedLine::Unterminated(line)) => line,
             Err(LineReadError::BudgetExceeded) => break (None, true),
             Err(_) => break (None, false),
         };
@@ -2154,7 +2510,7 @@ where
     let mut reader = BoundedZstdLines::open(path, offset, limits).ok()?;
     let (result, exhausted) = loop {
         let line = match reader.next(true) {
-            Ok(DecodedLine::Line(line)) => line,
+            Ok(DecodedLine::Line(line) | DecodedLine::Unterminated(line)) => line,
             Ok(DecodedLine::Oversized) => continue,
             Err(LineReadError::BudgetExceeded) => break (None, true),
             Ok(DecodedLine::Eof) | Err(_) => break (None, false),
@@ -2446,7 +2802,8 @@ where
     /// Returns `SessionError` if the session file cannot be written or the index cannot be updated.
     pub fn save_to(&mut self, dir: &Path) -> Result<(), SessionError> {
         self.updated_at = now_epoch();
-        write_session_file(dir, self)?;
+        let (file, _) = write_session_file_with_limits(dir, self, &DecodeLimits::LOAD)?;
+        drop(file);
         update_cwd_index(dir, &self.cwd, self.id)?;
         Ok(())
     }
@@ -3127,6 +3484,40 @@ mod tests {
     }
 
     #[test]
+    fn opening_complete_frame_with_unterminated_record_repairs_before_append() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let session: TestSession = Session::new("m", "/project");
+        let log = SessionLog::create(dir, &session).unwrap();
+        drop(log);
+        let path = jsonl_path(dir, session.id);
+
+        let mut encoded = Vec::new();
+        encode_frame(&mut encoded, b"{\"t\":\"msg\",\"d\":\"unterminated\"}").unwrap();
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(&encoded).unwrap();
+        drop(file);
+
+        let (mut loaded, mut repaired_log) =
+            SessionLog::open::<Value, Value, Value>(dir, session.id).unwrap();
+        assert_eq!(loaded.messages, [Value::String("unterminated".into())]);
+        loaded.messages.push(Value::String("appended".into()));
+        repaired_log.append(&loaded).unwrap();
+        drop(repaired_log);
+
+        let (reloaded, _) = SessionLog::open::<Value, Value, Value>(dir, session.id).unwrap();
+        assert_eq!(
+            reloaded.messages,
+            [
+                Value::String("unterminated".into()),
+                Value::String("appended".into())
+            ]
+        );
+        let (_, _, recovered_tail, _) = super::parse_records::<Value, Value, Value>(&path).unwrap();
+        assert!(!recovered_tail);
+    }
+
+    #[test]
     fn rejects_unknown_session_record() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
@@ -3267,11 +3658,193 @@ mod tests {
             super::DecodeLimits::new(256 * 1024, 256 * 1024, 10),
         )
         .unwrap();
+        let error = match reader.next(false) {
+            Err(error) => reader.limit_error(error),
+            Ok(_) => panic!("frame should exceed the decoder window limit"),
+        };
+
+        assert!(matches!(
+            error,
+            SessionError::DecoderWindowLimitExceeded { window_log: 10, .. }
+        ));
+    }
+
+    #[test]
+    fn full_session_serialization_streams_records_to_writer() {
+        #[derive(Default)]
+        struct WriteObserver {
+            largest_write: usize,
+            total: usize,
+        }
+
+        impl Write for WriteObserver {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.largest_write = self.largest_write.max(bytes.len());
+                self.total += bytes.len();
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut session: TestSession = Session::new("m", "/project");
+        session.messages = (0..1_000)
+            .map(|index| Value::String(format!("record-{index:04}")))
+            .collect();
+        let mut observer = WriteObserver::default();
+        let path = Path::new("streaming.jsonl");
+
+        let decoded_bytes = super::serialize_full_session(
+            &mut observer,
+            &session,
+            path,
+            &super::DecodeLimits::new(1_024, 128 * 1_024, 27),
+        )
+        .unwrap();
+
+        assert_eq!(observer.total, decoded_bytes);
+        assert!(observer.largest_write < observer.total / 10);
+    }
+
+    #[test]
+    fn bounded_writes_reject_records_and_totals_without_mutating_files() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut oversized: TestSession = Session::new("m", "/project");
+        oversized.messages.push(Value::String("x".repeat(512)));
+        let path = jsonl_path(dir, oversized.id);
+
+        let result = SessionLog::create_with_limits(
+            dir,
+            &oversized,
+            super::DecodeLimits::new(64, 1_024, 27),
+        );
+        assert!(matches!(
+            result,
+            Err(SessionError::RecordTooLarge { limit: 64, .. })
+        ));
+        assert!(!path.exists());
+
+        let aggregate: TestSession = Session::new("m", "/project");
+        let aggregate_path = jsonl_path(dir, aggregate.id);
+        let result =
+            SessionLog::create_with_limits(dir, &aggregate, super::DecodeLimits::new(1_024, 1, 27));
+        assert!(matches!(
+            result,
+            Err(SessionError::DecodedBudgetExceeded { limit: 1, .. })
+        ));
+        assert!(!aggregate_path.exists());
+
+        let mut session: TestSession = Session::new("m", "/project");
+        let mut log = SessionLog::create(dir, &session).unwrap();
+        let path = jsonl_path(dir, session.id);
+        let before = fs::read(&path).unwrap();
+        let limits = super::DecodeLimits::new(1_024, log.decoded_bytes, 27);
+
+        session.messages.push(Value::String("new record".into()));
+        let result = log.append_with_limits(&session, limits.clone());
+        assert!(matches!(
+            result,
+            Err(SessionError::DecodedBudgetExceeded { .. })
+        ));
+        assert_eq!(fs::read(&path).unwrap(), before);
+
+        session.title = "renamed".into();
+        let result = log.compact_with_limits(dir, &session, limits);
+        assert!(matches!(
+            result,
+            Err(SessionError::DecodedBudgetExceeded { .. })
+        ));
+        assert_eq!(fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn later_concatenated_frame_is_checked_only_when_reached() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("window-frames.jsonl");
+        let file = File::create(&path).unwrap();
+        let mut first = zstd::stream::Encoder::new(file, 3).unwrap();
+        first.window_log(10).unwrap();
+        first.write_all(b"allowed\n").unwrap();
+        let mut file = first.finish().unwrap();
+        let mut second = zstd::stream::Encoder::new(&mut file, 3).unwrap();
+        second.window_log(20).unwrap();
+        second.write_all(&vec![b'x'; 128 * 1024]).unwrap();
+        second.finish().unwrap();
+        drop(file);
+
+        let mut reader = super::BoundedZstdLines::open(
+            &path,
+            0,
+            super::DecodeLimits::new(256 * 1024, 256 * 1024, 10),
+        )
+        .unwrap();
 
         assert!(matches!(
             reader.next(false),
-            Err(super::LineReadError::DecoderWindowLimitExceeded)
+            Ok(super::DecodedLine::Line(line)) if line == "allowed"
         ));
+        let error = match reader.next(false) {
+            Err(error) => reader.limit_error(error),
+            Ok(_) => panic!("later frame should exceed the decoder window limit"),
+        };
+        assert!(matches!(
+            error,
+            SessionError::DecoderWindowLimitExceeded { window_log: 10, .. }
+        ));
+    }
+
+    #[test]
+    fn bounded_reader_decodes_fixed_file_length_snapshot() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("snapshot.jsonl");
+        let file = File::create(&path).unwrap();
+        let mut encoder = zstd::stream::Encoder::new(file, 3).unwrap();
+        encoder.window_log(10).unwrap();
+        encoder.write_all(b"allowed\n").unwrap();
+        encoder.finish().unwrap();
+        let mut reader = super::BoundedZstdLines::open(
+            &path,
+            0,
+            super::DecodeLimits::new(256 * 1024, 256 * 1024, 10),
+        )
+        .unwrap();
+
+        let file = OpenOptions::new().append(true).open(&path).unwrap();
+        let mut encoder = zstd::stream::Encoder::new(file, 3).unwrap();
+        encoder.window_log(20).unwrap();
+        encoder.write_all(&vec![b'x'; 128 * 1024]).unwrap();
+        encoder.finish().unwrap();
+
+        assert!(matches!(
+            reader.next(false),
+            Ok(super::DecodedLine::Line(line)) if line == "allowed"
+        ));
+        assert!(matches!(reader.next(false), Ok(super::DecodedLine::Eof)));
+    }
+
+    #[test]
+    fn decoded_bytes_include_crlf_delimiters() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("crlf.jsonl");
+        write_encoded(&path, b"a\r\nb\r\n");
+        let mut lines = Vec::new();
+
+        let (recovered, decoded_bytes) = super::visit_zstd_lines_with_decoded_bytes(
+            &path,
+            super::DecodeLimits::new(2, 6, 27),
+            |line| {
+                lines.push(line.to_owned());
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert!(!recovered);
+        assert_eq!(lines, ["a", "b"]);
+        assert_eq!(decoded_bytes, 6);
     }
 
     #[test]

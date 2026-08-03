@@ -9,6 +9,7 @@ use crate::animation::{animation_elapsed_ms, spinner_frame};
 use crate::cast;
 use crate::theme;
 
+use n00n_agent::FusionPhase;
 use n00n_providers::{CacheHealth, ModelPricing, TokenUsage};
 use quanta::Instant as CacheInstant;
 use ratatui::Frame;
@@ -52,6 +53,7 @@ pub struct StatusBarContext<'a> {
     pub chat_name: Option<&'a str>,
     pub retry_info: Option<&'a RetryInfo>,
     pub thinking_label: Option<Cow<'static, str>>,
+    pub fusion_phase: Option<FusionPhase>,
     pub fast: bool,
     pub workflow: bool,
     pub restoring: bool,
@@ -131,6 +133,13 @@ impl StatusBar {
         }
 
         left_spans.push(Span::styled(format!(" {}", ctx.mode_label), ctx.mode_style));
+
+        if let Some(label) = ctx.fusion_phase.and_then(fusion_phase_label) {
+            left_spans.push(Span::styled(
+                format!(" · Fusion {label}"),
+                theme::current().status_notice,
+            ));
+        }
 
         if let Some(name) = ctx.chat_name {
             left_spans.push(Span::styled(
@@ -274,6 +283,19 @@ impl StatusBar {
     }
 }
 
+fn fusion_phase_label(phase: FusionPhase) -> Option<&'static str> {
+    match phase {
+        FusionPhase::Planning => Some("planning"),
+        FusionPhase::Executing => Some("executing"),
+        FusionPhase::Reviewing => Some("reviewing"),
+        FusionPhase::LeadFallback => Some("lead fallback"),
+        FusionPhase::Idle
+        | FusionPhase::Complete
+        | FusionPhase::Cancelled
+        | FusionPhase::Failed => None,
+    }
+}
+
 fn collapse_home(path: &str) -> String {
     let Some(home) = n00n_storage::paths::home() else {
         return path.to_string();
@@ -373,6 +395,18 @@ mod tests {
     use tempfile::TempDir;
     use test_case::test_case;
 
+    #[test_case(FusionPhase::Planning, Some("planning") ; "planning")]
+    #[test_case(FusionPhase::Executing, Some("executing") ; "executing")]
+    #[test_case(FusionPhase::Reviewing, Some("reviewing") ; "reviewing")]
+    #[test_case(FusionPhase::LeadFallback, Some("lead fallback") ; "fallback")]
+    #[test_case(FusionPhase::Idle, None ; "idle")]
+    #[test_case(FusionPhase::Complete, None ; "complete")]
+    #[test_case(FusionPhase::Cancelled, None ; "cancelled")]
+    #[test_case(FusionPhase::Failed, None ; "failed")]
+    fn fusion_phase_labels(phase: FusionPhase, expected: Option<&str>) {
+        assert_eq!(fusion_phase_label(phase), expected);
+    }
+
     #[test_case(999, "999")]
     #[test_case(1_000, "1.0k")]
     #[test_case(12_345, "12.3k")]
@@ -451,6 +485,7 @@ mod tests {
                         chat_name: None,
                         retry_info: None,
                         thinking_label: None,
+                        fusion_phase: Some(FusionPhase::Executing),
                         fast: false,
                         workflow: false,
                         restoring: false,
@@ -470,6 +505,7 @@ mod tests {
 
         assert!(!text.contains("thinking..."), "status bar: {text:?}");
         assert!(text.contains("NORMAL"), "status bar: {text:?}");
+        assert!(text.contains("Fusion executing"), "status bar: {text:?}");
         assert!(
             text.chars()
                 .any(|ch| ('\u{2800}'..='\u{28ff}').contains(&ch)),
@@ -520,6 +556,7 @@ mod tests {
                         chat_name: None,
                         retry_info: None,
                         thinking_label: None,
+                        fusion_phase: None,
                         fast: false,
                         workflow: false,
                         restoring: false,
@@ -607,6 +644,7 @@ mod tests {
                         chat_name: None,
                         retry_info: None,
                         thinking_label: None,
+                        fusion_phase: None,
                         fast: false,
                         workflow: false,
                         restoring: false,

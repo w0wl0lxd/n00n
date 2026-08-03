@@ -601,8 +601,8 @@ impl<'t> EventLoop<'t> {
                 break Err(e);
             }
         };
-        // Fatal errors still save every session, kill MCP process groups,
-        // and drain the storage writer before the process exits.
+        // Fatal errors still save every session, shut down MCP transports and reap
+        // their children, and drain the storage writer before the process exits.
         let report = self.shutdown();
         result.map(|()| report)
     }

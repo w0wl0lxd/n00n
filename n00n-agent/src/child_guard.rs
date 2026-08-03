@@ -4,6 +4,7 @@ use std::process::ExitStatus;
 use std::time::Duration;
 
 use async_process::Child;
+use tracing::warn;
 
 const REAP_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -62,7 +63,9 @@ impl ChildGuard {
             if let Some(mut child) = child {
                 futures_lite::future::or(
                     async {
-                        let _ = child.status().await;
+                        if let Err(error) = child.status().await {
+                            warn!(pid = child.id(), %error, "failed to reap child process");
+                        }
                     },
                     async {
                         async_io::Timer::after(REAP_TIMEOUT).await;

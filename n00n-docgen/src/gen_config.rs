@@ -225,9 +225,11 @@ All fields are optional. Typos in field names cause an error right away.
     out.push_str("### `agent.fusion`\n\n");
     out.push_str("| Field | Type | Default | Description |\n");
     out.push_str("|-------|------|---------|-------------|\n");
-    out.push_str("| `enabled` | bool | `false` | Enable Fusion dual-lane routing (lead + sidekick) for this session |\n");
-    out.push_str("| `sidekick_tier` | string | - | Model tier for the sidekick lane (e.g. \"haiku\", \"sonnet\", \"opus\") |\n");
-    out.push('\n');
+    out.push_str("| `enabled` | bool | `false` | Enable beta Fusion planning, sidekick execution, and lead review for this session |\n");
+    out.push_str(
+        "| `sidekick_tier` | string | `weak` | Default model tier for the sidekick lane. |\n",
+    );
+    out.push_str("\nFusion is beta and off by default. Enable it with `--fusion`, `always_fusion`, or `[agent.fusion].enabled`. The `plugins.fusion` plugin must also stay enabled. Short requests bypass Fusion. Security, sensitive, destructive, design, and review work stays on the lead. `sidekick_tier` selects a conservative sidekick model. Optional `plugins.fusion.auto_tier` lets trusted configuration choose the tier from the brief.\n\n");
 
     write_section(&mut out, "[provider]", ProviderConfig::FIELDS);
     write_section(&mut out, "[storage]", StorageConfig::FIELDS);
