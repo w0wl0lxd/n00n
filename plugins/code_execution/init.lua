@@ -139,6 +139,21 @@ local function matches_filter(name, dctx)
   return true
 end
 
+local function non_null_type(schema)
+  local type_value = schema and schema.type
+  if type(type_value) == "string" then
+    return type_value
+  end
+  if type(type_value) == "table" then
+    for _, candidate in ipairs(type_value) do
+      if candidate ~= "null" then
+        return candidate
+      end
+    end
+  end
+  return nil
+end
+
 local function signature(t)
   local schema_props = (t.schema and t.schema.properties) or {}
   local required = {}
@@ -158,7 +173,7 @@ local function signature(t)
   end)
   local params = {}
   for _, pname in ipairs(names) do
-    local ptype = PY_TYPES[schema_props[pname].type] or "any"
+    local ptype = PY_TYPES[non_null_type(schema_props[pname])] or "any"
     local suffix = required[pname] and (": " .. ptype) or ("?: " .. ptype)
     params[#params + 1] = pname .. suffix
   end
