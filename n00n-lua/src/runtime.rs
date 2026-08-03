@@ -61,7 +61,10 @@ fn register_builtin_tools(registry: &Arc<ToolRegistry>) -> Result<(), PluginErro
         match registry.register(&tool, &source) {
             Ok(()) => {}
             Err(RegistryError::NameConflict { name, .. })
-                if name == "search_tools" || name == "tool_search" || name == "load_namespace" => {}
+                if name == "search_tools"
+                    || name == "tool_search"
+                    || name == "load_toolset"
+                    || name == "load_namespace" => {}
             Err(e) => {
                 return Err(PluginError::Lua {
                     plugin: "builtin".to_owned(),
@@ -2577,6 +2580,13 @@ pub fn spawn(
 mod tests {
     use super::*;
     use crate::api::tool::ToolCallReply;
+
+    #[test]
+    fn builtin_tool_registration_is_idempotent() {
+        let registry = Arc::new(ToolRegistry::new());
+        register_builtin_tools(&registry).unwrap();
+        register_builtin_tools(&registry).unwrap();
+    }
 
     fn make_buf_handle(text: &str) -> BufHandle {
         let buf = Arc::new(n00n_agent::SharedBuf::new());

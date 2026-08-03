@@ -56,6 +56,22 @@ const TOOL_NAME_MAP: &[(&str, &str)] = &[
     ("memory", "Memory"),
     ("question", "Question"),
     ("skill", "Skill"),
+    ("run_shell", "Bash"),
+    ("read_file", "Read"),
+    ("edit_file", "Edit"),
+    ("write_file", "Write"),
+    ("search_code", "Grep"),
+    ("search_files", "Glob"),
+    ("update_todo", "TodoWrite"),
+    ("fetch_url", "WebFetch"),
+    ("search_web", "WebSearch"),
+    ("run_task", "Task"),
+    ("edit_file_bulk", "MultiEdit"),
+    ("run_python", "CodeExecution"),
+    ("index_file", "Index"),
+    ("use_memory", "Memory"),
+    ("ask_user", "Question"),
+    ("load_skill", "Skill"),
 ];
 
 /// Emits a hyphenated-hex `UUIDv7` string for Claude Code SDK wire ids
@@ -1294,6 +1310,14 @@ mod tests {
     fn n00n_to_claude_roundtrip(n00n: &str, claude: &str) {
         assert_eq!(n00n_to_claude_tool_name(n00n), claude);
         assert_eq!(claude_to_n00n_tool_name(claude), n00n);
+    }
+
+    #[test_case("run_shell", "Bash")]
+    #[test_case("read_file", "Read")]
+    #[test_case("load_skill", "Skill")]
+    #[test_case("use_memory", "Memory")]
+    fn canonical_tool_names_use_claude_wire_names(n00n: &str, claude: &str) {
+        assert_eq!(n00n_to_claude_tool_name(n00n), claude);
     }
 
     #[test]
