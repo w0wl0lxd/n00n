@@ -339,12 +339,11 @@ pub fn provider_available(slug: &str) -> bool {
 
 fn provider_available_with_config(slug: &str, config: Option<&ProvidersConfig>) -> bool {
     let loaded_config;
-    let config = match config {
-        Some(config) => config,
-        None => {
-            loaded_config = ProvidersConfig::load();
-            &loaded_config
-        }
+    let config = if let Some(config) = config {
+        config
+    } else {
+        loaded_config = ProvidersConfig::load();
+        &loaded_config
     };
 
     if matches!(slug, "ollama" | "llama-cpp") {
