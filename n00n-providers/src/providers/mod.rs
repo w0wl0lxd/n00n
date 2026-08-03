@@ -212,10 +212,13 @@ impl KeyPool {
     }
 
     pub fn resolve(slug: &str, env_var: &str) -> Result<Self, AgentError> {
-        if let Ok(pool) = Self::from_env(env_var) {
-            debug!(slug, keys = pool.len(), "resolved API key from env");
-            return Ok(pool);
-        }
+        let env_error = match Self::from_env(env_var) {
+            Ok(pool) => {
+                debug!(slug, keys = pool.len(), "resolved API key from env");
+                return Ok(pool);
+            }
+            Err(error) => error,
+        };
         if let Some(key) = Self::key_from_file(slug) {
             debug!(slug, "resolved API key from saved credentials");
             return Ok(Self::from_keys(vec![key]));
@@ -224,11 +227,15 @@ impl KeyPool {
             debug!(slug, "resolved API key from providers.toml");
             return Ok(Self::from_keys(vec![key]));
         }
-        Err(AgentError::MissingCredentials {
-            message: format!(
-                "{env_var} not set and no saved credentials for '{slug}' — run `n00n auth login {slug}`"
-            ),
-        })
+        match env_error {
+            error @ AgentError::Config { .. } => Err(error),
+            AgentError::MissingCredentials { .. } => Err(AgentError::MissingCredentials {
+                message: format!(
+                    "{env_var} not set and no saved credentials for '{slug}' — run `n00n auth login {slug}`"
+                ),
+            }),
+            error => Err(error),
+        }
     }
 
     fn key_from_file(slug: &str) -> Option<String> {
@@ -298,6 +305,10 @@ impl KeyPool {
 mod tests {
     use super::*;
     use futures_lite::io::AsyncBufReadExt;
+    #[cfg(unix)]
+    use std::ffi::OsString;
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStringExt;
     use test_case::test_case;
 
     #[allow(unsafe_code)]
@@ -415,5 +426,21 @@ mod tests {
         assert!(result.is_err());
         let msg = format!("{result:?}");
         assert!(msg.contains(&env_var) || msg.contains(&slug));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[allow(unsafe_code)]
+    fn resolve_preserves_invalid_unicode_environment_error() {
+        let slug = format!("test_resolve_invalid_unicode_{}", fastrand::u32(..));
+        let env_var = format!("N00N_TEST_KEY_INVALID_UNICODE_{}", fastrand::u32(..));
+        let value = OsString::from_vec(vec![0xff]);
+        // SAFETY: This test owns its unique environment variable.
+        unsafe { std::env::set_var(&env_var, value) };
+        let result = KeyPool::resolve(&slug, &env_var);
+        // SAFETY: This test owns its unique environment variable.
+        unsafe { std::env::remove_var(&env_var) };
+
+        assert!(matches!(result, Err(AgentError::Config { .. })));
     }
 }
