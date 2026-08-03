@@ -662,8 +662,12 @@ impl McpHandle {
                 let mut task_guard = match self.task.lock() {
                     Ok(guard) => guard,
                     Err(poisoned) => {
-                        warn!("MCP task mutex was poisoned during shutdown; recovering guard");
-                        poisoned.into_inner()
+                        let guard = poisoned.into_inner();
+                        warn!(
+                            error = "mutex_poisoned",
+                            "MCP task mutex was poisoned during shutdown; using recovered guard"
+                        );
+                        guard
                     }
                 };
                 task_guard.take()

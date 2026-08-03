@@ -36,6 +36,9 @@ pub trait McpTransport: Send + Sync {
     }
     fn server_name(&self) -> &Arc<str>;
     fn transport_kind(&self) -> &'static str;
+    fn child_pids(&self) -> Vec<u32> {
+        vec![]
+    }
 }
 
 fn invalid_response(name: &Arc<str>, e: impl std::fmt::Display) -> McpError {
