@@ -16,7 +16,7 @@ use crate::tools::registry::{ToolInvocation, ToolRegistry, ToolSource};
 use crate::tools::{LocalToolFn, ToolContext};
 use crate::{AgentError, AgentEvent, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use n00n_config::ToolKey;
-use n00n_redact::redact_json_arg;
+use n00n_redact::redact_json_value_for_log;
 
 const SUBAGENT_PLUGINS: &[&str] = &["task", "workflow"];
 
@@ -450,7 +450,7 @@ async fn run_authorized(
                 warn!(
                     tool = %name,
                     source = %entry.source.as_log_field(),
-                    input_preview = %crate::tools::schema::preview(&redact_json_arg(&input.to_string())),
+                    input_preview = %crate::tools::schema::preview(&redact_json_value_for_log(input).to_string()),
                     error = %e,
                     "tool input parse failed"
                 );
@@ -828,7 +828,7 @@ pub(super) async fn process_tool_calls(
         debug!(
             tool = %name,
             id = %id,
-            input_preview = %crate::tools::schema::preview(&redact_json_arg(&input.to_string())),
+            input_preview = %crate::tools::schema::preview(&redact_json_value_for_log(&input).to_string()),
             "parsing tool call"
         );
         let normalized_name = name

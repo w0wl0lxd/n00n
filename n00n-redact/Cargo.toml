@@ -10,10 +10,10 @@ rust-version.workspace = true
 
 [dependencies]
 serde_json = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 test-case = { workspace = true }
-tracing = { workspace = true }
 
 [lints]
 workspace = true

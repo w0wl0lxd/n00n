@@ -4,7 +4,10 @@
 //! agent logs) redacts through this module so the secret-key policy lives in
 //! one place instead of three drifting copies.
 
+use std::mem;
+
 use serde_json::Value;
+use tracing::debug;
 
 pub mod sanitize;
 pub use sanitize::sanitize_text;
@@ -126,11 +129,30 @@ pub fn is_secret_key(key: &str) -> bool {
     last_word(key).is_some_and(|word| SECRET_KEY_LAST_WORDS.contains(&word.as_str()))
 }
 
-/// Returns the last separator-delimited word of `key`, lowercased.
+/// Returns the last separator- or case-delimited word of `key`, lowercased.
 fn last_word(key: &str) -> Option<String> {
-    key.split(|c: char| !c.is_ascii_alphanumeric())
-        .rfind(|word| !word.is_empty())
-        .map(str::to_ascii_lowercase)
+    let mut current = String::new();
+    let mut last = None;
+    let mut previous_lowercase = false;
+    for character in key.chars() {
+        let separator = !character.is_ascii_alphanumeric();
+        let case_boundary = previous_lowercase && character.is_ascii_uppercase();
+        if separator || case_boundary {
+            if !current.is_empty() {
+                last = Some(mem::take(&mut current));
+            }
+            if separator {
+                previous_lowercase = false;
+                continue;
+            }
+        }
+        previous_lowercase = character.is_ascii_lowercase();
+        current.push(character);
+    }
+    if !current.is_empty() {
+        last = Some(current);
+    }
+    last.map(|word| word.to_ascii_lowercase())
 }
 
 fn normalize_key(key: &str) -> String {
@@ -171,11 +193,17 @@ pub fn redact_json_value(value: &Value) -> Value {
 pub fn redact_json_arg(arg: &str) -> String {
     let redacted = match serde_json::from_str::<Value>(arg) {
         Ok(value) => redact_json_value_for_log(&value),
-        Err(_) => return sanitize::sanitize_text(arg, LOG_ARG_MAX_CHARS),
+        Err(error) => {
+            debug!(%error, "tool argument JSON parse failed; sanitizing text");
+            return sanitize::sanitize_text(arg, LOG_ARG_MAX_CHARS);
+        }
     };
     match serde_json::to_string(&redacted) {
         Ok(text) => text,
-        Err(_) => sanitize::sanitize_text(arg, LOG_ARG_MAX_CHARS),
+        Err(error) => {
+            debug!(%error, "redacted tool argument serialization failed; sanitizing text");
+            sanitize::sanitize_text(arg, LOG_ARG_MAX_CHARS)
+        }
     }
 }
 
@@ -207,9 +235,13 @@ pub fn redact_json_value_for_log(value: &Value) -> Value {
             } else if let Ok(inner) = serde_json::from_str::<Value>(text) {
                 // String contains JSON - redact the inner content and re-serialize
                 let redacted_inner = redact_json_value_for_log(&inner);
-                serde_json::to_string(&redacted_inner)
-                    .unwrap_or_else(|_| REDACTED.to_owned())
-                    .into()
+                match serde_json::to_string(&redacted_inner) {
+                    Ok(text) => text.into(),
+                    Err(error) => {
+                        debug!(%error, "redacted nested JSON serialization failed");
+                        REDACTED.into()
+                    }
+                }
             } else {
                 text.clone().into()
             }
@@ -301,6 +333,7 @@ fn is_prefixed_token(value: &str) -> bool {
     sanitize::SECRET_TOKEN_PREFIXES
         .iter()
         .any(|prefix| lower.starts_with(prefix))
+        || lower.starts_with("aiza")
 }
 
 fn is_aws_access_key_id(value: &str) -> bool {
@@ -383,6 +416,8 @@ mod tests {
         assert!(is_secret_key("slack-token"));
         assert!(is_secret_key("my_api key"));
         assert!(is_secret_key("session_credential"));
+        assert!(is_secret_key("vaultSecret"));
+        assert!(is_secret_key("myAuthKey"));
     }
 
     #[test]
@@ -401,6 +436,9 @@ mod tests {
         )));
         assert!(looks_like_secret_value("AKIA0123456789ABCDEF"));
         assert!(looks_like_secret_value("ASIA0123456789ABCDEF"));
+        assert!(looks_like_secret_value(
+            "AIzaSyD0123456789abcdefghijklmnopqrstuv"
+        ));
         assert!(looks_like_secret_value(&format!(
             "Bearer {}",
             "abc.def.".repeat(10)
