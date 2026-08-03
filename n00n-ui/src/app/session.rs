@@ -165,6 +165,7 @@ impl App {
             &self.permissions,
         );
         self.sync_ephemeral_state();
+        self.state.finish_snapshot();
         self.state.session.clone()
     }
 

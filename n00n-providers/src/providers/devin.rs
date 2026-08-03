@@ -60,6 +60,9 @@ const META_MAX_OUTPUT_TOKENS: &str = "cognition.ai/maxOutputTokens";
 const META_PRICING: &str = "cognition.ai/pricing";
 const META_FREE: &str = "cognition.ai/free";
 const META_PROMO: &str = "cognition.ai/promo";
+const STDERR_DIAGNOSTIC_BYTES: usize = 1_024;
+const STDERR_CATEGORY_GENERAL: &str = "general";
+const STDERR_CATEGORY_CONFIG_IMPORTER: &str = "known_config_importer";
 
 pub(crate) const fn models() -> &'static [ModelEntry] {
     &[
@@ -164,6 +167,83 @@ pub(crate) const fn models() -> &'static [ModelEntry] {
 
 type PendingResponse = flume::Sender<Result<Value, AgentError>>;
 
+#[derive(Debug, Eq, PartialEq)]
+enum StderrSeverity {
+    Debug,
+    Warn,
+    Error,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct StderrDiagnostic {
+    severity: StderrSeverity,
+    category: &'static str,
+    observed_bytes: usize,
+    truncated: bool,
+}
+
+fn has_stderr_level(line: &str, level: &str) -> bool {
+    line.split_ascii_whitespace().any(|token| token == level)
+}
+
+fn stderr_diagnostic(line: &str) -> Option<StderrDiagnostic> {
+    let trimmed = line.trim();
+    if trimmed.is_empty()
+        || (trimmed.contains("chisel_api") && trimmed.contains("telemetry"))
+        || trimmed.contains("unleash_sampling")
+    {
+        return None;
+    }
+
+    let known_config_importer_warning = has_stderr_level(trimmed, "WARN")
+        && trimmed.contains("config_importers")
+        && trimmed.contains("Failed to parse JSONC")
+        && (trimmed.contains("PreCompact") || trimmed.contains("PostCompact"));
+    let (severity, category) = if known_config_importer_warning {
+        (StderrSeverity::Debug, STDERR_CATEGORY_CONFIG_IMPORTER)
+    } else if has_stderr_level(trimmed, "ERROR") {
+        (StderrSeverity::Error, STDERR_CATEGORY_GENERAL)
+    } else if has_stderr_level(trimmed, "WARN") {
+        (StderrSeverity::Warn, STDERR_CATEGORY_GENERAL)
+    } else {
+        (StderrSeverity::Debug, STDERR_CATEGORY_GENERAL)
+    };
+
+    Some(StderrDiagnostic {
+        severity,
+        category,
+        observed_bytes: trimmed.len().min(STDERR_DIAGNOSTIC_BYTES),
+        truncated: trimmed.len() > STDERR_DIAGNOSTIC_BYTES,
+    })
+}
+
+fn log_stderr_diagnostic(line: &str) {
+    let Some(diagnostic) = stderr_diagnostic(line) else {
+        return;
+    };
+
+    match diagnostic.severity {
+        StderrSeverity::Error => error!(
+            category = diagnostic.category,
+            observed_bytes = diagnostic.observed_bytes,
+            truncated = diagnostic.truncated,
+            "devin ACP stderr diagnostic"
+        ),
+        StderrSeverity::Warn => warn!(
+            category = diagnostic.category,
+            observed_bytes = diagnostic.observed_bytes,
+            truncated = diagnostic.truncated,
+            "devin ACP stderr diagnostic"
+        ),
+        StderrSeverity::Debug => debug!(
+            category = diagnostic.category,
+            observed_bytes = diagnostic.observed_bytes,
+            truncated = diagnostic.truncated,
+            "devin ACP stderr diagnostic"
+        ),
+    }
+}
+
 struct DevinInner {
     _child: async_process::Child,
     stdin: Arc<AsyncMutex<async_process::ChildStdin>>,
@@ -256,25 +336,7 @@ impl DevinInner {
             let mut lines = reader.lines();
 
             while let Some(Ok(line)) = lines.next().await {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                if trimmed.contains(" ERROR ") {
-                    error!("devin acp stderr: {trimmed}");
-                } else if trimmed.contains(" WARN ")
-                    && trimmed.contains("config_importers")
-                    && trimmed.contains("Failed to parse JSONC")
-                    && (trimmed.contains("PreCompact") || trimmed.contains("PostCompact"))
-                {
-                    // n00n-agent implements these hooks directly; devin's config importer
-                    // is outdated and logs a warning for valid Claude Code hook names.
-                    debug!("devin acp stderr: {trimmed}");
-                } else if trimmed.contains(" WARN ") {
-                    warn!("devin acp stderr: {trimmed}");
-                } else {
-                    debug!("devin acp stderr: {trimmed}");
-                }
+                log_stderr_diagnostic(&line);
             }
         })
         .detach();
@@ -1921,6 +1983,51 @@ mod tests {
 
     fn opt(value: &str, name: &str) -> SessionConfigSelectOption {
         SessionConfigSelectOption::new(value.to_string(), name)
+    }
+
+    #[test]
+    fn stderr_diagnostic_preserves_error_severity_without_payload() {
+        let secret = "Bearer secret-token";
+        let line = format!("2026-01-01 ERROR request failed: {secret}");
+        let diagnostic = stderr_diagnostic(&line).expect("error line should be diagnosed");
+
+        assert_eq!(diagnostic.severity, StderrSeverity::Error);
+        assert_eq!(diagnostic.category, "general");
+        assert_eq!(diagnostic.observed_bytes, line.len());
+        assert!(!diagnostic.truncated);
+        assert!(!format!("{diagnostic:?}").contains(secret));
+    }
+
+    #[test]
+    fn stderr_diagnostic_bounds_reported_line_size() {
+        let line = format!(" WARN {}", "sensitive".repeat(STDERR_DIAGNOSTIC_BYTES + 1));
+        let diagnostic = stderr_diagnostic(&line).expect("warning line should be diagnosed");
+
+        assert_eq!(diagnostic.severity, StderrSeverity::Warn);
+        assert_eq!(diagnostic.observed_bytes, STDERR_DIAGNOSTIC_BYTES);
+        assert!(diagnostic.truncated);
+    }
+
+    #[test]
+    fn stderr_diagnostic_suppresses_known_chisel_telemetry_chatter() {
+        assert!(stderr_diagnostic("INFO chisel_api telemetry event payload=secret").is_none());
+        assert!(stderr_diagnostic("DEBUG unleash_sampling context=private").is_none());
+    }
+
+    #[test]
+    fn stderr_diagnostic_downgrades_known_config_importer_warning() {
+        let diagnostic = stderr_diagnostic(
+            " WARN config_importers Failed to parse JSONC hook=PreCompact payload=secret",
+        )
+        .expect("known warning should retain a diagnostic");
+
+        assert_eq!(diagnostic.severity, StderrSeverity::Debug);
+        assert_eq!(diagnostic.category, "known_config_importer");
+    }
+
+    #[test]
+    fn stderr_diagnostic_ignores_blank_lines() {
+        assert!(stderr_diagnostic("  \t ").is_none());
     }
 
     #[test]

@@ -2387,6 +2387,75 @@ fn session_has_content_covers_each_branch() {
 }
 
 #[test]
+fn unchanged_session_snapshot_keeps_revision_and_updated_at() {
+    let mut app = test_app();
+    let first = app.session_snapshot();
+    let second = app.session_snapshot();
+
+    assert_eq!(second.meta.revision, first.meta.revision);
+    assert_eq!(second.updated_at, first.updated_at);
+}
+
+#[test]
+fn session_snapshot_advances_revision_for_semantic_changes() {
+    let mut app = test_app();
+    let mut revision = app.session_snapshot().meta.revision;
+    let mut assert_changed = |app: &mut App, change| {
+        let next = app.session_snapshot().meta.revision;
+        assert!(next > revision, "{change} did not advance revision");
+        revision = next;
+    };
+
+    app.shared_history = Some(Arc::new(ArcSwap::from_pointee(vec![Message::user(
+        "history".into(),
+    )])));
+    assert_changed(&mut app, "history");
+
+    app.shared_transcript = Some(Arc::new(ArcSwap::from_pointee(vec![
+        TranscriptEntry::Message(Message::user("transcript".into())),
+    ])));
+    assert_changed(&mut app, "transcript");
+
+    app.shared_tool_outputs = Some(Arc::new(Mutex::new(HashMap::from([(
+        "tool".into(),
+        ToolOutput::TodoList(Vec::new()),
+    )]))));
+    assert_changed(&mut app, "tool output");
+
+    app.state.token_usage.input = 1;
+    app.state.context_size = 2;
+    assert_changed(&mut app, "usage");
+
+    app.permissions
+        .add_session_rule(n00n_config::PermissionRule {
+            tool: n00n_config::ToolKey::native("bash"),
+            scope: Some("cargo test".into()),
+            effect: n00n_config::Effect::Allow,
+        });
+    assert_changed(&mut app, "permission");
+
+    app.input_box.set_input("draft");
+    assert_changed(&mut app, "draft");
+
+    app.queue_and_notify(queued_msg("queued"));
+    assert_changed(&mut app, "queue");
+
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    app.update(subagent_msg(
+        AgentEvent::TextDelta {
+            text: "child".into(),
+        },
+        "task1",
+        Some("research"),
+    ));
+    assert_changed(&mut app, "subagent");
+
+    app.state.session.title.push_str(" changed");
+    assert_changed(&mut app, "title");
+}
+
+#[test]
 fn save_session_syncs_ephemeral_content_into_meta() {
     let mut app = test_app();
     app.save_session();
