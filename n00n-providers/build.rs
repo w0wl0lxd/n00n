@@ -70,6 +70,13 @@ fn main() {
                     ))
                 })
         };
+        let get_u64 = |key: &str, default: u64| -> u64 {
+            table
+                .get(key)
+                .and_then(toml::Value::as_integer)
+                .and_then(|v| u64::try_from(v).ok())
+                .unwrap_or_else(|| default)
+        };
 
         let const_name = get_str("const_name");
         let generated = format!(
@@ -84,6 +91,7 @@ fn main() {
     supports_prompt_cache_breakpoint: {},
     emit_reasoning_content: {},
     supports_parallel_tool_calls: {},
+    cache_ttl_seconds: {},
 }};
 "#,
             get_str("slug"),
@@ -96,6 +104,7 @@ fn main() {
             get_bool("supports_prompt_cache_breakpoint"),
             get_bool("emit_reasoning_content"),
             get_bool("supports_parallel_tool_calls"),
+            get_u64("cache_ttl_seconds", 0),
         );
 
         let out_file = out_dir.join(format!("{stem}.rs"));
