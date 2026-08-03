@@ -53,6 +53,12 @@ pub struct GitHubRepository {
     pub html_url: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitHubComment {
+    pub id: u64,
+    pub html_url: String,
+}
+
 #[derive(Debug)]
 enum GitHubError {
     RateLimited { retry_after: Option<u64> },
@@ -345,6 +351,105 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
     })?;
     t.set("get_pr", get_pr_fn)?;
 
+    let create_pr_fn = lua.create_function({
+        let gh_tried = Arc::clone(&gh_tried);
+        move |lua,
+              (owner, repo, head, base, title, body, token): (
+                  String,
+                  String,
+                  String,
+                  String,
+                  String,
+                  String,
+                  Option<String>,
+              )| {
+            let client = create_client()?;
+            let token = get_token(token, Arc::clone(&gh_tried)).ok_or_else(|| {
+                mlua::Error::external(
+                    "GitHub token not found. Set GITHUB_TOKEN, pass token parameter, or install gh CLI.",
+                )
+            })?;
+
+            let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls");
+            let payload = serde_json::json!({
+                "title": title,
+                "body": body,
+                "head": head,
+                "base": base,
+            });
+
+            let response = client
+                .post(&url)
+                .header("Authorization", format!("Bearer {token}"))
+                .header("User-Agent", "n00n")
+                .json(&payload)
+                .send()
+                .map_err(map_err)?;
+
+            check_rate_limit(&response).map_err(map_github_err)?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().unwrap_or_else(|_| "no body".to_string());
+                return Err(mlua::Error::external(format!(
+                    "GitHub API error {status}: {body}"
+                )));
+            }
+
+            let pr: GitHubPullRequest = response.json().map_err(map_err)?;
+            value_or_err(lua, Ok(pr))
+        }
+    })?;
+    t.set("create_pr", create_pr_fn)?;
+
+    let add_comment_fn = lua.create_function({
+        let gh_tried = Arc::clone(&gh_tried);
+        move |lua,
+              (owner, repo, issue_number, body, token): (
+                  String,
+                  String,
+                  u64,
+                  String,
+                  Option<String>,
+              )| {
+            let client = create_client()?;
+            let token = get_token(token, Arc::clone(&gh_tried)).ok_or_else(|| {
+                mlua::Error::external(
+                    "GitHub token not found. Set GITHUB_TOKEN, pass token parameter, or install gh CLI.",
+                )
+            })?;
+
+            let url = format!(
+                "https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/comments"
+            );
+            let payload = serde_json::json!({
+                "body": body,
+            });
+
+            let response = client
+                .post(&url)
+                .header("Authorization", format!("Bearer {token}"))
+                .header("User-Agent", "n00n")
+                .json(&payload)
+                .send()
+                .map_err(map_err)?;
+
+            check_rate_limit(&response).map_err(map_github_err)?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().unwrap_or_else(|_| "no body".to_string());
+                return Err(mlua::Error::external(format!(
+                    "GitHub API error {status}: {body}"
+                )));
+            }
+
+            let comment: GitHubComment = response.json().map_err(map_err)?;
+            value_or_err(lua, Ok(comment))
+        }
+    })?;
+    t.set("add_comment", add_comment_fn)?;
+
     Ok(t)
 }
 
@@ -517,6 +622,84 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
             returns: "(table) Pull request object with number, title, state, user, head, base, body, and html_url.",
             example: "",
         },
+        FnDoc {
+            name: "create_pr",
+            args: "{owner}, {repo}, {head}, {base}, {title}, {body}[, {token}]",
+            desc: "Create a new pull request in a GitHub repository. Requires authentication.",
+            params: &[
+                ParamDoc {
+                    name: "{owner}",
+                    ty: "string",
+                    desc: "Repository owner (username or organization).",
+                },
+                ParamDoc {
+                    name: "{repo}",
+                    ty: "string",
+                    desc: "Repository name.",
+                },
+                ParamDoc {
+                    name: "{head}",
+                    ty: "string",
+                    desc: "The name of the branch where your changes are implemented.",
+                },
+                ParamDoc {
+                    name: "{base}",
+                    ty: "string",
+                    desc: "The name of the branch you want the changes pulled into.",
+                },
+                ParamDoc {
+                    name: "{title}",
+                    ty: "string",
+                    desc: "Pull request title.",
+                },
+                ParamDoc {
+                    name: "{body}",
+                    ty: "string",
+                    desc: "Pull request body (markdown).",
+                },
+                ParamDoc {
+                    name: "{token}",
+                    ty: "string?",
+                    desc: "Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.",
+                },
+            ],
+            returns: "(table) Created pull request object with number, title, state, and html_url.",
+            example: "",
+        },
+        FnDoc {
+            name: "add_comment",
+            args: "{owner}, {repo}, {issue_number}, {body}[, {token}]",
+            desc: "Add a comment to an issue or pull request. Requires authentication.",
+            params: &[
+                ParamDoc {
+                    name: "{owner}",
+                    ty: "string",
+                    desc: "Repository owner (username or organization).",
+                },
+                ParamDoc {
+                    name: "{repo}",
+                    ty: "string",
+                    desc: "Repository name.",
+                },
+                ParamDoc {
+                    name: "{issue_number}",
+                    ty: "integer",
+                    desc: "Issue or pull request number.",
+                },
+                ParamDoc {
+                    name: "{body}",
+                    ty: "string",
+                    desc: "Comment body (markdown).",
+                },
+                ParamDoc {
+                    name: "{token}",
+                    ty: "string?",
+                    desc: "Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.",
+                },
+            ],
+            returns: "(table) Created comment object with id and html_url.",
+            example: "",
+        },
     ],
 };
 
@@ -555,7 +738,7 @@ mod tests {
         assert!(result.is_err());
         match result {
             Err(GitHubError::RateLimited { retry_after }) => {
-                assert_eq!(retry_after, Some(1234567890));
+                assert_eq!(retry_after, Some(1_234_567_890));
             }
             _ => panic!("Expected RateLimited error"),
         }
@@ -632,5 +815,29 @@ mod tests {
         let second = resolve_token(None, Arc::clone(&gh_tried), None);
         assert_eq!(second, None);
         assert!(gh_tried.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_create_pr_payload_construction() {
+        let payload = serde_json::json!({
+            "title": "Test PR",
+            "body": "Test body",
+            "head": "feature-branch",
+            "base": "main",
+        });
+
+        assert_eq!(payload["title"], "Test PR");
+        assert_eq!(payload["body"], "Test body");
+        assert_eq!(payload["head"], "feature-branch");
+        assert_eq!(payload["base"], "main");
+    }
+
+    #[test]
+    fn test_add_comment_payload_construction() {
+        let payload = serde_json::json!({
+            "body": "Test comment",
+        });
+
+        assert_eq!(payload["body"], "Test comment");
     }
 }

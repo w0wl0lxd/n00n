@@ -3,7 +3,7 @@ local ToolView = require("n00n.tool_view")
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Use **github** for GitHub API operations: list_issues, create_issue, list_prs, get_repo, get_issue, get_pr.",
+  content = "- Use **github** for GitHub API operations: list_issues, create_issue, list_prs, get_repo, get_issue, get_pr, create_pr, add_comment.",
 })
 
 local function dispatch(input)
@@ -115,6 +115,29 @@ local function dispatch(input)
     return { llm_output = table.concat(lines, "\n") }
   end
 
+  if command == "create_pr" then
+    if not input.head or not input.base or not input.title then
+      return { llm_output = "error: head, base, and title required for create_pr", is_error = true }
+    end
+    local ok, result =
+      pcall(n00n_github.create_pr, owner, repo, input.head, input.base, input.title, input.body, input.token)
+    if not ok then
+      return { llm_output = "error: " .. tostring(result), is_error = true }
+    end
+    return { llm_output = string.format("Created PR #%d: %s\n%s", result.number, result.title, result.html_url) }
+  end
+
+  if command == "add_comment" then
+    if not input.issue_number or type(input.issue_number) ~= "number" or not input.body then
+      return { llm_output = "error: issue_number and body required for add_comment", is_error = true }
+    end
+    local ok, result = pcall(n00n_github.add_comment, owner, repo, input.issue_number, input.body, input.token)
+    if not ok then
+      return { llm_output = "error: " .. tostring(result), is_error = true }
+    end
+    return { llm_output = string.format("Added comment %s\n%s", result.html_url) }
+  end
+
   return { llm_output = "error: unknown command: " .. tostring(command), is_error = true }
 end
 
@@ -122,14 +145,23 @@ n00n.api.register_tool({
   name = "github",
   kind = "read",
   description = [[
-Query GitHub repositories, issues, and pull requests using the REST API. Token sources: GITHUB_TOKEN env var, optional token parameter, or gh CLI fallback.
+GitHub REST API (read/write). Tokens: GITHUB_TOKEN, optional token param, or gh CLI.
 ]],
   schema = {
     type = "object",
     properties = {
       command = {
         type = "string",
-        enum = { "list_issues", "create_issue", "list_prs", "get_repo", "get_issue", "get_pr" },
+        enum = {
+          "list_issues",
+          "create_issue",
+          "list_prs",
+          "get_repo",
+          "get_issue",
+          "get_pr",
+          "create_pr",
+          "add_comment",
+        },
         required = true,
       },
       owner = { type = "string" },
@@ -138,6 +170,8 @@ Query GitHub repositories, issues, and pull requests using the REST API. Token s
       body = { type = "string" },
       issue_number = { type = "number" },
       pr_number = { type = "number" },
+      head = { type = "string" },
+      base = { type = "string" },
       token = { type = "string" },
     },
   },

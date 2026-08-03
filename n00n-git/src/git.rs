@@ -113,7 +113,9 @@ pub fn status(path: &Path) -> Result<GitStatus, GitError> {
             } => {
                 let path = rela_path.to_string();
                 let (status_str, is_staged) = match status {
-                    gix_status::index_as_worktree::EntryStatus::Conflict(_) => ("conflict", true),
+                    gix_status::index_as_worktree::EntryStatus::Conflict { .. } => {
+                        ("conflict", true)
+                    }
                     gix_status::index_as_worktree::EntryStatus::Change(change) => match change {
                         gix_status::index_as_worktree::Change::Removed => ("deleted", true),
                         gix_status::index_as_worktree::Change::Type { .. }
@@ -517,9 +519,14 @@ pub fn blame(path: &Path, file: &str) -> Result<GitBlame, GitError> {
     let decoded = head_commit
         .decode()
         .map_err(|e| GitError::GitOperation(format!("failed to decode commit: {e}")))?;
-    let author = decoded.author();
+    let author = decoded
+        .author()
+        .map_err(|e| GitError::GitOperation(format!("failed to decode author: {e}")))?;
+    let author_time = author
+        .time()
+        .map_err(|e| GitError::GitOperation(format!("failed to decode author time: {e}")))?
+        .seconds;
     let author_name = author.name.to_string();
-    let author_time = author.time.seconds;
 
     let content = std::fs::read_to_string(&file_path)
         .map_err(|e| GitError::FileNotFound(format!("failed to read file: {e}")))?;
@@ -545,8 +552,8 @@ pub fn blame(path: &Path, file: &str) -> Result<GitBlame, GitError> {
 fn worktree_root(path: &Path) -> Result<PathBuf, GitError> {
     let repo = gix::discover(path)
         .map_err(|e| GitError::GitOperation(format!("failed to discover repository: {e}")))?;
-    repo.work_dir()
-        .map_or_else(|| Err(GitError::BareRepo), |p| Ok(p.to_path_buf()))
+    let worktree = repo.worktree().ok_or(GitError::BareRepo)?;
+    Ok(worktree.base().to_path_buf())
 }
 
 fn run_git(path: &Path, args: &[&str]) -> Result<std::process::Output, GitError> {
