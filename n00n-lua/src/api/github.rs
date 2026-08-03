@@ -191,7 +191,7 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
             String,
             String,
             String,
-            String,
+            Option<String>,
             Option<String>,
         )| {
             let client = create_client()?;
@@ -202,10 +202,12 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
             })?;
 
             let url = format!("https://api.github.com/repos/{owner}/{repo}/issues");
-            let payload = serde_json::json!({
-                "title": title,
-                "body": body,
-            });
+            let mut payload = serde_json::Map::new();
+            payload.insert("title".to_string(), title.into());
+            if let Some(body) = body {
+                payload.insert("body".to_string(), body.into());
+            }
+            let payload = serde_json::Value::Object(payload);
 
             let response = client
                 .post(&url)
@@ -359,7 +361,7 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
                   String,
                   String,
                   String,
-                  String,
+                  Option<String>,
                   Option<String>,
               )| {
             let client = create_client()?;
@@ -370,12 +372,14 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
             })?;
 
             let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls");
-            let payload = serde_json::json!({
-                "title": title,
-                "body": body,
-                "head": head,
-                "base": base,
-            });
+            let mut payload = serde_json::Map::new();
+            payload.insert("title".to_string(), title.into());
+            payload.insert("head".to_string(), head.into());
+            payload.insert("base".to_string(), base.into());
+            if let Some(body) = body {
+                payload.insert("body".to_string(), body.into());
+            }
+            let payload = serde_json::Value::Object(payload);
 
             let response = client
                 .post(&url)
@@ -481,7 +485,7 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
         },
         FnDoc {
             name: "create_issue",
-            args: "{owner}, {repo}, {title}, {body}[, {token}]",
+            args: "{owner}, {repo}, {title}[, {body}[, {token}]]",
             desc: "Create a new issue in a GitHub repository. Requires authentication.",
             params: &[
                 ParamDoc {
@@ -501,8 +505,8 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
                 },
                 ParamDoc {
                     name: "{body}",
-                    ty: "string",
-                    desc: "Issue body (markdown).",
+                    ty: "string?",
+                    desc: "Issue body (markdown). Optional.",
                 },
                 ParamDoc {
                     name: "{token}",
@@ -621,7 +625,7 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
         },
         FnDoc {
             name: "create_pr",
-            args: "{owner}, {repo}, {head}, {base}, {title}, {body}[, {token}]",
+            args: "{owner}, {repo}, {head}, {base}, {title}[, {body}[, {token}]]",
             desc: "Create a new pull request in a GitHub repository. Requires authentication.",
             params: &[
                 ParamDoc {
@@ -651,8 +655,8 @@ pub(crate) const DOCS: ModuleDoc = ModuleDoc {
                 },
                 ParamDoc {
                     name: "{body}",
-                    ty: "string",
-                    desc: "Pull request body (markdown).",
+                    ty: "string?",
+                    desc: "Pull request body (markdown). Optional.",
                 },
                 ParamDoc {
                     name: "{token}",
