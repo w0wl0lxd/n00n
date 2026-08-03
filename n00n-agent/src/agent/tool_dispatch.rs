@@ -846,10 +846,11 @@ pub(super) async fn process_tool_calls(
             && !arguments.contains_key("model_tier")
         {
             let tier = match ctx.config.fusion.sidekick_tier {
-                n00n_config::providers::Tier::Weak => "weak",
+                n00n_config::providers::Tier::Weak | n00n_config::providers::Tier::Compaction => {
+                    "weak"
+                }
                 n00n_config::providers::Tier::Medium => "medium",
                 n00n_config::providers::Tier::Strong => "strong",
-                n00n_config::providers::Tier::Compaction => "weak",
             };
             arguments.insert("model_tier".into(), Value::String(tier.into()));
         }

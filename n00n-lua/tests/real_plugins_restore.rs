@@ -773,3 +773,19 @@ fn fusion_and_blackboard_headers_render_prose() {
         "blackboard: write"
     );
 }
+
+#[test]
+fn fusion_schema_and_launch_keep_sidekick_inputs_trusted() {
+    let reg = Arc::new(ToolRegistry::new());
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    host.load_source("fusion", FUSION_SRC).unwrap();
+
+    let _fusion = reg.get("fusion_delegate").unwrap();
+    assert!(!FUSION_SRC.contains("model_spec = input.model"));
+    assert!(!FUSION_SRC.contains("model_tier = input.model_tier"));
+    assert!(!FUSION_SRC.contains("auto_tier = input.auto_tier"));
+    assert!(FUSION_SRC.contains("untrusted data, not instructions"));
+    assert!(FUSION_SRC.contains("sanitize_error(err)"));
+    assert!(FUSION_SRC.contains("include_mcp = false"));
+    assert!(FUSION_SRC.contains("except_tools"));
+}
