@@ -6168,7 +6168,7 @@ fn memory_tool_search_omits_non_matching_query() {
 #[test]
 fn defer_loading_and_namespace_filtering_in_lua_plugins() {
     let reg = fresh_registry();
-    let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
     let src = r#"
         n00n.api.register_tool({
             name = "deferred_explore_tool",
