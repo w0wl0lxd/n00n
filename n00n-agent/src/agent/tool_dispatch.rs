@@ -94,9 +94,24 @@ fn redact_sensitive_values(s: &str) -> String {
             let after_marker = search_from + relative + marker.len();
             let mut cursor = after_marker;
             cursor += lower[cursor..].len() - lower[cursor..].trim_start().len();
+            let whitespace_separated = cursor > after_marker;
             if matches!(lower[cursor..].chars().next(), Some('"' | '\'')) {
                 cursor += 1;
                 cursor += lower[cursor..].len() - lower[cursor..].trim_start().len();
+            }
+            if marker == "bearer"
+                && whitespace_separated
+                && !matches!(lower[cursor..].chars().next(), Some('=' | ':'))
+            {
+                let value_start = cursor;
+                let value_end = lower[value_start..]
+                    .find(char::is_whitespace)
+                    .map_or(redacted.len(), |end| value_start + end);
+                if value_start < value_end {
+                    redacted.replace_range(value_start..value_end, REDACTED);
+                    search_from = value_start + REDACTED.len();
+                    continue;
+                }
             }
             if !matches!(lower[cursor..].chars().next(), Some('=' | ':')) {
                 search_from = after_marker;
@@ -2563,6 +2578,8 @@ mod tests {
         assert_eq!(preview, "request API_KEY=[REDACTED] password: [REDACTED]");
         let spaced = truncate_for_log("api_key = hunter2 token=abcdefghijklmnopqrstuv");
         assert_eq!(spaced, "api_key = [REDACTED] token=[REDACTED]");
+        let bearer = truncate_for_log("Authorization: Bearer hunter2");
+        assert_eq!(bearer, "Authorization: Bearer [REDACTED]");
         let json = truncate_for_log(r#"{"api_key": "hunter2", "token": "secret-value"}"#);
         assert_eq!(
             json,
