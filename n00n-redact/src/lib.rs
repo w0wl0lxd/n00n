@@ -341,7 +341,7 @@ fn is_prefixed_token(value: &str) -> bool {
 }
 
 fn is_aws_access_key_id(value: &str) -> bool {
-    if value.len() != AWS_ACCESS_KEY_ID_CHARS {
+    if value.len() != AWS_ACCESS_KEY_ID_CHARS || !value.is_ascii() {
         return false;
     }
     let (prefix, rest) = value.split_at(AWS_ACCESS_KEY_PREFIX_CHARS);
@@ -475,6 +475,7 @@ mod tests {
         assert!(!looks_like_secret_value("sk-abc"));
         assert!(!looks_like_secret_value("ghp_short"));
         assert!(!looks_like_secret_value("AKIA0"));
+        assert!(!looks_like_secret_value("AA€€€€€€"));
         assert!(!looks_like_secret_value("Bearer short"));
         assert!(!looks_like_secret_value("plain text"));
         assert!(!looks_like_secret_value(""));
