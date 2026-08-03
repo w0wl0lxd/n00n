@@ -49,12 +49,18 @@ pub(crate) fn encode_get_blob_result(request_id: u32, blob_data: Option<&[u8]>) 
     let result = GetBlobResult {
         blob_data: blob_data.map_or_else(Vec::new, <[u8]>::to_vec),
     };
+    let mut result_bytes = result.encode_to_vec();
+    if matches!(blob_data, Some(data) if data.is_empty()) {
+        result_bytes.extend_from_slice(&field_ld(1, &[]));
+    }
     let kv = KvClientMessage {
         id: u64::from(request_id),
-        get_blob_result: Some(result),
+        get_blob_result: None,
         set_blob_result: None,
     };
-    field_ld(3, &kv.encode_to_vec())
+    let mut kv_bytes = kv.encode_to_vec();
+    kv_bytes.extend_from_slice(&field_ld(2, &result_bytes));
+    field_ld(3, &kv_bytes)
 }
 
 /// Encode `AgentClientMessage.kv_client_message` for a set-blob ack.
