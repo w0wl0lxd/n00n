@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use n00n_agent::template::env_vars;
 use n00n_agent::tools::{
-    ActiveTools, DescriptionContext, ToolAudience, ToolFilter, ToolRegistry, ToolSource,
-    timeout_annotation,
+    ActiveTools, DescriptionContext, SessionIdentity, ToolAudience, ToolFilter, ToolRegistry,
+    ToolSource, timeout_annotation,
 };
 use n00n_config::{AlwaysThinking, PluginsConfig, ToolOutputLines};
 use n00n_lua::{PluginError, PluginHost, WARM_TOOL_CAP};
@@ -4060,6 +4060,428 @@ fn session_rejects_nonempty_lua_tools_object() {
         .expect_err("non-empty tools object must be rejected");
 
     assert!(error.contains(TOOLS_MUST_BE_ARRAY_ERR), "got: {error}");
+}
+#[test]
+fn lua_session_rejects_missing_identity() {
+    smol::block_on(async {
+        let reg = fresh_registry();
+        let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+        let src = format!(
+            r#"n00n.api.register_tool({{
+                name = "missing_identity_probe",
+                description = "test",
+                schema = {MINIMAL_SCHEMA},
+                audiences = {{ "main" }},
+                handler = function(input, ctx)
+                    local sess, err = n00n.agent.session(ctx, {{}})
+                    if sess ~= nil then return "unexpected session" end
+                    return err or "no error"
+                end
+            }})"#
+        );
+        host.load_source("missing_identity_plugin", &src).unwrap();
+        let entry = reg.get("missing_identity_probe").unwrap();
+        let invocation = entry.tool.parse(&serde_json::json!({})).unwrap();
+        let mut ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
+        ctx.identity = None;
+
+        let result = invocation.execute(&ctx).await.output.unwrap();
+        let n00n_agent::ToolOutput::Plain(output) = result else {
+            panic!("expected plain output");
+        };
+        assert_eq!(output.text, "session identity is unavailable");
+    });
+}
+
+#[test]
+fn plugin_state_capture_waits_for_inflight_handler_callbacks() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let source = format!(
+        r#"
+        n00n.api.register_tool({{
+            name = "delayed_state", description = "test", schema = {MINIMAL_SCHEMA},
+            handler = function(input, ctx)
+                local buf = n00n.ui.buf()
+                buf:set_lines({{ "waiting" }})
+                ctx:live_buf(buf)
+                n00n.async.run(function()
+                    local id = n00n.fn.jobstart("sleep 0.05")
+                    n00n.fn.jobwait(id)
+                    return "finished"
+                end, function(err)
+                    if err then
+                        ctx:finish(err)
+                        return
+                    end
+                    local _, state_err = ctx:state_replace("session", {{ value = "finished" }})
+                    ctx:finish(state_err or "done")
+                end)
+                return nil
+            end,
+        }})
+        "#
+    );
+    host.load_source("delayed_state", &source).unwrap();
+    let identity = SessionIdentity::root(SessionRef::generate());
+    let entry = reg.get("delayed_state").unwrap();
+    let invocation = entry.tool.parse(&serde_json::json!({})).unwrap();
+    let (event_tx, event_rx) = flume::unbounded();
+    let sender = n00n_agent::EventSender::new(event_tx, 0);
+    let mut ctx = n00n_agent::tools::test_support::stub_ctx_with(
+        &n00n_agent::AgentMode::Build,
+        Some(&sender),
+        Some("delayed-state"),
+    );
+    ctx.identity = Some(identity.clone());
+    let worker = std::thread::spawn(move || smol::block_on(invocation.execute(&ctx)));
+
+    loop {
+        let event = event_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        if matches!(
+            event.event,
+            n00n_agent::AgentEvent::LiveToolBuf { ref id, .. } if id == "delayed-state"
+        ) {
+            break;
+        }
+    }
+
+    let snapshot = host
+        .event_handle()
+        .unwrap()
+        .capture_state(&identity, 1)
+        .unwrap();
+    assert_eq!(
+        snapshot
+            .plugin_payload_for_apply(
+                "delayed_state",
+                1,
+                n00n_storage::sessions::StoredStateScope::Session,
+            )
+            .unwrap(),
+        Some(&serde_json::json!({"value": "finished"}))
+    );
+    assert_eq!(worker.join().unwrap().output.unwrap().as_text(), "done");
+}
+
+#[test]
+fn plugin_state_lifecycle_methods_reject_dead_host() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(reg).unwrap();
+    let handle = host.event_handle().unwrap();
+    let identity = SessionIdentity::root(SessionRef::generate());
+    drop(host);
+
+    assert!(matches!(
+        handle.capture_state(&identity, 1),
+        Err(PluginError::HostDead)
+    ));
+    assert!(matches!(
+        handle.hydrate_state(&identity, None),
+        Err(PluginError::HostDead)
+    ));
+    assert!(matches!(
+        handle.reset_state(&identity),
+        Err(PluginError::HostDead)
+    ));
+    assert!(matches!(
+        handle.drop_state_owner(identity.session_id().id()),
+        Err(PluginError::HostDead)
+    ));
+}
+
+#[test]
+fn plugin_state_capture_services_nested_lua_tool_calls() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let source = format!(
+        r#"
+        n00n.api.register_tool({{
+            name = "nested_state_writer", description = "test", schema = {MINIMAL_SCHEMA},
+            header = function() return "nested writer" end,
+            handler = function(input, ctx)
+                local _, err = ctx:state_replace("session", {{ value = "nested" }})
+                return err or "written"
+            end,
+        }})
+        n00n.api.register_tool({{
+            name = "nested_state_parent", description = "test", schema = {MINIMAL_SCHEMA},
+            handler = function(input, ctx)
+                local buf = n00n.ui.buf()
+                buf:set_lines({{ "waiting" }})
+                ctx:live_buf(buf)
+                local id = n00n.fn.jobstart("sleep 0.5")
+                n00n.fn.jobwait(id)
+                local result, err = n00n.agent.call_tool(ctx, "nested_state_writer", {{}})
+                return err or result
+            end,
+        }})
+        "#
+    );
+    host.load_source("nested_state", &source).unwrap();
+    let identity = SessionIdentity::root(SessionRef::generate());
+    let entry = reg.get("nested_state_parent").unwrap();
+    let invocation = entry.tool.parse(&serde_json::json!({})).unwrap();
+    let (event_tx, event_rx) = flume::unbounded();
+    let sender = n00n_agent::EventSender::new(event_tx, 0);
+    let mut ctx = n00n_agent::tools::test_support::stub_ctx_with(
+        &n00n_agent::AgentMode::Build,
+        Some(&sender),
+        Some("nested-state"),
+    );
+    ctx.identity = Some(identity.clone());
+    ctx.registry = Arc::clone(&reg);
+    let worker = std::thread::spawn(move || smol::block_on(invocation.execute(&ctx)));
+
+    loop {
+        let event = event_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        if matches!(
+            event.event,
+            n00n_agent::AgentEvent::LiveToolBuf { ref id, .. } if id == "nested-state"
+        ) {
+            break;
+        }
+    }
+
+    let snapshot = host
+        .event_handle()
+        .unwrap()
+        .capture_state(&identity, 1)
+        .unwrap();
+    assert_eq!(
+        snapshot
+            .plugin_payload_for_apply(
+                "nested_state",
+                1,
+                n00n_storage::sessions::StoredStateScope::Session,
+            )
+            .unwrap(),
+        Some(&serde_json::json!({"value": "nested"}))
+    );
+    assert_eq!(worker.join().unwrap().output.unwrap().as_text(), "written");
+}
+
+#[test]
+fn plugin_state_isolates_namespaces_and_session_scope_while_sharing_root_scope() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let plugin_a = format!(
+        r#"
+        local function read(ctx, scope)
+            local value, err = ctx:state_get(scope)
+            if err then return err end
+            return value and value.name or "none"
+        end
+        n00n.api.register_tool({{
+            name = "a_write_root", description = "test", schema = {MINIMAL_SCHEMA},
+            handler = function(input, ctx)
+                local _, err = ctx:state_replace("root", {{ name = "root-a" }})
+                return err or "ok"
+            end,
+        }})
+        n00n.api.register_tool({{
+            name = "a_write_session", description = "test", schema = {MINIMAL_SCHEMA},
+            handler = function(input, ctx)
+                local _, err = ctx:state_replace("session", {{ name = "session-a" }})
+                return err or "ok"
+            end,
+        }})
+        n00n.api.register_tool({{
+            name = "a_read_root", description = "test", schema = {MINIMAL_SCHEMA},
+            handler = function(input, ctx) return read(ctx, "root") end,
+        }})
+        n00n.api.register_tool({{
+            name = "a_read_session", description = "test", schema = {MINIMAL_SCHEMA},
+            handler = function(input, ctx) return read(ctx, "session") end,
+        }})
+        "#
+    );
+    let plugin_b = format!(
+        r#"n00n.api.register_tool({{
+            name = "b_read_root", description = "test", schema = {MINIMAL_SCHEMA},
+            handler = function(input, ctx)
+                local value, err = ctx:state_get("root")
+                if err then return err end
+                return value and value.name or "none"
+            end,
+        }})"#
+    );
+    host.load_source("plugin_a", &plugin_a).unwrap();
+    host.load_source("plugin_b", &plugin_b).unwrap();
+
+    let root = SessionIdentity::root(SessionRef::generate());
+    let child = SessionIdentity::child(SessionRef::generate(), root.root_session_id().clone());
+    let execute = |name: &str, identity: &SessionIdentity| {
+        let entry = reg.get(name).unwrap();
+        let invocation = entry.tool.parse(&serde_json::json!({})).unwrap();
+        let mut ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
+        ctx.identity = Some(identity.clone());
+        let output = smol::block_on(async { invocation.execute(&ctx).await })
+            .output
+            .unwrap();
+        let n00n_agent::ToolOutput::Plain(output) = output else {
+            panic!("expected plain output");
+        };
+        output.text
+    };
+
+    assert_eq!(execute("a_write_root", &root), "ok");
+    assert_eq!(execute("a_write_session", &root), "ok");
+    assert_eq!(execute("a_read_root", &child), "root-a");
+    assert_eq!(execute("a_read_session", &child), "none");
+    assert_eq!(execute("b_read_root", &root), "none");
+
+    let handle = host.event_handle().unwrap();
+    let captured = handle.capture_state(&root, 7).unwrap();
+    assert_eq!(captured.state_revision(), Some(7));
+    assert_eq!(
+        captured
+            .plugin_payload_for_apply(
+                "plugin_a",
+                1,
+                n00n_storage::sessions::StoredStateScope::Root
+            )
+            .unwrap(),
+        Some(&serde_json::json!({"name": "root-a"}))
+    );
+    handle.reset_state(&root).unwrap();
+    let reset = handle.capture_state(&root, 8).unwrap();
+    assert!(
+        reset
+            .plugin_payload_for_apply(
+                "plugin_a",
+                1,
+                n00n_storage::sessions::StoredStateScope::Root
+            )
+            .unwrap()
+            .is_none()
+    );
+    handle.hydrate_state(&root, Some(captured)).unwrap();
+    assert_eq!(execute("a_read_root", &root), "root-a");
+    assert_eq!(execute("a_read_session", &root), "session-a");
+
+    host.unload("plugin_a").unwrap();
+    let unloaded = handle.capture_state(&root, 8).unwrap();
+    assert!(
+        unloaded
+            .plugin_payload_for_apply(
+                "plugin_a",
+                1,
+                n00n_storage::sessions::StoredStateScope::Root,
+            )
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn plugin_state_rejects_context_reuse_after_handler_finishes() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let source = format!(
+        r#"
+        local saved
+        n00n.api.register_tool({{
+            name = "save_state_ctx", description = "test", schema = {MINIMAL_SCHEMA},
+            handler = function(input, ctx)
+                saved = ctx
+                local _, err = ctx:state_replace("session", {{ value = "original" }})
+                return err or "saved"
+            end,
+        }})
+        n00n.api.register_tool({{
+            name = "save_dispatch_ctx", description = "test", schema = {MINIMAL_SCHEMA},
+            handler = function(input, ctx)
+                saved = ctx
+                return "saved"
+            end,
+        }})
+        n00n.api.register_tool({{
+            name = "reuse_state_ctx", description = "test", schema = {MINIMAL_SCHEMA},
+            handler = function()
+                local _, err = saved:state_replace("session", {{ value = "stale" }})
+                return err or "unexpected success"
+            end,
+        }})
+        n00n.api.register_tool({{
+            name = "reuse_state_ctx_deadline", description = "test", schema = {MINIMAL_SCHEMA},
+            handler = function()
+                local _, err = saved:set_deadline(1)
+                return err or "unexpected success"
+            end,
+        }})
+        n00n.api.register_tool({{
+            name = "reuse_state_ctx_dispatch", description = "test", schema = {MINIMAL_SCHEMA},
+            handler = function()
+                local _, err = n00n.agent.call_tool(saved, "missing", {{}})
+                return err or "unexpected success"
+            end,
+        }})
+        "#
+    );
+    host.load_source("stale_ctx", &source).unwrap();
+    let identity = SessionIdentity::root(SessionRef::generate());
+    let execute = |name: &str| {
+        let entry = reg.get(name).unwrap();
+        let invocation = entry.tool.parse(&serde_json::json!({})).unwrap();
+        let mut ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
+        ctx.identity = Some(identity.clone());
+        let output = smol::block_on(async { invocation.execute(&ctx).await })
+            .output
+            .unwrap();
+        let n00n_agent::ToolOutput::Plain(output) = output else {
+            panic!("expected plain output");
+        };
+        output.text
+    };
+
+    assert_eq!(execute("save_state_ctx"), "saved");
+    assert_eq!(
+        execute("reuse_state_ctx"),
+        "state context is no longer active"
+    );
+    assert_eq!(
+        execute("reuse_state_ctx_dispatch"),
+        "state context is no longer active"
+    );
+    assert_eq!(
+        execute("reuse_state_ctx_deadline"),
+        "state context is no longer active"
+    );
+
+    let execute_without_identity = |name: &str| {
+        let entry = reg.get(name).unwrap();
+        let invocation = entry.tool.parse(&serde_json::json!({})).unwrap();
+        let ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
+        let output = smol::block_on(async { invocation.execute(&ctx).await })
+            .output
+            .unwrap();
+        let n00n_agent::ToolOutput::Plain(output) = output else {
+            panic!("expected plain output");
+        };
+        output.text
+    };
+    assert_eq!(execute_without_identity("save_dispatch_ctx"), "saved");
+    assert_eq!(
+        execute_without_identity("reuse_state_ctx_dispatch"),
+        "state context is no longer active"
+    );
+
+    let snapshot = host
+        .event_handle()
+        .unwrap()
+        .capture_state(&identity, 1)
+        .unwrap();
+    assert_eq!(
+        snapshot
+            .plugin_payload_for_apply(
+                "stale_ctx",
+                1,
+                n00n_storage::sessions::StoredStateScope::Session,
+            )
+            .unwrap(),
+        Some(&serde_json::json!({"value": "original"}))
+    );
 }
 
 #[test]

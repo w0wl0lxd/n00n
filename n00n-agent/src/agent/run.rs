@@ -19,8 +19,8 @@ use crate::cancel::{CancelMap, CancelToken, PreDispatchGate};
 use crate::mcp::McpSession;
 use crate::permissions::{PermissionAnswer, PermissionManager};
 use crate::tools::{
-    ActiveTools, Deadline, FileReadTracker, LocalTools, ToolAudience, ToolContext, ToolFilter,
-    ToolRegistry,
+    ActiveTools, Deadline, FileReadTracker, LocalTools, SessionIdentity, ToolAudience, ToolContext,
+    ToolFilter, ToolRegistry,
 };
 use crate::{
     AgentConfig, AgentError, AgentEvent, AgentInput, AgentMode, EventSender, ExtractedCommand,
@@ -28,6 +28,7 @@ use crate::{
     InterruptSource, ToolDoneEvent, TurnCompleteEvent,
 };
 use n00n_config::{ToolKey, ToolOutputLines};
+#[cfg(test)]
 use n00n_storage::id::SessionRef;
 
 use crate::tokenize::{
@@ -167,7 +168,7 @@ pub struct AgentParams {
     pub config: Arc<AgentConfig>,
     pub tool_output_lines: ToolOutputLines,
     pub permissions: Arc<PermissionManager>,
-    pub session_id: Option<SessionRef>,
+    pub identity: Option<SessionIdentity>,
     pub timeouts: n00n_providers::Timeouts,
     pub openai_options: OpenAiOptions,
     pub file_tracker: Arc<FileReadTracker>,
@@ -214,7 +215,7 @@ pub struct Agent<'h> {
     thinking_empty_retried: bool,
     permissions: Arc<PermissionManager>,
     opts: RequestOptions,
-    session_id: Option<SessionRef>,
+    identity: Option<SessionIdentity>,
     timeouts: n00n_providers::Timeouts,
     openai_options: OpenAiOptions,
     file_tracker: Arc<FileReadTracker>,
@@ -273,7 +274,7 @@ impl<'h> Agent<'h> {
             post_tool_empty_retried: false,
             thinking_empty_retried: false,
             opts: RequestOptions::default(),
-            session_id: params.session_id,
+            identity: params.identity,
             file_tracker: params.file_tracker,
             prompt_slots: params.prompt_slots,
             subagent_cancels: params.subagent_cancels,
@@ -502,7 +503,7 @@ impl<'h> Agent<'h> {
             event_tx: &self.event_tx,
             cancel: &self.cancel,
             opts,
-            session_id: self.session_id.as_ref(),
+            session_id: self.identity.as_ref().map(SessionIdentity::session_id),
         })
         .await
     }
@@ -886,6 +887,7 @@ impl<'h> Agent<'h> {
             prompt_slots: Arc::clone(&self.prompt_slots),
             opts: self.opts.clone(),
             subagent_cancels: Arc::clone(&self.subagent_cancels),
+            identity: self.identity.clone(),
             registry: Arc::clone(&self.registry),
             workflow: self.workflow,
             audience: self.audience,
@@ -1144,7 +1146,7 @@ impl<'h> Agent<'h> {
             &self.event_tx,
             &self.cancel,
             CompactionTrigger::Auto,
-            self.session_id.as_ref(),
+            self.identity.as_ref().map(SessionIdentity::session_id),
             &cwd,
             None,
         )
@@ -2141,7 +2143,7 @@ mod tests {
                     },
                     std::path::PathBuf::from("/tmp"),
                 )),
-                session_id: None,
+                identity: None,
                 timeouts: n00n_providers::Timeouts::default(),
                 openai_options: OpenAiOptions::default(),
                 file_tracker: FileReadTracker::fresh(),
@@ -3354,7 +3356,7 @@ mod tests {
                         },
                         std::path::PathBuf::from("/tmp"),
                     )),
-                    session_id: None,
+                    identity: None,
                     timeouts: n00n_providers::Timeouts::default(),
                     openai_options: OpenAiOptions::default(),
                     file_tracker: FileReadTracker::fresh(),
