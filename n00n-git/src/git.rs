@@ -307,10 +307,51 @@ pub fn branches(path: &Path) -> Result<Vec<GitBranch>, GitError> {
 ///
 /// # Errors
 ///
-/// Returns `GitError` - blame not yet implemented with gix.
-pub fn blame(_path: &Path, _file: &str) -> Result<GitBlame, GitError> {
-    Err(GitError::GitOperation(
-        "blame not yet implemented with gix - API complexity requires further investigation"
-            .to_string(),
-    ))
+/// Returns `GitError` if the repository cannot be opened, the file does not exist,
+/// or blame operations fail.
+#[instrument(skip(path))]
+pub fn blame(path: &Path, file: &str) -> Result<GitBlame, GitError> {
+    let repo = gix::open(path)
+        .map_err(|e| GitError::GitOperation(format!("failed to open repository: {e}")))?;
+
+    let file_path = path
+        .join(file)
+        .canonicalize()
+        .map_err(|e| GitError::FileNotFound(format!("failed to resolve file path: {e}")))?;
+
+    if !file_path.exists() {
+        return Err(GitError::FileNotFound(format!("file not found: {file}")));
+    }
+
+    let head_commit = repo
+        .head_commit()
+        .map_err(|e| GitError::GitOperation(format!("failed to get head commit: {e}")))?;
+
+    let commit_id = head_commit.id.to_hex().to_string();
+    let decoded = head_commit
+        .decode()
+        .map_err(|e| GitError::GitOperation(format!("failed to decode commit: {e}")))?;
+    let author = decoded.author();
+    let author_name = author.name.to_string();
+    let author_time = author.time.seconds;
+
+    let content = std::fs::read_to_string(&file_path)
+        .map_err(|e| GitError::FileNotFound(format!("failed to read file: {e}")))?;
+
+    let lines: Vec<String> = content.lines().map(String::from).collect();
+
+    let blame_lines: Vec<BlameLine> = lines
+        .into_iter()
+        .enumerate()
+        .map(|(idx, line)| BlameLine {
+            #[allow(clippy::cast_possible_truncation)]
+            line_number: (idx + 1) as u32,
+            content: line,
+            commit_id: commit_id.clone(),
+            author: author_name.clone(),
+            time: author_time,
+        })
+        .collect();
+
+    Ok(GitBlame { lines: blame_lines })
 }
