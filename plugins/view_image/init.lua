@@ -302,6 +302,7 @@ n00n.api.register_tool({
   -- to text, so the pixels could never reach the model from there.
   audiences = { "main", "research_sub", "general_sub" },
   defer_loading = true,
+  namespace = "core",
   strict = true,
 
   schema = {

@@ -1053,6 +1053,59 @@ mod tests {
         assert_eq!(names_for(ToolAudience::GENERAL_SUB), vec!["everywhere"]);
     }
 
+    #[test]
+    fn defer_loading_and_namespace_filtering() {
+        let reg = ToolRegistry::new();
+        let deferred_ns = Arc::new(MockTool {
+            name: "deferred_tool".to_owned(),
+            audience: ToolAudience::all(),
+            defer_loading: true,
+            namespace: Some("explore".to_owned()),
+        });
+        let active_tool = Arc::new(MockTool {
+            name: "active_tool".to_owned(),
+            audience: ToolAudience::all(),
+            defer_loading: false,
+            namespace: None,
+        });
+        let p = lua_source("p");
+        reg.register(&deferred_ns, &p).unwrap();
+        reg.register(&active_tool, &p).unwrap();
+
+        let vars = Vars::new();
+        let filter = crate::tools::ToolFilter::All;
+        let ctx = DescriptionContext {
+            filter: &filter,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        };
+
+        // Default active tools should exclude deferred tools
+        let active = ActiveTools::default();
+        let defs_active = reg.definitions(&vars, &ctx, &active);
+        let names_active: Vec<_> = defs_active
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["name"].as_str().unwrap().to_owned())
+            .collect();
+        assert!(names_active.contains(&"active_tool".to_owned()));
+        assert!(!names_active.contains(&"deferred_tool".to_owned()));
+
+        // With namespace active, deferred tool should be included
+        let mut with_ns = ActiveTools::default();
+        with_ns.namespaces.insert("explore".to_owned());
+        let defs_with_ns = reg.definitions(&vars, &ctx, &with_ns);
+        let names_with_ns: Vec<_> = defs_with_ns
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["name"].as_str().unwrap().to_owned())
+            .collect();
+        assert!(names_with_ns.contains(&"active_tool".to_owned()));
+        assert!(names_with_ns.contains(&"deferred_tool".to_owned()));
+    }
+
     #[test_case(Err("boom".into()), Some("/tmp/foo".into()), None          ; "clears_on_error")]
     #[test_case(Ok(ToolOutput::Plain("ok".into())), Some("/tmp/foo".into()), Some("/tmp/foo") ; "sets_on_success")]
     fn with_written_path(

@@ -29,6 +29,8 @@ end
 n00n.api.register_tool({
   name = "websearch",
   kind = "fetch",
+  defer_loading = true,
+  namespace = "research",
   description = [[Search the web for real-time information using Exa AI.
 
 - Use for current events, documentation, APIs, or anything not in local files.

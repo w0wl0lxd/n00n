@@ -299,6 +299,8 @@ local DESCRIPTION =
 n00n.api.register_tool({
   name = "skill",
   kind = "read",
+  defer_loading = true,
+  namespace = "memory",
   description = DESCRIPTION,
 
   schema = {

@@ -497,6 +497,7 @@ n00n.api.register_tool({
   kind = "execute",
   audiences = { "main" },
   defer_loading = true,
+  namespace = "agent",
   schema = control_schema,
   header = function(input)
     return "control · " .. tostring(input.action or "?")

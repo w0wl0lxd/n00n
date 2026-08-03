@@ -80,6 +80,8 @@ end
 n00n.api.register_tool({
   name = "webfetch",
   kind = "fetch",
+  defer_loading = true,
+  namespace = "research",
   modes = { "default", "research" },
   description = [[Fetch a URL and return its contents. Supports markdown (default), text, or html. HTTP auto-upgraded to HTTPS. Max 5MB response, 120s timeout. Best used inside code_execution to avoid context bloat.]],
   strict = true,

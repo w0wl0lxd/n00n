@@ -1091,6 +1091,8 @@ n00n.api.register_tool({
   name = "team",
   description = description,
   kind = "execute",
+  defer_loading = true,
+  namespace = "agent",
   audiences = { "main", "workflow" },
   schema = schema,
   timeout = TEAM_TIMEOUT_SECS,
