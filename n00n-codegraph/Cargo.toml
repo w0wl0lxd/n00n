@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+# Targets CodeGraph 1.5.0 CLI for command expansion (callers, callees, impact, affected, node, query, sync, files)
+# Falls back to CLI when native SQLite queries are not available
+
 [lints]
 workspace = true
 

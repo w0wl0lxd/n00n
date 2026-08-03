@@ -503,7 +503,7 @@ fn codegraph_native_database_does_not_require_cli() {
             n00n.codegraph.has_database = function() return true end
             n00n.codegraph.explore = function() return "native result", nil end
         "#,
-        json!({ "query": "target", "projectPath": "/fixture" }),
+        json!({ "command": "explore", "query": "target", "projectPath": "/fixture" }),
     )
     .expect("native Codegraph operation should succeed without the CLI");
 
@@ -526,7 +526,7 @@ fn codegraph_native_database_does_not_require_cli() {
         n00n.codegraph.has_index = function() return true end
         n00n.codegraph.has_database = function() return false end
     ",
-    json!({ "query": "target", "projectPath": "/fixture" }),
+    json!({ "command": "explore", "query": "target", "projectPath": "/fixture" }),
     "codegraph CLI not found";
     "codegraph_without_database"
 )]
