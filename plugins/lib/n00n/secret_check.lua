@@ -74,19 +74,6 @@ local SECRET_KEYWORDS = {
   "passwd=",
 }
 
--- Patterns that look like credential assignment/usage:
---   KEY="value", KEY='value', KEY=value, KEY: value, "Bearer <token>"
-local SECRET_ASSIGNMENT_PATTERN = "[%w_%-%.]*"
-  .. table.concat({
-    "[Kk]ey",
-    "[Ss]ecret",
-    "[Tt]oken",
-    "[Pp]assword",
-    "[Pp]asswd",
-    "[Cc]redential",
-  }, "|")
-  .. "%s*[=:]%s*[\"']?[^%s\"']+"
-
 -- High-entropy-ish token patterns: base64/hex strings that follow `=` or a key word.
 local TOKEN_VALUE_PATTERN = "[=:]%s*[\"']?([A-Za-z0-9+/_%-]+)"
 
