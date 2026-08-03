@@ -1,0 +1,1 @@
+Migrated Devin provider hand-rolled protobuf to `prost` derive macros, preserving the exact wire field numbers from Devin CLI `3000.3.22`.
