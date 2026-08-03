@@ -6,6 +6,9 @@ use tracing::instrument;
 
 use crate::error::GitError;
 
+use gix::dir as gix_dir;
+use gix::status::plumbing as gix_status;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitStatus {
     pub branch: Option<String>,
@@ -73,7 +76,7 @@ pub struct BlameLine {
 ///
 /// # Errors
 ///
-/// Returns `GitError` if the repository cannot be opened, is bare, or index operations fail.
+/// Returns `GitError` if the repository cannot be opened, is bare, or status operations fail.
 #[instrument(skip(path))]
 pub fn status(path: &Path) -> Result<GitStatus, GitError> {
     let repo = gix::open(path)
@@ -84,28 +87,66 @@ pub fn status(path: &Path) -> Result<GitStatus, GitError> {
         .map_err(|e| GitError::GitOperation(format!("failed to get head name: {e}")))?
         .map(|name| name.shorten().to_string());
 
-    let worktree = repo.worktree().ok_or(GitError::BareRepo)?;
-
-    let index = repo
-        .index_or_empty()
-        .map_err(|e| GitError::GitOperation(format!("failed to get index: {e}")))?;
+    repo.worktree().ok_or(GitError::BareRepo)?;
 
     let mut files = Vec::new();
 
-    for entry in index.entries() {
-        let entry_path = entry.path(&index).to_string();
-        let worktree_path = worktree.base().join(&entry_path);
+    let platform = repo
+        .status(gix::progress::Discard)
+        .map_err(|e| GitError::GitOperation(format!("failed to create status platform: {e}")))?;
 
-        let status = if worktree_path.exists() {
-            "clean"
-        } else {
-            "deleted"
+    let iter = platform
+        .into_index_worktree_iter(Vec::new())
+        .map_err(|e| GitError::GitOperation(format!("failed to create status iterator: {e}")))?;
+
+    for item_result in iter {
+        let item = item_result
+            .map_err(|e| GitError::GitOperation(format!("failed to read status item: {e}")))?;
+
+        let (entry_path, status, staged) = match item {
+            gix::status::index_worktree::Item::Modification {
+                rela_path, status, ..
+            } => {
+                let path = rela_path.to_string();
+                let (status_str, is_staged) = match status {
+                    gix_status::index_as_worktree::EntryStatus::Conflict(_) => ("conflict", true),
+                    gix_status::index_as_worktree::EntryStatus::Change(change) => match change {
+                        gix_status::index_as_worktree::Change::Removed => ("deleted", true),
+                        gix_status::index_as_worktree::Change::Type { .. }
+                        | gix_status::index_as_worktree::Change::Modification { .. }
+                        | gix_status::index_as_worktree::Change::SubmoduleModification(_) => {
+                            ("modified", true)
+                        }
+                    },
+                    gix_status::index_as_worktree::EntryStatus::NeedsUpdate(_) => continue,
+                    gix_status::index_as_worktree::EntryStatus::IntentToAdd => ("added", true),
+                };
+                (path, status_str, is_staged)
+            }
+            gix::status::index_worktree::Item::DirectoryContents { entry, .. } => {
+                let path = entry.rela_path.to_string();
+                let (status_str, is_staged) = match entry.status {
+                    gix_dir::entry::Status::Untracked => ("untracked", false),
+                    gix_dir::entry::Status::Ignored(_) => ("ignored", false),
+                    _ => continue,
+                };
+                (path, status_str, is_staged)
+            }
+            gix::status::index_worktree::Item::Rewrite {
+                dirwalk_entry,
+                copy,
+                ..
+            } => {
+                let path = dirwalk_entry.rela_path.to_string();
+                let status_str = if copy { "added" } else { "renamed" };
+                (path, status_str, true)
+            }
         };
 
         files.push(FileStatus {
             path: entry_path,
             status: status.to_string(),
-            staged: false,
+            staged,
         });
     }
 
