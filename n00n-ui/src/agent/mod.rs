@@ -13,10 +13,9 @@ use arc_swap::ArcSwap;
 use n00n_agent::permissions::PermissionManager;
 use n00n_agent::{
     AgentConfig, CancelMap, CancelToken, Envelope, McpCommand, McpConfigErrors, McpHandle,
-    McpSnapshotReader, ToolOutput, ToolOutputLines,
+    McpSnapshotReader, ToolOutput, ToolOutputLines, tools::SessionIdentity,
 };
 use n00n_lua::EventHandle;
-use n00n_storage::id::SessionRef;
 use n00n_storage::sessions::TranscriptEntry;
 
 use self::cancel_map::new_run_cancel_map;
@@ -55,6 +54,7 @@ pub(crate) struct AgentHandles {
     pub(crate) queue: QueueSender,
     pub(crate) timeouts: n00n_providers::Timeouts,
     openai_options: OpenAiOptions,
+    identity: Option<SessionIdentity>,
     task: smol::Task<()>,
 }
 
@@ -70,7 +70,7 @@ impl AgentHandles {
         config: AgentConfig,
         tool_output_lines: ToolOutputLines,
         permissions: &Arc<PermissionManager>,
-        session_id: Option<SessionRef>,
+        identity: Option<SessionIdentity>,
         timeouts: n00n_providers::Timeouts,
         openai_options: OpenAiOptions,
         lua_handle: Option<EventHandle>,
@@ -87,7 +87,7 @@ impl AgentHandles {
             permissions,
             mcp_handle,
             mcp_config_errors,
-            session_id,
+            identity,
             timeouts,
             openai_options,
             lua_handle,
@@ -152,7 +152,7 @@ impl AgentHandles {
             permissions,
             self.mcp_handle.clone(),
             self.mcp_config_errors.clone(),
-            Some(SessionRef::from(app.state.session.id)),
+            self.identity.clone(),
             self.timeouts,
             self.openai_options,
             lua_handle,
@@ -216,7 +216,7 @@ fn spawn_agent_internal(
     permissions: &Arc<PermissionManager>,
     mcp_handle: Option<McpHandle>,
     mcp_config_errors: McpConfigErrors,
-    session_id: Option<SessionRef>,
+    identity: Option<SessionIdentity>,
     timeouts: n00n_providers::Timeouts,
     openai_options: OpenAiOptions,
     lua_handle: Option<EventHandle>,
@@ -270,7 +270,7 @@ fn spawn_agent_internal(
         queue: queue_rx,
         cancel_map,
         init_cancel,
-        session_id,
+        identity: identity.clone(),
         timeouts,
         openai_options,
         lua_handle,
@@ -293,6 +293,7 @@ fn spawn_agent_internal(
         queue: queue_tx,
         timeouts,
         openai_options,
+        identity,
         task,
     }
 }

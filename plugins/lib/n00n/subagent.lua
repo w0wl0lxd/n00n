@@ -8,6 +8,26 @@ local route_tier = require("n00n.route_tier").route_tier
 local usage = require("n00n.usage")
 local structured_output = require("n00n.structured_output")
 
+local ORCHESTRATION_TOOLS = { "task", "team", "workflow", "agent_control", "batch" }
+
+local function excluded_tools(opts)
+  local excluded = {}
+  local seen = {}
+  if not opts.allow_orchestration then
+    for _, name in ipairs(ORCHESTRATION_TOOLS) do
+      excluded[#excluded + 1] = name
+      seen[name] = true
+    end
+  end
+  for _, name in ipairs(opts.except_tools or {}) do
+    if not seen[name] then
+      excluded[#excluded + 1] = name
+      seen[name] = true
+    end
+  end
+  return excluded
+end
+
 -- Launch a subagent with the given options.
 -- Returns (result | nil, err, cost, usage, model_spec)
 --
@@ -25,6 +45,7 @@ local structured_output = require("n00n.structured_output")
 --   include_mcp: Include MCP tools (default: true)
 --   only_tools: Optional allowlist of tool names
 --   except_tools: Optional denylist of tool names
+--   allow_orchestration: Expose recursive orchestration tools (default: false)
 --   system_append: Trusted instruction appended to the system prompt
 --   local_tools: Additional local tools to register
 --   preview: ActivityPreview object wrapping sess:prompt (optional)
@@ -125,12 +146,13 @@ function M.launch(ctx, opts)
   end
 
   -- Get tool definitions
+  local excluded = excluded_tools(opts)
 
   local tool_defs, tools_err = n00n.agent.tools(ctx, {
     audience = audience,
     spec = model_spec,
     only = opts.only_tools,
-    except = opts.except_tools,
+    except = excluded,
     include_mcp = opts.include_mcp,
   })
 
@@ -178,7 +200,7 @@ function M.launch(ctx, opts)
     thinking = opts.thinking,
     mode = subagent_type,
     include_mcp = opts.include_mcp,
-    except = opts.except_tools,
+    except = excluded,
   })
   if sess_err then
     return nil, sess_err, nil, nil, model_spec

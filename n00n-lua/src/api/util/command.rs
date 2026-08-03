@@ -405,6 +405,13 @@ pub enum WinCommand {
 }
 
 #[derive(Debug)]
+pub struct SessionBootstrap {
+    pub tool: String,
+    pub input: serde_json::Value,
+    pub title: Option<String>,
+}
+
+#[derive(Debug)]
 pub enum SessionRequest {
     List,
     Live,
@@ -417,6 +424,7 @@ pub enum SessionRequest {
         focus: bool,
         parent_id: Option<String>,
         caller_id: Option<SessionRef>,
+        bootstrap: Option<SessionBootstrap>,
     },
     Prompt {
         id: Option<String>,
@@ -427,6 +435,7 @@ pub enum SessionRequest {
     },
     Cancel {
         id: String,
+        caller_id: Option<SessionRef>,
     },
     Focus {
         id: String,

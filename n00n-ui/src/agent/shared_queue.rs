@@ -73,12 +73,19 @@ pub(crate) enum QueueItem {
     Compact {
         run_id: u64,
     },
+    DirectTool {
+        run_id: u64,
+        tool: String,
+        input: serde_json::Value,
+    },
 }
 
 impl QueueItem {
     pub(crate) fn run_id(&self) -> u64 {
         match self {
-            Self::Message { run_id, .. } | Self::Compact { run_id } => *run_id,
+            Self::Message { run_id, .. }
+            | Self::Compact { run_id }
+            | Self::DirectTool { run_id, .. } => *run_id,
         }
     }
 
@@ -99,13 +106,18 @@ impl QueueItem {
                     .fg
                     .unwrap_or_else(|| theme::current().foreground),
             },
+            Self::DirectTool { tool, .. } => QueueEntry {
+                text: Cow::Owned(tool.clone()),
+                color: theme::current().foreground,
+            },
         }
     }
 
-    fn into_extracted_command(self) -> ExtractedCommand {
+    fn into_extracted_command(self) -> Option<ExtractedCommand> {
         match self {
-            Self::Message { input, run_id, .. } => ExtractedCommand::Interrupt(input, run_id),
-            Self::Compact { run_id } => ExtractedCommand::Compact(run_id),
+            Self::Message { input, run_id, .. } => Some(ExtractedCommand::Interrupt(input, run_id)),
+            Self::Compact { run_id } => Some(ExtractedCommand::Compact(run_id)),
+            Self::DirectTool { .. } => None,
         }
     }
 
@@ -116,13 +128,14 @@ impl QueueItem {
         match self {
             Self::Message { displayed, .. } => !displayed,
             Self::Compact { .. } => true,
+            Self::DirectTool { .. } => false,
         }
     }
 
     fn is_ready(&self) -> bool {
         match self {
             Self::Message { ready, .. } => ready.load(Ordering::Acquire),
-            Self::Compact { .. } => true,
+            Self::Compact { .. } | Self::DirectTool { .. } => true,
         }
     }
 
@@ -168,7 +181,7 @@ impl QueueSender {
         let mut items = lock(&self.items);
         let submission_id = match &entry {
             QueueItem::Message { submission_id, .. } => *submission_id,
-            QueueItem::Compact { .. } => return,
+            QueueItem::Compact { .. } | QueueItem::DirectTool { .. } => return,
         };
         if items.iter().any(|item| {
             matches!(item, QueueItem::Message { submission_id: id, .. } if *id == submission_id)
@@ -279,7 +292,7 @@ impl QueueSender {
             .filter(|item| item.visible_in_panel())
             .filter_map(|item| match item {
                 QueueItem::Message { text, .. } => Some(text.clone()),
-                QueueItem::Compact { .. } => None,
+                QueueItem::Compact { .. } | QueueItem::DirectTool { .. } => None,
             })
             .collect()
     }
@@ -291,7 +304,7 @@ impl QueueSender {
                 QueueItem::Message {
                     input, delivery, ..
                 } => Some((input.clone(), *delivery)),
-                QueueItem::Compact { .. } => None,
+                QueueItem::Compact { .. } | QueueItem::DirectTool { .. } => None,
             })
             .collect()
     }
@@ -324,6 +337,7 @@ impl QueueReceiver {
                         delivery: Delivery::TurnEnd,
                         ..
                     } | QueueItem::Compact { .. }
+                        | QueueItem::DirectTool { .. }
                 )
             {
                 None
@@ -356,9 +370,12 @@ impl InterruptSource for QueueReceiver {
                     Delivery::Immediate => Some(index),
                 },
                 QueueItem::Compact { .. } => (point == InterruptPoint::Safe).then_some(index),
+                QueueItem::DirectTool { .. } => None,
             }
         })?;
-        items.remove(index).map(QueueItem::into_extracted_command)
+        items
+            .remove(index)
+            .and_then(QueueItem::into_extracted_command)
     }
 }
 

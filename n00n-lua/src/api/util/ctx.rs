@@ -10,10 +10,9 @@ use mlua::{LuaSerdeExt, MultiValue, UserData, UserDataMethods, Value as LuaValue
 use n00n_agent::agent::LoadedInstructions;
 use n00n_agent::cancel::CancelToken;
 use n00n_agent::tools::{
-    Deadline, FileReadTracker, LocalTools, ToolAudience, ToolContext, ToolLive,
+    Deadline, FileReadTracker, LocalTools, SessionIdentity, ToolAudience, ToolContext, ToolLive,
 };
 use n00n_config::{AgentConfig, ToolOutputLines};
-use n00n_storage::id::SessionRef;
 
 use crate::api::tool::ToolCallReply;
 use crate::api::ui::buf::BufHandle;
@@ -114,7 +113,7 @@ enum Caps {
         config: Arc<AgentConfig>,
         workflow: bool,
         audience: ToolAudience,
-        session_id: Option<SessionRef>,
+        identity: Option<SessionIdentity>,
     },
     Restore {
         state: Option<serde_json::Value>,
@@ -150,7 +149,7 @@ impl LuaCtx {
                 config: Arc::clone(&ctx.config),
                 workflow: ctx.workflow,
                 audience: ctx.audience,
-                session_id: ctx.session_id.clone(),
+                identity: ctx.identity.clone(),
             },
         )
     }
@@ -177,10 +176,10 @@ impl LuaCtx {
         }
     }
 
-    pub(crate) fn session_id(&self) -> Option<SessionRef> {
+    pub(crate) fn session_identity(&self) -> Option<SessionIdentity> {
         match &self.caps {
-            Caps::Handler { agent, .. } => agent.session_id.clone(),
-            Caps::Start { session_id, .. } => session_id.clone(),
+            Caps::Handler { agent, .. } => agent.identity.clone(),
+            Caps::Start { identity, .. } => identity.clone(),
             Caps::Restore { .. } => None,
         }
     }
@@ -589,7 +588,6 @@ mod tests {
 
     fn populated_ctx() -> ToolContext {
         let mut ctx = stub_ctx_with(&AgentMode::Build, None, Some(TOOL_USE_ID));
-        ctx.session_id = Some(n00n_storage::id::SessionRef::generate());
         ctx.deadline = Deadline::after(Duration::from_mins(1));
         ctx.tool_output_lines = ToolOutputLines {
             bash: 999,
@@ -610,12 +608,12 @@ mod tests {
     }
 
     #[test]
-    fn agent_context_keeps_tool_use_id_and_session_id_and_resets_per_call_state() {
+    fn agent_context_keeps_tool_use_id_and_identity_and_resets_per_call_state() {
         let ctx = populated_ctx();
-        let expected_session_id = ctx.session_id.clone();
+        let expected_identity = ctx.identity.clone();
         let agent = AgentContext::from(&ctx);
         assert_eq!(agent.tool_use_id.as_deref(), Some(TOOL_USE_ID));
-        assert_eq!(agent.session_id, expected_session_id);
+        assert_eq!(agent.identity, expected_identity);
         assert!(matches!(agent.deadline, Deadline::None));
         assert_eq!(agent.tool_output_lines, ToolOutputLines::default());
         assert!(agent.local_tools.is_empty());
@@ -636,7 +634,7 @@ mod tests {
         );
         let inner = agent.to_tool_context();
         assert_eq!(inner.tool_use_id, None);
-        assert_eq!(inner.session_id, agent.session_id);
+        assert_eq!(inner.identity, agent.identity);
         assert!(inner.live_sink.is_none(), "sink must not be inherited");
         assert_eq!(agent.tool_use_id.as_deref(), Some(TOOL_USE_ID));
     }
