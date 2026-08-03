@@ -27,7 +27,9 @@ use n00n_agent::{
 use n00n_lua_macro::{lua_class, lua_fn, lua_table};
 use n00n_providers::model::ModelTier;
 use n00n_providers::provider;
-use n00n_providers::{ContentBlock, Model, ModelError, Role, ThinkingConfig, model::TokenUsage};
+use n00n_providers::{
+    ContentBlock, Model, ModelError, ModelResolver, Role, ThinkingConfig, model::TokenUsage,
+};
 use n00n_storage::id::n00nId;
 use n00n_storage::sessions::StoredThinking;
 use serde_json::Value as JsonValue;
@@ -66,8 +68,11 @@ const STEERING_QUEUE_CAPACITY: usize = 32;
 const TOOL_EXCLUSIONS_META_FIELD: &str = "__n00n_tool_exclusions";
 
 fn resolve_model_from_ctx(ctx: &AgentContext, tier: Option<&str>) -> Result<Model, String> {
+    let resolver = ModelResolver::current();
     let Some(tier_str) = tier else {
-        return Ok(Model::clone(&ctx.model));
+        return resolver
+            .resolve(&ctx.model.spec())
+            .map_err(|error| error.to_string());
     };
     let requested: ModelTier = tier_str.parse().map_err(|e: ModelError| e.to_string())?;
     let effective = requested.min(ctx.model.tier);
@@ -77,13 +82,18 @@ fn resolve_model_from_ctx(ctx: &AgentContext, tier: Option<&str>) -> Result<Mode
     let map = n00n_providers::model_registry::model_registry()
         .read()
         .map_err(|e| format!("model registry lock poisoned: {e}"))?;
-    map.spec_for_tier(&ctx.model.provider, effective)
-        .or_else(|| map.spec_for_tier_any(effective))
-        .and_then(|s| Model::from_spec(&s).ok())
-        .map_or_else(
-            || Model::from_tier_dynamic(&ctx.model.provider, effective).map_err(|e| e.to_string()),
-            Ok,
-        )
+    let candidate = map
+        .spec_for_tier(&ctx.model.provider, effective)
+        .or_else(|| map.spec_for_tier_any(effective));
+    drop(map);
+    let candidate = match candidate {
+        Some(spec) => Model::from_spec(&spec).map_err(|error| error.to_string())?,
+        None => Model::from_tier_dynamic(&ctx.model.provider, effective)
+            .map_err(|error| error.to_string())?,
+    };
+    resolver
+        .resolve(&candidate.spec())
+        .map_err(|error| error.to_string())
 }
 
 fn model_to_lua_table(lua: &Lua, model: &Model) -> LuaResult<Table> {
@@ -287,7 +297,7 @@ fn resolve_model(
         .and_then(|t| t.get::<Option<String>>("spec").ok().flatten());
 
     let model = match spec_str {
-        Some(ref spec) => try_pair!(Model::from_spec(spec)),
+        Some(ref spec) => try_pair!(ModelResolver::current().resolve(spec)),
         None => try_pair!(resolve_model_from_ctx(agent, tier_str.as_deref())),
     };
     Ok((Some(model_to_lua_table(lua, &model)?), None))
@@ -354,7 +364,7 @@ fn usage_cost(
     output_tokens: u32,
     breakdown: Option<Table>,
 ) -> LuaResult<Pair<f64>> {
-    let model = try_pair!(Model::from_spec(&spec));
+    let model = try_pair!(ModelResolver::current().resolve(&spec));
     let (fresh, cache_read, cache_write, fast) = match breakdown {
         Some(breakdown) => {
             let fresh =
@@ -486,14 +496,11 @@ fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pa
     let workflow: bool = opts.get::<Option<bool>>("workflow")?.map_or(false, |v| v);
     let spec_str: Option<String> = opts.get("spec")?;
 
-    let parsed = spec_str
-        .as_deref()
-        .and_then(|spec| Model::from_spec(spec).ok());
-    let model = if let Some(ref m) = parsed {
-        m
-    } else {
-        &agent.model
+    let parsed = match spec_str.as_deref() {
+        Some(spec) => Some(try_pair!(ModelResolver::current().resolve(spec))),
+        None => None,
     };
+    let model = parsed.as_ref().map_or(agent.model.as_ref(), |model| model);
 
     let mcp_base = match (&only, &except) {
         (Some(included), _) => ToolFilter::Only(included.clone()),
@@ -696,7 +703,7 @@ async fn session(
 
     let (model, provider): (Model, Arc<dyn provider::Provider>) = if let Some(ref spec) = model_spec
     {
-        let mut m = try_pair!(Model::from_spec(spec));
+        let mut m = try_pair!(ModelResolver::current().resolve(spec));
         let p = provider::from_model_fallback_with_openai_options(
             &mut m,
             agent_ctx.timeouts,

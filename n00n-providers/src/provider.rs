@@ -333,7 +333,44 @@ pub fn provider_for_slug(slug: &str, timeouts: Timeouts) -> Result<Box<dyn Provi
 
 #[must_use]
 pub fn provider_available(slug: &str) -> bool {
+    if matches!(slug, "ollama" | "llama-cpp") {
+        return local_provider_configured(slug);
+    }
+    if slug == "cursor" {
+        return crate::providers::cursor::Cursor::has_credentials();
+    }
+    if slug == "devin" {
+        return crate::providers::devin::has_credentials();
+    }
+    if slug == "opencode" {
+        let config = n00n_config::providers::ProvidersConfig::load();
+        let has_key = crate::providers::KeyPool::resolve(
+            slug,
+            &n00n_config::providers::resolve_api_key_env(slug, config.get(slug)),
+        )
+        .is_ok();
+        let free_enabled = config
+            .get(slug)
+            .and_then(|def| def.enable_free_models)
+            .is_some_and(|enabled| enabled);
+        return (has_key || free_enabled) && provider_for_slug(slug, Timeouts::default()).is_ok();
+    }
     provider_for_slug(slug, Timeouts::default()).is_ok()
+}
+
+fn local_provider_configured(slug: &str) -> bool {
+    let config = n00n_config::providers::ProvidersConfig::load();
+    let def = config.get(slug);
+    let host_env = match slug {
+        "ollama" => "OLLAMA_HOST",
+        "llama-cpp" => "LLAMA_CPP_HOST",
+        _ => return false,
+    };
+    let has_host = n00n_config::providers::resolve_base_url(slug, def).is_some()
+        || std::env::var(host_env).is_ok_and(|value| !value.trim().is_empty());
+    let env = n00n_config::providers::resolve_api_key_env(slug, def);
+    let has_key = !env.is_empty() && crate::providers::KeyPool::resolve(slug, &env).is_ok();
+    has_host || has_key
 }
 
 /// Create a provider for a resolved model, applying provider-specific adjustments.
@@ -463,10 +500,15 @@ pub fn available_model_specs() -> Vec<String> {
         })
         .collect();
     for slug in dynamic::discovered_slugs() {
-        specs.extend(dynamic::dynamic_model_specs_for(slug));
+        if provider_available(slug) {
+            specs.extend(dynamic::dynamic_model_specs_for(slug));
+        }
     }
     for spec in crate::providers::custom::declared_model_specs() {
-        if !specs.contains(&spec) {
+        let configured = spec
+            .split_once('/')
+            .is_some_and(|(slug, _)| provider_available(slug));
+        if configured && !specs.contains(&spec) {
             specs.push(spec);
         }
     }
