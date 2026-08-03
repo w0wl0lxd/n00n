@@ -75,13 +75,17 @@ pub(crate) fn provider_allowed(provider: &str, configured_slugs: Option<&[&str]>
 }
 
 fn auto_detect_model(configured_slugs: Option<&[&str]>) -> Option<Model> {
+    let slugs: Vec<&str> = match configured_slugs {
+        Some(s) => s.to_vec(),
+        None => PROVIDER_PRIORITY.to_vec(),
+    };
     for tier in [ModelTier::Strong, ModelTier::Medium] {
-        for &slug in PROVIDER_PRIORITY {
+        for &slug in &slugs {
             if !provider_allowed(slug, configured_slugs) {
                 continue;
             }
             if n00n_providers::provider::provider_available(slug)
-                && let Ok(model) = Model::from_tier(slug, tier)
+                && let Ok(model) = Model::from_tier_dynamic(slug, tier)
             {
                 return Some(model);
             }
