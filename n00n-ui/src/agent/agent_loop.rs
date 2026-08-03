@@ -9,15 +9,19 @@ use n00n_agent::permissions::PermissionManager;
 use n00n_agent::template;
 use n00n_agent::template::Vars;
 use n00n_agent::tools::{
-    DescriptionContext, FileReadTracker, ToolAudience, ToolFilter, ToolRegistry, ToolsSnapshot,
+    Deadline, DelegationPolicy, DescriptionContext, FileReadTracker, LocalTools, ToolAudience,
+    ToolContext, ToolFilter, ToolRegistry, ToolsSnapshot,
 };
 use n00n_agent::{
-    Agent, AgentConfig, AgentEvent, AgentInput, AgentParams, AgentRunParams, CancelMap,
+    Agent, AgentConfig, AgentEvent, AgentInput, AgentMode, AgentParams, AgentRunParams, CancelMap,
     CancelToken, CancelTrigger, Envelope, EventSender, History, Instructions, McpCommand,
     McpHandle, PromptRole, ToolOutputLines,
 };
 use n00n_lua::EventHandle;
-use n00n_providers::{AgentError, Message, Model, OpenAiOptions, System, TokenUsage};
+use n00n_providers::{
+    AgentError, ContentBlock, Message, Model, OpenAiOptions, RequestOptions, Role, System,
+    TokenUsage,
+};
 use n00n_storage::id::SessionRef;
 use n00n_storage::sessions::TranscriptEntry;
 use serde_json::Value;
@@ -27,6 +31,8 @@ use super::ModelSlot;
 use super::cancel_map::RunCancelMap;
 use super::shared_queue::{QueueItem, QueueReceiver};
 
+const TEAM_TOOL_NAME: &str = "team";
+
 fn build_plan_path<'a>(
     mode: &n00n_agent::AgentMode,
     plan_path: Option<&'a Path>,
@@ -34,6 +40,16 @@ fn build_plan_path<'a>(
     matches!(mode, n00n_agent::AgentMode::Build)
         .then_some(plan_path)
         .flatten()
+}
+
+fn is_paused_team_output(output: &str) -> bool {
+    serde_json::from_str::<Value>(output).is_ok_and(|value| {
+        value.get("paused").and_then(Value::as_bool) == Some(true)
+            && value
+                .get("run_id")
+                .and_then(Value::as_str)
+                .is_some_and(|run_id| !run_id.is_empty())
+    })
 }
 
 pub(super) struct AgentLoop {
@@ -194,6 +210,15 @@ impl AgentLoop {
                     .await
             }
             QueueItem::Compact { .. } => self.do_compact(&event_tx).await,
+            QueueItem::ResumeTeam { resume_id, .. } => {
+                self.do_direct_tool(
+                    &event_tx,
+                    run_id,
+                    TEAM_TOOL_NAME,
+                    &serde_json::json!({ "goal": "", "resume": resume_id }),
+                )
+                .await
+            }
         };
 
         if let Err(e) = result {
@@ -221,6 +246,100 @@ impl AgentLoop {
             spawn_oauth_for_needs_auth(mcp);
         }
         !self.init_cancel.is_cancelled()
+    }
+
+    async fn do_direct_tool(
+        &mut self,
+        event_tx: &EventSender,
+        run_id: u64,
+        name: &str,
+        input: &Value,
+    ) -> Result<(), AgentError> {
+        let slot = self.model_slot.load();
+        self.rebuild_tools(&slot.model, true);
+        let prompt_slots = match self.lua_handle.as_ref() {
+            Some(handle) => handle.collect_prompt_slots_async().await,
+            None => n00n_agent::prompt::ResolvedSlots::default(),
+        };
+        let (trigger, cancel) = CancelToken::new();
+        self.set_cancel_trigger(run_id, trigger);
+        let tool_use_id = format!("direct-{run_id}");
+        self.history.push(Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: tool_use_id.clone(),
+                name: name.to_owned(),
+                input: input.clone(),
+            }],
+            ..Message::default()
+        });
+        let context = ToolContext {
+            provider: Arc::clone(&slot.provider),
+            model: Arc::new(slot.model.clone()),
+            event_tx: event_tx.clone(),
+            mode: Arc::new(AgentMode::Build),
+            tool_use_id: Some(tool_use_id.clone()),
+            session_id: self.session_id.clone(),
+            user_response_rx: Some(Arc::clone(&self.answer_rx)),
+            loaded_instructions: self.instructions.loaded.clone(),
+            cancel: cancel.clone(),
+            mcp: self.mcp.clone(),
+            deadline: Deadline::None,
+            config: Arc::new(self.config.clone()),
+            tool_output_lines: self.tool_output_lines,
+            permissions: Arc::clone(&self.permissions),
+            timeouts: self.timeouts,
+            openai_options: self.openai_options,
+            file_tracker: Arc::clone(&self.file_tracker),
+            prompt_slots: Arc::new(prompt_slots),
+            opts: RequestOptions::default(),
+            subagent_cancels: Arc::clone(&self.subagent_cancels),
+            registry: Arc::clone(ToolRegistry::global_arc()),
+            tool_filter: self.tool_filter.clone(),
+            delegation_policy: DelegationPolicy::Configured,
+            workflow: true,
+            audience: ToolAudience::MAIN,
+            local_tools: LocalTools::default(),
+            active_skill_policy: None,
+            live_sink: None,
+        };
+        let done = agent::tool_dispatch::run(
+            context.registry.as_ref(),
+            context.mcp.as_ref(),
+            tool_use_id.clone(),
+            name,
+            input,
+            &context,
+            agent::tool_dispatch::Emit::Notify,
+        )
+        .await;
+        self.clear_cancel_trigger(run_id);
+        let output = done.output.as_text();
+        let is_error = done.is_error;
+        self.history.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id,
+                content: output.clone(),
+                is_error,
+            }],
+            ..Message::default()
+        });
+        if cancel.is_cancelled() {
+            return Err(AgentError::Cancelled);
+        }
+        let _ = event_tx.send(AgentEvent::ToolDone(Box::new(done)));
+        if is_error && !is_paused_team_output(&output) {
+            let _ = event_tx.send(AgentEvent::Error { message: output });
+        } else {
+            let _ = event_tx.send(AgentEvent::Done {
+                usage: TokenUsage::default(),
+                num_turns: 0,
+                stop_reason: None,
+                fusion: None,
+            });
+        }
+        Ok(())
     }
 
     async fn do_compact(&mut self, event_tx: &EventSender) -> Result<(), AgentError> {
@@ -533,7 +652,14 @@ mod tests {
 
     use n00n_agent::AgentMode;
 
-    use super::build_plan_path;
+    use super::{build_plan_path, is_paused_team_output};
+
+    #[test]
+    fn paused_team_output_requires_flag_and_run_id() {
+        assert!(is_paused_team_output(r#"{"paused":true,"run_id":"run-1"}"#));
+        assert!(!is_paused_team_output(r#"{"paused":true}"#));
+        assert!(!is_paused_team_output("not json"));
+    }
 
     #[test]
     fn plan_mode_does_not_read_unwritten_plan() {

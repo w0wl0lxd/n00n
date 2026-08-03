@@ -237,6 +237,17 @@ impl UserData for LuaCtx {
             Ok((LuaValue::String(name), None))
         });
 
+        methods.add_method("session_id", |lua, this, ()| {
+            let Some(agent) = this.agent() else {
+                return Ok(this.cap_err_pair("session_id"));
+            };
+            let Some(session_id) = agent.session_id.as_ref() else {
+                return Ok((LuaValue::Nil, Some("session id is unavailable".into())));
+            };
+            let session_id = lua.create_string(session_id.to_string())?;
+            Ok((LuaValue::String(session_id), None))
+        });
+
         methods.add_method("live_buf", |lua, this, buf: mlua::AnyUserData| {
             if matches!(this.caps, Caps::Restore { .. }) {
                 return Ok(this.cap_err_pair("live_buf"));
@@ -389,6 +400,7 @@ mod tests {
     fn populated_ctx() -> ToolContext {
         let mut ctx = stub_ctx_with(&AgentMode::Build, None, Some(TOOL_USE_ID));
         ctx.deadline = Deadline::after(Duration::from_mins(1));
+        ctx.session_id = Some(n00n_storage::id::n00nId::generate().into());
         ctx.tool_output_lines = ToolOutputLines {
             bash: 999,
             ..ToolOutputLines::default()
@@ -411,6 +423,7 @@ mod tests {
     fn agent_context_keeps_tool_use_id_and_resets_per_call_state() {
         let agent = AgentContext::from(&populated_ctx());
         assert_eq!(agent.tool_use_id.as_deref(), Some(TOOL_USE_ID));
+        assert!(agent.session_id.is_some());
         assert!(matches!(agent.deadline, Deadline::None));
         assert_eq!(agent.tool_output_lines, ToolOutputLines::default());
         assert!(agent.local_tools.is_empty());
@@ -435,6 +448,17 @@ mod tests {
         assert_eq!(agent.tool_use_id.as_deref(), Some(TOOL_USE_ID));
     }
 
+    #[test]
+    fn handler_ctx_exposes_invoking_session_id() {
+        let lua = mlua::Lua::new();
+        lua.globals()
+            .set("ctx", LuaCtx::handler(&populated_ctx()))
+            .unwrap();
+        let (session_id, error): (Option<String>, Option<String>) =
+            lua.load("return ctx:session_id()").eval().unwrap();
+        assert!(session_id.is_some());
+        assert!(error.is_none());
+    }
     #[test]
     fn handler_ctx_keeps_parent_instruction_set() {
         let ctx = LuaCtx::handler(&populated_ctx());

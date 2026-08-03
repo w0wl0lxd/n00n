@@ -61,9 +61,10 @@ use n00n_config::UiConfig;
 use n00n_lua::{EventHandle, HintReader, KeymapReader, LuaCommandReader};
 use n00n_providers::{Effort, Message, Model, System, ThinkingConfig};
 use n00n_storage::StateDir;
+use n00n_storage::id::n00nId;
 use n00n_storage::input_history::InputHistory;
 use n00n_storage::model::persist_model;
-use n00n_storage::sessions::StoredTokenUsage;
+use n00n_storage::sessions::{SessionLifecycle, StoredTokenUsage};
 
 use crate::storage_writer::StorageWriter;
 use ratatui::layout::Position;
@@ -74,7 +75,7 @@ pub(crate) use mode::{Mode, PlanState, PlanTrigger};
 #[cfg(test)]
 use mouse::EDGE_SCROLL_LINES;
 pub(crate) use queue::{MessageQueue, SubmitOutcome};
-pub(crate) use session::session_has_content;
+pub(crate) use session::{paused_team_run, session_has_content};
 use session_state::SessionState;
 
 const CANCEL_MSG: &str = "Cancelled.";
@@ -109,23 +110,49 @@ const IMPLEMENT_PARALLEL_HINT: &str = "Use batch+task to parallelize, assign eac
 const TASK_DONE_DETAIL: &str = "✓ done";
 const TASK_ERROR_DETAIL: &str = "✗ error";
 const TASK_RUNNING_DETAIL: &str = "◈ running";
+const TASK_WAITING_DETAIL: &str = "waiting for input";
+const TASK_PAUSED_DETAIL: &str = "paused";
+const TASK_INTERRUPTED_DETAIL: &str = "interrupted; open to continue";
+const TASK_CANCELLED_DETAIL: &str = "cancelled";
 const STEERING_UNAVAILABLE_MSG: &str = "This agent is no longer accepting messages";
 const STEERING_BUSY_MSG: &str = "This agent is busy; try again in a moment";
-const TASK_PANEL_FOOTER: &[(&str, &str)] =
-    &[("enter", "open"), ("ctrl+x", "toggle"), ("esc", "close")];
+const TASK_PANEL_FOOTER: &[(&str, &str)] = &[
+    ("enter", "open"),
+    ("delete", "cancel"),
+    ("r", "resume"),
+    ("ctrl+x", "toggle"),
+    ("esc", "close"),
+];
 
 enum SubagentPromptError {
-    Finished,
-    Disconnected,
+    Finished(Submission),
+    Disconnected(Submission),
     Full(Submission),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum TaskStatus {
+pub(crate) enum TaskStatus {
     Main,
     Running,
+    WaitingInput,
+    Paused,
+    Interrupted,
     Done,
     Error,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentSessionEntry {
+    pub id: n00nId,
+    pub name: String,
+    pub status: TaskStatus,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TaskTarget {
+    Chat(usize),
+    Session(n00nId),
 }
 
 #[derive(Clone)]
@@ -133,6 +160,8 @@ pub(super) struct TaskEntry {
     name: String,
     status: TaskStatus,
     usage: Option<String>,
+    section: &'static str,
+    target: TaskTarget,
 }
 
 impl PickerItem for TaskEntry {
@@ -142,11 +171,18 @@ impl PickerItem for TaskEntry {
     fn suffix(&self) -> Option<&str> {
         self.usage.as_deref()
     }
+    fn section(&self) -> Option<&str> {
+        Some(self.section)
+    }
     fn detail(&self) -> Option<&str> {
         match self.status {
             TaskStatus::Done => Some(TASK_DONE_DETAIL),
             TaskStatus::Error => Some(TASK_ERROR_DETAIL),
             TaskStatus::Running => Some(TASK_RUNNING_DETAIL),
+            TaskStatus::WaitingInput => Some(TASK_WAITING_DETAIL),
+            TaskStatus::Paused => Some(TASK_PAUSED_DETAIL),
+            TaskStatus::Interrupted => Some(TASK_INTERRUPTED_DETAIL),
+            TaskStatus::Cancelled => Some(TASK_CANCELLED_DETAIL),
             TaskStatus::Main => None,
         }
     }
@@ -238,6 +274,7 @@ pub struct App {
     pub(super) command_palette: CommandPalette,
     pub(super) task_picker: ListPicker<TaskEntry>,
     pub(super) task_picker_original: Option<usize>,
+    agent_sessions: Vec<AgentSessionEntry>,
     pub(super) theme_picker: ThemePicker,
     pub(super) model_picker: ModelPicker,
     model_picker_reply: Option<flume::Sender<Option<String>>>,
@@ -356,6 +393,7 @@ impl App {
             ),
             task_picker: ListPicker::new(),
             task_picker_original: None,
+            agent_sessions: Vec::new(),
             theme_picker: ThemePicker::new(),
             model_picker: ModelPicker::new(available_models),
             model_picker_reply: None,
@@ -569,14 +607,14 @@ impl App {
         sub: Submission,
     ) -> Result<(), SubagentPromptError> {
         let Some(&idx) = self.chat_index.get(subagent_id) else {
-            return Err(SubagentPromptError::Disconnected);
+            return Err(SubagentPromptError::Disconnected(sub));
         };
         if self.chats[idx].is_finished() {
             self.subagent_prompts.remove(subagent_id);
-            return Err(SubagentPromptError::Finished);
+            return Err(SubagentPromptError::Finished(sub));
         }
         let Some(tx) = self.subagent_prompts.get(subagent_id) else {
-            return Err(SubagentPromptError::Disconnected);
+            return Err(SubagentPromptError::Disconnected(sub));
         };
         let prompt = SubagentPrompt {
             text: sub.text.clone(),
@@ -590,7 +628,7 @@ impl App {
             Err(flume::TrySendError::Full(_)) => Err(SubagentPromptError::Full(sub)),
             Err(flume::TrySendError::Disconnected(_)) => {
                 self.subagent_prompts.remove(subagent_id);
-                Err(SubagentPromptError::Disconnected)
+                Err(SubagentPromptError::Disconnected(sub))
             }
         }
     }
@@ -602,8 +640,9 @@ impl App {
                 self.flash(STEERING_BUSY_MSG.into());
                 self.input_box.set_submission(sub);
             }
-            Err(SubagentPromptError::Finished | SubagentPromptError::Disconnected) => {
+            Err(SubagentPromptError::Finished(sub) | SubagentPromptError::Disconnected(sub)) => {
                 self.flash(STEERING_UNAVAILABLE_MSG.into());
+                self.input_box.set_submission(sub);
             }
         }
     }
@@ -644,8 +683,19 @@ impl App {
         }
     }
 
-    fn open_tasks(&mut self) {
-        let entries: Vec<TaskEntry> = self
+    fn orchestration_section(name: &str) -> &'static str {
+        let normalized = name.trim().to_ascii_lowercase();
+        if normalized.starts_with("workflow:") || normalized.starts_with("workflow-") {
+            "Workflows"
+        } else if normalized.starts_with("team:") || normalized.starts_with("team-") {
+            "Teams"
+        } else {
+            "Agents"
+        }
+    }
+
+    fn task_entries(&self) -> Vec<TaskEntry> {
+        let mut entries: Vec<TaskEntry> = self
             .chats
             .iter()
             .enumerate()
@@ -678,13 +728,64 @@ impl App {
                     },
                     status,
                     usage,
+                    section: if i == 0 {
+                        "Main session"
+                    } else {
+                        Self::orchestration_section(&c.name)
+                    },
+                    target: TaskTarget::Chat(i),
                 }
             })
             .collect();
+        entries.extend(self.agent_sessions.iter().map(|session| TaskEntry {
+            name: format!("Agent: {}", session.name),
+            status: session.status,
+            usage: Some("background session".to_owned()),
+            section: Self::orchestration_section(&session.name),
+            target: TaskTarget::Session(session.id),
+        }));
+        entries[1..].sort_by_key(|entry| match entry.section {
+            "Agents" => 0,
+            "Teams" => 1,
+            "Workflows" => 2,
+            _ => 3,
+        });
+        entries
+    }
+
+    fn open_tasks(&mut self) {
         self.task_picker_original = Some(self.active_chat);
         self.task_picker.set_footer(TASK_PANEL_FOOTER);
-        self.task_picker.open(entries, " Agents & Teams ");
-        self.task_picker.select(self.active_chat);
+        let entries = self.task_entries();
+        let selected = entries
+            .iter()
+            .position(|entry| entry.target == TaskTarget::Chat(self.active_chat))
+            .map_or(0, std::convert::identity);
+        self.task_picker
+            .open(entries, " Agents, Teams & Workflows ");
+        self.task_picker.select(selected);
+    }
+
+    pub(crate) fn set_agent_sessions(&mut self, sessions: Vec<AgentSessionEntry>) {
+        if self.agent_sessions == sessions {
+            return;
+        }
+        let selected = self
+            .task_picker
+            .selected_index()
+            .map_or(0, std::convert::identity);
+        let selected_target = self.task_picker.item(selected).map(|entry| entry.target);
+        self.agent_sessions = sessions;
+        if self.task_picker.is_open() {
+            let entries = self.task_entries();
+            let last = entries.len().saturating_sub(1);
+            let selected = selected_target
+                .and_then(|target| entries.iter().position(|entry| entry.target == target))
+                .unwrap_or_else(|| selected.min(last));
+            self.task_picker
+                .open(entries, " Agents, Teams & Workflows ");
+            self.task_picker.select(selected);
+        }
     }
 
     fn handle_ctrl(&mut self, key: KeyEvent) -> Option<Vec<Action>> {
@@ -754,6 +855,8 @@ impl App {
                 let encoded = answer.encode();
                 self.permission_prompt.close();
                 self.send_to_agent(subagent_id.as_deref(), encoded);
+                self.state.session.meta.lifecycle = SessionLifecycle::Running;
+                self.save_session();
             }
             return Some(vec![]);
         }
@@ -866,16 +969,80 @@ impl App {
         }
 
         if self.task_picker.is_open() {
+            let selected_session = || {
+                let id = self
+                    .task_picker
+                    .selected_index()
+                    .and_then(|index| self.task_picker.item(index))
+                    .and_then(|entry| match entry.target {
+                        TaskTarget::Session(id) => Some(id),
+                        TaskTarget::Chat(_) => None,
+                    })?;
+                self.agent_sessions.iter().find(|session| session.id == id)
+            };
+            if matches!(key.code, KeyCode::Delete | KeyCode::Backspace) {
+                return Some(
+                    selected_session()
+                        .filter(|session| {
+                            matches!(
+                                session.status,
+                                TaskStatus::Running | TaskStatus::WaitingInput
+                            )
+                        })
+                        .map(|session| Action::CancelSession { id: session.id })
+                        .into_iter()
+                        .collect(),
+                );
+            }
+            if key.code == KeyCode::Char('r') {
+                if let Some(session) =
+                    selected_session().filter(|session| session.status == TaskStatus::Paused)
+                {
+                    return Some(vec![Action::ResumeSession { id: session.id }]);
+                }
+                let continuation = self
+                    .task_picker
+                    .selected_index()
+                    .and_then(|index| self.task_picker.item(index))
+                    .and_then(|entry| match entry.target {
+                        TaskTarget::Chat(index) if index > 0 => Some(index),
+                        TaskTarget::Chat(_) | TaskTarget::Session(_) => None,
+                    })
+                    .and_then(|index| {
+                        let chat = self.chats.get(index)?;
+                        let tool_use_id = chat.tool_use_id.as_ref()?;
+                        (!self.subagent_prompts.contains_key(tool_use_id))
+                            .then(|| {
+                                self.state
+                                    .session
+                                    .subagent_messages
+                                    .get(tool_use_id)
+                                    .filter(|messages| !messages.is_empty())
+                                    .map(|messages| Action::ContinueSubagent {
+                                        name: chat.name.clone(),
+                                        messages: messages.clone(),
+                                    })
+                            })
+                            .flatten()
+                    });
+                return Some(continuation.into_iter().collect());
+            }
             if key::TASKS.matches(key) {
                 self.task_picker.close();
                 return Some(vec![]);
             }
             return Some(match self.task_picker.handle_key(key) {
                 PickerAction::Consumed | PickerAction::Toggle(..) => vec![],
-                PickerAction::Select(idx, _) => {
+                PickerAction::Select(index, entry) => {
+                    debug_assert!(index < self.chats.len() + self.agent_sessions.len());
                     self.task_picker_original = None;
-                    self.active_chat = idx;
-                    vec![]
+                    match entry.target {
+                        TaskTarget::Chat(index) => {
+                            self.active_chat = index;
+                            vec![]
+                        }
+                        TaskTarget::Session(id) => vec![Action::FocusSession { id }],
+                    }
                 }
                 PickerAction::Close => {
                     self.active_chat = self.task_picker_original.take().unwrap_or_else(|| 0);
@@ -1184,16 +1351,37 @@ impl App {
     }
 
     pub(crate) fn handle_submit(&mut self, sub: Submission) -> Vec<Action> {
-        match std::mem::take(&mut self.pending_input) {
-            PendingInput::AuthRetry { subagent_id } => {
-                self.send_to_agent(subagent_id.as_deref(), String::new());
-                return vec![];
-            }
+        let active_subagent_id = if self.is_main_chat() {
+            None
+        } else {
+            self.chats[self.active_chat].tool_use_id.as_deref()
+        };
+        let pending_targets_active_chat = match &self.pending_input {
+            PendingInput::AuthRetry { subagent_id } => match subagent_id.as_deref() {
+                Some(id) => active_subagent_id == Some(id) || !self.chat_index.contains_key(id),
+                None => self.is_main_chat(),
+            },
             PendingInput::SubagentFollowUp { subagent_id } => {
-                self.handle_subagent_prompt_result(&subagent_id, sub);
-                return vec![];
+                active_subagent_id == Some(subagent_id.as_str())
             }
-            PendingInput::None => {}
+            PendingInput::None => false,
+        };
+        if pending_targets_active_chat {
+            match std::mem::take(&mut self.pending_input) {
+                PendingInput::AuthRetry { subagent_id } => {
+                    self.send_to_agent(subagent_id.as_deref(), String::new());
+                    self.state.session.meta.lifecycle = SessionLifecycle::Running;
+                    self.save_session();
+                    return vec![];
+                }
+                PendingInput::SubagentFollowUp { subagent_id } => {
+                    self.handle_subagent_prompt_result(&subagent_id, sub);
+                    self.state.session.meta.lifecycle = SessionLifecycle::Running;
+                    self.save_session();
+                    return vec![];
+                }
+                PendingInput::None => {}
+            }
         }
         if !self.is_main_chat() {
             if sub.is_empty() {
@@ -1208,19 +1396,6 @@ impl App {
         if sub.is_empty() {
             if self.status == Status::Streaming {
                 self.queue.promote_latest_steering();
-            }
-            return vec![];
-        }
-        if !self.is_main_chat() {
-            let subagent_id = self
-                .chat_index
-                .iter()
-                .find(|&(_, &idx)| idx == self.active_chat)
-                .map(|(id, _)| id.clone());
-            if let Some(subagent_id) = subagent_id
-                && self.send_subagent_prompt(&subagent_id, sub).is_err()
-            {
-                self.flash(STEERING_UNAVAILABLE_MSG.into());
             }
             return vec![];
         }
@@ -1306,6 +1481,7 @@ impl App {
         });
         self.run_id += 1;
         self.status = Status::Idle;
+        self.state.session.meta.lifecycle = SessionLifecycle::Idle;
         self.retry_info = None;
         self.last_esc = None;
         self.status_bar.clear_flash();
@@ -1334,6 +1510,7 @@ impl App {
         let _ = dispatch.gate.try_cancel();
         if relevant_run && self.status == Status::Streaming {
             self.status = Status::error(PERSISTENCE_FAILURE_MSG.into());
+            self.state.session.meta.lifecycle = SessionLifecycle::Failed;
             self.main_chat().push(DisplayMessage::new(
                 DisplayRole::Error,
                 PERSISTENCE_FAILURE_MSG.into(),
@@ -1427,6 +1604,8 @@ impl App {
         self.queue.clear();
         self.status = Status::Idle;
         self.fusion_phase = None;
+        self.state.session.meta.lifecycle = SessionLifecycle::Cancelled;
+        self.save_session();
         vec![Action::CancelAgent {
             run_id: cancelled_run,
         }]
@@ -1714,6 +1893,8 @@ impl App {
         {
             self.permission_prompt
                 .open(tool, scopes, subagent_id.clone());
+            self.state.session.meta.lifecycle = SessionLifecycle::WaitingInput;
+            self.save_session();
             return vec![];
         }
 
@@ -1729,25 +1910,44 @@ impl App {
                 ));
             }
             self.pending_input = PendingInput::AuthRetry { subagent_id };
+            self.state.session.meta.lifecycle = SessionLifecycle::WaitingInput;
+            self.save_session();
             return vec![];
         }
 
         if let ChatEventResult::SubagentInputRequired = result {
             if let Some(id) = subagent_id {
                 self.pending_input = PendingInput::SubagentFollowUp { subagent_id: id };
+                self.state.session.meta.lifecycle = SessionLifecycle::WaitingInput;
                 self.chats[chat_idx].push(DisplayMessage::new(
                     DisplayRole::Assistant,
                     "Waiting for your follow-up...".into(),
                 ));
             }
+            self.save_session();
             return vec![];
+        }
+
+        if chat_idx != 0
+            && let ChatEventResult::Error(message) = &result
+        {
+            self.chats[chat_idx].mark_finished(DisplayRole::Error, message);
+            if let Some(id) = subagent_id {
+                self.subagent_answers.remove(&id);
+                self.subagent_prompts.remove(&id);
+            }
         }
 
         if chat_idx == 0 {
             match result {
                 ChatEventResult::Done => {
                     self.status_bar.clear_flash();
+                    self.state.session.meta.lifecycle = SessionLifecycle::Succeeded;
                     self.save_session();
+                    if session::paused_team_run(&self.state.session.messages).is_some() {
+                        self.state.session.meta.lifecycle = SessionLifecycle::Paused;
+                        self.save_session();
+                    }
                     self.chat_index.clear();
                     self.subagent_answers.clear();
                     self.subagent_prompts.clear();
@@ -1760,6 +1960,7 @@ impl App {
                 ChatEventResult::Error(message) => {
                     self.status = Status::error(message.clone());
                     self.status_bar.clear_flash();
+                    self.state.session.meta.lifecycle = SessionLifecycle::Failed;
                     self.save_session();
                     self.queue.clear();
                     self.subagent_answers.clear();

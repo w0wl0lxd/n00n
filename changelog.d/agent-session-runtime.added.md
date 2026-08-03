@@ -1,0 +1,1 @@
+Added durable root/parent ownership and lifecycle tracking for agent sessions, tree-scoped Ctrl+X focus/cancel/resume controls, interrupted transcript recovery, persisted background-session visibility, and task delegation limits that allow only explore subagents.

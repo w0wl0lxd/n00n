@@ -7,14 +7,18 @@ use crate::components::DisplayRole;
 use crate::components::rewind_picker::RewindEntry;
 use crate::components::{Action, LoadedSession};
 use n00n_agent::{AgentInput, AgentMode, McpPromptRef};
-use n00n_providers::{Model, TokenUsage};
+use n00n_providers::{ContentBlock, Message, Model, TokenUsage};
 use n00n_storage::id::n00nId;
 use n00n_storage::sessions::{
     StoredDelivery, StoredImageMediaType, StoredImageSource, StoredMcpPrompt, StoredMode,
     StoredQueuedMessage, StoredSubagent, StoredThinking,
 };
+use serde_json::Value;
+use tracing::warn;
 
 use crate::AppSession;
+
+pub(crate) const TEAM_TOOL_NAME: &str = "team";
 
 use super::session_state::{SessionState, stored_to_rules};
 use super::{App, Mode, PendingInput, PlanState};
@@ -24,6 +28,50 @@ use crate::agent::{Delivery, QueuedMessage};
 /// iff this holds, and the shutdown path reuses it to tell which tabs were
 /// saved, so the report and the disk can never disagree. Sync the session
 /// first (`save_session` does).
+pub(crate) fn paused_team_run(history: &[Message]) -> Option<Value> {
+    let (user_index, last_user) = history
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, message)| matches!(message.role, n00n_providers::Role::User))?;
+
+    for block in &last_user.content {
+        let ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            ..
+        } = block
+        else {
+            continue;
+        };
+        let is_team_result = history[..user_index].iter().rev().any(|message| {
+            message
+                .tool_uses()
+                .any(|(id, name, _)| id == tool_use_id && name == TEAM_TOOL_NAME)
+        });
+        if !is_team_result || !content.trim_start().starts_with('{') {
+            continue;
+        }
+        let payload: Value = match serde_json::from_str(content) {
+            Ok(payload) => payload,
+            Err(error) => {
+                warn!(%tool_use_id, %error, "invalid paused team result; ignoring");
+                continue;
+            }
+        };
+        let paused = payload.get("paused").and_then(Value::as_bool) == Some(true);
+        let has_run_id = payload
+            .get("run_id")
+            .and_then(Value::as_str)
+            .is_some_and(|run_id| !run_id.is_empty());
+        if paused && has_run_id {
+            return Some(payload);
+        }
+    }
+
+    None
+}
+
 pub(crate) fn session_has_content(session: &AppSession) -> bool {
     !session.messages.is_empty()
         || !session.subagent_messages.is_empty()

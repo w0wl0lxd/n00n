@@ -803,7 +803,11 @@ local function run_team(input, ctx)
     end
     forwarded.background = false
     local prompt = "Use the team tool now. Do not only describe this request.\n\n" .. n00n.json.encode(forwarded)
-    local id, err = n00n.session.new({ prompt = prompt, focus = false })
+    local parent_id, parent_err = ctx:session_id()
+    if not parent_id then
+      return { llm_output = parent_err, is_error = true }
+    end
+    local id, err = n00n.session.new({ prompt = prompt, focus = false, parent_id = parent_id })
     if not id then
       return { llm_output = err, is_error = true }
     end
@@ -822,10 +826,11 @@ local function run_team(input, ctx)
   if input.thinking == nil then
     input.thinking = "adaptive"
   end
-  input._agent_budget = new_agent_guard(input.max_agents, input.timeout_secs)
+  local timeout_secs = input.timeout_secs or TEAM_TIMEOUT_SECS
+  input._agent_budget = new_agent_guard(input.max_agents, timeout_secs)
 
   -- Enforce wall-clock timeout for in-flight subagent calls
-  ctx:set_deadline(input.timeout_secs)
+  ctx:set_deadline(timeout_secs)
 
   local goal = input.goal
 

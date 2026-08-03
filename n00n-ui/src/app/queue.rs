@@ -5,6 +5,7 @@ use super::{Action, App, Status};
 use crate::agent::shared_queue::{Delivery, QueueItem, QueueSender};
 use crate::components::{SubmissionDispatch, queue_panel::QueueEntry};
 use n00n_agent::ImageSource;
+use n00n_storage::sessions::SessionLifecycle;
 use std::sync::{Arc, atomic::AtomicBool};
 
 pub(crate) use crate::agent::shared_queue::QueuedMessage;
@@ -410,6 +411,7 @@ impl App {
         paint_required: bool,
     ) -> Vec<Action> {
         self.status = Status::Streaming;
+        self.state.session.meta.lifecycle = SessionLifecycle::Running;
         self.fire_session_autocmd("TurnStart", serde_json::json!({}));
         let display_len_before = self.main_chat().message_count();
         if paint_required {

@@ -19,6 +19,7 @@ local BODY_INDENT_COLS = 4
 local MIN_MD_WIDTH = 20
 local DEFAULT_OUTPUT_LINES = 5
 local DEFAULT_MAX_LINE_BYTES = 500
+local TASK_EXCLUDED_DELEGATION_TOOLS = { "fusion_delegate", "task", "team", "workflow" }
 
 local description =
   [[Launch isolated agent; combine independent calls with batch. research (default) = read-only; general = can edit. Each call starts fresh; include context and ask for concise file:line results. Summarize returned results. auto_tier opt-in. background returns agent_id.]]
@@ -87,11 +88,19 @@ local function handler(input, ctx)
     end
     local prompt = "Use the task tool now with background=false. Do not only describe this request.\n\n"
       .. forwarded_json
-    local id, err = n00n.session.new({ prompt = prompt, focus = false })
+    local parent_id, parent_err = ctx:session_id()
+    if not parent_id then
+      return { llm_output = parent_err, is_error = true }
+    end
+    local id, err = n00n.session.new({ prompt = prompt, focus = false, parent_id = parent_id })
     if not id then
       return { llm_output = err, is_error = true }
     end
-    local output, output_err = n00n.json.encode({ agent_id = id, status = "started" })
+    local title = "task: " .. (input.description or input.prompt or ""):sub(1, 60)
+    pcall(function()
+      n00n.session.set_title({ id = id, title = title })
+    end)
+    local output, output_err = n00n.json.encode({ agent_id = id, status = "started", title = title })
     if output_err then
       return { llm_output = "failed to encode task status: " .. tostring(output_err), is_error = true }
     end
@@ -174,6 +183,8 @@ local function handler(input, ctx)
           output_schema = input.output_schema,
           preview = preview,
           activity_label = input.description or "task",
+          except_tools = TASK_EXCLUDED_DELEGATION_TOOLS,
+          delegation_policy = "explore_only",
         })
         if err then
           return { llm_output = err, is_error = true }
@@ -212,6 +223,7 @@ local function handler(input, ctx)
         local tool_defs, tools_err = n00n.agent.tools(ctx, {
           audience = audience,
           spec = model.spec,
+          except = TASK_EXCLUDED_DELEGATION_TOOLS,
         })
         if tools_err then
           return { llm_output = tools_err, is_error = true }
@@ -244,6 +256,8 @@ local function handler(input, ctx)
           name = input.description,
           thinking = input.thinking,
           mode = subagent_type,
+          except = TASK_EXCLUDED_DELEGATION_TOOLS,
+          delegation_policy = "explore_only",
         })
         if sess_err then
           return { llm_output = sess_err, is_error = true }

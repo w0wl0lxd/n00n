@@ -33,6 +33,18 @@ local AGE_UNITS = {
 local MAX_GROUP_CHILDREN = 20
 local GROUP_PREFIX = "group:"
 local GROUP_KIND = "group"
+local CATEGORY_ORDER = { "research", "ponder", "draft", "review", "teams", "workflows", "agents", "other" }
+local CATEGORY_LABELS = {
+  research = "Research",
+  ponder = "Ponder",
+  draft = "Draft",
+  review = "Review",
+  teams = "Teams",
+  workflows = "Workflows",
+  agents = "Agents",
+  other = "Other",
+  recovered = "Recovered sessions",
+}
 local FILTER_KEYS = {
   { "Enter", "open" },
   { "Ctrl+N", "new" },
@@ -162,22 +174,138 @@ local function sort_tree(nodes)
   end
 end
 
-local function build_tree(sessions)
-  local by_id = {}
-  for _, s in ipairs(sessions) do
-    by_id[s.id] = s
+local function has_word(text, word)
+  return text:find("%f[%a]" .. word .. "%f[%A]") ~= nil
+end
+
+local function descendant_category(session)
+  local kind = (session.kind or ""):lower()
+  if kind == "team" then
+    return "teams"
   end
-  local roots = {}
-  for _, s in ipairs(sessions) do
-    local p = s.parent_id
-    if p and by_id[p] then
-      table.insert(by_id[p].children, s)
-    else
-      table.insert(roots, s)
+  if kind == "workflow" then
+    return "workflows"
+  end
+  local text = ((session.display_title or "") .. " " .. (session.title or "")):lower()
+  for _, category in ipairs({ "research", "ponder", "draft", "review" }) do
+    if has_word(text, category) then
+      return category
     end
   end
+  if kind == "task" or kind == "agent" then
+    return "agents"
+  end
+  return "other"
+end
+
+local function main_ancestor(session, by_id)
+  local current = session
+  local seen = {}
+  while current do
+    if seen[current.id] then
+      return nil
+    end
+    seen[current.id] = true
+    if not current.parent_id then
+      return current
+    end
+    current = by_id[current.parent_id]
+  end
+  return nil
+end
+
+local function synthetic_group(root, category, children, expanded_state)
+  local id = GROUP_PREFIX .. root.id .. ":kind:" .. category
+  return {
+    id = id,
+    title = "",
+    display_title = CATEGORY_LABELS[category],
+    kind = GROUP_KIND,
+    is_group = true,
+    children = children,
+    parent_id = root.id,
+    updated_at = children[1].updated_at,
+    focused = false,
+    live = false,
+    status = "idle",
+    expanded = expanded_state[id] or false,
+    depth = 0,
+  }
+end
+
+local function recovered_group(children, expanded_state)
+  local id = GROUP_PREFIX .. "recovered"
+  return {
+    id = id,
+    title = "",
+    display_title = CATEGORY_LABELS.recovered,
+    kind = GROUP_KIND,
+    is_group = true,
+    children = children,
+    parent_id = nil,
+    updated_at = children[1].updated_at,
+    focused = false,
+    live = false,
+    status = "idle",
+    expanded = expanded_state[id] or false,
+    depth = 0,
+  }
+end
+
+local function build_tree(sessions, expanded_state)
+  local by_id = {}
+  for _, session in ipairs(sessions) do
+    by_id[session.id] = session
+    session.children = {}
+  end
+
+  local roots = {}
+  local descendants = {}
+  local malformed = {}
+  for _, session in ipairs(sessions) do
+    local root = main_ancestor(session, by_id)
+    if root == session then
+      roots[#roots + 1] = root
+      descendants[root.id] = descendants[root.id] or {}
+    elseif root then
+      local category = descendant_category(session)
+      descendants[root.id] = descendants[root.id] or {}
+      descendants[root.id][category] = descendants[root.id][category] or {}
+      descendants[root.id][category][#descendants[root.id][category] + 1] = session
+    else
+      malformed[#malformed + 1] = session
+    end
+  end
+
+  local nodes = {}
+  for _, root in ipairs(roots) do
+    nodes[#nodes + 1] = root
+    for _, category in ipairs(CATEGORY_ORDER) do
+      local children = descendants[root.id][category]
+      if children and #children > 0 then
+        table.sort(children, by_recency)
+        local group = synthetic_group(root, category, children, expanded_state)
+        for _, child in ipairs(children) do
+          child.group_id = group.id
+          nodes[#nodes + 1] = child
+        end
+        root.children[#root.children + 1] = group
+        nodes[#nodes + 1] = group
+      end
+    end
+  end
+  if #malformed > 0 then
+    table.sort(malformed, by_recency)
+    local recovered = recovered_group(malformed, expanded_state)
+    for _, session in ipairs(malformed) do
+      session.group_id = recovered.id
+      nodes[#nodes + 1] = session
+    end
+    roots[#roots + 1] = recovered
+    nodes[#nodes + 1] = recovered
+  end
   sort_tree(roots)
-  return roots
+  return roots, nodes
 end
 
 local function task_count(count)
@@ -492,12 +620,11 @@ local function refresh()
   end
   table.sort(all, by_recency)
 
-  board.nodes = all
-  board.roots = build_tree(all)
+  board.roots, board.nodes = build_tree(all, expanded_state)
   for _, root in ipairs(board.roots) do
-    group_node(root, all, board.rank, expanded_state)
+    group_node(root, board.nodes, board.rank, expanded_state)
   end
-  table.sort(all, by_recency)
+  table.sort(board.nodes, by_recency)
 
   apply_filter()
   update_footer()

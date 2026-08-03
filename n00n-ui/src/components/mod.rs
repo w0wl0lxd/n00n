@@ -36,6 +36,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use n00n_agent::{AgentInput, PreDispatchGate};
 use n00n_agent::{BufferSnapshot, ImageSource, ToolInput, ToolOutput};
 use n00n_providers::{Message, ModelTier};
+use n00n_storage::id::n00nId;
 use n00n_storage::sessions::TranscriptEntry;
 use ratatui::text::{Line, Span};
 
@@ -204,6 +205,19 @@ pub enum Action {
     },
     CancelSubagent {
         tool_use_id: String,
+    },
+    FocusSession {
+        id: n00nId,
+    },
+    CancelSession {
+        id: n00nId,
+    },
+    ResumeSession {
+        id: n00nId,
+    },
+    ContinueSubagent {
+        name: String,
+        messages: Vec<Message>,
     },
     NewSession,
     LoadSession(Box<LoadedSession>),

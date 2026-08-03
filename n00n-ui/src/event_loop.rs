@@ -7,8 +7,9 @@
 //! waits on every event source at once and wakes the moment a plugin action,
 //! agent event, or keypress arrives instead of sleeping in `event::poll`.
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use arc_swap::{ArcSwap, ArcSwapOption};
@@ -20,7 +21,9 @@ use crossterm::event::{
 };
 use n00n_agent::command::CustomCommand;
 use n00n_agent::permissions::PermissionManager;
-use n00n_agent::{AgentConfig, CancelToken, McpCommand, McpConfigErrors, McpHandle, mcp};
+use n00n_agent::{
+    AgentConfig, CancelToken, McpCommand, McpConfigErrors, McpHandle, ToolOutput, mcp,
+};
 use n00n_config::UiConfig;
 use n00n_lua::{
     EventHandle, HintReader, KeymapReader, LuaCommandReader, SessionReply, SessionRequest, UiAction,
@@ -30,18 +33,20 @@ use n00n_providers::provider::{
     Provider, fetch_all_models, from_model_fallback_with_openai_options,
     from_model_with_openai_options,
 };
-use n00n_providers::{ContentBlock, Message, Model, OpenAiOptions};
+use n00n_providers::{Message, Model, OpenAiOptions};
 use n00n_storage::StateDir;
 use n00n_storage::StorageError;
 use n00n_storage::id::{SessionRef, n00nId, n00nIdParseError};
-use n00n_storage::sessions::{SessionError, TranscriptEntry, normalize_title};
+use n00n_storage::sessions::{SessionError, SessionLifecycle, TranscriptEntry, normalize_title};
 use serde_json::{Value, json};
 use tracing::warn;
 
 use crate::AppSession;
 use crate::agent::{AgentCommand, AgentHandles, ModelSlot, shared_queue::QueueItem};
 use crate::app::shell::{ShellEvent, spawn_shell};
-use crate::app::{App, AppInit, Msg, QueuedMessage, SubmitOutcome};
+use crate::app::{
+    AgentSessionEntry, App, AppInit, Msg, QueuedMessage, SubmitOutcome, TaskStatus, paused_team_run,
+};
 use crate::components::input::Submission;
 use crate::components::usage_modal::UsageFetchState;
 use crate::components::{
@@ -64,7 +69,8 @@ const AGENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 const STORAGE_WRITER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const DELETE_FOCUSED_ERR: &str = "cannot delete the focused session";
 const NOT_LIVE_ERR: &str = "session not live";
-const TEAM_TOOL_NAME: &str = "team";
+const MAX_LIVE_SESSIONS: usize = 64;
+const MAX_SESSION_DEPTH: usize = 8;
 
 /// Tabs carry their in-memory sessions so `/reload` reopens them without a
 /// disk round-trip; `session_has_content` tells which ones were saved.
@@ -127,52 +133,126 @@ fn parse_session_id(id: &str) -> Result<n00nId, String> {
     id.parse().map_err(|e: n00nIdParseError| e.to_string())
 }
 
-fn paused_team_run(history: &[Message]) -> Option<Value> {
-    let (user_index, last_user) = history
-        .iter()
-        .enumerate()
-        .rev()
-        .find(|(_, message)| matches!(message.role, n00n_providers::Role::User))?;
+fn task_status(lifecycle: SessionLifecycle) -> TaskStatus {
+    match lifecycle {
+        SessionLifecycle::Running => TaskStatus::Running,
+        SessionLifecycle::WaitingInput => TaskStatus::WaitingInput,
+        SessionLifecycle::Paused => TaskStatus::Paused,
+        SessionLifecycle::Interrupted => TaskStatus::Interrupted,
+        SessionLifecycle::Failed => TaskStatus::Error,
+        SessionLifecycle::Cancelled => TaskStatus::Cancelled,
+        SessionLifecycle::Idle | SessionLifecycle::Succeeded => TaskStatus::Done,
+    }
+}
 
-    for block in &last_user.content {
-        let ContentBlock::ToolResult {
-            tool_use_id,
-            content,
-            ..
-        } = block
-        else {
-            continue;
-        };
-        let is_team_result = history[..user_index].iter().rev().any(|message| {
-            message
-                .tool_uses()
-                .any(|(id, name, _)| id == tool_use_id && name == TEAM_TOOL_NAME)
-        });
-        if !is_team_result {
-            continue;
-        }
+fn stored_task_status(lifecycle: SessionLifecycle) -> TaskStatus {
+    match lifecycle {
+        SessionLifecycle::Running | SessionLifecycle::WaitingInput => TaskStatus::Interrupted,
+        lifecycle => task_status(lifecycle),
+    }
+}
 
-        if !content.trim_start().starts_with('{') {
-            continue;
-        }
-        let payload: Value = match serde_json::from_str(content) {
-            Ok(payload) => payload,
-            Err(error) => {
-                warn!(%tool_use_id, %error, "invalid paused team result; ignoring");
-                continue;
-            }
+fn reconcile_restored_lifecycle(session: &mut AppSession) -> bool {
+    if matches!(
+        session.meta.lifecycle,
+        SessionLifecycle::Running | SessionLifecycle::WaitingInput
+    ) {
+        session.meta.lifecycle = SessionLifecycle::Interrupted;
+        true
+    } else {
+        false
+    }
+}
+fn shutdown_lifecycle(
+    lifecycle: SessionLifecycle,
+    team_resume_queued: bool,
+    history: &[Message],
+) -> SessionLifecycle {
+    if lifecycle == SessionLifecycle::Running
+        && (team_resume_queued || paused_team_run(history).is_some())
+    {
+        SessionLifecycle::Paused
+    } else {
+        lifecycle
+    }
+}
+
+fn session_depth(id: n00nId, parents: &HashMap<n00nId, Option<n00nId>>) -> Option<usize> {
+    let mut current = id;
+    let mut depth = 0usize;
+    let mut seen = HashSet::new();
+    while seen.insert(current) {
+        let parent = parents.get(&current)?;
+        let Some(parent) = parent else {
+            return Some(depth);
         };
-        let paused = payload.get("paused").and_then(Value::as_bool) == Some(true);
-        let has_run_id = payload
-            .get("run_id")
-            .and_then(Value::as_str)
-            .is_some_and(|run_id| !run_id.is_empty());
-        if paused && has_run_id {
-            return Some(payload);
+        depth = depth.saturating_add(1);
+        current = *parent;
+    }
+    None
+}
+
+fn is_descendant(
+    candidate: n00nId,
+    ancestor: n00nId,
+    parents: &HashMap<n00nId, Option<n00nId>>,
+) -> bool {
+    let mut current = candidate;
+    let mut seen = HashSet::new();
+    while seen.insert(current) {
+        let Some(parent) = parents.get(&current).copied().flatten() else {
+            return false;
+        };
+        if parent == ancestor {
+            return true;
+        }
+        current = parent;
+    }
+    false
+}
+
+fn session_root(id: n00nId, parents: &HashMap<n00nId, Option<n00nId>>) -> Option<n00nId> {
+    let mut current = id;
+    let mut seen = HashSet::new();
+    while seen.insert(current) {
+        let parent = parents.get(&current)?;
+        let Some(parent) = parent else {
+            return Some(current);
+        };
+        current = *parent;
+    }
+    None
+}
+fn owned_session_root(
+    id: n00nId,
+    explicit_roots: &HashMap<n00nId, Option<n00nId>>,
+    parents: &HashMap<n00nId, Option<n00nId>>,
+) -> Option<n00nId> {
+    let Some(root) = explicit_roots.get(&id).copied().flatten() else {
+        return session_root(id, parents);
+    };
+    if parents.get(&root).copied().flatten().is_some() {
+        return None;
+    }
+    let mut current = id;
+    let mut seen = HashSet::new();
+    while seen.insert(current) {
+        if current == root {
+            return Some(root);
+        }
+        match parents.get(&current).copied().flatten() {
+            Some(parent) => current = parent,
+            None => return (!parents.contains_key(&current)).then_some(root),
         }
     }
-
     None
+}
+
+#[derive(Clone)]
+struct StoredAgentSession {
+    entry: AgentSessionEntry,
+    parent_id: Option<n00nId>,
+    root_id: Option<n00nId>,
 }
 
 struct SessionRuntime {
@@ -187,6 +267,148 @@ impl SessionRuntime {
     fn id(&self) -> n00nId {
         self.app.state.session.id
     }
+}
+#[derive(Clone)]
+struct RuntimeDescriptor {
+    id: n00nId,
+    title: String,
+    lifecycle: SessionLifecycle,
+    parent_id: Option<n00nId>,
+    root_id: Option<n00nId>,
+    updated_at: u64,
+    focused: bool,
+    cwd: String,
+}
+
+impl RuntimeDescriptor {
+    fn from_runtime(runtime: &SessionRuntime, focused: bool) -> Self {
+        Self {
+            id: runtime.id(),
+            title: runtime.app.state.session.title.clone(),
+            lifecycle: runtime.app.state.session.meta.lifecycle,
+            parent_id: runtime.app.state.session.meta.parent_id,
+            root_id: runtime.app.state.session.meta.root_id,
+            updated_at: runtime.app.state.session.updated_at,
+            focused,
+            cwd: runtime.app.state.session.cwd.clone(),
+        }
+    }
+
+    fn agent_entry(&self) -> AgentSessionEntry {
+        AgentSessionEntry {
+            id: self.id,
+            name: self.title.clone(),
+            status: task_status(self.lifecycle),
+        }
+    }
+
+    fn control_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "title": self.title,
+            "status": match self.lifecycle {
+                SessionLifecycle::Running => "working",
+                SessionLifecycle::WaitingInput => "needs_input",
+                SessionLifecycle::Idle
+                | SessionLifecycle::Paused
+                | SessionLifecycle::Interrupted
+                | SessionLifecycle::Succeeded
+                | SessionLifecycle::Failed
+                | SessionLifecycle::Cancelled => "idle",
+            },
+            "lifecycle": self.lifecycle,
+            "updated_at": self.updated_at,
+            "focused": self.focused,
+            "parent_id": self.parent_id,
+            "root_id": self.root_id,
+            "cwd": self.cwd,
+        })
+    }
+
+    fn control_status_json(&self, output: Option<&str>, paused_team: Option<Value>) -> Value {
+        let mut descriptor = self.control_json();
+        if let Some(object) = descriptor.as_object_mut() {
+            object.insert(
+                "output".to_owned(),
+                output.map_or(Value::Null, |text| Value::String(text.to_owned())),
+            );
+            object.insert(
+                "paused_team".to_owned(),
+                paused_team.map_or(Value::Null, std::convert::identity),
+            );
+        }
+        descriptor
+    }
+}
+
+fn project_agent_sessions(
+    active_id: n00nId,
+    stored: &[StoredAgentSession],
+    live: &[RuntimeDescriptor],
+) -> Vec<AgentSessionEntry> {
+    let mut parents: HashMap<_, _> = stored
+        .iter()
+        .map(|session| (session.entry.id, session.parent_id))
+        .collect();
+    parents.extend(
+        live.iter()
+            .map(|descriptor| (descriptor.id, descriptor.parent_id)),
+    );
+    let mut explicit_roots: HashMap<_, _> = stored
+        .iter()
+        .map(|session| (session.entry.id, session.root_id))
+        .collect();
+    explicit_roots.extend(
+        live.iter()
+            .map(|descriptor| (descriptor.id, descriptor.root_id)),
+    );
+    let Some(active_root) = owned_session_root(active_id, &explicit_roots, &parents) else {
+        return Vec::new();
+    };
+    let mut agents: HashMap<_, _> = stored
+        .iter()
+        .filter(|session| session.parent_id.is_some())
+        .map(|session| (session.entry.id, session.entry.clone()))
+        .collect();
+    for descriptor in live
+        .iter()
+        .filter(|descriptor| descriptor.parent_id.is_some())
+    {
+        agents.insert(descriptor.id, descriptor.agent_entry());
+    }
+    let mut agents: Vec<_> = agents
+        .into_values()
+        .filter(|agent| {
+            agent.id != active_id
+                && owned_session_root(agent.id, &explicit_roots, &parents) == Some(active_root)
+        })
+        .collect();
+    agents.sort_unstable_by_key(|agent| *agent.id.as_bytes());
+    agents
+}
+
+fn continued_subagent_session(
+    parent: &AppSession,
+    model: &str,
+    name: &str,
+    messages: Vec<Message>,
+) -> AppSession {
+    let mut session = AppSession::new(model, &parent.cwd);
+    session.title = normalize_title(&format!("continued: {name}"));
+    session.meta.parent_id = Some(parent.id);
+    session.meta.root_id = Some(
+        parent
+            .meta
+            .root_id
+            .map_or(parent.id, std::convert::identity),
+    );
+    session.transcript = messages
+        .iter()
+        .cloned()
+        .map(TranscriptEntry::Message)
+        .collect();
+    session.messages = messages;
+    session
 }
 
 /// Everything needed to bring up a new session runtime after startup.
@@ -269,6 +491,7 @@ impl SpawnCtx {
 pub(crate) struct EventLoop<'t> {
     terminal: &'t mut ratatui::DefaultTerminal,
     sessions: Vec<SessionRuntime>,
+    stored_agent_sessions: Vec<StoredAgentSession>,
     focused: usize,
     ctx: SpawnCtx,
     input: InputReader,
@@ -487,6 +710,51 @@ impl<'t> EventLoop<'t> {
 
         let picker = Arc::new(terminal_image::picker());
 
+        let mut stored_by_id = HashMap::new();
+        let session_cwds: HashSet<_> = sessions.iter().map(|session| session.cwd.clone()).collect();
+        for session_cwd in session_cwds {
+            match AppSession::list(&session_cwd, &storage) {
+                Ok(summaries) => {
+                    for summary in summaries {
+                        let lifecycle = if matches!(
+                            summary.lifecycle,
+                            SessionLifecycle::Running | SessionLifecycle::WaitingInput
+                        ) {
+                            match AppSession::load(summary.id, &storage) {
+                                Ok(mut session) => {
+                                    reconcile_restored_lifecycle(&mut session);
+                                    storage_writer.send(Box::new(session));
+                                    SessionLifecycle::Interrupted
+                                }
+                                Err(error) => {
+                                    warn!(%error, session_id = %summary.id, "failed to reconcile interrupted session");
+                                    summary.lifecycle
+                                }
+                            }
+                        } else {
+                            summary.lifecycle
+                        };
+                        stored_by_id.insert(
+                            summary.id,
+                            StoredAgentSession {
+                                entry: AgentSessionEntry {
+                                    id: summary.id,
+                                    name: summary.title,
+                                    status: stored_task_status(lifecycle),
+                                },
+                                parent_id: summary.parent_id,
+                                root_id: summary.root_id,
+                            },
+                        );
+                    }
+                }
+                Err(error) => {
+                    warn!(%error, cwd = %session_cwd, "failed to list stored agent sessions");
+                }
+            }
+        }
+        let stored_agent_sessions = stored_by_id.into_values().collect();
+
         let ctx = SpawnCtx {
             storage,
             config,
@@ -510,7 +778,12 @@ impl<'t> EventLoop<'t> {
 
         let mut runtimes: Vec<SessionRuntime> = sessions
             .into_iter()
-            .map(|session| ctx.spawn_runtime(session))
+            .map(|mut session| {
+                if reconcile_restored_lifecycle(&mut session) {
+                    ctx.storage_writer.send(Box::new(session.clone()));
+                }
+                ctx.spawn_runtime(session)
+            })
             .collect();
         if runtimes.is_empty() {
             return Err(eyre!("event loop needs at least one session"));
@@ -533,6 +806,7 @@ impl<'t> EventLoop<'t> {
         Ok(Self {
             terminal,
             sessions: runtimes,
+            stored_agent_sessions,
             focused,
             ctx,
             input: InputReader::spawn()?,
@@ -550,6 +824,13 @@ impl<'t> EventLoop<'t> {
 
     fn focused_app(&mut self) -> &mut App {
         &mut self.sessions[self.focused].app
+    }
+    fn runtime_descriptors(&self) -> Vec<RuntimeDescriptor> {
+        self.sessions
+            .iter()
+            .enumerate()
+            .map(|(index, runtime)| RuntimeDescriptor::from_runtime(runtime, index == self.focused))
+            .collect()
     }
 
     pub(crate) fn run(mut self, initial_prompt: Option<String>) -> Result<ShutdownReport> {
@@ -601,9 +882,8 @@ impl<'t> EventLoop<'t> {
                 break Err(e);
             }
         };
-        // Fatal errors still save every session, shut down MCP transports
-        // (terminating and reaping their child processes), and drain the
-        // storage writer before the process exits.
+        // Fatal errors still save every session, kill MCP process groups,
+        // and drain the storage writer before the process exits.
         let report = self.shutdown();
         result.map(|()| report)
     }
@@ -675,33 +955,63 @@ impl<'t> EventLoop<'t> {
     }
 
     fn handle_wake(&mut self, wake: Wake) -> Result<()> {
-        self.dirty = true;
         match wake {
             Wake::Input(ev) => self.handle_input(ev),
             Wake::InputGone => return Err(eyre!("terminal input reader stopped")),
-            Wake::Ui(action) => self.handle_ui_action(action),
-            Wake::Agent(i, envelope) => self.handle_agent(i, envelope),
-            Wake::Shell(i, event) => self.sessions[i].app.handle_shell_event(event),
-            Wake::SubmissionPersisted(completion) => self.handle_submission_persisted(completion),
-            Wake::Warn(warning) => self.focused_app().flash(warning),
+            Wake::Ui(action) => {
+                self.handle_ui_action(action);
+                self.dirty = true;
+            }
+            Wake::Agent(i, envelope) => {
+                self.handle_agent(i, envelope);
+                self.dirty = true;
+            }
+            Wake::Shell(i, event) => {
+                self.sessions[i].app.handle_shell_event(event);
+                self.dirty = true;
+            }
+            Wake::SubmissionPersisted(completion) => {
+                self.handle_submission_persisted(completion);
+                self.dirty = true;
+            }
+            Wake::Warn(warning) => {
+                self.focused_app().flash(warning);
+                self.dirty = true;
+            }
         }
         Ok(())
     }
 
     fn tick(&mut self) {
+        self.sync_agent_sessions();
+        let mut focused_changed = false;
         for (i, rt) in self.sessions.iter_mut().enumerate() {
             rt.app.float_mgr.tick();
             if i != self.focused {
                 continue;
             }
             rt.app.tick_edge_scroll();
-            rt.app.tick_error_expiry();
+            focused_changed |= rt.app.tick_error_expiry();
+            focused_changed |= !rt.app.image_paste_rx.is_empty();
             rt.app.poll_image_paste();
             rt.app.btw_modal.poll();
-            rt.app.status_bar.poll_branch_update();
+            focused_changed |= rt.app.status_bar.clear_expired_hint();
+            focused_changed |= rt.app.status_bar.poll_branch_update();
             rt.app.mcp_picker.refresh();
         }
+        self.dirty |= focused_changed;
         self.tick_periodic_save();
+    }
+
+    fn sync_agent_sessions(&mut self) {
+        let descriptors = self.runtime_descriptors();
+        for runtime in &mut self.sessions {
+            runtime.app.set_agent_sessions(project_agent_sessions(
+                runtime.id(),
+                &self.stored_agent_sessions,
+                &descriptors,
+            ));
+        }
     }
 
     fn tick_periodic_save(&mut self) {
@@ -736,6 +1046,8 @@ impl<'t> EventLoop<'t> {
         for rt in &mut self.sessions {
             if rt.app.status == Status::Streaming && rt.handles.agent_rx.is_disconnected() {
                 rt.app.status = Status::error("agent stopped unexpectedly".into());
+                rt.app.state.session.meta.lifecycle = SessionLifecycle::Failed;
+                rt.app.save_session();
                 self.dirty = true;
             }
         }
@@ -867,6 +1179,9 @@ impl<'t> EventLoop<'t> {
                     let rt = self.remove_runtime(i);
                     rt.handles.cancel();
                 }
+                self.stored_agent_sessions
+                    .retain(|session| session.entry.id != id);
+                self.sync_agent_sessions();
                 self.ctx.storage_writer.delete(id, move |res| {
                     let reply = match res {
                         Ok(()) | Err(SessionError::Storage(StorageError::NotFound(_))) => {
@@ -879,19 +1194,9 @@ impl<'t> EventLoop<'t> {
             }
             SessionRequest::Live => {
                 let list: Vec<_> = self
-                    .sessions
+                    .runtime_descriptors()
                     .iter()
-                    .enumerate()
-                    .map(|(i, rt)| {
-                        json!({
-                            "id": rt.id(),
-                            "title": rt.app.state.session.title,
-                            "status": SessionStatus::of(&rt.app).as_str(),
-                            "updated_at": rt.app.state.session.updated_at,
-                            "focused": i == self.focused,
-                            "cwd": rt.app.state.session.cwd,
-                        })
-                    })
+                    .map(RuntimeDescriptor::control_json)
                     .collect();
                 let _ = reply_tx.send(Ok(json!(list)));
             }
@@ -908,16 +1213,8 @@ impl<'t> EventLoop<'t> {
                             .flatten()
                     });
                     let paused_team = paused_team_run(&history);
-                    Ok(json!({
-                        "id": rt.id(),
-                        "title": rt.app.state.session.title,
-                        "status": SessionStatus::of(&rt.app).as_str(),
-                        "updated_at": rt.app.state.session.updated_at,
-                        "focused": idx == self.focused,
-                        "output": output,
-                        "paused_team": paused_team,
-                        "cwd": rt.app.state.session.cwd,
-                    }))
+                    Ok(RuntimeDescriptor::from_runtime(rt, idx == self.focused)
+                        .control_status_json(output, paused_team))
                 });
                 let _ = reply_tx.send(reply);
             }
@@ -929,6 +1226,12 @@ impl<'t> EventLoop<'t> {
                 focus,
                 parent_id,
             } => {
+                if self.sessions.len() >= MAX_LIVE_SESSIONS {
+                    let _ = reply_tx.send(Err(format!(
+                        "live session limit reached ({MAX_LIVE_SESSIONS})"
+                    )));
+                    return;
+                }
                 let mut session = {
                     let slot = self.ctx.model_slot.load();
                     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
@@ -944,15 +1247,51 @@ impl<'t> EventLoop<'t> {
                     },
                     None => None,
                 };
+                if let Some(parent_id) = parent_id {
+                    let Some(parent_position) = self.position(parent_id) else {
+                        let _ = reply_tx.send(Err(format!("{NOT_LIVE_ERR}: {parent_id}")));
+                        return;
+                    };
+                    let parents: HashMap<_, _> = self
+                        .sessions
+                        .iter()
+                        .map(|runtime| (runtime.id(), runtime.app.state.session.meta.parent_id))
+                        .collect();
+                    let Some(parent_depth) = session_depth(parent_id, &parents) else {
+                        let _ = reply_tx.send(Err("invalid session parent chain".into()));
+                        return;
+                    };
+                    if parent_depth >= MAX_SESSION_DEPTH {
+                        let _ = reply_tx.send(Err(format!(
+                            "session depth limit reached ({MAX_SESSION_DEPTH})"
+                        )));
+                        return;
+                    }
+                    session.meta.root_id = Some(
+                        self.sessions[parent_position]
+                            .app
+                            .state
+                            .session
+                            .meta
+                            .root_id
+                            .map_or(parent_id, std::convert::identity),
+                    );
+                }
                 session.meta.parent_id = parent_id;
                 let idx = self.push_runtime(self.ctx.spawn_runtime(session));
                 let id = self.sessions[idx].id();
-                if let Some(prompt) = prompt {
-                    let _ = self.submit_text(idx, prompt, false, false);
+                if let Some(prompt) = prompt
+                    && let Err(error) = self.submit_text(idx, prompt, false, false)
+                {
+                    let runtime = self.remove_runtime(idx);
+                    runtime.handles.cancel();
+                    let _ = reply_tx.send(Err(error));
+                    return;
                 }
                 if focus {
                     self.set_focus(idx);
                 }
+                self.sync_agent_sessions();
                 let _ = reply_tx.send(Ok(json!(id)));
             }
             SessionRequest::Prompt {
@@ -973,14 +1312,12 @@ impl<'t> EventLoop<'t> {
             }
             SessionRequest::Cancel { id } => {
                 let reply = parse_session_id(&id).and_then(|id| {
-                    let idx = self
-                        .position(id)
-                        .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))?;
-                    if SessionStatus::of(&self.sessions[idx].app) == SessionStatus::Idle {
-                        return Err(format!("session is idle: {id}"));
+                    if self.position(id).is_none() {
+                        return Err(format!("{NOT_LIVE_ERR}: {id}"));
                     }
-                    let actions = self.sessions[idx].app.cancel_current_run();
-                    self.dispatch(idx, actions);
+                    if self.cancel_session_tree(id) == 0 {
+                        return Err(format!("session tree is idle: {id}"));
+                    }
                     Ok(json!(true))
                 });
                 let _ = reply_tx.send(reply);
@@ -1069,6 +1406,76 @@ impl<'t> EventLoop<'t> {
         self.focused = idx;
     }
 
+    fn ensure_live_session(&mut self, id: n00nId) -> Result<usize, String> {
+        if let Some(position) = self.position(id) {
+            return Ok(position);
+        }
+        if self.sessions.len() >= MAX_LIVE_SESSIONS {
+            return Err(format!("live session limit reached ({MAX_LIVE_SESSIONS})"));
+        }
+        let mut session = AppSession::load(id, &self.ctx.storage)
+            .map_err(|error| format!("Failed to load session: {error}"))?;
+        if reconcile_restored_lifecycle(&mut session) {
+            self.ctx.storage_writer.send(Box::new(session.clone()));
+        }
+        Ok(self.push_runtime(self.ctx.spawn_runtime(session)))
+    }
+
+    fn cancel_session_tree(&mut self, id: n00nId) -> usize {
+        let parents: HashMap<_, _> = self
+            .sessions
+            .iter()
+            .map(|runtime| (runtime.id(), runtime.app.state.session.meta.parent_id))
+            .collect();
+        let targets: Vec<_> = self
+            .sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, runtime)| {
+                (runtime.id() == id || is_descendant(runtime.id(), id, &parents))
+                    && matches!(
+                        runtime.app.state.session.meta.lifecycle,
+                        SessionLifecycle::Running | SessionLifecycle::WaitingInput
+                    )
+            })
+            .map(|(index, _)| index)
+            .collect();
+        let cancelled = targets.len();
+        for position in targets {
+            let actions = self.sessions[position].app.cancel_current_run();
+            self.dispatch(position, actions);
+        }
+        cancelled
+    }
+
+    fn resume_session(&mut self, id: n00nId) -> Result<(), String> {
+        let position = self.ensure_live_session(id)?;
+        let resume_id = {
+            let app = &self.sessions[position].app;
+            (app.state.session.meta.lifecycle == SessionLifecycle::Paused)
+                .then(|| paused_team_run(&app.state.session.messages))
+                .flatten()
+                .and_then(|payload| {
+                    payload
+                        .get("run_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .ok_or_else(|| "This session has no resumable team run".to_owned())?
+        };
+        let runtime = &mut self.sessions[position];
+        runtime.app.run_id += 1;
+        let run_id = runtime.app.run_id;
+        runtime.app.status = Status::Streaming;
+        runtime.app.state.session.meta.lifecycle = SessionLifecycle::Running;
+        runtime.app.save_session();
+        runtime
+            .handles
+            .queue
+            .push(QueueItem::ResumeTeam { run_id, resume_id });
+        Ok(())
+    }
+
     /// Focus a live session, or bring a stored one up: in place when the
     /// focused session is a blank idle one (nothing worth keeping), otherwise
     /// as a new runtime so the session you came from stays live.
@@ -1080,12 +1487,13 @@ impl<'t> EventLoop<'t> {
         let focused = &mut self.sessions[self.focused];
         if SessionStatus::of(&focused.app) == SessionStatus::Idle && !focused.app.has_content() {
             let actions = focused.app.load_session(id);
+            if reconcile_restored_lifecycle(&mut focused.app.state.session) {
+                focused.app.save_session();
+            }
             self.dispatch(self.focused, actions);
             return Ok(());
         }
-        let session = AppSession::load(id, &self.ctx.storage)
-            .map_err(|e| format!("Failed to load session: {e}"))?;
-        let idx = self.push_runtime(self.ctx.spawn_runtime(session));
+        let idx = self.ensure_live_session(id)?;
         self.set_focus(idx);
         Ok(())
     }
@@ -1110,8 +1518,14 @@ impl<'t> EventLoop<'t> {
                 self.dirty = true;
                 (None, None)
             }
-            Event::Key(key) if key.kind == KeyEventKind::Press => (Some(Msg::Key(key)), None),
-            Event::Paste(text) => (Some(Msg::Paste(text)), None),
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                self.dirty = true;
+                (Some(Msg::Key(key)), None)
+            }
+            Event::Paste(text) => {
+                self.dirty = true;
+                (Some(Msg::Paste(text)), None)
+            }
             Event::Mouse(mouse) => self.translate_mouse(mouse),
             _ => (None, None),
         }
@@ -1120,15 +1534,24 @@ impl<'t> EventLoop<'t> {
     fn translate_mouse(&mut self, mouse: CtMouseEvent) -> (Option<Msg>, Option<Event>) {
         match mouse.kind {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                self.dirty = true;
                 let scroll_lines = self.focused_app().ui_config.mouse_scroll_lines;
                 let (msg, leftover) = self.aggregate_scroll(mouse, scroll_lines);
                 (Some(msg), leftover)
             }
             MouseEventKind::Drag(MouseButton::Left) => {
+                self.dirty = true;
                 let (drag, leftover) = self.coalesce_drag(mouse);
                 (Some(Msg::Mouse(drag)), leftover)
             }
-            _ => (Some(Msg::Mouse(mouse)), None),
+            MouseEventKind::Moved => {
+                self.dirty |= self.focused_app().ui_config.mascot;
+                (Some(Msg::Mouse(mouse)), None)
+            }
+            _ => {
+                self.dirty = true;
+                (Some(Msg::Mouse(mouse)), None)
+            }
         }
     }
 
@@ -1286,6 +1709,31 @@ impl<'t> EventLoop<'t> {
                     .handles
                     .cmd_tx
                     .try_send(AgentCommand::CancelSubagent { tool_use_id });
+            }
+            Action::FocusSession { id } => {
+                if let Err(error) = self.focus_session(id) {
+                    self.focused_app().flash(error);
+                }
+            }
+            Action::CancelSession { id } => {
+                self.cancel_session_tree(id);
+            }
+            Action::ResumeSession { id } => {
+                if let Err(error) = self.resume_session(id) {
+                    self.focused_app().flash(error);
+                }
+            }
+            Action::ContinueSubagent { name, messages } => {
+                let model = self.ctx.model_slot.load().model.spec();
+                let session = continued_subagent_session(
+                    &self.sessions[idx].app.state.session,
+                    &model,
+                    &name,
+                    messages,
+                );
+                let position = self.push_runtime(self.ctx.spawn_runtime(session));
+                self.sessions[position].app.save_session();
+                self.set_focus(position);
             }
             Action::NewSession => {
                 self.respawn_agent(idx, Vec::new(), Vec::new());
@@ -1489,25 +1937,47 @@ impl<'t> EventLoop<'t> {
     fn shutdown(mut self) -> ShutdownReport {
         self.preserve_post_draw_submissions();
         let exit = self.sessions[self.focused].app.exit_request;
+        if let Some(ref h) = self.ctx.mcp_handle {
+            mcp::kill_process_groups(&h.reader().load().pids);
+        }
         for rt in &self.sessions {
             let _ = rt.handles.cmd_tx.try_send(AgentCommand::CancelAll);
         }
-        let mut tabs = Vec::with_capacity(self.sessions.len());
+        let mut pending_sessions = Vec::with_capacity(self.sessions.len());
         let mut agent_tasks = Vec::with_capacity(self.sessions.len());
         for rt in self.sessions.drain(..) {
             let SessionRuntime {
                 mut app, handles, ..
             } = rt;
-            app.save_session();
-            // `app` drops at the end of this iteration, closing the
-            // channels the agent loop waits on, so `join_all` can finish.
-            tabs.push(app.state.session);
+            app.state.session.meta.lifecycle = shutdown_lifecycle(
+                app.state.session.meta.lifecycle,
+                handles.queue.has_team_resume(),
+                &app.state.session.messages,
+            );
+            let snapshot = app.session_snapshot();
+            pending_sessions.push((
+                snapshot,
+                app.shared_history.clone(),
+                app.shared_transcript.clone(),
+                app.shared_tool_outputs.clone(),
+            ));
             agent_tasks.push(handles.into_task());
+        }
+        crate::agent::join_all(agent_tasks, AGENT_SHUTDOWN_TIMEOUT);
+        let mut tabs = Vec::with_capacity(pending_sessions.len());
+        for (mut session, history, transcript, tool_outputs) in pending_sessions {
+            sync_agent_mirrors(
+                &mut session,
+                history.as_ref(),
+                transcript.as_ref(),
+                tool_outputs.as_ref(),
+            );
+            self.ctx.storage_writer.send(Box::new(session.clone()));
+            tabs.push(session);
         }
         if let Some(ref h) = self.ctx.mcp_handle {
             smol::block_on(h.shutdown());
         }
-        crate::agent::join_all(agent_tasks, AGENT_SHUTDOWN_TIMEOUT);
         match Arc::try_unwrap(self.ctx.storage_writer) {
             Ok(writer) => writer.shutdown(STORAGE_WRITER_SHUTDOWN_TIMEOUT),
             Err(_) => {
@@ -1554,6 +2024,28 @@ fn take_painted_submissions<T>(
     ready
 }
 
+fn sync_agent_mirrors(
+    session: &mut AppSession,
+    history: Option<&Arc<ArcSwap<Vec<Message>>>>,
+    transcript: Option<&n00n_agent::SharedTranscript>,
+    tool_outputs: Option<&Arc<Mutex<HashMap<String, ToolOutput>>>>,
+) {
+    if let Some(history) = history {
+        session.messages.clone_from(&history.load());
+    }
+    if let Some(transcript) = transcript {
+        session.transcript.clone_from(&transcript.load());
+        session.set_transcript_revision(None);
+    }
+    if let Some(tool_outputs) = tool_outputs {
+        session.tool_outputs.clone_from(
+            &tool_outputs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+    }
+}
+
 fn should_save_periodically(status: &Status) -> bool {
     matches!(status, Status::Streaming)
 }
@@ -1571,12 +2063,19 @@ fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        DRAIN_BUDGET, DrainScheduler, TEAM_TOOL_NAME, draw_then_post_terminal, paused_team_run,
-        should_save_periodically, take_painted_submissions,
+        DRAIN_BUDGET, DrainScheduler, RuntimeDescriptor, StoredAgentSession,
+        continued_subagent_session, draw_then_post_terminal, is_descendant, owned_session_root,
+        paused_team_run, project_agent_sessions, reconcile_restored_lifecycle, session_depth,
+        session_root, should_save_periodically, shutdown_lifecycle, stored_task_status,
+        sync_agent_mirrors, take_painted_submissions,
     };
-    use crate::components::Status;
+    use crate::{
+        app::{AgentSessionEntry, TaskStatus},
+        components::Status,
+    };
+    use arc_swap::ArcSwap;
     use n00n_providers::{ContentBlock, Message, Role};
-    use n00n_storage::id::n00nId;
+    use n00n_storage::{id::n00nId, sessions::SessionLifecycle};
     use ratatui::{
         Terminal,
         backend::{Backend, ClearType, TestBackend, WindowSize},
@@ -1584,7 +2083,203 @@ mod tests {
         layout::{Position, Size},
         widgets::Paragraph,
     };
-    use std::io;
+    use std::collections::{HashMap, HashSet};
+    use std::{io, sync::Arc};
+
+    const TEAM_TOOL_NAME: &str = "team";
+
+    #[test]
+    fn session_root_scopes_entries_to_one_tree() {
+        let root = n00nId::generate();
+        let child = n00nId::generate();
+        let grandchild = n00nId::generate();
+        let unrelated = n00nId::generate();
+        let parents = HashMap::from([
+            (root, None),
+            (child, Some(root)),
+            (grandchild, Some(child)),
+            (unrelated, None),
+        ]);
+
+        assert_eq!(session_root(child, &parents), Some(root));
+        assert_eq!(session_root(grandchild, &parents), Some(root));
+        assert_eq!(session_root(unrelated, &parents), Some(unrelated));
+        assert_eq!(session_depth(root, &parents), Some(0));
+        assert_eq!(session_depth(grandchild, &parents), Some(2));
+        assert!(is_descendant(grandchild, root, &parents));
+        assert!(!is_descendant(child, unrelated, &parents));
+
+        let cycle = HashMap::from([(root, Some(child)), (child, Some(root))]);
+        assert_eq!(session_depth(root, &cycle), None);
+        assert_eq!(session_root(root, &cycle), None);
+    }
+    #[test]
+    fn durable_roots_recover_missing_parents_without_cross_root_leaks() {
+        let root_a = n00nId::generate();
+        let root_b = n00nId::generate();
+        let child = n00nId::generate();
+        let missing_parent = n00nId::generate();
+        let parents = HashMap::from([
+            (root_a, None),
+            (root_b, None),
+            (child, Some(missing_parent)),
+        ]);
+        let owned = HashMap::from([(child, Some(root_a))]);
+        assert_eq!(owned_session_root(child, &owned, &parents), Some(root_a));
+
+        let forged = HashMap::from([(child, Some(root_b))]);
+        let complete_chain = HashMap::from([(root_a, None), (root_b, None), (child, Some(root_a))]);
+        assert_eq!(owned_session_root(child, &forged, &complete_chain), None);
+
+        let cycle_peer = n00nId::generate();
+        let cycle = HashMap::from([
+            (root_a, None),
+            (child, Some(cycle_peer)),
+            (cycle_peer, Some(child)),
+        ]);
+        assert_eq!(owned_session_root(child, &owned, &cycle), None);
+    }
+
+    #[test]
+    fn concurrent_roots_project_only_owned_live_and_restored_descendants() {
+        let root_a = n00nId::generate();
+        let root_b = n00nId::generate();
+        let live_a = n00nId::generate();
+        let stored_a = n00nId::generate();
+        let child_b = n00nId::generate();
+        let malformed = n00nId::generate();
+        let descriptor = |id, parent_id, root_id| RuntimeDescriptor {
+            id,
+            title: id.to_string(),
+            lifecycle: SessionLifecycle::Running,
+            parent_id,
+            root_id,
+            updated_at: 1,
+            focused: false,
+            cwd: "/project".into(),
+        };
+        let live = vec![
+            descriptor(root_a, None, None),
+            descriptor(root_b, None, None),
+            descriptor(live_a, Some(root_a), Some(root_a)),
+            descriptor(child_b, Some(root_b), Some(root_b)),
+            descriptor(malformed, Some(n00nId::generate()), None),
+        ];
+        let stored = vec![StoredAgentSession {
+            entry: AgentSessionEntry {
+                id: stored_a,
+                name: "restored reviewer".into(),
+                status: TaskStatus::Interrupted,
+            },
+            parent_id: Some(root_a),
+            root_id: Some(root_a),
+        }];
+
+        let primary_projection = project_agent_sessions(root_a, &stored, &live);
+        assert_eq!(
+            primary_projection
+                .iter()
+                .map(|entry| entry.id)
+                .collect::<HashSet<_>>(),
+            HashSet::from([live_a, stored_a])
+        );
+        let child_projection = project_agent_sessions(live_a, &stored, &live);
+        assert_eq!(
+            child_projection
+                .iter()
+                .map(|entry| entry.id)
+                .collect::<Vec<_>>(),
+            [stored_a]
+        );
+        let unrelated_projection = project_agent_sessions(root_b, &stored, &live);
+        assert_eq!(
+            unrelated_projection
+                .iter()
+                .map(|entry| entry.id)
+                .collect::<Vec<_>>(),
+            [child_b]
+        );
+    }
+
+    #[test]
+    fn continued_subagent_branches_exact_transcript_with_parent_ownership() {
+        let mut parent = crate::AppSession::new("test/model", "/project");
+        let root = n00nId::generate();
+        parent.meta.root_id = Some(root);
+        let messages = vec![
+            Message::user("review this".into()),
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "finding".into(),
+                }],
+                ..Message::default()
+            },
+        ];
+
+        let continued =
+            continued_subagent_session(&parent, "test/model", "reviewer", messages.clone());
+
+        assert_eq!(continued.meta.parent_id, Some(parent.id));
+        assert_eq!(continued.meta.root_id, Some(root));
+        assert_eq!(continued.messages.len(), messages.len());
+        assert_eq!(
+            continued.messages[0].first_text_content(),
+            Some("review this")
+        );
+        assert_eq!(continued.messages[1].first_text_content(), Some("finding"));
+        assert_eq!(continued.transcript.len(), 2);
+        assert_eq!(continued.meta.lifecycle, SessionLifecycle::Idle);
+    }
+
+    #[test]
+    fn stored_active_lifecycle_is_reported_as_interrupted() {
+        let mut session = crate::AppSession::new("test/model", "/tmp");
+        session.meta.lifecycle = SessionLifecycle::Running;
+        assert!(reconcile_restored_lifecycle(&mut session));
+        assert_eq!(session.meta.lifecycle, SessionLifecycle::Interrupted);
+        assert!(!reconcile_restored_lifecycle(&mut session));
+
+        assert_eq!(
+            stored_task_status(SessionLifecycle::Running),
+            crate::app::TaskStatus::Interrupted
+        );
+        assert_eq!(
+            stored_task_status(SessionLifecycle::WaitingInput),
+            crate::app::TaskStatus::Interrupted
+        );
+        assert_eq!(
+            stored_task_status(SessionLifecycle::Paused),
+            crate::app::TaskStatus::Paused
+        );
+    }
+
+    #[test]
+    fn shutdown_syncs_sanitized_agent_history() {
+        let mut session = crate::AppSession::new("test/model", "/tmp");
+        let history = Arc::new(ArcSwap::from_pointee(vec![Message::user(
+            "cancelled".into(),
+        )]));
+
+        sync_agent_mirrors(&mut session, Some(&history), None, None);
+
+        assert_eq!(session.messages.len(), 1);
+        assert_eq!(session.messages[0].first_text_content(), Some("cancelled"));
+    }
+
+    #[test]
+    fn shutdown_mirrors_never_cross_contaminate_independent_roots() {
+        let mut session_a = crate::AppSession::new("test/model", "/tmp");
+        let mut session_b = crate::AppSession::new("test/model", "/tmp");
+        let history_a = Arc::new(ArcSwap::from_pointee(vec![Message::user("root-a".into())]));
+        let history_b = Arc::new(ArcSwap::from_pointee(vec![Message::user("root-b".into())]));
+
+        sync_agent_mirrors(&mut session_a, Some(&history_a), None, None);
+        sync_agent_mirrors(&mut session_b, Some(&history_b), None, None);
+
+        assert_eq!(session_a.messages[0].first_text_content(), Some("root-a"));
+        assert_eq!(session_b.messages[0].first_text_content(), Some("root-b"));
+    }
 
     #[test]
     fn paused_team_run_requires_matching_team_tool_call() {
@@ -1610,6 +2305,42 @@ mod tests {
         };
         let paused = paused_team_run(&[tool_call, tool_result]).expect("paused team payload");
         assert_eq!(paused["run_id"], "run-1");
+    }
+
+    #[test]
+    fn shutdown_keeps_inflight_team_checkpoint_resumable() {
+        let history = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "tool-1".into(),
+                    name: TEAM_TOOL_NAME.into(),
+                    input: serde_json::json!({}),
+                }],
+                ..Default::default()
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "tool-1".into(),
+                    content: r#"{"paused":true,"run_id":"run-1"}"#.into(),
+                    is_error: true,
+                }],
+                ..Default::default()
+            },
+        ];
+        assert_eq!(
+            shutdown_lifecycle(SessionLifecycle::Running, false, &history),
+            SessionLifecycle::Paused
+        );
+        assert_eq!(
+            shutdown_lifecycle(SessionLifecycle::Running, true, &[]),
+            SessionLifecycle::Paused
+        );
+        assert_eq!(
+            shutdown_lifecycle(SessionLifecycle::Failed, true, &history),
+            SessionLifecycle::Failed
+        );
     }
 
     #[test]

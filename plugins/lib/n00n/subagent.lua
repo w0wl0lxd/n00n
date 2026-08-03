@@ -179,6 +179,7 @@ function M.launch(ctx, opts)
     mode = subagent_type,
     include_mcp = opts.include_mcp,
     except = opts.except_tools,
+    delegation_policy = opts.delegation_policy,
   })
   if sess_err then
     return nil, sess_err, nil, nil, model_spec

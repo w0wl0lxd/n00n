@@ -24,6 +24,7 @@ use crate::theme;
 const COMPACT_LABEL: &str = "/compact";
 const STEERING_PREFIX: &str = "↪ ";
 const IMMEDIATE_PREFIX: &str = "↯ ";
+const TEAM_LABEL: &str = "team";
 
 type Items = Arc<Mutex<VecDeque<QueueItem>>>;
 
@@ -73,12 +74,18 @@ pub(crate) enum QueueItem {
     Compact {
         run_id: u64,
     },
+    ResumeTeam {
+        run_id: u64,
+        resume_id: String,
+    },
 }
 
 impl QueueItem {
     pub(crate) fn run_id(&self) -> u64 {
         match self {
-            Self::Message { run_id, .. } | Self::Compact { run_id } => *run_id,
+            Self::Message { run_id, .. }
+            | Self::Compact { run_id }
+            | Self::ResumeTeam { run_id, .. } => *run_id,
         }
     }
 
@@ -99,13 +106,18 @@ impl QueueItem {
                     .fg
                     .unwrap_or_else(|| theme::current().foreground),
             },
+            Self::ResumeTeam { .. } => QueueEntry {
+                text: Cow::Borrowed(TEAM_LABEL),
+                color: theme::current().foreground,
+            },
         }
     }
 
-    fn into_extracted_command(self) -> ExtractedCommand {
+    fn into_extracted_command(self) -> Option<ExtractedCommand> {
         match self {
-            Self::Message { input, run_id, .. } => ExtractedCommand::Interrupt(input, run_id),
-            Self::Compact { run_id } => ExtractedCommand::Compact(run_id),
+            Self::Message { input, run_id, .. } => Some(ExtractedCommand::Interrupt(input, run_id)),
+            Self::Compact { run_id } => Some(ExtractedCommand::Compact(run_id)),
+            Self::ResumeTeam { .. } => None,
         }
     }
 
@@ -116,13 +128,14 @@ impl QueueItem {
         match self {
             Self::Message { displayed, .. } => !displayed,
             Self::Compact { .. } => true,
+            Self::ResumeTeam { .. } => false,
         }
     }
 
     fn is_ready(&self) -> bool {
         match self {
             Self::Message { ready, .. } => ready.load(Ordering::Acquire),
-            Self::Compact { .. } => true,
+            Self::Compact { .. } | Self::ResumeTeam { .. } => true,
         }
     }
 
@@ -168,7 +181,7 @@ impl QueueSender {
         let mut items = lock(&self.items);
         let submission_id = match &entry {
             QueueItem::Message { submission_id, .. } => *submission_id,
-            QueueItem::Compact { .. } => return,
+            QueueItem::Compact { .. } | QueueItem::ResumeTeam { .. } => return,
         };
         if items.iter().any(|item| {
             matches!(item, QueueItem::Message { submission_id: id, .. } if *id == submission_id)
@@ -221,6 +234,12 @@ impl QueueSender {
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         lock(&self.items).is_empty()
+    }
+
+    pub(crate) fn has_team_resume(&self) -> bool {
+        lock(&self.items)
+            .iter()
+            .any(|item| matches!(item, QueueItem::ResumeTeam { .. }))
     }
 
     pub(crate) fn clear(&self) {
@@ -279,7 +298,7 @@ impl QueueSender {
             .filter(|item| item.visible_in_panel())
             .filter_map(|item| match item {
                 QueueItem::Message { text, .. } => Some(text.clone()),
-                QueueItem::Compact { .. } => None,
+                QueueItem::Compact { .. } | QueueItem::ResumeTeam { .. } => None,
             })
             .collect()
     }
@@ -291,7 +310,7 @@ impl QueueSender {
                 QueueItem::Message {
                     input, delivery, ..
                 } => Some((input.clone(), *delivery)),
-                QueueItem::Compact { .. } => None,
+                QueueItem::Compact { .. } | QueueItem::ResumeTeam { .. } => None,
             })
             .collect()
     }
@@ -324,6 +343,7 @@ impl QueueReceiver {
                         delivery: Delivery::TurnEnd,
                         ..
                     } | QueueItem::Compact { .. }
+                        | QueueItem::ResumeTeam { .. }
                 )
             {
                 None
@@ -356,9 +376,12 @@ impl InterruptSource for QueueReceiver {
                     Delivery::Immediate => Some(index),
                 },
                 QueueItem::Compact { .. } => (point == InterruptPoint::Safe).then_some(index),
+                QueueItem::ResumeTeam { .. } => None,
             }
         })?;
-        items.remove(index).map(QueueItem::into_extracted_command)
+        items
+            .remove(index)
+            .and_then(QueueItem::into_extracted_command)
     }
 }
 
@@ -366,6 +389,23 @@ impl InterruptSource for QueueReceiver {
 mod tests {
     use super::*;
     use n00n_agent::{AgentMode, ThinkingConfig};
+    #[test]
+    fn team_resume_runs_only_from_outer_queue() {
+        let (tx, rx) = queue();
+        tx.push(QueueItem::ResumeTeam {
+            run_id: 7,
+            resume_id: "run-1".into(),
+        });
+
+        assert!(tx.has_team_resume());
+        assert!(rx.poll(InterruptPoint::Safe).is_none());
+        assert!(matches!(
+            rx.pop(),
+            Some(QueueItem::ResumeTeam { run_id: 7, resume_id }) if resume_id == "run-1"
+        ));
+        assert!(!tx.has_team_resume());
+    }
+
     use test_case::test_case;
 
     fn msg(displayed: bool) -> QueueItem {

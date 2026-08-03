@@ -19,8 +19,8 @@ use crate::cancel::{CancelMap, CancelToken, PreDispatchGate};
 use crate::mcp::McpSession;
 use crate::permissions::{PermissionAnswer, PermissionManager};
 use crate::tools::{
-    ActiveTools, Deadline, FileReadTracker, LocalTools, ToolAudience, ToolContext, ToolFilter,
-    ToolRegistry,
+    ActiveTools, Deadline, DelegationPolicy, FileReadTracker, LocalTools, ToolAudience,
+    ToolContext, ToolFilter, ToolRegistry,
 };
 use crate::{
     AgentConfig, AgentError, AgentEvent, AgentInput, AgentMode, EventSender, ExtractedCommand,
@@ -222,6 +222,7 @@ pub struct Agent<'h> {
     subagent_cancels: Arc<crate::cancel::CancelMap<String>>,
     registry: Arc<crate::tools::ToolRegistry>,
     audience: ToolAudience,
+    delegation_policy: DelegationPolicy,
     workflow: bool,
     local_tools: LocalTools,
     active_skill_policy: Option<crate::skill_policy::ActiveSkillPolicy>,
@@ -279,6 +280,7 @@ impl<'h> Agent<'h> {
             subagent_cancels: params.subagent_cancels,
             registry: params.registry,
             audience: params.audience,
+            delegation_policy: DelegationPolicy::Configured,
             workflow: false,
             local_tools: LocalTools::default(),
             active_skill_policy: None,
@@ -301,6 +303,12 @@ impl<'h> Agent<'h> {
     #[must_use]
     pub fn with_dynamic_mcp_tools(mut self, allow: bool) -> Self {
         self.allow_dynamic_mcp_tools = allow;
+        self
+    }
+
+    #[must_use]
+    pub fn with_delegation_policy(mut self, policy: DelegationPolicy) -> Self {
+        self.delegation_policy = policy;
         self
     }
 
@@ -872,6 +880,7 @@ impl<'h> Agent<'h> {
             event_tx: self.event_tx.clone(),
             mode: Arc::clone(&self.mode),
             tool_use_id: None,
+            session_id: self.session_id.clone(),
             user_response_rx: self.user_response_rx.clone(),
             loaded_instructions: self.loaded_instructions.clone(),
             cancel: self.cancel.clone(),
@@ -887,6 +896,7 @@ impl<'h> Agent<'h> {
             opts: self.opts.clone(),
             subagent_cancels: Arc::clone(&self.subagent_cancels),
             registry: Arc::clone(&self.registry),
+            delegation_policy: self.delegation_policy,
             workflow: self.workflow,
             audience: self.audience,
             tool_filter: self.effective_tool_filter(),

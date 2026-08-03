@@ -16,7 +16,7 @@ use n00n_agent::{
 use n00n_config::{PermissionsConfig, UiConfig};
 use n00n_lua::{HintReader, KeymapReader, LuaCommandReader};
 use n00n_providers::{ContentBlock, Effort, Role, TokenUsage};
-use n00n_storage::sessions::{StoredMode, StoredThinking, TranscriptEntry};
+use n00n_storage::sessions::{SessionLifecycle, StoredMode, StoredThinking, TranscriptEntry};
 use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 use ratatui_image::picker::Picker;
 use std::path::{Path, PathBuf};
@@ -554,6 +554,90 @@ fn ctrl_c_quits_when_input_empty() {
     let actions = app.update(Msg::Key(kb::QUIT.to_key_event()));
     assert_eq!(app.exit_request, ExitRequest::Success);
     assert!(actions.is_empty());
+}
+
+#[test]
+fn lifecycle_tracks_waiting_resume_success_failure_and_cancel() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    app.state.session.meta.lifecycle = SessionLifecycle::Running;
+
+    app.update(agent_msg(AgentEvent::AuthRequired));
+    assert_eq!(
+        app.state.session.meta.lifecycle,
+        SessionLifecycle::WaitingInput
+    );
+    app.handle_submit(Submission {
+        text: String::new(),
+        images: Vec::new(),
+        control: false,
+    });
+    assert_eq!(app.state.session.meta.lifecycle, SessionLifecycle::Running);
+
+    app.update(agent_msg(AgentEvent::Done {
+        usage: TokenUsage::default(),
+        num_turns: 1,
+        stop_reason: None,
+        fusion: None,
+    }));
+    assert_eq!(
+        app.state.session.meta.lifecycle,
+        SessionLifecycle::Succeeded
+    );
+
+    app.status = Status::Streaming;
+    app.run_id += 1;
+    app.update(agent_msg_with_run_id(
+        AgentEvent::Error {
+            message: "boom".into(),
+        },
+        app.run_id,
+    ));
+    assert_eq!(app.state.session.meta.lifecycle, SessionLifecycle::Failed);
+
+    app.status = Status::Streaming;
+    app.handle_cancel();
+    assert_eq!(
+        app.state.session.meta.lifecycle,
+        SessionLifecycle::Cancelled
+    );
+}
+
+#[test]
+fn lifecycle_marks_paused_team_run() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    let history = vec![
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: "tool-1".into(),
+                name: "team".into(),
+                input: serde_json::json!({}),
+            }],
+            ..Default::default()
+        },
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "tool-1".into(),
+                content: r#"{"paused":true,"run_id":"run-1"}"#.into(),
+                is_error: true,
+            }],
+            ..Default::default()
+        },
+    ];
+    app.shared_history = Some(Arc::new(ArcSwap::from_pointee(history)));
+
+    app.update(agent_msg(AgentEvent::Done {
+        usage: TokenUsage::default(),
+        num_turns: 1,
+        stop_reason: None,
+        fusion: None,
+    }));
+    assert_eq!(app.state.session.meta.lifecycle, SessionLifecycle::Paused);
 }
 
 #[test_case(AgentEvent::Done { usage: TokenUsage::default(), num_turns: 1, stop_reason: None, fusion: None }, ExitRequest::Success ; "done_exits_success")]
@@ -1299,6 +1383,28 @@ fn cancel_resets_all_chats_and_indices() {
     assert!(app.chat_index.is_empty());
 }
 
+#[test]
+fn immediate_subagent_error_creates_visible_failed_chat() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+
+    app.update(subagent_msg(
+        AgentEvent::Error {
+            message: "failed before output".into(),
+        },
+        "task1",
+        Some("research"),
+    ));
+
+    assert_eq!(app.chats.len(), 2);
+    assert!(app.chats[1].is_failed());
+    open_tasks_picker(&mut app);
+    assert_eq!(
+        app.task_picker.item(1).unwrap().detail(),
+        Some(TASK_ERROR_DETAIL)
+    );
+}
 fn finish_subagent(app: &mut App, id: &str, is_error: bool) {
     app.update(agent_msg(AgentEvent::ToolDone(Box::new(ToolDoneEvent {
         id: id.into(),
@@ -1440,6 +1546,135 @@ fn completed_task_card_click_toggles_inline_without_navigating() {
     assert_eq!(app.chats[0].total_lines(), collapsed_lines);
 }
 
+#[test]
+fn agent_picker_keeps_background_sessions_visible_and_focusable() {
+    let mut app = test_app();
+    let first = n00nId::generate();
+    app.set_agent_sessions(vec![AgentSessionEntry {
+        id: first,
+        name: "task: inspect auth".into(),
+        status: TaskStatus::Running,
+    }]);
+    open_tasks_picker(&mut app);
+
+    let background = app.task_picker.item(1).unwrap();
+    assert_eq!(background.label(), "Agent: task: inspect auth");
+    assert_eq!(background.suffix(), Some("background session"));
+    assert_eq!(background.detail(), Some(TASK_RUNNING_DETAIL));
+    assert_eq!(app.resolve_render_chat(), 0);
+
+    app.update(Msg::Key(key(KeyCode::Down)));
+    let second = n00nId::generate();
+    app.set_agent_sessions(vec![
+        AgentSessionEntry {
+            id: second,
+            name: "team: ship fix".into(),
+            status: TaskStatus::Running,
+        },
+        AgentSessionEntry {
+            id: first,
+            name: "task: inspect auth".into(),
+            status: TaskStatus::Running,
+        },
+    ]);
+    assert!(app.task_picker.item(2).is_some());
+    assert!(app.task_picker.item(3).is_none());
+
+    let actions = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(matches!(
+        actions.as_slice(),
+        [Action::FocusSession { id }] if *id == first
+    ));
+}
+
+#[test]
+fn interrupted_background_session_is_discoverable_and_openable_for_continuation() {
+    let mut app = test_app();
+    let id = n00nId::generate();
+    app.set_agent_sessions(vec![AgentSessionEntry {
+        id,
+        name: "task: interrupted reviewer".into(),
+        status: TaskStatus::Interrupted,
+    }]);
+    open_tasks_picker(&mut app);
+    app.update(Msg::Key(key(KeyCode::Down)));
+
+    assert_eq!(
+        app.task_picker.item(1).and_then(PickerItem::detail),
+        Some(TASK_INTERRUPTED_DETAIL)
+    );
+    let actions = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(
+        matches!(actions.as_slice(), [Action::FocusSession { id: selected }] if *selected == id)
+    );
+}
+
+#[test]
+fn agent_picker_groups_agents_teams_and_workflows() {
+    let mut app = test_app();
+    app.set_agent_sessions(vec![
+        AgentSessionEntry {
+            id: n00nId::generate(),
+            name: "workflow: release".into(),
+            status: TaskStatus::Running,
+        },
+        AgentSessionEntry {
+            id: n00nId::generate(),
+            name: "team: implementation".into(),
+            status: TaskStatus::Running,
+        },
+        AgentSessionEntry {
+            id: n00nId::generate(),
+            name: "task: research".into(),
+            status: TaskStatus::Running,
+        },
+    ]);
+
+    open_tasks_picker(&mut app);
+
+    assert_eq!(
+        app.task_picker.item(1).and_then(PickerItem::section),
+        Some("Agents")
+    );
+    assert_eq!(
+        app.task_picker.item(2).and_then(PickerItem::section),
+        Some("Teams")
+    );
+    assert_eq!(
+        app.task_picker.item(3).and_then(PickerItem::section),
+        Some("Workflows")
+    );
+}
+
+#[test]
+fn agent_picker_emits_stable_cancel_and_resume_actions() {
+    let mut app = test_app();
+    let id = n00nId::generate();
+    app.set_agent_sessions(vec![AgentSessionEntry {
+        id,
+        name: "team: ship fix".into(),
+        status: TaskStatus::Running,
+    }]);
+    open_tasks_picker(&mut app);
+    app.update(Msg::Key(key(KeyCode::Down)));
+
+    let cancel = app.update(Msg::Key(key(KeyCode::Delete)));
+    assert!(matches!(
+        cancel.as_slice(),
+        [Action::CancelSession { id: selected }] if *selected == id
+    ));
+
+    app.set_agent_sessions(vec![AgentSessionEntry {
+        id,
+        name: "team: ship fix".into(),
+        status: TaskStatus::Paused,
+    }]);
+    let resume = app.update(Msg::Key(key(KeyCode::Char('r'))));
+    assert!(matches!(
+        resume.as_slice(),
+        [Action::ResumeSession { id: selected }] if *selected == id
+    ));
+}
 fn open_tasks_picker(app: &mut App) {
     for c in "/tasks".chars() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
@@ -1460,6 +1695,36 @@ fn agent_picker_exposes_names_models_and_status() {
     assert_eq!(agent.label(), "Agent: research");
     assert_eq!(agent.suffix(), Some("openai/test-model"));
     assert_eq!(agent.detail(), Some(TASK_RUNNING_DETAIL));
+}
+
+#[test]
+fn restored_subagent_transcript_can_branch_without_replaying_tools() {
+    let mut app = app_with_subagent();
+    let transcript = vec![
+        Message::user("review this".into()),
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text {
+                text: "found an issue".into(),
+            }],
+            ..Message::default()
+        },
+    ];
+    app.state
+        .session
+        .subagent_messages
+        .insert("task1".into(), transcript);
+    open_tasks_picker(&mut app);
+    app.update(Msg::Key(key(KeyCode::Down)));
+
+    let actions = app.update(Msg::Key(key(KeyCode::Char('r'))));
+    let [Action::ContinueSubagent { name, messages }] = actions.as_slice() else {
+        panic!("expected persisted transcript continuation");
+    };
+    assert_eq!(name, "research");
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].first_text_content(), Some("review this"));
+    assert_eq!(messages[1].first_text_content(), Some("found an issue"));
 }
 
 #[test]
@@ -3171,6 +3436,24 @@ fn typing_in_running_subagent_routes_prompt_to_that_agent() {
     assert_eq!(app.chats[1].last_message_text(), "hi");
     assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::User));
 }
+#[test]
+fn selected_subagent_chat_renders_typeable_input() {
+    let (mut app, _prompt_rx) = app_with_steerable_subagent("task1");
+    app.update(Msg::Key(key(KeyCode::Char('h'))));
+    app.update(Msg::Key(key(KeyCode::Char('i'))));
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+
+    terminal.draw(|frame| app.view(frame)).unwrap();
+
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(ratatui::buffer::Cell::symbol)
+        .collect::<String>();
+    assert!(rendered.contains("hi"));
+}
 
 #[test]
 fn typing_in_read_only_subagent_flashes_explanation() {
@@ -3179,6 +3462,41 @@ fn typing_in_read_only_subagent_flashes_explanation() {
     app.update(Msg::Key(key(KeyCode::Enter)));
 
     assert_eq!(app.status_bar.flash_text(), Some(STEERING_UNAVAILABLE_MSG));
+    assert_eq!(
+        app.input_box.submit().map(|submission| submission.text),
+        Some("h".into())
+    );
+}
+
+#[test]
+fn pending_follow_up_does_not_capture_another_agents_input() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    let (first_tx, first_rx) = flume::bounded(2);
+    let (second_tx, second_rx) = flume::bounded(2);
+    for (id, tx) in [("first", first_tx), ("second", second_tx)] {
+        app.update(Msg::Agent(Box::new(Envelope {
+            event: AgentEvent::TextDelta { text: id.into() },
+            subagent: Some(subagent_info_with_channels(id, "group", id, None, Some(tx))),
+            run_id: 1,
+        })));
+    }
+    app.pending_input = PendingInput::SubagentFollowUp {
+        subagent_id: "first".into(),
+    };
+    app.active_chat = app.chat_index["second"];
+
+    app.update(Msg::Key(key(KeyCode::Char('h'))));
+    app.update(Msg::Key(key(KeyCode::Char('i'))));
+    app.update(Msg::Key(key(KeyCode::Enter)));
+
+    assert!(first_rx.try_recv().is_err());
+    assert_eq!(second_rx.try_recv().unwrap().text, "hi");
+    assert!(matches!(
+        app.pending_input,
+        PendingInput::SubagentFollowUp { ref subagent_id } if subagent_id == "first"
+    ));
 }
 
 fn app_with_subagent_tx(id: &str) -> (App, flume::Receiver<String>, flume::Receiver<String>) {
@@ -3355,6 +3673,7 @@ fn auth_retry_in_subagent_routes_to_subagent_channel() {
         "sub1",
         Some("research"),
     ));
+    app.active_chat = app.chat_index["sub1"];
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
 
     assert!(actions.is_empty());
@@ -3599,19 +3918,27 @@ fn streaming_app_with_history() -> App {
 #[test_case(
     AgentEvent::Error { message: "timeout".into() } ; "stale_error_saves_session"
 )]
-fn stale_terminal_event_after_cancel_saves_session(event: AgentEvent) {
+fn cancelled_session_keeps_history_when_stale_terminal_arrives(event: AgentEvent) {
     let mut app = streaming_app_with_history();
     let old_run_id = app.run_id;
     cancel_app(&mut app);
     assert_ne!(app.run_id, old_run_id);
-    assert!(app.state.session.messages.is_empty());
+    assert_eq!(app.state.session.messages.len(), 2);
+    assert_eq!(
+        app.state.session.meta.lifecycle,
+        SessionLifecycle::Cancelled
+    );
 
     app.update(agent_msg_with_run_id(event, old_run_id));
     assert_eq!(app.state.session.messages.len(), 2);
+    assert_eq!(
+        app.state.session.meta.lifecycle,
+        SessionLifecycle::Cancelled
+    );
 }
 
 #[test]
-fn stale_non_terminal_event_does_not_save_session() {
+fn stale_non_terminal_event_preserves_cancelled_snapshot() {
     let mut app = streaming_app_with_history();
     let old_run_id = app.run_id;
     cancel_app(&mut app);
@@ -3625,7 +3952,11 @@ fn stale_non_terminal_event_does_not_save_session() {
         })),
         old_run_id,
     ));
-    assert!(app.state.session.messages.is_empty());
+    assert_eq!(app.state.session.messages.len(), 2);
+    assert_eq!(
+        app.state.session.meta.lifecycle,
+        SessionLifecycle::Cancelled
+    );
 }
 
 #[test]

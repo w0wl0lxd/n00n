@@ -300,6 +300,13 @@ pub fn timeout_annotation(secs: u64) -> String {
 pub type LocalToolFn = Arc<dyn Fn(&Value) -> Result<String, String> + Send + Sync>;
 pub type LocalTools = Arc<HashMap<String, LocalToolFn>>;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DelegationPolicy {
+    #[default]
+    Configured,
+    ExploreOnly,
+}
+
 #[derive(Clone)]
 pub struct ToolContext {
     pub provider: Arc<dyn Provider>,
@@ -307,6 +314,7 @@ pub struct ToolContext {
     pub event_tx: EventSender,
     pub mode: Arc<AgentMode>,
     pub tool_use_id: Option<String>,
+    pub session_id: Option<SessionRef>,
     pub user_response_rx: Option<Arc<async_lock::Mutex<flume::Receiver<String>>>>,
     pub loaded_instructions: LoadedInstructions,
     pub cancel: CancelToken,
@@ -323,6 +331,7 @@ pub struct ToolContext {
     pub subagent_cancels: Arc<CancelMap<String>>,
     pub registry: Arc<ToolRegistry>,
     pub tool_filter: ToolFilter,
+    pub delegation_policy: DelegationPolicy,
     pub workflow: bool,
     pub audience: ToolAudience,
     pub local_tools: LocalTools,
@@ -574,6 +583,7 @@ pub fn interpreter_ctx(
         event_tx: event_tx.clone(),
         mode: Arc::new(mode.clone()),
         tool_use_id: None,
+        session_id: None,
         user_response_rx,
         loaded_instructions: LoadedInstructions::new(),
         cancel,
@@ -590,6 +600,7 @@ pub fn interpreter_ctx(
         subagent_cancels: Arc::new(CancelMap::new()),
         registry,
         tool_filter: ToolFilter::All,
+        delegation_policy: DelegationPolicy::Configured,
         workflow: false,
         audience: ToolAudience::MAIN,
         local_tools: LocalTools::default(),

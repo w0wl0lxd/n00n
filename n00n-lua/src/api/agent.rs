@@ -17,8 +17,8 @@ use n00n_agent::cancel::CancelMap;
 use n00n_agent::tools::interpreter_bridge;
 use n00n_agent::tools::registry::ToolRegistry;
 use n00n_agent::tools::{
-    Deadline, DescriptionContext, FileReadTracker, LocalToolFn, LocalTools, ToolAudience,
-    ToolContext, ToolFilter, ToolLive,
+    Deadline, DelegationPolicy, DescriptionContext, FileReadTracker, LocalToolFn, LocalTools,
+    ToolAudience, ToolContext, ToolFilter, ToolLive,
 };
 use n00n_agent::{
     Agent, AgentEvent, AgentInput, AgentMode, AgentParams, AgentRunParams, Envelope, EventSender,
@@ -116,6 +116,14 @@ fn parse_session_mode(
 type Pair<T> = (Option<T>, Option<String>);
 
 #[allow(clippy::needless_pass_by_value)]
+fn parse_delegation_policy(value: Option<&str>) -> Result<DelegationPolicy, String> {
+    match value {
+        None | Some("configured") => Ok(DelegationPolicy::Configured),
+        Some("explore_only") => Ok(DelegationPolicy::ExploreOnly),
+        Some(value) => Err(format!("unknown delegation policy: {value}")),
+    }
+}
+
 fn explicit_tool_filter(tools: &JsonValue) -> Result<ToolFilter, String> {
     let definitions = tools
         .as_array()
@@ -621,6 +629,7 @@ async fn call_tool(
 ///   `fast` (boolean?) - use fast mode. Inherits parent setting if omitted.
 ///   `include_mcp` (boolean?) - inherit the parent MCP handle. Default: `true`.
 ///   `except` (string[]?) - tool names that remain unavailable if loaded later.
+///   `delegation_policy` (string?) - internal delegation gate. Defaults to `"configured"`.
 /// @return (Session?, string?) Session handle, or `(nil, err)` on failure.
 /// @example
 /// local tools = n00n.agent.tools(ctx, { audience = "general_sub" })
@@ -663,6 +672,11 @@ async fn session(
         &agent_ctx.mode,
     ) {
         Ok(mode) => mode,
+        Err(error) => return Ok(err_pair(error)),
+    };
+    let delegation_policy_value: Option<String> = opts.get("delegation_policy")?;
+    let delegation_policy = match parse_delegation_policy(delegation_policy_value.as_deref()) {
+        Ok(policy) => policy,
         Err(error) => return Ok(err_pair(error)),
     };
     let audience = match opts.get::<Option<String>>("audience")? {
@@ -820,8 +834,7 @@ async fn session(
                     AgentEvent::ToolDone(e) => {
                         progress.record_done(e);
                     }
-                    AgentEvent::Error { .. }
-                    | AgentEvent::ToolOutput { .. }
+                    AgentEvent::ToolOutput { .. }
                     | AgentEvent::ToolPending { .. }
                     | AgentEvent::SubagentHistory { .. } => continue,
                     _ => {}
@@ -841,6 +854,8 @@ async fn session(
     let name = name.unwrap_or_else(|| format!("session-{child_id}"));
     info!(name = %name, model = %model.id, "subagent session opened");
 
+    let parent_cancels = Arc::clone(&agent_ctx.subagent_cancels);
+    let session_child_id = child_id.clone();
     let state = SessionState {
         params: AgentParams {
             provider,
@@ -861,6 +876,7 @@ async fn session(
         tools: tools_json,
         tool_filter,
         allow_dynamic_mcp_tools,
+        delegation_policy,
         thinking,
         fast,
         mode,
@@ -879,7 +895,7 @@ async fn session(
         answer_tx: Some(answer_tx),
         prompt_rx,
         prompt_tx: Some(prompt_tx),
-        parent_cancels: Arc::clone(&agent_ctx.subagent_cancels),
+        parent_cancels: Arc::clone(&parent_cancels),
         child_id,
         parent_tool_use_id,
         parent_event_tx: parent_tx,
@@ -897,6 +913,8 @@ async fn session(
     let sess = lua.create_userdata(LuaSession {
         inner: Arc::new(AsyncMutex::new(state)),
         progress,
+        parent_cancels,
+        child_id: session_child_id,
     })?;
     Ok((Some(sess), None))
 }
@@ -1369,6 +1387,7 @@ struct SessionState {
     tools: JsonValue,
     tool_filter: ToolFilter,
     allow_dynamic_mcp_tools: bool,
+    delegation_policy: DelegationPolicy,
     thinking: ThinkingConfig,
     fast: bool,
     mode: AgentMode,
@@ -1457,6 +1476,8 @@ impl n00n_agent::InterruptSource for PromptInterruptSource {
 struct LuaSession {
     inner: Arc<AsyncMutex<SessionState>>,
     progress: Arc<Progress>,
+    parent_cancels: Arc<CancelMap<String>>,
+    child_id: String,
 }
 
 impl Drop for LuaSession {
@@ -1546,6 +1567,7 @@ async fn prompt(
         .with_cancel(s.child_cancel.clone())
         .with_mcp(s.mcp.clone())
         .with_dynamic_mcp_tools(s.allow_dynamic_mcp_tools)
+        .with_delegation_policy(s.delegation_policy)
         .with_local_tools(Arc::clone(&s.local_tools));
 
         let input = AgentInput {
@@ -1674,11 +1696,9 @@ async fn get_progress(lua: Lua, this: mlua::UserDataRef<LuaSession>) -> LuaResul
 ///
 /// @return
 #[lua_fn]
-async fn cancel(_lua: Lua, this: mlua::UserDataRef<LuaSession>) -> LuaResult<()> {
-    let inner = Arc::clone(&this.inner);
-    drop(this);
-    let s = inner.lock().await;
-    s.parent_cancels.cancel_or_precancel(s.child_id.clone());
+fn cancel(_lua: &Lua, this: &LuaSession) -> LuaResult<()> {
+    this.parent_cancels
+        .cancel_or_precancel(this.child_id.clone());
     Ok(())
 }
 
@@ -2209,6 +2229,14 @@ mod tests {
         assert!(raised.contains("boom"), "got: {raised}");
         let wrong = call("function() return 42 end", &input).unwrap_err();
         assert!(wrong.contains("expected string"), "got: {wrong}");
+    }
+
+    #[test_case(None, Ok(DelegationPolicy::Configured) ; "default_configured")]
+    #[test_case(Some("configured"), Ok(DelegationPolicy::Configured) ; "explicit_configured")]
+    #[test_case(Some("explore_only"), Ok(DelegationPolicy::ExploreOnly) ; "explore_only")]
+    #[test_case(Some("invalid"), Err("unknown delegation policy: invalid".to_owned()) ; "invalid")]
+    fn delegation_policy_parsing(value: Option<&str>, expected: Result<DelegationPolicy, String>) {
+        assert_eq!(parse_delegation_policy(value), expected);
     }
 
     #[test_case(Some("build"), None, AgentMode::Build ; "build")]

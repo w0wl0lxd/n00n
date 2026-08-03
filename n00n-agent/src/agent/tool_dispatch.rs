@@ -33,6 +33,7 @@ const CODE_EXECUTION_BLOCKED_IN_PLAN: &str = "code_execution is not available in
 const UNKNOWN_TOOL_PREFIX: &str = "unknown tool";
 const TOOL_AUDIENCE_DENIED: &str = "tool is not available to this agent audience";
 const TOOL_FILTER_DENIED: &str = "tool is not available in this session";
+const DELEGATION_POLICY_DENIED: &str = "task agents may delegate only to explore";
 const BASH_BLOCKED_IN_PLAN: &str = "bash command is not provably read-only in plan mode";
 pub(super) const FUSION_DELEGATE_BLOCKED: &str = "fusion_delegate is unavailable for this request";
 const FUSION_REQUIRED_BRIEF_FIELDS: &[&str] = &["description", "goal", "definition_of_done"];
@@ -262,6 +263,14 @@ struct PendingToolCall {
     fusion_delegate_authorized: bool,
 }
 
+fn delegation_policy_denied(name: &str, ctx: &ToolContext) -> Option<String> {
+    const DELEGATION_TOOLS: &[&str] = &["fusion_delegate", "task", "team", "workflow"];
+
+    (ctx.delegation_policy == crate::tools::DelegationPolicy::ExploreOnly
+        && DELEGATION_TOOLS.contains(&name))
+    .then(|| DELEGATION_POLICY_DENIED.to_owned())
+}
+
 fn skill_policy_denied(name: &str, ctx: &ToolContext) -> Option<String> {
     let policy = ctx.active_skill_policy.as_ref()?;
     let decision = policy.evaluate(name);
@@ -369,6 +378,9 @@ async fn run_authorized(
 ) -> ToolDoneEvent {
     // GPT-5.6 was likely trained on Codex sessions where tools are `functions.<name>`
     let name = name.strip_prefix("functions.").map_or(name, |value| value);
+    if let Some(reason) = delegation_policy_denied(name, ctx) {
+        return tool_done_error(id, Arc::from(name), reason);
+    }
     if name == crate::fusion::FUSION_DELEGATE_TOOL && !fusion_delegate_authorized {
         return tool_done_error(
             id,
@@ -1029,6 +1041,26 @@ mod tests {
             .collect();
         let input = serde_json::json!({"path": "/a"});
         assert_eq!(recent_calls(&entries).is_doom_loop(name, &input), expected);
+    }
+
+    #[test_case(crate::tools::DelegationPolicy::ExploreOnly, "task", true ; "task_denied")]
+    #[test_case(crate::tools::DelegationPolicy::ExploreOnly, "team", true ; "team_denied")]
+    #[test_case(crate::tools::DelegationPolicy::ExploreOnly, "workflow", true ; "workflow_denied")]
+    #[test_case(crate::tools::DelegationPolicy::ExploreOnly, "fusion_delegate", true ; "fusion_denied")]
+    #[test_case(crate::tools::DelegationPolicy::ExploreOnly, "explore", false ; "explore_allowed")]
+    #[test_case(crate::tools::DelegationPolicy::ExploreOnly, "read", false ; "ordinary_tool_allowed")]
+    #[test_case(crate::tools::DelegationPolicy::Configured, "task", false ; "configured_delegation_allowed")]
+    fn delegation_policy_blocks_nested_agents(
+        policy: crate::tools::DelegationPolicy,
+        tool: &str,
+        expected_denied: bool,
+    ) {
+        let mut ctx = crate::tools::test_support::stub_ctx(&Arc::new(AgentMode::Build));
+        ctx.delegation_policy = policy;
+        assert_eq!(
+            delegation_policy_denied(tool, &ctx).is_some(),
+            expected_denied
+        );
     }
 
     fn local_ctx(
