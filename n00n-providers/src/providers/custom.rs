@@ -343,7 +343,6 @@ impl Provider for CustomOpenAiProvider {
                     event_tx,
                     &auth,
                     self.compat.stream_timeout(),
-                    &opts,
                 )
                 .await
                 .map(|(_, response)| response);
@@ -363,7 +362,7 @@ impl Provider for CustomOpenAiProvider {
                 body["thinking"] = serde_json::json!({"type": "disabled"});
             }
             self.compat
-                .do_stream(model, &[], &body, event_tx, &auth, &opts)
+                .do_stream(model, &[], &body, event_tx, &auth)
                 .await
         })
     }
