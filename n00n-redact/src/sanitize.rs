@@ -47,8 +47,13 @@ pub fn sanitize_text(raw: &str, max_chars: usize) -> String {
     let mut index = 0;
     while index < words.len() {
         let word = words[index];
-        if word.eq_ignore_ascii_case("bearer") {
-            sanitized.push(format!("Bearer {REDACTED}"));
+        if is_authentication_scheme(word) {
+            let scheme = if word.eq_ignore_ascii_case("basic") {
+                "Basic"
+            } else {
+                "Bearer"
+            };
+            sanitized.push(format!("{scheme} {REDACTED}"));
             index = index.saturating_add(2);
             continue;
         }
@@ -214,6 +219,12 @@ mod tests {
     fn redacts_basic_auth_credentials_completely() {
         let sanitized = sanitize_text("Authorization: Basic dXNlcjpwYXNz trailing", 80);
         assert_eq!(sanitized, "Authorization:[REDACTED] trailing");
+    }
+
+    #[test]
+    fn redacts_standalone_basic_auth_credentials() {
+        let sanitized = sanitize_text("value Basic dXNlcjpwYXNz trailing", 80);
+        assert_eq!(sanitized, "value Basic [REDACTED] trailing");
     }
 
     #[test]
