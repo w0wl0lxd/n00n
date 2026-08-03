@@ -130,6 +130,7 @@ fn message_one(
             text: text.to_owned(),
             steer: opts.steer,
             control: opts.control,
+            caller_id: None,
         },
     )
     .map_err(|e| map_not_found(id, e))?;
@@ -150,6 +151,7 @@ fn resume_one(tx: &flume::Sender<UiAction>, id: &str) -> ControlResult<()> {
             text: prompt,
             steer: true,
             control: true,
+            caller_id: None,
         },
     )
     .map_err(|e| map_not_found(id, e))?;
@@ -361,10 +363,16 @@ mod tests {
                         text,
                         steer,
                         control,
+                        caller_id,
                     } => {
-                        if id.as_deref() != Some("sess-1") || text != "hi" || !steer || !control {
+                        if id.as_deref() != Some("sess-1")
+                            || text != "hi"
+                            || !steer
+                            || !control
+                            || caller_id.is_some()
+                        {
                             let _ = reply_tx.send(Err(format!(
-                                "unexpected prompt id={id:?} text={text:?} steer={steer} control={control}"
+                                "unexpected prompt id={id:?} text={text:?} steer={steer} control={control} caller_id={caller_id:?}"
                             )));
                             return;
                         }
@@ -412,10 +420,15 @@ mod tests {
                         text,
                         steer,
                         control,
+                        caller_id,
                     } => {
-                        if id.as_deref() != Some("sess-1") || !steer || !control {
+                        if id.as_deref() != Some("sess-1")
+                            || !steer
+                            || !control
+                            || caller_id.is_some()
+                        {
                             let _ = reply_tx.send(Err(format!(
-                                "unexpected prompt id={id:?} steer={steer} control={control}"
+                                "unexpected prompt id={id:?} steer={steer} control={control} caller_id={caller_id:?}"
                             )));
                             return;
                         }

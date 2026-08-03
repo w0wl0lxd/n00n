@@ -884,6 +884,7 @@ impl<'h> Agent<'h> {
             event_tx: self.event_tx.clone(),
             mode: Arc::clone(&self.mode),
             tool_use_id: None,
+            session_id: self.session_id.clone(),
             user_response_rx: self.user_response_rx.clone(),
             loaded_instructions: self.loaded_instructions.clone(),
             cancel: self.cancel.clone(),
@@ -2175,6 +2176,18 @@ mod tests {
             },
         );
         (agent, event_rx)
+    }
+
+    #[test]
+    fn tool_context_preserves_agent_session_id() {
+        let mut history = History::new(Vec::new());
+        let (mut agent, _event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
+        let session_id = SessionRef::generate();
+        agent.session_id = Some(session_id.clone());
+
+        let ctx = agent.tool_context();
+
+        assert_eq!(ctx.session_id, Some(session_id));
     }
 
     fn make_agent_with_config(

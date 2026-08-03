@@ -7,6 +7,7 @@ use n00n_lua_macro::{lua_fn, lua_table};
 
 use crate::api::util::command::{SessionReply, SessionRequest, UiAction};
 use crate::api::util::convert::json_to_lua;
+use crate::runtime::active_session_id;
 
 const NO_UI_ERR: &str = "no interactive UI attached";
 
@@ -127,6 +128,7 @@ async fn new(
     #[ctx] tx: Option<flume::Sender<UiAction>>,
     opts: Option<Table>,
 ) -> LuaResult<Pair> {
+    let caller_id = active_session_id(&lua);
     let (prompt, focus, parent_id) = match opts {
         Some(opts) => (
             opts.get("prompt")?,
@@ -142,6 +144,7 @@ async fn new(
             prompt,
             focus,
             parent_id,
+            caller_id,
         },
     )
     .await
@@ -167,6 +170,7 @@ async fn prompt(
     text: String,
     opts: Option<Table>,
 ) -> LuaResult<Pair> {
+    let caller_id = active_session_id(&lua);
     let (id, steer, control) = match opts {
         Some(opts) => (
             opts.get("session")?,
@@ -183,6 +187,7 @@ async fn prompt(
             text,
             steer,
             control,
+            caller_id,
         },
     )
     .await
@@ -234,14 +239,75 @@ lua_table! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use n00n_agent::cancel::CancelToken;
+    use n00n_storage::id::SessionRef;
     use serde_json::json;
     use test_case::test_case;
+
+    use crate::runtime::{TaskCell, TaskScope};
 
     fn lua_with_session(tx: Option<flume::Sender<UiAction>>) -> Lua {
         let lua = Lua::new();
         let t = create_session_table(&lua, tx).unwrap();
         lua.globals().set("session", t).unwrap();
         lua
+    }
+
+    #[test]
+    fn session_requests_attach_runtime_caller_id_not_lua_option() {
+        let (tx, rx) = flume::unbounded::<UiAction>();
+        let caller_id = SessionRef::generate();
+        let lua = lua_with_session(Some(tx));
+        let _scope = TaskScope::new(
+            &lua,
+            TaskCell::new(CancelToken::none(), None, None, Some(caller_id.clone())),
+        );
+        let expected_caller_id = caller_id.clone();
+        let checker = std::thread::spawn(move || {
+            let Ok(UiAction::Session {
+                req:
+                    SessionRequest::New {
+                        caller_id: actual_caller_id,
+                        ..
+                    },
+                reply_tx,
+            }) = rx.recv()
+            else {
+                panic!("expected new request");
+            };
+            assert_eq!(actual_caller_id.as_ref(), Some(&expected_caller_id));
+            reply_tx.send(Ok(json!("child"))).unwrap();
+            let Ok(UiAction::Session {
+                req:
+                    SessionRequest::Prompt {
+                        caller_id: actual_caller_id,
+                        ..
+                    },
+                reply_tx,
+            }) = rx.recv()
+            else {
+                panic!("expected prompt request");
+            };
+            assert_eq!(actual_caller_id.as_ref(), Some(&expected_caller_id));
+            reply_tx.send(Ok(json!("queued"))).unwrap();
+        });
+
+        let (child_id, prompt_status): (String, String) = smol::block_on(
+            lua.load(
+                r#"
+                local child, new_err = session.new({ caller_id = "spoof" })
+                if new_err then error(new_err) end
+                local status, prompt_err = session.prompt("hello", { caller_id = "spoof" })
+                if prompt_err then error(prompt_err) end
+                return child, status
+                "#,
+            )
+            .eval_async(),
+        )
+        .unwrap();
+        checker.join().unwrap();
+        assert_eq!(child_id, "child");
+        assert_eq!(prompt_status, "queued");
     }
 
     #[test]
@@ -340,6 +406,7 @@ mod tests {
                         text,
                         steer,
                         control,
+                        caller_id,
                     },
                 reply_tx,
             }) = rx.recv()
@@ -350,6 +417,7 @@ mod tests {
             assert_eq!(text, "hi");
             assert_eq!(steer, expected_steer);
             assert_eq!(control, expected_control);
+            assert_eq!(caller_id, None);
             reply_tx.send(Ok(json!("queued"))).unwrap();
         });
         let (val, err): (String, Option<String>) =

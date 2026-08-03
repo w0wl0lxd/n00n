@@ -945,6 +945,7 @@ impl<'t> EventLoop<'t> {
                 prompt,
                 focus,
                 parent_id,
+                caller_id: _,
             } => {
                 let mut session = {
                     let slot = self.ctx.model_slot.load();
@@ -984,6 +985,7 @@ impl<'t> EventLoop<'t> {
                 text,
                 steer,
                 control,
+                caller_id: _,
             } => {
                 let idx = match id {
                     None => Ok(self.focused),
