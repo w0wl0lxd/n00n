@@ -64,29 +64,34 @@ enum GitHubError {
     RateLimited { retry_after: Option<u64> },
 }
 
-fn get_token(provided_token: Option<String>, gh_tried: Arc<AtomicBool>) -> Option<String> {
-    if let Ok(t) = env::var("GITHUB_TOKEN") {
+fn resolve_token(
+    provided_token: Option<String>,
+    gh_tried: Arc<AtomicBool>,
+    env_token: Option<String>,
+) -> Option<String> {
+    if let Some(t) = env_token {
         return Some(t);
     }
     if let Some(t) = provided_token {
         return Some(t);
     }
-    if !gh_tried.swap(true, Ordering::SeqCst) {
-        if let Ok(output) = std::process::Command::new("gh")
+    if !gh_tried.swap(true, Ordering::SeqCst)
+        && let Ok(output) = std::process::Command::new("gh")
             .args(["auth", "token"])
             .output()
-        {
-            if output.status.success() {
-                if let Ok(token) = String::from_utf8(output.stdout) {
-                    let token = token.trim().to_string();
-                    if !token.is_empty() {
-                        return Some(token);
-                    }
-                }
-            }
+        && output.status.success()
+        && let Ok(token) = String::from_utf8(output.stdout)
+    {
+        let token = token.trim().to_string();
+        if !token.is_empty() {
+            return Some(token);
         }
     }
     None
+}
+
+fn get_token(provided_token: Option<String>, gh_tried: Arc<AtomicBool>) -> Option<String> {
+    resolve_token(provided_token, gh_tried, env::var("GITHUB_TOKEN").ok())
 }
 
 fn check_rate_limit(response: &reqwest::blocking::Response) -> Result<(), GitHubError> {
@@ -148,8 +153,9 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
     let t = lua.create_table()?;
     let gh_tried = Arc::new(AtomicBool::new(false));
 
-    let list_issues_fn = lua.create_function(
-        |lua, (owner, repo, token): (String, String, Option<String>)| {
+    let list_issues_fn = lua.create_function({
+        let gh_tried = Arc::clone(&gh_tried);
+        move |lua, (owner, repo, token): (String, String, Option<String>)| {
             let client = create_client()?;
             let token = get_token(token, Arc::clone(&gh_tried));
 
@@ -173,12 +179,14 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
 
             let issues: Vec<GitHubIssue> = response.json().map_err(map_err)?;
             value_or_err(lua, Ok(issues))
-        },
-    )?;
+        }
+    })?;
     t.set("list_issues", list_issues_fn)?;
 
     let create_issue_fn = lua.create_function(
-        |lua,
+        {
+            let gh_tried = Arc::clone(&gh_tried);
+            move |lua,
          (owner, repo, title, body, token): (
             String,
             String,
@@ -219,12 +227,13 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
 
             let issue: GitHubIssue = response.json().map_err(map_err)?;
             value_or_err(lua, Ok(issue))
-        },
-    )?;
+        }
+    })?;
     t.set("create_issue", create_issue_fn)?;
 
-    let list_prs_fn = lua.create_function(
-        |lua, (owner, repo, token): (String, String, Option<String>)| {
+    let list_prs_fn = lua.create_function({
+        let gh_tried = Arc::clone(&gh_tried);
+        move |lua, (owner, repo, token): (String, String, Option<String>)| {
             let client = create_client()?;
             let token = get_token(token, Arc::clone(&gh_tried));
 
@@ -248,12 +257,13 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
 
             let prs: Vec<GitHubPullRequest> = response.json().map_err(map_err)?;
             value_or_err(lua, Ok(prs))
-        },
-    )?;
+        }
+    })?;
     t.set("list_prs", list_prs_fn)?;
 
-    let get_repo_fn = lua.create_function(
-        |lua, (owner, repo, token): (String, String, Option<String>)| {
+    let get_repo_fn = lua.create_function({
+        let gh_tried = Arc::clone(&gh_tried);
+        move |lua, (owner, repo, token): (String, String, Option<String>)| {
             let client = create_client()?;
             let token = get_token(token, Arc::clone(&gh_tried));
 
@@ -277,12 +287,13 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
 
             let repo_info: GitHubRepository = response.json().map_err(map_err)?;
             value_or_err(lua, Ok(repo_info))
-        },
-    )?;
+        }
+    })?;
     t.set("get_repo", get_repo_fn)?;
 
-    let get_issue_fn = lua.create_function(
-        |lua, (owner, repo, issue_number, token): (String, String, u64, Option<String>)| {
+    let get_issue_fn = lua.create_function({
+        let gh_tried = Arc::clone(&gh_tried);
+        move |lua, (owner, repo, issue_number, token): (String, String, u64, Option<String>)| {
             let client = create_client()?;
             let token = get_token(token, Arc::clone(&gh_tried));
 
@@ -306,12 +317,13 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
 
             let issue: GitHubIssue = response.json().map_err(map_err)?;
             value_or_err(lua, Ok(issue))
-        },
-    )?;
+        }
+    })?;
     t.set("get_issue", get_issue_fn)?;
 
-    let get_pr_fn = lua.create_function(
-        |lua, (owner, repo, pr_number, token): (String, String, u64, Option<String>)| {
+    let get_pr_fn = lua.create_function({
+        let gh_tried = Arc::clone(&gh_tried);
+        move |lua, (owner, repo, pr_number, token): (String, String, u64, Option<String>)| {
             let client = create_client()?;
             let token = get_token(token, Arc::clone(&gh_tried));
 
@@ -335,8 +347,8 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
 
             let pr: GitHubPullRequest = response.json().map_err(map_err)?;
             value_or_err(lua, Ok(pr))
-        },
-    )?;
+        }
+    })?;
     t.set("get_pr", get_pr_fn)?;
 
     let create_pr_fn = lua.create_function(
@@ -760,32 +772,39 @@ mod tests {
     }
 
     #[test]
-    fn test_get_token_priority_env_var() {
+    fn resolve_token_prefers_env_over_provided() {
         let gh_tried = Arc::new(AtomicBool::new(false));
-        env::set_var("GITHUB_TOKEN", "env_token");
-        let token = get_token(Some("provided_token".to_string()), Arc::clone(&gh_tried));
+        let token = resolve_token(
+            Some("provided_token".to_string()),
+            Arc::clone(&gh_tried),
+            Some("env_token".to_string()),
+        );
         assert_eq!(token, Some("env_token".to_string()));
         assert!(!gh_tried.load(Ordering::SeqCst));
-        env::remove_var("GITHUB_TOKEN");
     }
 
     #[test]
-    fn test_get_token_priority_provided() {
+    fn resolve_token_falls_back_to_provided() {
         let gh_tried = Arc::new(AtomicBool::new(false));
-        let token = get_token(Some("provided_token".to_string()), Arc::clone(&gh_tried));
+        let token = resolve_token(
+            Some("provided_token".to_string()),
+            Arc::clone(&gh_tried),
+            None,
+        );
         assert_eq!(token, Some("provided_token".to_string()));
         assert!(!gh_tried.load(Ordering::SeqCst));
     }
 
     #[test]
-    fn test_get_token_priority_none_tries_gh_once() {
+    fn resolve_token_tries_gh_only_once() {
         let gh_tried = Arc::new(AtomicBool::new(false));
-        let token1 = get_token(None, Arc::clone(&gh_tried));
-        assert_eq!(token1, None);
+        // gh may or may not be installed, so we only assert the state change
+        // and that the second call does not retry the gh fallback.
+        let _first = resolve_token(None, Arc::clone(&gh_tried), None);
         assert!(gh_tried.load(Ordering::SeqCst));
 
-        let token2 = get_token(None, Arc::clone(&gh_tried));
-        assert_eq!(token2, None);
+        let second = resolve_token(None, Arc::clone(&gh_tried), None);
+        assert_eq!(second, None);
         assert!(gh_tried.load(Ordering::SeqCst));
     }
 
