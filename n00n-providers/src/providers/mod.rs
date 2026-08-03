@@ -188,7 +188,7 @@ pub struct KeyPool {
 impl KeyPool {
     pub fn from_env(env_var: &str) -> Result<Self, AgentError> {
         let raw = std::env::var(env_var).map_err(|error| match error {
-            std::env::VarError::NotPresent => AgentError::MissingCredentials {
+            std::env::VarError::NotPresent => AgentError::Config {
                 message: format!("{env_var} not set"),
             },
             std::env::VarError::NotUnicode(_) => AgentError::Config {
@@ -201,7 +201,7 @@ impl KeyPool {
             .filter(|s| !s.is_empty())
             .collect();
         if keys.is_empty() {
-            return Err(AgentError::MissingCredentials {
+            return Err(AgentError::Config {
                 message: format!("{env_var} is empty"),
             });
         }
@@ -228,7 +228,7 @@ impl KeyPool {
             return Ok(Self::from_keys(vec![key]));
         }
         match env_error {
-            AgentError::MissingCredentials { .. } => Err(AgentError::MissingCredentials {
+            AgentError::Config { .. } => Err(AgentError::Config {
                 message: format!(
                     "{env_var} not set and no saved credentials for '{slug}' — run `n00n auth login {slug}`"
                 ),

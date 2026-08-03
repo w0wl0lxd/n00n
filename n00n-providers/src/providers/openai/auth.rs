@@ -913,7 +913,7 @@ pub(crate) fn resolve_api_key(dir: &StateDir) -> Result<ResolvedAuth, AgentError
         });
     }
 
-    Err(AgentError::MissingCredentials {
+    Err(AgentError::Config {
         message: "not authenticated, set OPENAI_API_KEY or run `n00n auth login openai`".into(),
     })
 }

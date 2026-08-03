@@ -634,7 +634,7 @@ impl<'h> Agent<'h> {
                 }
                 return self.wait_for_reauth(e).await;
             }
-            Err(e) if e.is_cancelled() => {
+            Err(e) if matches!(e, n00n_providers::AgentError::Cancelled) => {
                 debug!(error = %e, model = %self.model.id, self.num_turns, "stream_message cancelled");
                 return Err(e);
             }
