@@ -43,6 +43,56 @@ local function is_unix()
   return true
 end
 
+local function parse_command_args(command_text)
+  local parts = {}
+  local current = {}
+  local quote = nil
+  local escaped = false
+  local token_started = false
+
+  for index = 1, #command_text do
+    local char = command_text:sub(index, index)
+    if escaped then
+      current[#current + 1] = char
+      escaped = false
+      token_started = true
+    elseif char == "\\" and quote ~= "'" then
+      escaped = true
+      token_started = true
+    elseif quote then
+      if char == quote then
+        quote = nil
+      else
+        current[#current + 1] = char
+      end
+      token_started = true
+    elseif char == "'" or char == '"' then
+      quote = char
+      token_started = true
+    elseif char:match("%s") then
+      if token_started then
+        parts[#parts + 1] = table.concat(current)
+        current = {}
+        token_started = false
+      end
+    else
+      current[#current + 1] = char
+      token_started = true
+    end
+  end
+
+  if quote then
+    return nil, "unterminated quote in command_text"
+  end
+  if escaped then
+    return nil, "trailing escape in command_text"
+  end
+  if token_started then
+    parts[#parts + 1] = table.concat(current)
+  end
+  return parts, nil
+end
+
 local function run_tmux(args, timeout_ms)
   local cmd = "tmux " .. args
   local id = n00n.fn.jobstart(cmd)
@@ -128,6 +178,7 @@ local function build_pane_list(output)
 end
 
 local handlers = {}
+local opts
 
 function handlers.list_sessions(input, _ctx)
   local output, err =
@@ -200,7 +251,7 @@ function handlers.new_window(input, _ctx)
   if target == "" then
     return nil, "target or session is required for new_window"
   end
-  local args = "new-window -d -t " .. shell_quote(target)
+  local args = "new-window -d -P -F '#{window_index}' -t " .. shell_quote(target)
   if name ~= "" then
     args = args .. " -n " .. shell_quote(name)
   end
@@ -208,7 +259,7 @@ function handlers.new_window(input, _ctx)
   if not output then
     return nil, err
   end
-  local window_index = output:match("^@(%d+)") or "unknown"
+  local window_index = output:match("(%d+)") or "unknown"
   return { success = true, window_index = window_index, target = target }
 end
 
@@ -247,13 +298,13 @@ function handlers.capture_pane(input, ctx)
   if target == "" then
     return nil, "target or pane is required for capture_pane"
   end
-  local args = "capture-pane -p -t " .. shell_quote(target)
+  local args = "capture-pane -p -J -t " .. shell_quote(target)
   local output, err = run_tmux(args, input.timeout_ms)
   if not output then
     return nil, err
   end
 
-  local max_lines, max_bytes = output_limits.resolve(input, ctx)
+  local max_lines, max_bytes = output_limits.resolve(opts, ctx)
   local truncated = truncate(output, max_lines, max_bytes)
 
   return { output = truncated, target = target }
@@ -264,9 +315,9 @@ function handlers.run_command(input, _ctx)
   if command_text == "" then
     return nil, "command_text is required for run_command"
   end
-  local parts = {}
-  for part in command_text:gmatch("%S+") do
-    parts[#parts + 1] = part
+  local parts, parse_err = parse_command_args(command_text)
+  if not parts then
+    return nil, parse_err
   end
   if #parts == 0 then
     return nil, "command_text is empty for run_command"
@@ -314,12 +365,12 @@ function handlers.break_pane(input, _ctx)
   if target == "" then
     return nil, "target or pane is required for break_pane"
   end
-  local args = "break-pane -d -t " .. shell_quote(target)
+  local args = "break-pane -d -P -F '#{window_index}' -t " .. shell_quote(target)
   local output, err = run_tmux(args, input.timeout_ms)
   if not output then
     return nil, err
   end
-  local window_index = output:match("^@(%d+)") or "unknown"
+  local window_index = output:match("(%d+)") or "unknown"
   return { success = true, window_index = window_index, target = target }
 end
 
@@ -340,7 +391,7 @@ function handlers.join_pane(input, _ctx)
   return { success = true, target = target, source = source }
 end
 
-local opts = n00n.api.register_options(output_limits.extend({
+opts = n00n.api.register_options(output_limits.extend({
   timeout_secs = {
     default = 30,
     min = 1,
@@ -414,6 +465,8 @@ n00n.api.register_tool({
       return { scopes = { "tmux.read" }, force_prompt = false }
     elseif kill_commands[cmd] then
       return { scopes = { "tmux.kill" }, force_prompt = true }
+    elseif cmd == "run_command" then
+      return { scopes = { "tmux.raw" }, force_prompt = true }
     else
       return { scopes = { "tmux.write" }, force_prompt = false }
     end
@@ -477,9 +530,11 @@ n00n.api.register_tool({
       return { llm_output = "error: " .. avail_err, is_error = true }
     end
 
-    local server_running, server_err = check_tmux_server()
-    if not server_running then
-      return { llm_output = "error: " .. server_err, is_error = true }
+    if cmd ~= "new_session" then
+      local server_running, server_err = check_tmux_server()
+      if not server_running then
+        return { llm_output = "error: " .. server_err, is_error = true }
+      end
     end
 
     local timeout_ms = (input.timeout or opts.timeout_secs) * 1000

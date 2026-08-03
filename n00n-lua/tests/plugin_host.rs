@@ -3001,6 +3001,28 @@ fn restore_rebuilds_body_from_input_content(
         "restored body should show content, not the summary: {text}"
     );
 }
+#[test_case::test_case("list_sessions", None, "tmux.read", false ; "read_without_prompt")]
+#[test_case::test_case("kill_session", None, "tmux.kill", true ; "dedicated_kill_forces_prompt")]
+#[test_case::test_case("run_command", Some("kill-server"), "tmux.raw", true ; "raw_command_forces_prompt")]
+fn tmux_permission_scopes(
+    command: &str,
+    command_text: Option<&str>,
+    expected_scope: &str,
+    expected_force_prompt: bool,
+) {
+    let (registry, _host) = builtins_host();
+    let mut input = serde_json::json!({ "command": command });
+    if let Some(command_text) = command_text {
+        input["command_text"] = serde_json::Value::String(command_text.to_owned());
+    }
+    let entry = registry.get("tmux").expect("tmux registered");
+    let invocation = entry.tool.parse(&input).expect("tmux input parses");
+    let scopes =
+        smol::block_on(invocation.permission_scopes()).expect("tmux permission scopes are present");
+
+    assert_eq!(scopes.scopes, [expected_scope]);
+    assert_eq!(scopes.force_prompt, expected_force_prompt);
+}
 
 /// Guards the stale-cancelled-handle bug: `permission_scopes` must call
 /// the plugin callback and return parsed scopes, not fall back to raw JSON.
