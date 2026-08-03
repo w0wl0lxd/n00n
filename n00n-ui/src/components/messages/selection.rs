@@ -35,7 +35,8 @@ pub(super) fn extract_selection_text(
         let Some(seg) = cache.get(i) else { continue };
 
         let rel_start = doc_start.row.saturating_sub(seg_start) as usize;
-        let rel_end = ((doc_end.row + 1).saturating_sub(seg_start) as usize).min(h as usize);
+        let rel_end =
+            (doc_end.row.saturating_add(1).saturating_sub(seg_start) as usize).min(h as usize);
 
         let inset = seg.content_inset();
         let content_x = msg_area.x.saturating_add(inset);
@@ -44,7 +45,7 @@ pub(super) fn extract_selection_text(
         } else {
             doc_start.col.saturating_sub(content_x)
         };
-        let end_col = if seg_end < doc_end.row + 1 {
+        let end_col = if seg_end < doc_end.row.saturating_add(1) {
             width
                 .saturating_sub(inset.saturating_mul(2))
                 .saturating_sub(1)
@@ -54,7 +55,7 @@ pub(super) fn extract_selection_text(
 
         let content_start = content_x + seg.prefix_width;
         let seg_fully_selected = seg_start >= doc_start.row
-            && seg_end <= doc_end.row + 1
+            && seg_end <= doc_end.row.saturating_add(1)
             && doc_start.col <= content_start
             && doc_end.col >= msg_area.x + width - 1;
         if seg_fully_selected && let Some(raw) = &seg.raw_text {
@@ -93,6 +94,9 @@ pub(super) fn extract_selection_text(
             &mut out,
             &breaks,
         );
+    }
+    while out.ends_with('\n') {
+        out.pop();
     }
     out
 }
