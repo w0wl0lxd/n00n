@@ -259,21 +259,20 @@ Mutate a background agent: message, stop, resume, or manage policy. Prefer list_
 | `action` | string | yes | Mutating control action. |
 | `agent_id` | string | no | Target agent id. |
 
-### `run_task` *(lua plugin)*
+### `use_blackboard` *(lua plugin)*
 
-Launch isolated agent; combine independent calls with batch. research (default) = read-only; general = can edit. Each call starts fresh; include context and ask for concise file:line results. Summarize returned results. auto_tier opt-in. background returns agent_id.
+Shared coordination for multi-agent sessions. Post observations, claim tasks atomically, query state.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `description` | string | yes | Task summary (3-5 words). |
-| `model_tier` | string | no | Tier: weak/medium/strong. |
-| `auto_tier` | boolean | no | Auto-route tier from prompt. |
-| `background` | boolean | no | Start in background; return agent_id immediately. |
-| `model` | string | no | Exact model override. |
-| `output_schema` | object | no | Output JSON schema. Result returned as validated JSON string. |
-| `prompt` | string | yes | Task prompt. |
-| `thinking` | string/integer | no | Thinking mode. Omit to inherit. |
-| `subagent_type` | string | no | research (default) or general. |
+| `post` | object | no | Post data. |
+| `only_active` | boolean | no | Active claims only. |
+| `action` | string | yes | Action. |
+| `query` | object | no | Query filters. |
+| `status` | string | no | Status. |
+| `post_id` | string | no | Post id. |
+| `task_id` | string | no | Task id. |
+| `claim` | object | no | Claim data. |
 
 ### `run_team` *(lua plugin)*
 
@@ -304,6 +303,22 @@ Run ALMAS team for SDLC goal. supervised=plan, autonomous=execute, swarm=decentr
 | `thinking` | string/integer | no |  | Thinking mode. Default: "adaptive". |
 | `background` | boolean | no |  | Start in background; return agent_id. |
 | `auto_tier` | boolean | no |  | Auto-route tier from step prompt. |
+
+### `run_task` *(lua plugin)*
+
+Launch isolated agent; combine independent calls with batch. research (default) = read-only; general = can edit. Each call starts fresh; include context and ask for concise file:line results. Summarize returned results. auto_tier opt-in. background returns agent_id.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `description` | string | yes | Task summary (3-5 words). |
+| `model_tier` | string | no | Tier: weak/medium/strong. |
+| `auto_tier` | boolean | no | Auto-route tier from prompt. |
+| `background` | boolean | no | Start in background; return agent_id immediately. |
+| `model` | string | no | Exact model override. |
+| `output_schema` | object | no | Output JSON schema. Result returned as validated JSON string. |
+| `prompt` | string | yes | Task prompt. |
+| `thinking` | string/integer | no | Thinking mode. Omit to inherit. |
+| `subagent_type` | string | no | research (default) or general. |
 
 ### `run_workflow` *(lua plugin)*
 
@@ -395,21 +410,6 @@ Load all deferred tools from a namespace when several sibling tools are needed. 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `namespace` | string | yes | Namespace to load |
-
-### `use_blackboard` *(lua plugin)*
-
-Shared coordination for multi-agent sessions. Post observations, claim tasks atomically, query state.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `post` | object | no | Post data. |
-| `only_active` | boolean | no | Active claims only. |
-| `action` | string | yes | Action. |
-| `query` | object | no | Query filters. |
-| `status` | string | no | Status. |
-| `post_id` | string | no | Post id. |
-| `task_id` | string | no | Task id. |
-| `claim` | object | no | Claim data. |
 
 ## Web
 

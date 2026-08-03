@@ -67,7 +67,8 @@ impl ModelCatalog {
     ///
     /// # Errors
     ///
-    /// Returns an error when the identifier is malformed, unavailable, or has invalid metadata.
+    /// Returns an error when the identifier is unavailable, its provider is
+    /// not configured, or its catalog metadata is invalid.
     pub fn resolve(&self, input: &str) -> Result<Model, ModelCatalogError> {
         let spec = self.canonical_spec(input)?;
         let (provider, _) = spec.split_once('/').ok_or(ModelCatalogError::InvalidSpec)?;
@@ -87,7 +88,7 @@ impl ModelCatalog {
         if self
             .specs
             .iter()
-            .any(|candidate| input.starts_with(candidate))
+            .any(|candidate| matches_catalog_spec(candidate, input))
         {
             return Ok(input.to_string());
         }
@@ -98,7 +99,7 @@ impl ModelCatalog {
             if self
                 .specs
                 .iter()
-                .any(|candidate| spec.starts_with(candidate))
+                .any(|candidate| matches_catalog_spec(candidate, &spec))
             {
                 return Ok(spec);
             }
@@ -135,11 +136,12 @@ impl ModelResolver {
         &self.catalog
     }
 
-    /// Resolve a model through the configured catalog.
+    /// Resolve a model identifier against the current catalog snapshot.
     ///
     /// # Errors
     ///
-    /// Returns an error when the model is malformed, unavailable, or has invalid metadata.
+    /// Returns an error when the identifier is unavailable, its provider is
+    /// not configured, or its catalog metadata is invalid.
     pub fn resolve(&self, input: &str) -> Result<Model, ModelCatalogError> {
         self.catalog.resolve(input)
     }
@@ -149,6 +151,18 @@ impl ModelResolver {
     pub fn refresh(&mut self) {
         self.catalog = ModelCatalog::current();
     }
+}
+
+fn matches_catalog_spec(candidate: &str, input: &str) -> bool {
+    if input == candidate {
+        return true;
+    }
+    input
+        .strip_prefix(candidate)
+        .and_then(|suffix| suffix.strip_prefix('-'))
+        .is_some_and(|version| {
+            version.len() == 8 && version.bytes().all(|byte| byte.is_ascii_digit())
+        })
 }
 
 fn is_spec(spec: &str) -> bool {
@@ -188,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn versioned_specs_preserve_catalog_prefix_compatibility() {
+    fn dated_specs_preserve_catalog_compatibility_without_arbitrary_suffixes() {
         let catalog = ModelCatalog::from_specs(["anthropic/claude-opus-4-5".to_string()]);
         assert_eq!(
             catalog
@@ -204,6 +218,19 @@ mod tests {
             catalog.canonical_spec("openai/claude-opus-4-5-20251101"),
             Err(ModelCatalogError::Unavailable(_))
         ));
+        for invalid in [
+            "anthropic/claude-opus-4-50",
+            "anthropic/claude-opus-4-5-arbitrary-suffix",
+            "claude-opus-4-5-arbitrary-suffix",
+        ] {
+            assert!(
+                matches!(
+                    catalog.canonical_spec(invalid),
+                    Err(ModelCatalogError::Unavailable(_))
+                ),
+                "unexpectedly accepted {invalid}"
+            );
+        }
     }
 
     #[test]

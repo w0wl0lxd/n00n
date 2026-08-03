@@ -752,13 +752,17 @@ impl App {
         None
     }
 
+    fn persist_onboarding_dismissal(&self) {
+        if let Err(error) = Onboarding::mark_seen(&self.storage) {
+            tracing::warn!(error = %error, "failed to persist welcome guide dismissal");
+        }
+    }
+
     fn dispatch_overlay(&mut self, key: KeyEvent) -> Option<Vec<Action>> {
         if self.onboarding.is_open() {
             self.onboarding.handle_key(key);
-            if !self.onboarding.is_open()
-                && let Err(error) = Onboarding::mark_seen(&self.storage)
-            {
-                tracing::warn!(error = %error, "failed to persist welcome guide dismissal");
+            if !self.onboarding.is_open() {
+                self.persist_onboarding_dismissal();
             }
             return Some(vec![]);
         }
@@ -2147,7 +2151,11 @@ impl App {
     }
 
     pub fn close_all_overlays(&mut self) {
+        let onboarding_was_open = self.onboarding.is_open();
         self.overlays_mut().iter_mut().for_each(|o| o.close());
+        if onboarding_was_open {
+            self.persist_onboarding_dismissal();
+        }
     }
 
     #[must_use]
@@ -2181,7 +2189,7 @@ impl App {
     }
 
     fn route_text_paste(&mut self, text: &str) {
-        if self.plan_form_active() {
+        if self.onboarding.is_open() || self.plan_form_active() {
             return;
         }
         if self.permission_prompt.handle_paste(text) {

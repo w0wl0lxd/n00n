@@ -46,8 +46,9 @@ const TOOL_GROUPS: &[(&str, &[&str])] = &[
             "list_agents",
             "get_agent",
             "control_agent",
-            "run_task",
+            "use_blackboard",
             "run_team",
+            "run_task",
             "run_workflow",
             "update_todo",
             "delegate_fusion",
@@ -55,13 +56,7 @@ const TOOL_GROUPS: &[(&str, &[&str])] = &[
     ),
     (
         "Context & Discovery",
-        &[
-            "use_memory",
-            "load_skill",
-            "search_tools",
-            "load_toolset",
-            "use_blackboard",
-        ],
+        &["use_memory", "load_skill", "search_tools", "load_toolset"],
     ),
     ("Web", &["fetch_url", "search_web"]),
 ];
@@ -282,7 +277,7 @@ fn load_registry_with_builtins() -> (Arc<ToolRegistry>, HashSet<String>) {
 
     let mut plugins = HashMap::new();
     let mut edit = PluginFileConfig::default();
-    for &sub in n00n_config::EDIT_SUB_TOOLS {
+    for &sub in n00n_config::EDIT_SUB_TOOL_OPTIONS {
         edit.opts.insert(sub.to_owned(), Value::Bool(true));
     }
     plugins.insert("edit".to_owned(), edit);
@@ -341,17 +336,13 @@ pub fn generate() -> String {
     writeln!(out).unwrap();
     writeln!(out, "# Tools").unwrap();
     writeln!(out).unwrap();
-    writeln!(
-        out,
-        "n00n ships with {total} built-in tools in this full reference, including opt-in edit sub-tools."
-    )
-    .unwrap();
-    writeln!(out).unwrap();
-    writeln!(
-        out,
-        "Use `explore_code` first for a general codebase question. Choose `index_file` for one-file structure, `map_code` for graph relationships, `map_codegraph` for cross-file structure or impact, and `search_text` for ranked search. Do not treat `explore_code` intents as separate tools."
-    )
-    .unwrap();
+    out.push_str("n00n ships with ");
+    out.push_str(&total.to_string());
+    out.push_str(" built-in tools in this full reference, including opt-in edit sub-tools.\n");
+    out.push('\n');
+    out.push_str(
+        "Use `explore_code` first for a general codebase question. Choose `index_file` for one-file structure, `map_code` for graph relationships, `map_codegraph` for cross-file structure or impact, and `search_text` for ranked search. Do not treat `explore_code` intents as separate tools.\n",
+    );
 
     let mut rendered: HashSet<&str> = HashSet::new();
 

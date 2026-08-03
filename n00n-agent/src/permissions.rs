@@ -304,13 +304,12 @@ impl PermissionManager {
         // A single non-plan scope means we must prompt for the rest.
         if !force_prompt && !pending.is_empty() {
             let is_plan_write = plan_path.is_some_and(|pp| {
-                matches!(tool, ToolKey::Native(name) if FILE_WRITE_TOOLS.contains(&name.as_ref()))
-                    && {
-                        let normalized_plan = normalize_scope_path(&pp.display().to_string());
-                        pending
-                            .iter()
-                            .all(|s| normalize_scope_path(s) == normalized_plan)
-                    }
+                is_file_write_tool(tool) && {
+                    let normalized_plan = normalize_scope_path(&pp.display().to_string());
+                    pending
+                        .iter()
+                        .all(|s| normalize_scope_path(s) == normalized_plan)
+                }
             });
             if is_plan_write {
                 return PermissionCheck::Allowed;
@@ -566,6 +565,14 @@ fn matches_rule(rule_key: &ToolKey, actual: &ToolKey) -> bool {
     }
 }
 
+fn is_file_write_tool(tool: &ToolKey) -> bool {
+    matches!(
+        tool,
+        ToolKey::Native(name)
+            if FILE_WRITE_TOOLS.contains(&crate::tools::canonical_tool_name(name))
+    )
+}
+
 fn rule_matches_scope(rule: &PermissionRule, scope: &str) -> bool {
     match &rule.scope {
         None => true,
@@ -664,7 +671,7 @@ fn generalize_scope(tool: &ToolKey, scope: &str) -> String {
         ToolKey::Native(name) if canonical_tool_name(name) == crate::tools::BASH_TOOL_NAME => {
             generalize_bash_segment(scope)
         }
-        ToolKey::Native(name) if FILE_WRITE_TOOLS.contains(&name.as_ref()) => {
+        ToolKey::Native(_) if is_file_write_tool(tool) => {
             let p = Path::new(scope);
             match p.parent() {
                 Some(parent) if !parent.as_os_str().is_empty() => {
@@ -1116,9 +1123,11 @@ mod tests {
             .unwrap()
     }
 
-    #[test]
-    fn generalize_edit_uses_parent_dir() {
-        let result = generalize_scope(&ToolKey::native("edit"), "/home/user/project/src/main.rs");
+    #[test_case("edit" ; "legacy_edit")]
+    #[test_case("multi_edit" ; "legacy_multi_edit")]
+    #[test_case("edit_file_bulk" ; "canonical_bulk_edit")]
+    fn generalize_file_write_uses_parent_dir(tool: &str) {
+        let result = generalize_scope(&ToolKey::native(tool), "/home/user/project/src/main.rs");
         let expected = format!(
             "{}/**",
             Path::new("/home/user/project/src/main.rs")

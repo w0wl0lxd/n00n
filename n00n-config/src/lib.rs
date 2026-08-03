@@ -90,19 +90,15 @@ pub const DEFAULT_BUILTINS: &[&str] = &[
 /// These used to be their own `tools.<name>` tables and are now edit plugin
 /// options; the config layer uses this list to reject the old form with a
 /// pointer to the new one.
-pub const EDIT_SUB_TOOLS: &[&str] = &["edit_lines", "insert_lines", "multiedit"];
+pub const EDIT_SUB_TOOL_OPTIONS: &[&str] = &["edit_lines", "insert_lines", "multiedit"];
+pub const EDIT_SUB_TOOLS: &[&str] = &["edit_file_bulk", "edit_file_lines", "insert_file_lines"];
 
 pub const FILE_WRITE_TOOLS: &[&str] = &[
     "write_file",
-    "write",
     "edit_file",
-    "edit",
     "edit_file_bulk",
-    "multiedit",
     "edit_file_lines",
-    "edit_lines",
     "insert_file_lines",
-    "insert_lines",
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -321,7 +317,7 @@ impl RawConfig {
 }
 
 fn validate_plugin_tables(plugins: &HashMap<String, PluginFileConfig>) -> Result<(), ConfigError> {
-    for &name in EDIT_SUB_TOOLS {
+    for &name in EDIT_SUB_TOOL_OPTIONS {
         if plugins.contains_key(name) {
             return Err(ConfigError::RemovedEditSubTool { tool: name });
         }
@@ -1083,6 +1079,9 @@ impl ToolOutputLines {
             }
             "read" | "read_file" => self.read,
             "memory" | "use_memory" => self.write,
+            "write" | "edit" | "multi_edit" | "multiedit" | "edit_lines" | "insert_lines" => {
+                self.write
+            }
             name if FILE_WRITE_TOOLS.contains(&name) => self.write,
             "webfetch" | "websearch" | "fetch_url" | "search_web" => self.web,
             _ => self.other,
@@ -3070,9 +3069,34 @@ mod tests {
         }
     }
 
+    #[test_case("bash", "run_shell" ; "bash")]
+    #[test_case("code_execution", "run_python" ; "code_execution")]
+    #[test_case("task", "run_task" ; "task")]
+    #[test_case("read", "read_file" ; "read")]
+    #[test_case("multi_edit", "edit_file_bulk" ; "multi_edit")]
+    #[test_case("multiedit", "edit_file_bulk" ; "multiedit")]
+    fn tool_output_lines_aliases_match_canonical(alias: &str, canonical: &str) {
+        let limits = ToolOutputLines::default();
+        assert_eq!(limits.get(alias), limits.get(canonical));
+    }
+
+    #[test]
+    fn file_write_tools_are_canonical_names() {
+        assert_eq!(
+            FILE_WRITE_TOOLS,
+            &[
+                "write_file",
+                "edit_file",
+                "edit_file_bulk",
+                "edit_file_lines",
+                "insert_file_lines",
+            ]
+        );
+    }
+
     #[test]
     fn removed_sub_tool_tables_error() {
-        for &tool in EDIT_SUB_TOOLS {
+        for &tool in EDIT_SUB_TOOL_OPTIONS {
             let raw: RawConfig = toml::from_str(&format!("[plugins.{tool}]\n")).unwrap();
             let Err(err) = raw.into_config(false) else {
                 panic!("plugins.{tool} should be rejected");

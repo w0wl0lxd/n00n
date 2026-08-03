@@ -276,10 +276,13 @@ pub const TOOL_ALIASES: &[(&str, &str)] = &[
 
 #[must_use]
 pub fn canonical_tool_name(name: &str) -> &str {
-    TOOL_ALIASES
+    match TOOL_ALIASES
         .iter()
         .find_map(|(alias, canonical)| (*alias == name).then_some(*canonical))
-        .map_or(name, |canonical| canonical)
+    {
+        Some(canonical) => canonical,
+        None => name,
+    }
 }
 
 fn same_tool(left: &str, right: &str) -> bool {
@@ -1248,6 +1251,45 @@ mod tests {
             err.contains("invalid glob pattern"),
             "expected 'invalid glob pattern', got: {err}"
         );
+    }
+
+    #[test_case("arbor", "map_code" ; "arbor")]
+    #[test_case("edit_lines", "edit_file_lines" ; "edit_lines")]
+    #[test_case("fusion_delegate", "delegate_fusion" ; "fusion_delegate")]
+    #[test_case("insert_lines", "insert_file_lines" ; "insert_lines")]
+    #[test_case("multiedit", "edit_file_bulk" ; "multiedit")]
+    fn legacy_tool_aliases_resolve(alias: &str, canonical: &str) {
+        assert_eq!(canonical_tool_name(alias), canonical);
+    }
+
+    #[test_case("edit_file_lines" ; "edit_lines")]
+    #[test_case("insert_file_lines" ; "insert_lines")]
+    #[test_case("edit_file_bulk" ; "multiedit")]
+    fn canonical_edit_sub_tools_are_builtins(name: &str) {
+        assert!(is_builtin_tool(name));
+    }
+
+    #[test]
+    fn lua_policy_aliases_match_rust_aliases() {
+        let policy = include_str!("../../../plugins/lib/n00n/policy.lua");
+        let alias_block = policy
+            .split_once("local TOOL_ALIASES = {")
+            .expect("Lua policy alias table")
+            .1
+            .split_once("\n}")
+            .expect("Lua policy alias table end")
+            .0;
+        let lua_aliases: std::collections::HashMap<&str, &str> = alias_block
+            .lines()
+            .filter_map(|line| {
+                let (alias, canonical) = line.trim().strip_suffix(',')?.split_once(" = ")?;
+                Some((alias, canonical.strip_prefix('"')?.strip_suffix('"')?))
+            })
+            .collect();
+        let rust_aliases: std::collections::HashMap<&str, &str> =
+            TOOL_ALIASES.iter().copied().collect();
+
+        assert_eq!(lua_aliases, rust_aliases);
     }
 
     #[test]

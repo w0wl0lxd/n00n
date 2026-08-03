@@ -112,7 +112,7 @@ fn filter_tools_for_mode(tools: &mut Value, mode: &AgentMode) {
             // Only remove tools we can positively identify as execute-kind.
             // MCP and other unregistered tools are left for the dispatch layer.
             registry
-                .get(name)
+                .get(canonical_name)
                 .map_or(true, |entry| entry.tool.tool_kind() != Some("execute"))
         });
     }
@@ -1067,8 +1067,8 @@ impl<'h> Agent<'h> {
     fn start_fusion_delegate(&mut self, message: &Message) -> Result<(), AgentError> {
         let Some((_, _, input)) = message.tool_uses().find(|(_, name, _)| {
             let name = *name;
-            let normalized = name.strip_prefix("functions.").map_or(name, |value| value);
-            crate::tools::canonical_tool_name(normalized) == crate::fusion::FUSION_DELEGATE_TOOL
+            let unprefixed = name.strip_prefix("functions.").map_or(name, |value| value);
+            crate::tools::canonical_tool_name(unprefixed) == crate::fusion::FUSION_DELEGATE_TOOL
         }) else {
             return Ok(());
         };

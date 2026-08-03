@@ -13,7 +13,7 @@ Install n00n, connect a provider, and run your first session. Takes a few minute
 
 ### Linux / macOS
 
-Download `install.sh` from the n00n release source, read it first (do not blindly trust shell scripts), then run:
+Open the [latest n00n release](https://github.com/w0wl0lxd/n00n/releases/latest), expand **Assets**, and download `install.sh`. Read it before you run it:
 
 ```sh
 cat install.sh

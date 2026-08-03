@@ -1139,19 +1139,21 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
             "register_tool: invalid name '{name}'"
         )));
     }
-    let aliases = spec
-        .get::<Option<Vec<String>>>("aliases")?
-        .unwrap_or_else(Vec::new)
-        .into_iter()
-        .map(|alias| {
-            if !is_valid_tool_name(&alias) || alias == name {
-                return Err(mlua::Error::runtime(format!(
-                    "register_tool: invalid alias '{alias}'"
-                )));
-            }
-            Ok(Arc::from(alias))
-        })
-        .collect::<LuaResult<Vec<Arc<str>>>>()?;
+    #[allow(clippy::manual_unwrap_or_default)]
+    let aliases = match spec.get::<Option<Vec<String>>>("aliases")? {
+        Some(aliases) => aliases,
+        None => Vec::new(),
+    }
+    .into_iter()
+    .map(|alias| {
+        if !is_valid_tool_name(&alias) || alias == name {
+            return Err(mlua::Error::runtime(format!(
+                "register_tool: invalid alias '{alias}'"
+            )));
+        }
+        Ok(Arc::from(alias))
+    })
+    .collect::<LuaResult<Vec<Arc<str>>>>()?;
     if aliases
         .iter()
         .enumerate()
