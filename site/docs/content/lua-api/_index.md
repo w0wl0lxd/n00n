@@ -814,6 +814,8 @@ and tool set.
     `"max"`), or a budget integer (token count). Inherits parent setting
     if omitted.
   - `fast` (`boolean?`) use fast mode. Inherits parent setting if omitted.
+  - `include_mcp` (`boolean?`) inherit the parent MCP handle. Default: `true`.
+  - `except` (`string[]?`) tool names that remain unavailable if loaded later.
 
 **Returns:** ([`Session?`](#n00n-agent-Session), `string?`) Session handle, or `(nil, err)` on failure.
 
@@ -5056,7 +5058,7 @@ Free-text search of the code graph.
 - `{query}` (`string`) Search query text.
 - `{project}` (`string`) Path to the project root.
 
-**Returns:** (`string`) Raw query results as text.
+**Returns:** (`string?`, `string?`) output and optional error message.
 
 ---
 
@@ -5072,7 +5074,7 @@ Show Arbor index status for a project.
 
 - `{project}` (`string`) Path to the project root.
 
-**Returns:** (`string`) Status text.
+**Returns:** (`string?`, `string?`) output and optional error message.
 
 ---
 
@@ -5174,6 +5176,156 @@ Shortest call path between two symbols in the graph index.
 
 **Returns:** (`table`) Path nodes or error when no path exists.
 
+---
+
+### `n00n.arbor.graph_map()` {#n00n-arbor-graph_map}
+
+```lua
+n00n.arbor.graph_map({project}, {token_budget?})
+```
+
+Ranked project skeleton from the native graph index.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+- `{token_budget}` (`integer`) Optional token budget (default 1024).
+
+**Returns:** (`table`) Array of map entries with `file`, `symbols`.
+
+---
+
+### `n00n.arbor.graph_entry_points()` {#n00n-arbor-graph_entry_points}
+
+```lua
+n00n.arbor.graph_entry_points({project})
+```
+
+List API entry points from the native graph index.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`table`) Array of entry point objects.
+
+---
+
+### `n00n.arbor.entry_points()` {#n00n-arbor-entry_points}
+
+```lua
+n00n.arbor.entry_points({project})
+```
+
+List API entry points via the Arbor CLI.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`string?`, `string?`) output and optional error message.
+
+---
+
+### `n00n.arbor.file_graph()` {#n00n-arbor-file_graph}
+
+```lua
+n00n.arbor.file_graph({project}, {file?})
+```
+
+Show file-level dependency graph via the Arbor CLI. Optional file focuses the graph on that file.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+- `{file}` (`string`) Optional file path to focus the dependency graph.
+
+**Returns:** (`string?`, `string?`) output and optional error message.
+
+---
+
+### `n00n.arbor.inspect()` {#n00n-arbor-inspect}
+
+```lua
+n00n.arbor.inspect({symbol}, {project})
+```
+
+Detailed symbol information with context via the Arbor CLI.
+
+**Parameters:**
+
+- `{symbol}` (`string`) Symbol name.
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`string?`, `string?`) output and optional error message.
+
+---
+
+### `n00n.arbor.path()` {#n00n-arbor-path}
+
+```lua
+n00n.arbor.path({from_symbol}, {to_symbol}, {project})
+```
+
+Call path between two symbols via the Arbor CLI.
+
+**Parameters:**
+
+- `{from_symbol}` (`string`) Start symbol name.
+- `{to_symbol}` (`string`) End symbol name.
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`string?`, `string?`) output and optional error message.
+
+---
+
+### `n00n.arbor.refactor()` {#n00n-arbor-refactor}
+
+```lua
+n00n.arbor.refactor({operation}, {project})
+```
+
+Run an allowlisted refactoring operation via the Arbor CLI. Requires explicit user confirmation; operations with unsafe characters are rejected.
+
+**Parameters:**
+
+- `{operation}` (`string`) Refactoring operation description.
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`string?`, `string?`) output and optional error message.
+
+---
+
+### `n00n.arbor.check()` {#n00n-arbor-check}
+
+```lua
+n00n.arbor.check({project})
+```
+
+Run static analysis checks via the Arbor CLI.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`string?`, `string?`) output and optional error message.
+
+---
+
+### `n00n.arbor.summary()` {#n00n-arbor-summary}
+
+```lua
+n00n.arbor.summary({project})
+```
+
+High-level project summary and statistics via the Arbor CLI.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+
+**Returns:** (`string?`, `string?`) output and optional error message.
+
 
 ## n00n.codegraph {#n00n-codegraph}
 
@@ -5253,6 +5405,148 @@ Run an explore query using the native SQLite index when available, otherwise `co
 
 **Returns:** (`string?`, `string?`) output and optional error message.
 
+---
+
+### `n00n.codegraph.callers()` {#n00n-codegraph-callers}
+
+```lua
+n00n.codegraph.callers({symbol}, {project}, {timeout_secs?})
+```
+
+Find all functions/methods that call a specific symbol using native SQLite when available, otherwise `codegraph callers`.
+
+**Parameters:**
+
+- `{symbol}` (`string`) Symbol name to find callers for.
+- `{project}` (`string`) Path to the project root.
+- `{timeout_secs}` (`integer`) Optional timeout in seconds (default 30).
+
+**Returns:** (`string?`, `string?`) output and optional error message.
+
+---
+
+### `n00n.codegraph.callees()` {#n00n-codegraph-callees}
+
+```lua
+n00n.codegraph.callees({symbol}, {project}, {timeout_secs?})
+```
+
+Find all functions/methods that a specific symbol calls using native SQLite when available, otherwise `codegraph callees`.
+
+**Parameters:**
+
+- `{symbol}` (`string`) Symbol name to find callees for.
+- `{project}` (`string`) Path to the project root.
+- `{timeout_secs}` (`integer`) Optional timeout in seconds (default 30).
+
+**Returns:** (`string?`, `string?`) output and optional error message.
+
+---
+
+### `n00n.codegraph.impact()` {#n00n-codegraph-impact}
+
+```lua
+n00n.codegraph.impact({symbol}, {project}, {timeout_secs?})
+```
+
+Analyze what code is affected by changing a symbol using native SQLite when available, otherwise `codegraph impact`.
+
+**Parameters:**
+
+- `{symbol}` (`string`) Symbol name to analyze impact for.
+- `{project}` (`string`) Path to the project root.
+- `{timeout_secs}` (`integer`) Optional timeout in seconds (default 30).
+
+**Returns:** (`string?`, `string?`) output and optional error message.
+
+---
+
+### `n00n.codegraph.affected()` {#n00n-codegraph-affected}
+
+```lua
+n00n.codegraph.affected({files}, {project}, {timeout_secs?})
+```
+
+Accept an array of file paths and compute the affected file set using `codegraph affected`.
+
+**Parameters:**
+
+- `{files}` (`table<string>`) Array of file paths that changed.
+- `{project}` (`string`) Path to the project root.
+- `{timeout_secs}` (`integer`) Optional timeout in seconds (default 30).
+
+**Returns:** (`string?`, `string?`) output and optional error message.
+
+---
+
+### `n00n.codegraph.node()` {#n00n-codegraph-node}
+
+```lua
+n00n.codegraph.node({name}, {project}, {timeout_secs?})
+```
+
+Get one symbol's source location and signature using native SQLite when available, otherwise `codegraph node` (which may include a caller/callee trail).
+
+**Parameters:**
+
+- `{name}` (`string`) Symbol name to look up.
+- `{project}` (`string`) Path to the project root.
+- `{timeout_secs}` (`integer`) Optional timeout in seconds (default 30).
+
+**Returns:** (`string?`, `string?`) output and optional error message.
+
+---
+
+### `n00n.codegraph.query()` {#n00n-codegraph-query}
+
+```lua
+n00n.codegraph.query({search}, {project}, {timeout_secs?})
+```
+
+Search for symbols in the codebase using native SQLite when available, otherwise `codegraph query`.
+
+**Parameters:**
+
+- `{search}` (`string`) Search query for symbols.
+- `{project}` (`string`) Path to the project root.
+- `{timeout_secs}` (`integer`) Optional timeout in seconds (default 30).
+
+**Returns:** (`string?`, `string?`) output and optional error message.
+
+---
+
+### `n00n.codegraph.sync()` {#n00n-codegraph-sync}
+
+```lua
+n00n.codegraph.sync({project}, {timeout_secs?})
+```
+
+Sync changes since last index using `codegraph sync`.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+- `{timeout_secs}` (`integer`) Optional timeout in seconds (default 30).
+
+**Returns:** (`string?`, `string?`) output and optional error message.
+
+---
+
+### `n00n.codegraph.files()` {#n00n-codegraph-files}
+
+```lua
+n00n.codegraph.files({project}, {timeout_secs?})
+```
+
+Show project file structure from the index using native SQLite when available, otherwise `codegraph files`.
+
+**Parameters:**
+
+- `{project}` (`string`) Path to the project root.
+- `{timeout_secs}` (`integer`) Optional timeout in seconds (default 30).
+
+**Returns:** (`string?`, `string?`) output and optional error message.
+
 
 ## n00n.semblem {#n00n-semblem}
 
@@ -5279,17 +5573,18 @@ Returns true when `.n00n/search/metadata.json` exists in the project root.
 ### `n00n.semblem.search()` {#n00n-semblem-search}
 
 ```lua
-n00n.semblem.search({repo}, {query}, {mode?}, {top_k?})
+n00n.semblem.search({repo}, {query}, {mode?}, {top_k?}, {content?})
 ```
 
-Search indexed source chunks. Defaults to BM25; hybrid/semantic modes nag when no embedder is configured.
+Search indexed source chunks. BM25 is native; hybrid/semantic try the upstream semble CLI and fall back to BM25 with an embedder nag if the CLI is unavailable.
 
 **Parameters:**
 
-- `{repo}` (`string`) Path to the project root.
+- `{repo}` (`string`) Local project root path, or an HTTPS git URL allowed by N00N_SEMBLE_ALLOWED_REMOTE_REPOS.
 - `{query}` (`string`) Natural-language or keyword query.
 - `{mode}` (`string`) One of bm25, hybrid, or semantic.
 - `{top_k}` (`integer`) Maximum number of results.
+- `{content}` (`string`) Content filter: docs, config, code, or all.
 
 **Returns:** (`string`) Ranked snippet output.
 
@@ -5305,12 +5600,28 @@ Find chunks related to a file location using BM25 over the anchor chunk.
 
 **Parameters:**
 
-- `{repo}` (`string`) Path to the project root.
+- `{repo}` (`string`) Local project root path, or an HTTPS git URL allowed by N00N_SEMBLE_ALLOWED_REMOTE_REPOS.
 - `{file_path}` (`string`) Relative or absolute file path.
 - `{line}` (`integer`) 1-based line number inside the file.
 - `{top_k}` (`integer`) Maximum number of results.
 
 **Returns:** (`string`) Ranked snippet output.
+
+---
+
+### `n00n.semblem.savings()` {#n00n-semblem-savings}
+
+```lua
+n00n.semblem.savings({repo})
+```
+
+Estimate token savings from using a hybrid/semantic embedder. Requires the semble CLI and has no native fallback.
+
+**Parameters:**
+
+- `{repo}` (`string`) Local project root path, or an HTTPS git URL allowed by N00N_SEMBLE_ALLOWED_REMOTE_REPOS.
+
+**Returns:** (`string?`, `string?`) savings summary and optional error message.
 
 
 ## n00n.workflow {#n00n-workflow}
@@ -5699,6 +6010,9 @@ function M.make_local_tool(schema, on_submit)
 --   output_schema: JSON Schema for structured output validation
 --   audience: Tool audience (default: computed from subagent_type)
 --   include_mcp: Include MCP tools (default: true)
+--   only_tools: Optional allowlist of tool names
+--   except_tools: Optional denylist of tool names
+--   system_append: Trusted instruction appended to the system prompt
 --   local_tools: Additional local tools to register
 --   preview: ActivityPreview object wrapping sess:prompt (optional)
 --   activity_label: Label used with preview (default: description)
