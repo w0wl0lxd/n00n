@@ -1,7 +1,8 @@
 local shorten_path = require("n00n.shorten_path")
 local ToolView = require("n00n.tool_view")
 
-local DESCRIPTION = [[Write content to a file. Prefer edit_file or edit_file_lines for existing files.]]
+local DESCRIPTION =
+  [[Write complete content to a new file or intentionally replace a whole file. Use when creating a file or replacing all of its contents. Do not use for targeted edits; use `edit_file`, `edit_file_bulk`, or `edit_file_lines` instead. Read first when preserving existing content.]]
 
 local function write_view_opts(ctx)
   local tol = ctx:tool_output_lines()
@@ -34,11 +35,13 @@ n00n.api.register_tool({
     properties = {
       path = {
         type = "string",
+        description = "File path to create or replace.",
         required = true,
         alias = "file_path",
       },
       content = {
         type = "string",
+        description = "Complete file contents to write.",
         required = true,
       },
     },

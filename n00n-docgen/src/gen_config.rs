@@ -135,7 +135,8 @@ fn write_tool_output_section(out: &mut String) {
     writeln!(
         out,
         "How many lines of output to show per tool in the UI. \
-         All values are `usize` with a minimum of {MIN_TOOL_OUTPUT_LINES}.\n"
+         All values are `usize` with a minimum of {MIN_TOOL_OUTPUT_LINES}. \
+         These keys are stable display buckets, not tool names.\n"
     )
     .unwrap();
     writeln!(out, "| Field | Default |").unwrap();
@@ -144,6 +145,16 @@ fn write_tool_output_section(out: &mut String) {
         writeln!(out, "| `{name}` | {default} |").unwrap();
     }
     writeln!(out).unwrap();
+    writeln!(
+        out,
+        "Legacy runtime names are grouped into these buckets: `bash`/`run_shell`, \
+         `code_execution`/`run_python`, `task`/`run_task`, `workflow`/`run_workflow`, \
+         `index`/`index_file`, `grep`/`search_code`/`search_files`/`search_text`, \
+         `explore`/`explore_code`/`map_code`/`map_codegraph`, `read`/`read_file`, \
+         `write`/`write_file`, and `web`/`fetch_url`/`search_web`. Use the short \
+         bucket keys in `init.lua`; canonical tool names are listed in the tool reference."
+    )
+    .unwrap();
 }
 
 pub fn generate() -> String {
@@ -222,6 +233,9 @@ All fields are optional. Typos in field names cause an error right away.
     write_tool_output_section(&mut out);
     write_section(&mut out, "[agent]", AgentConfig::FIELDS);
 
+    out.push_str("### `agent.dynamic_tools`\n\n");
+    out.push_str("Mode-based dynamic tool loading is disabled by default. Set `enabled = true` to filter the initial tool set by mode and use deferred tool loading. `default_mode` selects the starting mode (`default`, `research`, `build`, or `compact`); it defaults to `default`. Use `search_tools` for one unknown capability and `load_toolset` for several tools in a namespace.\n\n");
+
     out.push_str("### `agent.fusion`\n\n");
     out.push_str("| Field | Type | Default | Description |\n");
     out.push_str("|-------|------|---------|-------------|\n");
@@ -243,10 +257,11 @@ All fields are optional. Typos in field names cause an error right away.
          Each plugin checks its own options at startup. A typo, a wrong \
          type, or an unknown plugin name gives you a clear error right \
          away.\n\n\
-         The edit plugin's extra tools are options too: \
-         `plugins.edit = {{ multiedit = false, edit_lines = true }}`. \
-         The old `tools` table is gone. If your config still uses it, \
-         n00n stops at startup and shows you the new form.\n"
+          The edit plugin's options control the extra canonical tools: \
+          `multiedit` provides `edit_file_bulk`, `edit_lines` provides \
+          `edit_file_lines`, and `insert_lines` provides `insert_file_lines`. \
+          The old top-level `tools` table is gone. If your config still uses it, \
+          n00n stops at startup and points to the `plugins.edit` form.\n"
     )
     .unwrap();
     writeln!(

@@ -352,6 +352,12 @@ pub fn generate() -> String {
         "Use `explore_code` first for a general codebase question. Choose `index_file` for one-file structure, `map_code` for graph relationships, `map_codegraph` for cross-file structure or impact, and `search_text` for ranked search. Do not treat `explore_code` intents as separate tools."
     )
     .unwrap();
+    writeln!(out).unwrap();
+    writeln!(
+        out,
+        "The canonical inventory contains only the tools listed below. `activate_tool` is a compatibility plugin and is not a default built-in tool; current deferred loading uses `search_tools` for one capability and `load_toolset` for a namespace."
+    )
+    .unwrap();
 
     let mut rendered: HashSet<&str> = HashSet::new();
 
@@ -436,13 +442,15 @@ mod tests {
         assert!(cleaned.starts_with(remaining_prefix), "cleaned: {cleaned}");
     }
 
-    // Room for delegate_fusion + skill-system + memory-system + explore-stack tools; keep definitions lean.
-    const MAX_TOOL_DEFINITION_BYTES: usize = 46_000;
+    // Keep definitions compact while allowing the explicit usage guidance and schema descriptions.
+    const MAX_TOOL_DEFINITION_BYTES: usize = 54_000;
 
     #[test]
     fn generated_reference_uses_canonical_guidance_and_count() {
         let docs = generate();
         assert!(docs.contains("n00n ships with 33 built-in tools"));
+        assert!(docs.contains("The canonical inventory contains only the tools listed below."));
+        assert!(docs.contains("`activate_tool` is a compatibility plugin"));
         assert!(docs.contains("Use `explore_code` first for a general codebase question."));
         assert!(docs.contains("## Explore & Search"));
         assert!(docs.contains("## Context & Discovery"));
@@ -472,6 +480,76 @@ mod tests {
             json.len(),
             MAX_TOOL_DEFINITION_BYTES
         );
+    }
+
+    #[test]
+    fn canonical_tool_prompts_explain_use_and_avoidance() {
+        let vars = Vars::new()
+            .set("{cwd}", "<cwd>")
+            .set("{platform}", "linux")
+            .set("{date}", "YYYY-MM-DD");
+        let (registry, _) = load_registry_with_builtins();
+        let definitions = registry.definitions(
+            &vars,
+            &DescriptionContext {
+                filter: &ToolFilter::All,
+                audience: ToolAudience::MAIN,
+                workflow: false,
+            },
+            false,
+        );
+        let definitions = definitions
+            .as_array()
+            .expect("definitions should be an array");
+
+        for definition in definitions {
+            let name = definition["name"].as_str().expect("tool name");
+            let description = definition["description"]
+                .as_str()
+                .expect("tool description");
+            assert!(
+                description.contains("Use "),
+                "{name} lacks when-to-use guidance"
+            );
+            assert!(
+                description.contains("Do not use"),
+                "{name} lacks when-not-to-use guidance"
+            );
+
+            let properties = definition["input_schema"]["properties"]
+                .as_object()
+                .expect("tool schema properties");
+            for (parameter, schema) in properties {
+                assert!(
+                    schema
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| !value.trim().is_empty()),
+                    "{name}.{parameter} lacks a parameter description"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn activation_plugin_is_not_canonical_or_default() {
+        assert!(!n00n_agent::tools::CANONICAL_BUILTIN_TOOL_NAMES.contains(&"activate_tool"));
+        assert!(!n00n_config::DEFAULT_BUILTINS.contains(&"activate_tool"));
+    }
+
+    #[test]
+    fn migration_guide_covers_every_tool_alias() {
+        let guide = include_str!("../../site/docs/content/migration/2026-ux-rename.md");
+        for &(alias, canonical) in n00n_agent::tools::TOOL_ALIASES {
+            assert!(
+                guide.contains(&format!("`{alias}`")),
+                "migration guide omits {alias}"
+            );
+            assert!(
+                guide.contains(&format!("`{canonical}`")),
+                "migration guide omits {canonical}"
+            );
+        }
     }
 
     #[test]

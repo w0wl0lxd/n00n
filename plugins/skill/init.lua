@@ -294,7 +294,7 @@ local function select_skills(skills, input)
 end
 
 local DESCRIPTION =
-  "Load a skill that provides instructions and workflows for specific tasks. Use `list=true` to enumerate available skills; then call with the exact skill `name`."
+  "Load a skill that provides instructions and workflows for a specific task. Use `list=true` to discover skills, then call with the exact `name` when a matching skill exists. Do not use for generic project instructions; read AGENTS.md or use read_file instead. Do not load a skill when its instructions are already in context."
 
 n00n.api.register_tool({
   name = "load_skill",
@@ -310,7 +310,7 @@ n00n.api.register_tool({
         default = false,
         description = "Return the list of available skills with their descriptions instead of loading one.",
       },
-      name = { type = "string", description = "Name of the skill to load." },
+      name = { type = "string", description = "Exact skill name returned by `list=true`." },
       path = {
         type = "string",
         description = "Optional path in focus; when set, only skills whose frontmatter `paths` match this path are returned.",

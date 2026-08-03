@@ -410,7 +410,7 @@ n00n.api.register_tool({
   description = [[
 Graph-based code analysis using Arbor. Returns structured, compact
 caller/callee/project maps; prefer it over broad grep or unfiltered reads
-for relationship and impact questions.
+for relationship and impact questions. Use when you need callers, callees, entry points, or change impact. Do not use for single-file structure or text search; use `index_file` or `search_code` instead. Use `map_codegraph` for semantic cross-file questions.
 
 Commands:
 - callers <symbol>: Who calls this function/class? Returns name, kind, file, and line.
@@ -440,6 +440,7 @@ two symbols.]],
     properties = {
       command = {
         type = "string",
+        description = "Arbor operation to run.",
         enum = {
           "callers",
           "callees",
@@ -458,13 +459,13 @@ two symbols.]],
         },
         required = true,
       },
-      symbol = { type = "string" },
-      from_symbol = { type = "string" },
-      to_symbol = { type = "string" },
-      operation = { type = "string" },
-      project = { type = "string" },
-      path = { type = "string" },
-      token_budget = { type = "integer", default = 1024 },
+      symbol = { type = "string", description = "Symbol for inspect, callers, or callees." },
+      from_symbol = { type = "string", description = "Start symbol for a trace path." },
+      to_symbol = { type = "string", description = "Destination symbol for a trace path." },
+      operation = { type = "string", description = "Refactor operation when command is `refactor`." },
+      project = { type = "string", description = "Project root (defaults to cwd)." },
+      path = { type = "string", description = "Path for a path-scoped Arbor query." },
+      token_budget = { type = "integer", default = 1024, description = "Maximum response budget." },
     },
   },
   header = function(input)

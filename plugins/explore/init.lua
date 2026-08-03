@@ -72,6 +72,8 @@ n00n.api.register_tool({
 - **symbol** intent: symbol drill-down via `map_codegraph node`
 - **impact** intent: blast-radius analysis via `map_codegraph impact`
 
+Use when you need the router to choose an exploration backend. Do not use for a known single operation; call `index_file`, `search_code`, `map_code`, or `map_codegraph` directly. Use `read_file` after the router identifies the exact section.
+
 Set `intent` explicitly when you know the backend. Otherwise the router infers from the query.
 Use `command`, `symbol`, `from_symbol`, and `to_symbol` for precise map_code routing.]],
 
@@ -94,16 +96,26 @@ Use `command`, `symbol`, `from_symbol`, and `to_symbol` for precise map_code rou
         type = "string",
         enum = { "auto", "file", "skeleton", "relations", "cross_file", "search", "symbol", "impact", "trace" },
         default = "auto",
+        description = "Router backend: auto, file, skeleton, relations, cross_file, search, symbol, impact, or trace.",
       },
       command = {
         type = "string",
         enum = { "callers", "callees", "trace_path", "map", "diff", "query", "status" },
+        description = "Optional precise Arbor command for relations or impact queries.",
       },
-      symbol = { type = "string" },
-      from_symbol = { type = "string" },
-      to_symbol = { type = "string" },
-      token_budget = { type = "integer", default = 1024 },
-      use_cache = { type = "boolean", default = false },
+      symbol = { type = "string", description = "Symbol to inspect or use as a relation endpoint." },
+      from_symbol = { type = "string", description = "Starting symbol for a trace path." },
+      to_symbol = { type = "string", description = "Destination symbol for a trace path." },
+      token_budget = {
+        type = "integer",
+        default = 1024,
+        description = "Maximum response budget for the selected backend.",
+      },
+      use_cache = {
+        type = "boolean",
+        default = false,
+        description = "Reuse a cached exploration result when available.",
+      },
       mode = {
         type = "string",
         enum = { "bm25", "hybrid", "semantic" },

@@ -5,7 +5,7 @@
 local subagent = require("n00n.subagent")
 
 local description =
-  [[Beta Fusion delegation: the lead plans and reviews while a conservative sidekick executes. Pass goal, constraints, and definition_of_done, not file dumps. Fusion is off by default and delegation is lead-directed.]]
+  [[Delegate execution to the conservative Fusion sidekick while the lead plans and reviews. Use when Fusion is enabled and a scoped implementation can be reviewed by the lead. Do not use for security, sensitive, destructive, design, or review work; keep that on the lead. Pass goal, constraints, and definition_of_done, not file dumps.]]
 
 local schema = {
   type = "object",
@@ -18,7 +18,7 @@ local schema = {
     },
     goal = {
       type = "string",
-      description = "What to accomplish.",
+      description = "What to accomplish. Use when Fusion is enabled and the lead explicitly wants sidekick execution.",
     },
     constraints = {
       type = "string",

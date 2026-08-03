@@ -1,6 +1,6 @@
 # 2026 UX naming migration
 
-n00n now presents built-in tools with consistent `verb_noun` names. Existing names remain supported as deprecated aliases for at least one minor release.
+n00n 0.5 presents built-in tools with consistent `verb_noun` names. Existing names remain supported as deprecated aliases through the 0.6 release line.
 
 ## Tool names
 
@@ -84,8 +84,10 @@ Use `--session <id>` (or `-s <id>`) to resume a session. `--resume <id>` remains
 
 ## Timeline
 
-- **Current release:** canonical names are shown; previous names continue to work with a deprecation warning.
-- **At least one minor release:** aliases remain supported while scripts and permission rules migrate.
-- **Before alias removal:** release notes will announce the exact version and provide a migration check.
+- **0.5:** canonical names are shown. Previous names continue to work and emit deprecation warnings.
+- **0.6:** compatibility aliases remain supported for the full release line. New examples, scripts, and permission rules must use canonical names.
+- **0.7 at the earliest:** aliases may be removed only after the release notes name the removal version. If removal is postponed, the release notes will publish the new deadline.
+
+Before upgrading past 0.6, replace previous tool names in plugin configuration, permission rules, scripts, and saved prompts using the tables above. Run the affected workflows on 0.6 and resolve every legacy-name warning. Slash-command users should update muscle memory and shared instructions to the canonical command column; automated callers should update before the announced removal release.
 
 MCP server-qualified names and SDK protocol translations are unchanged.

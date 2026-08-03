@@ -3,7 +3,7 @@ local QuestionHelpers = require("question_helpers")
 local ToolView = require("n00n.tool_view")
 
 local DESCRIPTION =
-  [[Ask the user questions during execution. Supports single/multi-select, custom answers, and tabbed multi-question forms. Put recommended options first with "(Recommended)" suffix.]]
+  [[Ask the user questions during execution when a decision or missing input is required. Do not use when the answer is already known or can be inferred safely. Use `ask_user` for choices instead of guessing; put recommended options first with "(Recommended)" suffix. Supports single/multi-select, custom answers, and tabbed forms.]]
 
 local function card_width()
   local ok, size = pcall(n00n.ui.terminal_size)
@@ -25,19 +25,20 @@ n00n.api.register_tool({
   name = "ask_user",
   aliases = { "question" },
   description = DESCRIPTION,
+  -- Ask only when the user's choice is required; do not use for information already present in the request.
   schema = {
     type = "object",
     required = { "questions" },
     properties = {
       questions = {
         type = "array",
-        description = "List of questions to ask the user",
+        description = "Questions requiring a user decision or missing input.",
         items = {
           type = "object",
           required = { "question" },
           properties = {
-            question = { type = "string", description = "The question text" },
-            header = { type = "string", description = "Short tab header for the question" },
+            question = { type = "string", description = "Question text shown to the user." },
+            header = { type = "string", description = "Short tab header for the question." },
             options = {
               type = "array",
               description = "List of predefined options",

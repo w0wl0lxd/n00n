@@ -21,7 +21,7 @@ local DEFAULT_OUTPUT_LINES = 5
 local DEFAULT_MAX_LINE_BYTES = 500
 
 local description =
-  [[Launch isolated agent; combine independent calls with batch. research (default) = read-only; general = can edit. Each call starts fresh; include context and ask for concise file:line results. Summarize returned results. auto_tier opt-in. background returns agent_id.]]
+  [[Launch one isolated agent for a focused task. Use for independent research or a small delegated implementation with explicit context and concise file:line output. Do not use for multiple independent tasks; use `run_batch` or `run_team` instead. research is read-only, general may edit, and each call starts fresh; summarize returned results. background returns agent_id.]]
 
 local schema = {
   type = "object",
@@ -34,7 +34,7 @@ local schema = {
     },
     prompt = {
       type = "string",
-      description = "Task prompt.",
+      description = "Focused instructions and context for the isolated agent. State the question, scope, and expected file:line result.",
     },
     subagent_type = {
       type = "string",

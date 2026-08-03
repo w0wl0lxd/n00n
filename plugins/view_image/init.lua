@@ -1,7 +1,7 @@
 local shorten_path = require("n00n.shorten_path")
 
 local DESCRIPTION =
-  [[View an image file (png, jpeg, gif, webp) as vision input. Use instead of `read_file` for images. Paths: absolute, relative, or ~/. Oversized images downscaled automatically (animated gif/webp keep only first frame).]]
+  [[View an image file (png, jpeg, gif, webp) as vision input. Use for visual inspection and use instead of `read_file` for images. Do not use for text files or unsupported formats; use `read_file` instead. Crop or tile only when the full image is too large.]]
 
 -- Anthropic rejects images over 5MB base64; 3MB raw is ~4MB encoded,
 -- which leaves headroom.
@@ -308,40 +308,41 @@ n00n.api.register_tool({
     properties = {
       path = {
         type = "string",
+        description = "Image path to decode (png, jpeg, gif, or webp).",
         required = true,
         alias = "file_path",
       },
       tile_index = {
         type = "integer",
         minimum = 1,
-        description = "One-based tile.",
+        description = "One-based tile index when the image is split into tiles.",
       },
       tile_width = {
         type = "integer",
         minimum = 1,
         maximum = MAX_PROVIDER_EDGE,
-        description = "Default 2000; max 4MP.",
+        description = "Tile width in pixels (default 2000; provider edge limit applies).",
       },
       tile_height = {
         type = "integer",
         minimum = 1,
         maximum = MAX_PROVIDER_EDGE,
-        description = "Default 2000; max 4MP.",
+        description = "Tile height in pixels (default 2000; provider edge limit applies).",
       },
       crop = {
         type = "array",
         items = { type = "integer" },
         minItems = 4,
         maxItems = 4,
-        description = "[x,y,w,h]; <=8000 edge/4MP.",
+        description = "Crop rectangle [x, y, width, height]; maximum edge and pixel limits apply.",
       },
       static_image = {
         type = "boolean",
-        description = "First-frame PNG.",
+        description = "Use only the first frame of an animated image.",
       },
       allow_gif_animation = {
         type = "boolean",
-        description = "Raw GIF opt-in.",
+        description = "Allow the raw animated GIF when true; otherwise use a static frame.",
       },
     },
   },

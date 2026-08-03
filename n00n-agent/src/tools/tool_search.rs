@@ -79,7 +79,7 @@ impl crate::tools::registry::Tool for ToolSearch {
     }
 
     fn description(&self, _ctx: &DescriptionContext) -> Cow<'_, str> {
-        "Search deferred tools by name or description when the needed capability is not already available. Do not use this when a loaded sibling tool already matches the task.".into()
+        "Search deferred tools by name or description. Use when a needed capability is not loaded and its canonical name is unknown. Do not use when a loaded sibling already matches the task; call that sibling directly.".into()
     }
 
     fn schema(&self) -> Value {
@@ -88,11 +88,11 @@ impl crate::tools::registry::Tool for ToolSearch {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Search query to match tool names or descriptions"
+                    "description": "Capability, canonical tool name, or description text to match."
                 },
                 "namespace": {
                     "type": "string",
-                    "description": "Optional namespace filter"
+                    "description": "Optional namespace in which to search for deferred tools."
                 }
             },
             "required": ["query"],
@@ -174,7 +174,7 @@ impl crate::tools::registry::Tool for LoadNamespace {
     }
 
     fn description(&self, _ctx: &DescriptionContext) -> Cow<'_, str> {
-        "Load all deferred tools from a namespace when several sibling tools are needed. Do not use this for one known tool; use search_tools instead.".into()
+        "Load all deferred tools from one namespace. Use when several sibling tools from that namespace are needed. Do not use for one capability or an unknown canonical name; use `search_tools` instead.".into()
     }
 
     fn schema(&self) -> Value {
@@ -183,7 +183,7 @@ impl crate::tools::registry::Tool for LoadNamespace {
             "properties": {
                 "namespace": {
                     "type": "string",
-                    "description": "Namespace to load"
+                    "description": "Exact deferred namespace returned by `search_tools`."
                 }
             },
             "required": ["namespace"],

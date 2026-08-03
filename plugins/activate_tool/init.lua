@@ -1,5 +1,5 @@
 local DESCRIPTION =
-  [[Activate a tool that is not currently available. Use this when you need a tool that is not in the current mode's tool set. The tool will become available in the next turn.]]
+  [[Activate one deferred tool for the next turn. Use when the required capability is not currently available and you know its canonical name. Do not use when a loaded sibling already provides the capability; use that sibling directly. Search first with `search_tools` when the canonical name is unknown.]]
 
 n00n.api.register_tool({
   name = "activate_tool",
@@ -8,10 +8,11 @@ n00n.api.register_tool({
 
   schema = {
     type = "object",
+    required = { "tool_name" },
     properties = {
       tool_name = {
         type = "string",
-        description = "Name of the tool to activate",
+        description = "Canonical deferred tool name to add for the next turn. Use a name returned by `search_tools` or the documented inventory.",
         required = true,
       },
     },

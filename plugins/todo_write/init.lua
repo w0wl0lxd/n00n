@@ -24,7 +24,7 @@ local STATUS_MARKERS = {
 }
 
 local DESCRIPTION =
-  [[Create or update a structured todo list to track tasks. Use after EACH completed step. Send complete list each time (replace-all semantics). Use ONLY for multi-step work (3+ steps). Skip for trivial tasks.]]
+  [[Create or replace a structured todo list for multi-step work. Use for tasks with three or more steps and update after each completed step. Do not use for trivial one-step work; do not send a partial list because each call replaces the whole list. Use `use_blackboard` for shared multi-agent claims and observations.]]
 
 local function count_done()
   local n = 0

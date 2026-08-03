@@ -150,12 +150,12 @@ n00n.api.register_tool({
   aliases = { "index" },
   kind = "read",
   modes = { "default", "research", "build", "compact" },
-  description = [[Return a compact overview of a source file: imports, types, function signatures, and structure with line numbers in []. ~70-90% more efficient than reading full file. Use FIRST to understand structure before read with offset/limit. Supports source files and markdown. Falls back with error on unsupported languages.]],
+  description = [[Return a compact overview of a source file: imports, types, function signatures, and structure with line numbers in []. Use first to understand structure before `read_file`. Do not use for full contents or directory discovery; use `read_file` or `search_files` instead. Supports source files and markdown, and reports an error for unsupported languages.]],
 
   schema = {
     type = "object",
     properties = {
-      path = { type = "string", required = true },
+      path = { type = "string", description = "Source file or markdown path to summarize.", required = true },
     },
   },
   header = function(input)

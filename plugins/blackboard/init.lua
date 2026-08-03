@@ -524,7 +524,7 @@ local function query_posts(filters)
 end
 
 local description =
-  "Shared coordination for multi-agent sessions. Post observations, claim tasks atomically, query state."
+  "Shared coordination for multi-agent sessions. Use to post findings, claim work atomically, or query shared state when agents collaborate. Do not use as a private scratchpad; use `use_memory` for durable project notes. Use `run_team` or `run_task` to launch agents."
 
 local schema = {
   type = "object",

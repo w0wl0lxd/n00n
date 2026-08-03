@@ -47,7 +47,7 @@ local INDICATOR = {
 }
 
 local description = string.format(
-  [[Execute multiple independent tool calls concurrently. ALWAYS use run_batch for multiple independent calls. 1-%d tools per batch. Parallel execution, order not guaranteed. Partial failures don't stop others. Do NOT nest run_batch. Use run_python for dependent operations.]],
+  [[Execute multiple independent tool calls concurrently. Use when calls do not depend on each other's results. Do not use for dependent operations, filtering, or nested batches; use `run_python` instead. Use the individual sibling tool for a single call. 1-%d tools per batch, order not guaranteed, and partial failures do not stop other calls.]],
   MAX_BATCH_SIZE
 )
 
@@ -56,10 +56,10 @@ local schema = {
   properties = {
     tool_calls = {
       type = "array",
-      description = "Array of tool calls to execute in parallel",
+      description = "Independent tool calls to execute concurrently; order is not guaranteed.",
       required = true,
       items = {
-        description = "Tool invocation: { tool: string, parameters: object } or flat { tool: string, ...params }",
+        description = "Invocation object using `{ tool, parameters }` or flat `{ tool, ...params }` form.",
       },
     },
   },
