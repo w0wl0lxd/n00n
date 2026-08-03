@@ -25,6 +25,9 @@ use n00n_providers::{
 use n00n_storage::id::SessionRef;
 
 const TOOL_DEFINITIONS_BYTE_BUDGET: usize = 42_000;
+const TEAM_VALIDATION_PROVIDER_ERROR: &str =
+    "validation prompt error: no provider configured — run /login or `n00n auth login`";
+const TOOLS_MUST_BE_ARRAY_ERROR: &str = "tools must be an array";
 
 fn fresh_registry() -> Arc<ToolRegistry> {
     Arc::new(ToolRegistry::new())
@@ -4032,10 +4035,7 @@ n00n.api.register_tool({{
         .output
         .expect("team validation wave should complete");
 
-    assert_eq!(
-        output.as_text(),
-        "validation prompt error: no provider configured — run /login or `n00n auth login`"
-    );
+    assert_eq!(output.as_text(), TEAM_VALIDATION_PROVIDER_ERROR);
 }
 
 #[test]
@@ -4059,7 +4059,7 @@ fn session_rejects_nonempty_lua_tools_object() {
     let error = exec_tool(&reg, "session_nonempty_tools_probe", serde_json::json!({}))
         .expect_err("non-empty tools object must be rejected");
 
-    assert!(error.contains("tools must be an array"), "got: {error}");
+    assert!(error.contains(TOOLS_MUST_BE_ARRAY_ERROR), "got: {error}");
 }
 
 #[test]

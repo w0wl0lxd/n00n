@@ -366,6 +366,7 @@ fn handle_print_event(
         | AgentEvent::QueueItemConsumed { .. }
         | AgentEvent::AutoCompacting
         | AgentEvent::CompactionDone
+        | AgentEvent::FusionPhaseChanged { .. }
         | AgentEvent::AuthRequired
         | AgentEvent::PermissionRequest { .. }
         | AgentEvent::SubagentInputRequired { .. }
