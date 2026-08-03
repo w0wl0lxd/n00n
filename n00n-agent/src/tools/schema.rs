@@ -942,7 +942,7 @@ pub fn sanitize_tool_input_schema(mut schema: Value) -> Value {
     if let Value::Object(map) = &mut schema
         && is_object_schema(map)
     {
-        sanitize_object_schema(map);
+        sanitize_object_schema(map, true);
         return schema;
     }
     wrap_root_schema(schema)
@@ -980,7 +980,7 @@ fn sanitize_metadata(map: &mut serde_json::Map<String, Value>) {
     map.remove("$schema");
     map.remove("title");
     map.remove("$comment");
-    let is_object = type_includes(map, "object");
+    let is_object = is_object_schema(map);
     if let Some(ap) = map.get("additionalProperties") {
         // additionalProperties is only meaningful on object schemas.
         // Keep `false` so the model sees strict object boundaries.
@@ -995,10 +995,10 @@ fn sanitize_metadata(map: &mut serde_json::Map<String, Value>) {
     }
 }
 
-fn sanitize_object_schema(map: &mut serde_json::Map<String, Value>) {
+fn sanitize_object_schema(map: &mut serde_json::Map<String, Value>, normalize_type: bool) {
     sanitize_metadata(map);
 
-    if map.get("type").and_then(|v| v.as_str()) != Some("object") {
+    if normalize_type || map.get("type").is_none() {
         map.insert("type".to_string(), json!("object"));
     }
     if !map.contains_key("properties") {
@@ -1026,12 +1026,12 @@ fn sanitize_property_schema(schema: &mut Value) {
             let is_object = type_includes(map, "object");
 
             if is_object || (type_str.is_none() && map.contains_key("properties")) {
-                sanitize_object_schema(map);
+                sanitize_object_schema(map, false);
             } else if type_str == Some("array")
                 || type_includes(map, "array")
                 || map.contains_key("prefixItems")
             {
-                if type_str != Some("array") {
+                if !type_includes(map, "array") {
                     map.insert("type".to_string(), json!("array"));
                 }
                 sanitize_array_schema(map);
@@ -1059,7 +1059,7 @@ fn sanitize_property_schema(schema: &mut Value) {
                     }
                 }
             } else {
-                sanitize_object_schema(map);
+                sanitize_object_schema(map, false);
             }
         }
         Value::Array(arr) => {
@@ -1178,6 +1178,70 @@ mod schema_tests {
     fn sanitize_nullable_object_schema_keeps_strict_boundary() {
         let schema = json!({
             "type": ["object", "null"],
+            "properties": {"path": {"type": "string"}},
+            "additionalProperties": false,
+        });
+        let sanitized = sanitize_tool_input_schema(schema);
+        assert_eq!(sanitized["type"], "object");
+        assert_eq!(sanitized["additionalProperties"], false);
+    }
+
+    #[test]
+    fn sanitize_nullable_object_property_preserves_type_and_strictness() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "config": {
+                    "type": ["object", "null"],
+                    "properties": {"path": {"type": "string"}},
+                    "additionalProperties": false,
+                }
+            }
+        });
+        let sanitized = sanitize_tool_input_schema(schema);
+        assert_eq!(
+            sanitized["properties"]["config"]["type"],
+            json!(["object", "null"])
+        );
+        assert_eq!(
+            sanitized["properties"]["config"]["additionalProperties"],
+            false
+        );
+    }
+
+    #[test]
+    fn sanitize_nullable_array_property_preserves_type_and_nested_strictness() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": ["array", "null"],
+                    "items": {
+                        "type": ["object", "null"],
+                        "properties": {"name": {"type": "string"}},
+                        "additionalProperties": false,
+                    }
+                }
+            }
+        });
+        let sanitized = sanitize_tool_input_schema(schema);
+        assert_eq!(
+            sanitized["properties"]["items"]["type"],
+            json!(["array", "null"])
+        );
+        assert_eq!(
+            sanitized["properties"]["items"]["items"]["type"],
+            json!(["object", "null"])
+        );
+        assert_eq!(
+            sanitized["properties"]["items"]["items"]["additionalProperties"],
+            false
+        );
+    }
+
+    #[test]
+    fn sanitize_untyped_object_schema_keeps_strictness() {
+        let schema = json!({
             "properties": {"path": {"type": "string"}},
             "additionalProperties": false,
         });

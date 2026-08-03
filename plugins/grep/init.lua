@@ -205,7 +205,7 @@ n00n.api.register_tool({
   kind = "search",
   modes = { "default", "research", "build", "compact" },
   strict = true,
-  description = [[Search file contents using ripgrep-compatible regex. Respects .gitignore. Results grouped by file, sorted by modification time. This is not a shell: use `pattern` and a single `path`. For multiple paths, search each in a batch call. Do NOT wrap pattern in quotes or double-escape (e.g. `\[` not `\\[`). Multi-line matching auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`.]],
+  description = [[Search file contents using ripgrep-compatible regex. This is not a shell. Use `pattern` and one `path`. For multiple paths, put separate calls in a `batch`. Pass the pattern without shell quotes. Escape regex characters once, such as `\[` rather than `\\[`. Searches respect `.gitignore`. Results are grouped by file and sorted by modification time. Multi-line matching turns on when the pattern contains `\n`, `(?s)`, or `(?m)`.]],
 
   schema = {
     type = "object",

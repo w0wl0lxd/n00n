@@ -139,8 +139,8 @@ local function matches_filter(name, dctx)
   return true
 end
 
-local function non_null_type(schema)
-  local type_value = schema and schema.type
+local function non_null_type(property_schema)
+  local type_value = property_schema and property_schema.type
   if type(type_value) == "string" then
     return type_value
   end
