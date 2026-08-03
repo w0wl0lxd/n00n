@@ -18,9 +18,18 @@ use rusqlite::{Connection, OpenFlags};
 use crate::CodegraphError;
 
 const DEFAULT_RESULT_LIMIT: usize = 12;
+const CALLS_EDGE_KIND: &str = "calls";
 const SOURCE_CONTEXT_LINES: u32 = 2;
 const SOURCE_MAX_BYTES: u64 = 1024 * 1024;
 const SOURCE_UNAVAILABLE: &str = "(source unavailable)";
+
+fn like_pattern(input: &str) -> String {
+    let escaped = input
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    format!("%{escaped}%")
+}
 
 pub fn db_path(project: &Path) -> PathBuf {
     project.join(".codegraph/codegraph.db")
@@ -30,10 +39,9 @@ pub fn has_database(project: &Path) -> bool {
     db_path(project).is_file()
 }
 
-pub fn explore_database(query: &str, project: &Path) -> Result<String, CodegraphError> {
-    let db_path = db_path(project);
+fn open_readonly(project: &Path) -> Result<Connection, CodegraphError> {
     let conn = Connection::open_with_flags(
-        &db_path,
+        db_path(project),
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|source| CodegraphError::Sqlite { source })?;
@@ -41,12 +49,193 @@ pub fn explore_database(query: &str, project: &Path) -> Result<String, Codegraph
     conn.pragma_update(None, "query_only", "true")
         .map_err(|source| CodegraphError::Sqlite { source })?;
 
+    Ok(conn)
+}
+
+pub fn explore_database(query: &str, project: &Path) -> Result<String, CodegraphError> {
+    let conn = open_readonly(project)?;
+
     let nodes = search_nodes(&conn, query, DEFAULT_RESULT_LIMIT)?;
     if nodes.is_empty() {
         return Ok(format!("No codegraph matches for query: {query}"));
     }
 
     Ok(format_nodes(project, &nodes))
+}
+
+pub fn callers_database(symbol: &str, project: &Path) -> Result<String, CodegraphError> {
+    let conn = open_readonly(project)?;
+
+    let nodes = search_callers(&conn, symbol, DEFAULT_RESULT_LIMIT)?;
+    if nodes.is_empty() {
+        return Ok(format!("No callers found for symbol: {symbol}"));
+    }
+
+    Ok(format_nodes(project, &nodes))
+}
+
+pub fn callees_database(symbol: &str, project: &Path) -> Result<String, CodegraphError> {
+    let conn = open_readonly(project)?;
+
+    let nodes = search_callees(&conn, symbol, DEFAULT_RESULT_LIMIT)?;
+    if nodes.is_empty() {
+        return Ok(format!("No callees found for symbol: {symbol}"));
+    }
+
+    Ok(format_nodes(project, &nodes))
+}
+
+pub fn impact_database(symbol: &str, project: &Path) -> Result<String, CodegraphError> {
+    let conn = open_readonly(project)?;
+
+    let nodes = search_impact(&conn, symbol, DEFAULT_RESULT_LIMIT)?;
+    if nodes.is_empty() {
+        return Ok(format!("No impact found for symbol: {symbol}"));
+    }
+
+    Ok(format_nodes(project, &nodes))
+}
+
+pub fn node_database(name: &str, project: &Path) -> Result<String, CodegraphError> {
+    let conn = open_readonly(project)?;
+
+    let nodes = search_nodes(&conn, name, 1)?;
+    if nodes.is_empty() {
+        return Ok(format!("No node found for name: {name}"));
+    }
+
+    Ok(format_nodes(project, &nodes))
+}
+
+pub fn query_database(search: &str, project: &Path) -> Result<String, CodegraphError> {
+    let conn = open_readonly(project)?;
+
+    let nodes = search_nodes(&conn, search, DEFAULT_RESULT_LIMIT)?;
+    if nodes.is_empty() {
+        return Ok(format!("No codegraph matches for search: {search}"));
+    }
+
+    Ok(format_nodes(project, &nodes))
+}
+
+pub fn files_database(project: &Path) -> Result<String, CodegraphError> {
+    let conn = open_readonly(project)?;
+
+    let mut stmt = conn
+        .prepare("SELECT DISTINCT file_path FROM nodes ORDER BY file_path")
+        .map_err(|source| CodegraphError::Sqlite { source })?;
+
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|source| CodegraphError::Sqlite { source })?;
+
+    let mut files = Vec::new();
+    for row in rows {
+        files.push(row.map_err(|source| CodegraphError::Sqlite { source })?);
+    }
+
+    if files.is_empty() {
+        return Ok(String::from("No files found in index"));
+    }
+
+    Ok(files.join("\n"))
+}
+
+#[allow(clippy::similar_names)]
+pub fn affected_database(files: &[&str], project: &Path) -> Result<String, CodegraphError> {
+    let conn = open_readonly(project)?;
+
+    // Prepare statement once for finding nodes in changed files
+    let mut find_nodes_stmt = conn
+        .prepare("SELECT id FROM nodes WHERE file_path LIKE ?1 ESCAPE '\\'")
+        .map_err(|source| CodegraphError::Sqlite { source })?;
+
+    // Prepare statement for finding callers (files that call nodes in changed files)
+    let mut callers_stmt = conn
+        .prepare(
+            "SELECT DISTINCT caller.file_path
+             FROM nodes n
+             JOIN edges e ON e.target_id = n.id
+             JOIN nodes caller ON caller.id = e.source_id
+             WHERE n.id = ?1 AND e.kind = ?2",
+        )
+        .map_err(|source| CodegraphError::Sqlite { source })?;
+
+    // Prepare statement for finding callees (files called by nodes in changed files)
+    let mut callees_stmt = conn
+        .prepare(
+            "SELECT DISTINCT callee.file_path
+             FROM nodes n
+             JOIN edges e ON e.source_id = n.id
+             JOIN nodes callee ON callee.id = e.target_id
+             WHERE n.id = ?1 AND e.kind = ?2",
+        )
+        .map_err(|source| CodegraphError::Sqlite { source })?;
+
+    let mut seen = std::collections::BTreeSet::new();
+
+    for file in files {
+        let pattern = like_pattern(file.trim());
+
+        // Find all nodes in the changed file
+        let node_rows = find_nodes_stmt
+            .query_map((pattern.as_str(),), |row| row.get::<_, String>(0))
+            .map_err(|source| CodegraphError::Sqlite { source })?;
+
+        for node_id_result in node_rows {
+            let node_id = node_id_result.map_err(|source| CodegraphError::Sqlite { source })?;
+
+            // Find files that call this node
+            let callers_rows = callers_stmt
+                .query_map((&node_id, CALLS_EDGE_KIND), |row| row.get::<_, String>(0))
+                .map_err(|source| CodegraphError::Sqlite { source })?;
+
+            for caller_path_result in callers_rows {
+                seen.insert(
+                    caller_path_result.map_err(|source| CodegraphError::Sqlite { source })?,
+                );
+            }
+
+            // Find files called by this node
+            let callees_rows = callees_stmt
+                .query_map((&node_id, CALLS_EDGE_KIND), |row| row.get::<_, String>(0))
+                .map_err(|source| CodegraphError::Sqlite { source })?;
+
+            for callee_path_result in callees_rows {
+                seen.insert(
+                    callee_path_result.map_err(|source| CodegraphError::Sqlite { source })?,
+                );
+            }
+        }
+
+        // Also include the changed file itself
+        // Since we're using LIKE pattern, we need to get the actual file paths
+        let mut file_match_stmt = conn
+            .prepare("SELECT DISTINCT file_path FROM nodes WHERE file_path LIKE ?1 ESCAPE '\\'")
+            .map_err(|source| CodegraphError::Sqlite { source })?;
+
+        let file_matches = file_match_stmt
+            .query_map((pattern.as_str(),), |row| row.get::<_, String>(0))
+            .map_err(|source| CodegraphError::Sqlite { source })?;
+
+        for file_path_result in file_matches {
+            seen.insert(file_path_result.map_err(|source| CodegraphError::Sqlite { source })?);
+        }
+    }
+
+    let affected_files: Vec<String> = seen.into_iter().collect();
+
+    if affected_files.is_empty() {
+        return Ok(format!("No affected files found for: {}", files.join(", ")));
+    }
+
+    // Apply result limit
+    let limited: Vec<String> = affected_files
+        .into_iter()
+        .take(DEFAULT_RESULT_LIMIT)
+        .collect();
+
+    Ok(limited.join("\n"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,12 +288,12 @@ fn search_nodes(
         return Ok(nodes);
     }
 
-    let pattern = format!("%{}%", query.trim());
+    let pattern = like_pattern(query.trim());
     let mut fallback = conn
         .prepare(
             "SELECT id, name, qualified_name, file_path, start_line, end_line, signature, docstring \
              FROM nodes \
-             WHERE name LIKE ?1 OR qualified_name LIKE ?1 \
+             WHERE name LIKE ?1 ESCAPE '\\' OR qualified_name LIKE ?1 ESCAPE '\\' \
              LIMIT ?2",
         )
         .map_err(|source| CodegraphError::Sqlite { source })?;
@@ -122,6 +311,128 @@ fn search_nodes(
         .map_err(|source| CodegraphError::Sqlite { source })?;
 
     for row in fallback_rows {
+        nodes.push(row.map_err(|source| CodegraphError::Sqlite { source })?);
+    }
+    Ok(nodes)
+}
+
+pub fn search_callers(
+    conn: &Connection,
+    symbol: &str,
+    limit: usize,
+) -> Result<Vec<GraphNode>, CodegraphError> {
+    let pattern = like_pattern(symbol.trim());
+    let mut stmt = conn
+        .prepare(
+            "SELECT caller.id, caller.name, caller.qualified_name, caller.file_path, caller.start_line, caller.end_line, \
+             caller.signature, caller.docstring \
+             FROM nodes n \
+             JOIN edges e ON e.target_id = n.id \
+             JOIN nodes caller ON caller.id = e.source_id \
+             WHERE (n.name LIKE ?1 ESCAPE '\\' OR n.qualified_name LIKE ?1 ESCAPE '\\') AND e.kind = ?2 \
+             LIMIT ?3",
+        )
+        .map_err(|source| CodegraphError::Sqlite { source })?;
+
+    let rows = stmt
+        .query_map(
+            (
+                pattern.as_str(),
+                CALLS_EDGE_KIND,
+                i64::try_from(limit).map_err(|_| CodegraphError::Cli {
+                    message: String::from("result limit out of range"),
+                })?,
+            ),
+            map_graph_node,
+        )
+        .map_err(|source| CodegraphError::Sqlite { source })?;
+
+    let mut nodes = Vec::new();
+    for row in rows {
+        nodes.push(row.map_err(|source| CodegraphError::Sqlite { source })?);
+    }
+    Ok(nodes)
+}
+
+pub fn search_callees(
+    conn: &Connection,
+    symbol: &str,
+    limit: usize,
+) -> Result<Vec<GraphNode>, CodegraphError> {
+    let pattern = like_pattern(symbol.trim());
+    let mut stmt = conn
+        .prepare(
+            "SELECT callee.id, callee.name, callee.qualified_name, callee.file_path, callee.start_line, callee.end_line, \
+             callee.signature, callee.docstring \
+             FROM nodes n \
+             JOIN edges e ON e.source_id = n.id \
+             JOIN nodes callee ON callee.id = e.target_id \
+             WHERE (n.name LIKE ?1 ESCAPE '\\' OR n.qualified_name LIKE ?1 ESCAPE '\\') AND e.kind = ?2 \
+             LIMIT ?3",
+        )
+        .map_err(|source| CodegraphError::Sqlite { source })?;
+
+    let rows = stmt
+        .query_map(
+            (
+                pattern.as_str(),
+                CALLS_EDGE_KIND,
+                i64::try_from(limit).map_err(|_| CodegraphError::Cli {
+                    message: String::from("result limit out of range"),
+                })?,
+            ),
+            map_graph_node,
+        )
+        .map_err(|source| CodegraphError::Sqlite { source })?;
+
+    let mut nodes = Vec::new();
+    for row in rows {
+        nodes.push(row.map_err(|source| CodegraphError::Sqlite { source })?);
+    }
+    Ok(nodes)
+}
+
+pub fn search_impact(
+    conn: &Connection,
+    symbol: &str,
+    limit: usize,
+) -> Result<Vec<GraphNode>, CodegraphError> {
+    let pattern = like_pattern(symbol.trim());
+    let mut stmt = conn
+        .prepare(
+            "SELECT n.id, n.name, n.qualified_name, n.file_path, n.start_line, n.end_line, n.signature, n.docstring FROM nodes n
+             WHERE n.name LIKE ?1 ESCAPE '\\' OR n.qualified_name LIKE ?1 ESCAPE '\\'
+             UNION
+             SELECT n2.id, n2.name, n2.qualified_name, n2.file_path, n2.start_line, n2.end_line, n2.signature, n2.docstring
+             FROM nodes n
+             JOIN edges e ON e.source_id = n.id
+             JOIN nodes n2 ON n2.id = e.target_id
+             WHERE (n.name LIKE ?1 ESCAPE '\\' OR n.qualified_name LIKE ?1 ESCAPE '\\') AND e.kind = ?2
+             UNION
+             SELECT n2.id, n2.name, n2.qualified_name, n2.file_path, n2.start_line, n2.end_line, n2.signature, n2.docstring
+             FROM nodes n
+             JOIN edges e ON e.target_id = n.id
+             JOIN nodes n2 ON n2.id = e.source_id
+             WHERE (n.name LIKE ?1 ESCAPE '\\' OR n.qualified_name LIKE ?1 ESCAPE '\\') AND e.kind = ?2
+             LIMIT ?3",
+        )
+        .map_err(|source| CodegraphError::Sqlite { source })?;
+
+    let rows = stmt
+        .query_map(
+            (
+                pattern.as_str(),
+                CALLS_EDGE_KIND,
+                i64::try_from(limit).map_err(|_| CodegraphError::Cli {
+                    message: String::from("result limit out of range"),
+                })?,
+            ),
+            map_graph_node,
+        )
+        .map_err(|source| CodegraphError::Sqlite { source })?;
+
+    let mut nodes = Vec::new();
+    for row in rows {
         nodes.push(row.map_err(|source| CodegraphError::Sqlite { source })?);
     }
     Ok(nodes)
@@ -357,7 +668,10 @@ mod tests {
         not(any(target_os = "espidf", target_os = "horizon", target_os = "redox"))
     ))]
     use super::open_source_file_with;
-    use super::{GraphNode, SOURCE_UNAVAILABLE, format_nodes, fts_query, search_nodes};
+    use super::{
+        GraphNode, SOURCE_UNAVAILABLE, format_nodes, fts_query, search_callees, search_callers,
+        search_impact, search_nodes,
+    };
     use rusqlite::Connection;
 
     const SECRET: &str = "must not escape project root";
@@ -385,6 +699,14 @@ mod tests {
                 decorators TEXT,
                 type_parameters TEXT
             );
+            CREATE TABLE edges (
+                id TEXT PRIMARY KEY,
+                source_id TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                FOREIGN KEY (source_id) REFERENCES nodes(id),
+                FOREIGN KEY (target_id) REFERENCES nodes(id)
+            );
             CREATE VIRTUAL TABLE nodes_fts USING fts5(
                 id UNINDEXED,
                 name,
@@ -395,6 +717,16 @@ mod tests {
                 'node-1', 'function', 'restore_item', 'n00n_lua::restore_item',
                 'src/restore.rs', 'rust', 10, 20, 0, 0, 'restore helper', 'fn restore_item()', 'pub', 1, 0, 0, 0, NULL, NULL
             );
+            INSERT INTO nodes VALUES (
+                'node-2', 'function', 'main', 'n00n::main',
+                'src/main.rs', 'rust', 1, 5, 0, 0, 'entry point', 'fn main()', 'pub', 1, 0, 0, 0, NULL, NULL
+            );
+            INSERT INTO nodes VALUES (
+                'node-3', 'function', 'process', 'n00n::process',
+                'src/process.rs', 'rust', 5, 15, 0, 0, 'process data', 'fn process()', 'pub', 1, 0, 0, 0, NULL, NULL
+            );
+            INSERT INTO edges VALUES ('edge-1', 'node-2', 'node-1', 'calls');
+            INSERT INTO edges VALUES ('edge-2', 'node-2', 'node-3', 'calls');
             INSERT INTO nodes_fts(id, name, qualified_name, docstring)
                 VALUES ('node-1', 'restore_item', 'n00n_lua::restore_item', 'restore helper');",
         )
@@ -425,6 +757,37 @@ mod tests {
                 docstring: Some(String::from("restore helper")),
             }
         );
+    }
+
+    #[test]
+    fn search_callers_finds_calling_nodes() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        write_fixture(&conn);
+        let nodes = search_callers(&conn, "restore_item", 5).expect("search callers");
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "main");
+    }
+
+    #[test]
+    fn search_callees_finds_called_nodes() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        write_fixture(&conn);
+        let nodes = search_callees(&conn, "main", 5).expect("search callees");
+        assert_eq!(nodes.len(), 2);
+        assert!(nodes.iter().any(|n| n.name == "restore_item"));
+        assert!(nodes.iter().any(|n| n.name == "process"));
+    }
+
+    #[test]
+    fn search_impact_finds_blast_radius() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        write_fixture(&conn);
+        let nodes = search_impact(&conn, "main", 5).expect("search impact");
+        // main calls restore_item and process, so impact should include main + callees
+        assert!(!nodes.is_empty());
+        assert!(nodes.iter().any(|n| n.name == "main"));
+        assert!(nodes.iter().any(|n| n.name == "restore_item"));
+        assert!(nodes.iter().any(|n| n.name == "process"));
     }
 
     fn node(file_path: String) -> GraphNode {
