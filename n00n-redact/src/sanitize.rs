@@ -5,6 +5,12 @@
 
 const REDACTED: &str = "[REDACTED]";
 
+/// Minimum length for a bare `Basic` or `Bearer` value before it is treated as
+/// an HTTP authentication credential. Shorter or non-base64-ish values are
+/// left alone to avoid over-redacting common prose (`the basic idea`,
+/// `the bearer of bad news`).
+const AUTH_CREDENTIAL_MIN_CHARS: usize = 8;
+
 /// Substring-matched secret key fragments for free text, deliberately shorter
 /// than the exact-match `SECRET_KEYS` list: free text has no key position to
 /// anchor on, so matching stays aggressive to err toward redaction.
@@ -12,7 +18,6 @@ const SENSITIVE_KEY_FRAGMENTS: &[&str] = &[
     "apikey",
     "accesstoken",
     "authtoken",
-    "token",
     "cookie",
     "credential",
     "refreshtoken",
@@ -47,7 +52,11 @@ pub fn sanitize_text(raw: &str, max_chars: usize) -> String {
     let mut index = 0;
     while index < words.len() {
         let word = words[index];
-        if is_authentication_scheme(word) {
+        if is_authentication_scheme(word)
+            && words
+                .get(index + 1)
+                .is_some_and(|next| is_auth_credential_value(next))
+        {
             let scheme = if word.eq_ignore_ascii_case("basic") {
                 "Basic"
             } else {
@@ -137,6 +146,26 @@ fn is_authentication_scheme(value: &str) -> bool {
     value.eq_ignore_ascii_case("bearer") || value.eq_ignore_ascii_case("basic")
 }
 
+fn is_auth_credential_value(value: &str) -> bool {
+    is_secret_token(value) || is_basic_auth_credential(value)
+}
+
+fn is_basic_auth_credential(value: &str) -> bool {
+    let trimmed = value.trim_matches(|character: char| {
+        !character.is_ascii_alphanumeric()
+            && character != '+'
+            && character != '/'
+            && character != '='
+    });
+    trimmed.len() >= AUTH_CREDENTIAL_MIN_CHARS
+        && trimmed.chars().all(|character| {
+            character.is_ascii_alphanumeric()
+                || character == '+'
+                || character == '/'
+                || character == '='
+        })
+}
+
 fn contains_unescaped_quote(value: &str, quote: char) -> bool {
     let mut escaped = false;
     for character in value.chars() {
@@ -150,9 +179,10 @@ fn contains_unescaped_quote(value: &str, quote: char) -> bool {
 
 fn is_sensitive_key(value: &str) -> bool {
     let normalized = normalize_key(value);
-    SENSITIVE_KEY_FRAGMENTS
-        .iter()
-        .any(|fragment| normalized.contains(fragment))
+    super::SECRET_KEYS.contains(&normalized.as_str())
+        || SENSITIVE_KEY_FRAGMENTS
+            .iter()
+            .any(|fragment| normalized.contains(fragment))
 }
 
 fn is_secret_token(value: &str) -> bool {
@@ -301,5 +331,23 @@ mod tests {
     fn leaves_benign_text_untouched() {
         let sanitized = sanitize_text("searching for needle in src/main.rs", 80);
         assert_eq!(sanitized, "searching for needle in src/main.rs");
+    }
+
+    #[test]
+    fn preserves_basic_in_prose() {
+        let sanitized = sanitize_text("the basic idea is simple", 80);
+        assert_eq!(sanitized, "the basic idea is simple");
+    }
+
+    #[test]
+    fn preserves_bearer_in_prose() {
+        let sanitized = sanitize_text("the bearer of bad news", 80);
+        assert_eq!(sanitized, "the bearer of bad news");
+    }
+
+    #[test]
+    fn preserves_token_substrings_in_prose() {
+        let sanitized = sanitize_text("use max_tokens and tokenizer tokens carefully", 80);
+        assert_eq!(sanitized, "use max_tokens and tokenizer tokens carefully");
     }
 }
