@@ -74,7 +74,13 @@ fn style_for_token(
             italic,
             underline,
         } => {
-            let mut s = Style::default().fg(ratatui::style::Color::Rgb(fg.0, fg.1, fg.2));
+            let mut s = if theme::no_color() {
+                Style::default()
+            } else if theme::high_contrast() {
+                Style::default().fg(t.foreground)
+            } else {
+                Style::default().fg(ratatui::style::Color::Rgb(fg.0, fg.1, fg.2))
+            };
             if *bold {
                 s = s.add_modifier(Modifier::BOLD);
             }

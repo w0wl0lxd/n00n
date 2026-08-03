@@ -53,6 +53,6 @@ Use `--no-confirm` for non-interactive permission approval. `--yolo` remains a d
 
 - **Current release:** canonical names are shown; previous names continue to work with a deprecation warning.
 - **At least one minor release:** aliases remain supported while scripts and permission rules migrate.
-- **Before alias removal:** release notes will announce the exact version and `n00n doctor` will report remaining legacy names.
+- **Before alias removal:** release notes will announce the exact version and provide a migration check.
 
 MCP server-qualified names and SDK protocol translations are unchanged.

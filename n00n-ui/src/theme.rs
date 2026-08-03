@@ -305,7 +305,7 @@ pub enum SemanticRole {
 
 #[must_use]
 pub fn no_color() -> bool {
-    env::var_os("NO_COLOR").is_some_and(|value| value != "0")
+    env::var_os("NO_COLOR").is_some()
 }
 
 #[must_use]
@@ -777,6 +777,8 @@ impl Theme {
                 style.underline_color = None;
             } else {
                 *style = style.add_modifier(Modifier::BOLD);
+                style.fg = Some(Color::White);
+                style.bg = None;
             }
         }
         if no_color {
@@ -785,7 +787,19 @@ impl Theme {
             self.mode_build = Color::Reset;
             self.mode_plan = Color::Reset;
             self.mode_bash = Color::Reset;
+        } else if high_contrast {
+            self.background = Color::Black;
+            self.foreground = Color::White;
+            self.accent.fg = Some(Color::Yellow);
+            self.tool_success.fg = Some(Color::Green);
+            self.tool_error.fg = Some(Color::LightRed);
+            self.error.fg = Some(Color::LightRed);
+            self.mode_build = Color::Yellow;
+            self.mode_plan = Color::Cyan;
+            self.mode_bash = Color::Magenta;
         }
+        self.item_selected = self.item_selected.add_modifier(Modifier::REVERSED);
+        self.item_match_selected = self.item_match_selected.add_modifier(Modifier::REVERSED);
     }
 
     fn parse_raw_palette(full_table: &toml::Table) -> HashMap<String, String> {
@@ -1074,6 +1088,10 @@ mod tests {
         assert!(theme.tool_success.add_modifier.contains(Modifier::BOLD));
         assert!(theme.tool_error.add_modifier.contains(Modifier::BOLD));
         assert!(theme.status_dim.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(theme.background, Color::Black);
+        assert_eq!(theme.foreground, Color::White);
+        assert_eq!(theme.accent.fg, Some(Color::Yellow));
+        assert_eq!(theme.tool_error.fg, Some(Color::LightRed));
     }
 
     #[test]

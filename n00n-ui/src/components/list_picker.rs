@@ -62,7 +62,7 @@ pub struct ListPicker<T> {
     state: Option<State<T>>,
     title: String,
     max_visible: Option<u16>,
-    footer: Option<fn() -> Line<'static>>,
+    footer: Option<fn(u16) -> Line<'static>>,
     footer_hints: Option<&'static [(&'static str, &'static str)]>,
     error_text: Option<String>,
 }
@@ -242,7 +242,7 @@ impl<T: PickerItem> ListPicker<T> {
         self
     }
 
-    pub fn with_footer_builder(mut self, builder: fn() -> Line<'static>) -> Self {
+    pub fn with_footer_builder(mut self, builder: fn(u16) -> Line<'static>) -> Self {
         self.footer = Some(builder);
         self
     }
@@ -483,7 +483,7 @@ fn render_ready<T: PickerItem>(
     s: &mut State<T>,
     title: &str,
     max_visible: Option<u16>,
-    footer: Option<fn() -> Line<'static>>,
+    footer: Option<fn(u16) -> Line<'static>>,
     footer_hints: Option<&'static [(&'static str, &'static str)]>,
     error_text: Option<&str>,
 ) -> Rect {
@@ -562,7 +562,10 @@ fn render_ready<T: PickerItem>(
     render_search(frame, search_area, &s.search);
 
     if let Some(build) = footer {
-        frame.render_widget(Paragraph::new(build()), areas[area_idx]);
+        frame.render_widget(
+            Paragraph::new(build(areas[area_idx].width)),
+            areas[area_idx],
+        );
     } else if let Some(hints) = footer_hints {
         let pairs: Vec<Span<'static>> = hints
             .iter()

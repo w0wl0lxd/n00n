@@ -250,6 +250,21 @@ impl Cli {
         if self.permission_flags.legacy_yolo || legacy_acp_no_confirm {
             warnings.push("a legacy permission flag is deprecated; use --no-confirm".to_owned());
         }
+        let mut legacy_tool_names = self
+            .allowed_tools
+            .iter()
+            .chain(&self.disallowed_tools)
+            .filter(|name| canonical_tool_name(name) != name.as_str())
+            .cloned()
+            .collect::<Vec<_>>();
+        legacy_tool_names.sort_unstable();
+        legacy_tool_names.dedup();
+        if !legacy_tool_names.is_empty() {
+            warnings.push(format!(
+                "legacy tool names are deprecated: {}; use canonical names",
+                legacy_tool_names.join(", ")
+            ));
+        }
         if !ignored.is_empty() {
             warnings.push(format!(
                 "ignored compatibility flags: {}",

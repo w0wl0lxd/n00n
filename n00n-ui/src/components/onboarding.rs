@@ -63,41 +63,62 @@ impl Onboarding {
             return Rect::default();
         }
         let t = theme::current();
-        let lines = vec![
-            Line::raw(""),
-            Line::from(Span::styled(
-                "  A short guide to safe, clear tool use.",
-                t.foreground,
-            )),
-            Line::raw(""),
-            Line::from(vec![
-                Span::styled("  Permission prompts  ", t.keybind_section),
-                Span::styled(
-                    "show what a tool will do and where. You choose each time.",
+        let compact = area.width < 80;
+        let lines = if compact {
+            vec![
+                Line::raw(""),
+                Line::from(Span::styled("  Safe, clear tool use", t.foreground)),
+                Line::raw(""),
+                Line::from(Span::styled(
+                    "  Prompts show scope before tools run.",
                     t.tool_dim,
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("  Pickers              ", t.keybind_section),
-                Span::styled(
-                    "accept typing to search; Enter selects; Esc closes.",
-                    t.tool_dim,
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("  Tool output          ", t.keybind_section),
-                Span::styled(
-                    "keeps full names and lets you expand long sections.",
-                    t.tool_dim,
-                ),
-            ]),
-            Line::raw(""),
-            Line::from(Span::styled(
-                "  Press Enter or Space to start. Reopen this guide with /welcome.",
-                t.accent,
-            )),
-            Line::raw(""),
-        ];
+                )),
+                Line::from(Span::styled("  Type to search pickers.", t.tool_dim)),
+                Line::from(Span::styled("  Enter selects. Esc closes.", t.tool_dim)),
+                Line::raw(""),
+                Line::from(Span::styled(
+                    "  Enter to start · /welcome to reopen",
+                    t.accent,
+                )),
+                Line::raw(""),
+            ]
+        } else {
+            vec![
+                Line::raw(""),
+                Line::from(Span::styled(
+                    "  A short guide to safe, clear tool use.",
+                    t.foreground,
+                )),
+                Line::raw(""),
+                Line::from(vec![
+                    Span::styled("  Permission prompts  ", t.keybind_section),
+                    Span::styled(
+                        "show what a tool will do and where. You choose each time.",
+                        t.tool_dim,
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("  Pickers              ", t.keybind_section),
+                    Span::styled(
+                        "accept typing to search; Enter selects; Esc closes.",
+                        t.tool_dim,
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("  Tool output          ", t.keybind_section),
+                    Span::styled(
+                        "keeps full names and lets you expand long sections.",
+                        t.tool_dim,
+                    ),
+                ]),
+                Line::raw(""),
+                Line::from(Span::styled(
+                    "  Press Enter or Space to start. Reopen this guide with /welcome.",
+                    t.accent,
+                )),
+                Line::raw(""),
+            ]
+        };
         let height = match u16::try_from(lines.len()) {
             Ok(height) => height,
             Err(error) => {
@@ -107,7 +128,7 @@ impl Onboarding {
         };
         let modal = Modal {
             title: TITLE,
-            width_percent: 72,
+            width_percent: if compact { 90 } else { 72 },
             max_height_percent: 80,
         };
         let (popup, inner) = modal.render(frame, area, height);

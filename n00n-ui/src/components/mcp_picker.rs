@@ -13,6 +13,8 @@ const FOOTER_HINTS: &[(&str, &str)] = &[
     ("type", "search by server name"),
     ("Esc", "close"),
 ];
+const COMPACT_FOOTER_HINTS: &[(&str, &str)] =
+    &[("Enter", "toggle"), ("type", "search"), ("Esc", "close")];
 
 fn build_entries(infos: &[McpServerInfo]) -> (Vec<McpEntry>, Vec<bool>) {
     let entries = infos
@@ -98,9 +100,14 @@ pub struct McpPicker {
 impl McpPicker {
     pub fn new(snapshot: McpSnapshotReader, config_errors: McpConfigErrors) -> Self {
         Self {
-            picker: ListPicker::new().with_footer_builder(|| {
+            picker: ListPicker::new().with_footer_builder(|width| {
                 let t = crate::theme::current();
-                crate::components::hint_line(FOOTER_HINTS).style(t.tool_dim)
+                let hints = if width < 72 {
+                    COMPACT_FOOTER_HINTS
+                } else {
+                    FOOTER_HINTS
+                };
+                crate::components::hint_line(hints).style(t.tool_dim)
             }),
             snapshot,
             config_errors,

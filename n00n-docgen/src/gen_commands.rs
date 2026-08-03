@@ -11,6 +11,12 @@ const PLUGIN_COMMAND_CATEGORIES: &[(&str, CommandCategory)] = &[
     ("/team", CommandCategory::Action),
 ];
 
+fn builtin_reserves(name: &str) -> bool {
+    BUILTIN_COMMANDS.iter().any(|command| {
+        command.name == name || command.dispatch_name == name || command.aliases.contains(&name)
+    })
+}
+
 fn plugin_category(name: &str) -> Option<CommandCategory> {
     PLUGIN_COMMAND_CATEGORIES
         .iter()
@@ -49,7 +55,10 @@ fn write_header(out: &mut String) {
 }
 
 fn write_builtin_commands(out: &mut String) {
-    let plugin_commands = lua_util::load_builtin_plugin_commands();
+    let plugin_commands = lua_util::load_builtin_plugin_commands()
+        .into_iter()
+        .filter(|command| !builtin_reserves(&command.name))
+        .collect::<Vec<_>>();
 
     let _ = writeln!(out, "## Built-in commands");
     let _ = writeln!(out);
@@ -88,7 +97,7 @@ fn write_sessions(out: &mut String) {
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "Sessions run concurrently. `/new` starts a fresh session while the old one keeps working in the background, and `/sessions` shows the live status of each (working, needs input, idle) so you can jump between them. When a background session finishes or needs input, n00n flashes a note in the status bar."
+        "Sessions run concurrently. `/session:new` starts a fresh session while the old one keeps working in the background, and `/session:list` shows the live status of each (working, needs input, idle) so you can jump between them. When a background session finishes or needs input, n00n flashes a note in the status bar."
     );
 }
 

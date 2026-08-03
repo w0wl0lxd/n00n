@@ -138,7 +138,7 @@ pub const TOP_LEVEL_FIELDS: &[ConfigField] = &[
         ty: "bool",
         default: ConfigValue::Bool(false),
         min: None,
-        description: "Start every session with YOLO mode (skip permission prompts, deny rules still apply)",
+        description: "Start every session in no-confirm mode (skip prompts; deny rules still apply)",
     },
     ConfigField {
         name: "always_fast",

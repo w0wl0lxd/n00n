@@ -39,10 +39,38 @@ impl App {
         let layout = self.compute_layout(frame.area(), form_visible);
         let render_chat = self.resolve_render_chat();
 
+        let footer_context = if self.permission_prompt.is_editing() {
+            footer::FooterContext::PermissionEdit
+        } else if self.permission_prompt.is_confirming() {
+            footer::FooterContext::PermissionConfirm
+        } else if self.permission_prompt.is_open() {
+            footer::FooterContext::Permission
+        } else if self.onboarding.is_open() {
+            footer::FooterContext::Welcome
+        } else if self.help_modal.is_open() {
+            footer::FooterContext::Help
+        } else if self.plan_form_active() {
+            footer::FooterContext::Form
+        } else if self.command_palette.is_active()
+            || self.file_picker.is_open()
+            || self.task_picker.is_open()
+            || self.rewind_picker.is_open()
+            || self.theme_picker.is_open()
+            || self.model_picker.is_open()
+            || self.login_picker.is_open()
+            || self.mcp_picker.is_open()
+        {
+            footer::FooterContext::Picker
+        } else if self.any_overlay_open() {
+            footer::FooterContext::Modal
+        } else {
+            footer::FooterContext::Default
+        };
+
         Self::render_background(frame);
         self.render_messages(frame, &layout, render_chat);
         self.render_bottom_panel(frame, &layout);
-        footer::view(frame, layout.footer_area, self.any_overlay_open());
+        footer::view(frame, layout.footer_area, footer_context);
         self.render_splits(frame, &layout);
         let mut overlay_rect = self.render_picker_overlays(frame, &layout);
         self.render_status_bar(frame, layout.status_area, render_chat);

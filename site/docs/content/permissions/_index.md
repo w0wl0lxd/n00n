@@ -22,7 +22,7 @@ Any matching deny blocks the tool. No exceptions.
 For every tool call, n00n resolves permission like this:
 
 1. **Deny wins**: if any rule from any layer matches the tool and scope with a deny, the call is blocked immediately.
-2. If **YOLO** is active and no deny matched, allowed.
+2. If **no-confirm mode** is active and no deny matched, allowed.
 3. **Plan file auto-allow**: file write tools targeting the plan file path are allowed automatically (only if no deny rule matched in step 1).
 4. Fall back to `default` (per-tool, then global). Built-in default is `"prompt"`.
 
@@ -30,18 +30,18 @@ For every tool call, n00n resolves permission like this:
 
 | Tool | Scope | Notes |
 |------|-------|-------|
-| `write` | Project directory | Files outside require permission |
-| `edit` | Project directory | Files outside require permission |
-| `multiedit` | Project directory | Files outside require permission |
-| `task` | `*` (all) | Subagent spawning always allowed |
+| `write_file` | Project directory | Files outside require permission |
+| `edit_file` | Project directory | Files outside require permission |
+| `edit_file_bulk` | Project directory | Files outside require permission |
+| `run_task` | `*` (all) | Subagent spawning always allowed |
 
 These tools require explicit permission:
 
-- `bash` - Shell commands
-- `websearch` - Web search queries
-- `webfetch` - URL fetching
+- `run_shell` - Shell commands
+- `search_web` - Web search queries
+- `fetch_url` - URL fetching
 
-Container tools like `batch` and `code_execution` prompt for each inner tool individually.
+Container tools like `run_batch` and `run_python` prompt for each inner tool individually.
 
 ## TOML Configuration
 
@@ -53,7 +53,7 @@ There are two permission files:
 ```toml
 default = "deny"
 
-[bash]
+[run_shell]
 allow = [
     "cargo *",
     "git *",
@@ -63,7 +63,7 @@ deny = [
     "sudo *",
 ]
 
-[read]
+[read_file]
 default = "allow"
 
 [mcp.deepwiki]
@@ -75,7 +75,7 @@ deny = ["admin_delete"]
 
 Each tool gets its own section with `allow` and `deny` arrays. Values are glob-like scope patterns.
 
-> **Note:** In MCP server sections (`[mcp.*]`), the boolean forms `allow = true` and `deny = true` are deprecated and ignored. Use `default = "allow"` or `default = "deny"` instead. For native tool sections (e.g. `[bash]`), `allow = true` still works.
+> **Note:** In MCP server sections (`[mcp.*]`), the boolean forms `allow = true` and `deny = true` are deprecated and ignored. Use `default = "allow"` or `default = "deny"` instead. For native tool sections (e.g. `[run_shell]`), `allow = true` still works.
 
 ### The `default` key
 
@@ -84,12 +84,12 @@ Controls what happens when no allow or deny rule matches. Can be `"prompt"` (bui
 ```toml
 default = "deny"
 
-[bash]
+[run_shell]
 default = "prompt"
 allow = ["cargo *"]
 ```
 
-Here everything is denied by default, except `bash` which still prompts, and `cargo *` commands which are allowed.
+Here everything is denied by default, except `run_shell` which still prompts, and `cargo *` commands which are allowed.
 
 Note: `default = "allow"` only works in the global file. Projects cannot grant themselves full access.
 
@@ -138,29 +138,29 @@ When a tool needs permission, n00n asks you. Here are the keys:
 
 When you pick "always allow", the saved scope is generalized so it stays useful beyond just that one command:
 
-- **bash**: `cargo test --all` becomes `cargo *`
-- **write/edit/multiedit**: `/path/to/file.rs` becomes `/path/to/**`
+- **run_shell**: `cargo test --all` becomes `cargo *`
+- **write_file/edit_file/edit_file_bulk**: `/path/to/file.rs` becomes `/path/to/**`
 - **MCP tools**: always `*` (per-tool, so allowing `deepwiki.search` won't cover `deepwiki.fetch`)
-- **webfetch/websearch**: always `*`
+- **fetch_url/search_web**: always `*`
 
 For MCP tools, both allow and deny decisions generalize to `*` (the entire tool). This is because MCP tool inputs are opaque JSON with no meaningful scope pattern to differentiate. Denying a single MCP invocation denies the tool entirely until you revoke the rule.
 
-## YOLO Mode
+## No-confirm mode
 
-To skip all prompts, toggle YOLO with the `/yolo` command, or run with `--yolo`. Explicit deny rules still apply.
+To skip all prompts, toggle no-confirm mode with `/mode:no-confirm`, or run with `--no-confirm`. The `/yolo` command and `--yolo` flag remain deprecated aliases. Explicit deny rules still apply.
 
-To start in YOLO mode every time:
+To start in no-confirm mode every time:
 
 ```lua
 -- ~/.config/n00n/init.lua
 n00n.setup({
-    always_yolo = true,
+    always_yolo = true, -- legacy configuration key
 })
 ```
 
-## Bash Command Parsing
+## Shell command parsing
 
-Bash commands get parsed with tree-sitter to extract individual commands. Something like `cd /tmp && cargo test` is checked as two separate commands.
+`run_shell` commands get parsed with tree-sitter to extract individual commands. Something like `cd /tmp && cargo test` is checked as two separate commands.
 
 Some constructs are too complex to analyze statically, so they always trigger a prompt:
 

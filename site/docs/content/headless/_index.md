@@ -73,8 +73,9 @@ Under the hood it reuses the same `spawn_interactive` driver as the TUI and ACP 
 | `--fork-session` | Load a session's history under a new ID |
 | `--continue` | Resume the most recent session in the current directory |
 | `--permission-mode <mode>` | `default`, `acceptEdits`, `plan`, or `bypassPermissions` |
+| `--no-confirm` | Skip permission prompts while preserving explicit deny rules |
 | `--include-partial-messages` | Stream Anthropic-shaped deltas (`message_start`, `content_block_delta`, ...) |
-| `--allowed-tools` / `--disallowed-tools` | Comma-separated tool allow/deny lists (PascalCase or snake_case) |
+| `--allowed-tools` / `--disallowed-tools` | Comma-separated tool allow/deny lists (canonical snake_case; legacy names remain aliases) |
 
 ### Quick example
 
@@ -88,7 +89,7 @@ echo '{"type":"user","message":{"content":"explain this repo"}}' \
 Pipe compiler errors back for a fix:
 
 ```bash
-cargo build 2>&1 | n00n "Fix these compiler errors." --print --yolo
+cargo build 2>&1 | n00n "Fix these compiler errors." --print --no-confirm
 ```
 
 Generate a changelog from recent commits:
@@ -111,7 +112,7 @@ Migrate an API across many files:
 ```bash
 grep -rl 'old_api_call' src/ | while read file; do
   n00n "In $file, migrate old_api_call() to new_api_call(). \
-    Keep behavior identical." -p --yolo --allowed-tools Read,Edit
+    Keep behavior identical." -p --no-confirm --allowed-tools read_file,edit_file
 done
 ```
 

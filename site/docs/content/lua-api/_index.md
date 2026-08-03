@@ -732,7 +732,7 @@ available.
 ```lua
 local defs, err = n00n.agent.tools(ctx, {
   audience = "general_sub",
-  except = { "bash", "write" },
+  except = { "run_shell", "write_file" },
 })
 if err then error(err) end
 print(#defs .. " tools available")
@@ -747,7 +747,7 @@ n00n.agent.call_tool({ctx}, {name}, {input}, {opts?})
 ```
 
 Run a tool by name and wait for the result. This is how you call built-in
-tools (like `read`, `bash`, `glob`) from Lua without going through the LLM.
+tools (like `read_file`, `run_shell`, `search_files`) from Lua without going through the LLM.
 
 Live events (streaming output, annotations) are delivered through optional
 callbacks while the tool runs.
@@ -755,7 +755,7 @@ callbacks while the tool runs.
 **Parameters:**
 
 - `{ctx}` (`LuaCtx`) Agent context.
-- `{name}` (`string`) Tool name, e.g. `"bash"`, `"read"`.
+- `{name}` (`string`) Tool name, e.g. `"run_shell"`, `"read_file"`.
 - `{input}` (`table|any`) Tool input (JSON-serializable). Must match the tool's `input_schema`.
 - `{opts?}` (`table?`) Optional fields:
   - `timeout` (`integer?`) deadline in seconds.
@@ -769,7 +769,7 @@ callbacks while the tool runs.
 **Example:**
 
 ```lua
-local out, err = n00n.agent.call_tool(ctx, "bash", {
+local out, err = n00n.agent.call_tool(ctx, "run_shell", {
   command = "ls -la",
   timeout = 10,
 })

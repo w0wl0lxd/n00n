@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::mem;
 use std::sync::Arc;
 
@@ -37,6 +38,7 @@ impl CommandCategory {
         Self::Action,
     ];
 
+    #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Session => "Session",
@@ -81,6 +83,22 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
         0
     ),
     command!(
+        "/session:list",
+        "/sessions",
+        ["/sessions"],
+        Session,
+        "Browse and switch sessions",
+        0
+    ),
+    command!(
+        "/session:rename",
+        "/rename",
+        ["/rename"],
+        Session,
+        "Rename the current session",
+        1
+    ),
+    command!(
         "/session:compact",
         "/compact",
         ["/compact"],
@@ -119,6 +137,14 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
         ["/usage"],
         View,
         "View token usage",
+        0
+    ),
+    command!(
+        "/view:memory",
+        "/memory",
+        ["/memory"],
+        View,
+        "View and edit persistent notes",
         0
     ),
     command!(
@@ -219,6 +245,12 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
     ),
 ];
 
+fn conflicts_with_builtin(name: &str) -> bool {
+    BUILTIN_COMMANDS.iter().any(|command| {
+        command.name == name || command.dispatch_name == name || command.aliases.contains(&name)
+    })
+}
+
 pub struct ParsedCommand {
     pub name: String,
     pub args: String,
@@ -303,6 +335,7 @@ impl CommandPalette {
     ) -> Nucleo<CommandItem> {
         let nucleo = Nucleo::new(Config::DEFAULT, Arc::new(|| {}), None, 1);
         let injector = nucleo.injector();
+        let mut reserved = HashSet::new();
 
         for cmd in BUILTIN_COMMANDS {
             let aliases = cmd.aliases.join(" ");
@@ -321,8 +354,12 @@ impl CommandPalette {
         }
 
         for (i, cmd) in custom_commands.iter().enumerate() {
+            let name = cmd.display_name();
+            if conflicts_with_builtin(&name) || !reserved.insert(name.clone()) {
+                continue;
+            }
             let item = CommandItem {
-                name: cmd.display_name(),
+                name,
                 max_args: if cmd.has_args() { usize::MAX } else { 0 },
                 command_type: CommandType::Custom(i),
             };
@@ -332,8 +369,12 @@ impl CommandPalette {
         }
 
         for (i, prompt) in mcp_prompts.iter().enumerate() {
+            let name = format!("/{}", prompt.display_name);
+            if conflicts_with_builtin(&name) || !reserved.insert(name.clone()) {
+                continue;
+            }
             let item = CommandItem {
-                name: format!("/{}", prompt.display_name),
+                name,
                 max_args: if prompt.arguments.is_empty() {
                     0
                 } else {
@@ -347,6 +388,9 @@ impl CommandPalette {
         }
 
         for (i, cmd) in lua_commands.iter().enumerate() {
+            if conflicts_with_builtin(&cmd.name) || !reserved.insert(cmd.name.to_string()) {
+                continue;
+            }
             let item = CommandItem {
                 name: cmd.name.to_string(),
                 max_args: cmd.max_args,
@@ -744,6 +788,13 @@ mod tests {
     }
 
     #[test]
+    fn builtin_commands_reserve_canonical_names_and_aliases() {
+        assert!(conflicts_with_builtin("/action:help"));
+        assert!(conflicts_with_builtin("/help"));
+        assert!(!conflicts_with_builtin("/project:review"));
+    }
+
+    #[test]
     fn slash_shows_builtins_plus_extras() {
         let builtin_count = synced("/").filtered.len();
         assert!(builtin_count > 0);
@@ -1057,17 +1108,17 @@ mod tests {
             .iter()
             .filter(|f| matches!(f.command_type, CommandType::Lua(_)))
             .count();
-        assert_eq!(lua_count, 2);
+        assert_eq!(lua_count, 1);
     }
 
     #[test]
-    fn lua_command_filtered_by_substring() {
+    fn builtin_command_wins_over_matching_lua_command() {
         let p = synced_with_lua("/mem");
         assert!(p.is_active());
-        let found = p
-            .filtered
-            .iter()
-            .any(|f| matches!(f.command_type, CommandType::Lua(_)) && p.item_name(f) == "/memory");
+        let found = p.filtered.iter().any(|item| {
+            matches!(item.command_type, CommandType::Builtin(_))
+                && p.item_name(item) == "/view:memory"
+        });
         assert!(found);
     }
 

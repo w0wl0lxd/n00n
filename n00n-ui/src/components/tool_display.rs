@@ -708,12 +708,19 @@ pub(crate) fn resolve_span_style(style: &SpanStyle) -> Style {
         SpanStyle::Default => theme::current().tool,
         SpanStyle::Named(name) => theme::style_by_name(name),
         SpanStyle::Inline(inline) => {
-            let mut s = Style::default();
-            if let Some((r, g, b)) = inline.fg {
-                s = s.fg(Color::Rgb(r, g, b));
-            }
-            if let Some((r, g, b)) = inline.bg {
-                s = s.bg(Color::Rgb(r, g, b));
+            let accessible = theme::no_color() || theme::high_contrast();
+            let mut s = if theme::high_contrast() {
+                theme::current().tool
+            } else {
+                Style::default()
+            };
+            if !accessible {
+                if let Some((r, g, b)) = inline.fg {
+                    s = s.fg(Color::Rgb(r, g, b));
+                }
+                if let Some((r, g, b)) = inline.bg {
+                    s = s.bg(Color::Rgb(r, g, b));
+                }
             }
             if inline.bold {
                 s = s.bold();
