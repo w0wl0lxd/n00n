@@ -5883,7 +5883,8 @@ fn live_debloat_tool_invocation_suite() {
         serde_json::json!({
             "path": test_path,
             "old_string": "line 1",
-            "new_string": "line 1 updated"
+            "new_string": "line 1 updated",
+            "replace_all": false
         }),
     )
     .unwrap();
@@ -5952,7 +5953,10 @@ fn live_followup_schema_debloat_suite() {
     assert!(minified.get("$schema").is_none());
     assert!(minified.get("title").is_none());
     assert!(minified.get("$comment").is_none());
-    assert!(minified.get("additionalProperties").is_none());
+    assert_eq!(
+        minified.get("additionalProperties"),
+        Some(&serde_json::json!(false))
+    );
     assert!(minified["properties"]["query"].get("title").is_none());
     assert!(
         minified["properties"]["verbose"]

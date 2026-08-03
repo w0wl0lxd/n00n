@@ -53,13 +53,20 @@ local description = string.format(
 
 local schema = {
   type = "object",
+  additionalProperties = false,
+  required = { "tool_calls" },
   properties = {
     tool_calls = {
       type = "array",
-      description = "Array of tool calls to execute in parallel",
       required = true,
       items = {
-        description = "Tool invocation: { tool: string, parameters: object } or flat { tool: string, ...params }",
+        type = "object",
+        additionalProperties = false,
+        required = { "tool", "parameters" },
+        properties = {
+          tool = { type = "string", required = true },
+          parameters = { type = "object", required = true, properties = {} },
+        },
       },
     },
   },
@@ -67,9 +74,9 @@ local schema = {
 
 --- Input normalization (pure) ---------------------------------------------
 
--- Models send entries in two shapes, { tool, parameters } and flat
--- { tool, ...params }, so accept either, or even both merged, as long
--- as no key appears twice.
+-- Batch entries are strictly { tool = string, parameters = object }.
+-- The normalization code still tolerates flat fields for backward
+-- compatibility, but new schemas should use the nested 'parameters' form.
 local function normalize_entry(entry)
   if type(entry) ~= "table" then
     return nil, "batch entry must be an object"

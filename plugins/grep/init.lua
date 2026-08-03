@@ -204,20 +204,20 @@ n00n.api.register_tool({
   name = "grep",
   kind = "search",
   modes = { "default", "research", "build", "compact" },
-  description = [[Search file contents using regex. Respects .gitignore. Results grouped by file, sorted by modification time. Prefer speculative parallel searches over sequential glob+grep. Do NOT wrap pattern in quotes or double-escape (e.g. `\[` not `\\[`). Multi-line matching auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`.]],
+  strict = true,
+  description = [[Search file contents using ripgrep-compatible regex. Respects .gitignore. Results grouped by file, sorted by modification time. This is not a shell: use `pattern` and a single `path`. For multiple paths, search each in a batch call. Do NOT wrap pattern in quotes or double-escape (e.g. `\[` not `\\[`). Multi-line matching auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`.]],
 
   schema = {
     type = "object",
+    additionalProperties = false,
+    required = { "pattern", "path", "include", "context_before", "context_after", "limit" },
     properties = {
       pattern = { type = "string", required = true },
-      path = { type = "string" },
-      include = {
-        type = "string",
-        alias = "glob",
-      },
-      context_before = { type = "integer" },
-      context_after = { type = "integer" },
-      limit = { type = "integer" },
+      path = { type = { "string", "null" }, required = true },
+      include = { type = { "string", "null" }, required = true },
+      context_before = { type = { "integer", "null" }, required = true },
+      context_after = { type = { "integer", "null" }, required = true },
+      limit = { type = { "integer", "null" }, required = true },
     },
   },
 

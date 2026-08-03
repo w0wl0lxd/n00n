@@ -232,7 +232,6 @@ fn fusion_failed_delegate_preserves_charged_telemetry() {
             "description": "charged failure",
             "goal": "exercise the error path",
             "definition_of_done": "the failure keeps its telemetry",
-            "model": "test/sidekick",
         }),
         Tier::Weak,
         true,
@@ -821,7 +820,7 @@ fn multiedit_batch_child_shows_full_numbered_diff() {
     let host = PluginHost::with_all_builtins(Arc::new(ToolRegistry::new())).unwrap();
     let input = json!({ "tool_calls": [{ "tool": "multiedit", "parameters": {
         "path": path.to_str().unwrap(),
-        "edits": [{ "old_string": "old1\nold2\nold3\nold4\nold5", "new_string": "n1\nn2\nn3\nn4\nn5" }],
+        "edits": [{ "old_string": "old1\nold2\nold3\nold4\nold5", "new_string": "n1\nn2\nn3\nn4\nn5", "replace_all": false }],
     }}]});
     let state = json!({ "children": [
         { "tool": "multiedit", "status": "success", "output": "applied 1 edit" },
