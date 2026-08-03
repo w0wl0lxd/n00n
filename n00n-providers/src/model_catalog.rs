@@ -84,14 +84,22 @@ impl ModelCatalog {
         if let Some(spec) = self.aliases.get(input) {
             return Ok(spec.clone());
         }
-        if self.contains(input) {
+        if self
+            .specs
+            .iter()
+            .any(|candidate| input.starts_with(candidate))
+        {
             return Ok(input.to_string());
         }
         // This is the only built-in shorthand. It is deliberately an explicit
         // alias family, not a fallback to arbitrary provider/model parsing.
         if input.starts_with("claude-") {
             let spec = format!("anthropic/{input}");
-            if self.contains(&spec) {
+            if self
+                .specs
+                .iter()
+                .any(|candidate| spec.starts_with(candidate))
+            {
                 return Ok(spec);
             }
         }
@@ -175,6 +183,25 @@ mod tests {
         );
         assert!(matches!(
             catalog.canonical_spec("unknown"),
+            Err(ModelCatalogError::Unavailable(_))
+        ));
+    }
+
+    #[test]
+    fn versioned_specs_preserve_catalog_prefix_compatibility() {
+        let catalog = ModelCatalog::from_specs(["anthropic/claude-opus-4-5".to_string()]);
+        assert_eq!(
+            catalog
+                .canonical_spec("anthropic/claude-opus-4-5-20251101")
+                .unwrap(),
+            "anthropic/claude-opus-4-5-20251101"
+        );
+        assert_eq!(
+            catalog.canonical_spec("claude-opus-4-5-20251101").unwrap(),
+            "anthropic/claude-opus-4-5-20251101"
+        );
+        assert!(matches!(
+            catalog.canonical_spec("openai/claude-opus-4-5-20251101"),
             Err(ModelCatalogError::Unavailable(_))
         ));
     }

@@ -80,18 +80,23 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
         }
     });
 
-    let mut discovered_specs = Vec::new();
-    fetch_all_models(
-        |batch| {
-            for warning in batch.warnings {
-                warn!(%warning, "model discovery warning");
-            }
-            discovered_specs.extend(batch.models);
-        },
-        None,
-    )
-    .await;
-    let model_catalog = ModelCatalog::current_with_specs(discovered_specs);
+    let mut discovered_specs = vec![params.model.spec()];
+    let (discovery_tx, discovery_rx) = flume::unbounded();
+    let discovery_task = smol::spawn(async move {
+        fetch_all_models(
+            move |batch| {
+                for warning in batch.warnings {
+                    warn!(%warning, "model discovery warning");
+                }
+                if let Err(error) = discovery_tx.send(batch.models) {
+                    debug!(%error, "ACP model discovery receiver closed");
+                }
+            },
+            None,
+        )
+        .await;
+    });
+    let model_catalog = ModelCatalog::current_with_specs(discovered_specs.clone());
     let model_specs = model_catalog.specs().to_vec();
     let mut server = Server {
         out_tx,
@@ -117,6 +122,7 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
 
         let mut stream = serde_json::Deserializer::from_str(trimmed).into_iter::<Value>();
         for result in &mut stream {
+            refresh_model_catalog(&mut server, &discovery_rx, &mut discovered_specs);
             let raw = match result {
                 Ok(v) => v,
                 Err(e) => {
@@ -142,9 +148,26 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
     }
 
     drop(server);
+    let _ = discovery_task.cancel().await;
     writer_task.await;
 
     Ok(())
+}
+
+fn refresh_model_catalog(
+    server: &mut Server,
+    discovery_rx: &Receiver<Vec<String>>,
+    discovered_specs: &mut Vec<String>,
+) {
+    let mut changed = false;
+    for batch in discovery_rx.try_iter() {
+        discovered_specs.extend(batch);
+        changed = true;
+    }
+    if changed {
+        server.model_catalog = ModelCatalog::current_with_specs(discovered_specs.clone());
+        server.model_specs = server.model_catalog.specs().to_vec();
+    }
 }
 
 fn request_id(v: &Value) -> RequestId {
@@ -594,6 +617,38 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&history).unwrap(),
             serde_json::to_value(&messages).unwrap()
+        );
+    }
+
+    #[test]
+    fn model_discovery_batches_enrich_the_offline_catalog() {
+        let (out_tx, _out_rx) = flume::unbounded();
+        let mut discovered_specs = vec!["anthropic/active-model".to_string()];
+        let model_catalog = ModelCatalog::current_with_specs(discovered_specs.clone());
+        let mut server = Server {
+            model_specs: model_catalog.specs().to_vec(),
+            model_catalog,
+            out_tx,
+            session: None,
+        };
+        let (discovery_tx, discovery_rx) = flume::unbounded();
+        discovery_tx
+            .send(vec!["openai/discovered-model".to_string()])
+            .unwrap();
+
+        refresh_model_catalog(&mut server, &discovery_rx, &mut discovered_specs);
+
+        assert!(
+            server
+                .model_specs
+                .iter()
+                .any(|spec| spec == "anthropic/active-model")
+        );
+        assert!(
+            server
+                .model_specs
+                .iter()
+                .any(|spec| spec == "openai/discovered-model")
         );
     }
 

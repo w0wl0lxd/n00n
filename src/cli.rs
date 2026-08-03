@@ -135,11 +135,11 @@ pub struct Cli {
     pub plugin_flags: PluginFlags,
 
     /// Pre-approve tools (comma-separated). Accepts `PascalCase` (Claude Code) or `snake_case`.
-    #[arg(long, value_delimiter = ',')]
+    #[arg(long, alias = "allowedTools", value_delimiter = ',')]
     pub allowed_tools: Vec<String>,
 
     /// Disallowed tools (comma-separated).
-    #[arg(long, value_delimiter = ',')]
+    #[arg(long, alias = "disallowedTools", value_delimiter = ',')]
     pub disallowed_tools: Vec<String>,
 
     /// Session ID for SDK mode
@@ -562,6 +562,19 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn sdk_tool_flag_aliases_remain_compatible() {
+        let cli = Cli::parse_from([
+            "n00n",
+            "--allowedTools",
+            "Read,Bash",
+            "--disallowedTools",
+            "Write",
+        ]);
+        assert_eq!(cli.allowed_tools, ["Read", "Bash"]);
+        assert_eq!(cli.disallowed_tools, ["Write"]);
     }
 
     #[test]

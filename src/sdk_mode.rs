@@ -458,6 +458,12 @@ struct Shared {
     pending: HashSet<String>,
 }
 
+fn with_max_turns(config: &AgentConfig, max_turns: Option<u32>) -> Arc<AgentConfig> {
+    let mut config = config.clone();
+    config.max_turns = max_turns;
+    Arc::new(config)
+}
+
 pub fn run(params: SdkParams) -> Result<()> {
     let SdkParams {
         cli,
@@ -474,6 +480,7 @@ pub fn run(params: SdkParams) -> Result<()> {
         cli.permission_mode.as_deref(),
         cli.permission_flags.no_confirm(),
     );
+    let config = with_max_turns(&config, cli.max_turns);
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let working_dir = cwd.to_string_lossy().into_owned();
@@ -1255,6 +1262,12 @@ fn result_cost_usd(
 mod tests {
     use super::*;
     use test_case::test_case;
+
+    #[test]
+    fn sdk_max_turns_override_reaches_agent_config() {
+        let config = with_max_turns(&AgentConfig::default(), Some(3));
+        assert_eq!(config.max_turns, Some(3));
+    }
 
     fn claude_to_n00n_tool_name(name: &str) -> &str {
         TOOL_NAME_MAP
