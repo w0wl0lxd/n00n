@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, Metadata, OpenOptions, TryLockError};
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -42,6 +42,9 @@ const AUTH_DIR_MODE: u32 = 0o700;
 const AUTH_LOCK_MODE: u32 = 0o600;
 const AUTH_LOCK_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 const AUTH_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(25);
+const CODEX_AUTH_FILE: &str = "auth.json";
+const CODEX_CONFIG_FILE: &str = "config.toml";
+const CODEX_AUTH_LOCK_FILE: &str = "auth.json.lock";
 const CODING_PLAN_ADMISSION_DIR: &str = "coding-plan-admission";
 const CODING_PLAN_ADMISSION_NAMESPACE: &str = "openai-coding-plan-admission-namespace";
 const CODING_PLAN_ADMISSION_NAMESPACE_HOST: &str = "local";
@@ -792,74 +795,184 @@ pub fn is_oauth(dir: &StateDir) -> bool {
     load_tokens(dir, PROVIDER).is_some()
 }
 
-fn ensure_tokens(dir: &StateDir) -> Result<Option<OAuthTokens>, AgentError> {
-    if let Some(tokens) = load_tokens(dir, PROVIDER) {
-        return Ok(Some(tokens));
-    }
-    import_codex_tokens(dir)?;
-    Ok(load_tokens(dir, PROVIDER))
+fn codex_home_path(home: &Path, codex_home: Option<&Path>) -> PathBuf {
+    codex_home
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| home.join(".codex"))
 }
 
-fn import_codex_tokens(dir: &StateDir) -> Result<Option<OAuthTokens>, AgentError> {
-    // Only migrate into the user's real state directory, never a test temp dir.
-    let user = StateDir::resolve()?;
-    if dir.path() != user.path() {
-        return Ok(None);
+fn codex_auth_path(codex_home: &Path) -> PathBuf {
+    codex_home.join(CODEX_AUTH_FILE)
+}
+
+fn codex_home_from_env() -> Option<PathBuf> {
+    if let Some(codex_home) = env::var_os("CODEX_HOME") {
+        return Some(PathBuf::from(codex_home));
     }
+    n00n_storage::paths::home().map(|home| codex_home_path(&home, None))
+}
 
-    let Some(home) = n00n_storage::paths::home() else {
-        return Ok(None);
-    };
-    let codex_path = home.join(".codex").join("auth.json");
+pub(crate) fn codex_auth_path_from_env() -> Option<PathBuf> {
+    codex_home_from_env().map(|home| codex_auth_path(&home))
+}
 
-    let Ok(data) = fs::read_to_string(&codex_path) else {
-        debug!(path = %codex_path.display(), "no Codex auth file to migrate");
-        return Ok(None);
-    };
+fn codex_storage_error(path: &Path, message: impl Into<String>) -> AgentError {
+    AgentError::Config {
+        message: format!(
+            "Codex credentials at {}: {}",
+            path.display(),
+            message.into()
+        ),
+    }
+}
 
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&data) else {
-        debug!(path = %codex_path.display(), "malformed Codex auth file");
-        return Ok(None);
+pub(crate) fn load_codex_tokens(path: &Path) -> Result<Option<OAuthTokens>, AgentError> {
+    let data = match fs::read_to_string(path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(codex_storage_error(
+                path,
+                format!("cannot read file: {error}"),
+            ));
+        }
     };
-
-    let Some(tokens) = value.get("tokens").and_then(serde_json::Value::as_object) else {
-        return Ok(None);
-    };
-    let Some(access) = tokens
+    let value: serde_json::Value = serde_json::from_str(&data)
+        .map_err(|error| codex_storage_error(path, format!("contains malformed JSON: {error}")))?;
+    let tokens = value
+        .get("tokens")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| codex_storage_error(path, "does not contain a tokens object"))?;
+    let access = tokens
         .get("access_token")
         .and_then(serde_json::Value::as_str)
-    else {
-        return Ok(None);
-    };
-    let Some(refresh) = tokens
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| codex_storage_error(path, "does not contain tokens.access_token"))?;
+    let refresh = tokens
         .get("refresh_token")
         .and_then(serde_json::Value::as_str)
-    else {
-        return Ok(None);
-    };
-    let account_id = tokens
-        .get("account_id")
-        .and_then(serde_json::Value::as_str)
-        .map(String::from);
-
-    let Some(exp) = token_exp(access) else {
-        return Ok(None);
-    };
-    let access = access.to_string();
-    let refresh = refresh.to_string();
-    let expires = exp.checked_mul(1000).ok_or_else(|| AgentError::Config {
-        message: "OpenAI token expiry overflow".into(),
-    })?;
-
-    let n00n_tokens = OAuthTokens {
-        access,
-        refresh,
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| codex_storage_error(path, "does not contain tokens.refresh_token"))?;
+    let expires = token_exp(access)
+        .ok_or_else(|| codex_storage_error(path, "contains an access token with no valid expiry"))?
+        .checked_mul(1_000)
+        .ok_or_else(|| codex_storage_error(path, "contains an overflowing access-token expiry"))?;
+    Ok(Some(OAuthTokens {
+        access: access.into(),
+        refresh: refresh.into(),
         expires,
-        account_id,
+        account_id: tokens
+            .get("account_id")
+            .and_then(serde_json::Value::as_str)
+            .map(String::from),
+    }))
+}
+
+fn codex_keyring_only(codex_home: &Path) -> bool {
+    fs::read_to_string(codex_home.join(CODEX_CONFIG_FILE)).is_ok_and(|contents| {
+        contents.lines().any(|line| {
+            let Some((key, value)) = line.split_once('=') else {
+                return false;
+            };
+            if key.trim() != "cli_auth_credentials_store" {
+                return false;
+            }
+            let value = value
+                .split('#')
+                .next()
+                .map(str::trim)
+                .unwrap_or("")
+                .trim_matches(|character| character == '"' || character == '\'');
+            value.eq_ignore_ascii_case("keyring") || value.eq_ignore_ascii_case("auto")
+        })
+    })
+}
+
+fn save_codex_tokens(path: &Path, tokens: &OAuthTokens) -> Result<(), AgentError> {
+    let data = fs::read_to_string(path).map_err(|error| {
+        codex_storage_error(path, format!("cannot read before update: {error}"))
+    })?;
+    let mut value: serde_json::Value = serde_json::from_str(&data)
+        .map_err(|error| codex_storage_error(path, format!("contains malformed JSON: {error}")))?;
+    let object = value
+        .get_mut("tokens")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| codex_storage_error(path, "does not contain a tokens object"))?;
+    object.insert("access_token".into(), tokens.access.clone().into());
+    object.insert("refresh_token".into(), tokens.refresh.clone().into());
+    object.insert(
+        "account_id".into(),
+        tokens
+            .account_id
+            .clone()
+            .map_or(serde_json::Value::Null, Into::into),
+    );
+    let temporary = path.with_extension("json.tmp");
+    let mut file = File::create(&temporary)?;
+    serde_json::to_writer_pretty(&mut file, &value)?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    fs::rename(temporary, path)?;
+    Ok(())
+}
+
+pub(crate) fn synchronize_codex_tokens<F>(
+    path: &Path,
+    observed: &OAuthTokens,
+    force_refresh: bool,
+    refresh: F,
+) -> Result<TokenSync, AgentError>
+where
+    F: FnOnce(&OAuthTokens) -> Result<OAuthTokens, AgentError>,
+{
+    let lock_path = path.with_file_name(CODEX_AUTH_LOCK_FILE);
+    let lock = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(lock_path)?;
+    lock.lock()?;
+    let current = load_codex_tokens(path)?
+        .ok_or_else(|| codex_storage_error(path, "file disappeared while locked"))?;
+    let changed = current.access != observed.access
+        || current.refresh != observed.refresh
+        || current.expires != observed.expires
+        || current.account_id != observed.account_id;
+    let same_account = current.account_id.is_some() && current.account_id == observed.account_id;
+    if !current.is_expired() && (!force_refresh || changed) {
+        return Ok(TokenSync {
+            tokens: current,
+            outcome: if changed {
+                TokenSyncOutcome::Adopted
+            } else {
+                TokenSyncOutcome::Current
+            },
+            lock_wait: Duration::ZERO,
+            same_account,
+        });
+    }
+    let fresh = refresh(&current)?;
+    save_codex_tokens(path, &fresh)?;
+    Ok(TokenSync {
+        tokens: fresh,
+        outcome: TokenSyncOutcome::Refreshed,
+        lock_wait: Duration::ZERO,
+        same_account,
+    })
+}
+
+fn ensure_tokens(dir: &StateDir) -> Result<Option<OAuthTokens>, AgentError> {
+    let Some(codex_home) = codex_home_from_env() else {
+        return Ok(load_tokens(dir, PROVIDER));
     };
-    save_tokens(dir, PROVIDER, &n00n_tokens)?;
-    debug!("migrated Codex OpenAI tokens");
-    Ok(Some(n00n_tokens))
+    match load_codex_tokens(&codex_auth_path(&codex_home))? {
+        Some(tokens) => Ok(Some(tokens)),
+        None if codex_keyring_only(&codex_home) => Err(codex_storage_error(
+            &codex_home,
+            "uses keyring-only storage; n00n cannot reuse it yet, run `n00n auth login codex`",
+        )),
+        None => Ok(load_tokens(dir, PROVIDER)),
+    }
 }
 
 /// Resolve cached `OpenAI` authentication without network access.
@@ -1419,5 +1532,66 @@ mod tests {
 
         assert_eq!(extract_account_id("not.a.jwt"), None);
         assert_eq!(extract_account_id("invalid"), None);
+    }
+
+    #[test]
+    fn codex_path_selection_prefers_injected_home() {
+        let home = Path::new("/tmp/home");
+        let codex_home = Path::new("/tmp/codex");
+        assert_eq!(
+            codex_auth_path(&codex_home),
+            PathBuf::from("/tmp/codex/auth.json")
+        );
+        assert_eq!(codex_home_path(home, Some(codex_home)), codex_home);
+        assert_eq!(
+            codex_home_path(home, None),
+            PathBuf::from("/tmp/home/.codex")
+        );
+    }
+
+    #[test]
+    fn codex_file_errors_distinguish_missing_and_malformed() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(CODEX_AUTH_FILE);
+        assert!(load_codex_tokens(&path).unwrap().is_none());
+        fs::write(&path, "{").unwrap();
+        let error = load_codex_tokens(&path).unwrap_err();
+        assert!(error.to_string().contains("malformed JSON"));
+    }
+
+    #[test]
+    fn codex_refresh_adopts_newer_file_before_refreshing() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(CODEX_AUTH_FILE);
+        let access = |exp: u64| {
+            let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{exp}}}"#).as_bytes());
+            format!("e.{payload}.s")
+        };
+        let current = test_tokens(
+            &access(4_000_000_000),
+            "shared-refresh",
+            now_millis() + 3_600_000,
+        );
+        fs::write(&path, serde_json::json!({"tokens": {"access_token": current.access, "refresh_token": current.refresh, "account_id": "test-account"}}).to_string()).unwrap();
+        let observed = test_tokens("stale-access", "stale-refresh", 0);
+        let sync = synchronize_codex_tokens(&path, &observed, true, |_| {
+            Err(AgentError::Config {
+                message: "refresh should not run".into(),
+            })
+        })
+        .unwrap();
+        assert_eq!(sync.outcome, TokenSyncOutcome::Adopted);
+        assert_eq!(sync.tokens.refresh, "shared-refresh");
+    }
+
+    #[test]
+    fn codex_keyring_storage_is_detected_as_unsupported() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join(CODEX_CONFIG_FILE),
+            "cli_auth_credentials_store = \"keyring\"\n",
+        )
+        .unwrap();
+        assert!(codex_keyring_only(temp.path()));
     }
 }
