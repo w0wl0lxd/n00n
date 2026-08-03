@@ -594,29 +594,35 @@ pub fn extract_selected_text(
             .find(|r| r.area.y <= row && row < r.area.bottom());
 
         let Some(region) = region else {
+            if row == u16::MAX {
+                break;
+            }
             row += 1;
             continue;
         };
 
         let region_end = region.area.bottom();
         let fully_selected = ss.covers_rect(region.area);
-
-        if !out.is_empty() {
-            out.push('\n');
-        }
+        let mut chunk = String::new();
         if fully_selected && !region.raw_text.is_empty() {
-            out.push_str(region.raw_text);
+            chunk.push_str(region.raw_text);
         } else {
-            let chunk_end = region_end.min(ss.end_row + 1);
+            let chunk_end = region_end.min(ss.end_row.saturating_add(1));
             append_rows(
                 buf,
                 region.area,
                 ss,
                 row,
                 chunk_end,
-                &mut out,
+                &mut chunk,
                 &region.line_breaks,
             );
+        }
+        if !chunk.is_empty() {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&chunk);
         }
         row = region_end;
     }
@@ -1097,6 +1103,42 @@ mod tests {
         };
         let text = extract_selected_text(&buf, ss(0, 0, 0, 0), &[region]);
         assert_eq!(text, "H");
+    }
+
+    #[test]
+    fn fully_selected_raw_text_preserves_trailing_newlines() {
+        let buf = Buffer::empty(Rect::new(0, 0, 10, 2));
+        let region = ContentRegion {
+            area: Rect::new(0, 0, 10, 2),
+            raw_text: "Line A\n\n",
+            ..Default::default()
+        };
+
+        assert_eq!(
+            extract_selected_text(&buf, ss(0, 0, 1, 9), &[region]),
+            "Line A\n\n"
+        );
+    }
+
+    #[test]
+    fn extract_trailing_region_without_content_adds_no_trailing_newline() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 4));
+        buf.set_string(0, 0, "Line A    ", Style::default());
+        buf.set_string(0, 1, "Line B    ", Style::default());
+        let first = ContentRegion {
+            area: Rect::new(0, 0, 10, 2),
+            raw_text: "Line A\nLine B",
+            ..Default::default()
+        };
+        let blank_second = ContentRegion {
+            area: Rect::new(0, 2, 10, 2),
+            ..Default::default()
+        };
+        let text = extract_selected_text(&buf, ss(0, 0, 3, 9), &[first, blank_second]);
+        assert_eq!(
+            text, "Line A\nLine B",
+            "separator newline before a fully-selected but empty trailing region must not leak"
+        );
     }
 
     #[test_case(ss(5, 10, 5, 20), 5, (10, 20) ; "single_row")]
