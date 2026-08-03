@@ -137,17 +137,8 @@ n00n.api.register_tool({
   name = "git",
   kind = "read",
   description = [[
-Native git operations backed by gix/gitoxide. Query local repositories by spawning the n00n-git binary.
-
-Commands:
-- status: Show working tree status (branch, staged/unstaged files).
-- log: Show commit history (default 10 commits, use count for more).
-- diff <ref_a> <ref_b>: Show diff between two references.
-- branches: List all branches with HEAD SHAs.
-- blame <file>: Show blame information for a file.
-
-The n00n-git binary is spawned via jobstart/jobwait. Set the N00N_GIT_BIN environment variable to override the binary path.
-Use this for repository-aware queries, understanding history, and tracking changes.
+Query local git repositories (status, log, diff, branches, blame) by spawning the n00n-git binary.
+Set N00N_GIT_BIN to override the binary path.
 ]],
   schema = {
     type = "object",
