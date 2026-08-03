@@ -474,9 +474,15 @@ local function legacy_restore(children, output, tol)
   return buf
 end
 
+-- Restore/header see persisted raw model JSON; accept the schema alias
+-- `tool_uses` the same way live `parse`/`validate` remaps it.
+local function tool_calls_of(input)
+  return input.tool_calls or input.tool_uses or {}
+end
+
 local function restore(input, output, _is_error, rctx)
   local tol = rctx:tool_output_lines()
-  local children = prepare_children(input.tool_calls or {})
+  local children = prepare_children(tool_calls_of(input))
   if not children then
     return ToolView.restore(output, { max_lines = tol.other, keep = "head" })
   end
@@ -504,7 +510,7 @@ n00n.api.register_tool({
   defer_loading = true,
   schema = schema,
   header = function(input)
-    return #(input.tool_calls or {}) .. " tools"
+    return #tool_calls_of(input) .. " tools"
   end,
   handler = handler,
   restore = restore,
