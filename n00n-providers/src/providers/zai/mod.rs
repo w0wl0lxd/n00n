@@ -313,7 +313,7 @@ impl Provider for Zai {
             }
             match self
                 .compat
-                .do_stream(model, &[], &body, event_tx, &auth)
+                .do_stream(model, &[], &body, event_tx, &auth, &opts)
                 .await
             {
                 Err(AgentError::Api { status, message })
