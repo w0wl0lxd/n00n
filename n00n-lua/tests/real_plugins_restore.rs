@@ -928,6 +928,30 @@ fn fusion_is_rejected_when_disabled() {
 }
 
 #[test]
+fn grep_header_accepts_multiple_paths() {
+    let host = load_host();
+    let restored = restore(
+        &host,
+        "grep",
+        json!({ "pattern": "fn", "path": ["src", "tests"] }),
+        "src/main.rs:\n  1: fn main",
+        None,
+        vec![],
+    );
+
+    assert!(
+        restored.header.contains("src"),
+        "header: {}",
+        restored.header
+    );
+    assert!(
+        restored.header.contains("tests"),
+        "header: {}",
+        restored.header
+    );
+}
+
+#[test]
 fn fusion_rejects_compaction_sidekick_tier() {
     let error = execute_fusion(
         json!({"description":"test brief", "goal":"do it", "definition_of_done":"it works"}),
