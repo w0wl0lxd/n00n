@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785783858182,
+  "lastUpdate": 1785786599491,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -13279,6 +13279,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 132763,
             "range": "± 5871",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b39f755060cad67165d52857418915890ad59d43",
+          "message": "Merge pull request #223 from w0wl0lxd/fix/provider-token-usage\n\nfix(providers): derive non-cached input from Devin usage",
+          "timestamp": "2026-08-03T15:34:14-04:00",
+          "tree_id": "e846ed7bddc7ba228ad3b10a331236b1e7a93613",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/b39f755060cad67165d52857418915890ad59d43"
+        },
+        "date": 1785786598843,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 8441312,
+            "range": "± 54577",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1718128,
+            "range": "± 6448",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1721582,
+            "range": "± 26600",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 9441154,
+            "range": "± 32608",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3370700,
+            "range": "± 44725",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3370685,
+            "range": "± 10536",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 856445,
+            "range": "± 13610",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 104521,
+            "range": "± 1668",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 104450,
+            "range": "± 2458",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1264053,
+            "range": "± 3751",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 531935,
+            "range": "± 3649",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 531171,
+            "range": "± 4146",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 43854,
+            "range": "± 1523",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 154532,
+            "range": "± 2315",
             "unit": "ns/iter"
           }
         ]
