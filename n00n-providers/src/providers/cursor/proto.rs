@@ -11,6 +11,22 @@ use prost::Message;
 
 use crate::providers::cursor::connect::encode_frame;
 
+/// Length-delimited protobuf field (wire type 2).
+#[must_use]
+pub(crate) fn field_ld(field: u64, data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len().saturating_add(10));
+    prost::encoding::encode_varint((field << 3) | 2, &mut out);
+    prost::encoding::encode_varint(data.len() as u64, &mut out);
+    out.extend_from_slice(data);
+    out
+}
+
+/// Length-delimited string field.
+#[must_use]
+pub(crate) fn field_str(field: u64, value: &str) -> Vec<u8> {
+    field_ld(field, value.as_bytes())
+}
+
 /// `AgentMode`: `AGENT` = 1, `ASK` = 2, `PLAN` = 3.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, prost::Enumeration)]
 #[repr(i32)]
@@ -215,20 +231,16 @@ pub(crate) fn build_run_frames(params: &RunFrameParams<'_>) -> Result<Vec<Vec<u8
     let env_frame = encode_frame(0, &session_meta.encode_to_vec())?;
 
     let mut out = vec![run_frame, env_frame];
-    out.push(encode_frame(
-        0,
-        &AgentClientMessage::default().encode_to_vec(),
-    )?);
-    out.push(encode_frame(
-        0,
-        &AgentClientMessage::default().encode_to_vec(),
-    )?);
+    // Pacing frames: minimal field-5 / field-3 blobs (not full AgentClientMessage).
+    out.push(encode_frame(0, &field_ld(5, &field_str(1, "")))?);
+    out.push(encode_frame(0, &field_ld(3, &field_str(3, "")))?);
     for n in 1..=8u64 {
         let marker = MarkerMessage {
             index: n,
             field_3: String::new(),
         };
-        out.push(encode_frame(0, &marker.encode_to_vec())?);
+        // AgentClientMessage field 3 wraps the marker payload.
+        out.push(encode_frame(0, &field_ld(3, &marker.encode_to_vec()))?);
     }
     Ok(out)
 }
@@ -537,6 +549,66 @@ mod tests {
             vec![1, 3]
         );
         assert_eq!(fields[1].as_string().as_deref(), Some(""));
+    }
+
+    #[test]
+    fn build_run_frames_pacing_and_marker_wire_format() {
+        let frames = build_run_frames(&RunFrameParams {
+            prompt: "PROMPT_MARKER",
+            model_id: "default",
+            cwd: "/tmp",
+            conversation_id: "conv-1",
+            message_id: "msg-1",
+            mode: AGENT_MODE_AGENT,
+        })
+        .expect("frames");
+        assert!(frames.len() >= 12);
+
+        let mut buf = FrameBuffer::default();
+        buf.push(&frames[2]);
+        let field5_frame = buf.next_frame().expect("frame").expect("ok");
+        let field5_outer = parse_wire_fields(&field5_frame.payload).expect("field5");
+        assert_eq!(
+            field5_outer.iter().map(|f| f.number).collect::<Vec<_>>(),
+            vec![5]
+        );
+        let field5_inner =
+            parse_wire_fields(field5_outer[0].as_bytes().unwrap()).expect("field5 inner");
+        assert_eq!(
+            field5_inner.iter().map(|f| f.number).collect::<Vec<_>>(),
+            vec![1]
+        );
+        assert_eq!(field5_inner[0].as_string().as_deref(), Some(""));
+
+        buf.push(&frames[3]);
+        let field3_frame = buf.next_frame().expect("frame").expect("ok");
+        let field3_outer = parse_wire_fields(&field3_frame.payload).expect("field3");
+        assert_eq!(
+            field3_outer.iter().map(|f| f.number).collect::<Vec<_>>(),
+            vec![3]
+        );
+        let field3_inner =
+            parse_wire_fields(field3_outer[0].as_bytes().unwrap()).expect("field3 inner");
+        assert_eq!(
+            field3_inner.iter().map(|f| f.number).collect::<Vec<_>>(),
+            vec![3]
+        );
+        assert_eq!(field3_inner[0].as_string().as_deref(), Some(""));
+
+        buf.push(&frames[4]);
+        let marker_frame = buf.next_frame().expect("frame").expect("ok");
+        let marker_outer = parse_wire_fields(&marker_frame.payload).expect("marker wrap");
+        assert_eq!(
+            marker_outer.iter().map(|f| f.number).collect::<Vec<_>>(),
+            vec![3]
+        );
+        let marker_inner = parse_wire_fields(marker_outer[0].as_bytes().unwrap()).expect("marker");
+        assert_eq!(
+            marker_inner.iter().map(|f| f.number).collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+        assert_eq!(marker_inner[0].as_varint(), Some(1));
+        assert_eq!(marker_inner[1].as_string().as_deref(), Some(""));
     }
 
     #[test]
