@@ -269,16 +269,29 @@ function handlers.capture_pane(input, ctx)
 end
 
 function handlers.run_command(input, _ctx)
-  local command_text = input.command_text or input.command or ""
+  local command_text = input.command_text or input.raw_command or ""
   if command_text == "" then
     return nil, "command_text is required for run_command"
   end
-  local args = command_text
-  local output, err = run_tmux(args, input.timeout_ms)
-  if not output then
-    return nil, err
+  local parts = {}
+  for part in command_text:gmatch("%S+") do
+    parts[#parts + 1] = part
   end
-  return { output = output }
+  if #parts == 0 then
+    return nil, "command_text is empty for run_command"
+  end
+  local id = n00n.fn.jobstart({ "tmux", table.unpack(parts) })
+  local result = n00n.fn.jobwait(id, input.timeout_ms)
+  if not result then
+    n00n.fn.jobstop(id)
+    return nil, "tmux run_command timed out"
+  end
+  if result.exit_code ~= 0 then
+    local stderr = result.stderr or ""
+    local stdout = result.stdout or ""
+    return nil, "tmux run_command failed (exit " .. result.exit_code .. "): " .. stderr .. stdout
+  end
+  return { output = result.stdout or "" }
 end
 
 function handlers.resize(input, _ctx)
@@ -396,7 +409,7 @@ Targets follow tmux syntax: session_name, session_name:window_index, or session_
       pane = { type = "string", description = "Pane target" },
       keys = { type = "string", description = "Keys to send for send_keys" },
       command_text = { type = "string", description = "Raw tmux command for run_command" },
-      command = { type = "string", description = "Raw tmux command for run_command (alias)" },
+      raw_command = { type = "string", description = "Raw tmux command for run_command (alias)" },
       width = { type = "integer", description = "Pane width for resize" },
       height = { type = "integer", description = "Pane height for resize" },
       source = { type = "string", description = "Source pane for join_pane" },
