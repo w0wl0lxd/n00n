@@ -219,7 +219,7 @@ local function exfiltration_command_reason(command)
   for _, cmd in ipairs(network_cmds) do
     if
       normalized:find("^" .. cmd .. "%s")
-      or normalized:find("%|" .. cmd .. "%s")
+      or normalized:find("%|%s*" .. cmd .. "%s")
       or normalized:find("&&%s*" .. cmd .. "%s")
     then
       return cmd .. " may send data to a remote host"
@@ -227,33 +227,47 @@ local function exfiltration_command_reason(command)
   end
 
   -- Netcat / socket tools.
-  if normalized:find("^nc[%s%-]") or normalized:find("%|nc[%s%-]") or normalized:find("&&%s*nc[%s%-]") then
+  if normalized:find("^nc[%s%-]") or normalized:find("%|%s*nc[%s%-]") or normalized:find("&&%s*nc[%s%-]") then
     return "nc may send data to a remote host"
   end
-  if normalized:find("^ncat%s") or normalized:find("%|ncat%s") or normalized:find("&&%s*ncat%s") then
+  if normalized:find("^ncat%s") or normalized:find("%|%s*ncat%s") or normalized:find("&&%s*ncat%s") then
     return "ncat may send data to a remote host"
   end
 
   -- DNS exfiltration.
-  if normalized:find("^dig%s") or normalized:find("%|dig%s") or normalized:find("&&%s*dig%s") then
+  if normalized:find("^dig%s") or normalized:find("%|%s*dig%s") or normalized:find("&&%s*dig%s") then
     return "dig may exfiltrate data via DNS"
   end
-  if normalized:find("^nslookup%s") or normalized:find("%|nslookup%s") or normalized:find("&&%s*nslookup%s") then
+  if normalized:find("^nslookup%s") or normalized:find("%|%s*nslookup%s") or normalized:find("&&%s*nslookup%s") then
     return "nslookup may exfiltrate data via DNS"
   end
 
   -- Encoded data going to a network command.
   if
-    (normalized:find("base64") or normalized:find("xxd") or normalized:find("uuencode") or normalized:find("od "))
-    and (normalized:find("curl") or normalized:find("wget") or normalized:find("nc") or normalized:find("ncat"))
+    (
+      normalized:find("base64", 1, true)
+      or normalized:find("xxd", 1, true)
+      or normalized:find("uuencode", 1, true)
+      or normalized:find("od ", 1, true)
+    )
+    and (
+      normalized:find("curl", 1, true)
+      or normalized:find("wget", 1, true)
+      or normalized:find("nc", 1, true)
+      or normalized:find("ncat", 1, true)
+    )
   then
     return "encoded data may be sent to a remote host"
   end
 
   -- Shell substitution / command substitution feeding a network command.
   if
-    (normalized:find("curl") or normalized:find("wget") or normalized:find("nc") or normalized:find("ncat"))
-    and (normalized:find("%$(") or normalized:find("`"))
+    (
+      normalized:find("curl", 1, true)
+      or normalized:find("wget", 1, true)
+      or normalized:find("nc", 1, true)
+      or normalized:find("ncat", 1, true)
+    ) and (normalized:find("$(", 1, true) or normalized:find("`", 1, true))
   then
     return "command substitution may exfiltrate data"
   end
