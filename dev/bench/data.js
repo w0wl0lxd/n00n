@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785747788755,
+  "lastUpdate": 1785748375507,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -12739,6 +12739,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 109061,
             "range": "± 9236",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "96baf725a3c77e3d5e5bfdd52f275afd94bde39d",
+          "message": "Merge pull request #234 from w0wl0lxd/fix/provider-idempotency\n\nfix(providers): generate idempotency keys for provider POSTs",
+          "timestamp": "2026-08-03T04:44:08-04:00",
+          "tree_id": "a735870ff89662615205ce9eb554e7a369628d7e",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/96baf725a3c77e3d5e5bfdd52f275afd94bde39d"
+        },
+        "date": 1785748262047,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6639017,
+            "range": "± 280196",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2238445,
+            "range": "± 3206",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2219232,
+            "range": "± 51877",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8020795,
+            "range": "± 63201",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4251214,
+            "range": "± 44523",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4242434,
+            "range": "± 11198",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 583106,
+            "range": "± 7283",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191984,
+            "range": "± 474",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 192022,
+            "range": "± 482",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1043024,
+            "range": "± 11182",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 582445,
+            "range": "± 1782",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 582395,
+            "range": "± 24235",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 81077,
+            "range": "± 948",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 120304,
+            "range": "± 8805",
             "unit": "ns/iter"
           }
         ]
