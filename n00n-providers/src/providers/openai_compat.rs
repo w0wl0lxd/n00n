@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::{debug, warn};
 
-use super::ResolvedAuth;
+use super::{DEFAULT_TOOL_DESCRIPTION_MAX_CHARS, ResolvedAuth, trim_tool_description};
 use crate::types::{ImageDetail, TOOL_RESULT_ERROR_PREFIX};
 use crate::{
     AgentError, CacheControl, ContentBlock, Message, ProviderEvent, RequestDeliveryMetadata,
@@ -700,11 +700,14 @@ pub fn convert_tools(anthropic_tools: &Value) -> Value {
             .iter()
             .filter_map(|t| {
                 let strict = t.get("strict").and_then(Value::as_bool) == Some(true);
+                let description = t.get("description").and_then(Value::as_str).map(|d| {
+                    trim_tool_description(d, DEFAULT_TOOL_DESCRIPTION_MAX_CHARS).into_owned()
+                })?;
                 Some(json!({
                     "type": "function",
                     "function": {
                         "name": t.get("name")?,
-                        "description": t.get("description")?,
+                        "description": description,
                         "parameters": t.get("input_schema")?,
                         "strict": strict,
                     }
