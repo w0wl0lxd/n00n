@@ -131,22 +131,27 @@ pub fn is_secret_key(key: &str) -> bool {
 
 /// Returns the last separator- or case-delimited word of `key`, lowercased.
 fn last_word(key: &str) -> Option<String> {
+    let characters = key.chars().collect::<Vec<_>>();
     let mut current = String::new();
     let mut last = None;
-    let mut previous_lowercase = false;
-    for character in key.chars() {
+    for (index, character) in characters.iter().copied().enumerate() {
         let separator = !character.is_ascii_alphanumeric();
-        let case_boundary = previous_lowercase && character.is_ascii_uppercase();
+        let previous = index
+            .checked_sub(1)
+            .and_then(|position| characters.get(position));
+        let next = characters.get(index + 1);
+        let case_boundary = character.is_ascii_uppercase()
+            && (previous.is_some_and(|value| value.is_ascii_lowercase())
+                || (previous.is_some_and(|value| value.is_ascii_uppercase())
+                    && next.is_some_and(|value| value.is_ascii_lowercase())));
         if separator || case_boundary {
             if !current.is_empty() {
                 last = Some(mem::take(&mut current));
             }
             if separator {
-                previous_lowercase = false;
                 continue;
             }
         }
-        previous_lowercase = character.is_ascii_lowercase();
         current.push(character);
     }
     if !current.is_empty() {
@@ -417,6 +422,11 @@ mod tests {
         assert!(is_secret_key("session_credential"));
         assert!(is_secret_key("vaultSecret"));
         assert!(is_secret_key("myAuthKey"));
+        assert!(is_secret_key("DBPassword"));
+        let redacted = redact_json_value_for_log(&json!({
+            "DBPassword": "correct horse battery staple",
+        }));
+        assert_eq!(redacted["DBPassword"], REDACTED);
     }
 
     #[test]
