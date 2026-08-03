@@ -72,34 +72,39 @@ fn truncate_for_log(text: &str) -> String {
 }
 
 fn redact_sensitive_values(s: &str) -> String {
+    const REDACTED: &str = "[REDACTED]";
     let markers = [
         "api_key", "api-key", "api key", "token", "password", "secret", "bearer",
     ];
     let mut redacted = s.to_string();
     for marker in markers {
         let mut search_from = 0;
-        while let Some(relative) = redacted.to_ascii_lowercase()[search_from..].find(marker) {
+        loop {
             let lower = redacted.to_ascii_lowercase();
-            let start = search_from + relative;
-            let after_marker = start + marker.len();
-            let Some(separator) = lower[after_marker..].chars().position(|character| {
-                character == '=' || character == ':' || character.is_whitespace()
-            }) else {
+            let Some(relative) = lower[search_from..].find(marker) else {
                 break;
             };
-            let value_start = after_marker + separator + 1;
-            let value_start = value_start
-                + lower[value_start..]
-                    .chars()
-                    .take_while(|character| character.is_whitespace())
-                    .count();
+            let after_marker = search_from + relative + marker.len();
+            let whitespace = lower[after_marker..].len() - lower[after_marker..].trim_start().len();
+            let delimiter_start = after_marker + whitespace;
+            let value_start = match lower[delimiter_start..].chars().next() {
+                Some('=' | ':') => {
+                    let after_delimiter = delimiter_start + 1;
+                    after_delimiter + lower[after_delimiter..].len()
+                        - lower[after_delimiter..].trim_start().len()
+                }
+                Some(_) => delimiter_start,
+                None => break,
+            };
             let value_end = lower[value_start..]
                 .find(char::is_whitespace)
                 .map_or(redacted.len(), |end| value_start + end);
             if value_start < value_end {
-                redacted.replace_range(value_start..value_end, "[REDACTED]");
+                redacted.replace_range(value_start..value_end, REDACTED);
+                search_from = value_start + REDACTED.len();
+            } else {
+                search_from = after_marker;
             }
-            search_from = value_end.max(after_marker);
         }
     }
     redacted
@@ -2534,6 +2539,8 @@ mod tests {
     fn truncate_for_log_redacts_sensitive_values() {
         let preview = truncate_for_log("request API_KEY=secret-token password: hunter2");
         assert_eq!(preview, "request API_KEY=[REDACTED] password: [REDACTED]");
+        let spaced = truncate_for_log("api_key = hunter2 token=abcdefghijklmnopqrstuv");
+        assert_eq!(spaced, "api_key = [REDACTED] token=[REDACTED]");
     }
 
     #[test]

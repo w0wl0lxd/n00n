@@ -491,7 +491,8 @@ pub async fn fetch_all_models(
         let slug = manifest.slug;
         let provider = match smol::unblock(move || provider_for_slug(slug, timeouts)).await {
             Ok(provider) => provider,
-            Err(crate::AgentError::Config { message }) => {
+            Err(crate::AgentError::Config { message })
+            | Err(crate::AgentError::MissingCredentials { message }) => {
                 debug!(provider = slug, %message, "provider not configured, skipping");
                 continue;
             }
