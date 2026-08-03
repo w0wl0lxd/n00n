@@ -2877,6 +2877,30 @@ fn ctx_set_deadline_twice_errors() {
 }
 
 #[test]
+fn ctx_set_deadline_nil_noops() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "deadline_nil",
+            description = "calls set_deadline with nil",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                local _, err = ctx:set_deadline(nil)
+                if err then
+                    return {{ llm_output = "set_deadline(nil) failed: " .. tostring(err), is_error = true }}
+                end
+                return "ok"
+            end
+        }})"#,
+    );
+    host.load_source("deadline_nil", &src).unwrap();
+    let out = exec_tool(&reg, "deadline_nil", serde_json::json!({})).unwrap();
+    assert_eq!(out, "ok");
+}
+
+#[test]
 fn restore_tool_async_ordering_and_delivery() {
     let (_reg, host) = builtins_host();
 
@@ -4054,6 +4078,29 @@ fn session_opts_validation_rejects(opts: &str, expected: &str) {
     host.load_source("session_opts_plugin", &src).unwrap();
     let out = exec_tool(&reg, "session_opts_probe", serde_json::json!({})).unwrap();
     assert!(out.contains(expected), "got: {out}");
+}
+
+#[test]
+fn session_accepts_empty_table_as_no_tools() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"n00n.api.register_tool({{
+            name = "session_empty_tools",
+            description = "test",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function(input, ctx)
+                local sess, err = n00n.agent.session(ctx, {{ tools = {{}} }})
+                if err then return "session open failed: " .. err end
+                sess:close()
+                return "ok"
+            end
+        }})"#
+    );
+    host.load_source("session_empty_tools", &src).unwrap();
+    let out = exec_tool(&reg, "session_empty_tools", serde_json::json!({})).unwrap();
+    assert_eq!(out, "ok");
 }
 
 fn load_img_tool(host: &PluginHost) {

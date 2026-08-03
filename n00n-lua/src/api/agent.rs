@@ -120,6 +120,9 @@ fn explicit_tool_filter(tools: &JsonValue) -> Result<ToolFilter, String> {
     let definitions = tools
         .as_array()
         .ok_or_else(|| "tools must be an array".to_owned())?;
+    if definitions.is_empty() {
+        return Ok(ToolFilter::Only(vec![]));
+    }
     let names = definitions
         .iter()
         .enumerate()
@@ -151,6 +154,10 @@ fn attach_tool_exclusions(lua: &Lua, tools: &LuaValue, exclusions: &[String]) ->
         return Ok(());
     }
     let LuaValue::Table(tools) = tools else {
+        // Nil is acceptable as "no tools"
+        if matches!(tools, LuaValue::Nil) {
+            return Ok(());
+        }
         return Err(mlua::Error::runtime("tools must be an array"));
     };
     let metadata = lua.create_table_with_capacity(0, 2)?;
@@ -700,10 +707,16 @@ async fn session(
     let explicit_tools = tools_val.is_some();
     let (mut tools_json, mut tool_filter) = if let Some(val) = tools_val {
         let tools = lua_to_json(&lua, &val)?;
-        if !tools.is_array() {
+        // Accept nil, empty object, or empty array as "no tools"
+        if tools.is_null()
+            || (tools.is_object() && tools.as_object().map_or(false, serde_json::Map::is_empty))
+        {
+            (serde_json::json!([]), ToolFilter::All)
+        } else if !tools.is_array() {
             return Err(mlua::Error::runtime("tools must be an array"));
+        } else {
+            (tools, ToolFilter::All)
         }
-        (tools, ToolFilter::All)
     } else {
         let vars = n00n_agent::template::Vars::new();
         let filter = ToolFilter::from_config(&agent_ctx.config, &model, &[]);
