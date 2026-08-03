@@ -702,18 +702,22 @@ impl<'t> EventLoop<'t> {
     }
 
     fn tick(&mut self) {
+        let mut focused_changed = false;
         for (i, rt) in self.sessions.iter_mut().enumerate() {
             rt.app.float_mgr.tick();
             if i != self.focused {
                 continue;
             }
             rt.app.tick_edge_scroll();
-            rt.app.tick_error_expiry();
+            focused_changed |= rt.app.tick_error_expiry();
+            focused_changed |= !rt.app.image_paste_rx.is_empty();
             rt.app.poll_image_paste();
             rt.app.btw_modal.poll();
-            rt.app.status_bar.poll_branch_update();
+            focused_changed |= rt.app.status_bar.clear_expired_hint();
+            focused_changed |= rt.app.status_bar.poll_branch_update();
             rt.app.mcp_picker.refresh();
         }
+        self.dirty |= focused_changed;
         self.tick_periodic_save();
     }
 
@@ -1149,7 +1153,10 @@ impl<'t> EventLoop<'t> {
                 let (drag, leftover) = self.coalesce_drag(mouse);
                 (Some(Msg::Mouse(drag)), leftover)
             }
-            MouseEventKind::Moved => (Some(Msg::Mouse(mouse)), None),
+            MouseEventKind::Moved => {
+                self.dirty |= self.focused_app().ui_config.mascot;
+                (Some(Msg::Mouse(mouse)), None)
+            }
             _ => {
                 self.dirty = true;
                 (Some(Msg::Mouse(mouse)), None)

@@ -1216,6 +1216,22 @@ fn extract_fully_selected_message_copies_raw_text() {
 }
 
 #[test]
+fn extract_fully_selected_message_preserves_trailing_newlines() {
+    let mut panel = test_panel();
+    panel.push(DisplayMessage::new(
+        DisplayRole::Assistant,
+        "some text\n\n".into(),
+    ));
+    render(&mut panel, 80, 24);
+
+    let total: u16 = panel.segment_heights().iter().sum();
+    let area = Rect::new(0, 0, 80, 24);
+    let sel = make_sel(area, (0, 0), (u32::from(total - 1), 79));
+
+    assert_eq!(panel.extract_selection_text(&sel, area), "some text\n\n");
+}
+
+#[test]
 fn extract_fully_selected_tool_copies_raw_output() {
     let mut panel = test_panel();
     let table = "| a | b |\n|---|---|\n| 1 | 2 |";
