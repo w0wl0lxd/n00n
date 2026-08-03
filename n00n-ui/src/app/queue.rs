@@ -11,6 +11,7 @@ pub(crate) use crate::agent::shared_queue::QueuedMessage;
 
 pub(crate) const EMPTY_PROMPT_ERR: &str = "prompt is empty";
 pub(crate) const NO_QUEUE_ERR: &str = "session cannot queue messages";
+pub(crate) const NEW_SESSION_NOT_IDLE_ERR: &str = "new session is not idle";
 
 pub(crate) enum SubmitOutcome {
     Started(Vec<Action>),
@@ -270,6 +271,28 @@ impl App {
         } else {
             self.run_id += 1;
             SubmitOutcome::Started(self.start_background_submission(&msg))
+        }
+    }
+
+    pub(crate) fn prepare_new_session_prompt(
+        &mut self,
+        prompt: Option<String>,
+    ) -> Result<Vec<Action>, &'static str> {
+        let Some(text) = prompt else {
+            return Ok(Vec::new());
+        };
+        if !matches!(self.status, Status::Idle) {
+            return Err(NEW_SESSION_NOT_IDLE_ERR);
+        }
+        let outcome = self.submit_background_prompt(QueuedMessage {
+            text,
+            images: Vec::new(),
+            control: false,
+        });
+        match outcome {
+            SubmitOutcome::Started(actions) => Ok(actions),
+            SubmitOutcome::Queued => Err(NEW_SESSION_NOT_IDLE_ERR),
+            SubmitOutcome::Rejected(error) => Err(error),
         }
     }
 
