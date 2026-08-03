@@ -23,16 +23,16 @@ fn main() {
 }
 
 fn print_error(e: &color_eyre::Report, format: print::OutputFormat) {
+    const RED: &str = "\x1b[31m";
+    const BOLD_RED: &str = "\x1b[1;31m";
+    const DIM: &str = "\x1b[2m";
+    const RESET: &str = "\x1b[0m";
+
     if e.chain()
         .any(|cause| cause.downcast_ref::<print::CommandCancelled>().is_some())
     {
         return;
     }
-
-    const RED: &str = "\x1b[31m";
-    const BOLD_RED: &str = "\x1b[1;31m";
-    const DIM: &str = "\x1b[2m";
-    const RESET: &str = "\x1b[0m";
 
     if matches!(
         format,
