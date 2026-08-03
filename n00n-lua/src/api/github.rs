@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::api::util::convert::json_to_lua;
 use crate::docs::{DocKind, FnDoc, ModuleDoc, ParamDoc};
+use crate::plugin_permissions::{Permission, PluginPermissions};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitHubIssue {
@@ -68,6 +69,7 @@ fn resolve_token(
     provided_token: Option<String>,
     gh_tried: Arc<AtomicBool>,
     env_token: Option<String>,
+    allow_run: bool,
 ) -> Option<String> {
     if let Some(t) = env_token {
         return Some(t);
@@ -75,7 +77,8 @@ fn resolve_token(
     if let Some(t) = provided_token {
         return Some(t);
     }
-    if !gh_tried.swap(true, Ordering::SeqCst)
+    if allow_run
+        && !gh_tried.swap(true, Ordering::SeqCst)
         && let Ok(output) = std::process::Command::new("gh")
             .args(["auth", "token"])
             .output()
@@ -90,8 +93,14 @@ fn resolve_token(
     None
 }
 
-fn get_token(provided_token: Option<String>, gh_tried: Arc<AtomicBool>) -> Option<String> {
-    resolve_token(provided_token, gh_tried, env::var("GITHUB_TOKEN").ok())
+fn get_token(
+    provided_token: Option<String>,
+    gh_tried: Arc<AtomicBool>,
+    allow_env: bool,
+    allow_run: bool,
+) -> Option<String> {
+    let env_token = allow_env.then(|| env::var("GITHUB_TOKEN").ok()).flatten();
+    resolve_token(provided_token, gh_tried, env_token, allow_run)
 }
 
 fn check_rate_limit(response: &reqwest::blocking::Response) -> Result<(), GitHubError> {
@@ -109,9 +118,10 @@ fn check_rate_limit(response: &reqwest::blocking::Response) -> Result<(), GitHub
     Ok(())
 }
 
-fn create_client() -> Result<Client, mlua::Error> {
+fn create_client(allow_env: bool) -> Result<Client, mlua::Error> {
     let mut builder = Client::builder().user_agent("n00n");
-    if let Ok(timeout) = env::var("GITHUB_TIMEOUT")
+    if allow_env
+        && let Ok(timeout) = env::var("GITHUB_TIMEOUT")
         && let Ok(secs) = timeout.parse::<u64>()
     {
         builder = builder.timeout(std::time::Duration::from_secs(secs));
@@ -149,15 +159,17 @@ fn value_or_err<T: serde::Serialize>(
     json_to_lua(lua, &json)
 }
 
-pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
+pub(crate) fn create_github_table(lua: &Lua, permissions: &PluginPermissions) -> LuaResult<Table> {
     let t = lua.create_table()?;
     let gh_tried = Arc::new(AtomicBool::new(false));
+    let allow_env = permissions.is_allowed(Permission::Env);
+    let allow_run = permissions.is_allowed(Permission::Run);
 
-    let list_issues_fn = lua.create_function({
+    let list_issues_fn = permissions.guard(Permission::Net, lua, {
         let gh_tried = Arc::clone(&gh_tried);
         move |lua, (owner, repo, token): (String, String, Option<String>)| {
-            let client = create_client()?;
-            let token = get_token(token, Arc::clone(&gh_tried));
+            let client = create_client(allow_env)?;
+            let token = get_token(token, Arc::clone(&gh_tried), allow_env, allow_run);
 
             let url = format!("https://api.github.com/repos/{owner}/{repo}/issues");
             let mut request = client.get(&url);
@@ -183,8 +195,7 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
     })?;
     t.set("list_issues", list_issues_fn)?;
 
-    let create_issue_fn = lua.create_function(
-        {
+    let create_issue_fn = permissions.guard(Permission::Net, lua, {
             let gh_tried = Arc::clone(&gh_tried);
             move |lua,
          (owner, repo, title, body, token): (
@@ -194,8 +205,8 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
             Option<String>,
             Option<String>,
         )| {
-            let client = create_client()?;
-            let token = get_token(token, Arc::clone(&gh_tried)).ok_or_else(|| {
+            let client = create_client(allow_env)?;
+            let token = get_token(token, Arc::clone(&gh_tried), allow_env, allow_run).ok_or_else(|| {
                 mlua::Error::external(
                     "GitHub token not found. Set GITHUB_TOKEN, pass token parameter, or install gh CLI.",
                 )
@@ -232,11 +243,11 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
     })?;
     t.set("create_issue", create_issue_fn)?;
 
-    let list_prs_fn = lua.create_function({
+    let list_prs_fn = permissions.guard(Permission::Net, lua, {
         let gh_tried = Arc::clone(&gh_tried);
         move |lua, (owner, repo, token): (String, String, Option<String>)| {
-            let client = create_client()?;
-            let token = get_token(token, Arc::clone(&gh_tried));
+            let client = create_client(allow_env)?;
+            let token = get_token(token, Arc::clone(&gh_tried), allow_env, allow_run);
 
             let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls");
             let mut request = client.get(&url);
@@ -262,11 +273,11 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
     })?;
     t.set("list_prs", list_prs_fn)?;
 
-    let get_repo_fn = lua.create_function({
+    let get_repo_fn = permissions.guard(Permission::Net, lua, {
         let gh_tried = Arc::clone(&gh_tried);
         move |lua, (owner, repo, token): (String, String, Option<String>)| {
-            let client = create_client()?;
-            let token = get_token(token, Arc::clone(&gh_tried));
+            let client = create_client(allow_env)?;
+            let token = get_token(token, Arc::clone(&gh_tried), allow_env, allow_run);
 
             let url = format!("https://api.github.com/repos/{owner}/{repo}");
             let mut request = client.get(&url);
@@ -292,11 +303,11 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
     })?;
     t.set("get_repo", get_repo_fn)?;
 
-    let get_issue_fn = lua.create_function({
+    let get_issue_fn = permissions.guard(Permission::Net, lua, {
         let gh_tried = Arc::clone(&gh_tried);
         move |lua, (owner, repo, issue_number, token): (String, String, u64, Option<String>)| {
-            let client = create_client()?;
-            let token = get_token(token, Arc::clone(&gh_tried));
+            let client = create_client(allow_env)?;
+            let token = get_token(token, Arc::clone(&gh_tried), allow_env, allow_run);
 
             let url = format!("https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}");
             let mut request = client.get(&url);
@@ -322,11 +333,11 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
     })?;
     t.set("get_issue", get_issue_fn)?;
 
-    let get_pr_fn = lua.create_function({
+    let get_pr_fn = permissions.guard(Permission::Net, lua, {
         let gh_tried = Arc::clone(&gh_tried);
         move |lua, (owner, repo, pr_number, token): (String, String, u64, Option<String>)| {
-            let client = create_client()?;
-            let token = get_token(token, Arc::clone(&gh_tried));
+            let client = create_client(allow_env)?;
+            let token = get_token(token, Arc::clone(&gh_tried), allow_env, allow_run);
 
             let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}");
             let mut request = client.get(&url);
@@ -352,7 +363,7 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
     })?;
     t.set("get_pr", get_pr_fn)?;
 
-    let create_pr_fn = lua.create_function({
+    let create_pr_fn = permissions.guard(Permission::Net, lua, {
         let gh_tried = Arc::clone(&gh_tried);
         move |lua,
               (owner, repo, head, base, title, body, token): (
@@ -364,8 +375,8 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
                   Option<String>,
                   Option<String>,
               )| {
-            let client = create_client()?;
-            let token = get_token(token, Arc::clone(&gh_tried)).ok_or_else(|| {
+            let client = create_client(allow_env)?;
+            let token = get_token(token, Arc::clone(&gh_tried), allow_env, allow_run).ok_or_else(|| {
                 mlua::Error::external(
                     "GitHub token not found. Set GITHUB_TOKEN, pass token parameter, or install gh CLI.",
                 )
@@ -404,7 +415,7 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
     })?;
     t.set("create_pr", create_pr_fn)?;
 
-    let add_comment_fn = lua.create_function({
+    let add_comment_fn = permissions.guard(Permission::Net, lua, {
         let gh_tried = Arc::clone(&gh_tried);
         move |lua,
               (owner, repo, issue_number, body, token): (
@@ -414,8 +425,8 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
                   String,
                   Option<String>,
               )| {
-            let client = create_client()?;
-            let token = get_token(token, Arc::clone(&gh_tried)).ok_or_else(|| {
+            let client = create_client(allow_env)?;
+            let token = get_token(token, Arc::clone(&gh_tried), allow_env, allow_run).ok_or_else(|| {
                 mlua::Error::external(
                     "GitHub token not found. Set GITHUB_TOKEN, pass token parameter, or install gh CLI.",
                 )
@@ -788,6 +799,7 @@ mod tests {
             Some("provided_token".to_string()),
             Arc::clone(&gh_tried),
             Some("env_token".to_string()),
+            true,
         );
         assert_eq!(token, Some("env_token".to_string()));
         assert!(!gh_tried.load(Ordering::SeqCst));
@@ -800,6 +812,7 @@ mod tests {
             Some("provided_token".to_string()),
             Arc::clone(&gh_tried),
             None,
+            true,
         );
         assert_eq!(token, Some("provided_token".to_string()));
         assert!(!gh_tried.load(Ordering::SeqCst));
@@ -810,12 +823,34 @@ mod tests {
         let gh_tried = Arc::new(AtomicBool::new(false));
         // gh may or may not be installed, so we only assert the state change
         // and that the second call does not retry the gh fallback.
-        let _first = resolve_token(None, Arc::clone(&gh_tried), None);
+        let _first = resolve_token(None, Arc::clone(&gh_tried), None, true);
         assert!(gh_tried.load(Ordering::SeqCst));
 
-        let second = resolve_token(None, Arc::clone(&gh_tried), None);
+        let second = resolve_token(None, Arc::clone(&gh_tried), None, true);
         assert_eq!(second, None);
         assert!(gh_tried.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn resolve_token_does_not_run_gh_without_permission() {
+        let gh_tried = Arc::new(AtomicBool::new(false));
+        let token = resolve_token(None, Arc::clone(&gh_tried), None, false);
+
+        assert_eq!(token, None);
+        assert!(!gh_tried.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn denied_plugin_cannot_call_github_api() {
+        let lua = Lua::new();
+        let table = create_github_table(&lua, &PluginPermissions::denied()).unwrap();
+        let list_issues: mlua::Function = table.get("list_issues").unwrap();
+
+        let error = list_issues
+            .call::<mlua::Value>(("owner", "repo", None::<String>))
+            .unwrap_err();
+
+        assert!(error.to_string().contains("permission denied: 'net'"));
     }
 
     #[test]

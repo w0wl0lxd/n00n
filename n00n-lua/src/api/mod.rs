@@ -87,7 +87,7 @@ pub(crate) fn create_n00n_global(
     n00n.set("workflow", workflow::create_workflow_table(lua)?)?;
     n00n.set("arbor", arbor::create_arbor_table(lua)?)?;
     n00n.set("codegraph", codegraph::create_codegraph_table(lua)?)?;
-    n00n.set("github", github::create_github_table(lua)?)?;
+    n00n.set("github", github::create_github_table(lua, permissions)?)?;
     n00n.set("semblem", semblem::create_semblem_table(lua)?)?;
     n00n.set(
         "keymap",
