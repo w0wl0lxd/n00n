@@ -151,7 +151,7 @@ jobs:
     name: Lint (macOS)
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: macos-latest
+    runs-on: macos-15-intel
     steps:
       - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' # v7
         with:
@@ -179,7 +179,7 @@ jobs:
     name: Test (macOS)
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: macos-latest
+    runs-on: macos-15-intel
     steps:
       - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' # v7
         with:
