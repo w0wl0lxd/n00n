@@ -179,21 +179,6 @@ impl Chat {
                     self.messages_panel.flush();
                 }
             }
-            AgentEvent::FusionPhase { phase, label } => {
-                let phase = match phase {
-                    n00n_agent::FusionPhase::Planning => "Planning",
-                    n00n_agent::FusionPhase::Executing => "Executing",
-                    n00n_agent::FusionPhase::Reviewing => "Reviewing",
-                    n00n_agent::FusionPhase::LeadFallback => "Lead fallback",
-                    n00n_agent::FusionPhase::Complete => "Complete",
-                    n00n_agent::FusionPhase::Cancelled => "Cancelled",
-                    n00n_agent::FusionPhase::Failed => "Failed",
-                };
-                let text =
-                    label.map_or_else(|| phase.to_owned(), |label| format!("{phase}: {label}"));
-                self.messages_panel
-                    .push(DisplayMessage::new(DisplayRole::Control, text));
-            }
             AgentEvent::QueueItemConsumed {
                 text,
                 image_count,
@@ -1038,9 +1023,6 @@ mod tests {
     #[test_case(n00n_agent::FusionPhase::Executing, Some("brief label"), "Executing: brief label" ; "executing")]
     #[test_case(n00n_agent::FusionPhase::Reviewing, None, "Reviewing" ; "reviewing")]
     #[test_case(n00n_agent::FusionPhase::LeadFallback, None, "Lead fallback" ; "lead fallback")]
-    #[test_case(n00n_agent::FusionPhase::Complete, None, "Complete" ; "complete")]
-    #[test_case(n00n_agent::FusionPhase::Cancelled, None, "Cancelled" ; "cancelled")]
-    #[test_case(n00n_agent::FusionPhase::Failed, None, "Failed" ; "failed")]
     fn fusion_phase_renders_typed_control_text(
         phase: n00n_agent::FusionPhase,
         label: Option<&str>,
@@ -1048,13 +1030,35 @@ mod tests {
     ) {
         let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
         chat.handle_event(
-            AgentEvent::FusionPhase {
+            AgentEvent::FusionPhaseChanged {
                 phase,
                 label: label.map(str::to_owned),
             },
             None,
         );
         assert_eq!(chat.last_message_text(), expected);
+    }
+
+    #[test]
+    fn fusion_phase_label_is_single_line_and_bounded() {
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
+        let label = format!(
+            "  {}\nignored  ",
+            "a".repeat(MAX_FUSION_PHASE_LABEL_CHARS + 20)
+        );
+        chat.handle_event(
+            AgentEvent::FusionPhaseChanged {
+                phase: n00n_agent::FusionPhase::Executing,
+                label: Some(label),
+            },
+            None,
+        );
+        let rendered = chat.last_message_text();
+        assert!(!rendered.contains('\n'));
+        assert_eq!(
+            rendered.chars().count(),
+            "Executing: ".chars().count() + MAX_FUSION_PHASE_LABEL_CHARS
+        );
     }
 
     #[test]
@@ -1068,19 +1072,31 @@ mod tests {
             None,
         );
         let cards_before = chat.compaction_card_count();
-
         chat.handle_event(
-            AgentEvent::FusionPhase {
+            AgentEvent::FusionPhaseChanged {
                 phase: n00n_agent::FusionPhase::Executing,
                 label: Some("brief label".into()),
             },
             None,
         );
-
         assert_eq!(chat.compaction_card_count(), cards_before);
         assert!(!chat.streaming_text_is_empty());
         assert_eq!(chat.last_message_text(), "Executing: brief label");
     }
+
+    #[test]
+    fn existing_fusion_phase_event_also_renders_control_text() {
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
+        chat.handle_event(
+            AgentEvent::FusionPhaseChanged {
+                phase: n00n_agent::FusionPhase::Planning,
+                label: None,
+            },
+            None,
+        );
+        assert_eq!(chat.last_message_text(), "Planning");
+    }
+
     #[test]
     fn tool_lifecycle() {
         let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());

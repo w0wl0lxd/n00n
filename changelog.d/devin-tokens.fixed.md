@@ -2,6 +2,6 @@ Register `swe-1-7-max` and `swe-1-7-medium` as the canonical Devin model ids wit
 
 Validate the `devin`/`devin2` `base_url` before using it for authentication, falling back to the configured API server when it is missing or is not an `http://`/`https://` URL. This fixes `failed to build auth request: invalid format` errors when a provider name like `devin2` is configured.
 
-Map Devin gRPC `ModelUsageStats` to `TokenUsage` correctly, treating `input_tokens` as the total prompt and the cache fields as additive details, and robustly handling responses that already report `input_tokens` as the non-cached remainder. This stops the TUI token meter from underflowing or resetting on each message.
+Map Devin gRPC `ModelUsageStats` to `TokenUsage` correctly, treating `input_tokens` as the total prompt and the cache fields as additive details. Invalid cache breakdowns are ignored instead of changing the meaning of `input_tokens` based on counter magnitudes.
 
-Report the post-compaction conversation size in the `TurnComplete` event instead of the summary output token count, so the context meter no longer drops sharply after compaction.
+Report the full resumed conversation size in the post-compaction `TurnComplete` event using the active model tokenizer, continuation prompt, and tool definitions, so the context meter no longer drops sharply after compaction.

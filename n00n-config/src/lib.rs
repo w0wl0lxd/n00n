@@ -2282,13 +2282,10 @@ mod tests {
                 .unwrap();
         let overlay: RawConfig = toml::from_str("[agent.fusion]\nenabled = true\n").unwrap();
         base.merge(overlay);
-        let merged = base.into_config(false).unwrap();
 
+        let merged = base.into_config(false).unwrap();
         assert!(merged.agent.fusion.enabled);
-        assert_eq!(
-            merged.agent.fusion.sidekick_tier,
-            crate::providers::Tier::Medium
-        );
+        assert_eq!(merged.agent.fusion.sidekick_tier, Tier::Medium);
         assert!(!merged.always_fusion);
     }
 
@@ -2298,12 +2295,25 @@ mod tests {
             "[agent.fusion]\nenabled = true\nimplicit_model_switch = true\n",
         )
         .unwrap_err();
+
         assert!(
-            error
-                .to_string()
-                .contains("unknown field `implicit_model_switch`"),
+            error.to_string().contains(UNKNOWN_FUSION_FIELD),
             "unexpected parse error: {error}"
         );
+    }
+
+    #[test]
+    fn fusion_compaction_sidekick_tier_is_rejected() {
+        let raw: RawConfig =
+            toml::from_str("[agent.fusion]\nenabled = true\nsidekick_tier = \"compaction\"\n")
+                .unwrap();
+        let config = raw.into_config(false).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::InvalidFusionSidekickTier {
+                tier: Tier::Compaction
+            })
+        ));
     }
 
     #[test]

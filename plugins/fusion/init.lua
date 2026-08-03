@@ -147,11 +147,11 @@ end
 
 local function header(input)
   local label = input.description or ""
-  if utf8 and utf8.len(label) > 40 then
-    local offset = utf8.offset(label, 41)
-    if offset then
-      label = string.sub(label, 1, offset - 1)
-    end
+  if utf8 and utf8.offset then
+    local end_offset = utf8.offset(label, 41)
+    label = label:sub(1, end_offset and end_offset - 1 or #label)
+  else
+    label = label:sub(1, 40)
   end
   return "Executing: " .. label
 end
