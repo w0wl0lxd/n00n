@@ -226,7 +226,7 @@ impl Provider for Mistral {
             }
             let response = self
                 .compat
-                .do_stream(model, &extra_headers, &body, event_tx, &auth, &opts)
+                .do_stream(model, &extra_headers, &body, event_tx, &auth)
                 .await?;
 
             let hit = response.usage.cache_read > 0;

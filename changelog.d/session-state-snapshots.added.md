@@ -1,1 +1,0 @@
-Added a versioned session-state snapshot format so resumable tools can safely preserve scoped state across future session and compaction updates. Session records larger than 16 MiB are now rejected on save and load to bound memory use from malformed or highly compressed logs.
