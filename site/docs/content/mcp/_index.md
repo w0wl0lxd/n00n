@@ -61,7 +61,7 @@ One option lives at the top level of `mcp.toml`, outside any server:
 
 Every tool definition a server exposes costs context window space, on every request. Big servers like GitHub's ship dozens of tools when a task often needs three.
 
-So Maki, like Claude Code, defers MCP tools by default. The model sees one small `tool_search` tool that lists the deferred names, searches when it actually needs something, and the matches stay loaded for the rest of the session. Resume a session and the tools it was using come back. Subagents keep their own loads, so their searches don't bloat your main conversation.
+So n00n, like Claude Code, defers MCP tools by default. The model sees one small `tool_search` tool that lists the deferred names, searches when it actually needs something, and the matches stay loaded for the rest of the session. Resume a session and the tools it was using come back. Subagents keep their own loads, so their searches don't bloat your main conversation.
 
 You don't configure anything for this. Add servers, and only the tools the model actually uses take up context.
 

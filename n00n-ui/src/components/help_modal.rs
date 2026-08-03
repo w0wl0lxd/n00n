@@ -24,9 +24,55 @@ const INPUT_PREFIXES: &[(&str, &str)] = &[
     ("!!", "Run shell command (hidden from agent)"),
 ];
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HelpTab {
+    All,
+    Chat,
+    Editing,
+    Pickers,
+}
+
+impl HelpTab {
+    const ALL: [Self; 4] = [Self::All, Self::Chat, Self::Editing, Self::Pickers];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Chat => "Chat",
+            Self::Editing => "Editing",
+            Self::Pickers => "Pickers",
+        }
+    }
+
+    fn includes(self, context: KeybindContext) -> bool {
+        match self {
+            Self::All => true,
+            Self::Chat => matches!(context, KeybindContext::General | KeybindContext::Streaming),
+            Self::Editing => context == KeybindContext::Editing,
+            Self::Pickers => {
+                context == KeybindContext::Picker
+                    || context.parent() == Some(KeybindContext::Picker)
+            }
+        }
+    }
+}
+
 pub struct HelpModal {
     open: bool,
     scroll: ModalScroll,
+    tab: HelpTab,
+    search: String,
+    searching: bool,
+}
+
+fn matches_help(tab: HelpTab, query: &str, context: KeybindContext, description: &str) -> bool {
+    if !tab.includes(context) {
+        return false;
+    }
+    let query = query.trim().to_lowercase();
+    query.is_empty()
+        || context.label().to_lowercase().contains(&query)
+        || description.to_lowercase().contains(&query)
 }
 
 fn key_spans(label: ResolvedLabel, pad: usize, prefix: &str) -> Vec<Span<'static>> {
@@ -82,6 +128,9 @@ impl HelpModal {
         Self {
             open: false,
             scroll: ModalScroll::new_top(),
+            tab: HelpTab::All,
+            search: String::new(),
+            searching: false,
         }
     }
 
@@ -91,12 +140,19 @@ impl HelpModal {
 
     pub fn toggle(&mut self) {
         self.open = !self.open;
-        self.scroll.reset();
+        self.reset_view();
     }
 
     pub fn close(&mut self) {
         self.open = false;
+        self.reset_view();
+    }
+
+    fn reset_view(&mut self) {
         self.scroll.reset();
+        self.tab = HelpTab::All;
+        self.search.clear();
+        self.searching = false;
     }
 
     pub fn scroll(&mut self, delta: i32) {
@@ -104,6 +160,56 @@ impl HelpModal {
     }
 
     pub fn handle_key(&mut self, key_event: KeyEvent) -> bool {
+        if self.searching {
+            match key_event.code {
+                KeyCode::Esc => {
+                    self.search.clear();
+                    self.searching = false;
+                    self.scroll.reset();
+                    return true;
+                }
+                KeyCode::Enter => {
+                    self.searching = false;
+                    self.scroll.reset();
+                    return true;
+                }
+                KeyCode::Backspace => {
+                    self.search.pop();
+                    self.scroll.reset();
+                    return true;
+                }
+                KeyCode::Char(c)
+                    if !key_event.modifiers.intersects(
+                        crossterm::event::KeyModifiers::CONTROL
+                            | crossterm::event::KeyModifiers::ALT,
+                    ) =>
+                {
+                    self.search.push(c);
+                    self.scroll.reset();
+                    return true;
+                }
+                _ => return true,
+            }
+        }
+
+        if key_event.code == KeyCode::Char('/') {
+            self.searching = true;
+            return true;
+        }
+        if key_event.code == KeyCode::Tab {
+            let current = HelpTab::ALL
+                .iter()
+                .position(|tab| *tab == self.tab)
+                .unwrap_or_else(|| 0);
+            self.tab = HelpTab::ALL[(current + 1) % HelpTab::ALL.len()];
+            self.scroll.reset();
+            return true;
+        }
+        if let KeyCode::Char(c @ '1'..='4') = key_event.code {
+            self.tab = HelpTab::ALL[usize::from(c as u8 - b'1')];
+            self.scroll.reset();
+            return true;
+        }
         let close = key_event.code == KeyCode::Esc
             || key::HELP.matches(key_event)
             || key::QUIT.matches(key_event);
@@ -122,18 +228,55 @@ impl HelpModal {
 
         let mut lines: Vec<Line> = Vec::new();
         let theme = theme::current();
+        let query = self.search.as_str();
+
+        let tabs: Vec<Span<'static>> = HelpTab::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, tab)| {
+                let marker = if *tab == self.tab { "[" } else { " " };
+                let end = if *tab == self.tab { "]" } else { " " };
+                Span::styled(
+                    format!("{marker}{} {}{end} ", i + 1, tab.label()),
+                    if *tab == self.tab {
+                        theme.keybind_key
+                    } else {
+                        theme.tool_dim
+                    },
+                )
+            })
+            .collect();
+        lines.push(Line::from(tabs));
+        let search_label = if self.searching {
+            format!(
+                "  Search (type, Enter to keep, Esc to clear): {}",
+                self.search
+            )
+        } else if query.is_empty() {
+            "  Search: / to filter keybindings".to_string()
+        } else {
+            format!("  Search: {query} (press / to edit)")
+        };
+        lines.push(Line::from(Span::styled(search_label, theme.tool_dim)));
 
         let key_col_width = KEYBINDS
             .iter()
-            .filter(|kb| kb.platform.is_visible())
+            .filter(|kb| {
+                kb.platform.is_visible()
+                    && matches_help(self.tab, query, kb.context, kb.description)
+            })
             .map(|kb| kb.label.resolve().display_width())
             .max()
             .unwrap_or_else(|| 0)
             + KEY_COL_GAP;
-
         let mut first = true;
         for ctx in all_contexts() {
             if ctx.parent().is_some() {
+                continue;
+            }
+            if !KEYBINDS.iter().any(|kb| {
+                kb.platform.is_visible() && matches_help(self.tab, query, ctx, kb.description)
+            }) {
                 continue;
             }
             if !first {
@@ -146,10 +289,11 @@ impl HelpModal {
                 theme.keybind_section,
             )));
 
-            for kb in KEYBINDS
-                .iter()
-                .filter(|kb| kb.context == ctx && kb.platform.is_visible())
-            {
+            for kb in KEYBINDS.iter().filter(|kb| {
+                kb.context == ctx
+                    && kb.platform.is_visible()
+                    && matches_help(self.tab, query, ctx, kb.description)
+            }) {
                 let mut spans = key_spans(kb.label.resolve(), key_col_width, PREFIX_TOP);
                 spans.push(Span::styled(kb.description, theme.keybind_desc));
                 lines.push(Line::from(spans));
@@ -161,7 +305,11 @@ impl HelpModal {
                 }
                 let child_binds: Vec<_> = KEYBINDS
                     .iter()
-                    .filter(|kb| kb.context == child && kb.platform.is_visible())
+                    .filter(|kb| {
+                        kb.context == child
+                            && kb.platform.is_visible()
+                            && matches_help(self.tab, query, child, kb.description)
+                    })
                     .collect();
                 if child_binds.is_empty() {
                     continue;
@@ -254,6 +402,20 @@ mod tests {
         let mut modal = HelpModal::new();
         modal.toggle();
         assert!(modal.handle_key(key_ev(KeyCode::Char('a'))));
+        assert!(modal.is_open());
+    }
+
+    #[test]
+    fn tabs_and_search_are_keyboard_accessible() {
+        let mut modal = HelpModal::new();
+        modal.toggle();
+        assert!(modal.handle_key(key_ev(KeyCode::Char('3'))));
+        assert_eq!(modal.tab, HelpTab::Editing);
+        assert!(modal.handle_key(key_ev(KeyCode::Char('/'))));
+        assert!(modal.handle_key(key_ev(KeyCode::Char('s'))));
+        assert_eq!(modal.search, "s");
+        assert!(modal.handle_key(key_ev(KeyCode::Enter)));
+        assert!(!modal.searching);
         assert!(modal.is_open());
     }
 }

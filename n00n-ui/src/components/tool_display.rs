@@ -13,7 +13,7 @@ use std::fmt::Write;
 use std::sync::Arc;
 use std::time::Instant;
 
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use n00n_providers::{ModelPricing, TokenUsage};
 
@@ -35,12 +35,14 @@ pub struct RenderCtx<'a> {
     pub tool_output_lines: &'a ToolOutputLines,
 }
 
-pub const TOOL_INDICATOR: &str = "  ✓ ";
+pub const TOOL_INDICATOR: &str = "  ✓ done ";
 pub const TOOL_BODY_INDENT: &str = "    ";
 pub(crate) const SPINNER_STYLE_NAME: &str = "spinner";
 pub(crate) const SPINNER_STYLE_PREFIX: &str = "spinner:";
 
 const CODE_OUTPUT_DIVIDER: &str = "    ────────────";
+const MAX_TOOL_NAME_WIDTH: usize = 24;
+const TOOL_HEADER_RESERVED_WIDTH: u16 = 4;
 
 pub struct RoleStyle {
     pub prefix: &'static str,
@@ -366,6 +368,31 @@ fn resolve_output<'a>(
     }
 }
 
+fn truncate_tool_name(name: &str, max_width: usize) -> String {
+    if name.width() <= max_width {
+        return name.to_owned();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+
+    let target_width = max_width.saturating_sub(1);
+    let mut width = 0;
+    let mut truncated = String::new();
+    for ch in name.chars() {
+        let Some(char_width) = ch.width() else {
+            continue;
+        };
+        if width + char_width > target_width {
+            break;
+        }
+        truncated.push(ch);
+        width += char_width;
+    }
+    truncated.push('…');
+    truncated
+}
+
 struct ToolLineBuilder {
     lines: Vec<Line<'static>>,
     search_text: String,
@@ -411,7 +438,9 @@ impl ToolLineBuilder {
         annotation: Option<&str>,
         render_header: Option<&BufferSnapshot>,
     ) {
-        let label: String = tool_name.chars().take(12).collect();
+        let max_label_width = usize::from(self.width.saturating_sub(TOOL_HEADER_RESERVED_WIDTH))
+            .min(MAX_TOOL_NAME_WIDTH);
+        let label = truncate_tool_name(tool_name, max_label_width);
         let mut spans = vec![
             Span::styled(label, theme::current().tool_prefix),
             Span::styled("  ", theme::current().tool_dim),
@@ -479,10 +508,10 @@ impl ToolLineBuilder {
         let (text, style) = match indicator {
             Indicator::InProgress => {
                 let ch = spinner_frame(started_at.elapsed().as_millis());
-                (format!("{ch} "), theme::current().spinner)
+                (format!("{ch} running "), theme::current().spinner)
             }
             Indicator::Success => (TOOL_INDICATOR.into(), theme::current().tool_success),
-            Indicator::Error => ("  × ".into(), theme::current().tool_error),
+            Indicator::Error => ("  × error ".into(), theme::current().tool_error),
         };
         for (line, span) in &mut self.spinner_lines {
             if *line == 0 {
@@ -939,6 +968,16 @@ mod tests {
             output: both,
             details: false,
         }
+    }
+
+    #[test]
+    fn tool_header_soft_caps_long_names() {
+        let mut builder = ToolLineBuilder::new(20, exp(false), 10);
+        builder.push_header("my_long_server.do_something_complex", "running", None, None);
+
+        let label = builder.lines[0].spans[0].content.as_ref();
+        assert!(label.width() <= 16);
+        assert!(label.ends_with('…'));
     }
 
     fn code_input() -> ToolInput {

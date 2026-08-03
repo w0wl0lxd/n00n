@@ -146,6 +146,23 @@ impl PermissionPrompt {
         }
     }
 
+    fn action_hint(tool: &ToolKey) -> &'static str {
+        let name = match tool {
+            ToolKey::Native(name) | ToolKey::McpTool { tool: name, .. } => name.as_ref(),
+            ToolKey::Wildcard | ToolKey::McpServer { .. } => return "use an external tool",
+        };
+        match name {
+            "write" | "write_file" | "edit" | "edit_file" | "multiedit" | "edit_file_bulk"
+            | "edit_lines" | "edit_file_lines" | "insert_lines" | "insert_file_lines" => {
+                "change files"
+            }
+            "bash" | "run_shell" => "run a command",
+            "code_execution" | "run_python" => "execute code",
+            "webfetch" | "websearch" | "fetch_url" | "search_web" => "access the network",
+            _ => "use an external tool",
+        }
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<PermissionAnswer> {
         let Self::Open { state, buffer, .. } = self else {
             return None;
@@ -262,6 +279,26 @@ impl PermissionPrompt {
         tool_spans.push(Span::styled(tool.to_string(), value_style));
 
         let mut lines = vec![Line::raw(""), Line::from(tool_spans)];
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("action ", label_style),
+            Span::styled(Self::action_hint(tool), value_style),
+        ]));
+        let scope_hint = if scopes.is_empty() {
+            "the current request"
+        } else {
+            "only the scope(s) listed below"
+        };
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("scope  ", label_style),
+            Span::styled(scope_hint, value_style),
+        ]));
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("why    ", label_style),
+            Span::styled("n00n asks before a tool can affect your work", value_style),
+        ]));
         for (i, s) in scopes.iter().enumerate() {
             let label = if i == 0 { "scope " } else { "    + " };
             lines.push(Line::from(vec![
@@ -373,6 +410,33 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn prompt_explains_action_scope_and_reason_on_narrow_terminal() {
+        let prompt = open_prompt();
+        let text: String = prompt
+            .build_lines()
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+            .collect();
+        assert!(text.contains("run a command"));
+        assert!(text.contains("only the scope(s) listed below"));
+        assert!(text.contains("n00n asks before a tool can affect your work"));
+        assert_eq!(prompt.height(24), 21);
+    }
+
+    #[test]
+    fn action_hint_uses_only_the_local_tool_name() {
+        let mcp_tool = ToolKey::parse("webserver.restart").expect("valid MCP tool");
+        assert_eq!(
+            PermissionPrompt::action_hint(&mcp_tool),
+            "use an external tool"
+        );
+        assert_eq!(
+            PermissionPrompt::action_hint(&ToolKey::native("run_python")),
+            "execute code"
+        );
     }
 
     #[test]

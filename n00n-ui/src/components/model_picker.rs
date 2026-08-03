@@ -23,22 +23,22 @@ fn footer_line() -> Line<'static> {
     Line::from(vec![
         Span::styled("  Enter", t.keybind_key),
         Span::styled(" select", t.tool_dim),
-        Span::styled("  !", t.keybind_key),
-        Span::styled(" strong", t.tool_dim),
-        Span::styled("  @", t.keybind_key),
-        Span::styled(" medium", t.tool_dim),
-        Span::styled("  #", t.keybind_key),
-        Span::styled(" weak", t.tool_dim),
-        Span::styled("  $", t.keybind_key),
-        Span::styled(" compaction", t.tool_dim),
+        Span::styled("  1", t.keybind_key),
+        Span::styled(" Strong", t.tool_dim),
+        Span::styled("  2", t.keybind_key),
+        Span::styled(" Medium", t.tool_dim),
+        Span::styled("  3", t.keybind_key),
+        Span::styled(" Weak", t.tool_dim),
+        Span::styled("  4", t.keybind_key),
+        Span::styled(" Compaction", t.tool_dim),
     ])
 }
 
 fn tier_for_shortcut(key: KeyEvent) -> Option<ModelTier> {
     let digit = match (key.code, key.modifiers.contains(KeyModifiers::SHIFT)) {
-        // Kitty protocol: Shift+digit reported with base key + SHIFT modifier
-        (KeyCode::Char(c @ '1'..='4'), true) => c,
-        // Legacy terminals: Shift+digit reported as the resulting character
+        // Kitty and modern terminals report number keys as digits.
+        (KeyCode::Char(c @ '1'..='4'), _) => c,
+        // Legacy terminals report Shift+number as the resulting character.
         (KeyCode::Char('!' | '¡'), false) => '1', // US, ES
         (KeyCode::Char('@' | '"' | '™'), false) => '2', // US, UK/DE
         (KeyCode::Char('#' | '§' | '£'), false) => '3', // US, DE, UK
@@ -286,6 +286,26 @@ mod tests {
             "zai/glm-5".into(),
         ])));
         models
+    }
+
+    #[test]
+    fn number_keys_assign_named_tiers() {
+        assert_eq!(
+            tier_for_shortcut(key(KeyCode::Char('1'))),
+            Some(ModelTier::Strong)
+        );
+        assert_eq!(
+            tier_for_shortcut(key(KeyCode::Char('2'))),
+            Some(ModelTier::Medium)
+        );
+        assert_eq!(
+            tier_for_shortcut(key(KeyCode::Char('3'))),
+            Some(ModelTier::Weak)
+        );
+        assert_eq!(
+            tier_for_shortcut(key(KeyCode::Char('4'))),
+            Some(ModelTier::Compaction)
+        );
     }
 
     #[test_case(key(KeyCode::Esc)          ; "esc_closes")]
