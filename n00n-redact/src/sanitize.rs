@@ -45,9 +45,21 @@ pub(crate) const SECRET_TOKEN_PREFIXES: &[&str] = &[
 /// Sanitizes a free-text string: `Bearer <token>`, `key=value` / `key:value`
 /// with sensitive keys, and token-shaped values are replaced with
 /// `[REDACTED]`, then the result is capped at `max_chars` characters.
+/// Line breaks are preserved so multiline log previews are not collapsed.
 #[must_use]
 pub fn sanitize_text(raw: &str, max_chars: usize) -> String {
-    let words = raw.split_whitespace().collect::<Vec<_>>();
+    let sanitized = raw
+        .lines()
+        .map(|line| {
+            let words = line.split_whitespace().collect::<Vec<_>>();
+            sanitize_words(&words)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    truncate(&sanitized, max_chars)
+}
+
+fn sanitize_words(words: &[&str]) -> String {
     let mut sanitized = Vec::with_capacity(words.len());
     let mut index = 0;
     while index < words.len() {
@@ -131,7 +143,7 @@ pub fn sanitize_text(raw: &str, max_chars: usize) -> String {
         }
         index += 1;
     }
-    truncate(&sanitized.join(" "), max_chars)
+    sanitized.join(" ")
 }
 
 fn unterminated_opening_quote(value: &str) -> Option<char> {

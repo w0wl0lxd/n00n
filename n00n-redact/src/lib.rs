@@ -610,7 +610,8 @@ mod tests {
 
     #[test]
     fn redact_json_arg_redacts_stringified_containers() {
-        let out = redact_json_arg(r#"{"api_key":"sk-live"}"#);
+        let input = serde_json::to_string(&json!(r#"{"api_key":"sk-live"}"#)).unwrap();
+        let out = redact_json_arg(&input);
         assert!(
             !out.contains("sk-live"),
             "secret leaked from stringified container: {out}"
@@ -653,6 +654,13 @@ mod tests {
         let value = json!({"config": r#"{"password":"live-secret"#});
         let redacted = redact_json_value_for_log(&value);
         assert!(!redacted["config"].as_str().unwrap().contains("live-secret"));
+    }
+
+    #[test]
+    fn redact_json_value_for_log_preserves_newlines_in_benign_strings() {
+        let value = json!({"note": "line1\nline2"});
+        let redacted = redact_json_value_for_log(&value);
+        assert_eq!(redacted["note"].as_str().unwrap(), "line1\nline2");
     }
 
     #[test_case("plain", "plain"; "plain")]

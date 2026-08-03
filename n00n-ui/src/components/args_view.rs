@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 
 use crate::markdown::should_truncate;
 use crate::theme;
-use n00n_redact::{REDACTED, escape_value, is_secret_key, redact_json_value};
+use n00n_redact::{REDACTED, escape_value, is_secret_key, looks_like_secret_value};
 
 const COMPACT_BUDGET: usize = 40;
 const COLLAPSED_LINE_BUDGET: usize = 160;
@@ -33,12 +33,13 @@ pub(crate) fn render_args(
         lines: Vec::new(),
         budget,
     };
-    if let serde_json::Value::Object(map) = input {
+    let redacted = redact_display_value(input);
+    if let serde_json::Value::Object(map) = &redacted {
         for (key, value) in map {
             builder.push_entry(key, value, 0);
         }
     } else {
-        builder.push_line(0, vec![builder.value_span(input)]);
+        builder.push_line(0, vec![builder.value_span(&redacted)]);
     }
     let hidden = builder.lines.len().saturating_sub(limit);
     let hidden = if should_truncate(hidden) { hidden } else { 0 };
@@ -50,7 +51,7 @@ pub(crate) fn render_args(
 }
 
 pub(crate) fn arg_search_text(input: &serde_json::Value) -> String {
-    let redacted = redact_json_value(input);
+    let redacted = redact_display_value(input);
     if let serde_json::Value::Object(map) = &redacted {
         map.iter()
             .map(|(key, value)| format!("{key}: {}", search_value(value)))
@@ -62,10 +63,34 @@ pub(crate) fn arg_search_text(input: &serde_json::Value) -> String {
 }
 
 pub(crate) fn redacted_json_text(value: &serde_json::Value) -> String {
-    let redacted = redact_json_value(value);
+    let redacted = redact_display_value(value);
     match serde_json::to_string_pretty(&redacted) {
         Ok(text) => text,
         Err(error) => format!("<invalid JSON: {error}>"),
+    }
+}
+
+fn redact_display_value(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let out: serde_json::Map<String, serde_json::Value> = map
+                .iter()
+                .map(|(key, item)| {
+                    let item = if is_secret_key(key) {
+                        serde_json::Value::String(REDACTED.to_owned())
+                    } else {
+                        redact_display_value(item)
+                    };
+                    (key.clone(), item)
+                })
+                .collect();
+            serde_json::Value::Object(out)
+        }
+        serde_json::Value::Array(items) => items.iter().map(redact_display_value).collect(),
+        serde_json::Value::String(text) if looks_like_secret_value(text) => {
+            serde_json::Value::String(REDACTED.to_owned())
+        }
+        other => other.clone(),
     }
 }
 
@@ -468,6 +493,17 @@ mod tests {
         assert!(text.contains("[redacted]"));
         assert!(text.contains("bob"));
         assert!(!text.contains("abc"));
+    }
+
+    #[test]
+    fn secret_shaped_values_redacted_under_benign_keys() {
+        let view = render(&json!({ "note": "sk-live-0123456789abcdef0123456789ab" }));
+        let text = lines_text(&view);
+        assert!(
+            !text.contains("sk-live-0123456789abcdef0123456789ab"),
+            "secret value leaked: {text}"
+        );
+        assert!(text.contains(REDACTED), "value should be redacted: {text}");
     }
 
     #[test]
