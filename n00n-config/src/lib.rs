@@ -99,6 +99,7 @@ pub const FILE_WRITE_TOOLS: &[&str] = &[
     "edit_file",
     "edit",
     "edit_file_bulk",
+    "multi_edit",
     "multiedit",
     "edit_file_lines",
     "edit_lines",
@@ -1142,7 +1143,9 @@ impl ToolOutputLines {
             "task" | "run_task" => self.task,
             "workflow" | "run_workflow" => self.workflow,
             "index" | "index_file" => self.index,
-            "grep" | "glob" | "search_code" | "search_files" | "search_text" => self.grep,
+            "grep" | "glob" | "semblem" | "search_code" | "search_files" | "search_text" => {
+                self.grep
+            }
             "arbor" | "codegraph" | "explore" | "map_code" | "map_codegraph" | "explore_code" => {
                 self.explore
             }
@@ -3408,6 +3411,19 @@ mod tests {
         let perms = load_permissions_inner(dir.path(), std::slice::from_ref(&global));
         assert!(perms.rules.is_empty());
         assert!(perms.tool_defaults.is_empty());
+    }
+
+    #[test]
+    fn legacy_write_and_search_tools_use_expected_output_buckets() {
+        let lines = ToolOutputLines {
+            grep: 7,
+            write: 9,
+            ..ToolOutputLines::DEFAULT
+        };
+
+        assert!(FILE_WRITE_TOOLS.contains(&"multi_edit"));
+        assert_eq!(lines.get("multi_edit"), 9);
+        assert_eq!(lines.get("semblem"), 7);
     }
 
     #[cfg(unix)]

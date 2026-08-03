@@ -1225,6 +1225,28 @@ mod tests {
     }
 
     #[test]
+    fn lua_policy_aliases_exactly_match_rust_aliases() {
+        const POLICY: &str = include_str!("../../../plugins/lib/n00n/policy.lua");
+
+        let lua_aliases = POLICY
+            .lines()
+            .skip_while(|line| line.trim() != "local TOOL_ALIASES = {")
+            .skip(1)
+            .take_while(|line| line.trim() != "}")
+            .map(|line| {
+                let (alias, canonical) = line
+                    .trim()
+                    .trim_end_matches(',')
+                    .split_once(" = ")
+                    .expect("policy alias entry");
+                (alias, canonical.trim_matches('"'))
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(lua_aliases.as_slice(), TOOL_ALIASES);
+    }
+
+    #[test]
     fn mixed_alias_filters_apply_restrictions() {
         let allowed = ToolFilter::Only(vec!["read".to_owned()]);
         assert!(allowed.matches(READ_TOOL_NAME));

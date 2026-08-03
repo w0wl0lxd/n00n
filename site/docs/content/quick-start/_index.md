@@ -13,20 +13,23 @@ Install n00n, connect a provider, and run your first session. Takes a few minute
 
 ### Linux / macOS
 
-Download `install.sh` from the n00n release source, read it first (do not blindly trust shell scripts), then run:
+Clone the repository shallowly, read `install.sh` first (do not blindly trust shell scripts), then run it:
 
 ```sh
-cat install.sh
-chmod +x install.sh && ./install.sh
+tmp_dir=$(mktemp -d)
+git clone --depth 1 https://github.com/w0wl0lxd/n00n.git "$tmp_dir/n00n"
+cat "$tmp_dir/n00n/install.sh"
+chmod +x "$tmp_dir/n00n/install.sh"
+"$tmp_dir/n00n/install.sh"
 ```
 
 The installer uses `N00N_INSTALL_DIR` when set and otherwise installs to `$HOME/.local/bin`.
 
-### Windows (WSL or Git Bash)
+### Windows (WSL)
 
-Run the same `install.sh` from WSL or Git Bash after downloading and reviewing it. PowerShell users can use the Cargo or release options below; this repository does not ship a PowerShell installer.
+Run the same shallow-clone, review, and `install.sh` flow from WSL. The installer does not support Git Bash or PowerShell. Use the Cargo or release options below outside WSL; this repository does not ship a PowerShell installer.
 
-> **Note for Windows users:** The `run_shell` tool requires Git for Windows or WSL. Install one before using the shell-based installer.
+> **Note for Windows users:** The `run_shell` tool requires Git for Windows or WSL.
 
 
 ### Living on the edge (main branch)

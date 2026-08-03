@@ -20,7 +20,7 @@ n00n.api.register_tool({
   name = "search_text",
   aliases = { "semblem" },
   kind = "read",
-  description = [[Search indexed source code with BM25 keyword ranking. Use for natural-language or ranked code search after the index is available. Do not use for exact regex matches or call relationships; use `search_code` or `map_codegraph` instead. Builds a `.n00n/search/` index on first use.
+  description = [[Search indexed source code with BM25 keyword ranking. Use for natural-language or ranked code search after the index is available. Do not use for exact regex matches, call relationships, or cross-file structure and impact; use `search_code`, `map_code`, or `map_codegraph` respectively. Builds a `.n00n/search/` index on first use.
 
 Commands:
 - `search`: ranked snippets for a natural-language or keyword query

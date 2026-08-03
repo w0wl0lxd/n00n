@@ -39,7 +39,7 @@ use crate::api::util::convert::{json_to_lua, lua_to_json};
 use crate::api::util::ctx::LuaCtx;
 use crate::runtime::{HintContent, LiveCtx, PromptHintCallbacks, PromptHintRegistration, Request};
 
-const TOOL_NAME_MAX: usize = 32;
+const TOOL_NAME_MAX: usize = 64;
 const TOOL_HANDLER_RETURN_ERR: &str =
     "tool handler must return string or {output=string, is_error?=bool}";
 const TIMEOUT_PARSE_ERR: &str = "register_tool: 'timeout' must be a positive number, 0, or false";
@@ -622,7 +622,7 @@ fn parse_hint_content(lua: &Lua, spec: &Table) -> LuaResult<HintContent> {
 /// discarded.
 ///
 /// @param spec table Tool specification:
-///   name            (string)   Required canonical ASCII identifier, up to 64 chars ([a-zA-Z_][a-zA-Z0-9_]*).
+///   name            (string)   Required canonical ASCII identifier, up to 64 chars (`[a-zA-Z_][a-zA-Z0-9_]*`).
 ///   aliases         (string[]) Optional deprecated names accepted for compatibility but never shown to the model.
 ///   description     (string)   Required. Non-empty description shown to the model.
 ///   schema          (table)    Required. JSON Schema object describing the tool's input parameters.
@@ -1656,7 +1656,7 @@ mod tests {
     #[test_case::test_case("_leading", true ; "leading_underscore")]
     #[test_case::test_case("_", true ; "single_underscore")]
     #[test_case::test_case("snake_case_123", true ; "snake_with_digits")]
-    #[test_case::test_case(&"a".repeat(TOOL_NAME_MAX), true ; "max_length_ok")]
+    #[test_case::test_case(&"a".repeat(64), true ; "legacy_64_char_name")]
     #[test_case::test_case("", false ; "empty")]
     #[test_case::test_case("../../bash", false ; "path_traversal")]
     #[test_case::test_case("foo bar", false ; "space")]
@@ -1665,7 +1665,7 @@ mod tests {
     #[test_case::test_case("foo.bar", false ; "dot")]
     #[test_case::test_case("foo@bar", false ; "at_sign")]
     #[test_case::test_case("café", false ; "non_ascii")]
-    #[test_case::test_case(&"a".repeat(TOOL_NAME_MAX + 1), false ; "too_long")]
+    #[test_case::test_case(&"a".repeat(65), false ; "over_legacy_limit")]
     fn tool_name_validation(name: &str, expected: bool) {
         assert_eq!(is_valid_tool_name(name), expected);
     }

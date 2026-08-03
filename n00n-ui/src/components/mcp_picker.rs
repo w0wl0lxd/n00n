@@ -250,7 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn auth_rows_include_actionable_hint() {
+    fn auth_rows_include_status_label_and_actionable_hint() {
         let info = McpServerInfo {
             name: "github".into(),
             transport_kind: "http",
@@ -263,7 +263,30 @@ mod tests {
         let (entries, _) = build_entries(&[info]);
 
         assert_eq!(entries[0].icon, "?");
+        assert!(
+            entries[0]
+                .detail_text
+                .contains("Status: needs authentication")
+        );
         assert!(entries[0].detail_text.contains("n00n mcp auth github"));
+    }
+
+    #[test]
+    fn failed_rows_include_error_status_label() {
+        let info = McpServerInfo {
+            name: "broken".into(),
+            transport_kind: "stdio",
+            tool_count: 0,
+            prompt_count: 0,
+            status: McpServerStatus::Failed("connection refused".into()),
+            config_path: PathBuf::new(),
+            url: None,
+        };
+        let (entries, _) = build_entries(&[info]);
+
+        assert_eq!(entries[0].icon, "!");
+        assert!(entries[0].detail_text.contains("Status: error"));
+        assert!(entries[0].detail_text.contains("connection refused"));
     }
 
     #[test]

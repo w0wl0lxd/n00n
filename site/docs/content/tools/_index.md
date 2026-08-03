@@ -71,7 +71,7 @@ Search file contents using regex. Use for literal or regex matches when you know
 
 ### `search_text` *(lua plugin)*
 
-Search indexed source code with BM25 keyword ranking. Use for natural-language or ranked code search after the index is available. Do not use for exact regex matches or call relationships; use `search_code` or `map_codegraph` instead. Builds a `.n00n/search/` index on first use.
+Search indexed source code with BM25 keyword ranking. Use for natural-language or ranked code search after the index is available. Do not use for exact regex matches, call relationships, or cross-file structure and impact; use `search_code`, `map_code`, or `map_codegraph` respectively. Builds a `.n00n/search/` index on first use.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

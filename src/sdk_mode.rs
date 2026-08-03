@@ -930,9 +930,7 @@ fn handle_control_request(
                         Some("session ended before the model could be changed".to_string()),
                     )
                 } else {
-                    if let Ok(mut shared) = shared.lock() {
-                        shared.model = model;
-                    }
+                    store_shared_model(shared, model);
                     writer.emit_control_response(&cr.request_id, ok, None)
                 }
             }
@@ -943,6 +941,19 @@ fn handle_control_request(
             None,
             Some(format!("unsupported: {other}")),
         ),
+    }
+}
+
+fn store_shared_model(shared: &Mutex<Shared>, model: Model) {
+    match shared.lock() {
+        Ok(mut shared) => shared.model = model,
+        Err(poisoned) => {
+            tracing::warn!("recovering poisoned SDK shared model lock");
+            {
+                poisoned.into_inner().model = model;
+            }
+            shared.clear_poison();
+        }
     }
 }
 
@@ -1623,6 +1634,28 @@ mod tests {
             PermissionAnswer::DenyWithGuidance(msg) => assert_eq!(msg, "not now"),
             other => panic!("expected guidance, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn store_shared_model_recovers_poisoned_lock() {
+        let original = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
+        let replacement = Model::from_spec("anthropic/claude-3-haiku-20240307").unwrap();
+        let shared = Mutex::new(Shared {
+            model: original,
+            permission_mode: PermissionMode::Default,
+            turn_start: Instant::now(),
+            pending: HashSet::new(),
+        });
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = shared.lock().unwrap();
+            panic!("poison shared model lock");
+        });
+
+        store_shared_model(&shared, replacement.clone());
+
+        assert!(!shared.is_poisoned());
+        let recovered = shared.lock().expect("poison cleared after recovery");
+        assert_eq!(recovered.model.id, replacement.id);
     }
 
     #[test]

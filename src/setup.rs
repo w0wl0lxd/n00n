@@ -46,7 +46,7 @@ pub fn resolve_model(
     }
     auto_detect_model(&resolver).ok_or_else(|| {
         color_eyre::eyre::eyre!(
-            "no provider available - set an API key (e.g. ANTHROPIC_API_KEY), run `n00n auth login`, or use -m to specify a model\n\nSee https://github.com/w0wl0lxd/n00n/docs/providers/ for setup instructions"
+            "no provider available - set an API key (e.g. ANTHROPIC_API_KEY), run `n00n auth login`, or use -m to specify a model\n\nSee https://github.com/w0wl0lxd/n00n/blob/main/site/docs/content/providers/_index.md for setup instructions"
         )
     })
 }
