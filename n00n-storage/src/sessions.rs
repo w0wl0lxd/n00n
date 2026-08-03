@@ -195,7 +195,11 @@ pub struct SessionMeta {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub usage_by_model: HashMap<String, StoredTokenUsage>,
     /// Fusion dual-lane cost breakdown when `--fusion` / `always_fusion` was on.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_fusion_usage_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub fusion: Option<StoredFusionUsage>,
     /// Monotonic snapshot ordering used by write-behind persistence.
     #[serde(default)]
@@ -218,6 +222,46 @@ pub struct StoredFusionUsage {
     pub compact_count: u32,
     #[serde(default)]
     pub final_lane: String,
+}
+
+/// Parses a JSON `Value` into `StoredFusionUsage`, dropping corrupt/empty records.
+///
+/// Older session files occasionally wrote `lead_cost` or `sidekick_cost` as objects
+/// (e.g., maps from the model) instead of plain `f64`s. We tolerate those so the
+/// whole meta record is not discarded.
+fn fusion_usage_from_value(value: &serde_json::Value) -> Option<StoredFusionUsage> {
+    if value.is_null() {
+        return None;
+    }
+    match serde_json::from_value::<StoredFusionUsage>(value.clone()) {
+        Ok(usage) if usage == StoredFusionUsage::default() => None,
+        Ok(usage) => Some(usage),
+        Err(e) => {
+            warn!(
+                error = %e,
+                value_type = %match value {
+                    serde_json::Value::Object(_) => "object",
+                    serde_json::Value::Array(_) => "array",
+                    serde_json::Value::String(_) => "string",
+                    serde_json::Value::Number(_) => "number",
+                    serde_json::Value::Bool(_) => "boolean",
+                    serde_json::Value::Null => "null",
+                },
+                "rejected malformed fusion usage during session restore"
+            );
+            None
+        }
+    }
+}
+
+fn deserialize_fusion_usage_option<'de, D>(
+    deserializer: D,
+) -> Result<Option<StoredFusionUsage>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(raw.as_ref().and_then(fusion_usage_from_value))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -459,12 +503,39 @@ impl FromStr for Effort {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StoredReasoningMode {
+    Standard,
+    Pro,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StoredReasoningContext {
+    Auto,
+    CurrentTurn,
+    AllTurns,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase", tag = "kind")]
 pub enum StoredThinking {
     Off,
     Adaptive,
-    Effort { level: Effort },
-    Budget { tokens: u32 },
+    Effort {
+        level: Effort,
+    },
+    Budget {
+        tokens: u32,
+    },
+    #[serde(rename = "with_extras")]
+    WithExtras {
+        level: Effort,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning_mode: Option<StoredReasoningMode>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning_context: Option<StoredReasoningContext>,
+    },
 }
 
 impl StoredThinking {
@@ -1237,10 +1308,25 @@ where
                         source,
                     });
                 }
+                let tag = match serde_json::from_str::<serde_json::Value>(line) {
+                    Ok(v) => v.get("t").and_then(|t| t.as_str()).map(String::from),
+                    Err(tag_error) => {
+                        warn!(
+                            path = %path.display(),
+                            tag_error = %tag_error,
+                            line = line_count,
+                            "failed to extract record tag from malformed JSONL line"
+                        );
+                        None
+                    }
+                };
+                let record_tag = tag.as_deref().map_or("?", |t| t);
                 warn!(
                     path = %path.display(),
                     error = %error,
                     line = line_count,
+                    record_tag = %record_tag,
+                    record_len = line.len(),
                     "skipping unrecognized JSONL record",
                 );
                 return Ok(());
@@ -2221,7 +2307,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::StoredThinking;
     use super::ThinkingParseError;
     use super::{
         CWD_INDEX_FILE, DEFAULT_TITLE, LOG_FORMAT_VERSION, LogRecord, MAX_TITLE_LEN,
@@ -2229,6 +2314,7 @@ mod tests {
         classify_and_display, encode_frame, generate_title, jsonl_path, load_cwd_index, now_epoch,
         update_cwd_index,
     };
+    use super::{Effort, StoredReasoningContext, StoredReasoningMode, StoredThinking};
     use super::{
         OPENAI_RESPONSE_CHAIN_TTL_SECONDS, SESSIONS_DIR, StoredOpenAiResponseChain,
         delete_openai_response_chain, load_openai_response_chain, load_openai_response_chain_at,
@@ -2236,8 +2322,8 @@ mod tests {
         try_lock_openai_response_chain,
     };
     use super::{
-        SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError, TitleSource,
-        TranscriptEntry,
+        SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError, StoredFusionUsage,
+        StoredTokenUsage, TitleSource, TranscriptEntry,
     };
     use crate::StateDir;
     use crate::id::n00nId;
@@ -3640,10 +3726,25 @@ mod tests {
     #[test_case(StoredThinking::Off ; "off")]
     #[test_case(StoredThinking::Adaptive ; "adaptive")]
     #[test_case(StoredThinking::Budget { tokens: 4096 } ; "budget")]
+    #[test_case(StoredThinking::Effort { level: Effort::High } ; "effort")]
+    #[test_case(StoredThinking::WithExtras {
+        level: Effort::XHigh,
+        reasoning_mode: Some(StoredReasoningMode::Pro),
+        reasoning_context: Some(StoredReasoningContext::AllTurns),
+    } ; "with_extras")]
     fn stored_thinking_serde_round_trip(variant: StoredThinking) {
         let json = serde_json::to_string(&variant).unwrap();
         let parsed: StoredThinking = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, variant);
+    }
+
+    #[test_case("{\"kind\":\"effort\",\"level\":\"high\"}", StoredThinking::Effort { level: Effort::High } ; "legacy_effort")]
+    #[test_case("{\"kind\":\"with_extras\",\"level\":\"high\"}", StoredThinking::WithExtras { level: Effort::High, reasoning_mode: None, reasoning_context: None } ; "missing_extras_default")]
+    fn stored_thinking_deserializes_compatible_json(json: &str, expected: StoredThinking) {
+        assert_eq!(
+            serde_json::from_str::<StoredThinking>(json).unwrap(),
+            expected
+        );
     }
 
     #[test_case("off", &Ok(StoredThinking::Off) ; "off")]
@@ -3859,5 +3960,39 @@ mod tests {
         let list = TestSession::list_in("/project", dir).unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].title, "huge-output");
+    }
+
+    #[test]
+    fn session_load_tolerates_corrupt_fusion_in_meta() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.title = "old".into();
+        session.meta.fusion = Some(StoredFusionUsage {
+            lead_cost: 0.12,
+            sidekick_cost: 0.34,
+            lead_usage: StoredTokenUsage {
+                input: 1,
+                output: 2,
+                cache_creation: 0,
+                cache_read: 0,
+            },
+            sidekick_usage: StoredTokenUsage::default(),
+            delegation_count: 1,
+            compact_count: 0,
+            final_lane: "lead".into(),
+        });
+        session.save_to(dir).unwrap();
+
+        // Append a corrupt meta record where lead_cost is a map instead of an f64.
+        let bad_meta = br#"{"t":"meta","title":"updated","token_usage":null,"updated_at":1,"log_appends":0,"fusion":{"lead_cost":{"foo":"bar"}}}"#;
+        let path = jsonl_path(dir, session.id);
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        encode_frame(&mut file, bad_meta).unwrap();
+        drop(file);
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert_eq!(loaded.title, "updated");
+        assert!(loaded.meta.fusion.is_none());
     }
 }

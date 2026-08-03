@@ -7,7 +7,9 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 pub use n00n_storage::sessions::Effort;
-use n00n_storage::sessions::{MIN_THINKING_BUDGET, StoredThinking, TitleSource};
+use n00n_storage::sessions::{
+    MIN_THINKING_BUDGET, StoredReasoningContext, StoredReasoningMode, StoredThinking, TitleSource,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use strum::{Display, IntoStaticStr};
@@ -16,12 +18,24 @@ use tracing::warn;
 use crate::TokenUsage;
 use crate::model::Model;
 
+const LEGACY_IMAGE_SOURCE_TYPE: &str = "base64";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageMediaType {
     Png,
     Jpeg,
     Gif,
     Webp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display, Deserialize, Serialize)]
+#[strum(serialize_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+pub enum ImageDetail {
+    Auto,
+    Low,
+    High,
+    Original,
 }
 
 impl ImageMediaType {
@@ -59,19 +73,128 @@ impl<'de> Deserialize<'de> for ImageMediaType {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ImageSource {
     pub media_type: ImageMediaType,
     pub data: Arc<str>,
+    pub detail: Option<ImageDetail>,
+    pub file_id: Option<String>,
+    pub url: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for ImageSource {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+        let value = Value::deserialize(deserializer)?;
+        let obj = value
+            .as_object()
+            .ok_or_else(|| Error::custom("ImageSource must be an object"))?;
+
+        let image_type = match obj.get("type") {
+            None => LEGACY_IMAGE_SOURCE_TYPE,
+            Some(Value::String(image_type)) => image_type,
+            Some(_) => return Err(Error::custom("ImageSource type must be a string")),
+        };
+
+        let detail = match obj.get("detail") {
+            None => None,
+            Some(Value::String(detail)) => Some(match detail.as_str() {
+                "auto" => ImageDetail::Auto,
+                "low" => ImageDetail::Low,
+                "high" => ImageDetail::High,
+                "original" => ImageDetail::Original,
+                unknown => {
+                    return Err(Error::custom(format!("unknown ImageDetail '{unknown}'")));
+                }
+            }),
+            Some(_) => return Err(Error::custom("ImageSource detail must be a string")),
+        };
+
+        match image_type {
+            "file_id" => {
+                let file_id = obj
+                    .get("file_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| Error::custom("ImageSource file_id variant missing file_id"))?;
+                Ok(Self {
+                    media_type: ImageMediaType::Png,
+                    data: Arc::from(""),
+                    detail,
+                    file_id: Some(file_id.to_string()),
+                    url: None,
+                })
+            }
+            "url" => {
+                let url = obj
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| Error::custom("ImageSource url variant missing url"))?;
+                Ok(Self {
+                    media_type: ImageMediaType::Png,
+                    data: Arc::from(""),
+                    detail,
+                    file_id: None,
+                    url: Some(url.to_string()),
+                })
+            }
+            "base64" => {
+                let media_type_str =
+                    obj.get("media_type")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            Error::custom("ImageSource base64 variant missing media_type")
+                        })?;
+                let media_type = ImageMediaType::from_mime(media_type_str).ok_or_else(|| {
+                    Error::custom(format!("unknown image media type '{media_type_str}'"))
+                })?;
+                let data = obj
+                    .get("data")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| Error::custom("ImageSource base64 variant missing data"))?;
+                Ok(Self {
+                    media_type,
+                    data: Arc::from(data),
+                    detail,
+                    file_id: None,
+                    url: None,
+                })
+            }
+            other => Err(Error::custom(format!("unknown ImageSource type '{other}'"))),
+        }
+    }
 }
 
 impl Serialize for ImageSource {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
+        if let Some(ref file_id) = self.file_id {
+            let mut state = serializer.serialize_struct("ImageSource", 2)?;
+            state.serialize_field("type", "file_id")?;
+            state.serialize_field("file_id", file_id)?;
+            if let Some(detail) = self.detail {
+                state.serialize_field("detail", &detail)?;
+            }
+            return state.end();
+        }
+        if let Some(ref url) = self.url {
+            let mut state = serializer.serialize_struct("ImageSource", 2)?;
+            state.serialize_field("type", "url")?;
+            state.serialize_field("url", url)?;
+            if let Some(detail) = self.detail {
+                state.serialize_field("detail", &detail)?;
+            }
+            return state.end();
+        }
         let mut state = serializer.serialize_struct("ImageSource", 3)?;
         state.serialize_field("type", "base64")?;
         state.serialize_field("media_type", &self.media_type)?;
         state.serialize_field("data", &self.data)?;
+        if let Some(detail) = self.detail {
+            state.serialize_field("detail", &detail)?;
+        }
         state.end()
     }
 }
@@ -79,17 +202,65 @@ impl Serialize for ImageSource {
 impl ImageSource {
     #[must_use]
     pub fn new(media_type: ImageMediaType, data: Arc<str>) -> Self {
-        Self { media_type, data }
+        Self {
+            media_type,
+            data,
+            detail: None,
+            file_id: None,
+            url: None,
+        }
+    }
+
+    #[must_use]
+    pub fn file_id(file_id: impl Into<String>, detail: Option<ImageDetail>) -> Self {
+        Self {
+            media_type: ImageMediaType::Png,
+            data: Arc::from(""),
+            detail,
+            file_id: Some(file_id.into()),
+            url: None,
+        }
+    }
+
+    #[must_use]
+    pub fn url(url: impl Into<String>, detail: Option<ImageDetail>) -> Self {
+        Self {
+            media_type: ImageMediaType::Png,
+            data: Arc::from(""),
+            detail,
+            file_id: None,
+            url: Some(url.into()),
+        }
     }
 
     #[must_use]
     pub fn to_data_url(&self) -> String {
         format!("data:{};base64,{}", self.media_type.mime(), self.data)
     }
+
+    #[must_use]
+    pub fn to_input_image_payload(&self) -> Value {
+        let mut obj = json!({
+            "type": "input_image",
+        });
+        if let Some(ref file_id) = self.file_id {
+            obj["file_id"] = json!(file_id);
+        } else if let Some(ref url) = self.url {
+            obj["image_url"] = json!(url);
+        } else {
+            obj["image_url"] = json!(self.to_data_url());
+        }
+        if let Some(detail) = self.detail {
+            obj["detail"] = json!(detail.to_string());
+        }
+        obj
+    }
 }
 
 pub const IMAGE_OMITTED_NOTE: &str =
     "[image omitted: the current model does not support image input]";
+
+pub const FILE_OMITTED_NOTE: &str = "[file omitted: the current model does not support file input]";
 
 /// Prefix prepended to errored tool-result content so downstream providers can
 /// distinguish a failed tool execution from a successful one.
@@ -116,6 +287,36 @@ pub fn adapt_images_for_model<'a>(model: &Model, messages: &'a [Message]) -> Cow
                 if matches!(block, ContentBlock::Image { .. }) {
                     *block = ContentBlock::Text {
                         text: IMAGE_OMITTED_NOTE.into(),
+                    };
+                }
+            }
+            m
+        })
+        .collect();
+    Cow::Owned(adapted)
+}
+
+/// For models without file support, file blocks become a text note instead of a
+/// wire block the API would reject. History keeps the file metadata, so switching
+/// back to a file-capable model restores them.
+#[must_use]
+pub fn adapt_files_for_model<'a>(model: &Model, messages: &'a [Message]) -> Cow<'a, [Message]> {
+    let has_file = |m: &Message| {
+        m.content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::File { .. }))
+    };
+    if model.supports_files() || !messages.iter().any(has_file) {
+        return Cow::Borrowed(messages);
+    }
+    let adapted = messages
+        .iter()
+        .map(|m| {
+            let mut m = m.clone();
+            for block in &mut m.content {
+                if matches!(block, ContentBlock::File { .. }) {
+                    *block = ContentBlock::Text {
+                        text: FILE_OMITTED_NOTE.into(),
                     };
                 }
             }
@@ -313,6 +514,62 @@ pub enum ContentBlock {
     Image {
         source: ImageSource,
     },
+    File {
+        source: FileSource,
+    },
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FileSource {
+    #[serde(default)]
+    pub file_id: Option<String>,
+    #[serde(default)]
+    pub file_url: Option<String>,
+    #[serde(default)]
+    pub file_data: Option<String>,
+    #[serde(default)]
+    pub filename: Option<String>,
+    #[serde(default)]
+    pub detail: Option<ImageDetail>,
+}
+
+impl FileSource {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            file_id: None,
+            file_url: None,
+            file_data: None,
+            filename: None,
+            detail: None,
+        }
+    }
+
+    #[must_use]
+    pub fn file_id(file_id: impl Into<String>, detail: Option<ImageDetail>) -> Self {
+        Self {
+            file_id: Some(file_id.into()),
+            detail,
+            ..Self::new()
+        }
+    }
+
+    #[must_use]
+    pub fn file_url(file_url: impl Into<String>, detail: Option<ImageDetail>) -> Self {
+        Self {
+            file_url: Some(file_url.into()),
+            detail,
+            ..Self::new()
+        }
+    }
+
+    #[must_use]
+    pub fn identifier(&self) -> Option<&str> {
+        self.file_id
+            .as_deref()
+            .or_else(|| self.filename.as_deref())
+            .or_else(|| self.file_url.as_deref())
+    }
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -536,6 +793,12 @@ pub mod dialect {
         adaptive: Some(Medium),
         off: None,
     };
+    /// `OpenAI` Responses API with extended effort levels (xhigh, max).
+    pub const OPENAI_EXTENDED: EffortDialect = EffortDialect {
+        supported: &[Minimal, Low, Medium, High, XHigh, Max],
+        adaptive: Some(Medium),
+        off: None,
+    };
     /// opencode chat-completions, openrouter (static fallback).
     pub const PREFER_HIGH: EffortDialect = EffortDialect {
         supported: &[Low, Medium, High],
@@ -578,6 +841,25 @@ pub mod dialect {
     };
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningMode {
+    Standard,
+    Pro,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningContext {
+    Auto,
+    CurrentTurn,
+    AllTurns,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ThinkingExtras {
+    pub reasoning_mode: Option<ReasoningMode>,
+    pub reasoning_context: Option<ReasoningContext>,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ThinkingConfig {
     #[default]
@@ -585,6 +867,7 @@ pub enum ThinkingConfig {
     Adaptive,
     Effort(Effort),
     Budget(u32),
+    WithExtras(Effort, ThinkingExtras),
 }
 
 /// Resolved thinking value for token-budget APIs.
@@ -601,6 +884,22 @@ impl ThinkingConfig {
         !matches!(self, Self::Off)
     }
 
+    #[must_use]
+    pub fn effort(self) -> Option<Effort> {
+        match self {
+            Self::Effort(e) | Self::WithExtras(e, _) => Some(e),
+            Self::Off | Self::Adaptive | Self::Budget(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn extras(self) -> ThinkingExtras {
+        match self {
+            Self::WithExtras(_, extras) => extras,
+            _ => ThinkingExtras::default(),
+        }
+    }
+
     /// The effort string to send, snapped to the dialect's supported levels
     /// here and nowhere else (never chain snaps). `None` means send nothing:
     /// `Off` without an explicit off string, or `Adaptive` on APIs with their
@@ -610,7 +909,7 @@ impl ThinkingConfig {
         let level = match self {
             Self::Off => return dialect.off,
             Self::Adaptive => dialect.adaptive?,
-            Self::Effort(e) => e,
+            Self::Effort(e) | Self::WithExtras(e, _) => e,
             Self::Budget(n) => Effort::from_budget(
                 n,
                 model
@@ -628,7 +927,7 @@ impl ThinkingConfig {
         match self {
             Self::Off => Budgeted::Off,
             Self::Adaptive => Budgeted::Adaptive,
-            Self::Effort(e) => {
+            Self::Effort(e) | Self::WithExtras(e, _) => {
                 Budgeted::Tokens(e.budget(max.unwrap_or_else(|| FALLBACK_MAX_THINKING_BUDGET)))
             }
             Self::Budget(n) => Budgeted::Tokens(match max {
@@ -646,7 +945,7 @@ impl ThinkingConfig {
             match self {
                 Self::Off => {}
                 Self::Adaptive => body["thinking"] = json!({"type": "adaptive"}),
-                Self::Effort(_) | Self::Budget(_) => {
+                Self::Effort(_) | Self::Budget(_) | Self::WithExtras(_, _) => {
                     body["thinking"] = json!({"type": "adaptive"});
                     if let Some(effort) = self.effort_str(&dialect::ANTHROPIC_ADAPTIVE, model) {
                         body["output_config"]["effort"] = json!(effort);
@@ -731,7 +1030,7 @@ impl ThinkingConfig {
         match self {
             Self::Off => None,
             Self::Adaptive => Some(Cow::Borrowed("thinking")),
-            Self::Effort(e) => Some(Cow::Owned(format!("thinking: {e}"))),
+            Self::Effort(e) | Self::WithExtras(e, _) => Some(Cow::Owned(format!("thinking: {e}"))),
             Self::Budget(n) => Some(Cow::Owned(format!("thinking: {n}"))),
         }
     }
@@ -742,7 +1041,7 @@ impl std::fmt::Display for ThinkingConfig {
         match self {
             Self::Off => f.write_str("off"),
             Self::Adaptive => f.write_str("adaptive"),
-            Self::Effort(e) => f.write_str(e.as_str()),
+            Self::Effort(e) | Self::WithExtras(e, _) => f.write_str(e.as_str()),
             Self::Budget(n) => write!(f, "{n}"),
         }
     }
@@ -755,6 +1054,24 @@ impl From<StoredThinking> for ThinkingConfig {
             StoredThinking::Adaptive => Self::Adaptive,
             StoredThinking::Effort { level } => Self::Effort(level),
             StoredThinking::Budget { tokens } => Self::Budget(tokens),
+            StoredThinking::WithExtras {
+                level,
+                reasoning_mode,
+                reasoning_context,
+            } => Self::WithExtras(
+                level,
+                ThinkingExtras {
+                    reasoning_mode: reasoning_mode.map(|mode| match mode {
+                        StoredReasoningMode::Standard => ReasoningMode::Standard,
+                        StoredReasoningMode::Pro => ReasoningMode::Pro,
+                    }),
+                    reasoning_context: reasoning_context.map(|context| match context {
+                        StoredReasoningContext::Auto => ReasoningContext::Auto,
+                        StoredReasoningContext::CurrentTurn => ReasoningContext::CurrentTurn,
+                        StoredReasoningContext::AllTurns => ReasoningContext::AllTurns,
+                    }),
+                },
+            ),
         }
     }
 }
@@ -764,13 +1081,25 @@ impl From<ThinkingConfig> for StoredThinking {
         match c {
             ThinkingConfig::Off => Self::Off,
             ThinkingConfig::Adaptive => Self::Adaptive,
-            ThinkingConfig::Effort(e) => Self::Effort { level: e },
-            ThinkingConfig::Budget(n) => Self::Budget { tokens: n },
+            ThinkingConfig::Effort(level) => Self::Effort { level },
+            ThinkingConfig::Budget(tokens) => Self::Budget { tokens },
+            ThinkingConfig::WithExtras(level, extras) => Self::WithExtras {
+                level,
+                reasoning_mode: extras.reasoning_mode.map(|mode| match mode {
+                    ReasoningMode::Standard => StoredReasoningMode::Standard,
+                    ReasoningMode::Pro => StoredReasoningMode::Pro,
+                }),
+                reasoning_context: extras.reasoning_context.map(|context| match context {
+                    ReasoningContext::Auto => StoredReasoningContext::Auto,
+                    ReasoningContext::CurrentTurn => StoredReasoningContext::CurrentTurn,
+                    ReasoningContext::AllTurns => StoredReasoningContext::AllTurns,
+                }),
+            },
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestOptions {
     pub thinking: ThinkingConfig,
     /// Raw user preference, reconciled by [`RequestOptions::clamped`] before use.
@@ -781,6 +1110,10 @@ pub struct RequestOptions {
     pub message_cache_breakpoints: usize,
     pub protect_history_replay: bool,
     pub allow_history_replay: bool,
+    /// Optional safety identifier for the request (max 64 chars for `OpenAI`).
+    pub safety_identifier: Option<String>,
+    /// Whether moderation is enabled for this request.
+    pub moderation: bool,
 }
 
 impl Default for RequestOptions {
@@ -791,6 +1124,8 @@ impl Default for RequestOptions {
             message_cache_breakpoints: 2,
             protect_history_replay: false,
             allow_history_replay: false,
+            safety_identifier: None,
+            moderation: false,
         }
     }
 }
@@ -811,6 +1146,8 @@ impl RequestOptions {
             message_cache_breakpoints: self.message_cache_breakpoints,
             protect_history_replay: self.protect_history_replay,
             allow_history_replay: self.allow_history_replay,
+            safety_identifier: self.safety_identifier,
+            moderation: self.moderation,
         }
     }
 }
@@ -991,6 +1328,48 @@ mod tests {
 
     use Effort::{High, Low, Max, Minimal, XHigh};
 
+    #[test]
+    fn image_source_rejects_unknown_detail() {
+        let error = serde_json::from_value::<ImageSource>(serde_json::json!({
+            "type": "url",
+            "url": "https://example.com/image.png",
+            "detail": "ultra"
+        }))
+        .unwrap_err();
+
+        assert!(error.to_string().contains("unknown ImageDetail 'ultra'"));
+    }
+
+    #[test]
+    fn image_source_rejects_malformed_type() {
+        let error = serde_json::from_value::<ImageSource>(serde_json::json!({
+            "type": 42,
+            "media_type": "image/png",
+            "data": "abc123"
+        }))
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("ImageSource type must be a string")
+        );
+    }
+
+    #[test]
+    fn image_source_missing_type_uses_legacy_base64_shape() {
+        let source = serde_json::from_value::<ImageSource>(serde_json::json!({
+            "media_type": "image/png",
+            "data": "abc123"
+        }))
+        .unwrap();
+
+        assert_eq!(source.media_type, ImageMediaType::Png);
+        assert_eq!(source.data.as_ref(), "abc123");
+        assert!(source.file_id.is_none());
+        assert!(source.url.is_none());
+    }
+
     /// `max_output_tokens: 8192`, so `max_thinking_budget()` is 4096.
     fn thinking_model(id: &str) -> crate::model::Model {
         crate::model::Model {
@@ -1003,6 +1382,7 @@ mod tests {
     fn dialects_have_non_empty_ascending_supported() {
         let all = [
             &dialect::STANDARD,
+            &dialect::OPENAI_EXTENDED,
             &dialect::PREFER_HIGH,
             &dialect::HIGH_ONLY,
             &dialect::GLM,
@@ -1089,6 +1469,7 @@ mod tests {
     #[test_case(ThinkingConfig::Adaptive,     &json!({"generationConfig": {"thinkingConfig": {"includeThoughts": true}}}) ; "adaptive")]
     #[test_case(ThinkingConfig::Budget(4096), &json!({"generationConfig": {"thinkingConfig": {"thinkingBudget": 4096}}}) ; "budget")]
     #[test_case(ThinkingConfig::Budget(10000), &json!({"generationConfig": {"thinkingConfig": {"thinkingBudget": 8192}}}) ; "budget_clamped")]
+    #[test_case(ThinkingConfig::WithExtras(High, ThinkingExtras { reasoning_mode: Some(ReasoningMode::Pro), reasoning_context: Some(ReasoningContext::AllTurns) }), &json!({"generationConfig": {"thinkingConfig": {"thinkingBudget": 4915}}}) ; "with_extras_maps_to_budget")]
     fn thinking_apply_google_thinking(config: ThinkingConfig, expected: &Value) {
         let mut body = json!({});
         config.apply_google_thinking(&mut body, 8192);
@@ -1125,6 +1506,7 @@ mod tests {
             supports_tool_examples_override: None,
             supports_thinking_override: None,
             supports_vision_override: Some(provider.family().supports_vision()),
+            supports_files_override: None,
             pricing: crate::model::ModelPricing::default(),
             max_output_tokens: Some(8192),
             context_window: 200_000,
@@ -1146,6 +1528,8 @@ mod tests {
             message_cache_breakpoints: 2,
             protect_history_replay: false,
             allow_history_replay: false,
+            safety_identifier: None,
+            moderation: false,
         };
         assert_eq!(opts.clamped(&model).thinking, expected);
     }
@@ -1159,6 +1543,8 @@ mod tests {
             message_cache_breakpoints: 2,
             protect_history_replay: false,
             allow_history_replay: false,
+            safety_identifier: None,
+            moderation: false,
         };
         assert!(!opts.clamped(&model).fast);
     }
@@ -1177,14 +1563,22 @@ mod tests {
         assert_eq!(result, expected);
     }
 
-    #[test_case(ThinkingConfig::Off      ; "off")]
-    #[test_case(ThinkingConfig::Adaptive ; "adaptive")]
-    #[test_case(ThinkingConfig::Effort(Max) ; "effort")]
-    #[test_case(ThinkingConfig::Budget(8192) ; "budget")]
-    fn thinking_display_round_trip(config: ThinkingConfig) {
+    #[test_case(ThinkingConfig::Off, ThinkingConfig::Off ; "off")]
+    #[test_case(ThinkingConfig::Adaptive, ThinkingConfig::Adaptive ; "adaptive")]
+    #[test_case(ThinkingConfig::Effort(Max), ThinkingConfig::Effort(Max) ; "effort")]
+    #[test_case(ThinkingConfig::Budget(8192), ThinkingConfig::Budget(8192) ; "budget")]
+    #[test_case(
+        ThinkingConfig::WithExtras(Max, ThinkingExtras {
+            reasoning_mode: Some(ReasoningMode::Pro),
+            reasoning_context: Some(ReasoningContext::AllTurns),
+        }),
+        ThinkingConfig::Effort(Max);
+        "with_extras_display_narrows_to_effort"
+    )]
+    fn thinking_display_round_trip(config: ThinkingConfig, expected: ThinkingConfig) {
         let s = config.to_string();
         let parsed = ThinkingConfig::parse(&s, ThinkingConfig::Off).unwrap();
-        assert_eq!(parsed, config);
+        assert_eq!(parsed, expected);
     }
 
     #[test]
@@ -1195,5 +1589,91 @@ mod tests {
         };
         let json = serde_json::to_value(&block).unwrap();
         assert!(json.get("signature").is_none());
+    }
+
+    #[test]
+    fn thinking_config_with_extras_extracts_effort() {
+        let config = ThinkingConfig::WithExtras(
+            High,
+            ThinkingExtras {
+                reasoning_mode: Some(ReasoningMode::Pro),
+                reasoning_context: Some(ReasoningContext::AllTurns),
+            },
+        );
+        assert_eq!(config.effort(), Some(High));
+    }
+
+    #[test]
+    fn thinking_config_with_extras_extracts_extras() {
+        let extras = ThinkingExtras {
+            reasoning_mode: Some(ReasoningMode::Pro),
+            reasoning_context: Some(ReasoningContext::CurrentTurn),
+        };
+        let config = ThinkingConfig::WithExtras(High, extras);
+        let extracted = config.extras();
+        assert_eq!(extracted.reasoning_mode, Some(ReasoningMode::Pro));
+        assert_eq!(
+            extracted.reasoning_context,
+            Some(ReasoningContext::CurrentTurn)
+        );
+    }
+
+    #[test_case(
+        ThinkingConfig::WithExtras(High, ThinkingExtras {
+            reasoning_mode: Some(ReasoningMode::Pro),
+            reasoning_context: Some(ReasoningContext::CurrentTurn),
+        });
+        "preserves_all_extras"
+    )]
+    fn thinking_config_stored_round_trip(config: ThinkingConfig) {
+        let stored = StoredThinking::from(config);
+        assert_eq!(ThinkingConfig::from(stored), config);
+    }
+
+    #[test]
+    fn thinking_config_without_extras_returns_default_extras() {
+        let config = ThinkingConfig::Effort(High);
+        let extras = config.extras();
+        assert_eq!(extras.reasoning_mode, None);
+        assert_eq!(extras.reasoning_context, None);
+    }
+
+    #[test]
+    fn thinking_config_effort_str_with_extras() {
+        let config = ThinkingConfig::WithExtras(
+            XHigh,
+            ThinkingExtras {
+                reasoning_mode: Some(ReasoningMode::Pro),
+                reasoning_context: None,
+            },
+        );
+        let dialect = &dialect::OPENAI_EXTENDED;
+        let model = thinking_model("gpt-5.6-sol");
+        let effort_str = config.effort_str(dialect, &model);
+        assert_eq!(effort_str, Some("xhigh"));
+    }
+
+    #[test]
+    fn request_options_default_has_no_safety_or_moderation() {
+        let opts = RequestOptions::default();
+        assert!(opts.safety_identifier.is_none());
+        assert!(!opts.moderation);
+    }
+
+    #[test]
+    fn request_options_clamped_preserves_safety_and_moderation() {
+        let model = clamp_test_model(crate::provider::ProviderKind::OpenAi);
+        let opts = RequestOptions {
+            thinking: ThinkingConfig::Off,
+            fast: false,
+            message_cache_breakpoints: 2,
+            protect_history_replay: false,
+            allow_history_replay: false,
+            safety_identifier: Some("test-id".to_string()),
+            moderation: true,
+        };
+        let clamped = opts.clamped(&model);
+        assert_eq!(clamped.safety_identifier, Some("test-id".to_string()));
+        assert!(clamped.moderation);
     }
 }

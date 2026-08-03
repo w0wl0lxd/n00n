@@ -169,7 +169,7 @@ impl Provider for LocalEndpoint {
                     None,
                     None,
                     false,
-                    opts.thinking,
+                    &opts,
                     self.compat.config().supports_parallel_tool_calls,
                 );
                 body["return_progress"] = serde_json::Value::Bool(true);
@@ -192,6 +192,8 @@ impl Provider for LocalEndpoint {
                 tools,
                 session_id.map(n00n_storage::id::SessionRef::as_str),
                 self.system_prefix.as_deref(),
+                opts.message_cache_breakpoints,
+                opts.fast,
             );
 
             if self.thinking_budget_field {
