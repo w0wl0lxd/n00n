@@ -13,6 +13,7 @@ use std::fmt::Write;
 use std::sync::Arc;
 use std::time::Instant;
 
+use unicode_truncate::UnicodeTruncateStr;
 use unicode_width::UnicodeWidthStr;
 
 use n00n_providers::{ModelPricing, TokenUsage};
@@ -41,6 +42,8 @@ pub(crate) const SPINNER_STYLE_NAME: &str = "spinner";
 pub(crate) const SPINNER_STYLE_PREFIX: &str = "spinner:";
 
 const CODE_OUTPUT_DIVIDER: &str = "    ────────────";
+const TOOL_HEADER_SEPARATOR_WIDTH: usize = 2;
+const TOOL_HEADER_INDICATOR_WIDTH: usize = 10;
 
 pub struct RoleStyle {
     pub prefix: &'static str,
@@ -411,7 +414,25 @@ impl ToolLineBuilder {
         annotation: Option<&str>,
         render_header: Option<&BufferSnapshot>,
     ) {
-        let label = tool_name.to_owned();
+        let header_width = render_header
+            .and_then(|snapshot| snapshot.lines.first())
+            .map_or_else(
+                || UnicodeWidthStr::width(header),
+                |line| {
+                    line.spans
+                        .iter()
+                        .map(|span| UnicodeWidthStr::width(span.text.as_str()))
+                        .sum()
+                },
+            );
+        let annotation_width = annotation.map_or(0, |text| UnicodeWidthStr::width(text) + 3);
+        let label_width = usize::from(self.width).saturating_sub(
+            TOOL_HEADER_INDICATOR_WIDTH
+                + TOOL_HEADER_SEPARATOR_WIDTH
+                + header_width
+                + annotation_width,
+        );
+        let label = truncate_tool_label(tool_name, label_width);
         let mut spans = vec![
             Span::styled(label, theme::current().tool_prefix),
             Span::styled("  ", theme::current().tool_dim),
@@ -631,6 +652,17 @@ impl ToolLineBuilder {
             truncation_actions: self.truncation_actions,
         }
     }
+}
+
+fn truncate_tool_label(label: &str, max_width: usize) -> String {
+    if UnicodeWidthStr::width(label) <= max_width {
+        return label.to_owned();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    let (prefix, _) = label.unicode_truncate(max_width.saturating_sub(1));
+    format!("{prefix}…")
 }
 
 fn push_text_lines(lines: &mut Vec<Line<'static>>, text: &str, indent: &'static str) {
@@ -1559,6 +1591,37 @@ mod tests {
             SectionFlags::default(),
         );
         assert_eq!(tl.snapshot_base, None);
+    }
+
+    #[test_case("very_long_tool_name", 20, "very_…" ; "ascii")]
+    #[test_case("工具工具工具", 24, "工具工具…" ; "wide_unicode")]
+    fn narrow_header_truncates_visible_tool_name_but_preserves_search(
+        tool_name: &str,
+        width: u16,
+        expected_label: &str,
+    ) {
+        let mut msg = bash_msg("ok", ToolStatus::InProgress, None, None);
+        msg.role = DisplayRole::Tool(Box::new(ToolRole {
+            id: "t1".into(),
+            status: ToolStatus::InProgress,
+            name: tool_name.into(),
+        }));
+
+        let lines = build_tool_lines(
+            &msg,
+            ToolStatus::InProgress,
+            &test_rctx(width),
+            SectionFlags::default(),
+        );
+
+        assert_eq!(lines.lines[0].spans[1].content, expected_label);
+        assert!(lines.lines[0].width() <= usize::from(width));
+        assert!(lines.search_text.starts_with(tool_name));
+    }
+
+    #[test]
+    fn tool_label_truncation_preserves_emoji_graphemes() {
+        assert_eq!(truncate_tool_label("👩‍💻tool", 3), "👩‍💻…");
     }
 
     #[test]

@@ -25,6 +25,7 @@ use tempfile::TempDir;
 use test_case::test_case;
 
 const WRITER_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+const WELCOME_MARKER: &str = "welcome-seen";
 
 fn set_zone(app: &mut App, zone: SelectionZone, area: Rect) {
     app.zones.push(SelectableZone {
@@ -112,6 +113,33 @@ fn tempdir_app() -> (TempDir, StateDir, Arc<StorageWriter>, App) {
     let writer = Arc::new(StorageWriter::new(dir.clone()).unwrap());
     let app = build_app(dir.clone(), Arc::clone(&writer));
     (tmp, dir, writer, app)
+}
+
+#[test]
+fn close_all_overlays_persists_onboarding_dismissal() {
+    let mut app = test_app();
+    let marker = app.storage.path().join(WELCOME_MARKER);
+    std::fs::remove_file(&marker).expect("remove existing onboarding marker");
+    app.onboarding.open();
+
+    app.close_all_overlays();
+
+    assert!(!app.onboarding.is_open());
+    assert!(marker.is_file());
+}
+
+#[test]
+fn close_all_overlays_closes_onboarding_when_persistence_fails() {
+    let mut app = test_app();
+    let marker = app.storage.path().join(WELCOME_MARKER);
+    std::fs::remove_file(&marker).expect("remove existing onboarding marker");
+    std::fs::create_dir(&marker).expect("block marker file with a directory");
+    app.onboarding.open();
+
+    app.close_all_overlays();
+
+    assert!(!app.onboarding.is_open());
+    assert!(marker.is_dir());
 }
 
 fn mouse_event(kind: MouseEventKind, column: u16, row: u16) -> Msg {

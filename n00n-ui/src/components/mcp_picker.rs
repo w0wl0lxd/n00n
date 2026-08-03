@@ -5,7 +5,9 @@ use ratatui::layout::Rect;
 use n00n_agent::{McpConfigErrors, McpServerInfo, McpServerStatus, McpSnapshotReader};
 
 use crate::components::Overlay;
-use crate::components::list_picker::{ListPicker, PickerAction, PickerItem};
+use crate::components::list_picker::{
+    ListPicker, PICKER_FOOTER_BREAKPOINT, PickerAction, PickerItem,
+};
 use crate::theme::SemanticRole;
 
 const TITLE: &str = " MCP Servers ";
@@ -77,7 +79,10 @@ fn build_entries(infos: &[McpServerInfo]) -> (Vec<McpEntry>, Vec<bool>) {
             }
         })
         .collect();
-    let enabled = infos.iter().map(|info| info.status.is_active()).collect();
+    let enabled = infos
+        .iter()
+        .map(|info| !matches!(info.status, McpServerStatus::Disabled))
+        .collect();
     (entries, enabled)
 }
 
@@ -124,7 +129,7 @@ impl McpPicker {
         Self {
             picker: ListPicker::new().with_footer_builder(|width| {
                 let t = crate::theme::current();
-                let hints = if width < 72 {
+                let hints = if width < PICKER_FOOTER_BREAKPOINT {
                     COMPACT_FOOTER_HINTS
                 } else {
                     FOOTER_HINTS
@@ -260,7 +265,7 @@ mod tests {
             config_path: PathBuf::new(),
             url: None,
         };
-        let (entries, _) = build_entries(&[info]);
+        let (entries, enabled) = build_entries(&[info]);
 
         assert_eq!(entries[0].icon, "?");
         assert!(
@@ -269,6 +274,7 @@ mod tests {
                 .contains("Status: needs authentication")
         );
         assert!(entries[0].detail_text.contains("n00n mcp auth github"));
+        assert_eq!(enabled, vec![true]);
     }
 
     #[test]
@@ -282,11 +288,12 @@ mod tests {
             config_path: PathBuf::new(),
             url: None,
         };
-        let (entries, _) = build_entries(&[info]);
+        let (entries, enabled) = build_entries(&[info]);
 
         assert_eq!(entries[0].icon, "!");
         assert!(entries[0].detail_text.contains("Status: error"));
         assert!(entries[0].detail_text.contains("connection refused"));
+        assert_eq!(enabled, vec![true]);
     }
 
     #[test]

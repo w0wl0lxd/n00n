@@ -2160,7 +2160,11 @@ impl App {
     }
 
     pub fn close_all_overlays(&mut self) {
+        let dismiss_onboarding = self.onboarding.is_open();
         self.overlays_mut().iter_mut().for_each(|o| o.close());
+        if dismiss_onboarding && let Err(error) = Onboarding::mark_seen(&self.storage) {
+            tracing::warn!(error = %error, "failed to persist welcome guide dismissal");
+        }
     }
 
     #[must_use]

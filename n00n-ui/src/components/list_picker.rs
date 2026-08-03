@@ -21,6 +21,7 @@ use ratatui::widgets::Paragraph;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const NO_MATCHES: &str = "No matches";
+pub(crate) const PICKER_FOOTER_BREAKPOINT: u16 = 77;
 const MIN_WIDTH_PERCENT: u16 = 65;
 const MAX_HEIGHT_PERCENT: u16 = 80;
 const SEARCH_ROW: u16 = 1;
@@ -281,6 +282,17 @@ impl<T: PickerItem> ListPicker<T> {
         }
     }
 
+    pub fn select_item_index(&mut self, item_index: usize) {
+        if let Some(s) = self.state.as_mut() {
+            s.selected = s
+                .filtered
+                .iter()
+                .position(|index| *index == item_index)
+                .unwrap_or(0);
+            s.ensure_visible();
+        }
+    }
+
     pub fn set_error_text(&mut self, text: Option<String>) {
         self.error_text = text;
     }
@@ -418,6 +430,12 @@ impl<T: PickerItem> ListPicker<T> {
     pub fn selected_item(&self) -> Option<&T> {
         let s = self.state.as_ref()?;
         s.selected_item_index().map(|i| &s.items[i])
+    }
+
+    pub fn has_active_filter(&self) -> bool {
+        self.state
+            .as_ref()
+            .is_some_and(|state| !state.search.value().is_empty())
     }
 
     pub fn selected_index(&self) -> Option<usize> {
