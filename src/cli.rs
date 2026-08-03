@@ -254,7 +254,9 @@ impl Cli {
             .allowed_tools
             .iter()
             .chain(&self.disallowed_tools)
-            .filter(|name| canonical_tool_name(name) != name.as_str())
+            .filter(|name| {
+                normalize_tool_name(name).is_ok_and(|canonical| canonical != name.as_str())
+            })
             .cloned()
             .collect::<Vec<_>>();
         legacy_tool_names.sort_unstable();

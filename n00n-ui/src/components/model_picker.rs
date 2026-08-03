@@ -200,7 +200,8 @@ impl ModelPicker {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> ModelPickerAction {
-        if let Some(tier) = tier_for_shortcut(key)
+        if !self.picker.is_searching()
+            && let Some(tier) = tier_for_shortcut(key)
             && let Some(entry) = self.picker.selected_item()
         {
             let spec = entry.spec.clone();

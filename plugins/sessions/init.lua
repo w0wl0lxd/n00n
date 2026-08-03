@@ -162,22 +162,131 @@ local function sort_tree(nodes)
   end
 end
 
-local function build_tree(sessions)
+local GROUP_CATEGORIES = {
+  { key = "research", label = "Research" },
+  { key = "ponder", label = "Ponder" },
+  { key = "draft", label = "Draft" },
+  { key = "review", label = "Review" },
+  { key = "teams", label = "Teams" },
+  { key = "workflows", label = "Workflows" },
+  { key = "agents", label = "Agents / tasks" },
+  { key = "other", label = "Other" },
+}
+
+local function has_word(text, word)
+  text = string.lower(text or "")
+  return text == word
+    or text:match("^" .. word .. "[%s:_/%-]")
+    or text:match("[%s:_/%-]" .. word .. "[%s:_/%-]")
+    or text:match("[%s:_/%-]" .. word .. "$")
+end
+
+local function descendant_category(session)
+  local kind = string.lower(session.kind or "")
+  if kind == "team" then
+    return "teams"
+  end
+  if kind == "workflow" then
+    return "workflows"
+  end
+  if kind == "task" or kind == "agent" then
+    return "agents"
+  end
+
+  local text = table.concat({ session.kind or "", session.title or "", session.display_title or "" }, " ")
+  for _, category in ipairs({ "research", "ponder", "draft", "review" }) do
+    if has_word(text, category) then
+      return category
+    end
+  end
+  return "other"
+end
+
+local function main_ancestor(session, by_id)
+  local seen = {}
+  local current = session
+  while current and not seen[current.id] do
+    seen[current.id] = true
+    if current.kind == "main" and not current.parent_id then
+      return current
+    end
+    current = current.parent_id and by_id[current.parent_id] or nil
+  end
+  return nil
+end
+
+local function synthetic_group(root, category, children, expanded_state, rank)
+  local id = GROUP_PREFIX .. root.id .. ":" .. category.key
+  local group = {
+    id = id,
+    title = category.label,
+    display_title = category.label,
+    kind = GROUP_KIND,
+    is_group = true,
+    children = children,
+    parent_id = root.id,
+    updated_at = children[1].updated_at,
+    focused = false,
+    live = false,
+    status = "idle",
+    expanded = expanded_state[id] or false,
+    depth = 0,
+  }
+  rank[id] = rank[children[1].id] - 0.25
+  for _, child in ipairs(children) do
+    child.group_id = id
+  end
+  return group
+end
+
+local function build_tree(sessions, expanded_state, rank)
   local by_id = {}
   for _, s in ipairs(sessions) do
     by_id[s.id] = s
   end
+
+  local descendants = {}
   local roots = {}
-  for _, s in ipairs(sessions) do
-    local p = s.parent_id
-    if p and by_id[p] then
-      table.insert(by_id[p].children, s)
-    else
-      table.insert(roots, s)
+  for _, session in ipairs(sessions) do
+    if session.kind == "main" and not session.parent_id then
+      roots[#roots + 1] = session
+      descendants[session.id] = {}
     end
   end
+  for _, session in ipairs(sessions) do
+    if session.kind ~= "main" or session.parent_id then
+      local root = main_ancestor(session, by_id)
+      if root then
+        descendants[root.id][#descendants[root.id] + 1] = session
+      end
+    end
+  end
+
+  local nodes = {}
+  local function collect(node)
+    nodes[#nodes + 1] = node
+    for _, child in ipairs(node.children) do
+      collect(child)
+    end
+  end
+  for _, root in ipairs(roots) do
+    local categorized = {}
+    for _, session in ipairs(descendants[root.id]) do
+      local key = descendant_category(session)
+      categorized[key] = categorized[key] or {}
+      categorized[key][#categorized[key] + 1] = session
+    end
+    for _, category in ipairs(GROUP_CATEGORIES) do
+      local children = categorized[category.key]
+      if children then
+        table.sort(children, by_recency)
+        root.children[#root.children + 1] = synthetic_group(root, category, children, expanded_state, rank)
+      end
+    end
+    collect(root)
+  end
   sort_tree(roots)
-  return roots
+  return roots, nodes
 end
 
 local function task_count(count)
@@ -492,10 +601,9 @@ local function refresh()
   end
   table.sort(all, by_recency)
 
-  board.nodes = all
-  board.roots = build_tree(all)
+  board.roots, board.nodes = build_tree(all, expanded_state, board.rank)
   for _, root in ipairs(board.roots) do
-    group_node(root, all, board.rank, expanded_state)
+    group_node(root, board.nodes, board.rank, expanded_state)
   end
   table.sort(all, by_recency)
 

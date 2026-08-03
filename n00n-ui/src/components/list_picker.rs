@@ -25,6 +25,7 @@ const MIN_WIDTH_PERCENT: u16 = 65;
 const MAX_HEIGHT_PERCENT: u16 = 80;
 const SEARCH_ROW: u16 = 1;
 const DETAIL_RIGHT_PAD: u16 = 1;
+const CHECKBOX_WIDTH: usize = 6;
 
 pub trait PickerItem {
     fn label(&self) -> &str;
@@ -409,6 +410,12 @@ impl<T: PickerItem> ListPicker<T> {
         }
     }
 
+    pub fn is_searching(&self) -> bool {
+        self.state
+            .as_ref()
+            .is_some_and(|state| !state.search.value().is_empty())
+    }
+
     pub fn selected_item(&self) -> Option<&T> {
         let s = self.state.as_ref()?;
         s.selected_item_index().map(|i| &s.items[i])
@@ -736,7 +743,7 @@ fn render_list<T: PickerItem>(
             (false, false) => (t.item, t.item_desc),
         };
         let checkbox = enabled.map(|en| {
-            let sym = if en[item_idx] { "✓ on " } else { "✗ off " };
+            let sym = if en[item_idx] { "✓ on  " } else { "✗ off " };
             let sty = if i == selected {
                 style
             } else if en[item_idx] {
@@ -746,6 +753,7 @@ fn render_list<T: PickerItem>(
             };
             Span::styled(sym, sty)
         });
+        let checkbox_w = usize::from(checkbox.is_some()) * CHECKBOX_WIDTH;
         let label = format!("  {}", item.label());
         let suffix = item.suffix();
         let detail: Option<&str> = if item.is_spinning() {
@@ -758,14 +766,19 @@ fn render_list<T: PickerItem>(
         let trailing_gap = suffix_w + if suffix_w > 0 { suffix_gap } else { 0 };
         let line = if let Some(detail) = detail {
             let max_label = area.width.saturating_sub(
-                u16::try_from(detail.width()).unwrap_or_else(|_| u16::MAX)
+                u16::try_from(checkbox_w + detail.width()).unwrap_or_else(|_| u16::MAX)
                     + u16::try_from(trailing_gap).unwrap_or_else(|_| u16::MAX)
                     + 1
                     + DETAIL_RIGHT_PAD,
             ) as usize;
             let label = truncate_label(&label, max_label);
             let pad = (area.width as usize).saturating_sub(
-                label.width() + trailing_gap + detail.width() + DETAIL_RIGHT_PAD as usize + 1,
+                checkbox_w
+                    + label.width()
+                    + trailing_gap
+                    + detail.width()
+                    + DETAIL_RIGHT_PAD as usize
+                    + 1,
             );
             let mut spans = Vec::with_capacity(7);
             if let Some(cb) = checkbox {

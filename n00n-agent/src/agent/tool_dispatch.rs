@@ -370,9 +370,10 @@ async fn run_authorized(
     // GPT-5.6 was likely trained on Codex sessions where tools are `functions.<name>`
     let name = name.strip_prefix("functions.").map_or(name, |value| value);
     let entry = registry.get(name);
-    let canonical_name = entry
-        .as_ref()
-        .map_or_else(|| name.to_owned(), |entry| entry.name().to_owned());
+    let canonical_name = entry.as_ref().map_or_else(
+        || crate::tools::canonical_tool_name(name).to_owned(),
+        |entry| entry.name().to_owned(),
+    );
     if canonical_name == crate::fusion::FUSION_DELEGATE_TOOL && !fusion_delegate_authorized {
         return tool_done_error(
             id,

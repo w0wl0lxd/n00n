@@ -274,7 +274,11 @@ pub fn generation() -> u64 {
 pub fn load_by_name(name: &str) -> Result<Theme, String> {
     BUNDLED_THEMES.iter().find(|e| e.name == name).map_or_else(
         || Err(format!("unknown theme: {name}")),
-        |e| Theme::from_toml(e.toml),
+        |e| {
+            let mut theme = Theme::from_toml(e.toml)?;
+            theme.apply_accessibility(no_color(), high_contrast());
+            Ok(theme)
+        },
     )
 }
 
@@ -686,7 +690,7 @@ impl Theme {
             Modifier::BOLD,
         );
 
-        let mut theme = Self::build_theme(
+        let theme = Self::build_theme(
             &style,
             &derived_color,
             &derived_style,
@@ -696,7 +700,6 @@ impl Theme {
             &palette,
             syntax,
         );
-        theme.apply_accessibility(no_color(), high_contrast());
         Ok(theme)
     }
 
@@ -794,6 +797,17 @@ impl Theme {
             self.tool_success.fg = Some(Color::Green);
             self.tool_error.fg = Some(Color::LightRed);
             self.error.fg = Some(Color::LightRed);
+            self.diff_old.fg = Some(Color::LightRed);
+            self.diff_new.fg = Some(Color::LightGreen);
+            self.diff_old_emphasis.fg = Some(Color::LightRed);
+            self.diff_new_emphasis.fg = Some(Color::LightGreen);
+            self.todo_completed.fg = Some(Color::Green);
+            self.todo_in_progress.fg = Some(Color::Yellow);
+            self.todo_pending.fg = Some(Color::Cyan);
+            self.todo_cancelled.fg = Some(Color::Magenta);
+            self.status_notice.fg = Some(Color::Cyan);
+            self.status_retry_error.fg = Some(Color::LightRed);
+            self.status_retry_info.fg = Some(Color::Yellow);
             self.mode_build = Color::Yellow;
             self.mode_plan = Color::Cyan;
             self.mode_bash = Color::Magenta;
@@ -843,7 +857,10 @@ impl Theme {
         let mut last_error = String::new();
         for entry in BUNDLED_THEMES {
             match Self::from_toml(entry.toml) {
-                Ok(theme) => return theme,
+                Ok(mut theme) => {
+                    theme.apply_accessibility(no_color(), high_contrast());
+                    return theme;
+                }
                 Err(e) => last_error = e,
             }
         }

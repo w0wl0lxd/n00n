@@ -39,14 +39,14 @@ impl App {
         let layout = self.compute_layout(frame.area(), form_visible);
         let render_chat = self.resolve_render_chat();
 
-        let footer_context = if self.permission_prompt.is_editing() {
+        let footer_context = if self.onboarding.is_open() {
+            footer::FooterContext::Welcome
+        } else if self.permission_prompt.is_editing() {
             footer::FooterContext::PermissionEdit
         } else if self.permission_prompt.is_confirming() {
             footer::FooterContext::PermissionConfirm
         } else if self.permission_prompt.is_open() {
             footer::FooterContext::Permission
-        } else if self.onboarding.is_open() {
-            footer::FooterContext::Welcome
         } else if self.help_modal.is_open() {
             footer::FooterContext::Help
         } else if self.plan_form_active() {
@@ -106,7 +106,12 @@ impl App {
         let below_active = splits.rect(Split::Below).is_some();
         let bottom_takeover = form_visible || below_active;
         let max_bottom = inner.height.saturating_sub(MIN_CHAT_ROWS);
-        let activity_count = self.chats.iter().filter(|chat| chat.is_working()).count();
+        let activity_count = self
+            .chats
+            .iter()
+            .enumerate()
+            .filter(|(idx, chat)| *idx != self.active_chat && chat.is_working())
+            .count();
         let activity_height = if !bottom_takeover && self.is_main_chat() && activity_count > 0 {
             cast::usize_to_u16(activity_count.clamp(1, 4))
         } else {

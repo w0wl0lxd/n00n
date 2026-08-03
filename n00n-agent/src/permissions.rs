@@ -317,27 +317,7 @@ impl PermissionManager {
             }
         }
 
-        let eff = self
-            .tool_defaults
-            .get(tool)
-            .copied()
-            .or_else(|| {
-                // McpTool falls back to McpServer-level default (Arc clone, ~2ns)
-                let ToolKey::McpTool { server, .. } = tool else {
-                    return None;
-                };
-                self.tool_defaults
-                    .get(&ToolKey::McpServer {
-                        server: Arc::clone(server),
-                    })
-                    .copied()
-            })
-            .or_else(|| {
-                self.tool_defaults
-                    .iter()
-                    .find_map(|(key, effect)| matches_rule(key, tool).then_some(*effect))
-            })
-            .unwrap_or_else(|| self.default);
+        let eff = default_for_tool(&self.tool_defaults, tool).unwrap_or(self.default);
         match eff {
             DefaultEffect::Deny => {
                 info!(tool = %tool, "denied by default");
@@ -540,6 +520,61 @@ impl PermissionManager {
             Err(deny(answer.guidance().map(String::from)))
         }
     }
+}
+
+fn default_for_tool(
+    defaults: &HashMap<ToolKey, DefaultEffect>,
+    actual: &ToolKey,
+) -> Option<DefaultEffect> {
+    let mut best: Option<(u8, String, DefaultEffect)> = None;
+    for (key, effect) in defaults {
+        let rank = match (key, actual) {
+            (ToolKey::Native(name), ToolKey::Native(actual_name))
+                if canonical_tool_name(name) == canonical_tool_name(actual_name) =>
+            {
+                if name.as_ref() == canonical_tool_name(actual_name) {
+                    4
+                } else {
+                    3
+                }
+            }
+            (
+                ToolKey::McpTool {
+                    server: key_server,
+                    tool: key_tool,
+                },
+                ToolKey::McpTool {
+                    server: actual_server,
+                    tool: actual_tool,
+                },
+            ) if key_server == actual_server && key_tool == actual_tool => 4,
+            (
+                ToolKey::McpServer { server: key_server },
+                ToolKey::McpTool {
+                    server: actual_server,
+                    ..
+                },
+            ) if key_server == actual_server => 2,
+            (
+                ToolKey::McpServer { server: key_server },
+                ToolKey::McpServer {
+                    server: actual_server,
+                },
+            ) if key_server == actual_server => 3,
+            _ => 0,
+        };
+        if rank == 0 {
+            continue;
+        }
+        let key_text = key.to_string();
+        let replace = best.as_ref().is_none_or(|(best_rank, best_key, _)| {
+            rank > *best_rank || (rank == *best_rank && key_text < *best_key)
+        });
+        if replace {
+            best = Some((rank, key_text, *effect));
+        }
+    }
+    best.map(|(_, _, effect)| effect)
 }
 
 fn matches_rule(rule_key: &ToolKey, actual: &ToolKey) -> bool {
@@ -838,7 +873,6 @@ mod tests {
             scope_matches(&pattern, &value),
             "symlinked parent with non-existent tail should match: pattern={pattern}, value={value}"
         );
-
         let _ = std::fs::remove_dir_all(&real);
         let _ = std::fs::remove_file(&link);
     }
@@ -849,6 +883,45 @@ mod tests {
         assert!(matches!(
             default_mgr().check(&ToolKey::native("write"), &path, None),
             PermissionCheck::NeedsPrompt { .. }
+        ));
+    }
+
+    #[test]
+    fn native_alias_permission_rule_matches_canonical_tool() {
+        let mgr = PermissionManager::new(
+            make_config(vec![PermissionRule {
+                tool: ToolKey::native("read_file"),
+                scope: Some("*".into()),
+                effect: Effect::Allow,
+            }]),
+            PathBuf::from("/tmp"),
+        );
+        assert!(matches!(
+            mgr.check(&ToolKey::native("read"), "any", None),
+            PermissionCheck::Allowed
+        ));
+        assert!(matches!(
+            mgr.check(&ToolKey::native("read_file"), "any", None),
+            PermissionCheck::Allowed
+        ));
+    }
+
+    #[test]
+    fn canonical_tool_default_wins_over_alias_default_deterministically() {
+        let mgr = PermissionManager::new(
+            PermissionsConfig {
+                default: DefaultEffect::Prompt,
+                tool_defaults: HashMap::from([
+                    (ToolKey::native("read"), DefaultEffect::Deny),
+                    (ToolKey::native("read_file"), DefaultEffect::Allow),
+                ]),
+                ..Default::default()
+            },
+            PathBuf::from("/tmp"),
+        );
+        assert!(matches!(
+            mgr.check(&ToolKey::native("read"), "any", None),
+            PermissionCheck::Allowed
         ));
     }
 

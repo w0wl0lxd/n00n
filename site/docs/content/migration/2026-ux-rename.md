@@ -9,7 +9,7 @@ n00n now presents built-in tools with consistent `verb_noun` names. Existing nam
 | `read` | `read_file` |
 | `write` | `write_file` |
 | `edit` | `edit_file` |
-| `multiedit` | `edit_file_bulk` |
+| `multi_edit` / `multiedit` | `edit_file_bulk` |
 | `edit_lines` | `edit_file_lines` |
 | `insert_lines` | `insert_file_lines` |
 | `bash` | `run_shell` |

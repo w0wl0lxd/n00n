@@ -1260,6 +1260,19 @@ mod tests {
             assert!(name.len() <= 32, "builtin tool name is too long: {name}");
         }
     }
+    #[test]
+    fn rust_and_lua_alias_tables_stay_in_sync() {
+        let policy = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../plugins/lib/n00n/policy.lua"
+        ));
+        for &(alias, canonical) in TOOL_ALIASES {
+            assert!(
+                policy.contains(&format!("  {alias} = \"{canonical}\",")),
+                "Lua policy is missing alias {alias} -> {canonical}"
+            );
+        }
+    }
 
     #[test]
     fn mixed_alias_filters_apply_restrictions() {

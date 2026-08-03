@@ -355,7 +355,12 @@ impl CommandPalette {
 
         for (i, cmd) in custom_commands.iter().enumerate() {
             let name = cmd.display_name();
-            if conflicts_with_builtin(&name) || !reserved.insert(name.clone()) {
+            if conflicts_with_builtin(&name) {
+                tracing::debug!(command = %name, source = "custom", "skipping reserved slash command");
+                continue;
+            }
+            if !reserved.insert(name.clone()) {
+                tracing::debug!(command = %name, source = "custom", "skipping duplicate slash command");
                 continue;
             }
             let item = CommandItem {
@@ -370,7 +375,12 @@ impl CommandPalette {
 
         for (i, prompt) in mcp_prompts.iter().enumerate() {
             let name = format!("/{}", prompt.display_name);
-            if conflicts_with_builtin(&name) || !reserved.insert(name.clone()) {
+            if conflicts_with_builtin(&name) {
+                tracing::debug!(command = %name, source = "mcp", "skipping reserved slash command");
+                continue;
+            }
+            if !reserved.insert(name.clone()) {
+                tracing::debug!(command = %name, source = "mcp", "skipping duplicate slash command");
                 continue;
             }
             let item = CommandItem {
@@ -388,7 +398,12 @@ impl CommandPalette {
         }
 
         for (i, cmd) in lua_commands.iter().enumerate() {
-            if conflicts_with_builtin(&cmd.name) || !reserved.insert(cmd.name.to_string()) {
+            if conflicts_with_builtin(&cmd.name) {
+                tracing::debug!(command = %cmd.name, source = "lua", "skipping reserved slash command");
+                continue;
+            }
+            if !reserved.insert(cmd.name.to_string()) {
+                tracing::debug!(command = %cmd.name, source = "lua", "skipping duplicate slash command");
                 continue;
             }
             let item = CommandItem {
@@ -1103,12 +1118,15 @@ mod tests {
     #[test]
     fn lua_commands_appear_in_unfiltered_list() {
         let p = synced_with_lua("/");
-        let lua_count = p
+        let lua_entries: Vec<_> = p
             .filtered
             .iter()
-            .filter(|f| matches!(f.command_type, CommandType::Lua(_)))
-            .count();
-        assert_eq!(lua_count, 1);
+            .filter_map(|f| match f.command_type {
+                CommandType::Lua(index) => Some(p.lua_commands[index].name.to_string()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lua_entries, vec!["/deploy"]);
     }
 
     #[test]

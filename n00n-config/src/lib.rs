@@ -98,6 +98,7 @@ pub const FILE_WRITE_TOOLS: &[&str] = &[
     "edit_file",
     "edit",
     "edit_file_bulk",
+    "multi_edit",
     "multiedit",
     "edit_file_lines",
     "edit_lines",

@@ -6,6 +6,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
 use n00n_agent::permissions::{DEFAULT_DENY_GUIDANCE, PermissionAnswer, generalized_scopes};
+use n00n_agent::tools::{
+    BASH_TOOL_NAME, EDIT_TOOL_NAME, MULTIEDIT_TOOL_NAME, READ_TOOL_NAME, TODOWRITE_TOOL_NAME,
+    WRITE_TOOL_NAME, canonical_tool_name,
+};
 use n00n_config::ToolKey;
 
 use crate::components::Overlay;
@@ -167,15 +171,18 @@ impl PermissionPrompt {
     }
 
     fn action_hint(tool: &ToolKey) -> &'static str {
-        let name = tool.to_string();
-        if name.contains("write") || name.contains("edit") {
-            "change files"
-        } else if name.contains("bash") || name.contains("shell") {
-            "run a command"
-        } else if name.contains("web") || name.contains("http") {
-            "access the network"
-        } else {
-            "use an external tool"
+        let name = match tool {
+            ToolKey::Native(name) => canonical_tool_name(name),
+            _ => return "use an external tool",
+        };
+        match name {
+            WRITE_TOOL_NAME | EDIT_TOOL_NAME | MULTIEDIT_TOOL_NAME | "edit_file_lines"
+            | "insert_file_lines" => "change files",
+            READ_TOOL_NAME => "read files",
+            BASH_TOOL_NAME => "run a command",
+            "fetch_url" | "search_web" => "access the network",
+            TODOWRITE_TOOL_NAME => "update the todo list",
+            _ => "use an external tool",
         }
     }
 
