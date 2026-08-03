@@ -79,6 +79,7 @@ pub(super) async fn compact_history(
     session_id: Option<&n00n_storage::id::SessionRef>,
     cwd: &std::path::Path,
     transcript_path: Option<&std::path::Path>,
+    extra_context_tokens: u32,
 ) -> Result<(TokenUsage, String), AgentError> {
     run_precompact_hooks(trigger, session_id, cwd, transcript_path).await?;
 
@@ -135,7 +136,14 @@ pub(super) async fn compact_history(
 
     run_postcompact_hooks(trigger, session_id, cwd, transcript_path, &summary).await;
 
-    let usage = finish_compact(response, history, event_tx, compact_start, model);
+    let usage = finish_compact(
+        response,
+        history,
+        event_tx,
+        compact_start,
+        model,
+        extra_context_tokens,
+    );
     Ok((usage, summary))
 }
 
@@ -145,6 +153,7 @@ fn finish_compact(
     event_tx: &EventSender,
     compact_start: std::time::Instant,
     model: &Model,
+    extra_context_tokens: u32,
 ) -> TokenUsage {
     let StreamResponse {
         message: summary,
@@ -154,12 +163,14 @@ fn finish_compact(
 
     // Update the history before computing the post-compaction context size
     // so the UI meter reflects the compacted conversation, not just the
-    // summary output tokens.
+    // summary output tokens. Callers pass continue-prompt/tool-definition
+    // tokens that are part of the agent's full post-compact context.
     history.compact_boundary(
         Message::user("What did we do so far?".into()),
         summary.clone(),
     );
-    let context_size = crate::agent::run::estimate_message_tokens(history.as_slice(), &model.id);
+    let context_size = crate::agent::run::estimate_message_tokens(history.as_slice(), &model.id)
+        .saturating_add(extra_context_tokens);
 
     let _ = event_tx.send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
         message: summary,
@@ -201,6 +212,7 @@ pub async fn compact(
         None,
         &cwd,
         None,
+        0,
     )
     .await?;
     event_tx.send(AgentEvent::CompactionDone)?;

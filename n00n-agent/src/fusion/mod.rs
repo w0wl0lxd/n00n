@@ -9,6 +9,7 @@ use thiserror::Error;
 use crate::tools::ToolAudience;
 
 pub(crate) const FUSION_DELEGATE_TOOL: &str = "fusion_delegate";
+pub(crate) const FUSION_DELEGATE_BLOCKED: &str = "fusion_delegate is unavailable for this request";
 const RECENT_ERROR_ESCALATE_THRESHOLD: u32 = 2;
 const SIDEKICK_FAILURE_ESCALATE_THRESHOLD: u32 = 2;
 
@@ -30,11 +31,12 @@ impl FusionLane {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DelegationKind {
     /// Trivial conversational input that does not need delegation policy.
     Bypass,
     /// Ambiguity, design, review, or serial debugging — keep on lead.
+    #[default]
     LeadOnly,
     /// Mechanical exploration, edits, tests, lint — delegate to sidekick.
     Delegate,
@@ -178,6 +180,7 @@ pub struct FusionState {
     phase: FusionPhase,
     review_count: u32,
     fallback_count: u32,
+    request_kind: DelegationKind,
 }
 
 impl FusionState {
@@ -196,7 +199,17 @@ impl FusionState {
             phase: FusionPhase::Planning,
             review_count: 0,
             fallback_count: 0,
+            request_kind: DelegationKind::LeadOnly,
         }
+    }
+
+    pub fn set_request_kind(&mut self, kind: DelegationKind) {
+        self.request_kind = kind;
+    }
+
+    #[must_use]
+    pub const fn request_kind(&self) -> DelegationKind {
+        self.request_kind
     }
 
     pub fn record_lane_usage(&mut self, lane: FusionLane, usage: TokenUsage, cost: f64) {
@@ -228,6 +241,11 @@ impl FusionState {
     pub fn observe_tool_results(&mut self, results: &[crate::ToolDoneEvent]) {
         for done in results {
             if done.tool.as_ref() == FUSION_DELEGATE_TOOL {
+                // Dispatch denials never launched a sidekick; ignore them so
+                // blocked retries do not inflate failure/delegation counters.
+                if done.is_error && done.output.as_text() == FUSION_DELEGATE_BLOCKED {
+                    continue;
+                }
                 if let Some(telemetry) = done.output.telemetry() {
                     #[allow(clippy::manual_unwrap_or)]
                     let cost = match telemetry.cost {
@@ -595,6 +613,22 @@ mod tests {
         assert_eq!(state.recent_tool_errors(), 2);
         assert_eq!(state.sidekick_failures, 1);
         assert!(state.should_escalate_for_tool_errors());
+    }
+
+    #[test]
+    fn observe_tool_results_ignores_dispatch_blocked_delegates() {
+        let mut state = FusionState::new_lead();
+        state.observe_tool_results(&[crate::ToolDoneEvent {
+            id: "blocked".into(),
+            tool: Arc::from(FUSION_DELEGATE_TOOL),
+            output: crate::ToolOutput::Plain(FUSION_DELEGATE_BLOCKED.into()),
+            is_error: true,
+            annotation: None,
+            written_path: None,
+        }]);
+        assert_eq!(state.recent_tool_errors(), 0);
+        assert_eq!(state.sidekick_failures, 0);
+        assert_eq!(state.delegation_count, 0);
     }
 
     #[test]

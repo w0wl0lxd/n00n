@@ -720,9 +720,10 @@ impl Devin {
             entry
                 .prefixes
                 .iter()
-                .find(|p| cli_configs.contains_key(*p))
                 .copied()
-                .unwrap_or(entry.prefixes[0])
+                .find(|p| cli_configs.contains_key(*p))
+                .or_else(|| entry.prefixes.first().copied())
+                .unwrap_or_else(|| model_router_uid)
         });
         let chat_model_uid = cli_configs
             .get(canonical_id)

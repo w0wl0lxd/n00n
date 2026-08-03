@@ -376,7 +376,8 @@ impl<'h> Agent<'h> {
             message_len = input.message.len(),
             "agent run started"
         );
-        if self.fusion_state.is_some() {
+        if let Some(state) = self.fusion_state.as_mut() {
+            state.set_request_kind(crate::fusion::classify_delegation(&input.message));
             self.emit_fusion_phase(FusionPhase::Planning)?;
         }
 
@@ -687,7 +688,9 @@ impl<'h> Agent<'h> {
         if self.config.fusion.enabled
             && let Some(state) = self.fusion_state.as_mut()
         {
-            state.record_lane_usage(state.lane, usage, cost);
+            // The main agent always runs the lead wire model/provider; sidekick
+            // costs are recorded from fusion_delegate telemetry instead.
+            state.record_lane_usage(FusionLane::Lead, usage, cost);
         }
         self.total_usage += usage;
         self.total_cost += cost;
@@ -729,6 +732,14 @@ impl<'h> Agent<'h> {
         self.post_tool_empty_retried = false;
         self.thinking_empty_retried = false;
         let ctx = self.tool_context();
+        let fusion = self
+            .fusion_state
+            .as_ref()
+            .map(|state| tool_dispatch::FusionDispatchAuth {
+                phase: state.phase(),
+                lane: state.lane,
+                classification: state.request_kind(),
+            });
         tool_dispatch::process_tool_calls(
             response,
             &mut self.recent_calls,
@@ -736,6 +747,7 @@ impl<'h> Agent<'h> {
             self.history,
             &self.event_tx,
             &ctx,
+            fusion,
         )
         .await
     }
@@ -746,10 +758,10 @@ impl<'h> Agent<'h> {
     }
 
     fn handle_fusion_results(&mut self, results: &[ToolDoneEvent]) -> Result<(), AgentError> {
-        let Some(result) = results
-            .iter()
-            .find(|result| &*result.tool == crate::fusion::FUSION_DELEGATE_TOOL)
-        else {
+        let Some(result) = results.iter().find(|result| {
+            &*result.tool == crate::fusion::FUSION_DELEGATE_TOOL
+                && result.output.as_text() != crate::fusion::FUSION_DELEGATE_BLOCKED
+        }) else {
             return Ok(());
         };
         let Some(state) = self.fusion_state.as_mut() else {
@@ -926,9 +938,8 @@ impl<'h> Agent<'h> {
             return;
         }
         let lane = match route {
-            FusionRoute::Stay(lane) => lane,
             FusionRoute::EscalateToLead => FusionLane::Lead,
-            FusionRoute::Switch(lane) => lane,
+            FusionRoute::Stay(lane) | FusionRoute::Switch(lane) => lane,
         };
         if let Some(state) = self.fusion_state.as_mut() {
             state.lane = lane;
@@ -961,6 +972,13 @@ impl<'h> Agent<'h> {
             self.openai_options,
         );
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
+        // Match the post-compact agent context (continue prompt + tool defs)
+        // so the TurnComplete meter does not under-report until the next turn.
+        let extra_context_tokens = estimate_message_tokens(
+            std::slice::from_ref(&Message::synthetic(CONTINUE_AFTER_COMPACT.into())),
+            &compact_model.id,
+        )
+        .saturating_add(estimate_tool_tokens(&self.tools, &compact_model.id));
         let (usage, summary) = compaction::compact_history(
             &*compact_provider,
             &compact_model,
@@ -971,6 +989,7 @@ impl<'h> Agent<'h> {
             self.session_id.as_ref(),
             &cwd,
             None,
+            extra_context_tokens,
         )
         .await?;
         // Charge compaction to the pre-route lane before any Fusion switch.
@@ -1744,6 +1763,7 @@ mod tests {
             assert!(
                 tool_result.0.contains("unknown tool")
                     || tool_result.0.contains("not available")
+                    || tool_result.0.contains("unavailable")
                     || tool_result.0.contains("disabled"),
                 "unexpected denial: {}",
                 tool_result.0
@@ -1790,6 +1810,28 @@ mod tests {
             agent.fusion_state.as_ref().unwrap().lane,
             FusionLane::Sidekick
         );
+    }
+
+    #[test]
+    fn main_agent_usage_is_always_charged_to_lead_lane() {
+        let mut history = History::new(Vec::new());
+        let (mut agent, _event_rx) = make_agent_with_config(
+            MockProvider::new(Vec::new()),
+            &mut history,
+            fusion_enabled_config(),
+        );
+        agent.apply_fusion_route(FusionRoute::Switch(FusionLane::Sidekick));
+        let usage = TokenUsage {
+            input: 10,
+            output: 2,
+            ..Default::default()
+        };
+        agent.record_usage(usage, 0.25);
+        let state = agent.fusion_state.as_ref().unwrap();
+        assert_eq!(state.lead_usage, usage);
+        assert!((state.lead_cost - 0.25).abs() < COST_EPSILON);
+        assert_eq!(state.sidekick_usage, TokenUsage::default());
+        assert!(state.sidekick_cost.abs() < COST_EPSILON);
     }
 
     #[test]
