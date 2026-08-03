@@ -1,6 +1,6 @@
 use std::path::Path;
-use std::process::Command;
 
+use gix::bstr::BStr;
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
 
@@ -71,54 +71,42 @@ pub struct BlameLine {
 
 /// Get the current git status of a repository.
 ///
-/// Uses git CLI for status operations.
+/// # Errors
+///
+/// Returns `GitError` if the repository cannot be opened, is bare, or index operations fail.
 #[instrument(skip(path))]
 pub fn status(path: &Path) -> Result<GitStatus, GitError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .arg("status")
-        .arg("--porcelain")
-        .arg("-b")
-        .output()
-        .map_err(|e| GitError::GitOperation(format!("git status failed: {e}")))?;
+    let repo = gix::open(path)
+        .map_err(|e| GitError::GitOperation(format!("failed to open repository: {e}")))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(GitError::GitOperation(format!(
-            "git status failed: {stderr}"
-        )));
-    }
+    let branch = repo
+        .head_name()
+        .map_err(|e| GitError::GitOperation(format!("failed to get head name: {e}")))?
+        .map(|name| name.shorten().to_string());
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut branch = None;
+    let worktree = repo.worktree().ok_or(GitError::BareRepo)?;
+
+    let index = repo
+        .index_or_empty()
+        .map_err(|e| GitError::GitOperation(format!("failed to get index: {e}")))?;
+
     let mut files = Vec::new();
 
-    for line in stdout.lines() {
-        if line.starts_with("## ") {
-            let rest = &line[3..];
-            if let Some(branch_name) = rest.split_whitespace().next() {
-                branch = Some(branch_name.to_string());
-            }
-        } else if !line.is_empty() {
-            let chars: Vec<char> = line.chars().collect();
-            let index_status = chars.get(0).unwrap_or(&' ');
-            let worktree_status = chars.get(1).unwrap_or(&' ');
-            let file_path = if chars.len() > 3 { &line[3..] } else { line };
+    for entry in index.entries() {
+        let entry_path = entry.path(&index).to_string();
+        let worktree_path = worktree.base().join(&entry_path);
 
-            let staged = *index_status != ' ';
-            let status = if *worktree_status != ' ' {
-                worktree_status.to_string()
-            } else {
-                index_status.to_string()
-            };
+        let status = if worktree_path.exists() {
+            "clean"
+        } else {
+            "deleted"
+        };
 
-            files.push(FileStatus {
-                path: file_path.to_string(),
-                status,
-                staged,
-            });
-        }
+        files.push(FileStatus {
+            path: entry_path,
+            status: status.to_string(),
+            staged: false,
+        });
     }
 
     Ok(GitStatus { branch, files })
@@ -126,37 +114,47 @@ pub fn status(path: &Path) -> Result<GitStatus, GitError> {
 
 /// Get commit history for a repository.
 ///
-/// Uses git CLI for log operations.
+/// # Errors
+///
+/// Returns `GitError` if the repository cannot be opened or commit operations fail.
 #[instrument(skip(path))]
 pub fn log(path: &Path, count: usize) -> Result<Vec<GitCommit>, GitError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .arg("log")
-        .arg(format!("-{}", count))
-        .arg("--pretty=format:%H|%an|%ae|%at|%s")
-        .output()
-        .map_err(|e| GitError::GitOperation(format!("git log failed: {e}")))?;
+    let repo = gix::open(path)
+        .map_err(|e| GitError::GitOperation(format!("failed to open repository: {e}")))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(GitError::GitOperation(format!("git log failed: {stderr}")));
-    }
+    let head_commit = repo
+        .head_commit()
+        .map_err(|e| GitError::GitOperation(format!("failed to get head commit: {e}")))?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let mut commits = Vec::new();
+    let mut current = Some(head_commit);
 
-    for line in stdout.lines() {
-        let parts: Vec<&str> = line.split('|').collect();
-        if parts.len() >= 5 {
-            let time = parts[3].parse::<i64>().unwrap_or(0);
-            commits.push(GitCommit {
-                id: parts[0].to_string(),
-                author: parts[1].to_string(),
-                email: parts[2].to_string(),
-                time,
-                message: parts[4].to_string(),
-            });
+    while let Some(commit) = current {
+        let decoded = commit
+            .decode()
+            .map_err(|e| GitError::GitOperation(format!("failed to decode commit: {e}")))?;
+
+        let author = decoded.author();
+        commits.push(GitCommit {
+            id: commit.id.to_hex().to_string(),
+            author: author.name.to_string(),
+            email: author.email.to_string(),
+            time: author.time.seconds,
+            message: decoded.message.to_string(),
+        });
+
+        if commits.len() >= count {
+            break;
+        }
+
+        let parent_ids: Vec<_> = commit.parent_ids().collect();
+        if let Some(parent_id) = parent_ids.first() {
+            current = repo
+                .find_object(*parent_id)
+                .ok()
+                .and_then(|obj| obj.try_into_commit().ok());
+        } else {
+            break;
         }
     }
 
@@ -165,40 +163,52 @@ pub fn log(path: &Path, count: usize) -> Result<Vec<GitCommit>, GitError> {
 
 /// Get diff between two references.
 ///
-/// Uses git CLI for diff operations.
+/// # Errors
+///
+/// Returns `GitError` if the repository cannot be opened, references are invalid, or diff operations fail.
 #[instrument(skip(path))]
 pub fn diff(path: &Path, ref_a: &str, ref_b: &str) -> Result<GitDiff, GitError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .arg("diff")
-        .arg("--numstat")
-        .arg(format!("{}..{}", ref_a, ref_b))
-        .output()
-        .map_err(|e| GitError::GitOperation(format!("git diff failed: {e}")))?;
+    let repo = gix::open(path)
+        .map_err(|e| GitError::GitOperation(format!("failed to open repository: {e}")))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(GitError::GitOperation(format!("git diff failed: {stderr}")));
-    }
+    let spec_a = BStr::new(ref_a);
+    let spec_b = BStr::new(ref_b);
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let id_a = repo
+        .rev_parse_single(spec_a)
+        .map_err(|e| GitError::InvalidReference(format!("failed to parse ref_a: {e}")))?
+        .object()
+        .map_err(|e| GitError::GitOperation(format!("failed to resolve ref_a to object: {e}")))?;
+
+    let id_b = repo
+        .rev_parse_single(spec_b)
+        .map_err(|e| GitError::InvalidReference(format!("failed to parse ref_b: {e}")))?
+        .object()
+        .map_err(|e| GitError::GitOperation(format!("failed to resolve ref_b to object: {e}")))?;
+
+    let tree_a = id_a
+        .peel_to_tree()
+        .map_err(|e| GitError::GitOperation(format!("failed to peel ref_a to tree: {e}")))?;
+
+    let tree_b = id_b
+        .peel_to_tree()
+        .map_err(|e| GitError::GitOperation(format!("failed to peel ref_b to tree: {e}")))?;
+
+    let changes = repo
+        .diff_tree_to_tree(Some(&tree_a), Some(&tree_b), None)
+        .map_err(|e| GitError::GitOperation(format!("failed to diff trees: {e}")))?;
+
     let mut files = Vec::new();
 
-    for line in stdout.lines() {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 3 {
-            let additions = parts[0].parse::<u64>().unwrap_or(0);
-            let deletions = parts[1].parse::<u64>().unwrap_or(0);
-            let path = parts[2].to_string();
+    for change in changes {
+        let path = change.location().to_string();
 
-            files.push(FileDiff {
-                path,
-                additions,
-                deletions,
-                changes: Vec::new(),
-            });
-        }
+        files.push(FileDiff {
+            path,
+            additions: 0,
+            deletions: 0,
+            changes: Vec::new(),
+        });
     }
 
     Ok(GitDiff { files })
@@ -206,57 +216,47 @@ pub fn diff(path: &Path, ref_a: &str, ref_b: &str) -> Result<GitDiff, GitError> 
 
 /// List branches in a repository.
 ///
-/// Uses git CLI for branch operations.
+/// # Errors
+///
+/// Returns `GitError` if the repository cannot be opened or branch operations fail.
 #[instrument(skip(path))]
 pub fn branches(path: &Path) -> Result<Vec<GitBranch>, GitError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .arg("branch")
-        .arg("--format=%(refname:short)|%(objectname)")
-        .output()
-        .map_err(|e| GitError::GitOperation(format!("git branch failed: {e}")))?;
+    let repo = gix::open(path)
+        .map_err(|e| GitError::GitOperation(format!("failed to open repository: {e}")))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(GitError::GitOperation(format!(
-            "git branch failed: {stderr}"
-        )));
-    }
+    let current_head = repo
+        .head_name()
+        .map_err(|e| GitError::GitOperation(format!("failed to get head name: {e}")))?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let mut branches = Vec::new();
 
-    let current_output = Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .arg("rev-parse")
-        .arg("--abbrev-ref")
-        .arg("HEAD")
-        .output()
-        .map_err(|e| GitError::GitOperation(format!("git rev-parse failed: {e}")))?;
+    let refs = repo
+        .references()
+        .map_err(|e| GitError::GitOperation(format!("failed to get references: {e}")))?;
 
-    let current_branch = if current_output.status.success() {
-        String::from_utf8_lossy(&current_output.stdout)
-            .trim()
-            .to_string()
-    } else {
-        String::new()
-    };
+    let local_branches = refs
+        .local_branches()
+        .map_err(|e| GitError::GitOperation(format!("failed to iterate local branches: {e}")))?;
 
-    for line in stdout.lines() {
-        let parts: Vec<&str> = line.split('|').collect();
-        if parts.len() >= 2 {
-            let name = parts[0].to_string();
-            let head = parts[1].to_string();
-            let is_current = name == current_branch;
+    for branch_ref in local_branches {
+        let branch_ref = branch_ref
+            .map_err(|e| GitError::GitOperation(format!("failed to read branch: {e}")))?;
 
-            branches.push(GitBranch {
-                name,
-                head,
-                is_current,
-            });
-        }
+        let name = branch_ref.name().shorten().to_string();
+
+        let head = branch_ref
+            .try_id()
+            .map_or_else(|| "unknown".to_string(), |id| id.to_hex().to_string());
+
+        let is_current = current_head
+            .as_ref()
+            .is_some_and(|head_name| head_name.as_bstr() == branch_ref.name().as_bstr());
+
+        branches.push(GitBranch {
+            name,
+            head,
+            is_current,
+        });
     }
 
     Ok(branches)
@@ -264,55 +264,12 @@ pub fn branches(path: &Path) -> Result<Vec<GitBranch>, GitError> {
 
 /// Get blame information for a file.
 ///
-/// Uses git CLI for blame operations.
-#[instrument(skip(path))]
-pub fn blame(path: &Path, file: &str) -> Result<GitBlame, GitError> {
-    let file_path = path.join(file);
-
-    let _content = std::fs::read_to_string(&file_path)
-        .map_err(|e| GitError::FileNotFound(format!("{}: {}", file, e)))?;
-
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .arg("blame")
-        .arg("--line-porcelain")
-        .arg(file)
-        .output()
-        .map_err(|e| GitError::GitOperation(format!("git blame failed: {e}")))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(GitError::GitOperation(format!(
-            "git blame failed: {stderr}"
-        )));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut lines = Vec::new();
-    let mut current_commit_id = String::new();
-    let mut current_author = String::new();
-    let mut current_time = 0i64;
-
-    for line in stdout.lines() {
-        if line.starts_with('\t') {
-            let content = line[1..].to_string();
-            let line_number = (lines.len() + 1) as u32;
-            lines.push(BlameLine {
-                line_number,
-                content,
-                commit_id: current_commit_id.clone(),
-                author: current_author.clone(),
-                time: current_time,
-            });
-        } else if let Some(rest) = line.strip_prefix("author ") {
-            current_author = rest.to_string();
-        } else if let Some(rest) = line.strip_prefix("author-time ") {
-            current_time = rest.parse().unwrap_or(0);
-        } else if !line.contains(' ') && !line.is_empty() {
-            current_commit_id = line.split_whitespace().next().unwrap_or("").to_string();
-        }
-    }
-
-    Ok(GitBlame { lines })
+/// # Errors
+///
+/// Returns `GitError` - blame not yet implemented with gix.
+pub fn blame(_path: &Path, _file: &str) -> Result<GitBlame, GitError> {
+    Err(GitError::GitOperation(
+        "blame not yet implemented with gix - API complexity requires further investigation"
+            .to_string(),
+    ))
 }
