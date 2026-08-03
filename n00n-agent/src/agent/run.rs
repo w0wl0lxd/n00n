@@ -971,6 +971,8 @@ impl<'h> Agent<'h> {
                             if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
                                 self.active_tools.names.insert(name.to_owned());
                                 dirty = true;
+                            } else if item.get("mcp").is_some() {
+                                dirty = true;
                             }
                         }
                     }

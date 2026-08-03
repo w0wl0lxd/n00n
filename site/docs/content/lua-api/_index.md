@@ -5902,6 +5902,7 @@ return M
 
 ```lua
 -- Policy enforcement wrapper for tool calls.
+function M.canonical_tool_name(name)
 function M.evaluate_policy(agent_id, session_type, tags, tool_name)
 function M.call_tool(ctx, agent_id, session_type, tags, tool_name, input)
 ```

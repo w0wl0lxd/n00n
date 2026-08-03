@@ -67,7 +67,13 @@ pub struct HelpModal {
     searching: bool,
 }
 
-fn matches_help(tab: HelpTab, query: &str, context: KeybindContext, description: &str) -> bool {
+fn matches_help(
+    tab: HelpTab,
+    query: &str,
+    context: KeybindContext,
+    description: &str,
+    label: ResolvedLabel,
+) -> bool {
     if !tab.includes(context) {
         return false;
     }
@@ -75,6 +81,15 @@ fn matches_help(tab: HelpTab, query: &str, context: KeybindContext, description:
     query.is_empty()
         || context.label().to_lowercase().contains(&query)
         || description.to_lowercase().contains(&query)
+        || match label {
+            ResolvedLabel::Single(key) => key.to_lowercase().contains(&query),
+            ResolvedLabel::Alt(first, second) => {
+                first.to_lowercase().contains(&query) || second.to_lowercase().contains(&query)
+            }
+            ResolvedLabel::Multi(keys) => {
+                keys.iter().any(|key| key.to_lowercase().contains(&query))
+            }
+        }
 }
 
 fn key_spans(label: ResolvedLabel, pad: usize, prefix: &str) -> Vec<Span<'static>> {
@@ -261,13 +276,37 @@ impl HelpModal {
         };
         lines.push(Line::from(Span::styled(search_label, theme.tool_dim)));
 
+        let matching_input_prefixes: Vec<(&str, &str)> = INPUT_PREFIXES
+            .iter()
+            .copied()
+            .filter(|(label, description)| {
+                matches_help(
+                    self.tab,
+                    query,
+                    KeybindContext::Editing,
+                    description,
+                    ResolvedLabel::Single(label),
+                )
+            })
+            .collect();
         let key_col_width = KEYBINDS
             .iter()
             .filter(|kb| {
                 kb.platform.is_visible()
-                    && matches_help(self.tab, query, kb.context, kb.description)
+                    && matches_help(
+                        self.tab,
+                        query,
+                        kb.context,
+                        kb.description,
+                        kb.label.resolve(),
+                    )
             })
             .map(|kb| kb.label.resolve().display_width())
+            .chain(
+                matching_input_prefixes
+                    .iter()
+                    .map(|(label, _)| UnicodeWidthStr::width(*label)),
+            )
             .max()
             .unwrap_or_else(|| 0)
             + KEY_COL_GAP;
@@ -276,9 +315,13 @@ impl HelpModal {
             if ctx.parent().is_some() {
                 continue;
             }
-            if !KEYBINDS.iter().any(|kb| {
-                kb.platform.is_visible() && matches_help(self.tab, query, ctx, kb.description)
-            }) {
+            let has_keybind = KEYBINDS.iter().any(|kb| {
+                kb.platform.is_visible()
+                    && matches_help(self.tab, query, ctx, kb.description, kb.label.resolve())
+            });
+            let has_input_prefix =
+                ctx == KeybindContext::Editing && !matching_input_prefixes.is_empty();
+            if !has_keybind && !has_input_prefix {
                 continue;
             }
             if !first {
@@ -294,7 +337,7 @@ impl HelpModal {
             for kb in KEYBINDS.iter().filter(|kb| {
                 kb.context == ctx
                     && kb.platform.is_visible()
-                    && matches_help(self.tab, query, ctx, kb.description)
+                    && matches_help(self.tab, query, ctx, kb.description, kb.label.resolve())
             }) {
                 let mut spans = key_spans(kb.label.resolve(), key_col_width, PREFIX_TOP);
                 spans.push(Span::styled(kb.description, theme.keybind_desc));
@@ -310,7 +353,13 @@ impl HelpModal {
                     .filter(|kb| {
                         kb.context == child
                             && kb.platform.is_visible()
-                            && matches_help(self.tab, query, child, kb.description)
+                            && matches_help(
+                                self.tab,
+                                query,
+                                child,
+                                kb.description,
+                                kb.label.resolve(),
+                            )
                     })
                     .collect();
                 if child_binds.is_empty() {
@@ -332,13 +381,13 @@ impl HelpModal {
                 }
             }
 
-            if ctx == KeybindContext::Editing {
+            if ctx == KeybindContext::Editing && !matching_input_prefixes.is_empty() {
                 lines.push(Line::default());
                 lines.push(Line::from(Span::styled(
                     "    Input Prefixes",
                     theme.keybind_section,
                 )));
-                for &(pfx, desc) in INPUT_PREFIXES {
+                for &(pfx, desc) in &matching_input_prefixes {
                     let mut spans = key_spans(
                         ResolvedLabel::Single(pfx),
                         key_col_width - KEY_COL_GAP,
@@ -352,8 +401,14 @@ impl HelpModal {
 
         let status_indicators = STATUS_INDICATORS
             .iter()
-            .filter(|(_, description)| {
-                matches_help(self.tab, query, KeybindContext::General, description)
+            .filter(|(label, description)| {
+                matches_help(
+                    self.tab,
+                    query,
+                    KeybindContext::General,
+                    description,
+                    ResolvedLabel::Single(label),
+                )
             })
             .collect::<Vec<_>>();
         if !status_indicators.is_empty() {
@@ -424,6 +479,24 @@ mod tests {
         modal.toggle();
         assert!(modal.handle_key(key_ev(KeyCode::Char('a'))));
         assert!(modal.is_open());
+    }
+
+    #[test]
+    fn search_matches_displayed_key_labels() {
+        assert!(matches_help(
+            HelpTab::All,
+            "ctrl+x",
+            KeybindContext::General,
+            "unrelated description",
+            ResolvedLabel::Alt("ctrl+x", "cmd+x"),
+        ));
+        assert!(matches_help(
+            HelpTab::Editing,
+            "!!",
+            KeybindContext::Editing,
+            "unrelated description",
+            ResolvedLabel::Single("!!"),
+        ));
     }
 
     #[test]

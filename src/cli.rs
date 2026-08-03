@@ -135,11 +135,11 @@ pub struct Cli {
     pub plugin_flags: PluginFlags,
 
     /// Pre-approve tools (comma-separated). Accepts `PascalCase` (Claude Code) or `snake_case`.
-    #[arg(long, alias = "allowedTools", value_delimiter = ',')]
+    #[arg(long, value_delimiter = ',')]
     pub allowed_tools: Vec<String>,
 
     /// Disallowed tools (comma-separated).
-    #[arg(long, alias = "disallowedTools", value_delimiter = ',')]
+    #[arg(long, value_delimiter = ',')]
     pub disallowed_tools: Vec<String>,
 
     /// Session ID for SDK mode
@@ -562,6 +562,14 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn session_and_resume_flags_are_compatible() {
+        let canonical = Cli::parse_from(["n00n", "--session", "session-id"]);
+        let compatibility = Cli::parse_from(["n00n", "--resume", "session-id"]);
+        assert_eq!(canonical.session.as_deref(), Some("session-id"));
+        assert_eq!(compatibility.session, canonical.session);
     }
 
     #[test]

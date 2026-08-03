@@ -12,16 +12,20 @@ local RENAME_PREFIX = "Rename: "
 local CONFIRM_HINT = "  Ctrl+D again to delete"
 local CANNOT_DELETE_GROUP_HINT = "Cannot delete a group"
 local DELETE_FOCUSED_HINT = "Cannot delete the current session"
-local RENAME_USAGE = "Usage: /rename <title>"
+local RENAME_USAGE = "Usage: /session:rename <title>"
 local EMPTY_HINT = "  No sessions yet. Press Ctrl+N to start one."
 local NO_MATCHES_HINT = "  No matches"
 local LOADING_HINT = "  Loading sessions…"
-local CURRENT_LABEL = "current"
 local TICK_MS = 100
 local AGE_TICKS = 10
 -- Placeholder only: the host swaps "spinner:*"-styled spans for the live
 -- animated frame, so working rows spin without this plugin redrawing.
 local WORKING_ICON = "· "
+local STATUS_LABELS = {
+  needs_input = "Needs input",
+  working = "Working",
+  idle = "Idle",
+}
 local AGE_UNITS = {
   { 31536000, "y" },
   { 2592000, "mo" },
@@ -103,6 +107,10 @@ local function dispw(s)
   return utf8.len(s) or #s
 end
 
+local function status_label(s)
+  return STATUS_LABELS[s.status] or "Unknown"
+end
+
 local function age(updated_at)
   local secs = math.max(os.time() - (updated_at or 0), 0)
   for _, u in ipairs(AGE_UNITS) do
@@ -138,6 +146,10 @@ local function find_stored(id)
     end
   end
   return nil
+end
+
+local function stored_session_title(kind, title)
+  return kind and kind ~= "main" and (kind .. ": " .. title) or title
 end
 
 local function normalize_session(s, expanded_state)
@@ -341,10 +353,10 @@ local function update_footer()
   end
   local footer = {}
   if board.counts.needs_input > 0 then
-    footer[#footer + 1] = { "◆ " .. board.counts.needs_input, "needs input" }
+    footer[#footer + 1] = { "◆ " .. board.counts.needs_input, STATUS_LABELS.needs_input }
   end
   if board.counts.working > 0 then
-    footer[#footer + 1] = { "● " .. board.counts.working, "working" }
+    footer[#footer + 1] = { "● " .. board.counts.working, STATUS_LABELS.working }
   end
   for _, f in ipairs(FILTER_KEYS) do
     footer[#footer + 1] = f
@@ -378,7 +390,7 @@ render = function()
       right = task_count(count)
       right_style = selected and "selected" or "dim"
     else
-      right = s.focused and CURRENT_LABEL or age(s.updated_at)
+      right = status_label(s)
       right_style = selected and "selected" or (s.focused and "accent" or "dim")
     end
     if selected then
@@ -594,7 +606,7 @@ local function commit_rename()
   local title = board.rename.input:value():match("^%s*(.-)%s*$")
   local id = board.rename.id
   local current = selected()
-  local stored_title = current and current.kind ~= "main" and (current.kind .. ": " .. title) or title
+  local stored_title = stored_session_title(current and current.kind, title)
   stop_rename()
   if title == "" then
     return
@@ -780,9 +792,9 @@ n00n.api.create_autocmd("SessionStatusChanged", {
     last_status[d.session_id] = d.status
     if not d.focused then
       if d.status == "needs_input" then
-        n00n.ui.flash("◆ " .. d.title .. " needs input · /sessions")
+        n00n.ui.flash("◆ " .. d.title .. " needs input · /session:list")
       elseif d.status == "idle" and prev == "working" then
-        n00n.ui.flash("✓ " .. d.title .. " finished · /sessions")
+        n00n.ui.flash("✓ " .. d.title .. " finished · /session:list")
       end
     end
     if board then
@@ -811,7 +823,20 @@ n00n.api.register_command({
       n00n.ui.flash(err)
       return
     end
-    local _, set_err = n00n.session.set_title({ id = id, title = title })
+    local sessions, list_err = n00n.session.list()
+    if list_err then
+      n00n.ui.flash(list_err)
+      return
+    end
+    local kind = nil
+    for _, session in ipairs(sessions) do
+      if session.id == id then
+        kind = session.kind
+        break
+      end
+    end
+    local stored_title = stored_session_title(kind, title)
+    local _, set_err = n00n.session.set_title({ id = id, title = stored_title })
     n00n.ui.flash(set_err or ('Renamed to "' .. title .. '"'))
   end,
 })

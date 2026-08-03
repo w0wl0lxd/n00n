@@ -1,3 +1,5 @@
+local policy = require("n00n.policy")
+
 local M = {}
 
 local function normalize_tool_name(tool_name)
@@ -13,9 +15,21 @@ local function normalize_tool_name(tool_name)
   return as_internal:gsub("-", "_"):lower()
 end
 
+local function canonical_tool_name(tool_name)
+  local normalized = normalize_tool_name(tool_name)
+  if not normalized then
+    return nil
+  end
+  local namespace, bare = normalized:match("^(.*)%.([^.]+)$")
+  if namespace then
+    return namespace .. "." .. policy.canonical_tool_name(bare)
+  end
+  return policy.canonical_tool_name(normalized)
+end
+
 local function tool_names_match(policy_entry, tool_name)
-  local entry = normalize_tool_name(policy_entry)
-  local tool = normalize_tool_name(tool_name)
+  local entry = canonical_tool_name(policy_entry)
+  local tool = canonical_tool_name(tool_name)
   if not entry or not tool then
     return false
   end
@@ -46,12 +60,12 @@ function M.evaluate(envelope, tool_name)
   if not envelope then
     return { allowed = true }
   end
-  local normalized = normalize_tool_name(tool_name)
-  if not normalized then
+  local canonical = canonical_tool_name(tool_name)
+  if not canonical then
     return { allowed = false, reason = "tool name is required" }
   end
 
-  if normalized == "skill" then
+  if canonical == "load_skill" then
     return { allowed = true }
   end
 

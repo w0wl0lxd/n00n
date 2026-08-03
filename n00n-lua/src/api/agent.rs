@@ -65,12 +65,10 @@ const STEERING_QUEUE_CAPACITY: usize = 32;
 const TOOL_EXCLUSIONS_META_FIELD: &str = "__n00n_tool_exclusions";
 
 fn resolve_model_from_ctx(ctx: &AgentContext, tier: Option<&str>) -> Result<Model, String> {
-    let resolver = ModelResolver::current();
     let Some(tier_str) = tier else {
-        return resolver
-            .resolve(&ctx.model.spec())
-            .map_err(|error| error.to_string());
+        return Ok(Model::clone(&ctx.model));
     };
+    let resolver = ModelResolver::current();
     let requested: ModelTier = tier_str.parse().map_err(|e: ModelError| e.to_string())?;
     let effective = requested.min(ctx.model.tier);
     if effective == ctx.model.tier {
@@ -1728,6 +1726,24 @@ mod tests {
         let lua = Lua::new();
         let f: Function = lua.load(src).eval().unwrap();
         call_local_tool(&lua.weak(), &f, input)
+    }
+
+    #[test]
+    fn inherited_model_reuses_resolved_context_model() {
+        let mut tool_ctx = n00n_agent::tools::test_support::stub_ctx_with(
+            &n00n_agent::AgentMode::Build,
+            None,
+            None,
+        );
+        let mut discovered = Model::from_spec("opencode/opencode/big-pickle").unwrap();
+        discovered.context_window = 424_242;
+        tool_ctx.model = Arc::new(discovered);
+        let ctx = AgentContext::from(&tool_ctx);
+
+        let resolved = resolve_model_from_ctx(&ctx, None).unwrap();
+
+        assert_eq!(resolved.spec(), "opencode/opencode/big-pickle");
+        assert_eq!(resolved.context_window, 424_242);
     }
 
     #[test]

@@ -1,17 +1,16 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 const BAR_CHAR: &str = "━";
-const UNFILLED_COLOR: Color = Color::DarkGray;
-
 pub struct ProgressBarConfig<'a> {
     pub ratio: f64,
     pub style: Style,
     pub cache_ratio: f64,
     pub cache_style: Style,
+    pub unfilled_style: Style,
     pub label: Option<&'a str>,
     pub label_style: Option<Style>,
     pub bar_width: u16,
@@ -43,7 +42,7 @@ pub fn render(frame: &mut Frame, area: Rect, config: &ProgressBarConfig<'_>) {
         } else if i < filled {
             config.style
         } else {
-            Style::new().fg(UNFILLED_COLOR)
+            config.unfilled_style
         };
         spans.push(Span::styled(BAR_CHAR, style));
     }
@@ -56,9 +55,11 @@ mod tests {
     use super::*;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::style::{Color, Style};
     use test_case::test_case;
 
     const CACHE_STYLE: Style = Style::new().fg(Color::Green);
+    const UNFILLED_COLOR: Color = Color::DarkGray;
 
     fn render_gauge(ratio: f64, width: u16) -> Terminal<TestBackend> {
         render_gauge_with_cache(ratio, 0.0, width)
@@ -77,6 +78,7 @@ mod tests {
                         style: Style::default(),
                         cache_ratio,
                         cache_style: CACHE_STYLE,
+                        unfilled_style: Style::new().fg(UNFILLED_COLOR),
                         label: None,
                         label_style: None,
                         bar_width: width,
@@ -138,6 +140,7 @@ mod tests {
                         style: Style::default(),
                         cache_ratio: 0.0,
                         cache_style: CACHE_STYLE,
+                        unfilled_style: Style::new().fg(UNFILLED_COLOR),
                         label: None,
                         label_style: None,
                         bar_width: 0,
@@ -163,6 +166,7 @@ mod tests {
                         style: Style::default(),
                         cache_ratio: 0.0,
                         cache_style: CACHE_STYLE,
+                        unfilled_style: Style::new().fg(UNFILLED_COLOR),
                         label: Some(" PP:"),
                         label_style: None,
                         bar_width: width,
@@ -175,6 +179,39 @@ mod tests {
             .take_while(|&x| buf.cell((x, 0)).is_some_and(|c| c.symbol() != BAR_CHAR))
             .count();
         assert_eq!(label_cells, 4, "label 'PP:' should occupy 4 cells");
+    }
+
+    #[test]
+    fn caller_styles_can_disable_all_colors() {
+        let backend = TestBackend::new(4, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render(
+                    frame,
+                    frame.area(),
+                    &ProgressBarConfig {
+                        ratio: 0.5,
+                        style: Style::default(),
+                        cache_ratio: 0.25,
+                        cache_style: Style::default(),
+                        unfilled_style: Style::default(),
+                        label: None,
+                        label_style: None,
+                        bar_width: 4,
+                    },
+                );
+            })
+            .unwrap();
+
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .all(|cell| cell.fg == Color::Reset && cell.bg == Color::Reset)
+        );
     }
 
     #[test_case(0.5, 0.0, 0, 10  ; "no_cache")]

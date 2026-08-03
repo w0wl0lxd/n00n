@@ -746,6 +746,7 @@ fn render_list<T: PickerItem>(
             };
             Span::styled(sym, sty)
         });
+        let checkbox_width = checkbox.as_ref().map_or(0, Span::width);
         let label = format!("  {}", item.label());
         let suffix = item.suffix();
         let detail: Option<&str> = if item.is_spinning() {
@@ -758,14 +759,20 @@ fn render_list<T: PickerItem>(
         let trailing_gap = suffix_w + if suffix_w > 0 { suffix_gap } else { 0 };
         let line = if let Some(detail) = detail {
             let max_label = area.width.saturating_sub(
-                u16::try_from(detail.width()).unwrap_or_else(|_| u16::MAX)
+                u16::try_from(checkbox_width).unwrap_or_else(|_| u16::MAX)
+                    + u16::try_from(detail.width()).unwrap_or_else(|_| u16::MAX)
                     + u16::try_from(trailing_gap).unwrap_or_else(|_| u16::MAX)
                     + 1
                     + DETAIL_RIGHT_PAD,
             ) as usize;
             let label = truncate_label(&label, max_label);
             let pad = (area.width as usize).saturating_sub(
-                label.width() + trailing_gap + detail.width() + DETAIL_RIGHT_PAD as usize + 1,
+                checkbox_width
+                    + label.width()
+                    + trailing_gap
+                    + detail.width()
+                    + DETAIL_RIGHT_PAD as usize
+                    + 1,
             );
             let mut spans = Vec::with_capacity(7);
             if let Some(cb) = checkbox {
@@ -1118,6 +1125,29 @@ mod tests {
         p.handle_key(key(KeyCode::Char('b')));
         let action = p.handle_key(key(KeyCode::Enter));
         assert!(matches!(action, PickerAction::Toggle(1, false)));
+    }
+
+    #[test]
+    fn toggleable_row_width_preserves_detail() {
+        let mut entry = Entry::new("a very long server name");
+        entry.detail = Some("end".to_string());
+        let backend = TestBackend::new(20, 1);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        terminal
+            .draw(|frame| {
+                render_list(frame, frame.area(), &[0], &[entry], 0, 0, 1, Some(&[true]));
+            })
+            .expect("render");
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(rendered.contains("end"));
     }
 
     #[test_case("short", 10 => "short" ; "no_truncation_needed")]
