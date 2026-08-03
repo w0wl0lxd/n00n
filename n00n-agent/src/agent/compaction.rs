@@ -1230,6 +1230,7 @@ mod tests {
                 None,
                 &std::env::current_dir().unwrap(),
                 None,
+                0,
             )
             .await;
 
@@ -1282,6 +1283,7 @@ mod tests {
                 None,
                 &std::env::current_dir().unwrap(),
                 None,
+                0,
             )
             .await;
 

@@ -12,6 +12,17 @@ pub(crate) const FUSION_DELEGATE_TOOL: &str = "fusion_delegate";
 pub(crate) const FUSION_DELEGATE_BLOCKED: &str = "fusion_delegate is unavailable for this request";
 const RECENT_ERROR_ESCALATE_THRESHOLD: u32 = 2;
 const SIDEKICK_FAILURE_ESCALATE_THRESHOLD: u32 = 2;
+const MUTATION_SIGNALS: &[&str] = &[
+    "implement",
+    "write test",
+    "add test",
+    "fix lint",
+    "format",
+    "rename",
+    "boilerplate",
+    "update doc",
+    "apply patch",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -46,6 +57,7 @@ pub enum DelegationKind {
 #[serde(rename_all = "snake_case")]
 pub enum FusionPhase {
     #[default]
+    Idle,
     Planning,
     Executing,
     Reviewing,
@@ -91,7 +103,7 @@ pub enum FusionDispatchError {
     AlreadyDispatched,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct FusionDispatchGuard {
     enabled: bool,
     classification: DelegationKind,
@@ -168,7 +180,7 @@ pub struct FusionUsageStats {
 
 #[derive(Debug, Clone, Default)]
 pub struct FusionState {
-    pub lane: FusionLane,
+    lane: FusionLane,
     pub delegation_count: u32,
     pub sidekick_failures: u32,
     pub compact_count: u32,
@@ -201,6 +213,15 @@ impl FusionState {
             fallback_count: 0,
             request_kind: DelegationKind::LeadOnly,
         }
+    }
+
+    pub fn set_lane(&mut self, lane: FusionLane) {
+        self.lane = lane;
+    }
+
+    #[must_use]
+    pub const fn lane(&self) -> FusionLane {
+        self.lane
     }
 
     pub fn set_request_kind(&mut self, kind: DelegationKind) {
@@ -389,10 +410,7 @@ impl FusionState {
     }
 
     fn enter_terminal(&mut self, terminal: FusionPhase) -> Result<(), FusionTransitionError> {
-        if matches!(
-            self.phase,
-            FusionPhase::Complete | FusionPhase::Cancelled | FusionPhase::Failed
-        ) {
+        if self.phase.is_terminal() {
             return Err(FusionTransitionError {
                 from: self.phase,
                 to: terminal,
@@ -503,23 +521,13 @@ pub fn route_after_compact(
 
     let summary_kind = classify_delegation(compact_summary);
     let summary = compact_summary.to_ascii_lowercase();
-    let requests_mutation = [
-        "implement",
-        "write test",
-        "add test",
-        "fix lint",
-        "format",
-        "rename",
-        "boilerplate",
-        "update doc",
-        "apply patch",
-    ]
-    .iter()
-    .any(|signal| summary.contains(signal));
+    let requests_mutation = MUTATION_SIGNALS
+        .iter()
+        .any(|signal| summary.contains(signal));
 
     match (state.lane, summary_kind) {
         (FusionLane::Lead, DelegationKind::Delegate) if requests_mutation => {
-            FusionRoute::Switch(FusionLane::Sidekick)
+            FusionRoute::Stay(FusionLane::Lead)
         }
         (FusionLane::Sidekick, DelegationKind::LeadOnly | DelegationKind::Bypass) => {
             FusionRoute::Switch(FusionLane::Lead)
@@ -565,26 +573,26 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
-    #[test_case("hello", "Bypass" ; "trivial greeting")]
-    #[test_case("what is the current status?", "Bypass" ; "trivial status")]
-    #[test_case("", "LeadOnly" ; "empty")]
-    #[test_case("please handle this", "LeadOnly" ; "unknown")]
-    #[test_case("grep the repo for TODO and list matches", "Delegate" ; "mechanical grep")]
-    #[test_case("add boilerplate getters", "Delegate" ; "boilerplate")]
-    #[test_case("run cargo test", "Delegate" ; "narrow tests")]
-    #[test_case("fix lint in this module", "Delegate" ; "narrow lint")]
-    #[test_case("design the auth architecture and trade-offs", "LeadOnly" ; "architecture")]
-    #[test_case("plan the implementation", "LeadOnly" ; "planning")]
-    #[test_case("review the PR", "LeadOnly" ; "review")]
-    #[test_case("commit and merge this change", "LeadOnly" ; "commit merge")]
-    #[test_case("perform a security audit", "LeadOnly" ; "security")]
-    #[test_case("rotate these credentials", "LeadOnly" ; "credentials")]
-    #[test_case("change production permissions", "LeadOnly" ; "permissions")]
-    #[test_case("delete the customer database", "LeadOnly" ; "destructive")]
-    #[test_case("debug this serial failure chain", "LeadOnly" ; "serial debug")]
-    #[test_case("grep for credentials and rotate them", "LeadOnly" ; "mandatory lead signal wins")]
-    fn classify_delegation_contract(prompt: &str, expected: &str) {
-        assert_eq!(format!("{:?}", classify_delegation(prompt)), expected);
+    #[test_case("hello", DelegationKind::Bypass ; "trivial greeting")]
+    #[test_case("what is the current status?", DelegationKind::Bypass ; "trivial status")]
+    #[test_case("", DelegationKind::LeadOnly ; "empty")]
+    #[test_case("please handle this", DelegationKind::LeadOnly ; "unknown")]
+    #[test_case("grep the repo for TODO and list matches", DelegationKind::Delegate ; "mechanical grep")]
+    #[test_case("add boilerplate getters", DelegationKind::Delegate ; "boilerplate")]
+    #[test_case("run cargo test", DelegationKind::Delegate ; "narrow tests")]
+    #[test_case("fix lint in this module", DelegationKind::Delegate ; "narrow lint")]
+    #[test_case("design the auth architecture and trade-offs", DelegationKind::LeadOnly ; "architecture")]
+    #[test_case("plan the implementation", DelegationKind::LeadOnly ; "planning")]
+    #[test_case("review the PR", DelegationKind::LeadOnly ; "review")]
+    #[test_case("commit and merge this change", DelegationKind::LeadOnly ; "commit merge")]
+    #[test_case("perform a security audit", DelegationKind::LeadOnly ; "security")]
+    #[test_case("rotate these credentials", DelegationKind::LeadOnly ; "credentials")]
+    #[test_case("change production permissions", DelegationKind::LeadOnly ; "permissions")]
+    #[test_case("delete the customer database", DelegationKind::LeadOnly ; "destructive")]
+    #[test_case("debug this serial failure chain", DelegationKind::LeadOnly ; "serial debug")]
+    #[test_case("grep for credentials and rotate them", DelegationKind::LeadOnly ; "mandatory lead signal wins")]
+    fn classify_delegation_contract(prompt: &str, expected: DelegationKind) {
+        assert_eq!(classify_delegation(prompt), expected);
     }
 
     #[test]

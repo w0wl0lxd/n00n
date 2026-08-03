@@ -180,6 +180,7 @@ impl Chat {
             }
             AgentEvent::FusionPhase { phase, label } => {
                 let phase = match phase {
+                    n00n_agent::FusionPhase::Idle => "Idle",
                     n00n_agent::FusionPhase::Planning => "Planning",
                     n00n_agent::FusionPhase::Executing => "Executing",
                     n00n_agent::FusionPhase::Reviewing => "Reviewing",
@@ -193,6 +194,7 @@ impl Chat {
                 self.messages_panel
                     .push(DisplayMessage::new(DisplayRole::Control, text));
             }
+            AgentEvent::FusionPhaseChanged { .. } => {}
             AgentEvent::QueueItemConsumed {
                 text,
                 image_count,

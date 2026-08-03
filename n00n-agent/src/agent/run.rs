@@ -273,6 +273,11 @@ impl<'h> Agent<'h> {
     }
 
     #[must_use]
+    pub fn with_dynamic_mcp_tools(self, _enabled: bool) -> Self {
+        self
+    }
+
+    #[must_use]
     pub fn with_user_response_rx(
         mut self,
         rx: Arc<async_lock::Mutex<flume::Receiver<String>>>,
@@ -334,6 +339,9 @@ impl<'h> Agent<'h> {
     /// tool execution failures, or cancellation.
     pub async fn run(&mut self, input: AgentInput) -> Result<(), AgentError> {
         let protect_history_replay = !self.history.is_empty();
+        if self.config.fusion.enabled {
+            self.fusion_state = Some(FusionState::new_lead());
+        }
         let rollback_len = self.rollback_len.unwrap_or_else(|| self.history.len());
         self.rollback_len = Some(rollback_len);
         let pre_dispatch_rollback_len = self
@@ -368,6 +376,8 @@ impl<'h> Agent<'h> {
             message_cache_breakpoints: adaptive_cache_breakpoints(user_message_count),
             protect_history_replay,
             allow_history_replay: self.permissions.is_yolo(),
+            safety_identifier: None,
+            moderation: false,
         };
 
         info!(
@@ -399,7 +409,16 @@ impl<'h> Agent<'h> {
                         warn!(?error, "fusion: failed to mark run failed");
                     }
                 }
-                Ok(()) => {}
+                Ok(()) => {
+                    if self.fusion_state.is_some() {
+                        self.emit_fusion_phase(FusionPhase::Complete)?;
+                    }
+                }
+            }
+            if matches!(&result, Err(AgentError::Cancelled)) && self.fusion_state.is_some() {
+                self.emit_fusion_phase(FusionPhase::Cancelled)?;
+            } else if result.is_err() && self.fusion_state.is_some() {
+                self.emit_fusion_phase(FusionPhase::Failed)?;
             }
         }
 
@@ -501,11 +520,11 @@ impl<'h> Agent<'h> {
         if self.cancel.is_cancelled() || !self.commit_pre_dispatch() {
             return Err(AgentError::Cancelled);
         }
-        let initial = self.stream_response(self.opts).await;
+        let initial = self.stream_response(self.opts.clone()).await;
         let response = match initial {
             Err(AgentError::HistoryReplayRequired { reason }) => {
                 self.approve_history_replay(reason).await?;
-                let mut approved_opts = self.opts;
+                let mut approved_opts = self.opts.clone();
                 approved_opts.allow_history_replay = true;
                 self.stream_response(approved_opts).await
             }
@@ -737,7 +756,7 @@ impl<'h> Agent<'h> {
             .as_ref()
             .map(|state| tool_dispatch::FusionDispatchAuth {
                 phase: state.phase(),
-                lane: state.lane,
+                lane: state.lane(),
                 classification: state.request_kind(),
             });
         tool_dispatch::process_tool_calls(
@@ -778,7 +797,7 @@ impl<'h> Agent<'h> {
             if let Some(state) = self.fusion_state.as_mut()
                 && let Err(error) = state.delegate_failed(failure)
             {
-                warn!(?error, "fusion: rejected fallback transition");
+                warn!(?error, ?failure, "fusion: rejected fallback transition");
                 return Ok(());
             }
             self.history
@@ -817,13 +836,14 @@ impl<'h> Agent<'h> {
             openai_options: self.openai_options,
             file_tracker: Arc::clone(&self.file_tracker),
             prompt_slots: Arc::clone(&self.prompt_slots),
-            opts: self.opts,
+            opts: self.opts.clone(),
             subagent_cancels: Arc::clone(&self.subagent_cancels),
             registry: Arc::clone(&self.registry),
             workflow: self.workflow,
             audience: self.audience,
             local_tools: Arc::clone(&self.local_tools),
             active_skill_policy: self.active_skill_policy.clone(),
+            tool_filter: self.tool_filter.clone(),
             live_sink: None,
         }
     }
@@ -942,7 +962,7 @@ impl<'h> Agent<'h> {
             FusionRoute::Stay(lane) | FusionRoute::Switch(lane) => lane,
         };
         if let Some(state) = self.fusion_state.as_mut() {
-            state.lane = lane;
+            state.set_lane(lane);
         }
         self.apply_fusion_lane_context(lane);
     }
@@ -1035,6 +1055,9 @@ impl<'h> Agent<'h> {
                         self.history.push(msg);
                     }
                     self.mode = Arc::new(input.mode);
+                    if let Some(state) = self.fusion_state.as_mut() {
+                        state.set_request_kind(crate::fusion::classify_delegation(&input.message));
+                    }
                     let display = input.message;
                     if input.control {
                         let wrapped = format!(
@@ -1145,6 +1168,7 @@ pub fn estimate_message_tokens(messages: &[Message], model_id: &str) -> u32 {
             }
             ContentBlock::ToolUse { input, .. } => count_json_with_tokenizer(tokenizer, input),
             ContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE,
+            ContentBlock::File { .. } => IMAGE_TOKEN_ESTIMATE,
         })
         .sum();
     u32_from_usize_saturating(total)
@@ -1308,6 +1332,9 @@ mod tests {
                     source: ImageSource {
                         media_type: ImageMediaType::Png,
                         data: Arc::from("data"),
+                        detail: None,
+                        file_id: None,
+                        url: None,
                     },
                 },
             ],
@@ -1807,7 +1834,7 @@ mod tests {
         assert_eq!(agent.model.id, model_before);
         assert!(Arc::ptr_eq(&agent.provider, &provider_before));
         assert_eq!(
-            agent.fusion_state.as_ref().unwrap().lane,
+            agent.fusion_state.as_ref().unwrap().lane(),
             FusionLane::Sidekick
         );
     }

@@ -2385,17 +2385,15 @@ mod tests {
         assert!(guard.authorize(FusionInvocationOrigin::Direct).is_err());
     }
 
-    #[test_case(false, "Delegate" ; "disabled")]
-    #[test_case(true, "Bypass" ; "bypass")]
-    #[test_case(true, "LeadOnly" ; "lead only")]
-    fn fusion_dispatch_guard_denies_non_delegate_policy(enabled: bool, policy: &str) {
-        use crate::fusion::{DelegationKind, FusionDispatchGuard, FusionInvocationOrigin};
+    #[test_case(false, crate::fusion::DelegationKind::Delegate ; "disabled")]
+    #[test_case(true, crate::fusion::DelegationKind::Bypass ; "bypass")]
+    #[test_case(true, crate::fusion::DelegationKind::LeadOnly ; "lead only")]
+    fn fusion_dispatch_guard_denies_non_delegate_policy(
+        enabled: bool,
+        classification: crate::fusion::DelegationKind,
+    ) {
+        use crate::fusion::{FusionDispatchGuard, FusionInvocationOrigin};
 
-        let classification = match policy {
-            "Delegate" => DelegationKind::Delegate,
-            "Bypass" => DelegationKind::Bypass,
-            _ => DelegationKind::LeadOnly,
-        };
         let mut guard =
             FusionDispatchGuard::new(enabled, classification, crate::tools::ToolAudience::MAIN);
         assert!(guard.authorize(FusionInvocationOrigin::Direct).is_err());
