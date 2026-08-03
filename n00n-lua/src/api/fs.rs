@@ -686,6 +686,346 @@ async fn dir(lua: Lua, path: String, opts: Option<Table>) -> LuaResult<(Value, V
     }
 }
 
+fn scoped_components(relative: &str) -> std::io::Result<Vec<String>> {
+    let path = Path::new(relative);
+    let mut components = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(value) => components.push(value.to_string_lossy().into_owned()),
+            _ => {
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    "relative path must contain only normal components",
+                ));
+            }
+        }
+    }
+    if components.is_empty() {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "relative path is empty",
+        ));
+    }
+    Ok(components)
+}
+
+#[cfg(unix)]
+fn open_scoped_root(root: &Path) -> std::io::Result<File> {
+    use rustix::fs::{Mode, OFlags, open, openat};
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let mut directory: File = open("/", flags, Mode::empty())?.into();
+    for component in root.components() {
+        match component {
+            Component::RootDir => {}
+            Component::Normal(value) => {
+                directory = openat(&directory, value, flags, Mode::empty())?.into();
+            }
+            _ => {
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    "root must be an absolute path with normal components",
+                ));
+            }
+        }
+    }
+    Ok(directory)
+}
+
+#[cfg(unix)]
+fn scoped_parent(root: &Path, components: &[String]) -> std::io::Result<(File, String)> {
+    use rustix::fs::{Mode, OFlags, openat};
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let mut directory = open_scoped_root(root)?;
+    for component in &components[..components.len() - 1] {
+        directory = openat(&directory, component, flags, Mode::empty())?.into();
+    }
+    Ok((directory, components[components.len() - 1].clone()))
+}
+
+#[cfg(unix)]
+fn scoped_mkdir_all(root: &Path, relative: &str) -> std::io::Result<()> {
+    use rustix::fs::{Mode, OFlags, mkdirat, openat};
+    let components = scoped_components(relative)?;
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let mut directory = open_scoped_root(root)?;
+    for component in components {
+        match openat(&directory, &component, flags, Mode::empty()) {
+            Ok(fd) => directory = fd.into(),
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                match mkdirat(&directory, &component, Mode::from_raw_mode(0o700)) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+                    Err(error) => return Err(error.into()),
+                }
+                directory = openat(&directory, component, flags, Mode::empty())?.into();
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn scoped_mkdir_all(root: &Path, relative: &str) -> std::io::Result<()> {
+    let components = scoped_components(relative)?;
+    let root = root.canonicalize()?;
+    let mut directory = root.clone();
+    for component in components {
+        directory.push(component);
+        match std::fs::symlink_metadata(&directory) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(Error::new(
+                    ErrorKind::PermissionDenied,
+                    "directory path must not contain symlinks",
+                ));
+            }
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => {
+                return Err(Error::new(
+                    ErrorKind::AlreadyExists,
+                    "directory component is not a directory",
+                ));
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                std::fs::create_dir(&directory)?;
+            }
+            Err(error) => return Err(error),
+        }
+        let canonical = directory.canonicalize()?;
+        if !canonical.starts_with(&root) {
+            return Err(Error::new(ErrorKind::PermissionDenied, "path escapes root"));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn scoped_read(root: &Path, relative: &str) -> std::io::Result<Vec<u8>> {
+    use rustix::fs::{Mode, OFlags, openat};
+    let components = scoped_components(relative)?;
+    let (parent, leaf) = scoped_parent(root, &components)?;
+    let fd = openat(
+        &parent,
+        leaf,
+        OFlags::RDONLY | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )?;
+    let mut file: File = fd.into();
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut file, &mut bytes)?;
+    Ok(bytes)
+}
+
+#[cfg(not(unix))]
+fn portable_scoped_path(
+    root: &Path,
+    relative: &str,
+    allow_missing: bool,
+) -> std::io::Result<PathBuf> {
+    let components = scoped_components(relative)?;
+    let root = root.canonicalize()?;
+    let path = components
+        .iter()
+        .fold(root.clone(), |path, component| path.join(component));
+    let parent = path
+        .parent()
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "missing parent"))?
+        .canonicalize()?;
+    if !parent.starts_with(&root) {
+        return Err(Error::new(ErrorKind::PermissionDenied, "path escapes root"));
+    }
+    match std::fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(Error::new(
+            ErrorKind::PermissionDenied,
+            "final path must not be a symlink",
+        )),
+        Ok(_) => {
+            let canonical = path.canonicalize()?;
+            if canonical.starts_with(&root) {
+                Ok(path)
+            } else {
+                Err(Error::new(ErrorKind::PermissionDenied, "path escapes root"))
+            }
+        }
+        Err(error) if allow_missing && error.kind() == ErrorKind::NotFound => Ok(path),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(not(unix))]
+fn scoped_read(root: &Path, relative: &str) -> std::io::Result<Vec<u8>> {
+    std::fs::read(portable_scoped_path(root, relative, false)?)
+}
+
+fn scoped_metadata(root: &Path, relative: &str) -> std::io::Result<std::fs::Metadata> {
+    #[cfg(unix)]
+    {
+        use rustix::fs::{Mode, OFlags, openat};
+        let components = scoped_components(relative)?;
+        let (parent, leaf) = scoped_parent(root, &components)?;
+        let fd = openat(
+            &parent,
+            leaf,
+            OFlags::RDONLY | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )?;
+        let file: File = fd.into();
+        file.metadata()
+    }
+    #[cfg(not(unix))]
+    {
+        return std::fs::metadata(portable_scoped_path(root, relative, false)?);
+    }
+}
+
+#[cfg(unix)]
+fn scoped_write(root: &Path, relative: &str, content: &[u8]) -> std::io::Result<()> {
+    use rustix::fs::{Mode, OFlags, openat, renameat};
+    let components = scoped_components(relative)?;
+    let (parent, leaf) = scoped_parent(root, &components)?;
+    match openat(
+        &parent,
+        &leaf,
+        OFlags::RDONLY | OFlags::NOFOLLOW,
+        Mode::empty(),
+    ) {
+        Ok(_) => {}
+        Err(error) => {
+            let error: Error = error.into();
+            if error.kind() != ErrorKind::NotFound {
+                return Err(error);
+            }
+        }
+    }
+    let mut temporary_name = None;
+    for attempt in 0..100_u32 {
+        let name = format!(".{leaf}.n00n-{}-{attempt}", std::process::id());
+        match openat(
+            &parent,
+            &name,
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW,
+            Mode::from_raw_mode(0o600),
+        ) {
+            Ok(fd) => {
+                let mut file: File = fd.into();
+                file.write_all(content)?;
+                file.sync_all()?;
+                temporary_name = Some(name);
+                break;
+            }
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let temporary_name = temporary_name
+        .ok_or_else(|| Error::new(ErrorKind::AlreadyExists, "could not create temporary file"))?;
+    renameat(&parent, &temporary_name, &parent, leaf)?;
+    parent.sync_all()
+}
+
+#[cfg(not(unix))]
+fn scoped_write(root: &Path, relative: &str, content: &[u8]) -> std::io::Result<()> {
+    let path = portable_scoped_path(root, relative, true)?;
+    atomic_write(&path, content)
+}
+
+#[cfg(unix)]
+fn scoped_remove(root: &Path, relative: &str) -> std::io::Result<()> {
+    use rustix::fs::{AtFlags, Mode, OFlags, openat, unlinkat};
+    let components = scoped_components(relative)?;
+    let (parent, leaf) = scoped_parent(root, &components)?;
+    let fd = openat(
+        &parent,
+        &leaf,
+        OFlags::RDONLY | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )?;
+    let metadata: File = fd.into();
+    if !metadata.metadata()?.is_file() {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "scoped path is not a regular file",
+        ));
+    }
+    Ok(unlinkat(&parent, leaf, AtFlags::empty())?)
+}
+
+#[cfg(not(unix))]
+fn scoped_remove(root: &Path, relative: &str) -> std::io::Result<()> {
+    std::fs::remove_file(portable_scoped_path(root, relative, false)?)
+}
+
+/// Read a file beneath root without following symlinks.
+/// @param root string Configured root directory.
+/// @param relative string Relative file path.
+#[lua_fn(guard = FsRead)]
+async fn read_within(lua: Lua, root: String, relative: String) -> LuaResult<(Value, Value)> {
+    let root = make_absolute(&root)?;
+    let result = smol::unblock(move || scoped_read(&root, &relative)).await;
+    result_pair(
+        &lua,
+        result.and_then(|bytes| {
+            String::from_utf8(bytes).map_err(|error| Error::new(ErrorKind::InvalidData, error))
+        }),
+    )
+}
+
+/// Create relative directories beneath root without following symlinks.
+/// @param root string Existing configured root directory.
+/// @param relative string Relative directory path to create.
+#[lua_fn(guard = FsWrite)]
+async fn mkdir_within(lua: Lua, root: String, relative: String) -> LuaResult<(Value, Value)> {
+    let root = make_absolute(&root)?;
+    let result = smol::unblock(move || scoped_mkdir_all(&root, &relative)).await;
+    result_pair(&lua, result.map(|()| true))
+}
+
+/// Check metadata for a file beneath root without following symlinks.
+/// @param root string Configured root directory.
+/// @param relative string Relative file path.
+#[lua_fn(guard = FsRead)]
+async fn metadata_within(lua: Lua, root: String, relative: String) -> LuaResult<(Value, Value)> {
+    let root = make_absolute(&root)?;
+    let result = smol::unblock(move || scoped_metadata(&root, &relative)).await;
+    match result {
+        Ok(meta) => {
+            let table = lua.create_table()?;
+            table.set("size", meta.len())?;
+            table.set("is_file", meta.is_file())?;
+            table.set("is_dir", meta.is_dir())?;
+            Ok((Value::Table(table), Value::Nil))
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok((Value::Nil, Value::Nil)),
+        Err(error) => err_pair(&lua, error),
+    }
+}
+
+/// Atomically write a file beneath root without following symlinks.
+/// @param root string Configured root directory.
+/// @param relative string Relative file path.
+/// @param content string File content.
+#[lua_fn(guard = FsWrite)]
+async fn write_within(
+    lua: Lua,
+    root: String,
+    relative: String,
+    content: String,
+) -> LuaResult<(Value, Value)> {
+    let root = make_absolute(&root)?;
+    let result = smol::unblock(move || scoped_write(&root, &relative, content.as_bytes())).await;
+    result_pair(&lua, result.map(|()| true))
+}
+
+/// Delete a regular file beneath root without following symlinks.
+/// @param root string Configured root directory.
+/// @param relative string Relative file path.
+#[lua_fn(guard = FsWrite)]
+async fn rm_within(lua: Lua, root: String, relative: String) -> LuaResult<(Value, Value)> {
+    let root = make_absolute(&root)?;
+    let result = smol::unblock(move || scoped_remove(&root, &relative)).await;
+    result_pair(&lua, result.map(|()| true))
+}
+
 /// Write {content} to the file at {path}, creating it if it does not exist
 /// or overwriting it if it does.
 ///
@@ -1002,6 +1342,7 @@ lua_table! {
         read(perms), read_bytes(perms), read_bytes_limited(perms), read_lines(perms), metadata(perms), dirname, basename,
         joinpath, normalize, abspath, parents, root(perms), relpath, ext,
         dir(perms), write(perms), rm(perms), mkdir(perms), glob(perms), grep(perms),
+        read_within(perms), mkdir_within(perms), metadata_within(perms), write_within(perms), rm_within(perms),
     ]
 }
 
@@ -1966,6 +2307,7 @@ mod tests {
                 10_usize,
             )))
             .unwrap();
+
         assert_eq!(val, mlua::Value::Nil);
         let Value::String(err_str) = err else {
             panic!("expected error string");
@@ -1973,6 +2315,85 @@ mod tests {
         assert_eq!(
             err_str.to_str().unwrap(),
             "non-utf8 content; use read_bytes"
+        );
+    }
+
+    #[test]
+    fn scoped_paths_reject_lexical_escapes() {
+        for path in ["", ".", "..", "a/../b", "/absolute"] {
+            assert!(scoped_components(path).is_err(), "accepted {path:?}");
+        }
+    }
+
+    #[test]
+    fn scoped_operations_work() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join("sub")).unwrap();
+        scoped_write(tmp.path(), "sub/file", b"hello").unwrap();
+        assert_eq!(scoped_read(tmp.path(), "sub/file").unwrap(), b"hello");
+        assert!(scoped_metadata(tmp.path(), "sub/file").unwrap().is_file());
+        scoped_remove(tmp.path(), "sub/file").unwrap();
+        assert!(scoped_read(tmp.path(), "sub/file").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scoped_view_write_append_delete_reject_final_and_intermediate_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        std::fs::write(outside.path().join("secret"), "secret").unwrap();
+        symlink(outside.path().join("secret"), tmp.path().join("final")).unwrap();
+        symlink(outside.path(), tmp.path().join("jump")).unwrap();
+
+        for operation in [
+            scoped_read(tmp.path(), "final").is_err(),
+            scoped_metadata(tmp.path(), "final").is_err(),
+            scoped_write(tmp.path(), "final", b"replace").is_err(),
+            scoped_read(tmp.path(), "final")
+                .and_then(|mut content| {
+                    content.extend_from_slice(b"append");
+                    scoped_write(tmp.path(), "final", &content)
+                })
+                .is_err(),
+            scoped_remove(tmp.path(), "final").is_err(),
+            scoped_read(tmp.path(), "jump/secret").is_err(),
+            scoped_metadata(tmp.path(), "jump/secret").is_err(),
+            scoped_write(tmp.path(), "jump/secret", b"replace").is_err(),
+            scoped_read(tmp.path(), "jump/secret")
+                .and_then(|mut content| {
+                    content.extend_from_slice(b"append");
+                    scoped_write(tmp.path(), "jump/secret", &content)
+                })
+                .is_err(),
+            scoped_remove(tmp.path(), "jump/secret").is_err(),
+        ] {
+            assert!(operation);
+        }
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("secret")).unwrap(),
+            "secret"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scoped_operations_reject_symlinked_root() {
+        use std::os::unix::fs::symlink;
+
+        let container = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        std::fs::write(outside.path().join("secret"), "secret").unwrap();
+        let root = container.path().join("memories");
+        symlink(outside.path(), &root).unwrap();
+
+        assert!(scoped_read(&root, "secret").is_err());
+        assert!(scoped_write(&root, "secret", b"replace").is_err());
+        assert!(scoped_remove(&root, "secret").is_err());
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("secret")).unwrap(),
+            "secret"
         );
     }
 

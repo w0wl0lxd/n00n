@@ -3,6 +3,7 @@ local h = require("memory_helpers")
 local fnv1a_64 = h.fnv1a_64
 local count_lines = h.count_lines
 local project_id = h.project_id
+local safe_relative = h.safe_relative
 local safe_resolve = h.safe_resolve
 local dir_total_bytes = h.dir_total_bytes
 local list_memories = h.list_memories
@@ -74,6 +75,10 @@ case("safe_resolve_rejects_bad_paths", function()
     { "../escape", "traversal" },
     { "a/../../escape", "traversal" },
     { "inside/../../../etc/shadow", "traversal" },
+    { "../mem-evil/secret", "traversal" },
+    { "inside\\..\\secret", "traversal" },
+    { "C:\\Windows\\system.ini", "must be relative" },
+    { "\\\\server\\share", "must be relative" },
   }
   for _, v in ipairs(bad) do
     local _, err = safe_resolve("/tmp/mem", v[1])
@@ -82,6 +87,11 @@ case("safe_resolve_rejects_bad_paths", function()
       "input " .. tostring(v[1]) .. " should match '" .. v[2] .. "', got: " .. tostring(err)
     )
   end
+end)
+
+case("safe_relative_prevents_lexical_prefix_tricks", function()
+  local path, err = safe_relative("../memories-evil/secret.md")
+  assert(not path and err:find("traversal"), "sibling prefixes must not pass containment")
 end)
 
 case("safe_resolve_accepts_good_paths", function()
@@ -143,19 +153,22 @@ case("list_memories_sorts_sums_and_ignores_subdirs", function()
   rmtree(tmpdir)
 end)
 
-case("write_read_delete_lifecycle", function()
+case("scoped_write_view_append_delete_lifecycle", function()
   local tmpdir = mktmpdir()
-  assert(not n00n.fs.metadata(n00n.fs.joinpath(tmpdir, "nope.md")), "metadata should be nil for nonexistent")
+  assert(not h.metadata_file(tmpdir, "nope.md"), "metadata should be nil for nonexistent")
 
-  local file_path = safe_resolve(tmpdir, "arch.md")
-  n00n.fs.write(file_path, "# Architecture\nMicroservices")
-  eq(n00n.fs.read(file_path), "# Architecture\nMicroservices")
+  local ok, err = h.write_file(tmpdir, "arch.md", "# Architecture\nMicroservices")
+  assert(ok, tostring(err))
+  eq(h.read_file(tmpdir, "arch.md"), "# Architecture\nMicroservices")
 
-  n00n.fs.write(file_path, "v2")
-  eq(n00n.fs.read(file_path), "v2")
+  local existing = h.read_file(tmpdir, "arch.md")
+  ok, err = h.write_file(tmpdir, "arch.md", existing .. "\nAppendix")
+  assert(ok, tostring(err))
+  eq(h.read_file(tmpdir, "arch.md"), "# Architecture\nMicroservices\nAppendix")
 
-  n00n.fs.rm(file_path)
-  assert(not n00n.fs.metadata(file_path), "file should be deleted")
+  ok, err = h.delete_file(tmpdir, "arch.md")
+  assert(ok, tostring(err))
+  assert(not h.metadata_file(tmpdir, "arch.md"), "file should be deleted")
   rmtree(tmpdir)
 end)
 

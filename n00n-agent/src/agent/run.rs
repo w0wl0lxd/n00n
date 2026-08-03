@@ -204,6 +204,7 @@ pub struct Agent<'h> {
     workflow: bool,
     local_tools: LocalTools,
     active_skill_policy: Option<crate::skill_policy::ActiveSkillPolicy>,
+    skill_policy_ceiling: Option<crate::skill_policy::ActiveSkillPolicy>,
     tool_filter: ToolFilter,
     active_tools: ActiveTools,
     supports_tool_examples: bool,
@@ -272,6 +273,7 @@ impl<'h> Agent<'h> {
             workflow: false,
             local_tools: LocalTools::default(),
             active_skill_policy: None,
+            skill_policy_ceiling: None,
             tool_filter: run.tool_filter,
             active_tools: ActiveTools::default(),
             supports_tool_examples,
@@ -330,6 +332,16 @@ impl<'h> Agent<'h> {
     #[must_use]
     pub fn with_local_tools(mut self, local_tools: LocalTools) -> Self {
         self.local_tools = local_tools;
+        self
+    }
+
+    #[must_use]
+    pub fn with_skill_policy_ceiling(
+        mut self,
+        policy: Option<crate::skill_policy::ActiveSkillPolicy>,
+    ) -> Self {
+        self.active_skill_policy.clone_from(&policy);
+        self.skill_policy_ceiling = policy;
         self
     }
 
@@ -485,11 +497,10 @@ impl<'h> Agent<'h> {
         })?;
         let response = self.cancel.race(response_rx.recv_async()).await;
         drop(response_rx);
-        let approved = response
-            .ok()
-            .and_then(Result::ok)
-            .and_then(|answer| PermissionAnswer::decode(&answer))
-            .is_some_and(|answer| answer.is_allow());
+        let Ok(Ok(answer)) = response else {
+            return Err(AgentError::Cancelled);
+        };
+        let approved = PermissionAnswer::decode(&answer).is_some_and(|answer| answer.is_allow());
         if approved {
             Ok(())
         } else {
@@ -506,7 +517,14 @@ impl<'h> Agent<'h> {
         let initial = self.stream_response(self.opts).await;
         let response = match initial {
             Err(AgentError::HistoryReplayRequired { reason }) => {
-                self.approve_history_replay(reason).await?;
+                if let Err(error) = self.approve_history_replay(reason).await {
+                    if matches!(error, AgentError::Cancelled)
+                        && let Some(rollback_len) = self.rollback_len
+                    {
+                        self.history.truncate(rollback_len);
+                    }
+                    return Err(error);
+                }
                 let mut approved_opts = self.opts;
                 approved_opts.allow_history_replay = true;
                 self.stream_response(approved_opts).await
@@ -767,6 +785,9 @@ impl<'h> Agent<'h> {
     }
 
     fn apply_skill_policy_from_results(&mut self, results: &[ToolDoneEvent]) {
+        if self.skill_policy_ceiling.is_some() {
+            return;
+        }
         for done in results {
             crate::skill_policy::ActiveSkillPolicy::apply_from_skill_tool_result(
                 &mut self.active_skill_policy,
@@ -1178,15 +1199,16 @@ mod tests {
     use crate::permissions::{PermissionAnswer, PermissionManager};
     use serde_json::json;
 
-    #[test]
-    fn plan_mode_hides_code_execution_but_keeps_research_tools() {
+    #[test_case::test_case(AgentMode::Plan("plan.md".into()) ; "plan")]
+    #[test_case::test_case(AgentMode::Research ; "research")]
+    fn readonly_mode_hides_code_execution_but_keeps_research_tools(mode: AgentMode) {
         let mut tools = json!([
             {"name": "code_execution"},
             {"name": "codegraph"},
             {"name": "server__search"}
         ]);
 
-        filter_tools_for_mode(&mut tools, &AgentMode::Plan("plan.md".into()));
+        filter_tools_for_mode(&mut tools, &mode);
 
         let names: Vec<_> = tools
             .as_array()
@@ -1287,6 +1309,102 @@ mod tests {
                     if tool == ToolKey::native(HISTORY_REPLAY_TOOL)
                         && scopes[0].contains("saved continuation was not found")
             ));
+        });
+    }
+
+    struct ReplayApprovalProvider {
+        options: Arc<Mutex<Vec<RequestOptions>>>,
+    }
+
+    impl Provider for ReplayApprovalProvider {
+        fn stream_message<'a>(
+            &'a self,
+            _: &'a Model,
+            _: &'a [Message],
+            _: &'a System,
+            _: &'a Value,
+            _: &'a flume::Sender<ProviderEvent>,
+            opts: RequestOptions,
+            _: Option<&'a SessionRef>,
+        ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
+            Box::pin(async move {
+                self.options.lock().unwrap().push(opts);
+                if opts.allow_history_replay {
+                    Ok(text_response(StopReason::EndTurn))
+                } else {
+                    Err(AgentError::HistoryReplayRequired {
+                        reason: HistoryReplayReason::ContinuationUnavailable,
+                    })
+                }
+            })
+        }
+
+        fn list_models(&self) -> BoxFuture<'_, Result<Vec<n00n_providers::ModelInfo>, AgentError>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+
+    #[test]
+    fn history_replay_dispatches_only_after_explicit_approval() {
+        smol::block_on(async {
+            let options = Arc::new(Mutex::new(Vec::new()));
+            let provider = ReplayApprovalProvider {
+                options: Arc::clone(&options),
+            };
+            let mut history = History::new(vec![Message::user("restored".into())]);
+            let (mut agent, event_rx) = make_agent(provider, &mut history);
+            let (response_tx, response_rx) = flume::unbounded();
+            agent = agent.with_user_response_rx(Arc::new(async_lock::Mutex::new(response_rx)));
+            response_tx
+                .send(PermissionAnswer::AllowOnce.encode())
+                .unwrap();
+
+            agent.run(default_input()).await.unwrap();
+
+            let options = options.lock().unwrap();
+            assert_eq!(options.len(), 2);
+            assert!(!options[0].allow_history_replay);
+            assert!(options[1].allow_history_replay);
+            assert!(has_event(&drain_events(&event_rx), |event| matches!(
+                event,
+                AgentEvent::PermissionRequest { tool, .. }
+                    if tool == &ToolKey::native(HISTORY_REPLAY_TOOL)
+            )));
+        });
+    }
+
+    #[test]
+    fn cancelling_history_replay_approval_rolls_back_without_dispatch() {
+        smol::block_on(async {
+            let options = Arc::new(Mutex::new(Vec::new()));
+            let provider = ReplayApprovalProvider {
+                options: Arc::clone(&options),
+            };
+            let mut history = History::new(vec![Message::user("restored".into())]);
+            let (mut agent, event_rx) = make_agent(provider, &mut history);
+            let (_response_tx, response_rx) = flume::unbounded();
+            let (cancel_trigger, cancel) = CancelToken::new();
+            agent = agent
+                .with_user_response_rx(Arc::new(async_lock::Mutex::new(response_rx)))
+                .with_cancel(cancel);
+            let cancel_on_prompt = smol::spawn(async move {
+                let envelope = event_rx.recv_async().await.unwrap();
+                assert!(matches!(
+                    envelope.event,
+                    AgentEvent::PermissionRequest { tool, .. }
+                        if tool == ToolKey::native(HISTORY_REPLAY_TOOL)
+                ));
+                drop(cancel_trigger);
+            });
+
+            let result = agent.run(default_input()).await;
+            cancel_on_prompt.await;
+
+            assert!(matches!(result, Err(AgentError::Cancelled)));
+            assert_eq!(options.lock().unwrap().len(), 1);
+            drop(agent);
+            assert_eq!(history.len(), 1);
+            assert_eq!(history.as_slice()[0].first_text_content(), Some("restored"));
         });
     }
 
@@ -1479,7 +1597,7 @@ mod tests {
     }
 
     fn make_agent(
-        provider: MockProvider,
+        provider: impl Provider + 'static,
         history: &mut History,
     ) -> (Agent<'_>, flume::Receiver<Envelope>) {
         let (raw_tx, event_rx) = flume::unbounded();
