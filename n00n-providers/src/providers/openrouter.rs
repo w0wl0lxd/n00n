@@ -231,7 +231,7 @@ impl Provider for OpenRouter {
             let extra_headers = [("HTTP-Referer", REFERER), ("X-OpenRouter-Title", APP_TITLE)];
             let response = self
                 .compat
-                .do_stream(model, &extra_headers, &body, event_tx, &auth, &opts)
+                .do_stream(model, &extra_headers, &body, event_tx, &auth)
                 .await?;
 
             let hit = response.usage.cache_read > 0;

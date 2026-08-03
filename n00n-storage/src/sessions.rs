@@ -32,6 +32,11 @@ const LOG_FORMAT_VERSION: u32 = 3;
 const COMPRESS_LEVEL: i32 = 3;
 const MAX_INCREMENTAL_FRAMES: u64 = 16_384;
 const MAX_SESSION_RECORD_BYTES: usize = 16 * 1024 * 1024;
+const MAX_SESSION_DECODED_BYTES: usize = 512 * 1024 * 1024;
+const MAX_SCAN_RECORD_BYTES: usize = 4 * 1024 * 1024;
+const MAX_SCAN_DECODED_BYTES: usize = 64 * 1024 * 1024;
+const MAX_ZSTD_WINDOW_LOG: u32 = 27;
+const ZSTD_WINDOW_TOO_LARGE_ERROR_CODE: usize = 16;
 const TRANSCRIPT_RECORD_TYPE: &str = "transcript";
 pub const SESSIONS_DIR: &str = "sessions";
 const CWD_INDEX_FILE: &str = "cwd_latest.json";
@@ -71,10 +76,16 @@ pub enum SessionError {
     },
     #[error("cursor ahead of session (log has {saved}, session has {actual}); compact required")]
     CursorAhead { saved: usize, actual: usize },
+    #[error("session log record in {path} exceeds the {limit}-byte decoded record limit")]
+    RecordTooLarge { path: String, limit: usize },
+    #[error("session log {path} exceeds the configured zstd window-log limit {window_log}")]
+    DecoderWindowLimitExceeded { path: String, window_log: u32 },
+    #[error("decoded session log {path} exceeds the {limit}-byte load budget")]
+    DecodedBudgetExceeded { path: String, limit: usize },
     #[error("session log contains an unknown record type")]
     UnknownRecord,
     #[error("session record exceeds the {maximum}-byte limit")]
-    RecordTooLarge { maximum: usize },
+    RecordTooLargeWrite { maximum: usize },
 }
 
 /// Per-model token breakdown entry. Mirrors the four usage counters tracked by
@@ -1770,7 +1781,7 @@ fn append_record<W: Write, R: Serialize>(writer: &mut W, record: &R) -> Result<(
     let mut encoded = BoundedRecordBuffer::new(MAX_SESSION_RECORD_BYTES.saturating_sub(1));
     if let Err(error) = serde_json::to_writer(&mut encoded, record) {
         if encoded.exceeded {
-            return Err(SessionError::RecordTooLarge {
+            return Err(SessionError::RecordTooLargeWrite {
                 maximum: MAX_SESSION_RECORD_BYTES,
             });
         }
@@ -1849,7 +1860,7 @@ where
     };
     let mut got_header = false;
 
-    let recovered_tail = visit_zstd_lines(path, |line| {
+    let recovered_tail = visit_zstd_lines_with_limits(path, DecodeLimits::LOAD, |line| {
         line_count += 1;
         if line.is_empty() {
             return Ok(());
@@ -2021,62 +2032,175 @@ fn is_zst_data(data: &[u8]) -> bool {
     data.starts_with(&[0x28, 0xb5, 0x2f, 0xfd])
 }
 
-#[derive(Debug)]
-enum BoundedLineError {
+#[derive(Clone, Copy)]
+struct DecodeLimits {
+    line_bytes: usize,
+    decoded_bytes: usize,
+    window_log: u32,
+}
+
+impl DecodeLimits {
+    const LOAD: Self = Self::new(
+        MAX_SESSION_RECORD_BYTES,
+        MAX_SESSION_DECODED_BYTES,
+        MAX_ZSTD_WINDOW_LOG,
+    );
+    const SCAN: Self = Self::new(
+        MAX_SCAN_RECORD_BYTES,
+        MAX_SCAN_DECODED_BYTES,
+        MAX_ZSTD_WINDOW_LOG,
+    );
+
+    const fn new(max_line_bytes: usize, max_decoded_bytes: usize, max_window_log: u32) -> Self {
+        Self {
+            line_bytes: max_line_bytes,
+            decoded_bytes: max_decoded_bytes,
+            window_log: max_window_log,
+        }
+    }
+}
+
+enum DecodedLine {
+    Eof,
+    Line(String),
+    Oversized,
+}
+
+enum LineReadError {
     Io(IoError),
-    InvalidUtf8,
-    TooLarge,
+    DecoderWindowLimitExceeded,
+    RecordTooLarge,
+    BudgetExceeded,
 }
 
-fn read_bounded_line<'a, R: BufRead>(
-    reader: &mut R,
-    line: &'a mut Vec<u8>,
-    maximum: usize,
-) -> Result<Option<&'a str>, BoundedLineError> {
-    line.clear();
-    let read_limit = u64::try_from(maximum)
-        .map_err(|_| BoundedLineError::TooLarge)?
-        .saturating_add(1);
-    let mut limited = (&mut *reader).take(read_limit);
-    let bytes = limited
-        .read_until(b'\n', line)
-        .map_err(BoundedLineError::Io)?;
-    if bytes > maximum {
-        return Err(BoundedLineError::TooLarge);
-    }
-    if bytes == 0 {
-        return Ok(None);
-    }
-    std::str::from_utf8(line)
-        .map(Some)
-        .map_err(|_| BoundedLineError::InvalidUtf8)
+struct BoundedZstdLines {
+    reader: BufReader<Decoder<'static, BufReader<File>>>,
+    path: String,
+    limits: DecodeLimits,
+    decoded_bytes: usize,
 }
 
-fn visit_zstd_lines(
+impl BoundedZstdLines {
+    fn open(path: &Path, offset: u64, limits: DecodeLimits) -> Result<Self, SessionError> {
+        let mut file = File::open(path).map_err(StorageError::from)?;
+        file.seek(SeekFrom::Start(offset))
+            .map_err(StorageError::from)?;
+        let mut decoder = Decoder::new(file).map_err(StorageError::from)?;
+        decoder
+            .window_log_max(limits.window_log)
+            .map_err(StorageError::from)?;
+        Ok(Self {
+            reader: BufReader::new(decoder),
+            path: path.display().to_string(),
+            limits,
+            decoded_bytes: 0,
+        })
+    }
+
+    fn next(&mut self, drain_oversized: bool) -> Result<DecodedLine, LineReadError> {
+        let initial_capacity = self.limits.line_bytes.min(8 * 1024);
+        let mut line = Vec::with_capacity(initial_capacity);
+        let mut oversized = false;
+        loop {
+            let available = self.reader.fill_buf().map_err(classify_decoder_error)?;
+            if available.is_empty() {
+                return if line.is_empty() && !oversized {
+                    Ok(DecodedLine::Eof)
+                } else if oversized {
+                    Ok(DecodedLine::Oversized)
+                } else {
+                    String::from_utf8(line)
+                        .map(DecodedLine::Line)
+                        .map_err(|error| {
+                            LineReadError::Io(IoError::new(ErrorKind::InvalidData, error))
+                        })
+                };
+            }
+
+            let newline = available.iter().position(|byte| *byte == b'\n');
+            let consumed = newline.map_or(available.len(), |position| position + 1);
+            let next_decoded = self
+                .decoded_bytes
+                .checked_add(consumed)
+                .filter(|total| *total <= self.limits.decoded_bytes)
+                .ok_or(LineReadError::BudgetExceeded)?;
+            let content_len = match newline {
+                Some(position) => position,
+                None => consumed,
+            };
+            if !oversized {
+                let remaining = self.limits.line_bytes.saturating_sub(line.len());
+                if content_len <= remaining {
+                    line.extend_from_slice(&available[..content_len]);
+                } else {
+                    oversized = true;
+                    if !drain_oversized {
+                        return Err(LineReadError::RecordTooLarge);
+                    }
+                }
+            }
+            self.reader.consume(consumed);
+            self.decoded_bytes = next_decoded;
+
+            if newline.is_some() {
+                if oversized {
+                    return Ok(DecodedLine::Oversized);
+                }
+                if line.last() == Some(&b'\r') {
+                    line.pop();
+                }
+                return String::from_utf8(line)
+                    .map(DecodedLine::Line)
+                    .map_err(|error| {
+                        LineReadError::Io(IoError::new(ErrorKind::InvalidData, error))
+                    });
+            }
+        }
+    }
+
+    fn limit_error(&self, error: LineReadError) -> SessionError {
+        match error {
+            LineReadError::Io(error) => SessionError::Storage(StorageError::from(error)),
+            LineReadError::DecoderWindowLimitExceeded => SessionError::DecoderWindowLimitExceeded {
+                path: self.path.clone(),
+                window_log: self.limits.window_log,
+            },
+            LineReadError::RecordTooLarge => SessionError::RecordTooLarge {
+                path: self.path.clone(),
+                limit: self.limits.line_bytes,
+            },
+            LineReadError::BudgetExceeded => SessionError::DecodedBudgetExceeded {
+                path: self.path.clone(),
+                limit: self.limits.decoded_bytes,
+            },
+        }
+    }
+}
+
+fn classify_decoder_error(error: IoError) -> LineReadError {
+    let window_too_large_code = 0usize.wrapping_sub(ZSTD_WINDOW_TOO_LARGE_ERROR_CODE);
+    let window_too_large = zstd::zstd_safe::get_error_name(window_too_large_code);
+    if error.kind() == ErrorKind::Other && error.to_string() == window_too_large {
+        LineReadError::DecoderWindowLimitExceeded
+    } else {
+        LineReadError::Io(error)
+    }
+}
+
+fn visit_zstd_lines_with_limits(
     path: &Path,
+    limits: DecodeLimits,
     mut visit: impl FnMut(&str) -> Result<(), SessionError>,
 ) -> Result<bool, SessionError> {
-    let file = File::open(path).map_err(StorageError::from)?;
-    let decoder = Decoder::new(file).map_err(StorageError::from)?;
-    let mut reader = BufReader::new(decoder);
-    let mut line = Vec::new();
+    let mut reader = BoundedZstdLines::open(path, 0, limits)?;
     loop {
-        match read_bounded_line(&mut reader, &mut line, MAX_SESSION_RECORD_BYTES) {
-            Ok(None) => return Ok(false),
-            Ok(Some(line)) => visit(line.trim_end_matches(['\r', '\n']))?,
-            Err(BoundedLineError::TooLarge) => {
-                return Err(SessionError::RecordTooLarge {
-                    maximum: MAX_SESSION_RECORD_BYTES,
-                });
+        match reader.next(false) {
+            Ok(DecodedLine::Eof) => return Ok(false),
+            Ok(DecodedLine::Line(line)) => visit(&line)?,
+            Ok(DecodedLine::Oversized) => {
+                return Err(reader.limit_error(LineReadError::RecordTooLarge));
             }
-            Err(BoundedLineError::InvalidUtf8) => {
-                warn!(
-                    path = %path.display(),
-                    "recovering records before invalid UTF-8 tail"
-                );
-                return Ok(true);
-            }
-            Err(BoundedLineError::Io(error)) => {
+            Err(LineReadError::Io(error)) => {
                 warn!(
                     path = %path.display(),
                     error = %error,
@@ -2084,8 +2208,104 @@ fn visit_zstd_lines(
                 );
                 return Ok(true);
             }
+            Err(error) => return Err(reader.limit_error(error)),
         }
     }
+}
+
+const ZSTD_MAGIC: &[u8] = &[0x28, 0xb5, 0x2f, 0xfd];
+const LAST_FRAME_SEARCH_CHUNK: usize = 1024 * 1024;
+const MAX_LAST_FRAME_SEARCH_BYTES: u64 = 64 * 1024 * 1024;
+
+struct DecodedWorkBudget {
+    remaining: usize,
+}
+
+impl DecodedWorkBudget {
+    const fn new(limit: usize) -> Self {
+        Self { remaining: limit }
+    }
+
+    fn finish_attempt(&mut self, decoded_bytes: usize, allowance: usize, exhausted: bool) {
+        let spent = if exhausted {
+            allowance
+        } else {
+            decoded_bytes.min(allowance)
+        };
+        self.remaining = self.remaining.saturating_sub(spent);
+    }
+}
+
+fn try_decode_header_at(path: &Path, offset: u64) -> Option<ZstHeader> {
+    let mut reader = BoundedZstdLines::open(path, offset, DecodeLimits::SCAN).ok()?;
+    loop {
+        match reader.next(false) {
+            Ok(DecodedLine::Line(line)) if line.is_empty() => {}
+            Ok(DecodedLine::Line(line)) => return serde_json::from_str(&line).ok(),
+            Ok(DecodedLine::Eof | DecodedLine::Oversized) | Err(_) => return None,
+        }
+    }
+}
+
+fn try_decode_last_meta_at<M>(path: &Path, offset: u64) -> Option<(String, u64, Option<String>)>
+where
+    M: TitleSource + DeserializeOwned + Default,
+{
+    let mut budget = DecodedWorkBudget::new(DecodeLimits::SCAN.decoded_bytes);
+    try_decode_last_meta_at_with_budget::<M>(path, offset, DecodeLimits::SCAN, &mut budget)
+}
+
+fn try_decode_last_meta_at_with_budget<M>(
+    path: &Path,
+    offset: u64,
+    limits: DecodeLimits,
+    budget: &mut DecodedWorkBudget,
+) -> Option<(String, u64, Option<String>)>
+where
+    M: TitleSource + DeserializeOwned + Default,
+{
+    let mut reader = BoundedZstdLines::open(path, offset, limits).ok()?;
+    let mut title = String::new();
+    let mut updated_at = 0u64;
+    let mut first_message = None;
+    loop {
+        match reader.next(true) {
+            Ok(DecodedLine::Eof | DecodedLine::Oversized) | Err(LineReadError::BudgetExceeded) => {
+                break;
+            }
+            Ok(DecodedLine::Line(line)) => {
+                let trimmed = line.trim_end_matches(['\r', '\n']);
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if trimmed.starts_with(META_RECORD_PREFIX)
+                    && let Ok(MetaScan {
+                        title: t,
+                        updated_at: u,
+                    }) = serde_json::from_str(trimmed)
+                {
+                    title = t;
+                    updated_at = u;
+                }
+                if offset == 0
+                    && first_message.is_none()
+                    && trimmed.len() <= MAX_FIRST_MESSAGE_LINE_BYTES
+                    && trimmed.starts_with(MSG_RECORD_PREFIX)
+                    && let Ok(LogRecord::<M, serde_json::Value, serde_json::Value>::Msg { d }) =
+                        serde_json::from_str(trimmed)
+                    && let Some(text) = d.first_user_text().map(str::trim).filter(|t| !t.is_empty())
+                {
+                    first_message = Some(cap_text(text, MAX_FIRST_MESSAGE_TEXT_BYTES));
+                }
+            }
+            Err(_) => return None,
+        }
+    }
+    budget.finish_attempt(reader.decoded_bytes, limits.decoded_bytes, false);
+    if updated_at == 0 && title.is_empty() {
+        return None;
+    }
+    Some((title, updated_at, first_message))
 }
 
 // -- CWD index --
@@ -2452,98 +2672,6 @@ where
     Ok(with_created.into_iter().map(|(_, s)| s).collect())
 }
 
-const ZSTD_MAGIC: &[u8] = &[0x28, 0xb5, 0x2f, 0xfd];
-const LAST_FRAME_SEARCH_CHUNK: usize = 1024 * 1024;
-const MAX_LAST_FRAME_SEARCH_BYTES: u64 = 64 * 1024 * 1024;
-
-fn try_decode_header_at(path: &Path, offset: u64) -> Option<ZstHeader> {
-    let file = File::open(path).ok()?;
-    let mut file = file;
-    file.seek(SeekFrom::Start(offset)).ok()?;
-    let decoder = Decoder::new(file).ok()?;
-    let mut reader = BufReader::new(decoder);
-    let mut line = Vec::new();
-    loop {
-        let record_line = match read_bounded_line(&mut reader, &mut line, MAX_SESSION_RECORD_BYTES)
-        {
-            Ok(None) => return None,
-            Ok(Some(record_line)) => record_line,
-            Err(BoundedLineError::TooLarge) => {
-                warn!(
-                    path = %path.display(),
-                    maximum = MAX_SESSION_RECORD_BYTES,
-                    "zstd header record exceeds size limit"
-                );
-                return None;
-            }
-            Err(BoundedLineError::InvalidUtf8) => {
-                warn!(path = %path.display(), "zstd header record is not valid UTF-8");
-                return None;
-            }
-            Err(BoundedLineError::Io(error)) => {
-                warn!(path = %path.display(), error = %error, "failed to read zstd header");
-                return None;
-            }
-        };
-        let trimmed = record_line.trim_end_matches(['\r', '\n']);
-        if trimmed.is_empty() {
-            continue;
-        }
-        let parsed: ZstHeader = serde_json::from_str(trimmed).ok()?;
-        return Some(parsed);
-    }
-}
-
-fn try_decode_last_meta_at<M>(path: &Path, offset: u64) -> Option<(String, u64, Option<String>)>
-where
-    M: TitleSource + DeserializeOwned + Default,
-{
-    let file = File::open(path).ok()?;
-    let mut file = file;
-    file.seek(SeekFrom::Start(offset)).ok()?;
-    let decoder = Decoder::new(file).ok()?;
-    let mut reader = BufReader::new(decoder);
-    let mut line = Vec::new();
-    let mut title = String::new();
-    let mut updated_at = 0u64;
-    let mut first_message = None;
-    loop {
-        let record_line = match read_bounded_line(&mut reader, &mut line, MAX_SESSION_RECORD_BYTES)
-        {
-            Ok(None) => break,
-            Ok(Some(record_line)) => record_line,
-            Err(_) => return None,
-        };
-        let trimmed = record_line.trim_end_matches(['\r', '\n']);
-        if trimmed.is_empty() {
-            continue;
-        }
-        if trimmed.starts_with(META_RECORD_PREFIX)
-            && let Ok(MetaScan {
-                title: t,
-                updated_at: u,
-            }) = serde_json::from_str(trimmed)
-        {
-            title = t;
-            updated_at = u;
-        }
-        if offset == 0
-            && first_message.is_none()
-            && trimmed.len() <= MAX_FIRST_MESSAGE_LINE_BYTES
-            && trimmed.starts_with(MSG_RECORD_PREFIX)
-            && let Ok(LogRecord::<M, serde_json::Value, serde_json::Value>::Msg { d }) =
-                serde_json::from_str(trimmed)
-            && let Some(text) = d.first_user_text().map(str::trim).filter(|t| !t.is_empty())
-        {
-            first_message = Some(cap_text(text, MAX_FIRST_MESSAGE_TEXT_BYTES));
-        }
-    }
-    if updated_at == 0 && title.is_empty() {
-        return None;
-    }
-    Some((title, updated_at, first_message))
-}
-
 fn try_decode_first_message_at<M>(path: &Path, offset: u64) -> Option<String>
 where
     M: TitleSource + DeserializeOwned + Default,
@@ -2639,7 +2767,7 @@ where
             let mut title = String::new();
             let mut updated_at = 0u64;
             let mut first_message = None;
-            let _ = visit_zstd_lines(path, |line| {
+            let _ = visit_zstd_lines_with_limits(path, DecodeLimits::SCAN, |line| {
                 if !line.is_empty() {
                     if line.starts_with(META_RECORD_PREFIX)
                         && let Ok(MetaScan {
@@ -3520,29 +3648,11 @@ mod tests {
         assert!(matches!(error, SessionError::UnknownRecord));
     }
     #[test]
-    fn bounded_record_io_accepts_exact_limit_and_rejects_next_byte() {
+    fn bounded_record_buffer_accepts_exact_limit_and_rejects_next_byte() {
         let mut writer = super::BoundedRecordBuffer::new(3);
         writer.write_all(b"abc").unwrap();
         assert!(writer.write_all(b"d").is_err());
         assert_eq!(writer.bytes, b"abc");
-
-        let mut exact_reader = std::io::BufReader::new(std::io::Cursor::new(b"abc\n"));
-        let mut line = Vec::new();
-        assert_eq!(
-            super::read_bounded_line(&mut exact_reader, &mut line, 4).unwrap(),
-            Some("abc\n")
-        );
-        let mut oversized_reader = std::io::BufReader::new(std::io::Cursor::new(b"abc\n"));
-        assert!(matches!(
-            super::read_bounded_line(&mut oversized_reader, &mut line, 3),
-            Err(super::BoundedLineError::TooLarge)
-        ));
-        let mut split_utf8_reader =
-            std::io::BufReader::new(std::io::Cursor::new("abcé\n".as_bytes()));
-        assert!(matches!(
-            super::read_bounded_line(&mut split_utf8_reader, &mut line, 3),
-            Err(super::BoundedLineError::TooLarge)
-        ));
     }
 
     #[test]
@@ -3552,7 +3662,7 @@ mod tests {
             "d": "x".repeat(super::MAX_SESSION_RECORD_BYTES),
         });
         let error = append_record(&mut Vec::new(), &record).unwrap_err();
-        assert!(matches!(error, SessionError::RecordTooLarge { .. }));
+        assert!(matches!(error, SessionError::RecordTooLargeWrite { .. }));
     }
 
     #[test]

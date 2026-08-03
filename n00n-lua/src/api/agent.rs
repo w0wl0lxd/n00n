@@ -727,8 +727,14 @@ async fn session(
             model.supports_tool_examples(),
             &n00n_agent::tools::default_active_tools(),
         );
-        (tools, filter)
+        let tools_json =
+            serde_json::to_value(tools).map_err(|e| mlua::Error::runtime(e.to_string()))?;
+        (tools_json, filter)
     };
+
+    if explicit_tools {
+        tool_filter = ToolFilter::All;
+    }
 
     let mut local_map: HashMap<String, LocalToolFn> = HashMap::new();
     if let Some(tbl) = local_tools_tbl {
