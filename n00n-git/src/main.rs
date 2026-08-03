@@ -48,6 +48,28 @@ enum Commands {
         /// Relative path to the file within the repository
         file: String,
     },
+    /// Stage files in a repository
+    Add {
+        /// Path to the git repository
+        repo: PathBuf,
+        /// File paths to stage, relative to the repository root
+        files: Vec<String>,
+    },
+    /// Create a commit with the given message
+    Commit {
+        /// Path to the git repository
+        repo: PathBuf,
+        /// Commit message
+        #[arg(short, long)]
+        message: String,
+    },
+    /// Checkout a branch, tag, or ref
+    Checkout {
+        /// Path to the git repository
+        repo: PathBuf,
+        /// Branch, tag, or ref to checkout
+        target: String,
+    },
 }
 
 fn main() {
@@ -75,6 +97,15 @@ fn main() {
         Commands::Blame { repo, file } => git::blame(&repo, &file)
             .map_err(Into::into)
             .and_then(|v| serde_json::to_string(&v).map_err(Into::into)),
+        Commands::Add { repo, files } => git::add(&repo, &files)
+            .map_err(Into::into)
+            .and_then(|()| serde_json::to_string(&json!({ "ok": true })).map_err(Into::into)),
+        Commands::Commit { repo, message } => git::commit(&repo, &message)
+            .map_err(Into::into)
+            .and_then(|id| serde_json::to_string(&json!({ "commit_id": id })).map_err(Into::into)),
+        Commands::Checkout { repo, target } => git::checkout(&repo, &target)
+            .map_err(Into::into)
+            .and_then(|()| serde_json::to_string(&json!({ "ok": true })).map_err(Into::into)),
     };
 
     match result {
