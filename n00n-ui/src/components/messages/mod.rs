@@ -675,18 +675,29 @@ impl MessagesPanel {
         true
     }
 
-    fn segment_position(&self, tool_id: &str) -> (Option<u32>, u16) {
-        let Some(index) = self.cache.find_by_tool_id(tool_id) else {
+    fn cached_segment_position(&self, index: usize) -> (Option<u32>, u16) {
+        let Some(segment) = self.cache.get(index) else {
             return (None, 0);
         };
         let start = self.cache.segments()[..index]
             .iter()
-            .map(|seg| u32::from(seg.height(self.viewport_width)))
+            .map(|candidate| u32::from(candidate.height(self.viewport_width)))
             .sum();
-        (
-            Some(start),
-            self.cache.segments()[index].height(self.viewport_width),
-        )
+        (Some(start), segment.height(self.viewport_width))
+    }
+
+    fn segment_position(&self, tool_id: &str) -> (Option<u32>, u16) {
+        self.cache
+            .find_by_tool_id(tool_id)
+            .map_or((None, 0), |index| self.cached_segment_position(index))
+    }
+
+    fn message_segment_position(&self, message_index: usize) -> (Option<u32>, u16) {
+        self.cache
+            .segments()
+            .iter()
+            .position(|segment| segment.msg_index == Some(message_index))
+            .map_or((None, 0), |index| self.cached_segment_position(index))
     }
 
     fn shift_scroll_for_height_change(&mut self, old_height: u16, new_height: u16) {
@@ -700,14 +711,15 @@ impl MessagesPanel {
         };
     }
 
-    fn preserve_anchor(&mut self, old_start: Option<u32>, old_height: u16, tool_id: &str) {
-        let Some(old_start) = old_start else {
-            return;
-        };
-        let (_, new_height) = self.segment_position(tool_id);
-        if old_start < u32::from(self.scroll_top) {
+    fn preserve_anchor_at(&mut self, old_start: Option<u32>, old_height: u16, new_height: u16) {
+        if old_start.is_some_and(|start| start < u32::from(self.scroll_top)) {
             self.shift_scroll_for_height_change(old_height, new_height);
         }
+    }
+
+    fn preserve_anchor(&mut self, old_start: Option<u32>, old_height: u16, tool_id: &str) {
+        let (_, new_height) = self.segment_position(tool_id);
+        self.preserve_anchor_at(old_start, old_height, new_height);
     }
 
     #[cfg(test)]
@@ -1432,7 +1444,22 @@ impl MessagesPanel {
         is_header: bool,
         theme_gen: Option<u64>,
     ) -> bool {
-        let (old_start, old_height) = self.segment_position(tool_id);
+        let Some((message_index, containing_message)) = self
+            .messages
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, message)| message_contains_tool(message, tool_id))
+        else {
+            return false;
+        };
+        let nested =
+            !matches!(&containing_message.role, DisplayRole::Tool(tool) if tool.id == tool_id);
+        let (old_start, old_height) = if nested {
+            self.message_segment_position(message_index)
+        } else {
+            self.segment_position(tool_id)
+        };
         let anchor_auto_scroll = self.auto_scroll && self.last_total_lines > self.viewport_height;
         if theme_gen.is_some() {
             // A generation only comes with restore replies. The restore
@@ -1443,14 +1470,6 @@ impl MessagesPanel {
         let Some(applied_gen) = self.resolve_snapshot_gen(tool_id, theme_gen) else {
             return false;
         };
-        let nested = self
-            .messages
-            .iter()
-            .rev()
-            .find(|message| message_contains_tool(message, tool_id))
-            .is_some_and(
-                |message| !matches!(&message.role, DisplayRole::Tool(tool) if tool.id == tool_id),
-            );
         let Some(msg) = self.find_tool_msg_mut(tool_id) else {
             return false;
         };
@@ -1467,11 +1486,15 @@ impl MessagesPanel {
         } else {
             self.rebuild_tool_segment(tool_id);
         }
-        let (_, new_height) = self.segment_position(tool_id);
+        let (_, new_height) = if nested {
+            self.message_segment_position(message_index)
+        } else {
+            self.segment_position(tool_id)
+        };
         if anchor_auto_scroll {
             self.shift_scroll_for_height_change(old_height, new_height);
         } else {
-            self.preserve_anchor(old_start, old_height, tool_id);
+            self.preserve_anchor_at(old_start, old_height, new_height);
         }
         true
     }

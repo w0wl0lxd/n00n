@@ -799,6 +799,46 @@ fn recursive_compaction_restore_updates_header_body_and_rebake() {
 }
 
 #[test]
+fn nested_compaction_snapshot_preserves_manual_scroll_anchor() {
+    let tool = DisplayMessage::new(
+        DisplayRole::Tool(Box::new(ToolRole {
+            id: "tool-1".into(),
+            status: ToolStatus::Success,
+            name: Arc::from("bash"),
+        })),
+        "Run command".into(),
+    );
+    let compaction_id = "compaction:0";
+    let mut panel = test_panel();
+    panel.push(DisplayMessage::compaction(CompactionDisplay {
+        id: compaction_id.into(),
+        depth: 1,
+        message_count: 1,
+        summary: Some("summary".into()),
+        entries: vec![tool],
+    }));
+    panel.expanded_compactions.insert(compaction_id.into());
+    render(&mut panel, 80, 2);
+    panel.auto_scroll = false;
+    panel.scroll_top = 2;
+    let old_height = panel.cache.segments()[0].height(80);
+
+    panel.tool_snapshot(
+        "tool-1",
+        BufferSnapshot::from_arc(Arc::new(vec![
+            snap_line("line 1"),
+            snap_line("line 2"),
+            snap_line("line 3"),
+        ])),
+        Some(1),
+    );
+
+    let new_height = panel.cache.segments()[0].height(80);
+    assert!(new_height > old_height);
+    assert_eq!(panel.scroll_top, 2 + new_height - old_height);
+}
+
+#[test]
 fn expanded_compaction_card_caps_stored_tool_output() {
     let mut tool = DisplayMessage::new(
         DisplayRole::Tool(Box::new(ToolRole {
