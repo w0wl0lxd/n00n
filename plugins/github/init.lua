@@ -1,4 +1,5 @@
 local n00n_github = n00n.github
+local ToolView = require("n00n.tool_view")
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
@@ -121,6 +122,13 @@ Use this for GitHub-aware queries, tracking issues, and understanding repository
       return { scopes = { "github.write" }, force_prompt = true }
     end
     return { scopes = { "github.read" }, force_prompt = false }
+  end,
+  restore = function(_input, output, _is_error, ctx)
+    local tol = ctx:tool_output_lines()
+    return ToolView.restore(output, {
+      max_lines = (tol and tol.other) or 20,
+      keep = "head",
+    })
   end,
   handler = function(input, _ctx)
     return dispatch(input)

@@ -1,4 +1,5 @@
-local git_bin = os.getenv("N00N_GIT_BIN") or "n00n-git"
+local git_bin = (n00n.uv.os_getenv and n00n.uv.os_getenv("N00N_GIT_BIN")) or "n00n-git"
+local ToolView = require("n00n.tool_view")
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
@@ -12,9 +13,13 @@ local function dispatch(input)
   local command = input.command:gsub("-", "_")
   local path = input.path or "."
 
+  local function binary_missing_message()
+    return "n00n-git binary not found. Set N00N_GIT_BIN to an absolute path or install n00n-git on PATH."
+  end
+
   local function run_git_subcommand(args)
     if git_bin:sub(1, 1) ~= "/" and n00n.fn.executable(git_bin) == 0 then
-      return nil, "n00n-git binary not found in PATH. Set N00N_GIT_BIN to absolute path or install n00n-git."
+      return nil, binary_missing_message()
     end
 
     local cmd = { git_bin, command, path }
@@ -22,22 +27,19 @@ local function dispatch(input)
       table.insert(cmd, arg)
     end
 
-    local job_id = n00n.fn.jobstart(cmd)
-    if job_id <= 0 then
-      return nil, "failed to spawn n00n-git process"
+    local job_id, job_err = n00n.fn.jobstart(cmd)
+    if not job_id then
+      return nil, "failed to spawn n00n-git: " .. tostring(job_err or "unknown error")
     end
 
-    local exit_codes = { n00n.fn.jobwait({ job_id }) }
-    local exit_code = exit_codes[1]
-
-    local result = n00n.fn.jobstop({ job_id })
-    if not result or not result.stdout then
-      return nil, "failed to read n00n-git output"
+    local result = n00n.fn.jobwait(job_id, 30000)
+    if not result then
+      n00n.fn.jobstop(job_id)
+      return nil, "n00n-git timed out"
     end
 
-    if exit_code ~= 0 then
-      local stderr = result.stderr or ""
-      return nil, "n00n-git exited with code " .. exit_code .. ": " .. stderr
+    if result.exit_code ~= 0 then
+      return nil, "n00n-git exited with code " .. result.exit_code .. ": " .. (result.stderr or "")
     end
 
     local ok, data = pcall(n00n.json.decode, result.stdout)
@@ -65,8 +67,8 @@ local function dispatch(input)
       table.insert(lines, "Working tree clean")
     else
       for _, file in ipairs(result.files) do
-        local status = file.staged and "staged" or "unstaged"
-        table.insert(lines, string.format("  %s: %s (%s)", file.status, file.path, status))
+        local staged_label = file.staged and "staged" or "unstaged"
+        table.insert(lines, string.format("  %s: %s (%s)", file.status, file.path, staged_label))
       end
     end
     return { llm_output = table.concat(lines, "\n") }
@@ -135,7 +137,7 @@ n00n.api.register_tool({
   name = "git",
   kind = "read",
   description = [[
-Native git operations using gix/gitoxide. Query local repositories by spawning the n00n-git binary.
+Native git operations backed by gix/gitoxide. Query local repositories by spawning the n00n-git binary.
 
 Commands:
 - status: Show working tree status (branch, staged/unstaged files).
@@ -144,7 +146,7 @@ Commands:
 - branches: List all branches with HEAD SHAs.
 - blame <file>: Show blame information for a file.
 
-The n00n-git binary is spawned via jobstart/jobwait. Set N00N_GIT_BIN environment variable to override the binary path.
+The n00n-git binary is spawned via jobstart/jobwait. Set the N00N_GIT_BIN environment variable to override the binary path.
 Use this for repository-aware queries, understanding history, and tracking changes.
 ]],
   schema = {
@@ -169,14 +171,25 @@ Use this for repository-aware queries, understanding history, and tracking chang
     elseif input.command == "blame" and input.file then
       label = label .. " " .. input.file
     end
-    return "git " .. label
+    local header = "git " .. label
+    if input.path and input.path ~= "." then
+      header = header .. " in " .. input.path
+    end
+    return header
   end,
   permission_scopes = function(input)
-    local command = input.command or ""
-    if command == "status" or command == "log" or command == "diff" or command == "branches" or command == "blame" then
+    local cmd = input.command or ""
+    if cmd == "status" or cmd == "log" or cmd == "diff" or cmd == "branches" or cmd == "blame" then
       return { scopes = { "git.read" }, force_prompt = false }
     end
     return { scopes = { "git.write" }, force_prompt = true }
+  end,
+  restore = function(_input, output, _is_error, ctx)
+    local tol = ctx:tool_output_lines()
+    return ToolView.restore(output, {
+      max_lines = (tol and tol.other) or 20,
+      keep = "head",
+    })
   end,
   handler = function(input, _ctx)
     return dispatch(input)
