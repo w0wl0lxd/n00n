@@ -216,6 +216,16 @@ impl StoredPluginState {
         }
     }
 
+    fn from_raw(raw: serde_json::Value) -> Self {
+        let schema_version = raw
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64);
+        Self {
+            schema_version,
+            raw,
+        }
+    }
+
     fn payload(&self) -> Option<&serde_json::Value> {
         self.raw.get("payload")
     }
@@ -236,13 +246,7 @@ impl<'de> Deserialize<'de> for StoredPluginState {
         D: serde::Deserializer<'de>,
     {
         let raw = serde_json::Value::deserialize(deserializer)?;
-        let schema_version = raw
-            .get("schema_version")
-            .and_then(serde_json::Value::as_u64);
-        Ok(Self {
-            schema_version,
-            raw,
-        })
+        Ok(Self::from_raw(raw))
     }
 }
 
@@ -297,15 +301,7 @@ impl<'de> Deserialize<'de> for StoredPluginScopes {
         };
         let mut scopes = BTreeMap::new();
         for (scope, state) in fields {
-            scopes.insert(
-                scope,
-                StoredPluginState {
-                    schema_version: state
-                        .get("schema_version")
-                        .and_then(serde_json::Value::as_u64),
-                    raw: state,
-                },
-            );
+            scopes.insert(scope, StoredPluginState::from_raw(state));
         }
         Ok(Self {
             scopes: Some(scopes),
@@ -511,10 +507,10 @@ impl StoredSessionStateSnapshot {
         schema_version: u32,
         scope: StoredStateScope,
     ) -> Result<Option<&serde_json::Value>, SessionStateError> {
-        self.validate_for_apply()?;
         let StoredSessionStateSnapshotInner::Supported(snapshot) = &self.inner else {
             return Err(self.unsupported_schema_error());
         };
+        validate_plugin_name(plugin)?;
         let Some(stored_scopes) = snapshot.plugins.get(plugin) else {
             return Ok(None);
         };
@@ -541,7 +537,13 @@ impl StoredSessionStateSnapshot {
                 expected: scope,
             });
         };
-        let (Some(found), Some(payload)) = (state.schema_version, state.payload()) else {
+        let payload = state.payload();
+        let measured = match payload {
+            Some(payload) => payload,
+            None => &state.raw,
+        };
+        validate_plugin_state_size(plugin, measured)?;
+        let (Some(found), Some(payload)) = (state.schema_version, payload) else {
             return Err(SessionStateError::InvalidPluginState {
                 plugin: plugin.to_owned(),
                 scope,
@@ -578,8 +580,8 @@ fn validate_supported_snapshot(
         .plugins
         .values()
         .map(|stored_scopes| match &stored_scopes.scopes {
-            Some(scopes) if !scopes.is_empty() => scopes.len(),
-            Some(_) | None => 1,
+            Some(scopes) => scopes.len(),
+            None => 1,
         })
         .sum::<usize>();
     if entry_count > MAX_PLUGIN_STATE_ENTRIES {
@@ -589,11 +591,7 @@ fn validate_supported_snapshot(
         });
     }
     for (plugin, stored_scopes) in &snapshot.plugins {
-        if plugin.is_empty() || plugin.len() > MAX_PLUGIN_STATE_NAME_BYTES {
-            return Err(SessionStateError::InvalidPluginName {
-                plugin: plugin.clone(),
-            });
-        }
+        validate_plugin_name(plugin)?;
         let Some(scopes) = stored_scopes.scopes.as_ref() else {
             let Some(raw) = stored_scopes.malformed.as_ref() else {
                 return Err(SessionStateError::InvalidPluginContainer {
@@ -616,6 +614,20 @@ fn validate_supported_snapshot(
         return Err(SessionStateError::SnapshotTooLarge {
             bytes,
             maximum: MAX_SESSION_STATE_BYTES,
+        });
+    }
+    Ok(())
+}
+
+fn validate_plugin_name(plugin: &str) -> Result<(), SessionStateError> {
+    let valid = !plugin.is_empty()
+        && plugin.len() <= MAX_PLUGIN_STATE_NAME_BYTES
+        && plugin
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'));
+    if !valid {
+        return Err(SessionStateError::InvalidPluginName {
+            plugin: plugin.to_owned(),
         });
     }
     Ok(())
@@ -646,11 +658,16 @@ where
     let Some(raw) = raw else {
         return Ok(None);
     };
-    let Ok(snapshot) = serde_json::from_value(raw) else {
-        warn!("ignoring malformed session-state snapshot");
-        return Ok(None);
-    };
-    Ok(Some(snapshot))
+    match serde_json::from_value(raw) {
+        Ok(snapshot) => Ok(Some(snapshot)),
+        Err(error) => {
+            warn!(
+                category = ?error.classify(),
+                "ignoring malformed session-state snapshot"
+            );
+            Ok(None)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -4661,6 +4678,53 @@ mod tests {
             ),
             Err(super::SessionStateError::TooManyPlugins { .. })
         ));
+    }
+
+    #[test_case("" ; "empty")]
+    #[test_case("bad/name" ; "path_separator")]
+    #[test_case("bad name" ; "whitespace")]
+    #[test_case("bad\0name" ; "null_byte")]
+    #[test_case("pluginé" ; "non_ascii")]
+    fn session_state_snapshot_rejects_unsafe_plugin_names(plugin: &str) {
+        let mut snapshot = super::StoredSessionStateSnapshot::new(1);
+        assert!(matches!(
+            snapshot.insert_plugin_state(
+                plugin,
+                1,
+                super::StoredStateScope::Root,
+                serde_json::json!(null),
+            ),
+            Err(super::SessionStateError::InvalidPluginName { .. })
+        ));
+    }
+
+    #[test]
+    fn empty_plugin_scope_maps_do_not_consume_state_entry_quota() {
+        let mut plugins = serde_json::Map::new();
+        for index in 0..super::MAX_PLUGIN_STATE_ENTRIES {
+            plugins.insert(format!("empty_{index}"), serde_json::json!({}));
+        }
+        let mut snapshot: super::StoredSessionStateSnapshot =
+            serde_json::from_value(serde_json::json!({
+                "schema_version": 1,
+                "state_revision": 1,
+                "plugins": plugins,
+            }))
+            .unwrap();
+        snapshot
+            .insert_plugin_state(
+                "usable",
+                1,
+                super::StoredStateScope::Root,
+                serde_json::json!({ "value": true }),
+            )
+            .unwrap();
+        assert_eq!(
+            snapshot
+                .plugin_payload_for_apply("usable", 1, super::StoredStateScope::Root)
+                .unwrap(),
+            Some(&serde_json::json!({ "value": true }))
+        );
     }
 
     #[test]
