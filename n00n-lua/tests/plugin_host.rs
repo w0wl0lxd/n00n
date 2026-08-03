@@ -3006,6 +3006,7 @@ fn restore_rebuilds_body_from_input_content(
 }
 #[test_case::test_case("list_sessions", None, "tmux.read", false ; "read_without_prompt")]
 #[test_case::test_case("kill_session", None, "tmux.kill", true ; "dedicated_kill_forces_prompt")]
+#[test_case::test_case("send_keys", None, "tmux.write", true ; "send_keys_forces_prompt")]
 #[test_case::test_case("run_command", Some("kill-server"), "tmux.raw", true ; "raw_command_forces_prompt")]
 fn tmux_permission_scopes(
     command: &str,

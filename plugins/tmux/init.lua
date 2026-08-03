@@ -467,6 +467,8 @@ n00n.api.register_tool({
       return { scopes = { "tmux.kill" }, force_prompt = true }
     elseif cmd == "run_command" then
       return { scopes = { "tmux.raw" }, force_prompt = true }
+    elseif cmd == "send_keys" then
+      return { scopes = { "tmux.write" }, force_prompt = true }
     else
       return { scopes = { "tmux.write" }, force_prompt = false }
     end
