@@ -285,6 +285,9 @@ fn normalize_key(value: &str) -> String {
 }
 
 pub(crate) fn truncate(message: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
     if message.chars().count() <= max_chars {
         return message.to_owned();
     }
