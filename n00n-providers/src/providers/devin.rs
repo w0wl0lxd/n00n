@@ -896,12 +896,19 @@ impl Devin {
                     }
                 }
 
-                if response.stop_reason != STOP_REASON_UNSPECIFIED {
-                    stop_reason = match response.stop_reason {
-                        STOP_REASON_MAX_TOKENS => StopReason::MaxTokens,
-                        STOP_REASON_TOOL_USE => StopReason::ToolUse,
-                        unknown => {
+                if response.stop_reason != u64::from(STOP_REASON_UNSPECIFIED) {
+                    stop_reason = match u32::try_from(response.stop_reason) {
+                        Ok(STOP_REASON_MAX_TOKENS) => StopReason::MaxTokens,
+                        Ok(STOP_REASON_TOOL_USE) => StopReason::ToolUse,
+                        Ok(unknown) => {
                             debug!(stop_reason = unknown, "unknown Devin stop reason");
+                            StopReason::EndTurn
+                        }
+                        Err(_) => {
+                            debug!(
+                                stop_reason = response.stop_reason,
+                                "Devin stop reason exceeds supported range"
+                            );
                             StopReason::EndTurn
                         }
                     };
