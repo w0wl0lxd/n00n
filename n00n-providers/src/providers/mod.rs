@@ -187,8 +187,13 @@ pub struct KeyPool {
 
 impl KeyPool {
     pub fn from_env(env_var: &str) -> Result<Self, AgentError> {
-        let raw = std::env::var(env_var).map_err(|_| AgentError::MissingCredentials {
-            message: format!("{env_var} not set"),
+        let raw = std::env::var(env_var).map_err(|error| match error {
+            std::env::VarError::NotPresent => AgentError::MissingCredentials {
+                message: format!("{env_var} not set"),
+            },
+            std::env::VarError::NotUnicode(_) => AgentError::Config {
+                message: format!("{env_var} contains invalid Unicode"),
+            },
         })?;
         let keys: Vec<String> = raw
             .split(',')

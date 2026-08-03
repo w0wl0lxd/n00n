@@ -67,16 +67,23 @@ fn truncate_for_log(text: &str) -> String {
     let escaped = escape_control_chars(&redact_sensitive_values(text));
     match escaped.char_indices().nth(TOOL_ERROR_LOG_MAX_CHARS) {
         Some((idx, _)) => format!("{}... ({} bytes)", &escaped[..idx], text.len()),
+        None if text.chars().nth(TOOL_ERROR_LOG_MAX_CHARS).is_some() => {
+            format!("{escaped}... ({} bytes)", text.len())
+        }
         None => escaped,
     }
 }
 
 fn redact_sensitive_values(s: &str) -> String {
     const REDACTED: &str = "[REDACTED]";
+    let scan_end = s
+        .char_indices()
+        .nth(TOOL_ERROR_LOG_MAX_CHARS)
+        .map_or(s.len(), |(index, _)| index);
+    let mut redacted = s[..scan_end].to_string();
     let markers = [
         "api_key", "api-key", "api key", "token", "password", "secret", "bearer",
     ];
-    let mut redacted = s.to_string();
     for marker in markers {
         let mut search_from = 0;
         loop {
@@ -85,20 +92,35 @@ fn redact_sensitive_values(s: &str) -> String {
                 break;
             };
             let after_marker = search_from + relative + marker.len();
-            let whitespace = lower[after_marker..].len() - lower[after_marker..].trim_start().len();
-            let delimiter_start = after_marker + whitespace;
-            let value_start = match lower[delimiter_start..].chars().next() {
-                Some('=' | ':') => {
-                    let after_delimiter = delimiter_start + 1;
-                    after_delimiter + lower[after_delimiter..].len()
-                        - lower[after_delimiter..].trim_start().len()
-                }
-                Some(_) => delimiter_start,
-                None => break,
+            let mut cursor = after_marker;
+            cursor += lower[cursor..].len() - lower[cursor..].trim_start().len();
+            if matches!(lower[cursor..].chars().next(), Some('"' | '\'')) {
+                cursor += 1;
+                cursor += lower[cursor..].len() - lower[cursor..].trim_start().len();
+            }
+            if !matches!(lower[cursor..].chars().next(), Some('=' | ':')) {
+                search_from = after_marker;
+                continue;
+            }
+            cursor += 1;
+            cursor += lower[cursor..].len() - lower[cursor..].trim_start().len();
+            let quote = lower[cursor..]
+                .chars()
+                .next()
+                .filter(|character| matches!(character, '"' | '\''));
+            if quote.is_some() {
+                cursor += 1;
+            }
+            let value_start = cursor;
+            let value_end = if let Some(quote) = quote {
+                lower[value_start..]
+                    .find(quote)
+                    .map_or(redacted.len(), |end| value_start + end)
+            } else {
+                lower[value_start..]
+                    .find(char::is_whitespace)
+                    .map_or(redacted.len(), |end| value_start + end)
             };
-            let value_end = lower[value_start..]
-                .find(char::is_whitespace)
-                .map_or(redacted.len(), |end| value_start + end);
             if value_start < value_end {
                 redacted.replace_range(value_start..value_end, REDACTED);
                 search_from = value_start + REDACTED.len();
@@ -2541,6 +2563,15 @@ mod tests {
         assert_eq!(preview, "request API_KEY=[REDACTED] password: [REDACTED]");
         let spaced = truncate_for_log("api_key = hunter2 token=abcdefghijklmnopqrstuv");
         assert_eq!(spaced, "api_key = [REDACTED] token=[REDACTED]");
+        let json = truncate_for_log(r#"{"api_key": "hunter2", "token": "secret-value"}"#);
+        assert_eq!(
+            json,
+            r#"{\"api_key\": \"[REDACTED]\", \"token\": \"[REDACTED]\"}"#
+        );
+        let repeated = format!("token={} ", "x".repeat(10)).repeat(10_000);
+        let preview = truncate_for_log(&repeated);
+        assert!(preview.starts_with("token=[REDACTED]"));
+        assert!(preview.ends_with(&format!("... ({} bytes)", repeated.len())));
     }
 
     #[test]
