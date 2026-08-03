@@ -526,6 +526,14 @@ fn parse_model_version(id: &str) -> (u32, u32) {
     (major, 0)
 }
 
+fn chat_model_version(id: &str) -> Option<(u32, u32)> {
+    let version = id.strip_prefix("gpt-").or_else(|| {
+        id.strip_prefix('o')
+            .filter(|rest| rest.starts_with(char::is_numeric))
+    })?;
+    Some(parse_model_version(version))
+}
+
 pub(crate) fn sort_models(models: &mut [ModelInfo], entries: &[ModelEntry]) {
     models.sort_by(|a, b| {
         let a_tier = match lookup_entry(entries, &a.id) {
@@ -536,13 +544,11 @@ pub(crate) fn sort_models(models: &mut [ModelInfo], entries: &[ModelEntry]) {
             Ok(entry) => Some(entry.tier),
             Err(_) => None,
         };
+        let a_version = chat_model_version(&a.id);
+        let b_version = chat_model_version(&b.id);
 
-        let (a_major, a_minor) = parse_model_version(&a.id);
-        let (b_major, b_minor) = parse_model_version(&b.id);
-
-        b_major
-            .cmp(&a_major)
-            .then_with(|| b_minor.cmp(&a_minor))
+        b_version
+            .cmp(&a_version)
             .then_with(|| tier_strength(b_tier).cmp(&tier_strength(a_tier)))
             .then_with(|| a.id.cmp(&b.id))
     });
@@ -602,6 +608,37 @@ mod tests {
         assert_eq!(model.pricing.cache_read, cache_read);
         assert_eq!(model.pricing.cache_write, cache_write);
         assert_eq!(model.pricing.output, output);
+    }
+
+    #[test]
+    fn chat_models_sort_ahead_of_dated_non_chat_models() {
+        let mut listed = vec![
+            ModelInfo::id_only("omni-moderation-2024-09-26".into()),
+            ModelInfo::id_only("gpt-5.6-sol".into()),
+        ];
+
+        sort_models(&mut listed, models());
+
+        assert_eq!(listed[0].id, "gpt-5.6-sol");
+    }
+
+    #[test]
+    fn chat_models_sort_by_version_then_tier() {
+        let mut listed = vec![
+            ModelInfo::id_only("gpt-5.4".into()),
+            ModelInfo::id_only("gpt-5.6-luna".into()),
+            ModelInfo::id_only("gpt-5.6-sol".into()),
+        ];
+
+        sort_models(&mut listed, models());
+
+        assert_eq!(
+            listed
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.4"]
+        );
     }
 
     #[test]
