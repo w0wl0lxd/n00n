@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785769518335,
+  "lastUpdate": 1785772571538,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -13063,6 +13063,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 163634,
             "range": "± 9227",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "de42a54e02856f9e1446d6739e2bb248d2f422c3",
+          "message": "feat(storage): add versioned session state snapshots (#260)\n\n* feat(storage): add versioned session state snapshots\n\n* fix(storage): bound session record allocation\n\n* fix(storage): address snapshot review feedback\n\n* fix(storage): classify oversized UTF-8 records",
+          "timestamp": "2026-08-03T15:40:02Z",
+          "tree_id": "e24573765e604ea59fa8c883126e02909fbfdbc3",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/de42a54e02856f9e1446d6739e2bb248d2f422c3"
+        },
+        "date": 1785772569275,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6641247,
+            "range": "± 116354",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2225371,
+            "range": "± 14186",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2223009,
+            "range": "± 7634",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8503753,
+            "range": "± 117414",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4338765,
+            "range": "± 26205",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4348751,
+            "range": "± 16295",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 584382,
+            "range": "± 2241",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191767,
+            "range": "± 978",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 192183,
+            "range": "± 973",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1047856,
+            "range": "± 6449",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 582519,
+            "range": "± 2366",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 582856,
+            "range": "± 3815",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 65152,
+            "range": "± 7363",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 168252,
+            "range": "± 9689",
             "unit": "ns/iter"
           }
         ]
