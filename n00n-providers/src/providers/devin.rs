@@ -215,50 +215,20 @@ fn clamp_tokens(field: &'static str, value: u64) -> u32 {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DevinUsageFormat {
-    /// `input_tokens` is the total prompt, including cache reads and writes.
-    /// The cache fields are additive details and must be subtracted to get the
-    /// non-cached `TokenUsage.input`.
-    InputIsTotal,
-    /// `input_tokens` is already the non-cached remainder, so cache fields are
-    /// additive details and `input_tokens` is used as-is.
-    InputIsNonCached,
-}
-
-/// Detect which Devin usage format a response is using.  The invariant is that
-/// `input_tokens` should be at least as large as the total cache counters when
-/// it represents the whole prompt; when it is smaller, it must already be the
-/// non-cached remainder (otherwise the cache details would be larger than the
-/// total they are supposed to detail).
-fn detect_devin_usage_format(u: &ModelUsageStats) -> DevinUsageFormat {
-    let cached = u.cache_read_tokens.saturating_add(u.cache_write_tokens);
-    if u.input_tokens >= cached {
-        DevinUsageFormat::InputIsTotal
-    } else {
-        DevinUsageFormat::InputIsNonCached
-    }
-}
-
 fn devin_usage_to_token_usage(u: &ModelUsageStats) -> TokenUsage {
     let cached = u.cache_read_tokens.saturating_add(u.cache_write_tokens);
-    let format = detect_devin_usage_format(u);
-    let (input, cache_read, cache_creation) = match format {
-        DevinUsageFormat::InputIsTotal => (
-            u.input_tokens.saturating_sub(cached),
-            u.cache_read_tokens,
-            u.cache_write_tokens,
-        ),
-        DevinUsageFormat::InputIsNonCached => {
-            debug!(
+    let (input, cache_read, cache_creation) = u.input_tokens.checked_sub(cached).map_or_else(
+        || {
+            warn!(
                 input_tokens = u.input_tokens,
                 cache_read_tokens = u.cache_read_tokens,
                 cache_write_tokens = u.cache_write_tokens,
-                "Devin input_tokens is less than cached tokens; treating as non-cached"
+                "Devin usage categories exceed total input; ignoring cache breakdown"
             );
-            (u.input_tokens, u.cache_read_tokens, u.cache_write_tokens)
-        }
-    };
+            (u.input_tokens, 0, 0)
+        },
+        |input| (input, u.cache_read_tokens, u.cache_write_tokens),
+    );
     TokenUsage {
         input: clamp_tokens("input", input),
         output: clamp_tokens("output", u.output_tokens),
@@ -1221,10 +1191,7 @@ mod tests {
     }
 
     #[test]
-    fn devin_usage_treats_input_as_non_cached_when_cache_exceeds_total() {
-        // Some Devin responses report input_tokens as the non-cached remainder
-        // with cache fields as additive details; in that case total input is
-        // input_tokens + cache_read + cache_write.
+    fn devin_usage_ignores_nonconserving_cache_breakdown() {
         let stats = ModelUsageStats {
             input_tokens: 10,
             output_tokens: 5,
@@ -1233,45 +1200,24 @@ mod tests {
         };
         let usage = devin_usage_to_token_usage(&stats);
         assert_eq!(usage.input, 10);
-        assert_eq!(usage.cache_read, 100);
-        assert_eq!(usage.cache_creation, 50);
-        assert_eq!(usage.total_input(), 160);
+        assert_eq!(usage.cache_read, 0);
+        assert_eq!(usage.cache_creation, 0);
+        assert_eq!(usage.total_input(), 10);
     }
 
     #[test]
-    fn devin_usage_detects_format_with_overlapping_cache_counters() {
-        // When input_tokens equals the cache total, the only consistent
-        // interpretation is that input_tokens is the total and the cache details
-        // are included in it (non-cached portion would be zero).
-        let total = ModelUsageStats {
+    fn devin_usage_handles_cache_equal_to_total_input() {
+        let stats = ModelUsageStats {
             input_tokens: 50,
             output_tokens: 10,
             cache_read_tokens: 30,
             cache_write_tokens: 20,
         };
-        assert_eq!(
-            detect_devin_usage_format(&total),
-            DevinUsageFormat::InputIsTotal
-        );
-        let usage = devin_usage_to_token_usage(&total);
+        let usage = devin_usage_to_token_usage(&stats);
         assert_eq!(usage.input, 0);
+        assert_eq!(usage.cache_read, 30);
+        assert_eq!(usage.cache_creation, 20);
         assert_eq!(usage.total_input(), 50);
-
-        // When input_tokens is smaller, it is already the non-cached remainder
-        // and cache details must be added back for the total.
-        let remainder = ModelUsageStats {
-            input_tokens: 10,
-            output_tokens: 5,
-            cache_read_tokens: 30,
-            cache_write_tokens: 20,
-        };
-        assert_eq!(
-            detect_devin_usage_format(&remainder),
-            DevinUsageFormat::InputIsNonCached
-        );
-        let usage = devin_usage_to_token_usage(&remainder);
-        assert_eq!(usage.input, 10);
-        assert_eq!(usage.total_input(), 60);
     }
 
     #[test]
