@@ -5558,14 +5558,14 @@ Show project file structure from the index using native SQLite when available, o
 
 ## n00n.github {#n00n-github}
 
-GitHub REST API client using reqwest. Provides structured access to GitHub issues, pull requests, and repository metadata. Reads GITHUB_TOKEN from environment for authentication.
+GitHub REST API client using reqwest. Provides structured access to GitHub issues, pull requests, and repository metadata. Token sources: GITHUB_TOKEN env var, optional token parameter, or gh CLI fallback.
 
 ---
 
 ### `n00n.github.list_issues()` {#n00n-github-list_issues}
 
 ```lua
-n00n.github.list_issues({owner}, {repo})
+n00n.github.list_issues({owner}, {repo}[, {token}])
 ```
 
 List issues in a GitHub repository.
@@ -5574,6 +5574,7 @@ List issues in a GitHub repository.
 
 - `{owner}` (`string`) Repository owner (username or organization).
 - `{repo}` (`string`) Repository name.
+- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
 
 **Returns:** (`table`) Array of issue objects with number, title, state, user, body, and html_url.
 
@@ -5582,17 +5583,18 @@ List issues in a GitHub repository.
 ### `n00n.github.create_issue()` {#n00n-github-create_issue}
 
 ```lua
-n00n.github.create_issue({owner}, {repo}, {title}, {body})
+n00n.github.create_issue({owner}, {repo}, {title}[, {body}[, {token}]])
 ```
 
-Create a new issue in a GitHub repository. Requires GITHUB_TOKEN.
+Create a new issue in a GitHub repository. Requires authentication.
 
 **Parameters:**
 
 - `{owner}` (`string`) Repository owner (username or organization).
 - `{repo}` (`string`) Repository name.
 - `{title}` (`string`) Issue title.
-- `{body}` (`string`) Issue body (markdown).
+- `{body}` (`string?`) Issue body (markdown). Optional.
+- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
 
 **Returns:** (`table`) Created issue object with number, title, state, user, body, and html_url.
 
@@ -5601,7 +5603,7 @@ Create a new issue in a GitHub repository. Requires GITHUB_TOKEN.
 ### `n00n.github.list_prs()` {#n00n-github-list_prs}
 
 ```lua
-n00n.github.list_prs({owner}, {repo})
+n00n.github.list_prs({owner}, {repo}[, {token}])
 ```
 
 List pull requests in a GitHub repository.
@@ -5610,15 +5612,16 @@ List pull requests in a GitHub repository.
 
 - `{owner}` (`string`) Repository owner (username or organization).
 - `{repo}` (`string`) Repository name.
+- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
 
-**Returns:** (`table`) Array of pull request objects with number, title, state, user, head, base, and html_url.
+**Returns:** (`table`) Array of pull request objects with number, title, state, user, head, base, body, and html_url.
 
 ---
 
 ### `n00n.github.get_repo()` {#n00n-github-get_repo}
 
 ```lua
-n00n.github.get_repo({owner}, {repo})
+n00n.github.get_repo({owner}, {repo}[, {token}])
 ```
 
 Get repository metadata from GitHub.
@@ -5627,18 +5630,57 @@ Get repository metadata from GitHub.
 
 - `{owner}` (`string`) Repository owner (username or organization).
 - `{repo}` (`string`) Repository name.
+- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
 
 **Returns:** (`table`) Repository object with name, full_name, description, language, stargazers_count, forks_count, and html_url.
+
+---
+
+### `n00n.github.get_issue()` {#n00n-github-get_issue}
+
+```lua
+n00n.github.get_issue({owner}, {repo}, {issue_number}[, {token}])
+```
+
+Get a single issue from GitHub.
+
+**Parameters:**
+
+- `{owner}` (`string`) Repository owner (username or organization).
+- `{repo}` (`string`) Repository name.
+- `{issue_number}` (`integer`) Issue number.
+- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
+
+**Returns:** (`table`) Issue object with number, title, state, user, body, and html_url.
+
+---
+
+### `n00n.github.get_pr()` {#n00n-github-get_pr}
+
+```lua
+n00n.github.get_pr({owner}, {repo}, {pr_number}[, {token}])
+```
+
+Get a single pull request from GitHub.
+
+**Parameters:**
+
+- `{owner}` (`string`) Repository owner (username or organization).
+- `{repo}` (`string`) Repository name.
+- `{pr_number}` (`integer`) Pull request number.
+- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
+
+**Returns:** (`table`) Pull request object with number, title, state, user, head, base, body, and html_url.
 
 ---
 
 ### `n00n.github.create_pr()` {#n00n-github-create_pr}
 
 ```lua
-n00n.github.create_pr({owner}, {repo}, {head}, {base}, {title}, {body})
+n00n.github.create_pr({owner}, {repo}, {head}, {base}, {title}[, {body}[, {token}]])
 ```
 
-Create a new pull request in a GitHub repository. Requires GITHUB_TOKEN.
+Create a new pull request in a GitHub repository. Requires authentication.
 
 **Parameters:**
 
@@ -5647,7 +5689,8 @@ Create a new pull request in a GitHub repository. Requires GITHUB_TOKEN.
 - `{head}` (`string`) The name of the branch where your changes are implemented.
 - `{base}` (`string`) The name of the branch you want the changes pulled into.
 - `{title}` (`string`) Pull request title.
-- `{body}` (`string`) Pull request body (markdown).
+- `{body}` (`string?`) Pull request body (markdown). Optional.
+- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
 
 **Returns:** (`table`) Created pull request object with number, title, state, and html_url.
 
@@ -5656,17 +5699,18 @@ Create a new pull request in a GitHub repository. Requires GITHUB_TOKEN.
 ### `n00n.github.add_comment()` {#n00n-github-add_comment}
 
 ```lua
-n00n.github.add_comment({owner}, {repo}, {issue_number}, {body})
+n00n.github.add_comment({owner}, {repo}, {issue_number}, {body}[, {token}])
 ```
 
-Add a comment to an issue or pull request. Requires GITHUB_TOKEN.
+Add a comment to an issue or pull request. Requires authentication.
 
 **Parameters:**
 
 - `{owner}` (`string`) Repository owner (username or organization).
 - `{repo}` (`string`) Repository name.
-- `{issue_number}` (`number`) Issue or pull request number.
+- `{issue_number}` (`integer`) Issue or pull request number.
 - `{body}` (`string`) Comment body (markdown).
+- `{token}` (`string?`) Optional GitHub token. Falls back to GITHUB_TOKEN env var or gh CLI.
 
 **Returns:** (`table`) Created comment object with id and html_url.
 
