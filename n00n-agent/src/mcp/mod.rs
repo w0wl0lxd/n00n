@@ -807,7 +807,7 @@ async fn handle_reconnect(inner: &mut McpManagerInner, server_name: &str) {
     }
     match refresh_server(inner, server_name).await {
         Ok(()) => demoted!(server = server_name, "MCP reconnect complete"),
-        Err(e) => demoted!(server = %server_name, error = %e, "reconnect failed"),
+        Err(e) => warn!(server = %server_name, error = %e, "reconnect failed"),
     }
 }
 
