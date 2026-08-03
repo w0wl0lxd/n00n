@@ -220,8 +220,8 @@ pub(crate) struct GetChatMessageResponse {
     pub message_id: String,
     #[prost(string, tag = "3")]
     pub delta_text: String,
-    #[prost(uint32, tag = "5")]
-    pub stop_reason: u32,
+    #[prost(uint64, tag = "5")]
+    pub stop_reason: u64,
     #[prost(message, repeated, tag = "6")]
     pub delta_tool_calls: Vec<ChatToolCall>,
     #[prost(message, optional, tag = "7")]
@@ -468,7 +468,7 @@ mod tests {
         let response = GetChatMessageResponse {
             message_id: "message-1".to_string(),
             delta_text: "text".to_string(),
-            stop_reason: STOP_REASON_TOOL_USE,
+            stop_reason: u64::from(STOP_REASON_TOOL_USE),
             delta_tool_calls: vec![tool_call.clone()],
             usage: Some(usage),
             delta_thinking: "thinking".to_string(),
@@ -480,7 +480,7 @@ mod tests {
         assert_eq!(decoded.delta_text, "text");
         assert_eq!(decoded.delta_thinking, "thinking");
         assert_eq!(decoded.delta_signature, "signature");
-        assert_eq!(decoded.stop_reason, STOP_REASON_TOOL_USE);
+        assert_eq!(decoded.stop_reason, u64::from(STOP_REASON_TOOL_USE));
         assert_eq!(decoded.delta_tool_calls.len(), 1);
         assert_eq!(decoded.delta_tool_calls[0].id, tool_call.id);
         assert_eq!(decoded.delta_tool_calls[0].name, tool_call.name);
