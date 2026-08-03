@@ -50,24 +50,16 @@ pub struct GitHubRepository {
     pub html_url: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GitHubComment {
-    pub id: u64,
-    pub user: GitHubUser,
-    pub body: String,
-    pub created_at: String,
-}
-
 fn get_token() -> Option<String> {
     env::var("GITHUB_TOKEN").ok()
 }
 
 fn create_client() -> Result<Client, mlua::Error> {
     let mut builder = Client::builder();
-    if let Ok(timeout) = env::var("GITHUB_TIMEOUT") {
-        if let Ok(secs) = timeout.parse::<u64>() {
-            builder = builder.timeout(std::time::Duration::from_secs(secs));
-        }
+    if let Ok(timeout) = env::var("GITHUB_TIMEOUT")
+        && let Ok(secs) = timeout.parse::<u64>()
+    {
+        builder = builder.timeout(std::time::Duration::from_secs(secs));
     }
     builder
         .build()
@@ -94,11 +86,11 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
         let client = create_client()?;
         let token = get_token();
 
-        let url = format!("https://api.github.com/repos/{}/{}/issues", owner, repo);
+        let url = format!("https://api.github.com/repos/{owner}/{repo}/issues");
         let mut request = client.get(&url);
 
         if let Some(t) = token {
-            request = request.header("Authorization", format!("Bearer {}", t));
+            request = request.header("Authorization", format!("Bearer {t}"));
         }
 
         let response = request.send().map_err(map_err)?;
@@ -106,8 +98,7 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
             let status = response.status();
             let body = response.text().unwrap_or_else(|_| "no body".to_string());
             return Err(mlua::Error::external(format!(
-                "GitHub API error {}: {}",
-                status, body
+                "GitHub API error {status}: {body}"
             )));
         }
 
@@ -123,7 +114,7 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
                 mlua::Error::external("GITHUB_TOKEN environment variable not set")
             })?;
 
-            let url = format!("https://api.github.com/repos/{}/{}/issues", owner, repo);
+            let url = format!("https://api.github.com/repos/{owner}/{repo}/issues");
             let payload = serde_json::json!({
                 "title": title,
                 "body": body,
@@ -131,7 +122,7 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
 
             let response = client
                 .post(&url)
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("User-Agent", "n00n")
                 .json(&payload)
                 .send()
@@ -141,8 +132,7 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
                 let status = response.status();
                 let body = response.text().unwrap_or_else(|_| "no body".to_string());
                 return Err(mlua::Error::external(format!(
-                    "GitHub API error {}: {}",
-                    status, body
+                    "GitHub API error {status}: {body}"
                 )));
             }
 
@@ -156,11 +146,11 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
         let client = create_client()?;
         let token = get_token();
 
-        let url = format!("https://api.github.com/repos/{}/{}/pulls", owner, repo);
+        let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls");
         let mut request = client.get(&url);
 
         if let Some(t) = token {
-            request = request.header("Authorization", format!("Bearer {}", t));
+            request = request.header("Authorization", format!("Bearer {t}"));
         }
 
         let response = request.send().map_err(map_err)?;
@@ -168,8 +158,7 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
             let status = response.status();
             let body = response.text().unwrap_or_else(|_| "no body".to_string());
             return Err(mlua::Error::external(format!(
-                "GitHub API error {}: {}",
-                status, body
+                "GitHub API error {status}: {body}"
             )));
         }
 
@@ -182,11 +171,11 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
         let client = create_client()?;
         let token = get_token();
 
-        let url = format!("https://api.github.com/repos/{}/{}", owner, repo);
+        let url = format!("https://api.github.com/repos/{owner}/{repo}");
         let mut request = client.get(&url);
 
         if let Some(t) = token {
-            request = request.header("Authorization", format!("Bearer {}", t));
+            request = request.header("Authorization", format!("Bearer {t}"));
         }
 
         let response = request.send().map_err(map_err)?;
@@ -194,8 +183,7 @@ pub(crate) fn create_github_table(lua: &Lua) -> LuaResult<Table> {
             let status = response.status();
             let body = response.text().unwrap_or_else(|_| "no body".to_string());
             return Err(mlua::Error::external(format!(
-                "GitHub API error {}: {}",
-                status, body
+                "GitHub API error {status}: {body}"
             )));
         }
 
