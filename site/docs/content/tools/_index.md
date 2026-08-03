@@ -396,17 +396,14 @@ Load all tools from a namespace. Returns the list of tools that were loaded.
 
 Delegate to a Fusion sidekick. Pass goal, constraints, and definition_of_done — not file dumps.
 
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `description` | string | yes |  | Short label (3-5 words). |
-| `model_tier` | string | no |  | weak/medium/strong override. |
-| `model` | string | no |  | Exact model override. |
-| `goal` | string | yes |  | What to accomplish. |
-| `constraints` | string | no |  | Scope and patterns. |
-| `definition_of_done` | string | yes |  | Success checks (tests, artifacts). |
-| `auto_tier` | boolean | no | true | Tier from brief. |
-| `escalation_triggers` | string | no |  | When to escalate to the lead. |
-| `subagent_type` | string | no |  | research (read-only) or general (edit). Default: general. |
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `description` | string | yes | Short label (3-5 words). |
+| `constraints` | string | no | Scope and patterns. |
+| `definition_of_done` | string | yes | Success checks (tests, artifacts). |
+| `goal` | string | yes | What to accomplish. |
+| `escalation_triggers` | string | no | When to escalate to the lead. |
+| `subagent_type` | string | no | research (read-only) or general (edit). Default: general. |
 
 ## Web
 

@@ -191,7 +191,7 @@ n00n.setup({
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
-| `auto_tier` | boolean | `true` | - | Route sidekick tier from the brief. |
+| `auto_tier` | boolean | `true` | - | Allow trusted configuration to route the sidekick tier. |
 | `default_subagent_type` | string | `"general"` | - | Default subagent_type when omitted. |
 
 ### `plugins.glob`
