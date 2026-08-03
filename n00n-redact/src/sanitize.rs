@@ -60,61 +60,115 @@ pub fn sanitize_text(raw: &str, max_chars: usize) -> String {
 /// values where newlines should stay intact.
 #[must_use]
 pub(crate) fn sanitize_text_preserve_newlines(raw: &str, max_chars: usize) -> String {
-    // Replace line breaks with a placeholder that won't be split by split_whitespace
-    // Use a Unicode Private Use Area character (unlikely to appear in real text)
-    const LINE_BREAK_PLACEHOLDER: char = '\u{E000}';
-    let mut separators: Vec<&str> = Vec::new();
-    let mut normalized = String::new();
-
-    let mut remaining = raw;
-    while !remaining.is_empty() {
-        let (line, separator, rest) = split_line_with_separator(remaining);
-        if !normalized.is_empty() && !separator.is_empty() {
-            normalized.push(LINE_BREAK_PLACEHOLDER);
-            separators.push(separator);
-        }
-        normalized.push_str(line);
-        remaining = rest;
-    }
-
-    // Sanitize the entire text as one block to preserve state across line boundaries
-    // Use split(' ') instead of split_whitespace to preserve the placeholder
-    let words: Vec<&str> = normalized.split(' ').collect();
-    let sanitized = sanitize_words(&words);
-
-    // Restore original line separators
-    let mut result = String::new();
-    let mut separator_iter = separators.into_iter();
-    for part in sanitized.split(LINE_BREAK_PLACEHOLDER) {
-        if !result.is_empty()
-            && let Some(separator) = separator_iter.next()
-        {
-            result.push_str(separator);
-        }
-        result.push_str(part);
-    }
-
-    truncate(&result, max_chars)
+    // Tokenize into words and line separators, preserving exact separator positions
+    let tokens = tokenize_with_line_breaks(raw);
+    let sanitized = sanitize_tokens(tokens);
+    truncate(&sanitized, max_chars)
 }
 
-/// Splits a string at the first line break, returning (line, separator, rest).
-/// Handles `\n`, `\r\n`, and `\r` separators.
-fn split_line_with_separator(text: &str) -> (&str, &str, &str) {
-    if let Some(pos) = text.find('\n') {
-        if pos > 0 && text.as_bytes()[pos - 1] == b'\r' {
-            // \r\n
-            (&text[..pos - 1], "\r\n", &text[pos + 1..])
+#[derive(Clone, Copy)]
+enum Token<'a> {
+    Word(&'a str),
+    LineBreak(&'a str),
+}
+
+/// Tokenizes text into words and line separators, preserving exact positions.
+/// Line separators (\n, \r\n, \r) are emitted as separate tokens.
+fn tokenize_with_line_breaks(text: &str) -> Vec<Token<'_>> {
+    let mut tokens = Vec::new();
+    let mut word_start = None;
+    let mut i = 0;
+    let bytes = text.as_bytes();
+
+    while i < bytes.len() {
+        let c = bytes[i] as char;
+        if c == '\r' {
+            // Flush any pending word
+            if let Some(start) = word_start {
+                tokens.push(Token::Word(&text[start..i]));
+                word_start = None;
+            }
+            // Check for \r\n
+            if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+                tokens.push(Token::LineBreak("\r\n"));
+                i += 2;
+            } else {
+                tokens.push(Token::LineBreak("\r"));
+                i += 1;
+            }
+        } else if c == '\n' {
+            // Flush any pending word
+            if let Some(start) = word_start {
+                tokens.push(Token::Word(&text[start..i]));
+                word_start = None;
+            }
+            tokens.push(Token::LineBreak("\n"));
+            i += 1;
+        } else if c.is_whitespace() {
+            // Flush any pending word on whitespace
+            if let Some(start) = word_start {
+                tokens.push(Token::Word(&text[start..i]));
+                word_start = None;
+            }
+            i += 1;
         } else {
-            // \n
-            (&text[..pos], "\n", &text[pos + 1..])
+            // Non-whitespace character
+            if word_start.is_none() {
+                word_start = Some(i);
+            }
+            i += 1;
         }
-    } else if let Some(pos) = text.find('\r') {
-        // \r (not followed by \n)
-        (&text[..pos], "\r", &text[pos + 1..])
-    } else {
-        // No line break
-        (text, "", "")
     }
+
+    // Flush final word
+    if let Some(start) = word_start {
+        tokens.push(Token::Word(&text[start..]));
+    }
+
+    tokens
+}
+
+/// Sanitizes a token stream, preserving line break positions.
+/// Reuses `sanitize_words` for the actual redaction logic.
+fn sanitize_tokens(tokens: Vec<Token<'_>>) -> String {
+    // Collect word tokens for sanitization
+    let words: Vec<&str> = tokens
+        .iter()
+        .filter_map(|t| match t {
+            Token::Word(w) => Some(*w),
+            Token::LineBreak(_) => None,
+        })
+        .collect();
+
+    // Sanitize all words as a single block to preserve state across line boundaries
+    let sanitized = sanitize_words(&words);
+    let sanitized_words: Vec<&str> = sanitized.split(' ').collect();
+
+    // Reconstruct output, replacing word tokens with sanitized versions
+    let mut result = String::new();
+    let mut word_index = 0;
+    let mut at_line_start = true;
+
+    for token in tokens {
+        match token {
+            Token::Word(_) => {
+                if let Some(word) = sanitized_words.get(word_index) {
+                    if !at_line_start && !result.is_empty() {
+                        result.push(' ');
+                    }
+                    result.push_str(word);
+                    word_index += 1;
+                    at_line_start = false;
+                }
+            }
+            Token::LineBreak(separator) => {
+                result.push_str(separator);
+                at_line_start = true;
+            }
+        }
+    }
+
+    result
 }
 
 fn sanitize_words(words: &[&str]) -> String {
@@ -438,5 +492,94 @@ mod tests {
         let sanitized = sanitize_text_preserve_newlines(input, 200);
         assert!(sanitized.contains("[REDACTED]"));
         assert!(!sanitized.contains("plain-value"));
+    }
+
+    #[test]
+    fn preserves_lf_line_breaks() {
+        let input = "line1\nline2\nline3";
+        let sanitized = sanitize_text_preserve_newlines(input, 200);
+        assert_eq!(sanitized, "line1\nline2\nline3");
+    }
+
+    #[test]
+    fn preserves_crlf_line_breaks() {
+        let input = "line1\r\nline2\r\nline3";
+        let sanitized = sanitize_text_preserve_newlines(input, 200);
+        assert_eq!(sanitized, "line1\r\nline2\r\nline3");
+    }
+
+    #[test]
+    fn preserves_cr_line_breaks() {
+        let input = "line1\rline2\rline3";
+        let sanitized = sanitize_text_preserve_newlines(input, 200);
+        assert_eq!(sanitized, "line1\rline2\rline3");
+    }
+
+    #[test]
+    fn preserves_leading_line_breaks() {
+        let input = "\nline1\nline2";
+        let sanitized = sanitize_text_preserve_newlines(input, 200);
+        assert_eq!(sanitized, "\nline1\nline2");
+    }
+
+    #[test]
+    fn preserves_trailing_line_breaks() {
+        let input = "line1\nline2\n";
+        let sanitized = sanitize_text_preserve_newlines(input, 200);
+        assert_eq!(sanitized, "line1\nline2\n");
+    }
+
+    #[test]
+    fn preserves_consecutive_line_breaks() {
+        let input = "line1\n\n\nline2";
+        let sanitized = sanitize_text_preserve_newlines(input, 200);
+        assert_eq!(sanitized, "line1\n\n\nline2");
+    }
+
+    #[test]
+    fn preserves_mixed_line_endings() {
+        let input = "line1\nline2\r\nline3\rline4";
+        let sanitized = sanitize_text_preserve_newlines(input, 200);
+        assert_eq!(sanitized, "line1\nline2\r\nline3\rline4");
+    }
+
+    #[test]
+    fn redacts_key_value_across_crlf() {
+        let input = "password:\r\nsecret123";
+        let sanitized = sanitize_text_preserve_newlines(input, 200);
+        assert!(sanitized.contains("[REDACTED]"));
+        assert!(!sanitized.contains("secret123"));
+        assert!(sanitized.contains("\r\n"));
+    }
+
+    #[test]
+    fn redacts_key_value_across_cr() {
+        let input = "password:\rsecret123";
+        let sanitized = sanitize_text_preserve_newlines(input, 200);
+        assert!(sanitized.contains("[REDACTED]"));
+        assert!(!sanitized.contains("secret123"));
+        assert!(sanitized.contains('\r'));
+    }
+
+    #[test]
+    fn preserves_empty_lines() {
+        let input = "line1\n\nline2";
+        let sanitized = sanitize_text_preserve_newlines(input, 200);
+        assert_eq!(sanitized, "line1\n\nline2");
+    }
+
+    #[test]
+    fn handles_text_with_only_line_breaks() {
+        let input = "\n\n\n";
+        let sanitized = sanitize_text_preserve_newlines(input, 200);
+        assert_eq!(sanitized, "\n\n\n");
+    }
+
+    #[test]
+    fn redacts_bearer_token_across_line_break() {
+        let input = "Authorization:\nBearer sk-secret";
+        let sanitized = sanitize_text_preserve_newlines(input, 200);
+        assert!(sanitized.contains("[REDACTED]"));
+        assert!(!sanitized.contains("sk-secret"));
     }
 }
