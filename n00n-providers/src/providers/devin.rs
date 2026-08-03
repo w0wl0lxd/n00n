@@ -156,16 +156,20 @@ fn optional_env(name: &'static str) -> Result<Option<String>, AgentError> {
 }
 
 fn resolve_api_server_url(configured: String, base_url: Option<&str>) -> String {
-    match base_url.map(str::trim).filter(|s| !s.is_empty()) {
-        Some(url) if url.starts_with("http://") || url.starts_with("https://") => url.to_string(),
-        Some(base_url) => {
+    let Some(url) = base_url.map(str::trim).filter(|s| !s.is_empty()) else {
+        return configured;
+    };
+    match url::Url::parse(url) {
+        Ok(parsed) if matches!(parsed.scheme(), "http" | "https") && parsed.host().is_some() => {
+            url.to_string()
+        }
+        Ok(_) | Err(_) => {
             warn!(
-                base_url,
+                base_url = url,
                 "ignoring non-URL devin base_url; using configured API server"
             );
             configured
         }
-        None => configured,
     }
 }
 
@@ -211,29 +215,49 @@ fn clamp_tokens(field: &'static str, value: u64) -> u32 {
     }
 }
 
-fn devin_usage_to_token_usage(u: &ModelUsageStats) -> TokenUsage {
-    // Devin gRPC usage reports input_tokens as the total prompt tokens
-    // (including cache reads and writes), with cache fields as details.
-    // TokenUsage.input must be the non-cached portion so that total_input()
-    // and cost() are consistent with the rest of the providers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DevinUsageFormat {
+    /// `input_tokens` is the total prompt, including cache reads and writes.
+    /// The cache fields are additive details and must be subtracted to get the
+    /// non-cached `TokenUsage.input`.
+    InputIsTotal,
+    /// `input_tokens` is already the non-cached remainder, so cache fields are
+    /// additive details and `input_tokens` is used as-is.
+    InputIsNonCached,
+}
+
+/// Detect which Devin usage format a response is using.  The invariant is that
+/// `input_tokens` should be at least as large as the total cache counters when
+/// it represents the whole prompt; when it is smaller, it must already be the
+/// non-cached remainder (otherwise the cache details would be larger than the
+/// total they are supposed to detail).
+fn detect_devin_usage_format(u: &ModelUsageStats) -> DevinUsageFormat {
     let cached = u.cache_read_tokens.saturating_add(u.cache_write_tokens);
-    let (input, cache_read, cache_creation) = if u.input_tokens >= cached {
-        (
+    if u.input_tokens >= cached {
+        DevinUsageFormat::InputIsTotal
+    } else {
+        DevinUsageFormat::InputIsNonCached
+    }
+}
+
+fn devin_usage_to_token_usage(u: &ModelUsageStats) -> TokenUsage {
+    let cached = u.cache_read_tokens.saturating_add(u.cache_write_tokens);
+    let format = detect_devin_usage_format(u);
+    let (input, cache_read, cache_creation) = match format {
+        DevinUsageFormat::InputIsTotal => (
             u.input_tokens.saturating_sub(cached),
             u.cache_read_tokens,
             u.cache_write_tokens,
-        )
-    } else {
-        // Some Devin responses already report input_tokens as the non-cached
-        // remainder; in that case the cache fields are additive details and
-        // should not be subtracted from input.
-        debug!(
-            input_tokens = u.input_tokens,
-            cache_read_tokens = u.cache_read_tokens,
-            cache_write_tokens = u.cache_write_tokens,
-            "Devin input_tokens is less than cached tokens; treating as non-cached"
-        );
-        (u.input_tokens, u.cache_read_tokens, u.cache_write_tokens)
+        ),
+        DevinUsageFormat::InputIsNonCached => {
+            debug!(
+                input_tokens = u.input_tokens,
+                cache_read_tokens = u.cache_read_tokens,
+                cache_write_tokens = u.cache_write_tokens,
+                "Devin input_tokens is less than cached tokens; treating as non-cached"
+            );
+            (u.input_tokens, u.cache_read_tokens, u.cache_write_tokens)
+        }
     };
     TokenUsage {
         input: clamp_tokens("input", input),
@@ -720,10 +744,9 @@ impl Devin {
             entry
                 .prefixes
                 .iter()
+                .find(|p| cli_configs.contains_key::<str>(**p))
                 .copied()
-                .find(|p| cli_configs.contains_key(*p))
-                .or_else(|| entry.prefixes.first().copied())
-                .unwrap_or_else(|| model_router_uid)
+                .unwrap_or_else(|| entry.prefixes[0])
         });
         let chat_model_uid = cli_configs
             .get(canonical_id)
@@ -1168,6 +1191,14 @@ mod tests {
     }
 
     #[test]
+    fn malformed_url_with_scheme_but_no_host_falls_back() {
+        assert_eq!(
+            resolve_api_server_url("https://configured.example".to_string(), Some("https://")),
+            "https://configured.example"
+        );
+    }
+
+    #[test]
     fn devin_usage_maps_total_input_to_non_cached() {
         let stats = ModelUsageStats {
             input_tokens: 100,
@@ -1199,6 +1230,42 @@ mod tests {
         assert_eq!(usage.cache_read, 100);
         assert_eq!(usage.cache_creation, 50);
         assert_eq!(usage.total_input(), 160);
+    }
+
+    #[test]
+    fn devin_usage_detects_format_with_overlapping_cache_counters() {
+        // When input_tokens equals the cache total, the only consistent
+        // interpretation is that input_tokens is the total and the cache details
+        // are included in it (non-cached portion would be zero).
+        let total = ModelUsageStats {
+            input_tokens: 50,
+            output_tokens: 10,
+            cache_read_tokens: 30,
+            cache_write_tokens: 20,
+        };
+        assert_eq!(
+            detect_devin_usage_format(&total),
+            DevinUsageFormat::InputIsTotal
+        );
+        let usage = devin_usage_to_token_usage(&total);
+        assert_eq!(usage.input, 0);
+        assert_eq!(usage.total_input(), 50);
+
+        // When input_tokens is smaller, it is already the non-cached remainder
+        // and cache details must be added back for the total.
+        let remainder = ModelUsageStats {
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_read_tokens: 30,
+            cache_write_tokens: 20,
+        };
+        assert_eq!(
+            detect_devin_usage_format(&remainder),
+            DevinUsageFormat::InputIsNonCached
+        );
+        let usage = devin_usage_to_token_usage(&remainder);
+        assert_eq!(usage.input, 10);
+        assert_eq!(usage.total_input(), 60);
     }
 
     #[test]

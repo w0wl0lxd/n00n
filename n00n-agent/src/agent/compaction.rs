@@ -187,7 +187,7 @@ fn finish_compact(
         "compaction completed"
     );
 
-    usage
+    Ok(usage)
 }
 
 /// Compacts the conversation history using the provider.
