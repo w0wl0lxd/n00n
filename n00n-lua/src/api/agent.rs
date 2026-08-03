@@ -17,8 +17,8 @@ use n00n_agent::cancel::CancelMap;
 use n00n_agent::tools::interpreter_bridge;
 use n00n_agent::tools::registry::ToolRegistry;
 use n00n_agent::tools::{
-    Deadline, DescriptionContext, FileReadTracker, LocalToolFn, LocalTools, ToolAudience,
-    ToolContext, ToolFilter, ToolLive,
+    ActiveTools, Deadline, DescriptionContext, FileReadTracker, LocalToolFn, LocalTools,
+    ToolAudience, ToolContext, ToolFilter, ToolLive,
 };
 use n00n_agent::{
     Agent, AgentEvent, AgentInput, AgentMode, AgentParams, AgentRunParams, Envelope, EventSender,
@@ -705,21 +705,26 @@ async fn session(
     }
 
     let explicit_tools = tools_val.is_some();
-    let (mut tools_json, mut tool_filter) = if let Some(val) = tools_val {
+    let (mut tools_json, mut tool_filter, active_tools) = if let Some(val) = tools_val {
         let tools = lua_to_json(&lua, &val)?;
         // Accept nil, empty object, or empty array as "no tools"
         if tools.is_null()
             || (tools.is_object() && tools.as_object().map_or(false, serde_json::Map::is_empty))
         {
-            (serde_json::json!([]), ToolFilter::All)
+            (
+                serde_json::json!([]),
+                ToolFilter::All,
+                ActiveTools::default(),
+            )
         } else if !tools.is_array() {
             return Err(mlua::Error::runtime("tools must be an array"));
         } else {
-            (tools, ToolFilter::All)
+            (tools, ToolFilter::All, ActiveTools::default())
         }
     } else {
         let vars = n00n_agent::template::Vars::new();
         let filter = ToolFilter::from_config(&agent_ctx.config, &model, &[]);
+        let active_tools = n00n_agent::tools::default_active_tools(&agent_ctx.config);
         let ctx = DescriptionContext {
             filter: &filter,
             audience,
@@ -729,9 +734,9 @@ async fn session(
             &vars,
             &ctx,
             model.supports_tool_examples(),
-            &n00n_agent::tools::default_active_tools(),
+            &active_tools,
         );
-        (tools, filter)
+        (tools, filter, active_tools)
     };
 
     let mut local_map: HashMap<String, LocalToolFn> = HashMap::new();
@@ -863,6 +868,7 @@ async fn session(
         system: system.unwrap_or_else(String::new),
         tools: tools_json,
         tool_filter,
+        active_tools,
         allow_dynamic_mcp_tools,
         thinking,
         fast,
@@ -1371,6 +1377,7 @@ struct SessionState {
     system: String,
     tools: JsonValue,
     tool_filter: ToolFilter,
+    active_tools: ActiveTools,
     allow_dynamic_mcp_tools: bool,
     thinking: ThinkingConfig,
     fast: bool,
@@ -1537,6 +1544,7 @@ async fn prompt(
                 event_tx: s.sub_event_tx.clone(),
                 tools: s.tools.clone(),
                 tool_filter: s.tool_filter.clone(),
+                active_tools: s.active_tools.clone(),
             },
         )
         .with_user_response_rx(Arc::clone(&s.answer_rx))
