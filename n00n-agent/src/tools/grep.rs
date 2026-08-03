@@ -73,11 +73,15 @@ pub fn grep_search(params: &GrepParams) -> Result<(PathBuf, Vec<GrepFileEntry>),
     );
 
     let matcher = if is_multiline {
-        RegexMatcher::new(&params.pattern).map_err(|e| format!("{INVALID_REGEX}: {e}"))?
+        RegexMatcher::new(&params.pattern).map_err(|e| {
+            format!("{INVALID_REGEX}: {e}. Note: PCRE look-around (e.g. (?!...), (?<!...)) is not supported. Use Rust regex syntax.")
+        })?
     } else {
         RegexMatcher::new_line_matcher(&params.pattern)
             .or_else(|_| RegexMatcher::new(&params.pattern))
-            .map_err(|e| format!("{INVALID_REGEX}: {e}"))?
+            .map_err(|e| {
+                format!("{INVALID_REGEX}: {e}. Note: PCRE look-around (e.g. (?!...), (?<!...)) is not supported. Use Rust regex syntax.")
+            })?
     };
 
     let patterns: Vec<&str> = params.include.as_deref().into_iter().collect();

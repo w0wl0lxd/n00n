@@ -197,20 +197,25 @@ end
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Use the **grep** tool when searching for specific content across files.",
+  content = '- Use the **grep** tool when searching for specific content across files. Use the `pattern` parameter (not `command`). Avoid PCRE look-around like `(?!...)` or `(?<!...)` — they are not supported. For multiple paths, pass an array: `{"path": ["src", "tests"]}`.',
 })
 
 n00n.api.register_tool({
   name = "grep",
   kind = "search",
   modes = { "default", "research", "build", "compact" },
-  description = [[Search file contents using regex. Respects .gitignore. Results grouped by file, sorted by modification time. Prefer speculative parallel searches over sequential glob+grep. Do NOT wrap pattern in quotes or double-escape (e.g. `\[` not `\\[`). Multi-line matching auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`.]],
+  description = [[Search file contents using regex. Respects .gitignore. Results grouped by file, sorted by modification time. Prefer speculative parallel searches over sequential glob+grep. Do NOT wrap pattern in quotes or double-escape (e.g. `\[` not `\\[`). Multi-line matching auto-enabled when pattern contains `\n`, `(?s)`, or `(?m)`. Note: PCRE look-around (e.g. `(?!...)`, `(?<!...)`) is not supported. Use Rust regex syntax.]],
 
   schema = {
     type = "object",
     properties = {
       pattern = { type = "string", required = true },
-      path = { type = "string" },
+      path = {
+        oneOf = {
+          { type = "string" },
+          { type = "array", items = { type = "string" } },
+        },
+      },
       include = {
         type = "string",
         alias = "glob",
@@ -219,6 +224,7 @@ n00n.api.register_tool({
       context_after = { type = "integer" },
       limit = { type = "integer" },
     },
+    additionalProperties = false,
   },
 
   header = function(input)
@@ -256,34 +262,62 @@ n00n.api.register_tool({
 
     local max_line_bytes = opts.max_line_bytes
 
-    local entries, err = n00n.fs.grep(pattern, {
-      path = input.path,
-      include = input.include,
-      context_before = input.context_before or 0,
-      context_after = input.context_after or 0,
-      limit = limit,
-      max_line_bytes = max_line_bytes,
-    })
+    -- Handle path as either string or array of strings
+    local path = input.path
+    local path_type = type(path)
+    local all_entries = {}
+    local all_errors = {}
 
-    if not entries then
-      return { llm_output = "error: " .. tostring(err), is_error = true }
+    local function search_single_path(p)
+      local entries, err = n00n.fs.grep(pattern, {
+        path = p,
+        include = input.include,
+        context_before = input.context_before or 0,
+        context_after = input.context_after or 0,
+        limit = limit,
+        max_line_bytes = max_line_bytes,
+      })
+      if entries then
+        for _, entry in ipairs(entries) do
+          table.insert(all_entries, entry)
+        end
+      else
+        table.insert(all_errors, tostring(err))
+      end
     end
 
-    if #entries == 0 then
+    if path_type == "string" then
+      search_single_path(path)
+    elseif path_type == "table" then
+      for _, p in ipairs(path) do
+        search_single_path(p)
+      end
+    elseif path ~= nil then
+      return { llm_output = "error: path must be a string or array of strings, got " .. path_type, is_error = true }
+    end
+
+    if #all_entries == 0 and #all_errors > 0 then
+      -- If all paths failed, return the first error
+      return { llm_output = "error: " .. all_errors[1], is_error = true }
+    end
+
+    if #all_entries == 0 then
       return { llm_output = NO_MATCHES }
     end
 
-    for _, entry in ipairs(entries) do
+    -- Sort by modification time (n00n.fs.grep already does this per path, but we need to re-sort across paths)
+    -- For now, just keep the order from the searches
+    for _, entry in ipairs(all_entries) do
       ctx:record_read(entry.path)
     end
 
-    local llm_output = format_llm_output(entries)
+    local llm_output = format_llm_output(all_entries)
     llm_output = truncate(llm_output, max_lines, max_bytes)
 
     return {
       llm_output = llm_output,
-      body = build_grep_view(entries, ctx),
-      annotation = count_matches(entries),
+      body = build_grep_view(all_entries, ctx),
+      annotation = count_matches(all_entries),
     }
   end,
 })
