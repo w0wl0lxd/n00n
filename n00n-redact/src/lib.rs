@@ -84,7 +84,7 @@ pub const SECRET_KEYS: &[&str] = &[
     "ghtoken",
     "ghsecret",
     "ghkey",
-    "openaiscret",
+    "openaisecret",
     "openaikey",
     "openaitoken",
     "anthropickey",
