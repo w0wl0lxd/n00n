@@ -26,20 +26,16 @@ n00n.api.register_tool({
   permission_scopes = "path",
   audiences = { "main", "general_sub", "interpreter" },
   modes = { "default", "build" },
+  strict = true,
   description = DESCRIPTION,
 
   schema = {
     type = "object",
+    additionalProperties = false,
+    required = { "path", "content" },
     properties = {
-      path = {
-        type = "string",
-        required = true,
-        alias = "file_path",
-      },
-      content = {
-        type = "string",
-        required = true,
-      },
+      path = { type = "string", required = true, alias = "file_path" },
+      content = { type = "string", required = true },
     },
   },
 
