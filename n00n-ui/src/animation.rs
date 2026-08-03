@@ -1,5 +1,6 @@
 use std::mem;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use quanta::Instant;
@@ -7,14 +8,30 @@ use quanta::Instant;
 const SPINNER_FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const SPINNER_STRS: [&str; 10] = ["⠋ ", "⠙ ", "⠹ ", "⠸ ", "⠼ ", "⠴ ", "⠦ ", "⠧ ", "⠇ ", "⠏ "];
 const SPINNER_FRAME_MS: u128 = 80;
+static REDUCED_MOTION: AtomicBool = AtomicBool::new(false);
+
+pub fn set_reduced_motion(enabled: bool) {
+    REDUCED_MOTION.store(enabled, Ordering::Relaxed);
+}
+
+#[must_use]
+pub fn reduced_motion() -> bool {
+    REDUCED_MOTION.load(Ordering::Relaxed)
+}
 
 #[must_use]
 pub fn spinner_frame(elapsed_ms: u128) -> char {
+    if reduced_motion() {
+        return SPINNER_FRAMES[0];
+    }
     SPINNER_FRAMES[(elapsed_ms / SPINNER_FRAME_MS) as usize % SPINNER_FRAMES.len()]
 }
 
 #[must_use]
 pub fn spinner_str(elapsed_ms: u128) -> &'static str {
+    if reduced_motion() {
+        return SPINNER_STRS[0];
+    }
     SPINNER_STRS[(elapsed_ms / SPINNER_FRAME_MS) as usize % SPINNER_STRS.len()]
 }
 
@@ -83,7 +100,7 @@ impl Typewriter {
         self.tick();
         self.anim_start_visible = self.visible_len;
         self.anim_target = self.char_count;
-        if self.ms_per_char == 0 {
+        if self.ms_per_char == 0 || reduced_motion() {
             self.advance_visible(self.anim_target);
             return;
         }
@@ -94,6 +111,10 @@ impl Typewriter {
     }
 
     pub fn tick(&mut self) {
+        if reduced_motion() {
+            self.advance_visible(self.anim_target);
+            return;
+        }
         if self.visible_len >= self.anim_target {
             return;
         }
@@ -228,6 +249,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reduced_motion_freezes_spinners_and_reveals_text() {
+        set_reduced_motion(true);
+        assert_eq!(spinner_frame(SPINNER_FRAME_MS), SPINNER_FRAMES[0]);
+        assert_eq!(spinner_str(SPINNER_FRAME_MS), SPINNER_STRS[0]);
+
+        let mut tw = Typewriter::with_speed(1000);
+        tw.push("reduced motion");
+        assert_eq!(tw.visible(), "reduced motion");
+        assert!(!tw.is_animating());
+        set_reduced_motion(false);
+    }
+
+    #[test]
     fn spinner_wraps_around() {
         let first = spinner_frame(0);
         let wrapped = spinner_frame(SPINNER_FRAME_MS * SPINNER_FRAMES.len() as u128);
@@ -237,6 +271,7 @@ mod tests {
 
     #[test]
     fn push_animates_and_empty_push_is_noop() {
+        set_reduced_motion(false);
         let mut tw = Typewriter::new();
         tw.push("");
         assert!(!tw.is_animating());

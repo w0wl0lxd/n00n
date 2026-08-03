@@ -39,6 +39,10 @@ const PICKER_HINTS: &[FooterHint] = &[
         action: "move",
     },
     FooterHint {
+        key: "type",
+        action: "filter",
+    },
+    FooterHint {
         key: "Enter",
         action: "select",
     },
@@ -206,8 +210,9 @@ mod tests {
     #[test]
     fn overlay_footer_uses_picker_actions() {
         let hints = visible_hints(120, FooterContext::Picker);
-        assert_eq!(hints.len(), 3);
+        assert_eq!(hints.len(), 4);
         assert_eq!(hints[0].key, "↑↓");
-        assert_eq!(hints[2].action, "close");
+        assert_eq!(hints[1].action, "filter");
+        assert_eq!(hints[3].action, "close");
     }
 }

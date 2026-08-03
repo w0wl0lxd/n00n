@@ -11,7 +11,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Paragraph, Wrap};
 use unicode_width::UnicodeWidthStr;
 
 const TITLE: &str = " Keybindings ";
@@ -424,7 +424,11 @@ impl HelpModal {
             }
         }
 
-        let total = u16::try_from(lines.len()).unwrap_or_else(|_| u16::MAX);
+        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+        let content_width = crate::cast::u32_to_u16(u32::from(area.width) * 50 / 100)
+            .saturating_sub(2)
+            .max(1);
+        let total = u16::try_from(paragraph.line_count(content_width)).unwrap_or_else(|_| u16::MAX);
         let modal = Modal {
             title: TITLE,
             width_percent: 50,
@@ -435,8 +439,7 @@ impl HelpModal {
         self.scroll.update_dimensions(total, viewport_h);
         let scroll = self.scroll.offset();
 
-        let paragraph = Paragraph::new(lines).scroll((scroll, 0));
-        frame.render_widget(paragraph, inner);
+        frame.render_widget(paragraph.scroll((scroll, 0)), inner);
 
         if total > viewport_h {
             render_vertical_scrollbar(frame, inner, total, scroll, None);
