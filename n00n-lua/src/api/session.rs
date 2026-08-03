@@ -55,10 +55,10 @@ async fn list(lua: Lua, #[ctx] tx: Option<flume::Sender<UiAction>>) -> LuaResult
     roundtrip(lua, tx, SessionRequest::List).await
 }
 
-/// Lists the sessions currently running in this UI. Status is "working",
-/// "needs_input", or "idle".
+/// Lists the sessions currently running in this UI. Agent callers only see
+/// their ancestors and descendants. Status is "working", "needs_input", or "idle".
 ///
-/// @return (table|nil, string|nil) Array of `{id, title, status, updated_at, focused}`, or nil and an error.
+/// @return (table|nil, string|nil) Array of `{id, title, kind, parent_id, status, updated_at, focused}`, or nil and an error.
 /// @example
 /// local live, err = n00n.session.live()
 #[lua_fn]
@@ -124,8 +124,9 @@ async fn delete(
 /// Starts a new session in the current project.
 ///
 /// @param opts table? Optional fields: prompt (string) first user message
-///   to submit right away; focus (boolean) switch the UI to the new session;
-///   parent_id (string?) session that spawned this session.
+///   to submit right away; title (string) display title; focus (boolean) switch
+///   the UI to the new session; parent_id (string?) must match the host-owned
+///   invoking session when called by an agent.
 /// @return (string|nil, string|nil) New session id, or nil and an error.
 /// @example
 /// local id, err = n00n.session.new({ prompt = "fix the tests", focus = true })
@@ -139,7 +140,7 @@ async fn new(
         Some(opts) => (
             opts.get("prompt")?,
             opts.get("title")?,
-            opts.get("focus").unwrap_or_else(|_| false),
+            opts.get::<bool>("focus").unwrap_or(false),
             opts.get("parent_id")?,
         ),
         None => (None, None, false, None),

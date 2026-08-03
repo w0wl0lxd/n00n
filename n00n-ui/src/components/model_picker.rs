@@ -203,7 +203,7 @@ impl ModelPicker {
             return ModelPickerAction::AssignTier(spec, tier);
         }
         match self.picker.handle_key(key) {
-            PickerAction::Select(_, entry) => ModelPickerAction::Select(entry.spec),
+            PickerAction::Select(entry) => ModelPickerAction::Select(entry.spec),
             PickerAction::Close => ModelPickerAction::Close,
             PickerAction::Consumed | PickerAction::Toggle(..) => ModelPickerAction::Consumed,
         }

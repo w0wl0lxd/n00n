@@ -5003,12 +5003,21 @@ fn team_launcher_uses_native_model_picker_and_amp_labels() {
     let action = rx
         .recv_timeout(Duration::from_secs(5))
         .expect("Team launcher did not submit a session prompt");
-    let n00n_lua::UiAction::Session { req, reply_tx, .. } = action else {
+    let n00n_lua::UiAction::Session {
+        req,
+        reply_tx,
+        caller,
+        ..
+    } = action
+    else {
         panic!("expected Team session prompt");
     };
     let n00n_lua::SessionRequest::Prompt { text, .. } = req else {
         panic!("expected a prompt request");
     };
+    assert!(caller.is_agent(), "caller should be an agent");
+    assert_eq!(caller.session_id(), Some(&session_id));
+    assert_eq!(caller.tool(), Some("team"));
     assert!(
         text.contains("model: anthropic/claude-sonnet-4-6"),
         "submitted prompt: {text}"

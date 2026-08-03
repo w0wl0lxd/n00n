@@ -35,7 +35,7 @@ use crate::api::tool::{LuaTool, PendingTool, PendingTools, PermissionScopeSpec, 
 use crate::api::ui::HintStore;
 use crate::api::ui::buf::{BufHandle, BufferStore};
 use crate::api::util::command::{CommandHandlerMap, HintWriter, publish_command_snapshot};
-use crate::api::util::command::{LuaCommandReader, LuaCommandWriter, UiAction};
+use crate::api::util::command::{LuaCommandReader, LuaCommandWriter, SessionCaller, UiAction};
 use crate::api::util::convert::json_to_lua;
 use crate::api::util::ctx::LuaCtx;
 use crate::api::util::setup::ConfigStore;
@@ -611,12 +611,12 @@ pub(crate) fn with_live_ctx<R>(lua: &Lua, f: impl FnOnce(&LiveCtx) -> R) -> Opti
     lock_cell(&handle).live.as_ref().map(f)
 }
 
-pub(crate) fn active_session_caller(lua: &Lua) -> crate::api::util::command::SessionCaller {
+pub(crate) fn active_session_caller(lua: &Lua) -> SessionCaller {
     let Some(handle) = lua.app_data_ref::<TaskHandle>() else {
-        return crate::api::util::command::SessionCaller::agent(None, None);
+        return SessionCaller::agent(None, None);
     };
     let cell = lock_cell(&handle);
-    crate::api::util::command::SessionCaller::agent(
+    SessionCaller::agent(
         cell.caller_session_id.as_ref().map(ToString::to_string),
         cell.caller_tool.as_ref().map(ToString::to_string),
     )
@@ -917,8 +917,8 @@ fn spawn_async_task(
 
         let scope = TaskScope::new(&lua, {
             let mut cell = TaskCell::new(task.cancel.clone(), task.deadline, task.live_ctx.clone());
-            cell.caller_session_id = task.caller_session_id.clone();
-            cell.caller_tool = task.caller_tool.clone();
+            cell.caller_session_id.clone_from(&task.caller_session_id);
+            cell.caller_tool.clone_from(&task.caller_tool);
             cell
         });
         let result = scope
@@ -2612,6 +2612,21 @@ mod tests {
         let lua = Lua::new();
         lua.set_app_data(BufferStore::new());
         lua
+    }
+
+    #[test]
+    fn active_session_caller_comes_from_host_tool_context() {
+        let lua = test_lua();
+        let session_id = SessionRef::generate();
+        let mut cell = TaskCell::new(CancelToken::none(), None, None);
+        cell.caller_session_id = Some(session_id.clone());
+        cell.caller_tool = Some(Arc::from("task"));
+        let _scope = TaskScope::new(&lua, cell);
+
+        let caller = active_session_caller(&lua);
+        assert_eq!(caller.session_id(), Some(session_id.as_str()));
+        assert_eq!(caller.tool(), Some("task"));
+        assert!(!caller.is_host());
     }
 
     #[test]

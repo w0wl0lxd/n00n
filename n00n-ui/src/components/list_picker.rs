@@ -53,7 +53,7 @@ impl PickerItem for String {
 
 pub enum PickerAction<T> {
     Consumed,
-    Select(usize, T),
+    Select(T),
     Toggle(usize, bool),
     Close,
 }
@@ -368,7 +368,7 @@ impl<T: PickerItem> ListPicker<T> {
                     Some(idx) => {
                         if let Some(mut state) = self.state.take() {
                             let item = state.items.remove(idx);
-                            return PickerAction::Select(idx, item);
+                            return PickerAction::Select(item);
                         }
                         PickerAction::Consumed
                     }
@@ -979,7 +979,7 @@ mod tests {
         p.handle_key(key(KeyCode::Down));
 
         let action = p.handle_key(key(KeyCode::Enter));
-        assert!(matches!(action, PickerAction::Select(1, ref e) if e.label == "B"));
+        assert!(matches!(action, PickerAction::Select(ref e) if e.label == "B"));
         assert!(!p.is_open());
     }
 

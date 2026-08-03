@@ -922,15 +922,14 @@ impl App {
             }
             return Some(match self.task_picker.handle_key(key) {
                 PickerAction::Consumed | PickerAction::Toggle(..) => vec![],
-                PickerAction::Select(idx, _) => {
+                PickerAction::Select(entry) => {
                     self.task_picker_original = None;
-                    match self.task_picker.item(idx).map(|entry| entry.target) {
-                        Some(TaskTarget::Chat(chat)) => {
+                    match entry.target {
+                        TaskTarget::Chat(chat) => {
                             self.active_chat = chat;
                             vec![]
                         }
-                        Some(TaskTarget::Session(id)) => vec![Action::FocusSession(id)],
-                        None => vec![],
+                        TaskTarget::Session(id) => vec![Action::FocusSession(id)],
                     }
                 }
                 PickerAction::Close => {

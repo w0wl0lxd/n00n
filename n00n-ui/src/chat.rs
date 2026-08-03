@@ -180,20 +180,7 @@ impl Chat {
                 }
             }
             AgentEvent::FusionPhase { phase, label } => {
-                let phase = match phase {
-                    n00n_agent::FusionPhase::Idle => "Idle",
-                    n00n_agent::FusionPhase::Planning => "Planning",
-                    n00n_agent::FusionPhase::Executing => "Executing",
-                    n00n_agent::FusionPhase::Reviewing => "Reviewing",
-                    n00n_agent::FusionPhase::LeadFallback => "Lead fallback",
-                    n00n_agent::FusionPhase::Complete => "Complete",
-                    n00n_agent::FusionPhase::Cancelled => "Cancelled",
-                    n00n_agent::FusionPhase::Failed => "Failed",
-                };
-                let text =
-                    label.map_or_else(|| phase.to_owned(), |label| format!("{phase}: {label}"));
-                self.messages_panel
-                    .push(DisplayMessage::new(DisplayRole::Control, text));
+                self.push_fusion_phase(phase, label.as_deref());
             }
             AgentEvent::QueueItemConsumed {
                 text,
@@ -208,7 +195,6 @@ impl Chat {
                     control,
                 };
             }
-            AgentEvent::Retry { .. } => unreachable!("handled before handle_event"),
             AgentEvent::Done { .. } => {
                 self.messages_panel.flush();
                 return ChatEventResult::Done;
@@ -251,7 +237,7 @@ impl Chat {
             AgentEvent::FusionPhaseChanged { phase, label } => {
                 self.push_fusion_phase(phase, label.as_deref());
             }
-            AgentEvent::SubagentHistory { .. } => {}
+            AgentEvent::Retry { .. } | AgentEvent::SubagentHistory { .. } => {}
             AgentEvent::LiveToolBuf { id, body } => {
                 self.messages_panel.register_live_buf(id, body);
             }

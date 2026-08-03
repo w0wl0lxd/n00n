@@ -1480,6 +1480,7 @@ fn background_runtime_appears_in_tasks_and_navigates_by_session_id() {
     assert_eq!(task.detail(), Some(TASK_RUNNING_DETAIL));
 
     app.update(Msg::Key(key(KeyCode::Down)));
+    assert_eq!(app.task_picker.selected_index(), Some(1));
     assert_eq!(
         app.resolve_render_chat(),
         0,

@@ -7,6 +7,7 @@
 //! waits on every event source at once and wakes the moment a plugin action,
 //! agent event, or keypress arrives instead of sleeping in `event::poll`.
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -68,6 +69,8 @@ const STORAGE_WRITER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const DELETE_FOCUSED_ERR: &str = "cannot delete the focused session";
 const NOT_LIVE_ERR: &str = "session not live";
 const TEAM_TOOL_NAME: &str = "team";
+const TASK_SESSION_PROMPT_PREFIX: &str = "Use the task tool now ";
+const TEAM_SESSION_PROMPT_PREFIX: &str = "Use the team tool now.";
 const MAX_SESSION_DEPTH: usize = 4;
 const MAX_ROOT_DESCENDANTS: usize = 16;
 const MAX_ACTIVE_ROOT_DESCENDANTS: usize = 8;
@@ -197,14 +200,25 @@ fn runtime_kind(session: &AppSession) -> String {
     }
     let title = session.title.to_ascii_lowercase();
     if title.starts_with("team:") {
-        "team".to_owned()
-    } else if title.starts_with("workflow:") {
-        "workflow".to_owned()
-    } else if title.starts_with("task:") {
-        "task".to_owned()
-    } else {
-        "agent".to_owned()
+        return "team".to_owned();
     }
+    if title.starts_with("workflow:") {
+        return "workflow".to_owned();
+    }
+    if title.starts_with("task:") {
+        return "task".to_owned();
+    }
+    let prompt = session.messages.iter().find_map(|message| {
+        matches!(message.role, n00n_providers::Role::User)
+            .then(|| message.first_text_content())
+            .flatten()
+    });
+    match prompt {
+        Some(prompt) if prompt.starts_with(TASK_SESSION_PROMPT_PREFIX) => "task",
+        Some(prompt) if prompt.starts_with(TEAM_SESSION_PROMPT_PREFIX) => "team",
+        _ => "agent",
+    }
+    .to_owned()
 }
 
 fn runtime_kind_for_tool(tool: Option<&str>) -> String {
@@ -215,6 +229,139 @@ fn runtime_kind_for_tool(tool: Option<&str>) -> String {
         _ => "agent",
     }
     .to_owned()
+}
+
+#[derive(Clone, Copy)]
+struct LineageNode {
+    id: n00nId,
+    parent_id: Option<n00nId>,
+    active: bool,
+}
+
+impl LineageNode {
+    fn new(id: n00nId, parent_id: Option<n00nId>, active: bool) -> Self {
+        Self {
+            id,
+            parent_id,
+            active,
+        }
+    }
+}
+
+struct LineageSnapshot {
+    nodes: Vec<LineageNode>,
+    parent_map: HashMap<n00nId, Option<n00nId>>,
+}
+
+impl LineageSnapshot {
+    fn new(nodes: Vec<LineageNode>) -> Self {
+        let parent_map: HashMap<_, _> =
+            nodes.iter().map(|node| (node.id, node.parent_id)).collect();
+        Self { nodes, parent_map }
+    }
+
+    fn node(&self, id: n00nId) -> Option<&LineageNode> {
+        self.nodes.iter().find(|node| node.id == id)
+    }
+
+    fn is_ancestor(&self, ancestor: n00nId, mut session: n00nId) -> bool {
+        for _ in 0..self.nodes.len() {
+            let Some(parent) = self.parent_map.get(&session).copied().flatten() else {
+                return false;
+            };
+            if parent == ancestor {
+                return true;
+            }
+            session = parent;
+        }
+        false
+    }
+
+    fn related(&self, left: n00nId, right: n00nId) -> bool {
+        left == right || self.is_ancestor(left, right) || self.is_ancestor(right, left)
+    }
+
+    fn can_mutate(&self, caller: n00nId, target: n00nId) -> bool {
+        caller == target || self.is_ancestor(caller, target)
+    }
+
+    fn root_and_depth(&self, mut session: n00nId) -> Result<(n00nId, usize), String> {
+        let mut visited = HashSet::new();
+        let mut depth = 0;
+        loop {
+            if !visited.insert(session) {
+                return Err("session lineage contains a cycle".into());
+            }
+            let Some(parent) = self.parent_map.get(&session).copied().flatten() else {
+                return Ok((session, depth));
+            };
+            session = parent;
+            depth += 1;
+        }
+    }
+
+    fn admit_child(&self, parent: n00nId) -> Result<(), String> {
+        if self.node(parent).is_none() {
+            return Err(format!("parent session is not live: {parent}"));
+        }
+        let (root, parent_depth) = self.root_and_depth(parent)?;
+        if parent_depth + 1 > MAX_SESSION_DEPTH {
+            return Err(format!("session depth limit ({MAX_SESSION_DEPTH}) reached"));
+        }
+        let descendants = self
+            .nodes
+            .iter()
+            .filter(|node| self.is_ancestor(root, node.id))
+            .count();
+        if descendants >= MAX_ROOT_DESCENDANTS {
+            return Err(format!(
+                "session descendant limit ({MAX_ROOT_DESCENDANTS}) reached"
+            ));
+        }
+        let active = self
+            .nodes
+            .iter()
+            .filter(|node| node.active && self.is_ancestor(root, node.id))
+            .count();
+        if active >= MAX_ACTIVE_ROOT_DESCENDANTS {
+            return Err(format!(
+                "active session descendant limit ({MAX_ACTIVE_ROOT_DESCENDANTS}) reached"
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn validate_caller_identity(
+    is_host: bool,
+    session_id: Option<&str>,
+    is_live: impl FnOnce(n00nId) -> bool,
+) -> Result<Option<n00nId>, String> {
+    if is_host {
+        return Ok(None);
+    }
+    let raw_id = session_id.ok_or_else(|| "session request has no invoking session".to_owned())?;
+    let id = parse_session_id(raw_id)?;
+    if !is_live(id) {
+        return Err(format!("invoking session is not live: {id}"));
+    }
+    Ok(Some(id))
+}
+
+fn resolve_parent_id(
+    is_host: bool,
+    caller_id: Option<n00nId>,
+    requested_parent: Option<n00nId>,
+) -> Result<Option<n00nId>, String> {
+    if is_host {
+        return Ok(requested_parent);
+    }
+    let caller_id =
+        caller_id.ok_or_else(|| "session request has no invoking session".to_owned())?;
+    if requested_parent.is_some_and(|requested| requested != caller_id) {
+        return Err("session parent does not match the invoking session".into());
+    }
+    Ok(Some(caller_id))
 }
 
 impl SessionRuntime {
@@ -572,7 +719,7 @@ impl<'t> EventLoop<'t> {
         }
 
         let (submission_persist_tx, submission_persist_rx) = flume::unbounded();
-        Ok(Self {
+        let mut event_loop = Self {
             terminal,
             sessions: runtimes,
             focused,
@@ -587,7 +734,9 @@ impl<'t> EventLoop<'t> {
             last_save: Instant::now(),
             _model_fetch_task: bg.task,
             dirty: true,
-        })
+        };
+        event_loop.sync_runtime_tasks();
+        Ok(event_loop)
     }
 
     fn focused_app(&mut self) -> &mut App {
@@ -850,26 +999,41 @@ impl<'t> EventLoop<'t> {
             }
         }
     }
-
     fn emit_status_changes(&mut self) {
-        let Some(handle) = self.ctx.lua_event_handle.as_ref() else {
-            return;
-        };
-        for (i, rt) in self.sessions.iter_mut().enumerate() {
-            let status = SessionStatus::of(&rt.app);
-            if status == rt.last_status {
+        let mut tasks_changed = false;
+        for (i, runtime) in self.sessions.iter_mut().enumerate() {
+            let status = SessionStatus::of(&runtime.app);
+            if status == runtime.last_status {
                 continue;
             }
-            rt.last_status = status;
-            handle.fire_autocmd(
-                "SessionStatusChanged",
-                json!({
-                    "session_id": rt.id(),
-                    "title": rt.app.state.session.title,
-                    "status": status.as_str(),
-                    "focused": i == self.focused,
-                }),
-            );
+            runtime.last_status = status;
+            if runtime.app.state.session.meta.parent_id.is_some() {
+                let task_status = match status {
+                    SessionStatus::Working | SessionStatus::NeedsInput => {
+                        RuntimeTaskStatus::Running
+                    }
+                    SessionStatus::Idle if matches!(runtime.app.status, Status::Error { .. }) => {
+                        RuntimeTaskStatus::Error
+                    }
+                    SessionStatus::Idle => RuntimeTaskStatus::Done,
+                };
+                tasks_changed |= runtime.task_status != task_status;
+                runtime.task_status = task_status;
+            }
+            if let Some(handle) = self.ctx.lua_event_handle.as_ref() {
+                handle.fire_autocmd(
+                    "SessionStatusChanged",
+                    json!({
+                        "session_id": runtime.id(),
+                        "title": runtime.app.state.session.title,
+                        "status": status.as_str(),
+                        "focused": i == self.focused,
+                    }),
+                );
+            }
+        }
+        if tasks_changed {
+            self.sync_runtime_tasks();
         }
     }
 
@@ -884,13 +1048,33 @@ impl<'t> EventLoop<'t> {
     ) {
         match req {
             SessionRequest::List => {
+                let caller_id = match self.caller_id_result(caller) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        let _ = reply_tx.send(Err(error));
+                        return;
+                    }
+                };
+                let allowed_ids = caller_id.map(|id| {
+                    let lineage = self.lineage();
+                    self.sessions
+                        .iter()
+                        .filter(|runtime| lineage.related(id, runtime.id()))
+                        .map(SessionRuntime::id)
+                        .collect::<HashSet<_>>()
+                });
                 let storage = self.ctx.storage.clone();
                 smol::unblock(move || {
                     let cwd =
                         std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                     let reply = AppSession::list(&cwd.to_string_lossy(), &storage)
                         .map_err(|e| e.to_string())
-                        .and_then(|list| serde_json::to_value(list).map_err(|e| e.to_string()));
+                        .and_then(|mut list| {
+                            if let Some(allowed_ids) = &allowed_ids {
+                                list.retain(|session| allowed_ids.contains(&session.id));
+                            }
+                            serde_json::to_value(list).map_err(|e| e.to_string())
+                        });
                     let _ = reply_tx.send(reply);
                 })
                 .detach();
@@ -906,6 +1090,10 @@ impl<'t> EventLoop<'t> {
                         return;
                     }
                 };
+                if let Err(error) = self.authorize_mutation(caller, id) {
+                    let _ = reply_tx.send(Err(error));
+                    return;
+                }
                 if let Some(i) = self.position(id) {
                     if i == self.focused {
                         let _ = reply_tx.send(Err(DELETE_FOCUSED_ERR.into()));
@@ -913,6 +1101,7 @@ impl<'t> EventLoop<'t> {
                     }
                     let rt = self.remove_runtime(i);
                     rt.handles.cancel();
+                    self.sync_runtime_tasks();
                 }
                 self.ctx.storage_writer.delete(id, move |res| {
                     let reply = match res {
@@ -932,11 +1121,14 @@ impl<'t> EventLoop<'t> {
                         return;
                     }
                 };
+                let lineage = self.lineage();
                 let list: Vec<_> = self
                     .sessions
                     .iter()
                     .enumerate()
-                    .filter(|(_, rt)| caller_id.is_none_or(|id| self.lineage_related(id, rt.id())))
+                    .filter(|(_, rt)| {
+                        caller.is_host() || caller_id.is_some_and(|id| lineage.related(id, rt.id()))
+                    })
                     .map(|(i, rt)| {
                         json!({
                             "id": rt.id(),
@@ -954,6 +1146,7 @@ impl<'t> EventLoop<'t> {
             }
             SessionRequest::Status { id } => {
                 let reply = parse_session_id(&id).and_then(|id| {
+                    self.authorize_related(caller, id)?;
                     let idx = self
                         .position(id)
                         .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))?;
@@ -979,7 +1172,14 @@ impl<'t> EventLoop<'t> {
                 let _ = reply_tx.send(reply);
             }
             SessionRequest::Current => {
-                let _ = reply_tx.send(Ok(json!(self.sessions[self.focused].id())));
+                let reply = self.caller_id_result(caller).map(|id| {
+                    let current = match id {
+                        Some(id) => id,
+                        None => self.sessions[self.focused].id(),
+                    };
+                    json!(current)
+                });
+                let _ = reply_tx.send(reply);
             }
             SessionRequest::New {
                 prompt,
@@ -1001,24 +1201,16 @@ impl<'t> EventLoop<'t> {
                         return;
                     }
                 };
-                let parent_id = if let Some(caller_id) = caller_id {
-                    if requested_parent.is_some_and(|requested| requested != caller_id) {
-                        let _ = reply_tx.send(Err(
-                            "session parent does not match the invoking session".into(),
-                        ));
-                        return;
-                    }
-                    Some(caller_id)
-                } else if caller.is_host() {
-                    requested_parent
-                } else if requested_parent.is_some() {
-                    let _ = reply_tx.send(Err("session parent requires a trusted caller".into()));
-                    return;
-                } else {
-                    None
-                };
+                let parent_id =
+                    match resolve_parent_id(caller.is_host(), caller_id, requested_parent) {
+                        Ok(id) => id,
+                        Err(error) => {
+                            let _ = reply_tx.send(Err(error));
+                            return;
+                        }
+                    };
                 if let Some(parent) = parent_id
-                    && let Err(error) = self.admit_child(parent)
+                    && let Err(error) = self.lineage().admit_child(parent)
                 {
                     let _ = reply_tx.send(Err(error));
                     return;
@@ -1046,7 +1238,6 @@ impl<'t> EventLoop<'t> {
                 } else {
                     self.sessions[idx].app.save_session();
                 }
-                self.sync_runtime_tasks();
                 if focus {
                     self.set_focus(idx);
                 }
@@ -1058,18 +1249,25 @@ impl<'t> EventLoop<'t> {
                 steer,
                 control,
             } => {
-                let idx = match id {
-                    None => Ok(self.focused),
-                    Some(id) => parse_session_id(&id).and_then(|id| {
-                        self.position(id)
-                            .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))
-                    }),
-                };
-                let _ =
-                    reply_tx.send(idx.and_then(|idx| self.submit_text(idx, text, steer, control)));
+                let reply = (|| {
+                    let caller_id = self.caller_id_result(caller)?;
+                    let target = match (id, caller_id) {
+                        (Some(id), _) => parse_session_id(&id)?,
+                        (None, Some(caller_id)) => caller_id,
+                        (None, None) => self.sessions[self.focused].id(),
+                    };
+                    self.authorize_mutation(caller, target)?;
+                    let idx = self
+                        .position(target)
+                        .ok_or_else(|| format!("{NOT_LIVE_ERR}: {target}"))?;
+                    self.submit_text(idx, text, steer, control)
+                })();
+                let _ = reply_tx.send(reply);
             }
             SessionRequest::Cancel { id } => {
-                let reply = parse_session_id(&id).and_then(|id| {
+                let reply = (|| {
+                    let id = parse_session_id(&id)?;
+                    self.authorize_mutation(caller, id)?;
                     let idx = self
                         .position(id)
                         .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))?;
@@ -1078,13 +1276,18 @@ impl<'t> EventLoop<'t> {
                     }
                     let actions = self.sessions[idx].app.cancel_current_run();
                     self.dispatch(idx, actions);
+                    self.sessions[idx].task_status = RuntimeTaskStatus::Done;
+                    self.sync_runtime_tasks();
                     Ok(json!(true))
-                });
+                })();
                 let _ = reply_tx.send(reply);
             }
             SessionRequest::Focus { id } => {
                 let reply = parse_session_id(&id)
-                    .and_then(|id| self.focus_session(id))
+                    .and_then(|id| {
+                        self.authorize_mutation(caller, id)?;
+                        self.focus_session(id)
+                    })
                     .map(|()| json!(true));
                 let _ = reply_tx.send(reply);
             }
@@ -1092,10 +1295,12 @@ impl<'t> EventLoop<'t> {
                 let title = normalize_title(&title);
                 let reply = (|| {
                     let id = parse_session_id(&id)?;
+                    self.authorize_mutation(caller, id)?;
                     if let Some(i) = self.position(id) {
                         let app = &mut self.sessions[i].app;
                         app.state.session.title = title;
                         app.save_session();
+                        self.sync_runtime_tasks();
                     } else {
                         let mut session =
                             AppSession::load(id, &self.ctx.storage).map_err(|e| e.to_string())?;
@@ -1111,91 +1316,57 @@ impl<'t> EventLoop<'t> {
     }
 
     fn caller_id_result(&self, caller: &SessionCaller) -> Result<Option<n00nId>, String> {
-        let Some(id) = caller.session_id() else {
-            return Ok(None);
+        validate_caller_identity(caller.is_host(), caller.session_id(), |id| {
+            self.position(id).is_some()
+        })
+    }
+
+    fn lineage(&self) -> LineageSnapshot {
+        LineageSnapshot::new(
+            self.sessions
+                .iter()
+                .map(|runtime| {
+                    LineageNode::new(
+                        runtime.id(),
+                        runtime.app.state.session.meta.parent_id,
+                        runtime.task_status == RuntimeTaskStatus::Running,
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    fn authorize_related(&self, caller: &SessionCaller, target: n00nId) -> Result<(), String> {
+        let Some(caller_id) = self.caller_id_result(caller)? else {
+            return Ok(());
         };
-        let id = parse_session_id(id)?;
-        self.position(id)
-            .ok_or_else(|| format!("invoking session is not live: {id}"))?;
-        Ok(Some(id))
+        if self.lineage().related(caller_id, target) {
+            Ok(())
+        } else {
+            Err(format!("session is outside the invoking lineage: {target}"))
+        }
     }
 
-    fn parent_of(&self, id: n00nId) -> Option<n00nId> {
-        self.position(id)
-            .and_then(|index| self.sessions[index].app.state.session.meta.parent_id)
-    }
-
-    fn is_ancestor(&self, ancestor: n00nId, mut session: n00nId) -> bool {
-        for _ in 0..self.sessions.len() {
-            let Some(parent) = self.parent_of(session) else {
-                return false;
-            };
-            if parent == ancestor {
-                return true;
-            }
-            session = parent;
+    fn authorize_mutation(&self, caller: &SessionCaller, target: n00nId) -> Result<(), String> {
+        let Some(caller_id) = self.caller_id_result(caller)? else {
+            return Ok(());
+        };
+        if self.lineage().can_mutate(caller_id, target) {
+            Ok(())
+        } else {
+            Err(format!("session is outside the invoking subtree: {target}"))
         }
-        false
-    }
-
-    fn lineage_related(&self, left: n00nId, right: n00nId) -> bool {
-        left == right || self.is_ancestor(left, right) || self.is_ancestor(right, left)
-    }
-
-    fn root_and_depth(&self, mut session: n00nId) -> (n00nId, usize) {
-        let mut depth = 0;
-        for _ in 0..self.sessions.len() {
-            let Some(parent) = self.parent_of(session) else {
-                break;
-            };
-            session = parent;
-            depth += 1;
-        }
-        (session, depth)
-    }
-
-    fn admit_child(&self, parent: n00nId) -> Result<(), String> {
-        if self.position(parent).is_none() {
-            return Err(format!("parent session is not live: {parent}"));
-        }
-        let (root, parent_depth) = self.root_and_depth(parent);
-        if parent_depth + 1 > MAX_SESSION_DEPTH {
-            return Err(format!("session depth limit ({MAX_SESSION_DEPTH}) reached"));
-        }
-        let descendants = self
-            .sessions
-            .iter()
-            .filter(|runtime| self.is_ancestor(root, runtime.id()))
-            .count();
-        if descendants >= MAX_ROOT_DESCENDANTS {
-            return Err(format!(
-                "session descendant limit ({MAX_ROOT_DESCENDANTS}) reached"
-            ));
-        }
-        let active = self
-            .sessions
-            .iter()
-            .filter(|runtime| {
-                self.is_ancestor(root, runtime.id())
-                    && runtime.task_status == RuntimeTaskStatus::Running
-            })
-            .count();
-        if active >= MAX_ACTIVE_ROOT_DESCENDANTS {
-            return Err(format!(
-                "active session descendant limit ({MAX_ACTIVE_ROOT_DESCENDANTS}) reached"
-            ));
-        }
-        Ok(())
     }
 
     fn sync_runtime_tasks(&mut self) {
+        let lineage = self.lineage();
         let projected: Vec<Vec<RuntimeTaskEntry>> = self
             .sessions
             .iter()
             .map(|owner| {
                 self.sessions
                     .iter()
-                    .filter(|runtime| self.is_ancestor(owner.id(), runtime.id()))
+                    .filter(|runtime| lineage.is_ancestor(owner.id(), runtime.id()))
                     .map(|runtime| RuntimeTaskEntry {
                         id: runtime.id(),
                         title: runtime.app.state.session.title.clone(),
@@ -1251,11 +1422,13 @@ impl<'t> EventLoop<'t> {
         if idx < self.focused {
             self.focused -= 1;
         }
+        self.sync_runtime_tasks();
         rt
     }
 
     fn push_runtime(&mut self, rt: SessionRuntime) -> usize {
         self.sessions.push(rt);
+        self.sync_runtime_tasks();
         self.sessions.len() - 1
     }
 
@@ -1613,6 +1786,7 @@ impl<'t> EventLoop<'t> {
                         model: new_model,
                         provider: Arc::from(new_provider),
                     }));
+                    self.sync_runtime_tasks();
                 }
                 Err(e) => {
                     let msg = format!("Failed to create provider: {e}");
@@ -1774,9 +1948,12 @@ fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        DRAIN_BUDGET, DrainScheduler, TEAM_TOOL_NAME, draw_then_post_terminal, paused_team_run,
-        should_save_periodically, take_painted_submissions,
+        DRAIN_BUDGET, DrainScheduler, LineageNode, LineageSnapshot, MAX_ACTIVE_ROOT_DESCENDANTS,
+        MAX_ROOT_DESCENDANTS, MAX_SESSION_DEPTH, TEAM_TOOL_NAME, draw_then_post_terminal,
+        paused_team_run, resolve_parent_id, runtime_kind, should_save_periodically,
+        take_painted_submissions, validate_caller_identity,
     };
+    use crate::AppSession;
     use crate::components::Status;
     use n00n_providers::{ContentBlock, Message, Role};
     use n00n_storage::id::n00nId;
@@ -1788,6 +1965,102 @@ mod tests {
         widgets::Paragraph,
     };
     use std::io;
+
+    #[test]
+    fn caller_identity_rejects_missing_and_unknown_agent_sessions() {
+        assert!(validate_caller_identity(false, None, |_| true).is_err());
+        assert!(validate_caller_identity(false, Some("not-an-id"), |_| true).is_err());
+        let unknown = n00nId::generate();
+        assert!(validate_caller_identity(false, Some(&unknown.to_string()), |_| false).is_err());
+        assert_eq!(
+            validate_caller_identity(true, None, |_| false).expect("host is trusted"),
+            None
+        );
+    }
+
+    #[test]
+    fn host_owned_parent_rejects_spoofing() {
+        let caller = n00nId::generate();
+        let forged = n00nId::generate();
+        assert_eq!(
+            resolve_parent_id(false, Some(caller), Some(caller)).expect("matching parent"),
+            Some(caller)
+        );
+        assert!(resolve_parent_id(false, Some(caller), Some(forged)).is_err());
+        assert_eq!(
+            resolve_parent_id(true, None, Some(forged)).expect("host parent"),
+            Some(forged)
+        );
+    }
+
+    #[test]
+    fn lineage_scope_excludes_siblings_and_ancestors_from_mutation() {
+        let root = n00nId::generate();
+        let child = n00nId::generate();
+        let sibling = n00nId::generate();
+        let grandchild = n00nId::generate();
+        let lineage = LineageSnapshot::new(vec![
+            LineageNode::new(root, None, false),
+            LineageNode::new(child, Some(root), true),
+            LineageNode::new(sibling, Some(root), true),
+            LineageNode::new(grandchild, Some(child), true),
+        ]);
+
+        assert!(lineage.related(child, root));
+        assert!(lineage.related(child, grandchild));
+        assert!(!lineage.related(child, sibling));
+        assert!(lineage.can_mutate(root, grandchild));
+        assert!(!lineage.can_mutate(child, root));
+        assert!(!lineage.can_mutate(child, sibling));
+    }
+
+    #[test]
+    fn lineage_admission_enforces_depth_and_active_descendant_limits() {
+        let root = n00nId::generate();
+        let mut nodes = vec![LineageNode::new(root, None, false)];
+        let mut parent = root;
+        for _ in 0..MAX_SESSION_DEPTH {
+            let child = n00nId::generate();
+            nodes.push(LineageNode::new(child, Some(parent), false));
+            parent = child;
+        }
+        let depth_limited = LineageSnapshot::new(nodes);
+        assert!(depth_limited.admit_child(parent).is_err());
+
+        let active_nodes = std::iter::once(LineageNode::new(root, None, false))
+            .chain(
+                (0..MAX_ACTIVE_ROOT_DESCENDANTS)
+                    .map(|_| LineageNode::new(n00nId::generate(), Some(root), true)),
+            )
+            .collect();
+        let active_limited = LineageSnapshot::new(active_nodes);
+        assert!(active_limited.admit_child(root).is_err());
+
+        let descendant_nodes = std::iter::once(LineageNode::new(root, None, false))
+            .chain(
+                (0..MAX_ROOT_DESCENDANTS)
+                    .map(|_| LineageNode::new(n00nId::generate(), Some(root), false)),
+            )
+            .collect();
+        let descendant_limited = LineageSnapshot::new(descendant_nodes);
+        assert!(descendant_limited.admit_child(root).is_err());
+    }
+    #[test]
+    fn restored_background_session_recovers_kind_from_prompt() {
+        let parent = n00nId::generate();
+        let mut task = AppSession::new("openai/test", "/project");
+        task.meta.parent_id = Some(parent);
+        task.title = "inspect registration".into();
+        task.messages.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "Use the task tool now with background=false. Do not only describe this request."
+                    .into(),
+            }],
+            ..Default::default()
+        });
+        assert_eq!(runtime_kind(&task), "task");
+    }
 
     #[test]
     fn paused_team_run_requires_matching_team_tool_call() {
