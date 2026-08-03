@@ -129,7 +129,7 @@ impl Cursor {
     ) -> Result<Self, AgentError> {
         let trust = env_flag(TRUST_ENV, false);
         let yolo = env_flag(YOLO_ENV, false);
-        if !trust || !yolo {
+        if !trust_yolo_enabled(trust, yolo) {
             return Err(AgentError::Config {
                 message: TRUST_YOLO_REQUIRED.into(),
             });
@@ -151,6 +151,10 @@ impl Cursor {
     pub(crate) fn has_credentials() -> bool {
         super::KeyPool::resolve("cursor", API_KEY_ENV).is_ok()
             || auth::read_ide_access_token().is_ok()
+    }
+
+    pub(crate) fn has_required_settings() -> bool {
+        trust_yolo_enabled(env_flag(TRUST_ENV, false), env_flag(YOLO_ENV, false))
     }
 
     pub(crate) fn new(timeouts: Timeouts) -> Result<Self, AgentError> {
@@ -941,6 +945,10 @@ fn env_optional(name: &str) -> Option<String> {
     }
 }
 
+const fn trust_yolo_enabled(trust: bool, yolo: bool) -> bool {
+    trust && yolo
+}
+
 fn env_flag(name: &str, default: bool) -> bool {
     match std::env::var(name) {
         Ok(v) => matches!(v.as_str(), "1" | "true" | "yes"),
@@ -994,6 +1002,14 @@ mod tests {
             content: vec![ContentBlock::Text { text: text.into() }],
             ..Default::default()
         }
+    }
+
+    #[test_case(false, false => false; "neither")]
+    #[test_case(true, false => false; "trust_only")]
+    #[test_case(false, true => false; "yolo_only")]
+    #[test_case(true, true => true; "both")]
+    fn trust_and_yolo_are_both_required(trust: bool, yolo: bool) -> bool {
+        trust_yolo_enabled(trust, yolo)
     }
 
     #[test]
