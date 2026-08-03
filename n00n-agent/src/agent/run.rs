@@ -1338,6 +1338,7 @@ mod tests {
     struct MockProvider {
         responses: Mutex<Vec<StreamResponse>>,
         requests: Arc<Mutex<Vec<Vec<Message>>>>,
+        tool_requests: Arc<Mutex<Vec<Value>>>,
         cancel_on_request: Option<usize>,
         calls: AtomicUsize,
     }
@@ -1347,6 +1348,7 @@ mod tests {
             Self {
                 responses: Mutex::new(responses),
                 requests: Arc::new(Mutex::new(Vec::new())),
+                tool_requests: Arc::new(Mutex::new(Vec::new())),
                 cancel_on_request: None,
                 calls: AtomicUsize::new(0),
             }
@@ -1358,6 +1360,7 @@ mod tests {
                 Self {
                     responses: Mutex::new(responses),
                     requests: Arc::clone(&requests),
+                    tool_requests: Arc::new(Mutex::new(Vec::new())),
                     cancel_on_request: None,
                     calls: AtomicUsize::new(0),
                 },
@@ -1365,10 +1368,25 @@ mod tests {
             )
         }
 
+        fn recording_tools(responses: Vec<StreamResponse>) -> (Self, Arc<Mutex<Vec<Value>>>) {
+            let tool_requests = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    responses: Mutex::new(responses),
+                    requests: Arc::new(Mutex::new(Vec::new())),
+                    tool_requests: Arc::clone(&tool_requests),
+                    cancel_on_request: None,
+                    calls: AtomicUsize::new(0),
+                },
+                tool_requests,
+            )
+        }
+
         fn cancel_on_request(responses: Vec<StreamResponse>, request: usize) -> Self {
             Self {
                 responses: Mutex::new(responses),
                 requests: Arc::new(Mutex::new(Vec::new())),
+                tool_requests: Arc::new(Mutex::new(Vec::new())),
                 cancel_on_request: Some(request),
                 calls: AtomicUsize::new(0),
             }
@@ -1381,7 +1399,7 @@ mod tests {
             _: &'a Model,
             messages: &'a [Message],
             _: &'a System,
-            _: &'a Value,
+            tools: &'a Value,
             _: &'a flume::Sender<ProviderEvent>,
             _: RequestOptions,
             _: Option<&'a SessionRef>,
@@ -1392,6 +1410,7 @@ mod tests {
                     return Err(AgentError::Cancelled);
                 }
                 self.requests.lock().unwrap().push(messages.to_vec());
+                self.tool_requests.lock().unwrap().push(tools.clone());
                 let mut responses = self.responses.lock().unwrap();
                 assert!(!responses.is_empty(), "MockProvider: no more responses");
                 Ok(responses.remove(0))
@@ -1462,6 +1481,17 @@ mod tests {
         registry: Arc<ToolRegistry>,
     ) -> (Agent<'_>, flume::Receiver<Envelope>) {
         let (raw_tx, event_rx) = flume::unbounded();
+        let vars = crate::template::env_vars();
+        let filter = ToolFilter::from_config(&config, &default_model(), &[]);
+        let tools = registry.definitions(
+            &vars,
+            &crate::tools::DescriptionContext {
+                filter: &filter,
+                audience: ToolAudience::MAIN,
+                workflow: false,
+            },
+            false,
+        );
         let agent = Agent::new(
             AgentParams {
                 provider: Arc::new(provider),
@@ -1489,8 +1519,8 @@ mod tests {
                 history,
                 system: System::from("system"),
                 event_tx: EventSender::new(raw_tx, 0),
-                tools: serde_json::json!([]),
-                tool_filter: ToolFilter::All,
+                tools,
+                tool_filter: filter,
             },
         );
         (agent, event_rx)
