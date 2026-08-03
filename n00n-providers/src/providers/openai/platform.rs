@@ -17,7 +17,7 @@ use n00n_storage::sessions::{
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::model::Model;
 use crate::provider::{BoxFuture, Provider};
@@ -2049,7 +2049,7 @@ impl Provider for OpenAi {
                         reason: HistoryReplayReason::ContinuationNotFound,
                     });
                 }
-                warn!(
+                info!(
                     chain_reset = true,
                     full_history_fallback = true,
                     "OpenAI Responses chain was not found; replaying approved full history"
