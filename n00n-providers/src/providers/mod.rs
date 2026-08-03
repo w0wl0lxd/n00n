@@ -228,7 +228,6 @@ impl KeyPool {
             return Ok(Self::from_keys(vec![key]));
         }
         match env_error {
-            error @ AgentError::Config { .. } => Err(error),
             AgentError::MissingCredentials { .. } => Err(AgentError::MissingCredentials {
                 message: format!(
                     "{env_var} not set and no saved credentials for '{slug}' — run `n00n auth login {slug}`"
