@@ -265,6 +265,7 @@ impl Copilot {
                 BufReader::new(response.into_body()),
                 event_tx,
                 self.stream_timeout,
+                &crate::RequestOptions::default(),
             )
             .await
         } else {
@@ -322,6 +323,7 @@ impl Copilot {
             event_tx,
             &resolved,
             self.stream_timeout,
+            &opts,
         )
         .await
         .map(|(_, response)| response)
