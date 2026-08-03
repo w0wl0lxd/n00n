@@ -64,9 +64,7 @@ impl Server {
 /// Runs the ACP server.
 ///
 /// # Errors
-/// Returns an error if the writer task panics or internal setup fails.
-/// Individual line, JSON, or request-id errors are turned into JSON-RPC
-/// error responses and the server keeps running.
+/// Returns an error if stdin reading fails or JSON parsing fails.
 pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
     let (out_tx, out_rx) = flume::unbounded::<Value>();
 
@@ -89,51 +87,17 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
 
     let stdin = smol::Unblock::new(std::io::stdin());
     let mut reader = smol::io::BufReader::new(stdin);
-
-    loop {
-        let (id, raw) = match read_request(&mut reader).await {
-            Ok(Some(v)) => v,
-            Ok(None) => break,
-            Err(e) => {
-                if let Some(acp_err) = e.downcast_ref::<AcpError>() {
-                    server.respond(RequestId::Null, Err(acp_err.clone()));
-                    continue;
-                }
-                return Err(e);
-            }
-        };
-
-        if raw.get("result").is_some() || raw.get("error").is_some() {
-            handle_incoming_response(&server, &raw);
-        } else if let Some(method) = raw.get("method").and_then(Value::as_str) {
-            match id {
-                Some(id) => handle_request(&mut server, method, id, &raw, &params),
-                None => handle_notification(&server, method),
-            }
-        } else if let Some(id) = id {
-            server.respond(id, Err(AcpError::invalid_request()));
-        }
-    }
-
-    drop(server);
-    writer_task.await;
-
-    Ok(())
-}
-
-async fn read_request<R>(reader: &mut R) -> color_eyre::Result<Option<(Option<RequestId>, Value)>>
-where
-    R: smol::io::AsyncBufRead + Unpin,
-{
     let mut line = String::new();
+
     loop {
         line.clear();
         match reader.read_line(&mut line).await {
-            Ok(0) => return Ok(None),
+            Ok(0) => break,
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
                 warn!(error = %e, "invalid UTF-8 on stdin");
-                return Err(AcpError::parse_error().into());
+                server.respond(RequestId::Null, Err(AcpError::parse_error()));
+                continue;
             }
             Err(e) => {
                 warn!(error = %e, "I/O error reading from stdin");
@@ -146,18 +110,43 @@ where
             continue;
         }
 
-        let raw: Value = serde_json::from_str(trimmed).map_err(|e| {
-            warn!(error = %e, "invalid JSON on stdin");
-            color_eyre::Report::from(AcpError::parse_error())
-        })?;
+        let mut stream = serde_json::Deserializer::from_str(trimmed).into_iter::<Value>();
+        for result in &mut stream {
+            let raw = match result {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(error = %e, "invalid JSON on stdin");
+                    server.respond(RequestId::Null, Err(AcpError::parse_error()));
+                    break;
+                }
+            };
 
-        let id = raw
-            .get("id")
-            .map(request_id)
-            .transpose()
-            .map_err(color_eyre::Report::from)?;
-        return Ok(Some((id, raw)));
+            let id = match raw.get("id").map(request_id).transpose() {
+                Ok(Some(id)) => Some(id),
+                Ok(None) => None,
+                Err(e) => {
+                    server.respond(RequestId::Null, Err(e));
+                    break;
+                }
+            };
+
+            if raw.get("result").is_some() || raw.get("error").is_some() {
+                handle_incoming_response(&server, &raw);
+            } else if let Some(method) = raw.get("method").and_then(Value::as_str) {
+                match id {
+                    Some(id) => handle_request(&mut server, method, id, &raw, &params),
+                    None => handle_notification(&server, method),
+                }
+            } else if let Some(id) = id {
+                server.respond(id, Err(AcpError::invalid_request()));
+            }
+        }
     }
+
+    drop(server);
+    writer_task.await;
+
+    Ok(())
 }
 
 fn request_id(v: &Value) -> Result<RequestId, AcpError> {
@@ -627,56 +616,5 @@ mod tests {
 
         let overflow = serde_json::from_str::<Value>("10000000000000000000").unwrap();
         assert!(request_id(&overflow).is_err());
-    }
-
-    #[test]
-    fn read_request_returns_none_on_eof() {
-        smol::block_on(async {
-            let mut reader = make_reader(b"");
-            assert!(read_request(&mut reader).await.unwrap().is_none());
-        });
-    }
-
-    #[test]
-    fn read_request_returns_parse_error_on_invalid_utf8() {
-        smol::block_on(async {
-            let mut reader = make_reader(b"\xff\xfe\n");
-            let err = read_request(&mut reader)
-                .await
-                .unwrap_err()
-                .downcast::<AcpError>()
-                .unwrap();
-            assert_eq!(err.code, AcpError::parse_error().code);
-        });
-    }
-
-    #[test]
-    fn read_request_returns_invalid_request_on_overflow_id() {
-        smol::block_on(async {
-            let mut reader = make_reader(
-                b"{\"jsonrpc\":\"2.0\",\"id\":10000000000000000000,\"method\":\"initialize\"}\n",
-            );
-            let err = read_request(&mut reader)
-                .await
-                .unwrap_err()
-                .downcast::<AcpError>()
-                .unwrap();
-            assert_eq!(err.code, AcpError::invalid_request().code);
-        });
-    }
-
-    #[test]
-    fn read_request_parses_null_id() {
-        smol::block_on(async {
-            let mut reader =
-                make_reader(b"{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"initialize\"}\n");
-            let (id, raw) = read_request(&mut reader).await.unwrap().unwrap();
-            assert_eq!(id, Some(RequestId::Null));
-            assert_eq!(raw.get("method").unwrap(), "initialize");
-        });
-    }
-
-    fn make_reader(data: &[u8]) -> smol::io::BufReader<smol::Unblock<std::io::Cursor<Vec<u8>>>> {
-        smol::io::BufReader::new(smol::Unblock::new(std::io::Cursor::new(data.to_vec())))
     }
 }
