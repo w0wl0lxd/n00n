@@ -141,16 +141,9 @@ impl Provider for TensorX {
                 body["chat_template_kwargs"] = json!({"thinking": true});
             }
 
-            let response = self
-                .compat
-                .do_stream(model, &[], &body, event_tx, &auth, &opts)
-                .await?;
-
             self.compat
-                .emit_cache_health(&response.usage, event_tx)
-                .await;
-
-            Ok(response)
+                .do_stream(model, &[], &body, event_tx, &auth)
+                .await
         })
     }
 

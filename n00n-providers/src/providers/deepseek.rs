@@ -192,16 +192,9 @@ impl Provider for DeepSeek {
                 body["thinking"] = serde_json::json!({"type": "disabled"});
             }
 
-            let response = self
-                .compat
-                .do_stream(model, &[], &body, event_tx, &auth, &opts)
-                .await?;
-
             self.compat
-                .emit_cache_health(&response.usage, event_tx)
-                .await;
-
-            Ok(response)
+                .do_stream(model, &[], &body, event_tx, &auth)
+                .await
         })
     }
 

@@ -143,16 +143,9 @@ impl Provider for Synthetic {
             );
             opts.thinking
                 .apply_reasoning_effort(&mut body, &dialect::STANDARD, model);
-            let response = self
-                .compat
-                .do_stream(model, &[], &body, event_tx, &auth, &opts)
-                .await?;
-
             self.compat
-                .emit_cache_health(&response.usage, event_tx)
-                .await;
-
-            Ok(response)
+                .do_stream(model, &[], &body, event_tx, &auth)
+                .await
         })
     }
 

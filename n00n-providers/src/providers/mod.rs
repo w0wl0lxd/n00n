@@ -36,9 +36,6 @@ pub(crate) mod synthetic;
 pub(crate) mod tensorx;
 pub(crate) mod zai;
 
-#[cfg(test)]
-pub(crate) mod proto_test_util;
-
 const LOW_SPEED_BYTES_PER_SEC: u32 = 1;
 
 pub(crate) fn user_agent() -> &'static str {

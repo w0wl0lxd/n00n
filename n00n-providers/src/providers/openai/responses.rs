@@ -490,20 +490,19 @@ pub(crate) async fn do_stream(
     event_tx: &Sender<ProviderEvent>,
     auth: &ResolvedAuth,
     stream_timeout: Duration,
-    opts: &RequestOptions,
 ) -> Result<(Option<String>, StreamResponse), AgentError> {
     let base_url = base_url(auth);
     let json_body = serde_json::to_vec(body)?;
 
-    let mut builder = Request::builder()
-        .method("POST")
-        .uri(format!("{base_url}{RESPONSES_PATH}"))
-        .header("content-type", "application/json")
-        .header("user-agent", super::super::user_agent());
-    if let Some(key) = opts.idempotency_key.as_deref() {
-        builder = builder.header("Idempotency-Key", key);
-    }
-    let request = auth.configure_request(builder).body(json_body)?;
+    let request = auth
+        .configure_request(
+            Request::builder()
+                .method("POST")
+                .uri(format!("{base_url}{RESPONSES_PATH}"))
+                .header("content-type", "application/json")
+                .header("user-agent", super::super::user_agent()),
+        )
+        .body(json_body)?;
 
     debug!(
         model = %model.id,
@@ -519,7 +518,6 @@ pub(crate) async fn do_stream(
             BufReader::new(response.into_body()),
             event_tx,
             stream_timeout,
-            opts.idempotency_key.clone(),
         )
         .await
     } else {
@@ -558,7 +556,6 @@ pub(crate) struct ResponseAccumulator {
     stop_reason: Option<StopReason>,
     is_first_content: bool,
     emitted_event: bool,
-    idempotency_key: Option<String>,
 }
 
 pub(crate) fn is_semantic_progress_event(event_type: &str, data: &Value) -> bool {
@@ -601,7 +598,7 @@ impl ResponseAccumulator {
         })
     }
 
-    pub fn new(idempotency_key: Option<String>) -> Self {
+    pub fn new() -> Self {
         Self {
             text: String::new(),
             reasoning_summary_text: String::new(),
@@ -613,7 +610,6 @@ impl ResponseAccumulator {
             stop_reason: None,
             is_first_content: true,
             emitted_event: false,
-            idempotency_key,
         }
     }
 
@@ -633,8 +629,6 @@ impl ResponseAccumulator {
         };
         let mut metadata = RequestDeliveryMetadata::new(phase);
         metadata.response_id.clone_from(&self.response_id);
-        metadata.idempotency_key.clone_from(&self.idempotency_key);
-
         metadata.emitted_event = self.emitted_event;
         metadata
     }
@@ -1159,11 +1153,10 @@ pub(crate) async fn parse_sse(
     reader: impl AsyncBufRead + Unpin,
     event_tx: &Sender<ProviderEvent>,
     stream_timeout: Duration,
-    idempotency_key: Option<String>,
 ) -> Result<(Option<String>, StreamResponse), AgentError> {
     let mut lines = reader.lines();
 
-    let mut acc = ResponseAccumulator::new(idempotency_key);
+    let mut acc = ResponseAccumulator::new();
     let mut deadline = Instant::now() + stream_timeout;
     let response_deadline = Instant::now() + response_in_flight_timeout(stream_timeout);
     let mut current_event = String::new();
@@ -1335,7 +1328,7 @@ mod tests {
         Vec<ProviderEvent>,
     ) {
         let (tx, rx) = flume::unbounded();
-        let result = parse_sse(Cursor::new(sse.as_bytes()), &tx, TEST_STREAM_TIMEOUT, None).await;
+        let result = parse_sse(Cursor::new(sse.as_bytes()), &tx, TEST_STREAM_TIMEOUT).await;
         (result, rx.drain().collect())
     }
 
@@ -1456,7 +1449,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
     fn builtin_completed_event_marks_output_emitted(event_type: &str) {
         smol::block_on(async {
             let (tx, _rx) = flume::unbounded();
-            let mut accumulator = ResponseAccumulator::new(None);
+            let mut accumulator = ResponseAccumulator::new();
             accumulator
                 .handle_event(event_type, &json!({}), &tx)
                 .await
@@ -1490,7 +1483,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 
             for (item, expected) in cases {
                 let (tx, rx) = flume::unbounded();
-                let mut accumulator = ResponseAccumulator::new(None);
+                let mut accumulator = ResponseAccumulator::new();
                 accumulator
                     .handle_event(
                         "response.output_item.done",
@@ -2563,7 +2556,6 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
                 &event_tx,
                 &auth,
                 Duration::from_secs(2),
-                &RequestOptions::default(),
             )
             .await
             .unwrap_err();

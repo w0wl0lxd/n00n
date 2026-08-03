@@ -220,7 +220,7 @@ impl Provider for Mistral {
             }
             let response = self
                 .compat
-                .do_stream(model, &extra_headers, &body, event_tx, &auth, &opts)
+                .do_stream(model, &extra_headers, &body, event_tx, &auth)
                 .await?;
 
             self.compat

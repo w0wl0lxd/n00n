@@ -12,7 +12,7 @@ use n00n_providers::model::Model;
 use n00n_providers::provider::{self, Provider};
 use n00n_storage::StateDir;
 use n00n_storage::id::{SessionRef, n00nId};
-use n00n_storage::sessions::{Session, StoredMode, TranscriptEntry};
+use n00n_storage::sessions::{Session, StoredMode};
 use serde_json::Value;
 use tracing::{error, warn};
 
@@ -109,14 +109,13 @@ impl SessionStore {
 
     fn record_turn(
         &mut self,
-        history: &History,
+        messages: &[Message],
         model_spec: String,
         mode: &AgentMode,
         plan_path: Option<&Path>,
     ) -> Result<(), &'static str> {
         self.update_turn_metadata(mode, plan_path)?;
-        self.session.messages = history.as_slice().to_vec();
-        self.session.transcript = history.transcript().to_vec();
+        self.session.messages = messages.to_vec();
         self.session.model = model_spec;
         self.session.update_title_if_default();
         self.save();
@@ -317,7 +316,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
 
             if let Some(store) = &mut session_store
                 && let Err(error) =
-                    store.record_turn(&history, model_spec, &mode, plan_path.as_deref())
+                    store.record_turn(history.as_slice(), model_spec, &mode, plan_path.as_deref())
             {
                 warn!(error, "session metadata was not persisted");
             }
@@ -356,7 +355,6 @@ pub struct InteractiveParams {
     pub initial_wd: PathBuf,
     pub session_id: Option<SessionRef>,
     pub initial_history: Vec<Message>,
-    pub initial_transcript: Vec<TranscriptEntry<Message>>,
     pub yolo: bool,
     pub system_prompt_override: Option<String>,
     pub append_system_prompt: Option<String>,
@@ -432,10 +430,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
                 ));
 
             let mut store = store;
-            let mut history = History::restored_with_transcript(
-                params.initial_history,
-                params.initial_transcript,
-            );
+            let mut history = History::restored(params.initial_history);
             let mut run_id: u64 = 0;
             let mut tool_filter = tool_filter.clone();
 
@@ -564,7 +559,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> InteractiveHandle {
 
                 if let Some(store) = &mut store
                     && let Err(error) = store.record_turn(
-                        &history,
+                        history.as_slice(),
                         model.spec(),
                         &turn_mode,
                         turn_plan_path.as_deref(),
@@ -604,8 +599,7 @@ fn extract_tool_names(tools: &Value) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use n00n_providers::{ContentBlock, Role};
-    use n00n_storage::sessions::{TranscriptEntry, generate_title};
+    use n00n_storage::sessions::generate_title;
     use tempfile::TempDir;
 
     use super::*;
@@ -632,28 +626,6 @@ mod tests {
         StoredSession::load(session_id(), &StateDir::from_path(tmp.path().to_path_buf())).unwrap()
     }
 
-    fn assistant(text: &str) -> Message {
-        Message {
-            role: Role::Assistant,
-            content: vec![ContentBlock::Text { text: text.into() }],
-            ..Default::default()
-        }
-    }
-
-    fn recursive_transcript() -> Vec<TranscriptEntry<Message>> {
-        vec![
-            TranscriptEntry::Compaction {
-                entries: vec![TranscriptEntry::Compaction {
-                    entries: vec![TranscriptEntry::Message(Message::user("original".into()))],
-                    generated_summary: Some(assistant("first summary")),
-                }],
-                generated_summary: Some(assistant("second summary")),
-            },
-            TranscriptEntry::GeneratedMessage(Message::user("summary prompt".into())),
-            TranscriptEntry::GeneratedMessage(assistant("active summary")),
-        ]
-    }
-
     #[test]
     fn new_session_is_loadable_before_first_turn() {
         let tmp = TempDir::new().unwrap();
@@ -672,10 +644,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut store = store_in(&tmp);
         let messages = vec![Message::user("fix the login bug".into())];
-        let history = History::new(messages.clone());
         store
             .record_turn(
-                &history,
+                &messages,
                 MODEL_SPEC.into(),
                 &AgentMode::Plan(PathBuf::from("plan.md")),
                 None,
@@ -702,7 +673,7 @@ mod tests {
 
         store
             .record_turn(
-                &History::new(Vec::new()),
+                &[],
                 MODEL_SPEC.into(),
                 &AgentMode::Research,
                 Some(&build_plan),
@@ -719,7 +690,7 @@ mod tests {
         let mut store = store_in(&tmp);
         store
             .record_turn(
-                &History::new(vec![Message::user("first prompt".into())]),
+                &[Message::user("first prompt".into())],
                 MODEL_SPEC.into(),
                 &AgentMode::Plan(PathBuf::from("plan.md")),
                 None,
@@ -730,13 +701,13 @@ mod tests {
         let mut store = store_in(&tmp);
         assert_eq!(store.session.messages.len(), 1);
 
-        let history = History::new(vec![
+        let messages = vec![
             Message::user("first prompt".into()),
             Message::user("second prompt".into()),
-        ]);
+        ];
         store
             .record_turn(
-                &history,
+                &messages,
                 "other/model".into(),
                 &AgentMode::Plan(PathBuf::from("plan.md")),
                 None,
@@ -746,60 +717,6 @@ mod tests {
         let loaded = load(&tmp);
         assert_eq!(loaded.messages.len(), 2);
         assert_eq!(loaded.model, "other/model");
-    }
-
-    #[test]
-    fn transcript_only_empty_message_state_is_recoverable() {
-        let history = History::restored_with_transcript(Vec::new(), recursive_transcript());
-
-        assert_eq!(history.len(), 2);
-        assert_eq!(history.as_slice()[0].user_text(), Some("summary prompt"));
-        assert!(matches!(
-            &history.as_slice()[1].content[0],
-            ContentBlock::Text { text } if text == "active summary"
-        ));
-        assert!(matches!(
-            history.transcript(),
-            [
-                TranscriptEntry::Compaction { entries, .. },
-                TranscriptEntry::GeneratedMessage(_),
-                TranscriptEntry::GeneratedMessage(_),
-            ] if matches!(entries.as_slice(), [TranscriptEntry::Compaction { .. }])
-        ));
-    }
-
-    #[test]
-    fn resume_continue_reload_preserves_recursive_transcript() {
-        let tmp = TempDir::new().unwrap();
-        let mut store = store_in(&tmp);
-        let mut history = History::restored_with_transcript(Vec::new(), recursive_transcript());
-        history.push(Message::user("Continue".into()));
-        history.push(assistant("continued response"));
-
-        store
-            .record_turn(
-                &history,
-                MODEL_SPEC.into(),
-                &AgentMode::Plan(PathBuf::from("plan.md")),
-                None,
-            )
-            .unwrap();
-        drop(store);
-
-        let loaded = load(&tmp);
-        assert_eq!(loaded.messages.len(), 4);
-        assert_eq!(loaded.messages[2].user_text(), Some("Continue"));
-        assert!(matches!(
-            loaded.transcript.as_slice(),
-            [
-                TranscriptEntry::Compaction { entries, .. },
-                TranscriptEntry::GeneratedMessage(_),
-                TranscriptEntry::GeneratedMessage(_),
-                TranscriptEntry::Message(message),
-                TranscriptEntry::Message(_),
-            ] if matches!(entries.as_slice(), [TranscriptEntry::Compaction { .. }])
-                && message.user_text() == Some("Continue")
-        ));
     }
 
     #[cfg(unix)]

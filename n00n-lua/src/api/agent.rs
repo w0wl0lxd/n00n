@@ -17,8 +17,8 @@ use n00n_agent::cancel::CancelMap;
 use n00n_agent::tools::interpreter_bridge;
 use n00n_agent::tools::registry::ToolRegistry;
 use n00n_agent::tools::{
-    ActiveTools, Deadline, DescriptionContext, FileReadTracker, LocalToolFn, LocalTools,
-    ToolAudience, ToolContext, ToolFilter, ToolLive,
+    Deadline, DescriptionContext, FileReadTracker, LocalToolFn, LocalTools, ToolAudience,
+    ToolContext, ToolFilter, ToolLive,
 };
 use n00n_agent::{
     Agent, AgentEvent, AgentInput, AgentMode, AgentParams, AgentRunParams, Envelope, EventSender,
@@ -120,9 +120,6 @@ fn explicit_tool_filter(tools: &JsonValue) -> Result<ToolFilter, String> {
     let definitions = tools
         .as_array()
         .ok_or_else(|| "tools must be an array".to_owned())?;
-    if definitions.is_empty() {
-        return Ok(ToolFilter::Only(vec![]));
-    }
     let names = definitions
         .iter()
         .enumerate()
@@ -154,10 +151,6 @@ fn attach_tool_exclusions(lua: &Lua, tools: &LuaValue, exclusions: &[String]) ->
         return Ok(());
     }
     let LuaValue::Table(tools) = tools else {
-        // Nil is acceptable as "no tools"
-        if matches!(tools, LuaValue::Nil) {
-            return Ok(());
-        }
         return Err(mlua::Error::runtime("tools must be an array"));
     };
     let metadata = lua.create_table_with_capacity(0, 2)?;
@@ -705,26 +698,19 @@ async fn session(
     }
 
     let explicit_tools = tools_val.is_some();
-    let (mut tools_json, mut tool_filter, active_tools) = if let Some(val) = tools_val {
-        let tools = lua_to_json(&lua, &val)?;
-        // Accept nil, empty object, or empty array as "no tools"
-        if tools.is_null()
-            || (tools.is_object() && tools.as_object().map_or(false, serde_json::Map::is_empty))
-        {
-            (
-                serde_json::json!([]),
-                ToolFilter::All,
-                ActiveTools::default(),
-            )
-        } else if !tools.is_array() {
-            return Err(mlua::Error::runtime("tools must be an array"));
-        } else {
-            (tools, ToolFilter::All, ActiveTools::default())
+    let (mut tools_json, mut tool_filter) = if let Some(val) = tools_val {
+        let empty_lua_table = matches!(&val, LuaValue::Table(table) if table.is_empty());
+        let mut tools = lua_to_json(&lua, &val)?;
+        if empty_lua_table && matches!(&tools, JsonValue::Object(object) if object.is_empty()) {
+            tools = JsonValue::Array(Vec::new());
         }
+        if !tools.is_array() {
+            return Err(mlua::Error::runtime("tools must be an array"));
+        }
+        (tools, ToolFilter::All)
     } else {
         let vars = n00n_agent::template::Vars::new();
         let filter = ToolFilter::from_config(&agent_ctx.config, &model, &[]);
-        let active_tools = n00n_agent::tools::default_active_tools(&agent_ctx.config);
         let ctx = DescriptionContext {
             filter: &filter,
             audience,
@@ -734,10 +720,16 @@ async fn session(
             &vars,
             &ctx,
             model.supports_tool_examples(),
-            &active_tools,
+            &n00n_agent::tools::default_active_tools(),
         );
-        (tools, filter, active_tools)
+        let tools_json =
+            serde_json::to_value(tools).map_err(|e| mlua::Error::runtime(e.to_string()))?;
+        (tools_json, filter)
     };
+
+    if explicit_tools {
+        tool_filter = ToolFilter::All;
+    }
 
     let mut local_map: HashMap<String, LocalToolFn> = HashMap::new();
     if let Some(tbl) = local_tools_tbl {
@@ -868,7 +860,6 @@ async fn session(
         system: system.unwrap_or_else(String::new),
         tools: tools_json,
         tool_filter,
-        active_tools,
         allow_dynamic_mcp_tools,
         thinking,
         fast,
@@ -1377,7 +1368,6 @@ struct SessionState {
     system: String,
     tools: JsonValue,
     tool_filter: ToolFilter,
-    active_tools: ActiveTools,
     allow_dynamic_mcp_tools: bool,
     thinking: ThinkingConfig,
     fast: bool,
@@ -1544,7 +1534,6 @@ async fn prompt(
                 event_tx: s.sub_event_tx.clone(),
                 tools: s.tools.clone(),
                 tool_filter: s.tool_filter.clone(),
-                active_tools: s.active_tools.clone(),
             },
         )
         .with_user_response_rx(Arc::clone(&s.answer_rx))
