@@ -1,4 +1,5 @@
 local shorten_path = require("n00n.shorten_path")
+local secret_check = require("n00n.secret_check")
 local ToolView = require("n00n.tool_view")
 local fuzzy_replace = require("n00n.fuzzy_replace")
 local replace_lines = require("edit_helpers").replace_lines
@@ -256,6 +257,10 @@ n00n.api.register_tool({
       replace_all = {
         type = "boolean",
       },
+      justification = {
+        type = "string",
+        description = "Required when new_string may contain secrets/PII. Explain why this replacement is safe.",
+      },
     },
   },
 
@@ -265,6 +270,11 @@ n00n.api.register_tool({
   end),
 
   handler = function(input, ctx)
+    local secret_reason = secret_check.reason(input.new_string)
+    if secret_reason and (not input.justification or input.justification:match("^%s*$")) then
+      return { llm_output = "error: " .. secret_reason .. "; provide justification to edit", is_error = true }
+    end
+
     local result, err = apply_edit(input.path, ctx, function(content)
       return fuzzy_replace.replace(content, input.old_string, input.new_string, input.replace_all or false)
     end)
@@ -313,6 +323,10 @@ register_tool_if(opts.multiedit, {
           },
         },
       },
+      justification = {
+        type = "string",
+        description = "Required when any new_string may contain secrets/PII. Explain why these replacements are safe.",
+      },
     },
   },
 
@@ -329,6 +343,16 @@ register_tool_if(opts.multiedit, {
     local edits = input.edits
     if #edits == 0 then
       return { llm_output = "provide at least one edit", is_error = true }
+    end
+
+    for i, edit in ipairs(edits) do
+      local secret_reason = secret_check.reason(edit.new_string)
+      if secret_reason and (not input.justification or input.justification:match("^%s*$")) then
+        return {
+          llm_output = "error: edits[" .. i - 1 .. "] " .. secret_reason .. "; provide justification to multiedit",
+          is_error = true,
+        }
+      end
     end
 
     local result, err = apply_edit(input.path, ctx, function(content)
@@ -385,6 +409,10 @@ register_tool_if(opts.edit_lines, {
         type = "string",
         required = true,
       },
+      justification = {
+        type = "string",
+        description = "Required when new_string may contain secrets/PII. Explain why this replacement is safe.",
+      },
     },
   },
 
@@ -394,6 +422,11 @@ register_tool_if(opts.edit_lines, {
   end),
 
   handler = function(input, ctx)
+    local secret_reason = secret_check.reason(input.new_string)
+    if secret_reason and (not input.justification or input.justification:match("^%s*$")) then
+      return { llm_output = "error: " .. secret_reason .. "; provide justification to edit_lines", is_error = true }
+    end
+
     local result, err = apply_edit(input.path, ctx, function(content)
       return replace_lines(content, input.start, input["end"], input.new_string)
     end)
@@ -431,6 +464,10 @@ register_tool_if(opts.insert_lines, {
         type = "string",
         required = true,
       },
+      justification = {
+        type = "string",
+        description = "Required when new_string may contain secrets/PII. Explain why this insertion is safe.",
+      },
     },
   },
 
@@ -440,6 +477,11 @@ register_tool_if(opts.insert_lines, {
   end),
 
   handler = function(input, ctx)
+    local secret_reason = secret_check.reason(input.new_string)
+    if secret_reason and (not input.justification or input.justification:match("^%s*$")) then
+      return { llm_output = "error: " .. secret_reason .. "; provide justification to insert_lines", is_error = true }
+    end
+
     local result, err = apply_edit(input.path, ctx, function(content)
       return replace_lines(content, input.line, nil, input.new_string)
     end)
