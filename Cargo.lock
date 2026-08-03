@@ -1977,9 +1977,9 @@ dependencies = [
 
 [[package]]
 name = "gix-command"
-version = "0.9.1"
+version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00706d4fef135ef4b01680d5218c6ee40cda8baf697b864296cbc887d19118f6"
+checksum = "cf4363accdf6ef7ba861871d2d521ab7418a04aaaed919fadb022af71d379b12"
 dependencies = [
  "bstr",
  "gix-path",
@@ -2337,9 +2337,9 @@ dependencies = [
 
 [[package]]
 name = "gix-path"
-version = "0.12.3"
+version = "0.12.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ed3e8d7a82e886e17a72e03d4ba0c13db6f2219b6cd4e2900b4cae426ec20c9"
+checksum = "751d6bd162106f8c1e7e9aaccb5bbdd605267e91a930a17a4560c46e33a9100c"
 dependencies = [
  "bstr",
  "gix-trace",
@@ -4354,6 +4354,7 @@ dependencies = [
  "libc",
  "n00n-config",
  "n00n-storage",
+ "prost",
  "reqwest",
  "rusqlite",
  "rustls",
@@ -5339,6 +5340,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "962200e2d7d551451297d9fdce85138374019ada198e30ea9ede38034e27604c"
 dependencies = [
  "parking_lot",
+]
+
+[[package]]
+name = "prost"
+version = "0.14.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "528ac67416ff8646872a3c02cad9cc4ee5dc9f9540c9b10771855c95cb2e5ae1"
+dependencies = [
+ "bytes",
+ "prost-derive",
+]
+
+[[package]]
+name = "prost-derive"
+version = "0.14.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
+dependencies = [
+ "anyhow",
+ "itertools 0.14.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -8978,9 +9002,9 @@ dependencies = [
 
 [[package]]
 name = "zlib-rs"
-version = "0.6.6"
+version = "0.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b142a20ec14a91d5bc708c1dc21b080c550113d8aa77afa29635673a65dd02c5"
+checksum = "34b31d188d9d685a4f9c7b46d6e36631b07058d2cfe190267adce54dc230bf12"
 
 [[package]]
 name = "zmij"
