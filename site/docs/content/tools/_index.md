@@ -430,31 +430,35 @@ Search the web for real-time information using Exa AI.
 
 ### `git` *(lua plugin)*
 
-Query local git repositories (status, log, diff, branches, blame) by spawning the n00n-git binary.
-Set N00N_GIT_BIN to override the binary path.
+Local git operations via n00n-git. Set N00N_GIT_BIN to override the binary path.
 
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `ref_b` | string | no |  |
 | `path` | string | no |  |
+| `message` | string | no |  |
 | `count` | integer | no |  |
+| `target` | string | no |  |
 | `command` | string | yes |  |
 | `file` | string | no |  |
+| `files` | array | no |  |
 | `ref_a` | string | no |  |
 
 ### `github` *(lua plugin)*
 
-Query GitHub repositories, issues, and pull requests using the REST API. Requires GITHUB_TOKEN.
+GitHub REST API (read/write). Tokens: GITHUB_TOKEN, optional token param, or gh CLI.
 
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `repo` | string | no |  |
 | `issue_number` | number | no |  |
-| `title` | string | no |  |
 | `head` | string | no |  |
-| `command` | string | yes |  |
 | `owner` | string | no |  |
-| `base` | string | no |  |
 | `body` | string | no |  |
+| `repo` | string | no |  |
+| `title` | string | no |  |
+| `command` | string | yes |  |
+| `token` | string | no |  |
+| `base` | string | no |  |
+| `pr_number` | number | no |  |
