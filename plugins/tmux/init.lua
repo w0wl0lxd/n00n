@@ -35,21 +35,12 @@ local function check_tmux_server()
   return true, nil
 end
 
-local function check_unix_platform()
-  local sys = n00n.uv.os_uname()
-  if
-    sys
-    and sys.sysname
-    and (
-      sys.sysname:match("Linux")
-      or sys.sysname:match("Darwin")
-      or sys.sysname:match("BSD")
-      or sys.sysname:match("SunOS")
-    )
-  then
-    return true
+local function is_unix()
+  local os_name = n00n.uv.os_getenv and n00n.uv.os_getenv("OS") or nil
+  if os_name and os_name:lower():find("windows") then
+    return false
   end
-  return false
+  return true
 end
 
 local function run_tmux(args, timeout_ms)
@@ -262,7 +253,7 @@ function handlers.capture_pane(input, ctx)
     return nil, err
   end
 
-  local max_lines, max_bytes = output_limits.resolve(opts, ctx)
+  local max_lines, max_bytes = output_limits.resolve(input, ctx)
   local truncated = truncate(output, max_lines, max_bytes)
 
   return { output = truncated, target = target }
@@ -494,7 +485,7 @@ Targets follow tmux syntax: session_name, session_name:window_index, or session_
       return { llm_output = "error: unknown command: " .. tostring(cmd), is_error = true }
     end
 
-    if not check_unix_platform() then
+    if not is_unix() then
       return { llm_output = "error: tmux is Unix-only and not supported on this platform", is_error = true }
     end
 
