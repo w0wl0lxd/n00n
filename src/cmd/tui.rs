@@ -9,6 +9,7 @@ use color_eyre::eyre::Context;
 
 use n00n_agent::command::{self, CustomCommand};
 use n00n_agent::tools::ToolRegistry;
+use n00n_config::providers::ProvidersConfig;
 use n00n_config::{Config, load_env_files, load_permissions};
 use n00n_lua::PluginHost;
 use n00n_providers::model::Model;
@@ -170,8 +171,14 @@ fn build_stack(
     }
 
     let commands = discover_commands(cli.plugin_flags.no_commands);
+    let providers_toml = ProvidersConfig::load();
 
-    let model_result = setup::resolve_model(cli.model.as_deref(), &config.provider, storage);
+    let model_result = setup::resolve_model(
+        cli.model.as_deref(),
+        &config.provider,
+        &providers_toml,
+        storage,
+    );
     let (model, needs_login) = match (model_result, fallback_model) {
         (Ok(m), _) => (m, false),
         (Err(e), Some(last_model)) => {
