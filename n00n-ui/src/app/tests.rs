@@ -316,6 +316,23 @@ fn new_session_without_prompt_allows_blank_app() {
 }
 
 #[test]
+fn new_session_prompt_starts_only_from_idle() {
+    let mut app = test_app();
+    let actions = app
+        .prepare_new_session_prompt(Some("start work".into()))
+        .expect("idle new-session prompt must start");
+    assert!(matches!(actions.as_slice(), [Action::SendMessage(_)]));
+
+    let mut busy = test_app();
+    busy.status = Status::Streaming;
+    let Err(error) = busy.prepare_new_session_prompt(Some("do not queue".into())) else {
+        panic!("busy new session must reject its initial prompt");
+    };
+    assert_eq!(error, queue::NEW_SESSION_NOT_IDLE_ERR);
+    assert!(busy.queue.is_empty());
+}
+
+#[test]
 fn session_api_prompt_is_explicitly_non_paint_gated() {
     let mut app = test_app();
     let outcome = app.submit_background_prompt(crate::app::queue::QueuedMessage {

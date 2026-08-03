@@ -726,6 +726,79 @@ fn expanded_compaction_card_renders_stored_tool_output_once() {
 }
 
 #[test]
+fn recursive_compaction_restore_updates_header_body_and_rebake() {
+    let mut tool = DisplayMessage::new(
+        DisplayRole::Tool(Box::new(ToolRole {
+            id: "tool-1".into(),
+            status: ToolStatus::Success,
+            name: Arc::from("bash"),
+        })),
+        "Run command".into(),
+    );
+    tool.tool_raw_input = Some(Arc::new(serde_json::json!({ "command": "echo" })));
+    tool.tool_output = Some(Arc::new(ToolOutput::Plain("stale fallback".into())));
+    let inner_id = "compaction:0.0";
+    let outer_id = "compaction:0";
+    let inner = DisplayMessage::compaction(CompactionDisplay {
+        id: inner_id.into(),
+        depth: 2,
+        message_count: 1,
+        summary: Some("inner summary".into()),
+        entries: vec![tool],
+    });
+    let mut panel = test_panel();
+    panel.push(DisplayMessage::compaction(CompactionDisplay {
+        id: outer_id.into(),
+        depth: 1,
+        message_count: 1,
+        summary: Some("outer summary".into()),
+        entries: vec![inner],
+    }));
+    panel.expanded_compactions.insert(outer_id.into());
+    panel.expanded_compactions.insert(inner_id.into());
+    rebuild(&mut panel);
+
+    panel.tool_header_snapshot(
+        "tool-1",
+        BufferSnapshot::from_arc(Arc::new(vec![
+            snap_line("restored header"),
+            snap_line("header continuation"),
+        ])),
+        Some(1),
+    );
+    panel.tool_snapshot(
+        "tool-1",
+        BufferSnapshot::from_arc(Arc::new(vec![snap_line("restored body")])),
+        Some(1),
+    );
+    render(&mut panel, 80, 24);
+
+    {
+        let restored = panel.find_tool_msg_mut("tool-1").unwrap();
+        assert!(restored.render_header.is_some());
+        assert_eq!(
+            restored
+                .render_snapshot
+                .as_ref()
+                .map(BufferSnapshot::first_line_text),
+            Some("restored body".into())
+        );
+    }
+    let card = first_segment_text(&panel);
+    assert!(card.contains("restored header"), "card: {card}");
+    assert!(card.contains("header continuation"), "card: {card}");
+    assert!(card.contains("restored body"), "card: {card}");
+    assert!(!card.contains("stale fallback"), "card: {card}");
+
+    panel.set_restore_channel(
+        Some(n00n_lua::EventHandle::disconnected_for_test()),
+        Some(test_event_sender()),
+    );
+    panel.rebake_stale_snapshots(2);
+    assert_eq!(panel.rebake_requested_gen("tool-1"), Some(2));
+}
+
+#[test]
 fn expanded_compaction_card_caps_stored_tool_output() {
     let mut tool = DisplayMessage::new(
         DisplayRole::Tool(Box::new(ToolRole {

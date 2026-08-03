@@ -11,8 +11,9 @@ pub(crate) use self::segment::wrapped_line_count;
 
 use super::tool_display::{
     RenderCtx, ToolLines, append_annotation, append_right_info, assistant_style,
-    bake_snapshot_tail, build_instructions_lines, build_tool_lines, control_style, done_style,
-    error_style, format_timestamp_now, thinking_style, truncate_to_header, user_style,
+    bake_snapshot_lines, bake_snapshot_tail, build_instructions_lines, build_tool_lines,
+    control_style, done_style, error_style, format_timestamp_now, thinking_style,
+    truncate_to_header, user_style,
 };
 use super::{
     CompactionDisplay, DisplayMessage, DisplayMetadata, DisplayRole, ToolRole, ToolStatus,
@@ -1356,18 +1357,13 @@ impl MessagesPanel {
     }
 
     fn has_snapshot(&self, tool_id: &str) -> bool {
-        self.messages
-            .iter()
-            .rfind(|m| matches!(&m.role, DisplayRole::Tool(t) if t.id == tool_id))
-            .is_some_and(|m| m.render_snapshot.is_some())
+        find_tool_msg(&self.messages, tool_id)
+            .is_some_and(|message| message.render_snapshot.is_some())
     }
 
     fn lua_restore_item(&self, tool_id: &str) -> Option<n00n_lua::RestoreItem> {
-        let msg = self
-            .messages
-            .iter()
-            .rfind(|m| matches!(&m.role, DisplayRole::Tool(t) if t.id == tool_id))?;
-        crate::chat::restore_item_for(msg, self.tool_output_lines, self.theme_generation)
+        let message = find_tool_msg(&self.messages, tool_id)?;
+        crate::chat::restore_item_for(message, self.tool_output_lines, self.theme_generation)
     }
 
     /// Re-restores every snapshot still painted with old-theme colors.
@@ -1380,7 +1376,9 @@ impl MessagesPanel {
         self.rebake_requested.retain(|_, g| *g >= current_gen);
         let tol = self.tool_output_lines;
         let mut requested = Vec::new();
-        for msg in &self.messages {
+        let mut tool_messages = Vec::new();
+        collect_tool_messages(&self.messages, &mut tool_messages);
+        for msg in tool_messages {
             let DisplayRole::Tool(role) = &msg.role else {
                 continue;
             };
@@ -1424,10 +1422,7 @@ impl MessagesPanel {
     }
 
     fn current_snapshot_gen(&self, tool_id: &str) -> Option<u64> {
-        self.messages
-            .iter()
-            .rfind(|m| matches!(&m.role, DisplayRole::Tool(t) if t.id == tool_id))
-            .map(|m| m.snapshot_theme_gen)
+        find_tool_msg(&self.messages, tool_id).map(|message| message.snapshot_theme_gen)
     }
 
     fn store_snapshot(
@@ -1448,6 +1443,14 @@ impl MessagesPanel {
         let Some(applied_gen) = self.resolve_snapshot_gen(tool_id, theme_gen) else {
             return false;
         };
+        let nested = self
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message_contains_tool(message, tool_id))
+            .is_some_and(
+                |message| !matches!(&message.role, DisplayRole::Tool(tool) if tool.id == tool_id),
+            );
         let Some(msg) = self.find_tool_msg_mut(tool_id) else {
             return false;
         };
@@ -1458,7 +1461,12 @@ impl MessagesPanel {
             msg.render_snapshot = Some(snapshot);
         }
         msg.snapshot_theme_gen = applied_gen;
-        self.rebuild_tool_segment(tool_id);
+        if nested {
+            self.cache.invalidate_from_msg_count();
+            self.rebuild_line_cache();
+        } else {
+            self.rebuild_tool_segment(tool_id);
+        }
         let (_, new_height) = self.segment_position(tool_id);
         if anchor_auto_scroll {
             self.shift_scroll_for_height_change(old_height, new_height);
@@ -1469,9 +1477,7 @@ impl MessagesPanel {
     }
 
     fn find_tool_msg_mut(&mut self, tool_id: &str) -> Option<&mut DisplayMessage> {
-        self.messages
-            .iter_mut()
-            .rfind(|m| matches!(&m.role, DisplayRole::Tool(t) if t.id == tool_id))
+        find_tool_msg_mut(&mut self.messages, tool_id)
     }
 
     fn rctx(&self) -> RenderCtx<'_> {
@@ -2038,6 +2044,60 @@ impl MessagesPanel {
     }
 }
 
+fn message_contains_tool(message: &DisplayMessage, tool_id: &str) -> bool {
+    matches!(&message.role, DisplayRole::Tool(tool) if tool.id == tool_id)
+        || matches!(
+            &message.metadata,
+            Some(DisplayMetadata::Compaction(compaction))
+                if compaction
+                    .entries
+                    .iter()
+                    .any(|entry| message_contains_tool(entry, tool_id))
+        )
+}
+
+fn find_tool_msg<'a>(messages: &'a [DisplayMessage], tool_id: &str) -> Option<&'a DisplayMessage> {
+    messages.iter().rev().find_map(|message| {
+        if matches!(&message.role, DisplayRole::Tool(tool) if tool.id == tool_id) {
+            return Some(message);
+        }
+        match &message.metadata {
+            Some(DisplayMetadata::Compaction(compaction)) => {
+                find_tool_msg(&compaction.entries, tool_id)
+            }
+            Some(DisplayMetadata::CompactionPending) | None => None,
+        }
+    })
+}
+
+fn find_tool_msg_mut<'a>(
+    messages: &'a mut [DisplayMessage],
+    tool_id: &str,
+) -> Option<&'a mut DisplayMessage> {
+    messages.iter_mut().rev().find_map(|message| {
+        if matches!(&message.role, DisplayRole::Tool(tool) if tool.id == tool_id) {
+            return Some(message);
+        }
+        match &mut message.metadata {
+            Some(DisplayMetadata::Compaction(compaction)) => {
+                find_tool_msg_mut(&mut compaction.entries, tool_id)
+            }
+            Some(DisplayMetadata::CompactionPending) | None => None,
+        }
+    })
+}
+
+fn collect_tool_messages<'a>(messages: &'a [DisplayMessage], tools: &mut Vec<&'a DisplayMessage>) {
+    for message in messages {
+        if matches!(message.role, DisplayRole::Tool(_)) {
+            tools.push(message);
+        }
+        if let Some(DisplayMetadata::Compaction(compaction)) = &message.metadata {
+            collect_tool_messages(&compaction.entries, tools);
+        }
+    }
+}
+
 fn build_compaction_segment(
     compaction: &CompactionDisplay,
     msg_index: usize,
@@ -2130,21 +2190,41 @@ fn append_compaction_entry(
     lines: &mut Vec<Line<'static>>,
 ) {
     let label = role_name(&message.role);
-    let mut text_lines = message.text.lines();
-    if let Some(first) = text_lines.next() {
-        lines.push(Line::from(vec![
-            Span::raw(" ".repeat(indent)),
-            Span::styled(format!("{label}> "), theme::current().tool_dim),
-            Span::raw(first.to_owned()),
-        ]));
-        for line in text_lines {
+    let continuation_indent = " ".repeat(indent + label.len() + 2);
+    if let Some(header) = message.render_header.as_ref()
+        && !header.lines.is_empty()
+    {
+        let mut header_lines = bake_snapshot_lines(header, &continuation_indent);
+        if let Some(first) = header_lines.first_mut() {
+            first.spans[0] = Span::raw(" ".repeat(indent));
+            first.spans.insert(
+                1,
+                Span::styled(format!("{label}> "), theme::current().tool_dim),
+            );
+        }
+        lines.extend(header_lines);
+    } else {
+        let mut text_lines = message.text.lines();
+        if let Some(first) = text_lines.next() {
             lines.push(Line::from(vec![
-                Span::raw(" ".repeat(indent + label.len() + 2)),
-                Span::raw(line.to_owned()),
+                Span::raw(" ".repeat(indent)),
+                Span::styled(format!("{label}> "), theme::current().tool_dim),
+                Span::raw(first.to_owned()),
             ]));
+            for line in text_lines {
+                lines.push(Line::from(vec![
+                    Span::raw(continuation_indent.clone()),
+                    Span::raw(line.to_owned()),
+                ]));
+            }
         }
     }
-    if let Some(output) = message.tool_output.as_deref() {
+    if let Some(snapshot) = message.render_snapshot.as_ref() {
+        lines.extend(bake_snapshot_lines(
+            snapshot,
+            &" ".repeat(indent + label.len() + 2),
+        ));
+    } else if let Some(output) = message.tool_output.as_deref() {
         let output = output.as_display_text();
         let tool_name = message.role.tool_name().unwrap_or_else(|| "");
         let truncated = truncate_output(&output, tool_output_lines.get(tool_name));
