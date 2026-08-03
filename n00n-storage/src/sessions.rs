@@ -2024,24 +2024,32 @@ fn is_zst_data(data: &[u8]) -> bool {
 #[derive(Debug)]
 enum BoundedLineError {
     Io(IoError),
+    InvalidUtf8,
     TooLarge,
 }
 
-fn read_bounded_line<R: BufRead>(
+fn read_bounded_line<'a, R: BufRead>(
     reader: &mut R,
-    line: &mut String,
+    line: &'a mut Vec<u8>,
     maximum: usize,
-) -> Result<usize, BoundedLineError> {
+) -> Result<Option<&'a str>, BoundedLineError> {
     line.clear();
     let read_limit = u64::try_from(maximum)
         .map_err(|_| BoundedLineError::TooLarge)?
         .saturating_add(1);
     let mut limited = (&mut *reader).take(read_limit);
-    let bytes = limited.read_line(line).map_err(BoundedLineError::Io)?;
+    let bytes = limited
+        .read_until(b'\n', line)
+        .map_err(BoundedLineError::Io)?;
     if bytes > maximum {
         return Err(BoundedLineError::TooLarge);
     }
-    Ok(bytes)
+    if bytes == 0 {
+        return Ok(None);
+    }
+    std::str::from_utf8(line)
+        .map(Some)
+        .map_err(|_| BoundedLineError::InvalidUtf8)
 }
 
 fn visit_zstd_lines(
@@ -2051,15 +2059,22 @@ fn visit_zstd_lines(
     let file = File::open(path).map_err(StorageError::from)?;
     let decoder = Decoder::new(file).map_err(StorageError::from)?;
     let mut reader = BufReader::new(decoder);
-    let mut line = String::new();
+    let mut line = Vec::new();
     loop {
         match read_bounded_line(&mut reader, &mut line, MAX_SESSION_RECORD_BYTES) {
-            Ok(0) => return Ok(false),
-            Ok(_) => visit(line.trim_end_matches(['\r', '\n']))?,
+            Ok(None) => return Ok(false),
+            Ok(Some(line)) => visit(line.trim_end_matches(['\r', '\n']))?,
             Err(BoundedLineError::TooLarge) => {
                 return Err(SessionError::RecordTooLarge {
                     maximum: MAX_SESSION_RECORD_BYTES,
                 });
+            }
+            Err(BoundedLineError::InvalidUtf8) => {
+                warn!(
+                    path = %path.display(),
+                    "recovering records before invalid UTF-8 tail"
+                );
+                return Ok(true);
             }
             Err(BoundedLineError::Io(error)) => {
                 warn!(
@@ -2447,11 +2462,12 @@ fn try_decode_header_at(path: &Path, offset: u64) -> Option<ZstHeader> {
     file.seek(SeekFrom::Start(offset)).ok()?;
     let decoder = Decoder::new(file).ok()?;
     let mut reader = BufReader::new(decoder);
-    let mut line = String::new();
+    let mut line = Vec::new();
     loop {
-        match read_bounded_line(&mut reader, &mut line, MAX_SESSION_RECORD_BYTES) {
-            Ok(0) => return None,
-            Ok(_) => {}
+        let record_line = match read_bounded_line(&mut reader, &mut line, MAX_SESSION_RECORD_BYTES)
+        {
+            Ok(None) => return None,
+            Ok(Some(record_line)) => record_line,
             Err(BoundedLineError::TooLarge) => {
                 warn!(
                     path = %path.display(),
@@ -2460,12 +2476,16 @@ fn try_decode_header_at(path: &Path, offset: u64) -> Option<ZstHeader> {
                 );
                 return None;
             }
+            Err(BoundedLineError::InvalidUtf8) => {
+                warn!(path = %path.display(), "zstd header record is not valid UTF-8");
+                return None;
+            }
             Err(BoundedLineError::Io(error)) => {
                 warn!(path = %path.display(), error = %error, "failed to read zstd header");
                 return None;
             }
-        }
-        let trimmed = line.trim_end_matches(['\r', '\n']);
+        };
+        let trimmed = record_line.trim_end_matches(['\r', '\n']);
         if trimmed.is_empty() {
             continue;
         }
@@ -2483,17 +2503,18 @@ where
     file.seek(SeekFrom::Start(offset)).ok()?;
     let decoder = Decoder::new(file).ok()?;
     let mut reader = BufReader::new(decoder);
-    let mut line = String::new();
+    let mut line = Vec::new();
     let mut title = String::new();
     let mut updated_at = 0u64;
     let mut first_message = None;
     loop {
-        match read_bounded_line(&mut reader, &mut line, MAX_SESSION_RECORD_BYTES) {
-            Ok(0) => break,
-            Ok(_) => {}
+        let record_line = match read_bounded_line(&mut reader, &mut line, MAX_SESSION_RECORD_BYTES)
+        {
+            Ok(None) => break,
+            Ok(Some(record_line)) => record_line,
             Err(_) => return None,
-        }
-        let trimmed = line.trim_end_matches(['\r', '\n']);
+        };
+        let trimmed = record_line.trim_end_matches(['\r', '\n']);
         if trimmed.is_empty() {
             continue;
         }
@@ -3506,14 +3527,20 @@ mod tests {
         assert_eq!(writer.bytes, b"abc");
 
         let mut exact_reader = std::io::BufReader::new(std::io::Cursor::new(b"abc\n"));
-        let mut line = String::new();
+        let mut line = Vec::new();
         assert_eq!(
             super::read_bounded_line(&mut exact_reader, &mut line, 4).unwrap(),
-            4
+            Some("abc\n")
         );
         let mut oversized_reader = std::io::BufReader::new(std::io::Cursor::new(b"abc\n"));
         assert!(matches!(
             super::read_bounded_line(&mut oversized_reader, &mut line, 3),
+            Err(super::BoundedLineError::TooLarge)
+        ));
+        let mut split_utf8_reader =
+            std::io::BufReader::new(std::io::Cursor::new("abcé\n".as_bytes()));
+        assert!(matches!(
+            super::read_bounded_line(&mut split_utf8_reader, &mut line, 3),
             Err(super::BoundedLineError::TooLarge)
         ));
     }
@@ -3536,12 +3563,15 @@ mod tests {
         let log = SessionLog::create(dir, &session).unwrap();
         drop(log);
 
-        let record = format!(
-            "{{\"t\":\"meta\",\"state_snapshot\":{{\"schema_version\":2,\"opaque\":\"{}\"}}}}\n",
-            "x".repeat(super::MAX_SESSION_RECORD_BYTES)
-        );
+        let prefix = b"{\"t\":\"meta\",\"state_snapshot\":{\"schema_version\":2,\"opaque\":\"";
+        let mut record = prefix.to_vec();
+        record.extend(std::iter::repeat_n(
+            b'x',
+            super::MAX_SESSION_RECORD_BYTES - prefix.len(),
+        ));
+        record.extend_from_slice("é\"}}\n".as_bytes());
         let mut encoded = Vec::new();
-        encode_frame(&mut encoded, record.as_bytes()).unwrap();
+        encode_frame(&mut encoded, &record).unwrap();
         let path = jsonl_path(dir, session.id);
         let original_len = fs::metadata(&path).unwrap().len();
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
