@@ -278,7 +278,7 @@ pub fn redact_json_value_for_log(value: &Value) -> Value {
                     }
                 }
             } else {
-                sanitize::sanitize_text(text, LOG_ARG_MAX_CHARS).into()
+                sanitize::sanitize_text_preserve_newlines(text, LOG_ARG_MAX_CHARS).into()
             }
         }
         other => other.clone(),
