@@ -286,7 +286,7 @@ fn encode_devin_tools(tools: &serde_json::Value) -> Result<Vec<Vec<u8>>, AgentEr
         encoded.push(encode_chat_tool_definition(&ChatToolDefinition {
             name: name.to_string(),
             description: description.map_or(String::new(), std::string::ToString::to_string),
-            json_schema_string: schema_string.clone(),
+            json_schema_string: schema_string,
             strict,
         }));
     }
@@ -1110,7 +1110,8 @@ mod tests {
     const TRAILER_JSON_ERROR: &str = "invalid Devin end-stream trailer JSON";
 
     fn prompt_string_field(prompt: &[u8], field_number: u64) -> Option<String> {
-        let msg = crate::providers::devin_proto::ChatMessagePrompt::decode(prompt).ok()?;
+        let msg = crate::providers::devin_proto::ChatMessagePrompt::decode(prompt)
+            .expect("invalid Devin ChatMessagePrompt data");
         match field_number {
             1 => Some(msg.message_id),
             3 => Some(msg.prompt),

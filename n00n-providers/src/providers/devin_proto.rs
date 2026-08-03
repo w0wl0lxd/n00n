@@ -110,11 +110,11 @@ pub(crate) struct ImageData {
 
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct ChatToolCall {
-    #[prost(string, required, tag = "1")]
+    #[prost(string, tag = "1")]
     pub id: String,
-    #[prost(string, required, tag = "2")]
+    #[prost(string, tag = "2")]
     pub name: String,
-    #[prost(string, required, tag = "3")]
+    #[prost(string, tag = "3")]
     pub arguments_json: String,
 }
 
@@ -280,10 +280,9 @@ pub(crate) struct ModelInfo {
     #[prost(string, tag = "12")]
     pub chat_model_name: String,
 }
-#[must_use]
-pub fn encode_get_user_jwt_request(api_key: &str) -> Vec<u8> {
-    GetUserJwtRequest {
-        metadata: Some(Metadata {
+impl Metadata {
+    fn new(api_key: &str, user_jwt: &str) -> Self {
+        Self {
             ide_name: CLI_SOURCE.to_string(),
             extension_version: CLI_VERSION.to_string(),
             api_key: api_key.to_string(),
@@ -292,14 +291,27 @@ pub fn encode_get_user_jwt_request(api_key: &str) -> Vec<u8> {
             disable_telemetry: false,
             ide_version: CLI_VERSION.to_string(),
             extension_name: CLI_SOURCE.to_string(),
-            user_jwt: String::new(),
-        }),
+            user_jwt: user_jwt.to_string(),
+        }
+    }
+}
+
+#[must_use]
+pub fn encode_get_user_jwt_request(api_key: &str) -> Vec<u8> {
+    GetUserJwtRequest {
+        metadata: Some(Metadata::new(api_key, "")),
     }
     .encode_to_vec()
 }
 
-pub fn decode_get_user_jwt_response(buf: &[u8]) -> Result<GetUserJwtResponse, String> {
-    GetUserJwtResponse::decode(buf).map_err(|e| e.to_string())
+#[derive(Debug, thiserror::Error)]
+pub enum DevinProtoError {
+    #[error("failed to decode Devin protobuf response: {0}")]
+    Decode(#[from] prost::DecodeError),
+}
+
+pub fn decode_get_user_jwt_response(buf: &[u8]) -> Result<GetUserJwtResponse, DevinProtoError> {
+    Ok(GetUserJwtResponse::decode(buf)?)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -318,17 +330,7 @@ pub fn encode_get_chat_message_request(
     top_p: f64,
 ) -> Vec<u8> {
     GetChatMessageRequest {
-        metadata: Some(Metadata {
-            ide_name: CLI_SOURCE.to_string(),
-            extension_version: CLI_VERSION.to_string(),
-            api_key: api_key.to_string(),
-            locale: "en".to_string(),
-            os: String::new(),
-            disable_telemetry: false,
-            ide_version: CLI_VERSION.to_string(),
-            extension_name: CLI_SOURCE.to_string(),
-            user_jwt: user_jwt.to_string(),
-        }),
+        metadata: Some(Metadata::new(api_key, user_jwt)),
         prompt: prompt.to_string(),
         chat_message_prompts: chat_message_prompts.to_vec(),
         chat_model_uid: chat_model_uid.to_string(),
@@ -364,8 +366,10 @@ pub fn encode_get_chat_message_request(
     .encode_to_vec()
 }
 
-pub fn decode_get_chat_message_response(buf: &[u8]) -> Result<GetChatMessageResponse, String> {
-    GetChatMessageResponse::decode(buf).map_err(|e| e.to_string())
+pub fn decode_get_chat_message_response(
+    buf: &[u8],
+) -> Result<GetChatMessageResponse, DevinProtoError> {
+    Ok(GetChatMessageResponse::decode(buf)?)
 }
 
 #[must_use]
@@ -392,37 +396,23 @@ pub fn encode_chat_tool_definition(tool: &ChatToolDefinition) -> Vec<u8> {
 #[must_use]
 pub fn encode_get_cli_model_configs_request(api_key: &str) -> Vec<u8> {
     GetCliModelConfigsRequest {
-        metadata: Some(Metadata {
-            ide_name: CLI_SOURCE.to_string(),
-            extension_version: CLI_VERSION.to_string(),
-            api_key: api_key.to_string(),
-            locale: "en".to_string(),
-            os: String::new(),
-            disable_telemetry: false,
-            ide_version: CLI_VERSION.to_string(),
-            extension_name: CLI_SOURCE.to_string(),
-            user_jwt: String::new(),
-        }),
+        metadata: Some(Metadata::new(api_key, "")),
     }
     .encode_to_vec()
 }
 
-pub fn decode_cli_model_configs(buf: &[u8]) -> Result<HashMap<String, String>, String> {
-    let resp = GetCliModelConfigsResponse::decode(buf).map_err(|e| e.to_string())?;
+pub fn decode_cli_model_configs(buf: &[u8]) -> Result<HashMap<String, String>, DevinProtoError> {
+    let resp = GetCliModelConfigsResponse::decode(buf)?;
     let mut map = HashMap::new();
     for config in resp.client_model_configs {
         let label = config.label;
         let model_uid_22 = config.model_uid;
-        let wire_uid = if let Some(m) = config.model_or_alias.as_ref() {
-            m.model_uid.clone()
-        } else {
-            String::new()
-        };
-        let chat_model_name = if let Some(m) = config.model_info.as_ref() {
-            m.chat_model_name.clone()
-        } else {
-            String::new()
-        };
+        let wire_uid = config
+            .model_or_alias
+            .map_or_else(String::new, |model| model.model_uid);
+        let chat_model_name = config
+            .model_info
+            .map_or_else(String::new, |info| info.chat_model_name);
         let display = if model_uid_22.is_empty() {
             label.clone()
         } else {
@@ -528,6 +518,31 @@ mod tests {
         assert_eq!(
             models.get("Model Label").map(String::as_str),
             Some("chat-model-name")
+        );
+    }
+
+    #[test]
+    fn cli_model_config_falls_back_to_alias_wire_id() {
+        let response = GetCliModelConfigsResponse {
+            client_model_configs: vec![ClientModelConfig {
+                label: "Model Label".to_string(),
+                model_or_alias: Some(ModelOrAlias {
+                    model_uid: "alias-wire-id".to_string(),
+                }),
+                model_uid: "display-model-id".to_string(),
+                model_info: Some(ModelInfo {
+                    chat_model_name: String::new(),
+                }),
+            }],
+        };
+        let models = decode_cli_model_configs(&response.encode_to_vec()).expect("decode configs");
+        assert_eq!(
+            models.get("display-model-id").map(String::as_str),
+            Some("alias-wire-id")
+        );
+        assert_eq!(
+            models.get("Model Label").map(String::as_str),
+            Some("alias-wire-id")
         );
     }
 

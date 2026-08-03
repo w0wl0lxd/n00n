@@ -528,8 +528,6 @@ async fn run_text_turn_mode_tokio(
     let mut text_deltas = 0u32;
     let mut kv_ops = 0u32;
     let mut top_fields: Vec<u64> = Vec::new();
-    let interaction_fields: Vec<u64> = Vec::new();
-    let interaction_sample = String::new();
     let started = Instant::now();
     let mut last_data = Instant::now();
     let mut got_any_data = false;
@@ -564,8 +562,7 @@ async fn run_text_turn_mode_tokio(
                         "cursor run stalled before assistant output \
                          (frames={frames_seen} enqueued={enqueued} sent={enqueued} \
                          kv_ops={kv_ops} exec_skipped={exec_skipped} \
-                         top_fields={top_fields:?} interaction_fields={interaction_fields:?} \
-                         sample={interaction_sample:?})"
+                         top_fields={top_fields:?})"
                     )
                 } else {
                     format!("cursor run first-byte timeout (enqueued={enqueued})")
@@ -618,14 +615,16 @@ async fn run_text_turn_mode_tokio(
                         }
                         // Use prost to decode for field inspection
                         if let Ok(msg) = AgentServerMessage::decode(&*payload) {
-                            top_fields.push(1);
-                            if msg.interaction_update.is_some() {
+                            if msg.interaction_update.is_some() && top_fields.len() < 32 {
                                 top_fields.push(1);
                             }
-                            if !msg.exec_server_message.is_empty() {
+                            if !msg.exec_server_message.is_empty() && top_fields.len() < 32 {
                                 top_fields.push(2);
                             }
-                            if !msg.kv_server_message.is_empty() {
+                            if !msg.field_3.is_empty() && top_fields.len() < 32 {
+                                top_fields.push(3);
+                            }
+                            if !msg.kv_server_message.is_empty() && top_fields.len() < 32 {
                                 top_fields.push(4);
                             }
                         }
@@ -700,13 +699,18 @@ fn handle_data_frame(
     let Ok(server_msg) = AgentServerMessage::decode(&*payload) else {
         let mut kv_op = false;
         for (field, wire, data) in iter_fields(&payload).flatten() {
-            if field == 4
-                && wire == 2
-                && let Ok(Some(op)) = parse_kv_server_message(data)
-            {
-                queue_checkpoint_reply(op, checkpoints, outbound)?;
-                kv_op = true;
-                break;
+            if field == 4 && wire == 2 {
+                match parse_kv_server_message(data) {
+                    Ok(Some(op)) => {
+                        queue_checkpoint_reply(op, checkpoints, outbound)?;
+                        kv_op = true;
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        tracing::warn!(target: "cursor.kv", %error, "failed to decode kv server message");
+                    }
+                }
             }
         }
         let exec_skipped = has_exec_server_message(&payload);
@@ -724,25 +728,19 @@ fn handle_data_frame(
             kv_op,
         });
     };
-    if let Ok(Some(op)) = parse_kv_server_message(&server_msg.kv_server_message) {
-        queue_checkpoint_reply(op, checkpoints, outbound)?;
-        return Ok(FrameHandleOutcome {
-            exec_skipped: false,
-            text_deltas: 0,
-            kv_op: true,
-        });
-    }
-    if exec_message_has_mcp_args(&server_msg.exec_server_message)
-        || exec_message_has_mcp_args(&server_msg.field_3)
-    {
-        // Phase 0: n00n owns tools; ignore Cursor-side exec until Phase 1 maps them.
-        // Aborting the whole turn drops text deltas that often follow.
-        return Ok(FrameHandleOutcome {
-            exec_skipped: true,
-            text_deltas: 0,
-            kv_op: false,
-        });
-    }
+    let kv_op = match parse_kv_server_message(&server_msg.kv_server_message) {
+        Ok(Some(op)) => {
+            queue_checkpoint_reply(op, checkpoints, outbound)?;
+            true
+        }
+        Ok(None) => false,
+        Err(error) => {
+            tracing::warn!(target: "cursor.kv", %error, "failed to decode kv server message");
+            false
+        }
+    };
+    let exec_skipped = exec_message_has_mcp_args(&server_msg.exec_server_message)
+        || exec_message_has_mcp_args(&server_msg.field_3);
     let mut deltas = 0u32;
     if let Some(update) = server_msg.interaction_update {
         if let Some(delta) = update.text_delta
@@ -758,9 +756,9 @@ fn handle_data_frame(
         }
     }
     Ok(FrameHandleOutcome {
-        exec_skipped: false,
+        exec_skipped,
         text_deltas: deltas,
-        kv_op: false,
+        kv_op,
     })
 }
 
@@ -769,6 +767,15 @@ fn queue_checkpoint_reply(
     checkpoints: &SharedCheckpointStore,
     outbound: &OutboundQueue,
 ) -> Result<(), AgentError> {
+    let request_id = match &op {
+        KvServerOp::Get { id, .. } | KvServerOp::Set { id, .. } => *id,
+    };
+    if request_id == 0 {
+        return Err(AgentError::Api {
+            status: 400,
+            message: "Cursor checkpoint request has invalid id 0".to_string(),
+        });
+    }
     let reply = match op {
         KvServerOp::Get { id, blob_id } => {
             let store = checkpoints.lock().map_err(|_| AgentError::Api {
@@ -807,7 +814,8 @@ fn queue_checkpoint_reply(
 mod tests {
     use super::*;
     use crate::providers::cursor::proto::{
-        AGENT_MODE_ASK, AgentServerMessage, InteractionUpdate, TextDelta,
+        AGENT_MODE_ASK, AgentServerMessage, InteractionUpdate, KvServerMessage, SetBlobArgs,
+        TextDelta,
     };
     use flate2::Compression;
     use flate2::write::GzEncoder;
@@ -860,7 +868,6 @@ mod tests {
 
     #[test]
     fn handle_data_frame_queues_set_blob_ack() {
-        use crate::providers::cursor::proto::{KvServerMessage, SetBlobArgs};
         let args = SetBlobArgs {
             blob_id: b"blob-id".to_vec(),
             blob_data: b"blob-data".to_vec(),
@@ -871,7 +878,12 @@ mod tests {
             set_blob: Some(args),
         };
         let msg = AgentServerMessage {
-            interaction_update: None,
+            interaction_update: Some(InteractionUpdate {
+                text_delta: Some(TextDelta {
+                    text: "same-frame".to_string(),
+                }),
+                thinking_delta: None,
+            }),
             exec_server_message: Vec::new(),
             field_3: Vec::new(),
             kv_server_message: kv.encode_to_vec(),
@@ -886,8 +898,10 @@ mod tests {
         let (outbound, _notify) = new_outbound_queue();
         let mut text = String::new();
         let mut thinking = String::new();
-        handle_data_frame(&frame, &mut text, &mut thinking, &store, &outbound).expect("handle");
-        assert!(text.is_empty());
+        let outcome =
+            handle_data_frame(&frame, &mut text, &mut thinking, &store, &outbound).expect("handle");
+        assert_eq!(text, "same-frame");
+        assert!(outcome.kv_op);
         assert_eq!(
             store.lock().expect("lock").get(b"blob-id"),
             Some(b"blob-data".as_slice())

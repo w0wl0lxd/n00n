@@ -219,16 +219,14 @@ pub(crate) fn build_run_frames(params: &RunFrameParams<'_>) -> Result<Vec<Vec<u8
         conversation_id_2: params.conversation_id.to_string(),
     };
 
-    let run_frame = encode_frame(0, &client_msg.encode_to_vec())?;
+    let run_frame = encode_frame(0, &field_ld(1, &client_msg.encode_to_vec()))?;
 
     let environment = Environment::new(params.cwd);
-    let context = Context {
-        environment: Some(environment),
-    };
-    let session_meta = SessionMeta {
-        context: Some(context),
-    };
-    let env_frame = encode_frame(0, &session_meta.encode_to_vec())?;
+    let environment = field_ld(4, &environment.encode_to_vec());
+    let context = field_ld(1, &environment);
+    let session_meta = field_ld(1, &context);
+    let session_meta = field_ld(10, &session_meta);
+    let env_frame = encode_frame(0, &field_ld(2, &session_meta))?;
 
     let mut out = vec![run_frame, env_frame];
     // Pacing frames: minimal field-5 / field-3 blobs (not full AgentClientMessage).
@@ -258,14 +256,14 @@ pub(crate) fn heartbeat_frame() -> Result<Vec<u8>, String> {
 /// Text delta from the server.
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct TextDelta {
-    #[prost(string, tag = "1")]
+    #[prost(string, required, tag = "1")]
     pub text: String,
 }
 
 /// Thinking delta from the server.
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct ThinkingDelta {
-    #[prost(string, tag = "1")]
+    #[prost(string, required, tag = "1")]
     pub text: String,
 }
 
@@ -283,11 +281,11 @@ pub(crate) struct InteractionUpdate {
 pub(crate) struct AgentServerMessage {
     #[prost(message, optional, tag = "1")]
     pub interaction_update: Option<InteractionUpdate>,
-    #[prost(bytes, tag = "2")]
+    #[prost(bytes, required, tag = "2")]
     pub exec_server_message: Vec<u8>,
-    #[prost(bytes, tag = "3")]
+    #[prost(bytes, required, tag = "3")]
     pub field_3: Vec<u8>,
-    #[prost(bytes, tag = "4")]
+    #[prost(bytes, required, tag = "4")]
     pub kv_server_message: Vec<u8>,
 }
 
@@ -301,30 +299,30 @@ pub(crate) struct ExecServerMessage {
 /// MCP tool arguments requested by the server.
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct McpArgs {
-    #[prost(string, tag = "5")]
+    #[prost(string, required, tag = "5")]
     pub name: String,
 }
 
 /// Get blob arguments from server.
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct GetBlobArgs {
-    #[prost(bytes, tag = "1")]
+    #[prost(bytes, required, tag = "1")]
     pub blob_id: Vec<u8>,
 }
 
 /// Set blob arguments from server.
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct SetBlobArgs {
-    #[prost(bytes, tag = "1")]
+    #[prost(bytes, required, tag = "1")]
     pub blob_id: Vec<u8>,
-    #[prost(bytes, tag = "2")]
+    #[prost(bytes, required, tag = "2")]
     pub blob_data: Vec<u8>,
 }
 
 /// KV server message wrapper.
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct KvServerMessage {
-    #[prost(uint64, tag = "1")]
+    #[prost(uint64, required, tag = "1")]
     pub id: u64,
     #[prost(message, optional, tag = "2")]
     pub get_blob: Option<GetBlobArgs>,
@@ -349,7 +347,7 @@ pub(crate) struct SetBlobResult {
 /// KV client message wrapper.
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct KvClientMessage {
-    #[prost(uint64, tag = "1")]
+    #[prost(uint64, required, tag = "1")]
     pub id: u64,
     #[prost(message, optional, tag = "2")]
     pub get_blob_result: Option<GetBlobResult>,
@@ -365,7 +363,10 @@ pub(crate) fn iter_fields(
         while !buf.is_empty() {
             let (tag, rest) = match decode_varint(buf) {
                 Ok(value) => value,
-                Err(error) => return Some(Err(error)),
+                Err(error) => {
+                    buf = &[];
+                    return Some(Err(error));
+                }
             };
             buf = rest;
             let field = tag >> 3;
@@ -374,26 +375,37 @@ pub(crate) fn iter_fields(
                 0 => {
                     let (_, rest) = match decode_varint(buf) {
                         Ok(value) => value,
-                        Err(error) => return Some(Err(error)),
+                        Err(error) => {
+                            buf = &[];
+                            return Some(Err(error));
+                        }
                     };
                     buf = rest;
                 }
                 2 => {
                     let (len, rest) = match decode_varint(buf) {
                         Ok(value) => value,
-                        Err(error) => return Some(Err(error)),
+                        Err(error) => {
+                            buf = &[];
+                            return Some(Err(error));
+                        }
                     };
                     let Ok(len) = usize::try_from(len) else {
+                        buf = &[];
                         return Some(Err("protobuf length overflow".into()));
                     };
                     if rest.len() < len {
+                        buf = &[];
                         return Some(Err("truncated length-delimited field".into()));
                     }
                     let (data, rest) = rest.split_at(len);
                     buf = rest;
                     return Some(Ok((field, wire, data)));
                 }
-                other => return Some(Err(format!("unsupported protobuf wire type {other}"))),
+                other => {
+                    buf = &[];
+                    return Some(Err(format!("unsupported protobuf wire type {other}")));
+                }
             }
         }
         None
@@ -619,7 +631,10 @@ mod tests {
         let mut buf = FrameBuffer::default();
         buf.push(&frames[0]);
         let frame = buf.next_frame().expect("frame").expect("ok");
-        let client_fields = parse_wire_fields(&frame.payload).expect("valid client message");
+        let outer = parse_wire_fields(&frame.payload).expect("valid run envelope");
+        assert_eq!(outer[0].number, 1);
+        let client_fields =
+            parse_wire_fields(outer[0].as_bytes().unwrap()).expect("client message");
         assert_eq!(
             client_fields.iter().map(|f| f.number).collect::<Vec<_>>(),
             vec![1, 2, 4, 5, 9, 12, 14, 14, 16]
