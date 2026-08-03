@@ -962,11 +962,18 @@ impl<'t> EventLoop<'t> {
                     None => None,
                 };
                 session.meta.parent_id = parent_id;
-                let idx = self.push_runtime(self.ctx.spawn_runtime(session));
-                let id = self.sessions[idx].id();
-                if let Some(prompt) = prompt {
-                    let _ = self.submit_text(idx, prompt, false, false);
-                }
+                let mut runtime = self.ctx.spawn_runtime(session);
+                let actions = match runtime.app.prepare_new_session_prompt(prompt) {
+                    Ok(actions) => actions,
+                    Err(error) => {
+                        runtime.handles.cancel();
+                        let _ = reply_tx.send(Err(error.into()));
+                        return;
+                    }
+                };
+                let id = runtime.id();
+                let idx = self.push_runtime(runtime);
+                self.dispatch(idx, actions);
                 if focus {
                     self.set_focus(idx);
                 }
