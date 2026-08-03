@@ -457,6 +457,7 @@ pub enum UiAction {
         reply_tx: flume::Sender<Option<String>>,
     },
     Session {
+        caller: Option<String>,
         req: SessionRequest,
         reply_tx: flume::Sender<SessionReply>,
     },

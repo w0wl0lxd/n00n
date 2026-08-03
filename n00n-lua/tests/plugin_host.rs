@@ -147,6 +147,25 @@ fn exec_output_in(
     smol::block_on(async { inv.execute(&ctx).await }).output
 }
 
+fn exec_tool_in_session(
+    reg: &ToolRegistry,
+    name: &str,
+    input: serde_json::Value,
+) -> Result<String, String> {
+    let entry = reg
+        .get(name)
+        .unwrap_or_else(|| panic!("tool {name} not registered"));
+    let inv = entry.tool.parse(&input).expect("parse failed");
+    let mut ctx = n00n_agent::tools::test_support::stub_ctx(&n00n_agent::AgentMode::Build);
+    ctx.session_id = Some(n00n_storage::id::n00nId::generate().into());
+    smol::block_on(async { inv.execute(&ctx).await })
+        .output
+        .map(|out| match out {
+            n00n_agent::ToolOutput::Plain(s) => s.text,
+            other => panic!("unexpected output: {other:?}"),
+        })
+}
+
 const ECHO_PLUGIN: &str = r#"
 n00n.api.register_tool({
     name = "echo_",
@@ -4975,7 +4994,12 @@ fn team_launcher_uses_native_model_picker_and_amp_labels() {
     let action = rx
         .recv_timeout(Duration::from_secs(5))
         .expect("Team launcher did not submit a session prompt");
-    let n00n_lua::UiAction::Session { req, reply_tx } = action else {
+    let n00n_lua::UiAction::Session {
+        caller: _,
+        req,
+        reply_tx,
+    } = action
+    else {
         panic!("expected Team session prompt");
     };
     let n00n_lua::SessionRequest::Prompt { text, .. } = req else {
@@ -5019,7 +5043,12 @@ fn team_launcher_collects_goal_and_submits_configured_prompt() {
     let action = rx
         .recv_timeout(Duration::from_secs(5))
         .expect("Team launcher did not submit a session prompt");
-    let n00n_lua::UiAction::Session { req, reply_tx } = action else {
+    let n00n_lua::UiAction::Session {
+        caller: _,
+        req,
+        reply_tx,
+    } = action
+    else {
         panic!("expected Team session prompt");
     };
     let n00n_lua::SessionRequest::Prompt { id, text, .. } = req else {
@@ -5048,7 +5077,7 @@ fn agent_control_resume_preserves_paused_team_mode() {
     let (reg, host) = builtins_host();
     let rx = host.ui_action_rx().unwrap();
     let worker = std::thread::spawn(move || {
-        exec_tool(
+        exec_tool_in_session(
             &reg,
             "agent_control",
             serde_json::json!({
@@ -5059,12 +5088,20 @@ fn agent_control_resume_preserves_paused_team_mode() {
         )
     });
 
-    let n00n_lua::UiAction::Session { req, reply_tx } = rx
+    let n00n_lua::UiAction::Session {
+        caller,
+        req,
+        reply_tx,
+    } = rx
         .recv_timeout(Duration::from_secs(5))
         .expect("agent_control did not request session status")
     else {
         panic!("expected session status request");
     };
+    assert!(
+        caller.is_some(),
+        "agent tools must carry the invoking session"
+    );
     assert!(matches!(req, n00n_lua::SessionRequest::Status { .. }));
     reply_tx
         .send(Ok(serde_json::json!({
@@ -5079,12 +5116,20 @@ fn agent_control_resume_preserves_paused_team_mode() {
         })))
         .unwrap();
 
-    let n00n_lua::UiAction::Session { req, reply_tx } = rx
+    let n00n_lua::UiAction::Session {
+        caller,
+        req,
+        reply_tx,
+    } = rx
         .recv_timeout(Duration::from_secs(5))
         .expect("agent_control did not submit resume prompt")
     else {
         panic!("expected session prompt request");
     };
+    assert!(
+        caller.is_some(),
+        "agent tools must carry the invoking session"
+    );
     let n00n_lua::SessionRequest::Prompt {
         text,
         steer,

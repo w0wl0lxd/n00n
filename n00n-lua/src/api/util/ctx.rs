@@ -146,6 +146,10 @@ impl LuaCtx {
         }
     }
 
+    pub(crate) fn session_id(&self) -> Option<n00n_storage::id::SessionRef> {
+        self.agent().and_then(|agent| agent.session_id.clone())
+    }
+
     /// Dispatch capability: only handler ctxs can call `n00n.agent.*`.
     pub(crate) fn agent(&self) -> Option<&AgentContext> {
         match &self.caps {

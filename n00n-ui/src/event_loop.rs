@@ -68,6 +68,7 @@ const DRAIN_BUDGET: usize = 256;
 const AGENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 const STORAGE_WRITER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const DELETE_FOCUSED_ERR: &str = "cannot delete the focused session";
+const DELETE_PARENT_ERR: &str = "cannot delete a session with descendants";
 const NOT_LIVE_ERR: &str = "session not live";
 const MAX_LIVE_SESSIONS: usize = 64;
 const MAX_SESSION_DEPTH: usize = 8;
@@ -258,6 +259,7 @@ struct StoredAgentSession {
 struct SessionRuntime {
     app: App,
     handles: AgentHandles,
+    model_slot: Arc<ArcSwap<ModelSlot>>,
     shell_tx: flume::Sender<ShellEvent>,
     shell_rx: flume::Receiver<ShellEvent>,
     last_status: SessionStatus,
@@ -429,19 +431,41 @@ struct SpawnCtx {
     lua_event_handle: Option<EventHandle>,
     mcp_handle: Option<McpHandle>,
     mcp_config_errors: McpConfigErrors,
-    model_slot: Arc<ArcSwap<ModelSlot>>,
+    default_model_slot: Arc<ArcSwap<ModelSlot>>,
     available_models: Arc<ArcSwapOption<Vec<String>>>,
     storage_writer: Arc<StorageWriter>,
     picker: Arc<Picker>,
 }
 
 impl SpawnCtx {
+    fn model_slot_for(&self, spec: &str) -> Arc<ArcSwap<ModelSlot>> {
+        if let Ok(mut model) = Model::from_spec(spec)
+            && let Ok(provider) =
+                from_model_with_openai_options(&mut model, self.timeouts, self.openai_options)
+        {
+            return Arc::new(ArcSwap::from_pointee(ModelSlot {
+                model,
+                provider: Arc::from(provider),
+            }));
+        }
+        let fallback = self.default_model_slot.load();
+        warn!(
+            model = spec,
+            "failed to restore session model; using startup model"
+        );
+        Arc::new(ArcSwap::from_pointee(ModelSlot {
+            model: fallback.model.clone(),
+            provider: Arc::clone(&fallback.provider),
+        }))
+    }
+
     fn spawn_runtime(&self, session: AppSession) -> SessionRuntime {
         let resumed = crate::app::session_has_content(&session);
+        let model_slot = self.model_slot_for(&session.model);
         let permissions = Arc::new(self.permissions.fork());
         let initial_plan_path = session.meta.plan_path.as_ref().map(PathBuf::from);
         let handles = AgentHandles::spawn(
-            &self.model_slot,
+            &model_slot,
             session.messages.clone(),
             session.transcript.clone(),
             initial_plan_path,
@@ -456,7 +480,7 @@ impl SpawnCtx {
             self.mcp_config_errors.clone(),
         );
         let mut app = App::new(AppInit {
-            model: self.model_slot.load().model.clone(),
+            model: model_slot.load().model.clone(),
             session,
             storage: self.storage.clone(),
             available_models: Arc::clone(&self.available_models),
@@ -481,6 +505,7 @@ impl SpawnCtx {
         SessionRuntime {
             app,
             handles,
+            model_slot,
             shell_tx,
             shell_rx,
             last_status: SessionStatus::Idle,
@@ -770,7 +795,7 @@ impl<'t> EventLoop<'t> {
             lua_event_handle,
             mcp_handle,
             mcp_config_errors,
-            model_slot,
+            default_model_slot: model_slot,
             available_models: bg.available,
             storage_writer,
             picker,
@@ -1052,17 +1077,26 @@ impl<'t> EventLoop<'t> {
             }
         }
 
-        let slot_model = self.ctx.model_slot.load();
-        let spec = slot_model.model.spec();
+        let default_model = self.ctx.default_model_slot.load();
         for rt in &mut self.sessions {
-            if rt.app.state.session.model != spec
+            let slot_model = rt.model_slot.load();
+            if slot_model.model.spec() == default_model.model.spec()
+                && slot_model.model.context_window != default_model.model.context_window
+            {
+                drop(slot_model);
+                rt.model_slot.store(Arc::new(ModelSlot {
+                    model: default_model.model.clone(),
+                    provider: Arc::clone(&default_model.provider),
+                }));
+            }
+            let slot_model = rt.model_slot.load();
+            if rt.app.state.session.model != slot_model.model.spec()
                 || rt.app.state.model.context_window != slot_model.model.context_window
             {
                 rt.app.update_model(&slot_model.model);
                 self.dirty = true;
             }
         }
-        drop(slot_model);
 
         self.emit_status_changes();
         Ok(())
@@ -1095,8 +1129,12 @@ impl<'t> EventLoop<'t> {
                     .pick_model_for_lua(current.as_deref(), reply_tx);
                 self.handle_action(self.focused, Action::RefreshModels);
             }
-            UiAction::Session { req, reply_tx } => {
-                self.handle_session_request(req, reply_tx);
+            UiAction::Session {
+                caller,
+                req,
+                reply_tx,
+            } => {
+                self.handle_session_request(caller.as_deref(), req, reply_tx);
             }
         }
     }
@@ -1138,17 +1176,70 @@ impl<'t> EventLoop<'t> {
             );
         }
     }
+    fn runtime_root(&self, index: usize) -> Option<n00nId> {
+        let parents: HashMap<_, _> = self
+            .sessions
+            .iter()
+            .map(|runtime| (runtime.id(), runtime.app.state.session.meta.parent_id))
+            .collect();
+        let explicit_roots: HashMap<_, _> = self
+            .sessions
+            .iter()
+            .map(|runtime| (runtime.id(), runtime.app.state.session.meta.root_id))
+            .collect();
+        owned_session_root(self.sessions[index].id(), &explicit_roots, &parents)
+    }
+
+    fn authorize_session_target(&self, caller: Option<usize>, target: usize) -> Result<(), String> {
+        if caller.is_none() {
+            return Ok(());
+        }
+        let Some(caller_root) = caller.and_then(|index| self.runtime_root(index)) else {
+            return Err("invoking session has invalid ownership metadata".into());
+        };
+        if self.runtime_root(target) == Some(caller_root) {
+            Ok(())
+        } else {
+            Err("session is outside the invoking session tree".into())
+        }
+    }
 
     /// `List` replies from a background task (the scan can be slow); every
     /// other request is answered synchronously by the event loop, which owns
     /// the live runtimes.
     fn handle_session_request(
         &mut self,
+        caller: Option<&str>,
         req: SessionRequest,
         reply_tx: flume::Sender<SessionReply>,
     ) {
+        let caller = match caller.map(parse_session_id).transpose().and_then(|caller| {
+            caller
+                .map(|id| {
+                    self.position(id)
+                        .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))
+                })
+                .transpose()
+        }) {
+            Ok(caller) => caller,
+            Err(error) => {
+                let _ = reply_tx.send(Err(error));
+                return;
+            }
+        };
+        if let Some(index) = caller
+            && let Err(error) = self.authorize_session_target(caller, index)
+        {
+            let _ = reply_tx.send(Err(error));
+            return;
+        }
         match req {
             SessionRequest::List => {
+                if caller.is_some() {
+                    let _ = reply_tx
+                        .send(Err("stored session listing is unavailable to agents".into()));
+                    return;
+                }
                 let storage = self.ctx.storage.clone();
                 smol::unblock(move || {
                     let cwd =
@@ -1171,13 +1262,37 @@ impl<'t> EventLoop<'t> {
                         return;
                     }
                 };
+                let mut parents: HashMap<_, _> = self
+                    .sessions
+                    .iter()
+                    .map(|runtime| (runtime.id(), runtime.app.state.session.meta.parent_id))
+                    .collect();
+                parents.extend(
+                    self.stored_agent_sessions
+                        .iter()
+                        .map(|session| (session.entry.id, session.parent_id)),
+                );
+                if parents
+                    .keys()
+                    .any(|candidate| *candidate != id && is_descendant(*candidate, id, &parents))
+                {
+                    let _ = reply_tx.send(Err(DELETE_PARENT_ERR.into()));
+                    return;
+                }
                 if let Some(i) = self.position(id) {
+                    if let Err(error) = self.authorize_session_target(caller, i) {
+                        let _ = reply_tx.send(Err(error));
+                        return;
+                    }
                     if i == self.focused {
                         let _ = reply_tx.send(Err(DELETE_FOCUSED_ERR.into()));
                         return;
                     }
                     let rt = self.remove_runtime(i);
                     rt.handles.cancel();
+                } else if caller.is_some() {
+                    let _ = reply_tx.send(Err(format!("{NOT_LIVE_ERR}: {id}")));
+                    return;
                 }
                 self.stored_agent_sessions
                     .retain(|session| session.entry.id != id);
@@ -1193,9 +1308,14 @@ impl<'t> EventLoop<'t> {
                 });
             }
             SessionRequest::Live => {
+                let caller_root = caller.and_then(|index| self.runtime_root(index));
                 let list: Vec<_> = self
                     .runtime_descriptors()
                     .iter()
+                    .filter(|descriptor| {
+                        caller_root
+                            .is_none_or(|root| descriptor.root_id.unwrap_or(descriptor.id) == root)
+                    })
                     .map(RuntimeDescriptor::control_json)
                     .collect();
                 let _ = reply_tx.send(Ok(json!(list)));
@@ -1205,6 +1325,7 @@ impl<'t> EventLoop<'t> {
                     let idx = self
                         .position(id)
                         .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))?;
+                    self.authorize_session_target(caller, idx)?;
                     let rt = &self.sessions[idx];
                     let history = rt.handles.history.load();
                     let output = history.iter().rev().find_map(|message| {
@@ -1219,7 +1340,8 @@ impl<'t> EventLoop<'t> {
                 let _ = reply_tx.send(reply);
             }
             SessionRequest::Current => {
-                let _ = reply_tx.send(Ok(json!(self.sessions[self.focused].id())));
+                let current = caller.unwrap_or(self.focused);
+                let _ = reply_tx.send(Ok(json!(self.sessions[current].id())));
             }
             SessionRequest::New {
                 prompt,
@@ -1233,7 +1355,8 @@ impl<'t> EventLoop<'t> {
                     return;
                 }
                 let mut session = {
-                    let slot = self.ctx.model_slot.load();
+                    let source = caller.unwrap_or(self.focused);
+                    let slot = self.sessions[source].model_slot.load();
                     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
                     AppSession::new(&slot.model.spec(), &cwd.to_string_lossy())
                 };
@@ -1245,13 +1368,17 @@ impl<'t> EventLoop<'t> {
                             return;
                         }
                     },
-                    None => None,
+                    None => caller.map(|index| self.sessions[index].id()),
                 };
                 if let Some(parent_id) = parent_id {
                     let Some(parent_position) = self.position(parent_id) else {
                         let _ = reply_tx.send(Err(format!("{NOT_LIVE_ERR}: {parent_id}")));
                         return;
                     };
+                    if let Err(error) = self.authorize_session_target(caller, parent_position) {
+                        let _ = reply_tx.send(Err(error));
+                        return;
+                    }
                     let parents: HashMap<_, _> = self
                         .sessions
                         .iter()
@@ -1301,20 +1428,23 @@ impl<'t> EventLoop<'t> {
                 control,
             } => {
                 let idx = match id {
-                    None => Ok(self.focused),
+                    None => Ok(caller.unwrap_or(self.focused)),
                     Some(id) => parse_session_id(&id).and_then(|id| {
                         self.position(id)
                             .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))
                     }),
                 };
-                let _ =
-                    reply_tx.send(idx.and_then(|idx| self.submit_text(idx, text, steer, control)));
+                let _ = reply_tx.send(idx.and_then(|idx| {
+                    self.authorize_session_target(caller, idx)?;
+                    self.submit_text(idx, text, steer, control)
+                }));
             }
             SessionRequest::Cancel { id } => {
                 let reply = parse_session_id(&id).and_then(|id| {
-                    if self.position(id).is_none() {
+                    let Some(index) = self.position(id) else {
                         return Err(format!("{NOT_LIVE_ERR}: {id}"));
-                    }
+                    };
+                    self.authorize_session_target(caller, index)?;
                     if self.cancel_session_tree(id) == 0 {
                         return Err(format!("session tree is idle: {id}"));
                     }
@@ -1324,7 +1454,13 @@ impl<'t> EventLoop<'t> {
             }
             SessionRequest::Focus { id } => {
                 let reply = parse_session_id(&id)
-                    .and_then(|id| self.focus_session(id))
+                    .and_then(|id| {
+                        let index = self
+                            .position(id)
+                            .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))?;
+                        self.authorize_session_target(caller, index)?;
+                        self.focus_session(id)
+                    })
                     .map(|()| json!(true));
                 let _ = reply_tx.send(reply);
             }
@@ -1333,10 +1469,14 @@ impl<'t> EventLoop<'t> {
                 let reply = (|| {
                     let id = parse_session_id(&id)?;
                     if let Some(i) = self.position(id) {
+                        self.authorize_session_target(caller, i)?;
                         let app = &mut self.sessions[i].app;
                         app.state.session.title = title;
                         app.save_session();
                     } else {
+                        if caller.is_some() {
+                            return Err(format!("{NOT_LIVE_ERR}: {id}"));
+                        }
                         let mut session =
                             AppSession::load(id, &self.ctx.storage).map_err(|e| e.to_string())?;
                         session.title = title;
@@ -1642,7 +1782,7 @@ impl<'t> EventLoop<'t> {
         rt.handles.respawn(
             history,
             transcript,
-            &self.ctx.model_slot,
+            &rt.model_slot,
             self.ctx.config.clone(),
             self.ctx.ui_config.tool_output_lines,
             &permissions,
@@ -1724,7 +1864,7 @@ impl<'t> EventLoop<'t> {
                 }
             }
             Action::ContinueSubagent { name, messages } => {
-                let model = self.ctx.model_slot.load().model.spec();
+                let model = self.sessions[idx].model_slot.load().model.spec();
                 let session = continued_subagent_session(
                     &self.sessions[idx].app.state.session,
                     &model,
@@ -1754,7 +1894,7 @@ impl<'t> EventLoop<'t> {
             }
             Action::LoadSession(loaded) => {
                 let loaded = *loaded;
-                if loaded.model_spec != self.ctx.model_slot.load().model.spec()
+                if loaded.model_spec != self.sessions[idx].model_slot.load().model.spec()
                     && let Ok(mut new_model) = Model::from_spec(&loaded.model_spec)
                     && let Ok(new_provider) = from_model_with_openai_options(
                         &mut new_model,
@@ -1763,7 +1903,7 @@ impl<'t> EventLoop<'t> {
                     )
                 {
                     self.sessions[idx].app.usage_slot.store(None);
-                    self.ctx.model_slot.store(Arc::new(ModelSlot {
+                    self.sessions[idx].model_slot.store(Arc::new(ModelSlot {
                         model: new_model,
                         provider: Arc::from(new_provider),
                     }));
@@ -1826,7 +1966,7 @@ impl<'t> EventLoop<'t> {
                 }
             }
             Action::Btw(question) => {
-                let slot = self.ctx.model_slot.load();
+                let slot = self.sessions[idx].model_slot.load();
                 self.sessions[idx].app.start_btw(
                     &question,
                     Arc::clone(&slot.provider),
@@ -1850,11 +1990,12 @@ impl<'t> EventLoop<'t> {
                 self.ctx.openai_options,
             ) {
                 Ok(new_provider) => {
-                    let app = self.focused_app();
+                    let focused = self.focused;
+                    let app = &mut self.sessions[focused].app;
                     app.update_model(&new_model);
                     app.record_recent_model(spec);
                     app.usage_slot.store(None);
-                    self.ctx.model_slot.store(Arc::new(ModelSlot {
+                    self.sessions[focused].model_slot.store(Arc::new(ModelSlot {
                         model: new_model,
                         provider: Arc::from(new_provider),
                     }));
@@ -1888,7 +2029,7 @@ impl<'t> EventLoop<'t> {
     }
 
     fn refresh_usage(&mut self) {
-        let provider = Arc::clone(&self.ctx.model_slot.load().provider);
+        let provider = Arc::clone(&self.sessions[self.focused].model_slot.load().provider);
         let slot = Arc::clone(&self.focused_app().usage_slot);
         slot.store(Some(Arc::new(UsageFetchState::Loading)));
         smol::spawn(async move {
@@ -1903,13 +2044,14 @@ impl<'t> EventLoop<'t> {
     }
 
     fn refresh_provider(&mut self, slug: &str) {
-        let mut model = self.ctx.model_slot.load().model.clone();
+        let mut model = self.sessions[self.focused].model_slot.load().model.clone();
         if model.provider.to_string() == slug {
             if let Ok(provider) =
                 n00n_providers::provider::from_model(&mut model, self.ctx.timeouts)
             {
-                self.focused_app().usage_slot.store(None);
-                self.ctx.model_slot.store(Arc::new(ModelSlot {
+                let focused = self.focused;
+                self.sessions[focused].app.usage_slot.store(None);
+                self.sessions[focused].model_slot.store(Arc::new(ModelSlot {
                     model,
                     provider: Arc::from(provider),
                 }));
@@ -1949,29 +2091,32 @@ impl<'t> EventLoop<'t> {
             let SessionRuntime {
                 mut app, handles, ..
             } = rt;
-            app.state.session.meta.lifecycle = shutdown_lifecycle(
-                app.state.session.meta.lifecycle,
-                handles.queue.has_team_resume(),
-                &app.state.session.messages,
-            );
+            let previous_lifecycle = app.state.session.meta.lifecycle;
+            let has_team_resume = handles.queue.has_team_resume();
             let snapshot = app.session_snapshot();
             pending_sessions.push((
                 snapshot,
                 app.shared_history.clone(),
                 app.shared_transcript.clone(),
                 app.shared_tool_outputs.clone(),
+                previous_lifecycle,
+                has_team_resume,
             ));
             agent_tasks.push(handles.into_task());
         }
         crate::agent::join_all(agent_tasks, AGENT_SHUTDOWN_TIMEOUT);
         let mut tabs = Vec::with_capacity(pending_sessions.len());
-        for (mut session, history, transcript, tool_outputs) in pending_sessions {
+        for (mut session, history, transcript, tool_outputs, previous_lifecycle, has_team_resume) in
+            pending_sessions
+        {
             sync_agent_mirrors(
                 &mut session,
                 history.as_ref(),
                 transcript.as_ref(),
                 tool_outputs.as_ref(),
             );
+            session.meta.lifecycle =
+                shutdown_lifecycle(previous_lifecycle, has_team_resume, &session.messages);
             self.ctx.storage_writer.send(Box::new(session.clone()));
             tabs.push(session);
         }

@@ -7,6 +7,7 @@ use n00n_lua_macro::{lua_fn, lua_table};
 
 use crate::api::util::command::{SessionReply, SessionRequest, UiAction};
 use crate::api::util::convert::json_to_lua;
+use crate::runtime::active_session_id;
 
 const NO_UI_ERR: &str = "no interactive UI attached";
 
@@ -24,8 +25,16 @@ async fn roundtrip(
     let Some(tx) = tx else {
         return Ok(err_pair(NO_UI_ERR));
     };
+    let caller = active_session_id(&lua);
     let (reply_tx, reply_rx) = flume::bounded::<SessionReply>(1);
-    if tx.try_send(UiAction::Session { req, reply_tx }).is_err() {
+    if tx
+        .try_send(UiAction::Session {
+            caller,
+            req,
+            reply_tx,
+        })
+        .is_err()
+    {
         return Ok(err_pair(NO_UI_ERR));
     }
     match reply_rx.recv_async().await {
@@ -259,6 +268,7 @@ mod tests {
         let lua = lua_with_session(Some(tx));
         std::thread::spawn(move || {
             let Ok(UiAction::Session {
+                caller: _,
                 req: SessionRequest::Focus { id },
                 reply_tx,
             }) = rx.recv()
@@ -279,6 +289,7 @@ mod tests {
         let lua = lua_with_session(Some(tx));
         let checker = std::thread::spawn(move || {
             let Ok(UiAction::Session {
+                caller: _,
                 req: SessionRequest::Status { id },
                 reply_tx,
             }) = rx.recv()
@@ -303,6 +314,7 @@ mod tests {
         let lua = lua_with_session(Some(tx));
         let checker = std::thread::spawn(move || {
             let Ok(UiAction::Session {
+                caller: _,
                 req: SessionRequest::Cancel { id },
                 reply_tx,
             }) = rx.recv()
@@ -334,6 +346,7 @@ mod tests {
         let expected_id = expected_id.map(str::to_owned);
         let checker = std::thread::spawn(move || {
             let Ok(UiAction::Session {
+                caller: _,
                 req:
                     SessionRequest::Prompt {
                         id,
