@@ -911,7 +911,10 @@ mod tests {
         // Verify new fields are preserved
         assert_eq!(event["service_tier"], "fast");
         assert_eq!(event["safety_identifier"], "test-id");
-        assert_eq!(event["moderation"], json!({"model": "omni-moderation-latest"}));
+        assert_eq!(
+            event["moderation"],
+            json!({"model": "omni-moderation-latest"})
+        );
     }
 
     #[test]
