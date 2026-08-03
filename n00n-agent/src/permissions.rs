@@ -303,13 +303,12 @@ impl PermissionManager {
         // A single non-plan scope means we must prompt for the rest.
         if !force_prompt && !pending.is_empty() {
             let is_plan_write = plan_path.is_some_and(|pp| {
-                matches!(tool, ToolKey::Native(name) if FILE_WRITE_TOOLS.contains(&name.as_ref()))
-                    && {
-                        let normalized_plan = normalize_scope_path(&pp.display().to_string());
-                        pending
-                            .iter()
-                            .all(|s| normalize_scope_path(s) == normalized_plan)
-                    }
+                is_file_write_tool(tool) && {
+                    let normalized_plan = normalize_scope_path(&pp.display().to_string());
+                    pending
+                        .iter()
+                        .all(|s| normalize_scope_path(s) == normalized_plan)
+                }
             });
             if is_plan_write {
                 return PermissionCheck::Allowed;
@@ -539,7 +538,9 @@ impl PermissionManager {
 fn matches_rule(rule_key: &ToolKey, actual: &ToolKey) -> bool {
     match (rule_key, actual) {
         (ToolKey::Wildcard, _) => true,
-        (ToolKey::Native(a), ToolKey::Native(b)) => a == b,
+        (ToolKey::Native(a), ToolKey::Native(b)) => {
+            crate::tools::canonical_tool_name(a) == crate::tools::canonical_tool_name(b)
+        }
         (
             ToolKey::McpServer { server: rs },
             ToolKey::McpServer { server: as_ } | ToolKey::McpTool { server: as_, .. },
@@ -556,6 +557,14 @@ fn matches_rule(rule_key: &ToolKey, actual: &ToolKey) -> bool {
         ) => rs == as_ && rt == at,
         _ => false,
     }
+}
+
+fn is_file_write_tool(tool: &ToolKey) -> bool {
+    matches!(
+        tool,
+        ToolKey::Native(name)
+            if FILE_WRITE_TOOLS.contains(&crate::tools::canonical_tool_name(name))
+    )
 }
 
 fn rule_matches_scope(rule: &PermissionRule, scope: &str) -> bool {
@@ -653,8 +662,12 @@ pub fn generalized_scopes(tool: &ToolKey, scopes: &[String]) -> Vec<String> {
 
 fn generalize_scope(tool: &ToolKey, scope: &str) -> String {
     match tool {
-        ToolKey::Native(name) if name.as_ref() == "bash" => generalize_bash_segment(scope),
-        ToolKey::Native(name) if FILE_WRITE_TOOLS.contains(&name.as_ref()) => {
+        ToolKey::Native(name)
+            if crate::tools::canonical_tool_name(name) == crate::tools::BASH_TOOL_NAME =>
+        {
+            generalize_bash_segment(scope)
+        }
+        ToolKey::Native(_) if is_file_write_tool(tool) => {
             let p = Path::new(scope);
             match p.parent() {
                 Some(parent) if !parent.as_os_str().is_empty() => {

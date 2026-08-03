@@ -13,7 +13,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::selection::Selection;
-use n00n_agent::tools::{ToolInvocation, ToolRegistry, WRITE_TOOL_NAME};
+use n00n_agent::tools::{ToolInvocation, ToolRegistry, WRITE_TOOL_NAME, canonical_tool_name};
 use n00n_agent::{
     AgentEvent, BufferSnapshot, FusionPhase, ImageSource, ToolDoneEvent, ToolOutput, ToolStartEvent,
 };
@@ -141,7 +141,7 @@ impl Chat {
             }
             AgentEvent::ToolDone(e) => {
                 let plan_write = plan_path.filter(|pp| e.wrote_to(pp));
-                let is_full_write = &*e.tool == WRITE_TOOL_NAME;
+                let is_full_write = canonical_tool_name(&e.tool) == WRITE_TOOL_NAME;
                 self.messages_panel.tool_done(*e);
                 if let Some(pp) = plan_write {
                     let content = if is_full_write {
@@ -686,13 +686,14 @@ fn transcript_to_display_at<S: std::hash::BuildHasher>(
                 } else {
                     format!("{parent_id}.{compaction_index}")
                 };
-                let (child_display, _) = transcript_to_display_at(
+                let (child_display, mut child_restore_items) = transcript_to_display_at(
                     children,
                     tool_outputs,
                     tool_output_lines,
                     depth + 1,
                     &id,
                 );
+                restore_items.append(&mut child_restore_items);
                 let summary = generated_summary
                     .as_ref()
                     .and_then(Message::first_text_content)
@@ -1262,6 +1263,41 @@ mod tests {
     }
 
     #[test]
+    fn recursive_transcript_retains_each_nested_restore_item_once() {
+        let deepest = tool_use_pair_with_id(
+            "deep-tool-id",
+            "bash",
+            serde_json::json!({"command": "pwd"}),
+            "/tmp",
+            false,
+        );
+        let child = tool_use_pair_with_id(
+            "child-tool-id",
+            "read",
+            serde_json::json!({"path": "src/main.rs"}),
+            "1: fn main() {}",
+            false,
+        );
+        let transcript = vec![TranscriptEntry::Compaction {
+            entries: vec![
+                TranscriptEntry::Compaction {
+                    entries: deepest.into_iter().map(TranscriptEntry::Message).collect(),
+                    generated_summary: None,
+                },
+                TranscriptEntry::Message(child[0].clone()),
+                TranscriptEntry::Message(child[1].clone()),
+            ],
+            generated_summary: None,
+        }];
+
+        let (_, items) =
+            transcript_to_display(&transcript, &empty_outputs(), &ToolOutputLines::default());
+        let tool_ids: Vec<_> = items.iter().map(|item| item.tool_use_id.as_str()).collect();
+
+        assert_eq!(tool_ids, ["deep-tool-id", "child-tool-id"]);
+    }
+
+    #[test]
     fn legacy_compaction_keeps_following_user_assistant_pair_visible() {
         let transcript = vec![
             TranscriptEntry::Compaction {
@@ -1339,11 +1375,21 @@ mod tests {
         result: &str,
         is_error: bool,
     ) -> Vec<Message> {
+        tool_use_pair_with_id("t1", tool, input, result, is_error)
+    }
+
+    fn tool_use_pair_with_id(
+        id: &str,
+        tool: &str,
+        input: serde_json::Value,
+        result: &str,
+        is_error: bool,
+    ) -> Vec<Message> {
         vec![
             Message {
                 role: Role::Assistant,
                 content: vec![ContentBlock::ToolUse {
-                    id: "t1".into(),
+                    id: id.into(),
                     name: tool.into(),
                     input,
                 }],
@@ -1352,7 +1398,7 @@ mod tests {
             Message {
                 role: Role::User,
                 content: vec![ContentBlock::ToolResult {
-                    tool_use_id: "t1".into(),
+                    tool_use_id: id.into(),
                     content: result.into(),
                     is_error,
                 }],

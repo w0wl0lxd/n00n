@@ -4,7 +4,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use color_eyre::Result;
 use color_eyre::eyre::bail;
 
-use n00n_agent::tools::{all_builtin_tool_names, is_builtin_tool};
+use n00n_agent::tools::{all_builtin_tool_names, canonical_tool_name, is_builtin_tool};
 
 use crate::print::OutputFormat;
 
@@ -441,7 +441,7 @@ pub fn normalize_tool_name(name: &str) -> Result<String> {
             all_builtin_tool_names().join(", ")
         );
     }
-    Ok(result)
+    Ok(canonical_tool_name(&result).to_owned())
 }
 
 #[cfg(test)]
@@ -449,10 +449,10 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
-    #[test_case("Read", "read")]
-    #[test_case("Bash", "bash")]
-    #[test_case("CodeExecution", "code_execution")]
-    #[test_case("code_execution", "code_execution"; "snake_passthrough")]
+    #[test_case("Read", "read_file")]
+    #[test_case("Bash", "run_shell")]
+    #[test_case("CodeExecution", "run_python")]
+    #[test_case("code_execution", "run_python"; "snake_passthrough")]
     fn normalize_tool_name_valid_inputs(input: &str, expected: &str) {
         assert_eq!(normalize_tool_name(input).unwrap(), expected);
     }

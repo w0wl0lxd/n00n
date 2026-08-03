@@ -31,7 +31,7 @@ use n00n_providers::{
 };
 use n00n_storage::StateDir;
 use n00n_storage::id::{SessionRef, n00nId};
-use n00n_storage::sessions::Session;
+use n00n_storage::sessions::{Session, TranscriptEntry};
 use serde::Serialize;
 use serde_json::Value;
 use tracing::warn;
@@ -40,22 +40,22 @@ use uuid::Uuid;
 use crate::cli::Cli;
 
 const TOOL_NAME_MAP: &[(&str, &str)] = &[
-    ("bash", "Bash"),
-    ("read", "Read"),
-    ("edit", "Edit"),
-    ("write", "Write"),
-    ("grep", "Grep"),
-    ("glob", "Glob"),
-    ("todo_write", "TodoWrite"),
-    ("webfetch", "WebFetch"),
-    ("websearch", "WebSearch"),
-    ("task", "Task"),
-    ("multiedit", "MultiEdit"),
-    ("code_execution", "CodeExecution"),
-    ("index", "Index"),
-    ("memory", "Memory"),
-    ("question", "Question"),
-    ("skill", "Skill"),
+    ("run_shell", "Bash"),
+    ("read_file", "Read"),
+    ("edit_file", "Edit"),
+    ("write_file", "Write"),
+    ("search_code", "Grep"),
+    ("search_files", "Glob"),
+    ("update_todo", "TodoWrite"),
+    ("fetch_url", "WebFetch"),
+    ("search_web", "WebSearch"),
+    ("run_task", "Task"),
+    ("edit_file_bulk", "MultiEdit"),
+    ("run_python", "CodeExecution"),
+    ("index_file", "Index"),
+    ("use_memory", "Memory"),
+    ("ask_user", "Question"),
+    ("load_skill", "Skill"),
 ];
 
 /// Emits a hyphenated-hex `UUIDv7` string for Claude Code SDK wire ids
@@ -394,10 +394,11 @@ impl StreamSynth {
 }
 
 fn n00n_to_claude_tool_name(name: &str) -> &str {
+    let canonical = n00n_agent::tools::canonical_tool_name(name);
     TOOL_NAME_MAP
         .iter()
-        .find(|(m, _)| *m == name)
-        .map_or(name, |(_, c)| *c)
+        .find(|(n00n, _)| *n00n == canonical)
+        .map_or(canonical, |(_, claude)| *claude)
 }
 
 #[derive(Clone)]
@@ -481,7 +482,7 @@ pub fn run(params: SdkParams) -> Result<()> {
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let working_dir = cwd.to_string_lossy().into_owned();
-    let (session_id, initial_history) = resolve_session(&cli, &working_dir)?;
+    let (session_id, initial_history, initial_transcript) = resolve_session(&cli, &working_dir)?;
 
     let (mcp_handle, mcp_config_errors) =
         smol::block_on(mcp::start(&cwd, config.mcp_tool_desc_max_chars));
@@ -502,6 +503,7 @@ pub fn run(params: SdkParams) -> Result<()> {
         initial_wd: cwd.clone(),
         session_id,
         initial_history,
+        initial_transcript,
         yolo: permission_mode == PermissionMode::BypassPermissions,
         system_prompt_override: cli.system_prompt.clone().filter(|s| !s.is_empty()),
         append_system_prompt: cli.append_system_prompt.clone().filter(|s| !s.is_empty()),
@@ -784,8 +786,15 @@ fn handle_control_cancel(
 
 type StoredSession = Session<Message, TokenUsage, ToolOutput>;
 
-fn resolve_session(cli: &Cli, cwd: &str) -> Result<(Option<SessionRef>, Vec<Message>)> {
-    let (resumed_id, history) = if let Some(id) = &cli.session {
+fn resolve_session(
+    cli: &Cli,
+    cwd: &str,
+) -> Result<(
+    Option<SessionRef>,
+    Vec<Message>,
+    Vec<TranscriptEntry<Message>>,
+)> {
+    let (resumed_id, history, transcript) = if let Some(id) = &cli.session {
         let storage = StateDir::resolve().context("resolve state dir")?;
         let session_ref: SessionRef = id
             .parse()
@@ -793,15 +802,19 @@ fn resolve_session(cli: &Cli, cwd: &str) -> Result<(Option<SessionRef>, Vec<Mess
         let session = StoredSession::load(session_ref.id(), &storage)
             .map_err(|e| eyre!("load session {id}: {e}"))?;
         let resumed = (!cli.session_flags.fork_session).then_some(session_ref);
-        (resumed, session.messages)
+        (resumed, session.messages, session.transcript)
     } else if cli.session_flags.continue_session {
         let storage = StateDir::resolve().context("resolve state dir")?;
         match StoredSession::latest(cwd, &storage) {
-            Ok(Some(session)) => (Some(SessionRef::from(session.id)), session.messages),
-            _ => (None, Vec::new()),
+            Ok(Some(session)) => (
+                Some(SessionRef::from(session.id)),
+                session.messages,
+                session.transcript,
+            ),
+            _ => (None, Vec::new(), Vec::new()),
         }
     } else {
-        (None, Vec::new())
+        (None, Vec::new(), Vec::new())
     };
 
     let cli_session_id = cli
@@ -813,7 +826,7 @@ fn resolve_session(cli: &Cli, cwd: &str) -> Result<(Option<SessionRef>, Vec<Mess
         })
         .transpose()?;
 
-    Ok((cli_session_id.or(resumed_id), history))
+    Ok((cli_session_id.or(resumed_id), history, transcript))
 }
 
 fn parse_or_warn<T: serde::de::DeserializeOwned>(payload: Value, what: &str) -> Option<T> {
@@ -922,24 +935,17 @@ fn handle_control_request(
 fn resolve_set_model(model_val: Option<&Value>, startup_model: &Model) -> Option<Model> {
     let resolver = ModelResolver::current();
     match model_val? {
-        Value::Null => match resolver.resolve(&startup_model.spec()) {
-            Ok(model) => Some(model),
-            Err(_) => {
-                eprintln!(
-                    "warning: startup model is no longer configured or available; keeping current model"
-                );
-                None
-            }
-        },
-        Value::String(model_str) => match resolver.resolve(model_str) {
-            Ok(model) => Some(model),
-            Err(_) => {
+        Value::Null => Some(startup_model.clone()),
+        Value::String(model_str) => {
+            if let Ok(model) = resolver.resolve(model_str) {
+                Some(model)
+            } else {
                 eprintln!(
                     "warning: requested model is not configured or available; keeping current model"
                 );
                 None
             }
-        },
+        }
         _ => None,
     }
 }
@@ -1272,21 +1278,21 @@ mod tests {
             .map_or(name, |(m, _)| *m)
     }
 
-    #[test_case("bash", "Bash")]
-    #[test_case("read", "Read")]
-    #[test_case("edit", "Edit")]
-    #[test_case("write", "Write")]
-    #[test_case("grep", "Grep")]
-    #[test_case("glob", "Glob")]
-    #[test_case("todo_write", "TodoWrite")]
-    #[test_case("webfetch", "WebFetch")]
-    #[test_case("websearch", "WebSearch")]
-    #[test_case("task", "Task")]
-    #[test_case("multiedit", "MultiEdit")]
-    #[test_case("code_execution", "CodeExecution")]
-    #[test_case("index", "Index")]
-    #[test_case("memory", "Memory")]
-    #[test_case("question", "Question")]
+    #[test_case("run_shell", "Bash")]
+    #[test_case("read_file", "Read")]
+    #[test_case("edit_file", "Edit")]
+    #[test_case("write_file", "Write")]
+    #[test_case("search_code", "Grep")]
+    #[test_case("search_files", "Glob")]
+    #[test_case("update_todo", "TodoWrite")]
+    #[test_case("fetch_url", "WebFetch")]
+    #[test_case("search_web", "WebSearch")]
+    #[test_case("run_task", "Task")]
+    #[test_case("edit_file_bulk", "MultiEdit")]
+    #[test_case("run_python", "CodeExecution")]
+    #[test_case("index_file", "Index")]
+    #[test_case("use_memory", "Memory")]
+    #[test_case("ask_user", "Question")]
     fn n00n_to_claude_roundtrip(n00n: &str, claude: &str) {
         assert_eq!(n00n_to_claude_tool_name(n00n), claude);
         assert_eq!(claude_to_n00n_tool_name(claude), n00n);

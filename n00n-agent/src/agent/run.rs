@@ -61,8 +61,12 @@ const CACHE_BREAKPOINTS_MIN: usize = 1;
 fn remove_fusion_delegate_tool(tools: &mut Value) {
     if let Some(definitions) = tools.as_array_mut() {
         definitions.retain(|definition| {
-            definition.get("name").and_then(Value::as_str)
-                != Some(crate::fusion::FUSION_DELEGATE_TOOL)
+            definition
+                .get("name")
+                .and_then(Value::as_str)
+                .is_none_or(|name| {
+                    crate::tools::canonical_tool_name(name) != crate::fusion::FUSION_DELEGATE_TOOL
+                })
         });
     }
 }
@@ -92,21 +96,22 @@ fn filter_tools_for_mode(tools: &mut Value, mode: &AgentMode) {
             let Some(name) = definition.get("name").and_then(Value::as_str) else {
                 return true;
             };
+            let canonical_name = crate::tools::canonical_tool_name(name);
             // Bash is the only execute-kind tool allowed in plan mode, and only
             // for commands that pass the read-only classifier.
-            if name == crate::tools::BASH_TOOL_NAME {
+            if canonical_name == crate::tools::BASH_TOOL_NAME {
                 return true;
             }
             // Keep the historical name-based guard and extend it to any tool
             // whose kind is "execute", so a renamed code_execution tool is
             // also filtered out.
-            if name == crate::tools::CODE_EXECUTION_TOOL_NAME {
+            if canonical_name == crate::tools::CODE_EXECUTION_TOOL_NAME {
                 return false;
             }
             // Only remove tools we can positively identify as execute-kind.
             // MCP and other unregistered tools are left for the dispatch layer.
             registry
-                .get(name)
+                .get(canonical_name)
                 .map_or(true, |entry| entry.tool.tool_kind() != Some("execute"))
         });
     }
@@ -957,8 +962,8 @@ impl<'h> Agent<'h> {
     fn apply_tool_search_results(&mut self, results: &[ToolDoneEvent]) -> bool {
         let mut dirty = false;
         for done in results {
-            match done.tool.as_ref() {
-                "tool_search" => {
+            match crate::tools::canonical_tool_name(done.tool.as_ref()) {
+                "search_tools" => {
                     let text = done.output.as_text();
                     if let Ok(Value::Array(items)) = serde_json::from_str::<Value>(&text) {
                         for item in items {
@@ -1061,8 +1066,8 @@ impl<'h> Agent<'h> {
     fn start_fusion_delegate(&mut self, message: &Message) -> Result<(), AgentError> {
         let Some((_, _, input)) = message.tool_uses().find(|(_, name, _)| {
             let name = *name;
-            name.strip_prefix("functions.").map_or(name, |value| value)
-                == crate::fusion::FUSION_DELEGATE_TOOL
+            let unprefixed = name.strip_prefix("functions.").map_or(name, |value| value);
+            crate::tools::canonical_tool_name(unprefixed) == crate::fusion::FUSION_DELEGATE_TOOL
         }) else {
             return Ok(());
         };
