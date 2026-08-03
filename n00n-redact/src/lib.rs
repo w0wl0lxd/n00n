@@ -425,6 +425,10 @@ mod tests {
         assert!(looks_like_secret_value(jwt));
         assert!(looks_like_secret_value(&format!("sk-{}", "a".repeat(48))));
         assert!(looks_like_secret_value(&format!("ghp_{}", "a".repeat(36))));
+        assert!(looks_like_secret_value(&format!("gho_{}", "a".repeat(36))));
+        assert!(looks_like_secret_value(&format!("ghu_{}", "a".repeat(36))));
+        assert!(looks_like_secret_value(&format!("ghs_{}", "a".repeat(36))));
+        assert!(looks_like_secret_value(&format!("ghr_{}", "a".repeat(36))));
         assert!(looks_like_secret_value(&format!(
             "github_pat_{}",
             "a".repeat(30)

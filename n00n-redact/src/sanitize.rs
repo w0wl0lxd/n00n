@@ -24,8 +24,18 @@ const SENSITIVE_KEY_FRAGMENTS: &[&str] = &[
     "clientsecret",
 ];
 
-pub(crate) const SECRET_TOKEN_PREFIXES: &[&str] =
-    &["sk-", "ghp_", "github_pat_", "glpat-", "xoxb-", "xoxp-"];
+pub(crate) const SECRET_TOKEN_PREFIXES: &[&str] = &[
+    "sk-",
+    "ghp_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "ghr_",
+    "github_pat_",
+    "glpat-",
+    "xoxb-",
+    "xoxp-",
+];
 
 /// Sanitizes a free-text string: `Bearer <token>`, `key=value` / `key:value`
 /// with sensitive keys, and token-shaped values are replaced with
@@ -58,7 +68,7 @@ pub fn sanitize_text(raw: &str, max_chars: usize) -> String {
                         break;
                     }
                 }
-            } else if inline_value.is_some_and(|value| value.eq_ignore_ascii_case("bearer")) {
+            } else if inline_value.is_some_and(is_authentication_scheme) {
                 index = index.saturating_add(1).min(words.len());
             } else if inline_value.is_none_or(str::is_empty) {
                 let next_is_separator = words
@@ -72,7 +82,7 @@ pub fn sanitize_text(raw: &str, max_chars: usize) -> String {
                     }
                     if words
                         .get(index)
-                        .is_some_and(|next| next.eq_ignore_ascii_case("bearer"))
+                        .is_some_and(|next| is_authentication_scheme(next))
                     {
                         index += 1;
                     }
@@ -116,6 +126,10 @@ fn unterminated_opening_quote(value: &str) -> Option<char> {
         .next()
         .filter(|character| matches!(character, '\'' | '"'))?;
     (!contains_unescaped_quote(&value[quote.len_utf8()..], quote)).then_some(quote)
+}
+
+fn is_authentication_scheme(value: &str) -> bool {
+    value.eq_ignore_ascii_case("bearer") || value.eq_ignore_ascii_case("basic")
 }
 
 fn contains_unescaped_quote(value: &str, quote: char) -> bool {
@@ -193,6 +207,12 @@ mod tests {
     #[test]
     fn redacts_adjacent_bearer_scheme_and_token() {
         let sanitized = sanitize_text("Authorization:Bearer visible-token trailing", 80);
+        assert_eq!(sanitized, "Authorization:[REDACTED] trailing");
+    }
+
+    #[test]
+    fn redacts_basic_auth_credentials_completely() {
+        let sanitized = sanitize_text("Authorization: Basic dXNlcjpwYXNz trailing", 80);
         assert_eq!(sanitized, "Authorization:[REDACTED] trailing");
     }
 
