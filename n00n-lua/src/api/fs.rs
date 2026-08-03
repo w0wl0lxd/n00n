@@ -49,6 +49,10 @@ fn path_to_string(p: &Path) -> LuaResult<String> {
         .ok_or_else(|| mlua::Error::runtime("non-utf8 path"))
 }
 
+fn is_permission_denied_walk_error(kind: Option<ErrorKind>) -> bool {
+    kind == Some(ErrorKind::PermissionDenied)
+}
+
 fn filetype_str(ft: FileType) -> &'static str {
     if ft.is_file() {
         "file"
@@ -875,8 +879,12 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
             for entry in walker {
                 let entry = match entry {
                     Ok(e) => e,
-                    Err(e) => {
-                        tracing::debug!(error = %e, "glob: walk error");
+                    Err(error) => {
+                        if is_permission_denied_walk_error(error.io_error().map(Error::kind)) {
+                            tracing::debug!(error = %error, "glob: permission denied while walking");
+                        } else {
+                            tracing::warn!(error = %error, "glob: unexpected walk error");
+                        }
                         continue;
                     }
                 };
@@ -905,8 +913,12 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
             for entry in walker {
                 let entry = match entry {
                     Ok(e) => e,
-                    Err(e) => {
-                        tracing::debug!(error = %e, "glob: walk error");
+                    Err(error) => {
+                        if is_permission_denied_walk_error(error.io_error().map(Error::kind)) {
+                            tracing::debug!(error = %error, "glob: permission denied while walking");
+                        } else {
+                            tracing::warn!(error = %error, "glob: unexpected walk error");
+                        }
                         continue;
                     }
                 };
@@ -1041,6 +1053,15 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use super::*;
+
+    #[test]
+    fn glob_walk_error_classification_distinguishes_permission_denied() {
+        assert!(is_permission_denied_walk_error(Some(
+            ErrorKind::PermissionDenied
+        )));
+        assert!(!is_permission_denied_walk_error(Some(ErrorKind::Other)));
+        assert!(!is_permission_denied_walk_error(None));
+    }
     use crate::plugin_permissions::PluginPermissions;
     use mlua::Lua;
     use tempfile::TempDir;
