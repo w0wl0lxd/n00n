@@ -135,11 +135,11 @@ pub struct Cli {
     pub plugin_flags: PluginFlags,
 
     /// Pre-approve tools (comma-separated). Accepts `PascalCase` (Claude Code) or `snake_case`.
-    #[arg(long, value_delimiter = ',')]
+    #[arg(long, alias = "allowedTools", value_delimiter = ',')]
     pub allowed_tools: Vec<String>,
 
     /// Disallowed tools (comma-separated).
-    #[arg(long, value_delimiter = ',')]
+    #[arg(long, alias = "disallowedTools", value_delimiter = ',')]
     pub disallowed_tools: Vec<String>,
 
     /// Session ID for SDK mode
