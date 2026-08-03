@@ -60,7 +60,7 @@ inventory::submit!(n00n_config::providers::BuiltInProvider {
     protocol: n00n_config::providers::Protocol::Devin,
     default_base_url: DEVIN_API_URL,
     default_api_key_env: "DEVIN_API_KEY",
-    default_model: "devin/swe-1-7",
+    default_model: "devin/swe-1-7-max",
     plans: None,
     login_url: None,
     needs_url: false,
