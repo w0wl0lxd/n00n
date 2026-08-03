@@ -733,6 +733,8 @@ n00n.api.register_tool({
   name = "blackboard",
   description = description,
   kind = "execute",
+  defer_loading = true,
+  namespace = "agent",
   audiences = { "main", "general_sub", "workflow" },
   schema = schema,
   handler = handler,

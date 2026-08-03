@@ -6164,3 +6164,57 @@ fn memory_tool_search_omits_non_matching_query() {
         "search should omit importance-only matches: {out}"
     );
 }
+
+#[test]
+fn defer_loading_and_namespace_filtering_in_lua_plugins() {
+    let reg = fresh_registry();
+    let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = r#"
+        n00n.api.register_tool({
+            name = "deferred_explore_tool",
+            defer_loading = true,
+            namespace = "explore",
+            description = "A deferred explore tool",
+            schema = { type = "object", properties = {} },
+            handler = function() return { llm_output = "ok" } end,
+        })
+        n00n.api.register_tool({
+            name = "active_tool",
+            description = "An active tool",
+            schema = { type = "object", properties = {} },
+            handler = function() return { llm_output = "ok" } end,
+        })
+    "#;
+    host.load_source("test_plugin", src).expect("load plugin");
+
+    let ctx = DescriptionContext {
+        filter: &ToolFilter::All,
+        audience: ToolAudience::MAIN,
+        workflow: false,
+    };
+
+    // Default active tools should exclude deferred tools
+    let active = ActiveTools::default();
+    let defs_active = reg.definitions_active(&env_vars(), &ctx, true, &active);
+    let names_active: Vec<_> = defs_active
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["name"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(names_active.contains(&"active_tool".to_owned()));
+    assert!(!names_active.contains(&"deferred_explore_tool".to_owned()));
+
+    // With namespace active, deferred tool should be included
+    let mut with_ns = ActiveTools::default();
+    with_ns.namespaces.insert("explore".to_owned());
+    let defs_with_ns = reg.definitions_active(&env_vars(), &ctx, true, &with_ns);
+    let names_with_ns: Vec<_> = defs_with_ns
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["name"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(names_with_ns.contains(&"active_tool".to_owned()));
+    assert!(names_with_ns.contains(&"deferred_explore_tool".to_owned()));
+}

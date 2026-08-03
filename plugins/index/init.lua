@@ -148,6 +148,8 @@ n00n.api.register_prompt_hint({
 n00n.api.register_tool({
   name = "index",
   kind = "read",
+  defer_loading = true,
+  namespace = "explore",
   modes = { "default", "research", "build", "compact" },
   description = [[Return a compact overview of a source file: imports, types, function signatures, and structure with line numbers in []. ~70-90% more efficient than reading full file. Use FIRST to understand structure before read with offset/limit. Supports source files and markdown. Falls back with error on unsupported languages.]],
   strict = true,
