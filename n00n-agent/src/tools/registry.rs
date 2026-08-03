@@ -1056,13 +1056,13 @@ mod tests {
     #[test]
     fn defer_loading_and_namespace_filtering() {
         let reg = ToolRegistry::new();
-        let deferred_ns = Arc::new(MockTool {
+        let deferred_ns: Arc<dyn Tool> = Arc::new(MockTool {
             name: "deferred_tool".to_owned(),
             audience: ToolAudience::all(),
             defer_loading: true,
             namespace: Some("explore".to_owned()),
         });
-        let active_tool = Arc::new(MockTool {
+        let active_tool: Arc<dyn Tool> = Arc::new(MockTool {
             name: "active_tool".to_owned(),
             audience: ToolAudience::all(),
             defer_loading: false,
@@ -1082,7 +1082,7 @@ mod tests {
 
         // Default active tools should exclude deferred tools
         let active = ActiveTools::default();
-        let defs_active = reg.definitions(&vars, &ctx, &active);
+        let defs_active = reg.definitions_active(&vars, &ctx, true, &active);
         let names_active: Vec<_> = defs_active
             .as_array()
             .unwrap()
@@ -1095,7 +1095,7 @@ mod tests {
         // With namespace active, deferred tool should be included
         let mut with_ns = ActiveTools::default();
         with_ns.namespaces.insert("explore".to_owned());
-        let defs_with_ns = reg.definitions(&vars, &ctx, &with_ns);
+        let defs_with_ns = reg.definitions_active(&vars, &ctx, true, &with_ns);
         let names_with_ns: Vec<_> = defs_with_ns
             .as_array()
             .unwrap()

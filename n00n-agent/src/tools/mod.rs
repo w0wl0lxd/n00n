@@ -209,6 +209,8 @@ pub fn capability_exclusions(model: &Model) -> &'static [&'static str] {
 pub fn default_active_tools() -> ActiveTools {
     let mut active = ActiveTools::default();
     active.namespaces.insert("agent".to_owned());
+    active.names.insert(AGENT_CONTROL_TOOL_NAME.to_owned());
+    active.names.insert(BATCH_TOOL_NAME.to_owned());
     active.names.insert(VIEW_IMAGE_TOOL_NAME.to_owned());
     active
 }
