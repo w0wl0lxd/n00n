@@ -677,6 +677,10 @@ fn snapshot_to_lines_range(
     (lines, spinners)
 }
 
+pub(crate) fn bake_snapshot_lines(snapshot: &BufferSnapshot, indent: &str) -> Vec<Line<'static>> {
+    snapshot_to_lines_range(snapshot, indent, 0..snapshot.lines.len(), spinner_str(0)).0
+}
+
 /// Bakes only `snapshot.lines[from..]`, the tail a live buffer gained since
 /// the segment last rendered. The panel splices this onto the existing
 /// snapshot block instead of re-baking the whole buffer.
