@@ -81,11 +81,18 @@ pub(crate) struct UserMessage {
     pub mode: u64,
 }
 
-/// Action wrapper for user message.
+/// Inner action wrapper for the user message.
+#[derive(Clone, PartialEq, prost::Message)]
+pub(crate) struct UserMessageAction {
+    #[prost(message, optional, tag = "1")]
+    pub user_message: Option<UserMessage>,
+}
+
+/// Action wrapper for the user message action.
 #[derive(Clone, PartialEq, prost::Message)]
 pub(crate) struct Action {
     #[prost(message, optional, tag = "1")]
-    pub user_message: Option<UserMessage>,
+    pub user_message_action: Option<UserMessageAction>,
 }
 
 /// Environment context for the agent.
@@ -196,7 +203,9 @@ pub(crate) fn build_run_frames(params: &RunFrameParams<'_>) -> Result<Vec<Vec<u8
         mode: params.mode,
     };
     let action = Action {
-        user_message: Some(user_message),
+        user_message_action: Some(UserMessageAction {
+            user_message: Some(user_message),
+        }),
     };
 
     let model_meta = ModelMeta::new(params.model_id);
@@ -642,7 +651,17 @@ mod tests {
 
         let action = parse_wire_fields(client_fields[1].as_bytes().unwrap()).expect("action");
         assert_eq!(action[0].number, 1);
-        let user_msg = parse_wire_fields(action[0].as_bytes().unwrap()).expect("user message");
+        let user_message_action =
+            parse_wire_fields(action[0].as_bytes().unwrap()).expect("user message action");
+        assert_eq!(
+            user_message_action
+                .iter()
+                .map(|f| f.number)
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
+        let user_msg =
+            parse_wire_fields(user_message_action[0].as_bytes().unwrap()).expect("user message");
         assert_eq!(
             user_msg.iter().map(|f| f.number).collect::<Vec<_>>(),
             vec![1, 2, 3, 4]
