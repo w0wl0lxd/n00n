@@ -98,27 +98,30 @@ impl StatusBar {
         self.cwd_branch = label.into();
     }
 
-    pub fn poll_branch_update(&mut self) {
+    pub fn poll_branch_update(&mut self) -> bool {
         let Some(rx) = &self.branch_update_rx else {
-            return;
+            return false;
         };
-        if rx.try_iter().next().is_some() {
-            self.cwd_branch = cwd_branch_label();
+        if rx.try_iter().next().is_none() {
+            return false;
         }
+        self.cwd_branch = cwd_branch_label();
+        true
     }
 
     pub fn clear_flash(&mut self) {
         self.flash = None;
     }
 
-    pub fn clear_expired_hint(&mut self) {
-        if self
+    pub fn clear_expired_hint(&mut self) -> bool {
+        let expired = self
             .flash
             .as_ref()
-            .is_some_and(|(_, t)| t.elapsed() >= self.flash_duration)
-        {
+            .is_some_and(|(_, t)| t.elapsed() >= self.flash_duration);
+        if expired {
             self.flash = None;
         }
+        expired
     }
 
     pub fn view(&self, frame: &mut Frame, area: Rect, ctx: &StatusBarContext) {

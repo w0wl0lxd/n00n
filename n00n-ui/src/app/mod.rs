@@ -464,10 +464,12 @@ impl App {
         }
     }
 
-    pub fn tick_error_expiry(&mut self) {
-        if self.status.is_error_expired() {
-            self.status = Status::Idle;
+    pub fn tick_error_expiry(&mut self) -> bool {
+        if !self.status.is_error_expired() {
+            return false;
         }
+        self.status = Status::Idle;
+        true
     }
 
     fn active_chat(&mut self) -> &mut Chat {

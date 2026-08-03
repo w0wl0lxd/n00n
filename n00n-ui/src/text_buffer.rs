@@ -80,7 +80,7 @@ impl TextBuffer {
     }
 
     pub fn insert_text(&mut self, text: &str) {
-        let sanitized = text.replace('\t', TAB_SPACES);
+        let sanitized = text.replace('\t', TAB_SPACES).replace('\r', "");
         for (i, chunk) in sanitized.split('\n').enumerate() {
             if i > 0 {
                 self.add_line();
@@ -487,6 +487,17 @@ mod tests {
         let mut buf = TextBuffer::new("");
         buf.insert_text("\tindented\n\t\tdouble");
         assert_eq!(buf.lines(), &["  indented", "    double"]);
+    }
+
+    #[test]
+    fn insert_text_strips_carriage_returns() {
+        let mut buf = TextBuffer::new("");
+        buf.insert_text("first\r\nsecond\rthird");
+        assert_eq!(
+            buf.lines(),
+            &["first", "secondthird"],
+            "CRLF line endings and bare CR must not leak into the buffer"
+        );
     }
 
     #[test]
