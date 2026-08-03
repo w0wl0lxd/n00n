@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use n00n_storage::version::{self, VersionError};
 use n00n_storage::{StateDir, StorageError};
 
+use crate::print::{OutputFormat, confirm_destructive, emit_command_result};
+
 const INSTALL_SCRIPT_URL: &str = "https://raw.githubusercontent.com/w0wl0lxd/n00n/main/install.sh";
 const BACKUP_FILENAME: &str = "n00n_backup";
 const INSTALL_DIR_ENV: &str = "N00N_INSTALL_DIR";
@@ -53,6 +55,9 @@ pub enum UpdateError {
 
     #[error("failed to check latest version: {0}")]
     VersionCheck(#[from] VersionError),
+
+    #[error("failed to read confirmation: {0}")]
+    Prompt(#[from] std::io::Error),
 }
 
 fn fetch_script() -> Result<String, UpdateError> {
@@ -125,7 +130,7 @@ fn restore_backup(backup_path: &Path, exe_path: &Path) -> Result<(), UpdateError
 
     let tmp = exe_path.with_extension("n00n_tmp");
     if needs_sudo(exe_path) {
-        println!("Restoring to {} (requires sudo)...", exe_path.display());
+        eprintln!("Restoring to {} (requires sudo)...", exe_path.display());
         let status = std::process::Command::new("sudo")
             .args(["sh", "-c", r#"cp -- "$1" "$2" && mv -- "$2" "$3""#, "--"])
             .arg(backup_path)
@@ -143,26 +148,29 @@ fn restore_backup(backup_path: &Path, exe_path: &Path) -> Result<(), UpdateError
     Ok(())
 }
 
-fn prompt_yes(install_dir: &Path) -> bool {
-    eprint!(
-        "Install to {} and run this script? [y/N] ",
-        install_dir.display()
-    );
-    let _ = std::io::stderr().flush();
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input).is_ok() && input.trim().eq_ignore_ascii_case("y")
-}
-
-pub fn update(skip_confirm: bool, no_color: bool) -> Result<(), UpdateError> {
+pub fn update(
+    skip_confirm: bool,
+    no_color: bool,
+    dry_run: bool,
+    format: OutputFormat,
+) -> Result<(), UpdateError> {
     let latest = version::fetch_latest()?;
     if !version::is_newer(&latest, version::CURRENT) {
-        println!("Already up to date (v{})", version::CURRENT);
+        emit_command_result(
+            format,
+            "update",
+            "success",
+            &format!("already up to date (v{})", version::CURRENT),
+        );
         return Ok(());
     }
 
-    println!("Current version: v{}", version::CURRENT);
-    println!("Latest version:  v{latest}");
-    println!();
+    let structured = matches!(format, OutputFormat::Json | OutputFormat::StreamJson);
+    if !structured {
+        println!("Current version: v{}", version::CURRENT);
+        println!("Latest version:  v{latest}");
+        println!();
+    }
 
     let exe_path = current_exe_resolved()?;
     let install_dir = match std::env::var_os(INSTALL_DIR_ENV).filter(|d| !d.is_empty()) {
@@ -178,16 +186,28 @@ pub fn update(skip_confirm: bool, no_color: bool) -> Result<(), UpdateError> {
     };
     let storage = StateDir::resolve()?;
 
-    let script = fetch_script()?;
-
-    if no_color {
-        println!("{script}");
-    } else {
-        println!("{}", n00n_ui::highlight_ansi("bash", &script));
+    if dry_run {
+        emit_command_result(
+            format,
+            "update",
+            "dry-run",
+            &format!("would update to v{latest} in {}", install_dir.display()),
+        );
+        return Ok(());
     }
 
-    if !skip_confirm && !prompt_yes(&install_dir) {
-        println!("Aborted.");
+    let script = fetch_script()?;
+
+    if !structured {
+        if no_color {
+            println!("{script}");
+        } else {
+            println!("{}", n00n_ui::highlight_ansi("bash", &script));
+        }
+    }
+
+    if !skip_confirm && !confirm_destructive(format, "update", &install_dir.display().to_string())?
+    {
         return Ok(());
     }
 
@@ -195,15 +215,24 @@ pub fn update(skip_confirm: bool, no_color: bool) -> Result<(), UpdateError> {
 
     execute_script(&script, &install_dir)?;
 
-    println!();
-    println!("Updated successfully.");
-    println!("Previous version saved to: {}", backup_path.display());
-    println!("To restore: n00n rollback");
+    emit_command_result(
+        format,
+        "update",
+        "success",
+        &format!(
+            "updated successfully; previous version saved to {}",
+            backup_path.display()
+        ),
+    );
 
     Ok(())
 }
 
-pub fn rollback() -> Result<(), UpdateError> {
+pub fn rollback(
+    skip_confirm: bool,
+    dry_run: bool,
+    format: OutputFormat,
+) -> Result<(), UpdateError> {
     let exe_path = current_exe_resolved()?;
     let storage = StateDir::resolve()?;
     let backup_path = storage.path().join(BACKUP_FILENAME);
@@ -212,9 +241,25 @@ pub fn rollback() -> Result<(), UpdateError> {
         return Err(UpdateError::NoBackup(backup_path));
     }
 
+    if dry_run {
+        emit_command_result(
+            format,
+            "rollback",
+            "dry-run",
+            &format!(
+                "would restore the previous version from {}",
+                backup_path.display()
+            ),
+        );
+        return Ok(());
+    }
+    if !skip_confirm && !confirm_destructive(format, "rollback", &exe_path.display().to_string())? {
+        return Ok(());
+    }
+
     restore_backup(&backup_path, &exe_path)?;
 
-    println!("Restored previous version.");
+    emit_command_result(format, "rollback", "success", "restored previous version");
 
     Ok(())
 }

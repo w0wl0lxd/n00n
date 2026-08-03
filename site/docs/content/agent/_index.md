@@ -78,7 +78,7 @@ This binds the control plane with the worker backend only. The TUI replaces this
 
 Use `--json` on `list` and `status` for machine-readable output suitable for status bars, notifications, and orchestration scripts. The shape is intentionally stable and separate from the internal daemon NDJSON wire protocol.
 
-`run --json` still uses the global `--output-format json` flag for one-shot foreground runs.
+`run --json` still uses the global `--output json` flag for one-shot foreground runs. `--output-format json` remains a compatible alias.
 
 ## See also
 

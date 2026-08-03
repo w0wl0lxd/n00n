@@ -28,7 +28,7 @@ echo "list all TODO comments" | n00n -p
 | `stream-json` | JSONL stream, one event per line |
 
 ```bash
-n00n "fix the tests" --print --output-format json
+n00n "fix the tests" --print --output json
 ```
 
 JSON output includes `type`, `subtype`, `is_error`, `duration_ms`, `num_turns`, `result`, `stop_reason`, `session_id`, `total_cost_usd`, and `usage`.
@@ -44,10 +44,10 @@ n00n's `--print` is a drop-in replacement for Claude Code:
 claude "fix the bug" --print --output-format json
 
 # After
-n00n "fix the bug" --print --output-format json
+n00n "fix the bug" --print --output json
 ```
 
-Same JSON fields, same `--output-format` options, same `--verbose` behavior. Scripts that parse Claude Code output work unchanged.
+Same JSON fields and `--verbose` behavior. Use `--output json` (or the compatible `--output-format json`) when scripts need structured output.
 
 ## SDK / Stream Mode
 
@@ -82,6 +82,18 @@ Under the hood it reuses the same `spawn_interactive` driver as the TUI and ACP 
 ```bash
 echo '{"type":"user","message":{"content":"explain this repo"}}' \
   | n00n --print --input-format stream-json --max-turns 3
+```
+
+## Safe destructive commands
+
+Update, rollback, credential logout, and agent stop ask for confirmation. Use `--dry-run` to inspect the action without changing anything, or `--no-confirm` in an explicitly authorized automation job:
+
+```bash
+n00n update --dry-run --output json
+n00n rollback --dry-run --output json
+n00n auth logout openai --dry-run --output json
+n00n mcp logout github --dry-run --output json
+n00n agent stop worker-42 --dry-run --output json
 ```
 
 ## Examples
@@ -119,5 +131,5 @@ done
 Cost tracking:
 
 ```bash
-n00n "refactor the database layer" -p --output-format json | jq '.total_cost_usd'
+n00n "refactor the database layer" -p --output json | jq '.total_cost_usd'
 ```
