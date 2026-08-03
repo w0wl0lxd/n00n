@@ -65,6 +65,7 @@ All fields are optional. Typos in field names cause an error right away.
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
+| `reduced_motion` | bool | `false` | - | Reduce motion and reveal streamed text immediately |
 | `splash_animation` | bool | `true` | - | Show splash animation on startup |
 | `mascot` | bool | `true` | - | Show the n00n mascot on the idle splash screen |
 | `scrollbar` | bool | `true` | - | Show vertical scrollbar in scrollable areas |
