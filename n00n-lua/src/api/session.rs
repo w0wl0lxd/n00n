@@ -270,6 +270,7 @@ mod tests {
         std::thread::spawn(move || {
             let Ok(UiAction::Session {
                 req: SessionRequest::Focus { id },
+                caller: _,
                 reply_tx,
             }) = rx.recv()
             else {
@@ -290,6 +291,7 @@ mod tests {
         let checker = std::thread::spawn(move || {
             let Ok(UiAction::Session {
                 req: SessionRequest::Status { id },
+                caller: _,
                 reply_tx,
             }) = rx.recv()
             else {
@@ -314,6 +316,7 @@ mod tests {
         let checker = std::thread::spawn(move || {
             let Ok(UiAction::Session {
                 req: SessionRequest::Cancel { id },
+                caller: _,
                 reply_tx,
             }) = rx.recv()
             else {
@@ -351,6 +354,7 @@ mod tests {
                         steer,
                         control,
                     },
+                caller: _,
                 reply_tx,
             }) = rx.recv()
             else {

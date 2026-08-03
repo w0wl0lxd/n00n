@@ -2976,6 +2976,8 @@ mod tests {
             cancel,
             deadline,
             live_ctx: None,
+            caller_session_id: None,
+            caller_tool: None,
             owner: None,
             parent: None,
         }
