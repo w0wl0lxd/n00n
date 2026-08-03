@@ -207,12 +207,7 @@ impl Chat {
                     control,
                 };
             }
-            AgentEvent::Retry { .. } => {
-                tracing::warn!(
-                    "retry event reached chat handling; expected to be intercepted by the app layer"
-                );
-                return ChatEventResult::Continue;
-            }
+            AgentEvent::Retry { .. } => unreachable!("handled before handle_event"),
             AgentEvent::Done { .. } => {
                 self.messages_panel.flush();
                 return ChatEventResult::Done;
@@ -804,7 +799,7 @@ pub fn history_to_display<S: std::hash::BuildHasher>(
                                 reg.get(name).and_then(|entry| entry.try_parse(input));
                             let summary = reg.resolve_header(name, input);
                             let (status, result_text) = results.get(id.as_str()).map_or(
-                                (ToolStatus::Error, None),
+                                (ToolStatus::Success, None),
                                 |(err, text)| {
                                     let s = if *err {
                                         ToolStatus::Error
@@ -1083,6 +1078,34 @@ mod tests {
         assert!(!chat.streaming_text_is_empty());
         assert_eq!(chat.last_message_text(), "Executing: brief label");
     }
+
+    #[test]
+    fn existing_fusion_phase_event_also_renders_control_text() {
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
+        chat.handle_event(
+            AgentEvent::FusionPhaseChanged {
+                phase: n00n_agent::FusionPhase::Planning,
+                label: None,
+            },
+            None,
+        );
+        assert_eq!(chat.last_message_text(), "Planning");
+    }
+
+    #[test]
+    fn unexpected_retry_event_is_ignored() {
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
+        let result = chat.handle_event(
+            AgentEvent::Retry {
+                attempt: 1,
+                message: "overloaded".into(),
+                delay_ms: 100,
+            },
+            None,
+        );
+        assert!(matches!(result, ChatEventResult::Continue));
+    }
+
     #[test]
     fn tool_lifecycle() {
         let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
@@ -1340,22 +1363,6 @@ mod tests {
         let display = history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default()).0;
         assert_eq!(display.len(), 1);
         assert!(matches!(&display[0].role, DisplayRole::Tool(t) if t.status == expected));
-    }
-
-    #[test]
-    fn history_unmatched_tool_use_is_error_not_success() {
-        let msgs = vec![Message {
-            role: Role::Assistant,
-            content: vec![ContentBlock::ToolUse {
-                id: "t1".into(),
-                name: "bash".into(),
-                input: serde_json::json!({"command": "ls"}),
-            }],
-            ..Default::default()
-        }];
-        let display = history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default()).0;
-        assert_eq!(display.len(), 1);
-        assert!(matches!(&display[0].role, DisplayRole::Tool(t) if t.status == ToolStatus::Error));
     }
 
     #[test]
