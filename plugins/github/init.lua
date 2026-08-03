@@ -82,16 +82,7 @@ n00n.api.register_tool({
   name = "github",
   kind = "read",
   description = [[
-GitHub REST API client using reqwest. Query GitHub repositories, issues, and pull requests.
-
-Commands:
-- list_issues: List issues in a repository.
-- create_issue: Create a new issue (requires GITHUB_TOKEN).
-- list_prs: List pull requests in a repository.
-- get_repo: Get repository metadata.
-
-Reads GITHUB_TOKEN from environment for authentication. All operations return structured JSON.
-Use this for GitHub-aware queries, tracking issues, and understanding repository state.
+Query GitHub repositories, issues, and pull requests using the REST API. Requires GITHUB_TOKEN.
 ]],
   schema = {
     type = "object",
