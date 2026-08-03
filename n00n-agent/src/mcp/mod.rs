@@ -790,8 +790,14 @@ async fn shutdown_all(inner: &mut McpManagerInner) {
         })
         .collect();
 
-    for transport in transports {
-        transport.shutdown().await;
+    // Run cleanup concurrently: stdio reaps are bounded by REAP_TIMEOUT each, and HTTP
+    // session DELETE must not sit behind a slow earlier transport during process exit.
+    let tasks: Vec<_> = transports
+        .into_iter()
+        .map(|transport| smol::spawn(async move { transport.shutdown().await }))
+        .collect();
+    for task in tasks {
+        task.await;
     }
     info!("MCP command loop shutting down");
 }
@@ -1368,13 +1374,26 @@ mod tests {
     struct OrderedShutdownTransport {
         name: Arc<str>,
         events: Arc<Mutex<Vec<String>>>,
+        gate: Option<Arc<AsyncMutex<()>>>,
+        completed: Option<flume::Sender<()>>,
     }
 
     impl OrderedShutdownTransport {
         fn new(name: &str, events: Arc<Mutex<Vec<String>>>) -> Arc<Self> {
+            Self::with_gate(name, events, None, None)
+        }
+
+        fn with_gate(
+            name: &str,
+            events: Arc<Mutex<Vec<String>>>,
+            gate: Option<Arc<AsyncMutex<()>>>,
+            completed: Option<flume::Sender<()>>,
+        ) -> Arc<Self> {
             Arc::new(Self {
                 name: Arc::from(name),
                 events,
+                gate,
+                completed,
             })
         }
 
@@ -1409,7 +1428,13 @@ mod tests {
 
         fn shutdown(&self) -> transport::BoxFuture<'_, ()> {
             Box::pin(async move {
+                if let Some(gate) = &self.gate {
+                    let _held = gate.lock().await;
+                }
                 self.record("complete");
+                if let Some(completed) = &self.completed {
+                    let _ = completed.try_send(());
+                }
             })
         }
 
@@ -2023,10 +2048,82 @@ mod tests {
 
             shutdown_all(&mut inner).await;
 
-            assert_eq!(
-                *events.lock().unwrap(),
-                ["begin:a", "begin:b", "complete:a", "complete:b"]
+            let events = events.lock().unwrap().clone();
+            let first_complete = events
+                .iter()
+                .position(|e| e.starts_with("complete:"))
+                .expect("expected a complete event");
+            assert!(
+                events[..first_complete]
+                    .iter()
+                    .all(|e| e.starts_with("begin:")),
+                "every begin must precede any complete: {events:?}"
             );
+            assert!(events.contains(&"begin:a".to_string()));
+            assert!(events.contains(&"begin:b".to_string()));
+            assert!(events.contains(&"complete:a".to_string()));
+            assert!(events.contains(&"complete:b".to_string()));
+        });
+    }
+
+    #[test]
+    fn shutdown_all_runs_cleanup_concurrently() {
+        smol::block_on(async {
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let gate = Arc::new(AsyncMutex::new(()));
+            let held = gate.lock().await;
+            let (fast_done_tx, fast_done_rx) = flume::bounded(1);
+            let first = OrderedShutdownTransport::with_gate(
+                "slow",
+                Arc::clone(&events),
+                Some(Arc::clone(&gate)),
+                None,
+            );
+            let second = OrderedShutdownTransport::with_gate(
+                "fast",
+                Arc::clone(&events),
+                None,
+                Some(fast_done_tx),
+            );
+            let mut inner = McpManagerInner {
+                entries: vec![
+                    fake_entry("slow", first as _),
+                    fake_entry("fast", second as _),
+                ],
+                generation: 0,
+                max_desc_chars: n00n_config::DEFAULT_MCP_TOOL_DESC_MAX_CHARS,
+            };
+
+            let shutdown = smol::spawn(async move {
+                shutdown_all(&mut inner).await;
+            });
+
+            let finished = futures_lite::future::or(
+                async {
+                    fast_done_rx
+                        .recv_async()
+                        .await
+                        .expect("fast cleanup signal");
+                    true
+                },
+                async {
+                    smol::Timer::after(Duration::from_secs(1)).await;
+                    false
+                },
+            )
+            .await;
+            assert!(
+                finished,
+                "fast transport cleanup stayed blocked behind slow shutdown: {:?}",
+                events.lock().unwrap()
+            );
+            assert!(
+                !events.lock().unwrap().iter().any(|e| e == "complete:slow"),
+                "slow transport should still be gated"
+            );
+            drop(held);
+            shutdown.await;
+            assert!(events.lock().unwrap().iter().any(|e| e == "complete:slow"));
         });
     }
 
