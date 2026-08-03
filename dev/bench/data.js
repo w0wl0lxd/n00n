@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785748375507,
+  "lastUpdate": 1785748585469,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -12847,6 +12847,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 120304,
             "range": "± 8805",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f5be3f3022c585751339d516f5f4c19925277bea",
+          "message": "Merge pull request #248 from w0wl0lxd/hotfix/devin-empty-tool-args\n\nfix(providers): handle empty Devin tool arguments",
+          "timestamp": "2026-08-03T04:44:11-04:00",
+          "tree_id": "39ee397853d3bbb6c2272badb99046468a50288e",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/f5be3f3022c585751339d516f5f4c19925277bea"
+        },
+        "date": 1785748584438,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6706525,
+            "range": "± 219479",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2219583,
+            "range": "± 14307",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2239509,
+            "range": "± 27791",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8135074,
+            "range": "± 37211",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4448055,
+            "range": "± 100679",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4319187,
+            "range": "± 114185",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 590949,
+            "range": "± 1780",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 192128,
+            "range": "± 1436",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 192181,
+            "range": "± 2373",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1048648,
+            "range": "± 15563",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 584712,
+            "range": "± 44593",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 583360,
+            "range": "± 2330",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 58719,
+            "range": "± 6499",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 175680,
+            "range": "± 14314",
             "unit": "ns/iter"
           }
         ]
