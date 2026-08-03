@@ -44,6 +44,8 @@ fn build_app_with_mcp(
     mcp_reader: McpSnapshotReader,
 ) -> App {
     let model = test_model();
+    n00n_storage::atomic_write(&dir.path().join("welcome-seen"), b"test\n")
+        .expect("mark welcome guide seen for app tests");
     App::new(AppInit {
         model,
         session: AppSession::new("test-model", "/tmp/test"),

@@ -268,6 +268,10 @@ impl App {
         if r.width > 0 {
             overlay_rect = r;
         }
+        let r = self.onboarding.view(frame, full);
+        if r.width > 0 {
+            overlay_rect = r;
+        }
         if self.usage_modal.is_open() {
             let quota = self.usage_slot.load();
             let ctx = UsageModalContext {

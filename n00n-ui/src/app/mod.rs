@@ -35,6 +35,7 @@ use crate::components::login_picker::{LoginPicker, LoginPickerAction};
 use crate::components::lua_float::FloatManager;
 use crate::components::mcp_picker::{McpPicker, McpPickerAction};
 use crate::components::model_picker::{ModelPicker, ModelPickerAction};
+use crate::components::onboarding::Onboarding;
 use crate::components::permission_prompt::PermissionPrompt;
 use crate::components::plan_form::{PlanForm, PlanFormAction};
 use crate::components::rewind_picker::{RewindPicker, RewindPickerAction};
@@ -245,6 +246,7 @@ pub struct App {
     pub(super) mcp_picker: McpPicker,
     pub(super) rewind_picker: RewindPicker,
     pub(super) help_modal: HelpModal,
+    pub(super) onboarding: Onboarding,
     pub(super) usage_modal: UsageModal,
     pub(super) btw_modal: BtwModal,
     pub(super) float_mgr: FloatManager,
@@ -363,6 +365,7 @@ impl App {
             mcp_picker: McpPicker::new(mcp_reader, mcp_config_errors),
             rewind_picker: RewindPicker::new(),
             help_modal: HelpModal::new(),
+            onboarding: Onboarding::new(&storage),
             usage_modal: UsageModal::new(),
             btw_modal: BtwModal::new(ui_config.typewriter_ms_per_char),
             float_mgr: FloatManager::new(),
@@ -750,6 +753,16 @@ impl App {
     }
 
     fn dispatch_overlay(&mut self, key: KeyEvent) -> Option<Vec<Action>> {
+        if self.onboarding.is_open() {
+            self.onboarding.handle_key(key);
+            if !self.onboarding.is_open()
+                && let Err(error) = self.onboarding.mark_seen(&self.storage)
+            {
+                tracing::warn!(error = %error, "failed to persist welcome guide dismissal");
+            }
+            return Some(vec![]);
+        }
+
         if self.permission_prompt.is_open() {
             if let Some(answer) = self.permission_prompt.handle_key(key) {
                 let subagent_id = self.permission_prompt.subagent_id().map(str::to_owned);
@@ -1841,6 +1854,10 @@ impl App {
                 self.help_modal.toggle();
                 vec![]
             }
+            "/welcome" => {
+                self.onboarding.open();
+                vec![]
+            }
             "/usage" => {
                 self.usage_modal.toggle();
                 if self.usage_modal.is_open() {
@@ -2075,9 +2092,10 @@ impl App {
         vec![]
     }
 
-    fn overlays(&self) -> [&dyn Overlay; 13] {
+    fn overlays(&self) -> [&dyn Overlay; 14] {
         [
             &self.help_modal,
+            &self.onboarding,
             &self.usage_modal,
             &self.btw_modal,
             &self.float_mgr,
@@ -2093,9 +2111,10 @@ impl App {
         ]
     }
 
-    fn overlays_mut(&mut self) -> [&mut dyn Overlay; 13] {
+    fn overlays_mut(&mut self) -> [&mut dyn Overlay; 14] {
         [
             &mut self.help_modal,
+            &mut self.onboarding,
             &mut self.usage_modal,
             &mut self.btw_modal,
             &mut self.float_mgr,

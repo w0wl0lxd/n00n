@@ -35,7 +35,7 @@ pub struct RenderCtx<'a> {
     pub tool_output_lines: &'a ToolOutputLines,
 }
 
-pub const TOOL_INDICATOR: &str = "  ✓ ";
+pub const TOOL_INDICATOR: &str = "  ✓ done ";
 pub const TOOL_BODY_INDENT: &str = "    ";
 pub(crate) const SPINNER_STYLE_NAME: &str = "spinner";
 pub(crate) const SPINNER_STYLE_PREFIX: &str = "spinner:";
@@ -411,7 +411,7 @@ impl ToolLineBuilder {
         annotation: Option<&str>,
         render_header: Option<&BufferSnapshot>,
     ) {
-        let label: String = tool_name.chars().take(12).collect();
+        let label = tool_name.to_owned();
         let mut spans = vec![
             Span::styled(label, theme::current().tool_prefix),
             Span::styled("  ", theme::current().tool_dim),
@@ -479,10 +479,10 @@ impl ToolLineBuilder {
         let (text, style) = match indicator {
             Indicator::InProgress => {
                 let ch = spinner_frame(started_at.elapsed().as_millis());
-                (format!("{ch} "), theme::current().spinner)
+                (format!("{ch} running "), theme::current().spinner)
             }
             Indicator::Success => (TOOL_INDICATOR.into(), theme::current().tool_success),
-            Indicator::Error => ("  × ".into(), theme::current().tool_error),
+            Indicator::Error => ("  × error ".into(), theme::current().tool_error),
         };
         for (line, span) in &mut self.spinner_lines {
             if *line == 0 {

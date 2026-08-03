@@ -146,6 +146,19 @@ impl PermissionPrompt {
         }
     }
 
+    fn action_hint(tool: &ToolKey) -> &'static str {
+        let name = tool.to_string();
+        if name.contains("write") || name.contains("edit") {
+            "change files"
+        } else if name.contains("bash") || name.contains("shell") {
+            "run a command"
+        } else if name.contains("web") || name.contains("http") {
+            "access the network"
+        } else {
+            "use an external tool"
+        }
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<PermissionAnswer> {
         let Self::Open { state, buffer, .. } = self else {
             return None;
@@ -262,6 +275,26 @@ impl PermissionPrompt {
         tool_spans.push(Span::styled(tool.to_string(), value_style));
 
         let mut lines = vec![Line::raw(""), Line::from(tool_spans)];
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("action ", label_style),
+            Span::styled(Self::action_hint(tool), value_style),
+        ]));
+        let scope_hint = if scopes.is_empty() {
+            "the current request"
+        } else {
+            "only the scope(s) listed below"
+        };
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("scope  ", label_style),
+            Span::styled(scope_hint, value_style),
+        ]));
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("why    ", label_style),
+            Span::styled("n00n asks before a tool can affect your work", value_style),
+        ]));
         for (i, s) in scopes.iter().enumerate() {
             let label = if i == 0 { "scope " } else { "    + " };
             lines.push(Line::from(vec![
@@ -373,6 +406,20 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn prompt_explains_action_scope_and_reason_on_narrow_terminal() {
+        let prompt = open_prompt();
+        let text: String = prompt
+            .build_lines()
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+            .collect();
+        assert!(text.contains("action"));
+        assert!(text.contains("scope"));
+        assert!(text.contains("why"));
+        assert!(prompt.height(24) > 0);
     }
 
     #[test]
