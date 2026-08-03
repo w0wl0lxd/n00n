@@ -205,9 +205,15 @@ fn devin_usage_to_token_usage(u: &ModelUsageStats) -> TokenUsage {
     // Devin gRPC usage reports input_tokens as the total prompt tokens
     // (including cache reads and writes), with cache fields as details.
     // TokenUsage.input must be the non-cached portion so that total_input()
-    // and cost() are consistent with the rest of the providers.
+    // and cost() are consistent with the rest of the providers. Some
+    // responses already report input_tokens as the non-cached remainder;
+    // keep that reported value instead of saturating to zero.
     let cached = u.cache_read_tokens.saturating_add(u.cache_write_tokens);
-    let input = u.input_tokens.saturating_sub(cached);
+    let input = if u.input_tokens >= cached {
+        u.input_tokens.saturating_sub(cached)
+    } else {
+        u.input_tokens
+    };
     TokenUsage {
         input: clamp_tokens("input", input),
         output: clamp_tokens("output", u.output_tokens),
@@ -1030,9 +1036,9 @@ mod tests {
     }
 
     #[test]
-    fn devin_usage_does_not_underflow_when_cache_exceeds_total() {
-        // Some responses may already report input_tokens as the non-cached
-        // remainder; saturating subtraction keeps the reported value safe.
+    fn devin_usage_preserves_input_when_cache_exceeds_total() {
+        // Some responses report input_tokens as the non-cached remainder.
+        // Keep the reported value instead of saturating to zero.
         let stats = ModelUsageStats {
             input_tokens: 10,
             output_tokens: 5,
@@ -1040,9 +1046,10 @@ mod tests {
             cache_write_tokens: 50,
         };
         let usage = devin_usage_to_token_usage(&stats);
-        assert_eq!(usage.input, 0);
+        assert_eq!(usage.input, 10);
         assert_eq!(usage.cache_read, 100);
         assert_eq!(usage.cache_creation, 50);
+        assert_eq!(usage.total_input(), 160);
     }
 
     #[test]
