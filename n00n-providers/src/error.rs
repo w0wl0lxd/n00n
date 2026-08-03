@@ -279,6 +279,7 @@ impl AgentError {
                 // Match actual missing-credential messages, excluding "invalid API key" and unrelated errors
                 (msg_lower.contains("not authenticated") && !msg_lower.contains("invalid"))
                     || (msg_lower.contains("not set") && !msg_lower.contains("invalid"))
+                    || (msg_lower.contains("is empty") && !msg_lower.contains("invalid"))
                     || (msg_lower.contains("api key") && !msg_lower.contains("invalid"))
             }
             _ => false,
@@ -616,6 +617,12 @@ mod tests {
         };
         assert!(missing_key.is_missing_credentials());
         assert!(missing_key.is_config());
+
+        let empty_env_key = AgentError::Config {
+            message: "ANTHROPIC_API_KEY is empty".into(),
+        };
+        assert!(empty_env_key.is_missing_credentials());
+        assert!(empty_env_key.is_config());
 
         let not_authenticated = AgentError::Config {
             message: "not authenticated, run n00n auth login".into(),
