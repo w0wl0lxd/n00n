@@ -171,7 +171,7 @@ fn is_secret_token(value: &str) -> bool {
                 .next_back()
                 .is_none_or(|character| !character.is_alphabetic())
         })
-        || lower.starts_with("akia")
+        || super::is_aws_access_key_id(trimmed)
         || lower.starts_with("aiza")
         || super::is_jwt_like(&lower)
 }
@@ -275,6 +275,12 @@ mod tests {
     fn redacts_secret_tokens_in_compact_malformed_json() {
         let sanitized = sanitize_text(r#"{"user":"bob","id":"AKIA0123456789ABCDEF""#, 200);
         assert!(!sanitized.contains("AKIA0123456789ABCDEF"));
+    }
+
+    #[test]
+    fn redacts_asia_access_key_id_in_compact_malformed_json() {
+        let sanitized = sanitize_text(r#"{"user":"bob","id":"ASIA0123456789ABCDEF""#, 200);
+        assert!(!sanitized.contains("ASIA0123456789ABCDEF"));
     }
     #[test]
     fn redacts_jwt_in_malformed_json_text() {

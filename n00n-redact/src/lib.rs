@@ -316,9 +316,8 @@ pub fn looks_like_secret_value(value: &str) -> bool {
     if trimmed.is_empty() {
         return false;
     }
-    if let Some(bearer) = trimmed
-        .strip_prefix("Bearer ")
-        .or_else(|| trimmed.strip_prefix("bearer "))
+    if let Some((scheme, bearer)) = trimmed.split_once(' ')
+        && scheme.eq_ignore_ascii_case("bearer")
     {
         return bearer.trim().len() >= BEARER_VALUE_MIN_CHARS;
     }
@@ -493,6 +492,14 @@ mod tests {
         ));
         assert!(looks_like_secret_value(&format!(
             "Bearer {}",
+            "abc.def.".repeat(10)
+        )));
+        assert!(looks_like_secret_value(&format!(
+            "bearer {}",
+            "abc.def.".repeat(10)
+        )));
+        assert!(looks_like_secret_value(&format!(
+            "BEARER {}",
             "abc.def.".repeat(10)
         )));
         assert!(looks_like_secret_value(
