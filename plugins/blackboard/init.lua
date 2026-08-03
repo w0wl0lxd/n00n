@@ -730,7 +730,8 @@ local function header(input)
 end
 
 n00n.api.register_tool({
-  name = "blackboard",
+  name = "use_blackboard",
+  aliases = { "blackboard" },
   description = description,
   kind = "execute",
   audiences = { "main", "general_sub", "workflow" },

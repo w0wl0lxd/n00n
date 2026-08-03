@@ -22,7 +22,8 @@ local function normalize_questions(questions)
 end
 
 n00n.api.register_tool({
-  name = "question",
+  name = "ask_user",
+  aliases = { "question" },
   description = DESCRIPTION,
   schema = {
     type = "object",

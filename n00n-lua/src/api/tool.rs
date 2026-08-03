@@ -140,6 +140,7 @@ impl PermissionScopeSpec {
 
 pub(crate) struct PendingTool {
     pub(crate) name: Arc<str>,
+    pub(crate) aliases: Vec<Arc<str>>,
     pub(crate) description: String,
     pub(crate) schema: &'static ParamSchema,
     pub(crate) audience: ToolAudience,
@@ -163,6 +164,7 @@ pub(crate) type PendingTools = Arc<Mutex<Vec<PendingTool>>>;
 
 pub(crate) struct LuaTool {
     pub(crate) name: Arc<str>,
+    pub(crate) aliases: Vec<Arc<str>>,
     pub(crate) description: String,
     pub(crate) schema: &'static ParamSchema,
     pub(crate) audience: ToolAudience,
@@ -185,6 +187,10 @@ pub(crate) struct LuaTool {
 impl Tool for LuaTool {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn aliases(&self) -> Vec<&str> {
+        self.aliases.iter().map(AsRef::as_ref).collect()
     }
 
     fn description(&self, ctx: &DescriptionContext) -> Cow<'_, str> {
@@ -650,7 +656,8 @@ fn parse_hint_content(lua: &Lua, spec: &Table) -> LuaResult<HintContent> {
 /// discarded.
 ///
 /// @param spec table Tool specification:
-///   name            (string)   Required. ASCII identifier, up to 64 chars ([a-zA-Z_][a-zA-Z0-9_]*).
+///   name            (string)   Required canonical ASCII identifier, up to 64 chars ([a-zA-Z_][a-zA-Z0-9_]*).
+///   aliases         (string[]) Optional deprecated names accepted for compatibility but never shown to the model.
 ///   description     (string)   Required. Non-empty description shown to the model.
 ///   schema          (table)    Required. JSON Schema object describing the tool's input parameters.
 ///   handler         (function) Required. Called with `(input, ctx)` when the tool is invoked.
@@ -882,12 +889,13 @@ fn get_tool(lua: &Lua, name: String) -> LuaResult<LuaValue> {
         return Ok(LuaValue::Nil);
     };
     let t = tool_entry_to_lua(lua, &entry)?;
-    if let Some((header, restore)) = local_tool_handles(&name) {
+    let canonical_name = entry.name().to_owned();
+    if let Some((header, restore)) = local_tool_handles(&canonical_name) {
         if let Some(f) = header {
-            t.set("header", wrap_header(lua, name.clone(), f)?)?;
+            t.set("header", wrap_header(lua, canonical_name.clone(), f)?)?;
         }
         if let Some(f) = restore {
-            t.set("restore", wrap_restore(lua, name, f)?)?;
+            t.set("restore", wrap_restore(lua, canonical_name, f)?)?;
         }
     }
     Ok(LuaValue::Table(t))
@@ -931,6 +939,11 @@ fn tool_entry_to_lua(lua: &Lua, entry: &RegisteredTool) -> LuaResult<Table> {
     }
     let t = lua.create_table()?;
     t.set("name", entry.name())?;
+    let aliases = lua.create_table()?;
+    for alias in entry.tool.aliases() {
+        aliases.push(alias)?;
+    }
+    t.set("aliases", aliases)?;
     t.set("schema", json_to_lua(lua, &entry.tool.schema())?)?;
     t.set("audiences", audiences)?;
     if let Some(kind) = entry.tool.tool_kind() {
@@ -1160,6 +1173,22 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
             "register_tool: invalid name '{name}'"
         )));
     }
+    let aliases = spec
+        .get::<Option<Vec<String>>>("aliases")?
+        .unwrap_or_default()
+        .into_iter()
+        .map(|alias| {
+            if !is_valid_tool_name(&alias) || alias == name {
+                return Err(mlua::Error::runtime(format!(
+                    "register_tool: invalid alias '{alias}'"
+                )));
+            }
+            Ok(Arc::from(alias))
+        })
+        .collect::<LuaResult<Vec<Arc<str>>>>()?;
+    if aliases.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(mlua::Error::runtime("register_tool: duplicate aliases"));
+    }
     let description: String = spec.get("description").unwrap_or_else(|_| String::new());
     if description.trim().is_empty() {
         return Err(mlua::Error::runtime(
@@ -1253,6 +1282,7 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .push(PendingTool {
             name,
+            aliases,
             description,
             schema: param_schema,
             audience,
@@ -1761,6 +1791,7 @@ mod tests {
         let (tx, _rx) = flume::unbounded();
         LuaTool {
             name: Arc::from("test_tool"),
+            aliases: Vec::new(),
             description: "test".into(),
             schema,
             audience: ToolAudience::default(),

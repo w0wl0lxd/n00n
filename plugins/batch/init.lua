@@ -503,7 +503,8 @@ local function restore(input, output, _is_error, rctx)
 end
 
 n00n.api.register_tool({
-  name = "batch",
+  name = "run_batch",
+  aliases = { "batch" },
   description = description,
   kind = "execute",
   workload = "orchestrator",

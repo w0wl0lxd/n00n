@@ -404,7 +404,8 @@ local function dispatch(input)
 end
 
 n00n.api.register_tool({
-  name = "arbor",
+  name = "map_code",
+  aliases = { "arbor" },
   kind = "read",
   description = [[
 Graph-based code analysis using Arbor. Returns structured, compact
