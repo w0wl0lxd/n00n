@@ -1015,12 +1015,15 @@ fn sanitize_property_schema(schema: &mut Value) {
 
             if is_object || (type_str.is_none() && map.contains_key("properties")) {
                 sanitize_object_schema(map);
-            } else if type_str == Some("array") || map.contains_key("prefixItems") {
+            } else if type_str == Some("array")
+                || type_includes(map, "array")
+                || map.contains_key("prefixItems")
+            {
                 if type_str != Some("array") {
                     map.insert("type".to_string(), json!("array"));
                 }
                 sanitize_array_schema(map);
-            } else if type_str.is_some() {
+            } else if type_str.is_some() || map.get("type").and_then(Value::as_array).is_some() {
             } else if map.contains_key("enum") {
                 map.insert("type".to_string(), json!("string"));
             } else if map.contains_key("anyOf")
@@ -1169,6 +1172,13 @@ mod schema_tests {
         let sanitized = sanitize_tool_input_schema(schema);
         assert_eq!(sanitized["type"], "object");
         assert_eq!(sanitized["additionalProperties"], false);
+    }
+
+    #[test]
+    fn sanitize_nullable_primitive_schema_preserves_types() {
+        let schema = json!({"type": ["integer", "null"]});
+        let sanitized = sanitize_tool_input_schema(schema.clone());
+        assert_eq!(sanitized["properties"]["value"], schema);
     }
 
     #[test]
