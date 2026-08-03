@@ -12,6 +12,7 @@ paths = [
   # strings that look like API keys but are not credentials.
   '''maki-agent/''',
   '''maki-providers/''',
+  '''n00n-redact/''',
 ]
 regexes = [
   # Feature/version date identifiers, e.g. "oauth-2025-04-20" or
