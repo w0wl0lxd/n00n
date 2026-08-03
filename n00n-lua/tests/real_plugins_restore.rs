@@ -29,6 +29,7 @@ const CODEGRAPH_SRC: &str = include_str!("../../plugins/codegraph/init.lua");
 const EXPLORE_SRC: &str = include_str!("../../plugins/explore/init.lua");
 const GREP_SRC: &str = include_str!("../../plugins/grep/init.lua");
 const SEMBLEM_SRC: &str = include_str!("../../plugins/semblem/init.lua");
+const TASK_SRC: &str = include_str!("../../plugins/task/init.lua");
 const WORKFLOW_SRC: &str = include_str!("../../plugins/workflow/init.lua");
 
 /// Only the real `ToolView` emits this when collapsed.
@@ -85,6 +86,7 @@ fn load_host() -> PluginHost {
     host.load_source("explore", EXPLORE_SRC).unwrap();
     host.load_source("grep", GREP_SRC).unwrap();
     host.load_source("semblem", SEMBLEM_SRC).unwrap();
+    host.load_source("task", TASK_SRC).unwrap();
     host
 }
 
@@ -485,6 +487,23 @@ fn restore(
         }
     }
     out
+}
+
+#[test]
+fn task_restore_rebuilds_old_plain_persisted_output() {
+    let host = load_host();
+    let output = "cancelled\nold detail one\nold detail two\nold detail three\nold detail four\nold detail five";
+    let restored = restore(
+        &host,
+        "task",
+        json!({ "description": "restored task", "prompt": "work" }),
+        output,
+        None,
+        vec![],
+    );
+
+    assert!(restored.body.contains("cancelled"));
+    assert!(restored.body.contains(EXPAND_HINT));
 }
 
 #[test_case::test_case(
