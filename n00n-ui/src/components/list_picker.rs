@@ -284,11 +284,12 @@ impl<T: PickerItem> ListPicker<T> {
 
     pub fn select_item_index(&mut self, item_index: usize) {
         if let Some(s) = self.state.as_mut() {
-            s.selected = s
-                .filtered
-                .iter()
-                .position(|index| *index == item_index)
-                .unwrap_or(0);
+            s.selected =
+                if let Some(position) = s.filtered.iter().position(|index| *index == item_index) {
+                    position
+                } else {
+                    0
+                };
             s.ensure_visible();
         }
     }

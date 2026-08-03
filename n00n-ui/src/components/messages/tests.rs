@@ -83,7 +83,7 @@ fn finish_with_live_buf(
 #[test]
 fn activity_elapsed_resets_when_idle_panel_starts_working() {
     let mut panel = test_panel();
-    panel.activity_started_at = Instant::now().checked_sub(Duration::from_secs(60));
+    panel.activity_started_at = Instant::now().checked_sub(Duration::from_mins(1));
     assert!(!panel.is_working());
 
     panel.tool_start(start("t1", BASH_TOOL_NAME));
