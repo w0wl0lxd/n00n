@@ -198,7 +198,6 @@ futures-lite = "2"
 futures = "0.3"
 pin-project-lite = "0.2"
 bytes = "1"
-prost = { version = "0.14.4", default-features = false, features = ["derive", "std"] }
 tokio = { version = "1", default-features = false, features = [
   "rt",
   "time",
