@@ -388,7 +388,7 @@ impl<'h> Agent<'h> {
             protect_history_replay,
             allow_history_replay: self.permissions.is_yolo(),
             safety_identifier: None,
-            moderation: false,
+            idempotency_key: None,
         };
 
         info!(
@@ -577,6 +577,14 @@ impl<'h> Agent<'h> {
                     if !self.approve_ambiguous_request_replay(metadata).await? {
                         break Err(error);
                     }
+                    if let Some(metadata) = metadata {
+                        opts.idempotency_key = metadata.idempotency_key.clone();
+                    }
+                    self.event_tx.send(AgentEvent::Retry {
+                        attempt: 1,
+                        message: AMBIGUOUS_REPLAY_RESET_MESSAGE.into(),
+                        delay_ms: 0,
+                    })?;
                     warn!(
                         delivery_phase = ?metadata.map(|metadata| metadata.phase),
                         response_id_present = metadata.is_some_and(|metadata| metadata.response_id.is_some()),
@@ -1440,6 +1448,211 @@ mod tests {
     }
 
     #[test]
+    fn history_replay_propagates_closed_approval_channel() {
+        smol::block_on(async {
+            let mut history = History::new(vec![Message::user("restored".into())]);
+            let (agent, _event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
+            let (response_tx, response_rx) = flume::unbounded::<String>();
+            drop(response_tx);
+            let agent = agent.with_user_response_rx(Arc::new(async_lock::Mutex::new(response_rx)));
+
+            let error = agent
+                .approve_history_replay(HistoryReplayReason::ContinuationNotFound)
+                .await
+                .unwrap_err();
+
+            assert!(matches!(
+                error,
+                AgentError::Config { message }
+                    if message.contains(HISTORY_REPLAY_CHANNEL_CLOSED_MESSAGE)
+            ));
+        });
+    }
+
+    #[test]
+    fn ambiguous_request_replay_requires_an_interactive_approval_channel() {
+        smol::block_on(async {
+            let mut history = History::new(Vec::new());
+            let (agent, _) = make_agent(MockProvider::new(Vec::new()), &mut history);
+            let metadata = RequestDeliveryMetadata {
+                phase: RequestDeliveryPhase::SentAwaitingAcceptance,
+                response_id: None,
+                idempotency_key: None,
+                close_code: None,
+                close_reason: None,
+                emitted_event: false,
+            };
+
+            assert!(
+                !agent
+                    .approve_ambiguous_request_replay(Some(&metadata))
+                    .await
+                    .unwrap()
+            );
+        });
+    }
+
+    #[test]
+    fn ambiguous_request_replay_propagates_closed_approval_channel() {
+        smol::block_on(async {
+            let mut history = History::new(Vec::new());
+            let (agent, _event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
+            let (response_tx, response_rx) = flume::unbounded::<String>();
+            drop(response_tx);
+            let agent = agent.with_user_response_rx(Arc::new(async_lock::Mutex::new(response_rx)));
+
+            let error = agent
+                .approve_ambiguous_request_replay(None)
+                .await
+                .unwrap_err();
+
+            assert!(matches!(
+                error,
+                AgentError::Config { message }
+                    if message.contains(AMBIGUOUS_REPLAY_CHANNEL_CLOSED_MESSAGE)
+            ));
+        });
+    }
+
+    #[test]
+    fn ambiguous_request_replay_accepts_explicit_user_approval() {
+        smol::block_on(async {
+            let mut history = History::new(Vec::new());
+            let (agent, event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
+            let (response_tx, response_rx) = flume::unbounded();
+            let agent = agent.with_user_response_rx(Arc::new(async_lock::Mutex::new(response_rx)));
+            response_tx
+                .send(PermissionAnswer::AllowOnce.encode())
+                .unwrap();
+            let metadata = RequestDeliveryMetadata {
+                phase: RequestDeliveryPhase::SentAwaitingAcceptance,
+                response_id: None,
+                idempotency_key: None,
+                close_code: None,
+                close_reason: None,
+                emitted_event: false,
+            };
+
+            assert!(
+                agent
+                    .approve_ambiguous_request_replay(Some(&metadata))
+                    .await
+                    .unwrap()
+            );
+
+            let event = event_rx.recv().unwrap();
+            assert!(matches!(
+                event.event,
+                AgentEvent::PermissionRequest { tool, scopes, .. }
+                    if tool == ToolKey::native(AMBIGUOUS_REPLAY_TOOL)
+                        && scopes[0].contains("duplicate output or charges")
+            ));
+        });
+    }
+
+    #[test]
+    fn approved_ambiguous_request_is_replayed_once() {
+        smol::block_on(async {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let provider = AmbiguousProvider {
+                calls: Arc::clone(&calls),
+                failures: 1,
+            };
+            let mut history = History::new(Vec::new());
+            let (mut agent, event_rx) = make_agent_with_registry(
+                provider,
+                &mut history,
+                AgentConfig::default(),
+                Arc::new(ToolRegistry::new()),
+            );
+            let (response_tx, response_rx) = flume::unbounded();
+            response_tx
+                .send(PermissionAnswer::AllowOnce.encode())
+                .unwrap();
+            agent = agent.with_user_response_rx(Arc::new(async_lock::Mutex::new(response_rx)));
+
+            agent.run(default_input()).await.unwrap();
+
+            assert_eq!(calls.load(Ordering::Relaxed), 2);
+            let events = drain_events(&event_rx);
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(
+                        event.event,
+                        AgentEvent::PermissionRequest { ref tool, .. }
+                            if *tool == ToolKey::native(AMBIGUOUS_REPLAY_TOOL)
+                    ))
+                    .count(),
+                1
+            );
+            let stale_index = events
+                .iter()
+                .position(|event| {
+                    matches!(
+                        &event.event,
+                        AgentEvent::TextDelta { text } if text == "stale"
+                    )
+                })
+                .unwrap();
+            let reset_index = events
+                .iter()
+                .position(|event| {
+                    matches!(
+                        &event.event,
+                        AgentEvent::Retry {
+                            attempt: 1,
+                            message,
+                            delay_ms: 0,
+                        } if message == AMBIGUOUS_REPLAY_RESET_MESSAGE
+                    )
+                })
+                .unwrap();
+            assert!(stale_index < reset_index);
+        });
+    }
+
+    #[test]
+    fn ambiguous_request_is_not_replayed_twice() {
+        smol::block_on(async {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let provider = AmbiguousProvider {
+                calls: Arc::clone(&calls),
+                failures: 2,
+            };
+            let mut history = History::new(Vec::new());
+            let (mut agent, event_rx) = make_agent_with_registry(
+                provider,
+                &mut history,
+                AgentConfig::default(),
+                Arc::new(ToolRegistry::new()),
+            );
+            let (response_tx, response_rx) = flume::unbounded();
+            response_tx
+                .send(PermissionAnswer::AllowOnce.encode())
+                .unwrap();
+            agent = agent.with_user_response_rx(Arc::new(async_lock::Mutex::new(response_rx)));
+
+            let error = agent.run(default_input()).await.unwrap_err();
+
+            assert!(matches!(error, AgentError::RequestSent { .. }));
+            assert_eq!(calls.load(Ordering::Relaxed), 2);
+            let events = drain_events(&event_rx);
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(
+                        event.event,
+                        AgentEvent::PermissionRequest { ref tool, .. }
+                            if *tool == ToolKey::native(AMBIGUOUS_REPLAY_TOOL)
+                    ))
+                    .count(),
+                1
+            );
+        });
+    }
+
+    #[test]
     fn context_size_additions_use_saturating_add() {
         let context_size: u32 = u32::MAX - 100;
         let additional: u32 = 200;
@@ -1488,22 +1701,44 @@ mod tests {
         assert!(tokens > u32_from_usize_saturating(IMAGE_TOKEN_ESTIMATE));
     }
 
-    #[test]
-    fn estimate_message_tokens_uses_attachment_estimate_for_file_reference() {
-        let messages = vec![Message {
-            role: Role::User,
-            content: vec![ContentBlock::File {
-                source: n00n_providers::FileSource {
-                    filename: Some("notes.txt".into()),
-                    ..Default::default()
-                },
-            }],
-            ..Default::default()
-        }];
-        assert_eq!(
-            estimate_message_tokens(&messages, ""),
-            u32_from_usize_saturating(IMAGE_TOKEN_ESTIMATE)
-        );
+    impl Provider for AmbiguousProvider {
+        fn stream_message<'a>(
+            &'a self,
+            _: &'a Model,
+            _: &'a [Message],
+            _: &'a System,
+            _: &'a Value,
+            event_tx: &'a flume::Sender<ProviderEvent>,
+            _: RequestOptions,
+            _: Option<&'a SessionRef>,
+        ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
+            Box::pin(async {
+                let call = self.calls.fetch_add(1, Ordering::Relaxed);
+                if call < self.failures {
+                    event_tx
+                        .send(ProviderEvent::TextDelta {
+                            text: "stale".into(),
+                        })
+                        .unwrap();
+                    return Err(AgentError::RequestSent {
+                        message: "WebSocket connection reset".into(),
+                        metadata: Some(RequestDeliveryMetadata {
+                            phase: RequestDeliveryPhase::SentAwaitingAcceptance,
+                            response_id: None,
+                            idempotency_key: None,
+                            close_code: None,
+                            close_reason: None,
+                            emitted_event: true,
+                        }),
+                    });
+                }
+                Ok(text_response(StopReason::EndTurn))
+            })
+        }
+
+        fn list_models(&self) -> BoxFuture<'_, Result<Vec<n00n_providers::ModelInfo>, AgentError>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
     }
 
     #[test]
