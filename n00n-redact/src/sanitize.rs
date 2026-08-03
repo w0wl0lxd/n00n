@@ -60,7 +60,9 @@ pub fn sanitize_text(raw: &str, max_chars: usize) -> String {
                 let next_is_separator = words
                     .get(index)
                     .is_some_and(|next| *next == "=" || *next == ":");
-                if separator.is_some() || next_is_separator || key.starts_with('-') {
+                let json_like_key = key.starts_with(['{', '[']);
+                if separator.is_some() || next_is_separator || key.starts_with('-') || json_like_key
+                {
                     if next_is_separator {
                         index += 1;
                     }
@@ -143,6 +145,7 @@ fn is_secret_token(value: &str) -> bool {
         })
         || lower.starts_with("akia")
         || lower.starts_with("aiza")
+        || super::is_jwt_like(&lower)
 }
 
 fn normalize_key(value: &str) -> String {
@@ -205,6 +208,13 @@ mod tests {
     fn redacts_complete_multi_word_quoted_value_after_spaced_separator() {
         let sanitized = sanitize_text(r#"{"password": "two words""#, 80);
         assert_eq!(sanitized, r#"{"password":[REDACTED]"#);
+        assert!(!sanitized.contains("two"));
+        assert!(!sanitized.contains("words"));
+    }
+
+    #[test]
+    fn consumes_quoted_value_after_json_like_bare_key() {
+        let sanitized = sanitize_text(r#"{"password" "two words"}"#, 80);
         assert!(!sanitized.contains("two"));
         assert!(!sanitized.contains("words"));
     }
