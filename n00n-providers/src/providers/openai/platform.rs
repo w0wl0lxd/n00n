@@ -864,10 +864,49 @@ impl OpenAi {
         result
     }
 
+    #[cfg(test)]
+    #[allow(clippy::large_futures)]
+    #[allow(clippy::too_many_arguments)]
+    async fn stream_websocket<F>(
+        &self,
+        slot: Option<ResponseConnectionSlot>,
+        body: &Value,
+        full_history_body: &mut Option<Value>,
+        full_history_fallback_available: bool,
+        build_full_history: F,
+        chain_session: Option<n00nId>,
+        admission_scope: Option<&str>,
+        event_tx: &Sender<ProviderEvent>,
+        auth: &ResolvedAuth,
+        credential_hash: &str,
+        stream_timeout: Duration,
+        attempt_nonce: u64,
+    ) -> Result<(Option<String>, StreamResponse), super::websocket::WebSocketAttemptError>
+    where
+        F: FnMut() -> Value,
+    {
+        self.stream_websocket_with_key(
+            slot,
+            body,
+            full_history_body,
+            full_history_fallback_available,
+            build_full_history,
+            chain_session,
+            admission_scope,
+            event_tx,
+            auth,
+            credential_hash,
+            stream_timeout,
+            attempt_nonce,
+            None,
+        )
+        .await
+    }
+
     #[allow(clippy::large_futures)]
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_lines)]
-    async fn stream_websocket<F>(
+    async fn stream_websocket_with_key<F>(
         &self,
         slot: Option<ResponseConnectionSlot>,
         body: &Value,
@@ -881,6 +920,7 @@ impl OpenAi {
         credential_hash: &str,
         stream_timeout: Duration,
         attempt_nonce: u64,
+        idempotency_key: Option<&str>,
     ) -> Result<(Option<String>, StreamResponse), super::websocket::WebSocketAttemptError>
     where
         F: FnMut() -> Value,
@@ -989,6 +1029,7 @@ impl OpenAi {
                     },
                     event_tx,
                     stream_timeout,
+                    idempotency_key,
                 )
                 .await;
             match &result {
@@ -1308,6 +1349,9 @@ impl OpenAi {
         // Full-history replay is therefore required after a connection change.
         let mut opts = opts;
         opts.allow_history_replay = true;
+        // The OpenAI Coding Plan endpoint rejects `prompt_cache_options`, so
+        // disable message-cache breakpoints for Codex requests.
+        opts.message_cache_breakpoints = 0;
         let admission = match self
             .acquire_coding_plan_admission(auth, attempt_nonce)
             .await
@@ -1426,7 +1470,7 @@ impl OpenAi {
             let admission_guard = admission;
             let connection_slot = self.response_connection_slot(session_id);
             let websocket_result = self
-                .stream_websocket(
+                .stream_websocket_with_key(
                     connection_slot,
                     &body,
                     &mut full_history_body,
@@ -1451,6 +1495,7 @@ impl OpenAi {
                     &socket_credential_hash,
                     stream_timeout,
                     attempt_nonce,
+                    opts.idempotency_key.as_deref(),
                 )
                 .await;
             match websocket_result {
@@ -1574,6 +1619,7 @@ impl OpenAi {
                         event_tx,
                         &fallback_auth.resolved,
                         stream_timeout,
+                        &opts,
                     )
                     .await
                     {
@@ -1755,6 +1801,7 @@ impl OpenAi {
                 event_tx,
                 &auth,
                 self.compat.stream_timeout(),
+                &opts,
             )
             .await
         })
@@ -2136,7 +2183,7 @@ impl Provider for OpenAi {
             self.with_oauth_retry(|| async {
                 let auth = self.current_auth();
                 self.compat
-                    .do_stream(model, &[], &body, event_tx, &auth)
+                    .do_stream(model, &[], &body, event_tx, &auth, &opts)
                     .await
             })
             .await
