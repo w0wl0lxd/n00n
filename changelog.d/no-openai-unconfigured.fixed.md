@@ -1,0 +1,1 @@
+n00n no longer auto-selects or restores a saved model from a provider that is not listed in `providers.toml` when a `providers.toml` exists. This prevents the agent from trying to use OpenAI (e.g. `openai/gpt-5.6-*`) when the user has not configured that provider.
