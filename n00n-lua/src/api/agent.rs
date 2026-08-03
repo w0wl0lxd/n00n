@@ -652,7 +652,12 @@ async fn session(
     drop(ctx);
     let model_spec: Option<String> = opts.get("model_spec")?;
     let system: Option<String> = opts.get("system")?;
-    let tools_val: Option<LuaValue> = opts.get("tools")?;
+    let explicit_tools = opts.contains_key("tools")?;
+    let tools_val = if explicit_tools {
+        Some(opts.get::<LuaValue>("tools")?)
+    } else {
+        None
+    };
     let local_tools_tbl: Option<Table> = opts.get("local_tools")?;
     let include_mcp = opts
         .get::<Option<bool>>("include_mcp")?
@@ -704,7 +709,6 @@ async fn session(
         let _ = sink.send(ToolLive::Annotation(model.spec()));
     }
 
-    let explicit_tools = tools_val.is_some();
     let (mut tools_json, mut tool_filter) = if let Some(val) = tools_val {
         let tools = lua_to_json(&lua, &val)?;
         // Accept nil, empty object, or empty array as "no tools"
