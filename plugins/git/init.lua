@@ -131,7 +131,10 @@ local function dispatch(input)
   end
 
   if command == "conflicts" then
-    local args = { "--include-untracked" }
+    local args = {}
+    if input.include_untracked ~= false then
+      table.insert(args, "--include-untracked")
+    end
     if input.output then
       table.insert(args, "--output")
       table.insert(args, input.output)
@@ -142,7 +145,7 @@ local function dispatch(input)
     end
     if input.kinds then
       table.insert(args, "--kinds")
-      table.insert(args, tostring(input.kinds))
+      table.insert(args, table.concat(input.kinds, ","))
     end
     local result, err = run_git_subcommand(args)
     if err then
@@ -216,7 +219,19 @@ Local git operations via n00n-git.
       },
       message = { type = "string" },
       target = { type = "string" },
-      output = { type = "string" },
+      output = {
+        type = "string",
+        enum = { "compact", "full", "both" },
+      },
+      kinds = {
+        type = "array",
+        items = {
+          type = "string",
+          enum = { "conflict", "todo", "fixme", "hack", "placeholder" },
+        },
+      },
+      max_hunk_lines = { type = "integer" },
+      include_untracked = { type = "boolean" },
     },
   },
   header = function(input)

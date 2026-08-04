@@ -260,6 +260,8 @@ fn scan_file(
     let mut truncated = false;
 
     if is_unmerged && options.kinds.contains(&FindingKind::Conflict) {
+        // `line: 0` is a sentinel for a file-level unmerged index entry, since there
+        // is no concrete content/line number to report.
         findings.push(Finding {
             kind: "conflict".to_string(),
             line: 0,

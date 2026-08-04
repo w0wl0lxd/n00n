@@ -56,8 +56,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             kind,
             top_k,
         } => {
-            let index_dir = SmellIndex::index_dir(&repo);
-            let _ = SmellIndex::open_or_create(&index_dir, &SearchConfig::default())?;
             if !SmellIndex::has_index(&repo) {
                 return Err(format!(
                     "no smell index for {}; run `n00n-smell index`",
@@ -65,6 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .into());
             }
+            let index_dir = SmellIndex::index_dir(&repo);
             let index = SmellIndex::open_or_create(&index_dir, &SearchConfig::default())?;
             let results = index.search(&Query {
                 text: query,

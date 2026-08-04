@@ -446,8 +446,11 @@ Local git operations via n00n-git.
 |-----------|------|----------|-------------|
 | `ref_b` | string | no |  |
 | `path` | string | no |  |
+| `include_untracked` | boolean | no |  |
+| `max_hunk_lines` | integer | no |  |
 | `output` | string | no |  |
 | `message` | string | no |  |
+| `kinds` | array | no |  |
 | `count` | integer | no |  |
 | `target` | string | no |  |
 | `command` | string | yes |  |
