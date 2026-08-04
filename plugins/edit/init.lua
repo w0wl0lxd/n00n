@@ -244,14 +244,17 @@ n00n.api.register_tool({
         type = "string",
         required = true,
         alias = "file_path",
+        description = "File path.",
       },
       old_string = {
         type = "string",
         required = true,
+        description = "Exact text to replace. Must match uniquely unless replace_all.",
       },
       new_string = {
         type = "string",
         required = true,
+        description = "Replacement text. Empty string deletes old_string.",
       },
       replace_all = {
         type = "boolean",
@@ -302,10 +305,12 @@ register_tool_if(opts.multiedit, {
             old_string = {
               type = "string",
               required = true,
+              description = "Exact text to replace. Must match uniquely unless replace_all.",
             },
             new_string = {
               type = "string",
               required = true,
+              description = "Replacement text. Empty string deletes old_string.",
             },
             replace_all = {
               type = "boolean",
