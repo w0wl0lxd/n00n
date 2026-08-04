@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-n00n ships with 36 built-in tools. This is the full reference.
+n00n ships with 34 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -21,7 +21,7 @@ Commands run in <cwd> by default.
 | `workdir` | string | no | cwd | Working directory |
 | `timeout` | integer | no | 120 | Timeout seconds |
 | `command` | string | yes |  | Bash command to execute |
-| `justification` | string | no |  | Required when command is broad/unbounded. Explain scope and bound assumptions. |
+| `justification` | string | no |  | Required for unbounded commands. Explain scope and bounds. |
 | `description` | string | no |  | Short description (3-5 words) of what the command does |
 
 ### `read` *(lua plugin)*
@@ -50,9 +50,9 @@ Replace exact string match in a file. `old_string` must match uniquely unless `r
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `replace_all` | boolean | no |  |
-| `path` | string | yes |  |
-| `old_string` | string | yes |  |
-| `new_string` | string | yes |  |
+| `path` | string | yes | File path. |
+| `old_string` | string | yes | Exact text to replace. Must match uniquely unless replace_all. |
+| `new_string` | string | yes | Replacement text. Empty string deletes old_string. |
 
 ### `multiedit` *(lua plugin)*
 
@@ -123,9 +123,9 @@ Search file contents using regex. Respects .gitignore. Results grouped by file, 
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `include` | string | no |  |
-| `path` | string | no |  |
-| `pattern` | string | yes |  |
+| `include` | string | no | Glob pattern (e.g. '*.rs'). |
+| `path` | string | no | Directory or file to search. |
+| `pattern` | string | yes | Regex pattern. Do not wrap in quotes. |
 | `context_after` | integer | no |  |
 | `limit` | integer | no |  |
 | `context_before` | integer | no |  |
@@ -183,15 +183,6 @@ Search indexed source code with BM25 keyword ranking. Builds a `.n00n/search/` i
 | `content` | string | no | Content filter for search (docs, config, code, or all) |
 | `top_k` | integer | no |  |
 
-### `smell` *(lua plugin)*
-
-Code-smell index. index, search.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `command` | string | yes |  |
-| `query` | string | no |  |
-
 ### `arbor` *(lua plugin)*
 
 Graph-based code analysis using Arbor. Returns structured, compact
@@ -217,7 +208,7 @@ Execute multiple independent tool calls concurrently. ALWAYS use batch for multi
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `tool_calls` | array | yes | Array of tool calls to execute in parallel |
+| `tool_calls` | array | yes | Required. Array of tool calls to execute in parallel. Key must be 'tool_calls'. |
 
 ### `code_execution` *(lua plugin)*
 
@@ -235,6 +226,28 @@ Ask the user questions during execution. Supports single/multi-select, custom an
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `questions` | array | yes | List of questions to ask the user |
+
+### `tmux` *(lua plugin)*
+
+Manage tmux sessions, windows, and panes. Requires a running tmux server on Unix-like systems.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_name` | string | no |  |
+| `source` | string | no |  |
+| `timeout` | integer | no |  |
+| `destination` | string | no |  |
+| `window` | string | no |  |
+| `height` | integer | no |  |
+| `width` | integer | no |  |
+| `raw_command` | string | no |  |
+| `window_name` | string | no |  |
+| `keys` | string | no |  |
+| `target` | string | no |  |
+| `command` | string | yes |  |
+| `command_text` | string | no |  |
+| `session` | string | no |  |
+| `pane` | string | no |  |
 
 ## Agent & Knowledge
 
@@ -403,7 +416,7 @@ Load all tools from a namespace. Returns the list of tools that were loaded.
 
 ### `fusion_delegate` *(lua plugin)*
 
-Beta Fusion delegation: the lead plans and reviews while a conservative sidekick executes. Pass goal, constraints, and definition_of_done, not file dumps. Fusion is off by default and delegation is lead-directed.
+Delegate to a Fusion sidekick. Pass goal, constraints, and definition_of_done — not file dumps.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -434,44 +447,3 @@ Search the web for real-time information using Exa AI.
 |-----------|------|----------|---------|-------------|
 | `num_results` | integer | no | 8 | Number of results to return |
 | `query` | string | yes |  | Search query |
-
-## Repository
-
-### `git` *(lua plugin)*
-
-Local git operations via n00n-git.
-
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `ref_b` | string | no |  |
-| `path` | string | no |  |
-| `include_untracked` | boolean | no |  |
-| `max_hunk_lines` | integer | no |  |
-| `output` | string | no |  |
-| `message` | string | no |  |
-| `kinds` | array | no |  |
-| `count` | integer | no |  |
-| `target` | string | no |  |
-| `command` | string | yes |  |
-| `file` | string | no |  |
-| `files` | array | no |  |
-| `ref_a` | string | no |  |
-
-### `github` *(lua plugin)*
-
-GitHub REST API (read/write). Tokens: GITHUB_TOKEN, optional token param, or gh CLI.
-
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `issue_number` | number | no |  |
-| `head` | string | no |  |
-| `owner` | string | no |  |
-| `body` | string | no |  |
-| `repo` | string | no |  |
-| `title` | string | no |  |
-| `command` | string | yes |  |
-| `token` | string | no |  |
-| `base` | string | no |  |
-| `pr_number` | number | no |  |

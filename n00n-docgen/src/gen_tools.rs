@@ -35,7 +35,7 @@ const SECTIONS: &[(&str, &[&str])] = &[
     ),
     (
         "Execution & Control",
-        &["batch", "code_execution", "question"],
+        &["batch", "code_execution", "question", "tmux"],
     ),
     (
         "Agent & Knowledge",
