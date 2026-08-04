@@ -47,6 +47,7 @@ struct SessionState {
     plan_path: Option<PathBuf>,
     current_model: String,
     pending_prompt: PendingPrompt,
+    event_pump: smol::Task<()>,
     _daemon: Option<crate::SessionDaemonGuard>,
 }
 
@@ -117,7 +118,7 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
                 handle_incoming_response(&server, &raw);
             } else if let Some(method) = raw.get("method").and_then(Value::as_str) {
                 match id {
-                    Some(id) => handle_request(&mut server, method, id, &raw, &params),
+                    Some(id) => handle_request(&mut server, method, id, &raw, &params).await,
                     None => handle_notification(&server, method),
                 }
             } else if let Some(id) = id {
@@ -126,6 +127,7 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
         }
     }
 
+    retire_session(&mut server).await;
     drop(server);
     writer_task.await;
 
@@ -141,41 +143,19 @@ fn request_id(v: &Value) -> RequestId {
     serde_json::from_value(v.clone()).map_or(RequestId::Null, std::convert::identity)
 }
 
-fn handle_request(srv: &mut Server, method: &str, id: RequestId, raw: &Value, params: &AcpParams) {
+async fn handle_request(
+    srv: &mut Server,
+    method: &str,
+    id: RequestId,
+    raw: &Value,
+    params: &AcpParams,
+) {
     let result = match method {
         "initialize" => Ok(AgentResponse::InitializeResponse(
             methods::initialize_response(),
         )),
-        "session/new" => parse_params::<NewSessionRequest>(raw).map(|req| {
-            let handle = spawn_session(params, req.cwd, None, Vec::new());
-            let spec = params.model.spec();
-            let resp = methods::new_session_response(handle.session_id.as_str())
-                .config_options(vec![methods::model_config_option(&spec, &srv.model_specs)]);
-            install_session(srv, handle, spec, AgentMode::Build, None, params);
-            AgentResponse::NewSessionResponse(resp)
-        }),
-        "session/load" => parse_params::<LoadSessionRequest>(raw).and_then(|req| {
-            let session_ref: SessionRef =
-                req.session_id.0.parse().map_err(|_| {
-                    AcpError::resource_not_found(Some(req.session_id.0.to_string()))
-                })?;
-            let storage = n00n_storage::StateDir::resolve()
-                .map_err(|e| AcpError::internal_error().data(json_str(&e)))?;
-            let stored = load_session_from(&storage, session_ref.id())?;
-            let (current_mode, plan_path) = mode_and_plan_from_stored(&storage, &stored.meta)
-                .map_err(|e| AcpError::internal_error().data(json_str(&e)))?;
-            let history = stored.messages;
-            let sid = SessionId::from(session_ref.to_string());
-            for update in translate::replay_history(&history) {
-                session_update(&srv.out_tx, &sid, update);
-            }
-            let handle = spawn_session(params, req.cwd, Some(session_ref), history);
-            let spec = params.model.spec();
-            let resp = methods::load_session_response()
-                .config_options(vec![methods::model_config_option(&spec, &srv.model_specs)]);
-            install_session(srv, handle, spec, current_mode, plan_path, params);
-            Ok(AgentResponse::LoadSessionResponse(resp))
-        }),
+        "session/new" => handle_new_session(srv, raw, params).await,
+        "session/load" => handle_load_session(srv, raw, params).await,
         "session/prompt" => match handle_prompt(srv, raw, &id) {
             Ok(()) => return,
             Err(e) => Err(e),
@@ -185,6 +165,73 @@ fn handle_request(srv: &mut Server, method: &str, id: RequestId, raw: &Value, pa
         _ => Err(AcpError::method_not_found()),
     };
     srv.respond(id, result);
+}
+
+async fn handle_new_session(
+    srv: &mut Server,
+    raw: &Value,
+    params: &AcpParams,
+) -> Result<AgentResponse, AcpError> {
+    let req = parse_params::<NewSessionRequest>(raw)?;
+    retire_session(srv).await;
+    let handle = spawn_session(params, req.cwd, None, Vec::new());
+    let spec = params.model.spec();
+    let resp = methods::new_session_response(handle.session_id.as_str())
+        .config_options(vec![methods::model_config_option(&spec, &srv.model_specs)]);
+    install_session(srv, handle, spec, AgentMode::Build, None, params);
+    Ok(AgentResponse::NewSessionResponse(resp))
+}
+
+async fn handle_load_session(
+    srv: &mut Server,
+    raw: &Value,
+    params: &AcpParams,
+) -> Result<AgentResponse, AcpError> {
+    let req = parse_params::<LoadSessionRequest>(raw)?;
+    let session_ref: SessionRef = req
+        .session_id
+        .0
+        .parse()
+        .map_err(|_| AcpError::resource_not_found(Some(req.session_id.0.to_string())))?;
+    let storage = n00n_storage::StateDir::resolve()
+        .map_err(|error| AcpError::internal_error().data(json_str(&error)))?;
+    let stored = load_session_from(&storage, session_ref.id())?;
+    let (current_mode, plan_path) = mode_and_plan_from_stored(&storage, &stored.meta)
+        .map_err(|error| AcpError::internal_error().data(json_str(&error)))?;
+    let history = stored.messages;
+    let sid = SessionId::from(session_ref.to_string());
+    for update in translate::replay_history(&history) {
+        session_update(&srv.out_tx, &sid, update);
+    }
+    retire_session(srv).await;
+    let handle = spawn_session(params, req.cwd, Some(session_ref), history);
+    let spec = params.model.spec();
+    let resp = methods::load_session_response()
+        .config_options(vec![methods::model_config_option(&spec, &srv.model_specs)]);
+    install_session(srv, handle, spec, current_mode, plan_path, params);
+    Ok(AgentResponse::LoadSessionResponse(resp))
+}
+
+async fn retire_session(srv: &mut Server) {
+    let Some(session) = srv.session.take() else {
+        return;
+    };
+    let SessionState {
+        handle,
+        event_pump,
+        pending_prompt,
+        ..
+    } = session;
+    if let Some((id, _)) = take_pending(&pending_prompt) {
+        let response = PromptResponse::new(StopReason::Cancelled);
+        send(
+            &srv.out_tx,
+            Response::new(id, Ok(AgentResponse::PromptResponse(response))),
+        );
+    }
+    let _ = handle.cancel_tx.try_send(());
+    event_pump.cancel().await;
+    handle.task.cancel().await;
 }
 
 fn spawn_session(
@@ -200,6 +247,7 @@ fn spawn_session(
         timeouts: params.timeouts,
         openai_options: params.openai_options,
         prompt_slots: Arc::clone(&params.prompt_slots),
+        state_persistence: params.state_persistence.clone(),
         excluded_tools: Vec::new(),
         mcp_handle: params.mcp_handle.clone(),
         initial_wd: cwd,
@@ -222,7 +270,7 @@ fn install_session(
     params: &AcpParams,
 ) {
     let pending = Arc::new(Mutex::new(PendingPromptState::default()));
-    start_event_pump(
+    let event_pump = start_event_pump(
         handle.event_rx.clone(),
         handle.session_id.clone(),
         srv.out_tx.clone(),
@@ -239,6 +287,7 @@ fn install_session(
         plan_path,
         current_model,
         pending_prompt: pending,
+        event_pump,
         _daemon: daemon,
     });
 }
@@ -421,7 +470,7 @@ fn start_event_pump(
     session_id: SessionRef,
     out_tx: Sender<Value>,
     pending: PendingPrompt,
-) {
+) -> smol::Task<()> {
     smol::spawn(async move {
         let sid = SessionId::from(session_id.to_string());
         let mut next_request_id = FIRST_OUTGOING_REQUEST_ID;
@@ -491,7 +540,6 @@ fn start_event_pump(
             session_update(&out_tx, &sid, update);
         }
     })
-    .detach();
 }
 
 fn take_pending(pending: &PendingPrompt) -> Option<(RequestId, bool)> {

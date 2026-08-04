@@ -6,7 +6,7 @@ pub mod translate;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use n00n_agent::headless::InteractiveHandle;
+use n00n_agent::headless::{InteractiveHandle, SessionStatePersistence};
 use n00n_agent::prompt::ResolvedSlots;
 use n00n_agent::{AgentConfig, PermissionsConfig};
 use n00n_providers::model::Model;
@@ -27,6 +27,7 @@ pub struct AcpParams {
     pub initial_wd: PathBuf,
     pub mcp_handle: Option<n00n_agent::McpHandle>,
     pub prompt_slots: Arc<ResolvedSlots>,
+    pub state_persistence: Option<Arc<dyn SessionStatePersistence>>,
     pub yolo: bool,
     pub session_daemon_register: Option<SessionDaemonRegister>,
 }
