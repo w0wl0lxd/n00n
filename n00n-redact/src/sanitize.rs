@@ -281,13 +281,14 @@ fn is_basic_auth_credential(value: &str) -> bool {
             && character != '/'
             && character != '='
     });
-    let has_base64_like_entropy = (trimmed.chars().any(|c| c.is_ascii_uppercase())
-        && trimmed.chars().any(|c| c.is_ascii_lowercase()))
-        || trimmed
-            .chars()
-            .any(|character| character.is_ascii_digit() || "+/=".contains(character));
+    let has_mixed_case = trimmed.chars().any(|c| c.is_ascii_uppercase())
+        && trimmed.chars().any(|c| c.is_ascii_lowercase());
+    let has_base64_specific = trimmed
+        .chars()
+        .any(|character| character.is_ascii_digit() || "+/=".contains(character));
     trimmed.len() >= AUTH_CREDENTIAL_MIN_CHARS
-        && has_base64_like_entropy
+        && has_mixed_case
+        && has_base64_specific
         && trimmed.chars().all(|character| {
             character.is_ascii_alphanumeric()
                 || character == '+'

@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 
 use crate::markdown::should_truncate;
 use crate::theme;
-use n00n_redact::{REDACTED, escape_value, is_secret_key, looks_like_secret_value};
+use n00n_redact::{REDACTED, escape_value, is_secret_key};
 
 const COMPACT_BUDGET: usize = 40;
 const COLLAPSED_LINE_BUDGET: usize = 160;
@@ -71,37 +71,7 @@ pub(crate) fn redacted_json_text(value: &serde_json::Value) -> String {
 }
 
 fn redact_display_value(value: &serde_json::Value) -> serde_json::Value {
-    match value {
-        serde_json::Value::Object(map) => {
-            let out: serde_json::Map<String, serde_json::Value> = map
-                .iter()
-                .map(|(key, item)| {
-                    let item = if is_secret_key(key) {
-                        serde_json::Value::String(REDACTED.to_owned())
-                    } else {
-                        redact_display_value(item)
-                    };
-                    (key.clone(), item)
-                })
-                .collect();
-            serde_json::Value::Object(out)
-        }
-        serde_json::Value::Array(items) => items.iter().map(redact_display_value).collect(),
-        serde_json::Value::String(text) if looks_like_secret_value(text) => {
-            serde_json::Value::String(REDACTED.to_owned())
-        }
-        serde_json::Value::String(text) => match serde_json::from_str::<serde_json::Value>(text) {
-            Ok(inner) => {
-                let redacted_inner = redact_display_value(&inner);
-                match serde_json::to_string(&redacted_inner) {
-                    Ok(text) => serde_json::Value::String(text),
-                    Err(_) => serde_json::Value::String(REDACTED.to_owned()),
-                }
-            }
-            Err(_) => value.clone(),
-        },
-        other => other.clone(),
-    }
+    n00n_redact::redact_json_value_for_log(value)
 }
 
 fn search_value(value: &serde_json::Value) -> String {

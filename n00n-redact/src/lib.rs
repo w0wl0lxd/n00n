@@ -324,10 +324,10 @@ pub fn looks_like_secret_value(value: &str) -> bool {
     if trimmed.is_empty() {
         return false;
     }
-    if let Some((scheme, bearer)) = trimmed.split_once(' ')
-        && scheme.eq_ignore_ascii_case("bearer")
+    if let Some((scheme, credential)) = trimmed.split_once(' ')
+        && (scheme.eq_ignore_ascii_case("bearer") || scheme.eq_ignore_ascii_case("basic"))
     {
-        return bearer.trim().len() >= BEARER_VALUE_MIN_CHARS;
+        return credential.trim().len() >= BEARER_VALUE_MIN_CHARS;
     }
     is_private_key(trimmed)
         || is_jwt_like(trimmed)
