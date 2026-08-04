@@ -5,8 +5,8 @@ use tracing::{error, info, warn};
 
 use n00n_providers::provider::Provider;
 use n00n_providers::{
-    ContentBlock, HistoryReplayReason, Message, Model, OpenAiOptions, RequestOptions, Role,
-    StopReason, StreamResponse, System, TokenUsage,
+    ContentBlock, HistoryReplayReason, Message, Model, OpenAiOptions, RequestDeliveryMetadata,
+    RequestDeliveryPhase, RequestOptions, Role, StopReason, StreamResponse, System, TokenUsage,
 };
 
 use super::compaction::{self, CONTINUE_AFTER_COMPACT};
@@ -53,6 +53,12 @@ const CACHE_BREAKPOINTS_LONG: usize = 4;
 const CACHE_BREAKPOINTS_MEDIUM: usize = 3;
 const CACHE_BREAKPOINTS_SHORT: usize = 2;
 const CACHE_BREAKPOINTS_MIN: usize = 1;
+
+const AMBIGUOUS_REPLAY_PERMISSION_ID: &str = "ambiguous-request-replay";
+const AMBIGUOUS_REPLAY_TOOL: &str = "ambiguous_request_replay";
+const AMBIGUOUS_REPLAY_RESET_MESSAGE: &str = "Resetting partial output before approved replay";
+const HISTORY_REPLAY_CHANNEL_CLOSED_MESSAGE: &str = "History replay approval channel closed";
+const AMBIGUOUS_REPLAY_CHANNEL_CLOSED_MESSAGE: &str = "Ambiguous replay approval channel closed";
 
 fn filter_fusion_delegate(
     tools: &mut Value,
@@ -392,6 +398,8 @@ impl<'h> Agent<'h> {
         if let Some(mcp) = self.mcp.as_ref() {
             mcp.extend_tools(&mut self.tools);
         }
+        let tool_filter = self.effective_tool_filter();
+        crate::tools::filter_definitions(&mut self.tools, &tool_filter);
         filter_tools_for_mode(&mut self.tools, &self.mode);
         let fusion_visible = self.fusion_delegate_visible();
         filter_fusion_delegate(
@@ -413,6 +421,8 @@ impl<'h> Agent<'h> {
             message_cache_breakpoints: adaptive_cache_breakpoints(user_message_count),
             protect_history_replay,
             allow_history_replay: self.permissions.is_yolo(),
+            safety_identifier: None,
+            moderation: false,
         };
 
         info!(
@@ -421,7 +431,8 @@ impl<'h> Agent<'h> {
             message_len = input.message.len(),
             "agent run started"
         );
-        if self.fusion_state.is_some() {
+        if let Some(state) = self.fusion_state.as_mut() {
+            state.set_request_kind(crate::fusion::classify_delegation(&input.message));
             self.emit_fusion_phase(FusionPhase::Planning)?;
         }
 
@@ -431,31 +442,20 @@ impl<'h> Agent<'h> {
         }
         .await;
 
-        let terminal_phase = if let Some(state) = self.fusion_state.as_mut() {
+        if let Some(state) = self.fusion_state.as_mut() {
             match &result {
-                Err(AgentError::Cancelled) => match state.cancel() {
-                    Ok(()) => Some(FusionPhase::Cancelled),
-                    Err(error) => {
+                Err(AgentError::Cancelled) => {
+                    if let Err(error) = state.cancel() {
                         warn!(?error, "fusion: failed to mark run cancelled");
-                        None
                     }
-                },
-                Err(_) => match state.fail() {
-                    Ok(()) => Some(FusionPhase::Failed),
-                    Err(error) => {
+                }
+                Err(_) => {
+                    if let Err(error) = state.fail() {
                         warn!(?error, "fusion: failed to mark run failed");
-                        None
                     }
-                },
-                Ok(()) => None,
+                }
+                Ok(()) => {}
             }
-        } else {
-            None
-        };
-        if let Some(phase) = terminal_phase
-            && let Err(error) = self.emit_fusion_phase(phase)
-        {
-            warn!(?error, "fusion: failed to emit {phase:?} phase");
         }
 
         if matches!(result, Err(AgentError::Cancelled)) {

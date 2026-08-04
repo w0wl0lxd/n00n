@@ -21,6 +21,9 @@ end
 local function dispatch(input, ctx, use_cache)
   local intent = router.normalize_intent(input)
   local backend, backend_input = router.build_backend_input(input, intent)
+  if backend_input and backend_input.is_error then
+    return backend_input, route_label(backend or "unknown", intent), false
+  end
   local cache_key = router.cache_key(backend, backend_input)
 
   if use_cache and session_cache[cache_key] then
@@ -51,20 +54,22 @@ n00n.api.register_tool({
   name = "explore",
   kind = "read",
   description = [[Unified codebase exploration router. Picks the best backend for the question:
-- **file** intent (or a file path): compact single-file skeleton via `index`
-- **relations** intent: caller/callee maps, trace paths, blast radius via `arbor`
+- **file** or **skeleton** intent (or a file path): compact single-file skeleton via `index`
+- **relations** or **trace** intent: caller/callee maps, trace paths, blast radius via `arbor`
 - **cross_file** intent (default for NL questions): structural cross-file analysis via `codegraph`
+- **search** intent: keyword or natural-language search via `semblem`
+- **symbol** intent: symbol drill-down via `codegraph node`
+- **impact** intent: blast-radius analysis via `codegraph impact`
 
 Set `intent` explicitly when you know the backend. Otherwise the router infers from the query.
 Use `command`, `symbol`, `from_symbol`, and `to_symbol` for precise arbor routing.]],
 
   schema = {
     type = "object",
-    required = { "query" },
     properties = {
       query = {
         type = "string",
-        description = "Question, symbol, or file path to explore.",
+        description = "Question, symbol, or file path to explore. Required unless `command` is provided.",
       },
       path = {
         type = "string",
@@ -76,7 +81,7 @@ Use `command`, `symbol`, `from_symbol`, and `to_symbol` for precise arbor routin
       },
       intent = {
         type = "string",
-        enum = { "auto", "file", "relations", "cross_file" },
+        enum = { "auto", "file", "skeleton", "relations", "cross_file", "search", "symbol", "impact", "trace" },
         default = "auto",
       },
       command = {
@@ -88,12 +93,17 @@ Use `command`, `symbol`, `from_symbol`, and `to_symbol` for precise arbor routin
       to_symbol = { type = "string" },
       token_budget = { type = "integer", default = 1024 },
       use_cache = { type = "boolean", default = false },
+      mode = {
+        type = "string",
+        enum = { "bm25", "hybrid", "semantic" },
+        description = "Search mode for semblem (bm25, hybrid, or semantic).",
+      },
     },
   },
 
   header = function(input)
     local project = input.project or cwd
-    return ExploreResult.header(input.query, project)
+    return ExploreResult.header(input.query or input.command or "", project)
   end,
 
   restore = function(_input, output, _is_error, ctx)
@@ -101,7 +111,7 @@ Use `command`, `symbol`, `from_symbol`, and `to_symbol` for precise arbor routin
   end,
 
   handler = function(input, ctx)
-    if not input.query or trim(input.query) == "" then
+    if (not input.query or trim(input.query) == "") and not input.command then
       return { llm_output = "error: query is required", is_error = true }
     end
 

@@ -10,9 +10,11 @@ use thiserror::Error;
 use crate::tools::ToolAudience;
 
 pub(crate) const FUSION_DELEGATE_TOOL: &str = "fusion_delegate";
+pub(crate) const FUSION_DELEGATE_BLOCKED: &str = "fusion_delegate is unavailable for this request";
 const RECENT_ERROR_ESCALATE_THRESHOLD: u32 = 2;
 const SIDEKICK_FAILURE_ESCALATE_THRESHOLD: u32 = 2;
 const ALREADY_DISPATCHED_MESSAGE: &str = "Fusion delegation has already been dispatched";
+const MAX_DELEGATIONS_BEFORE_LEAD_LOCK: u32 = 8;
 
 /// Results produced by `FusionDispatchGuard::authorize` before any subagent
 /// launch. They must not count as delegations, sidekick failures, or tool errors.
@@ -27,6 +29,18 @@ const FUSION_DENIAL_MESSAGES: &[&str] = &[
 fn is_guard_denial(text: &str) -> bool {
     FUSION_DENIAL_MESSAGES.contains(&text)
 }
+
+const MUTATION_SIGNALS: &[&str] = &[
+    "implement",
+    "write test",
+    "add test",
+    "fix lint",
+    "format",
+    "rename",
+    "boilerplate",
+    "update doc",
+    "apply patch",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -60,6 +74,7 @@ pub enum DelegationKind {
 #[serde(rename_all = "snake_case")]
 pub enum FusionPhase {
     #[default]
+    Idle,
     Planning,
     Executing,
     Reviewing,
@@ -193,6 +208,7 @@ pub struct FusionState {
     phase: FusionPhase,
     review_count: u32,
     fallback_count: u32,
+    request_kind: DelegationKind,
 }
 
 impl FusionState {
@@ -211,6 +227,7 @@ impl FusionState {
             phase: FusionPhase::Planning,
             review_count: 0,
             fallback_count: 0,
+            request_kind: DelegationKind::LeadOnly,
         }
     }
 
@@ -240,10 +257,24 @@ impl FusionState {
         }
     }
 
+    pub fn set_request_kind(&mut self, kind: DelegationKind) {
+        self.request_kind = kind;
+    }
+
+    #[must_use]
+    pub const fn request_kind(&self) -> DelegationKind {
+        self.request_kind
+    }
+
     pub fn observe_tool_results(&mut self, results: &[crate::ToolDoneEvent]) {
         for done in results {
             if done.tool.as_ref() == FUSION_DELEGATE_TOOL {
+                // Dispatch denials never launched a sidekick; ignore them so
+                // blocked retries do not inflate failure/delegation counters.
                 if done.is_error && is_guard_denial(&done.output.as_text()) {
+                    continue;
+                }
+                if done.is_error && done.output.as_text() == FUSION_DELEGATE_BLOCKED {
                     continue;
                 }
                 self.record_delegation();
@@ -287,7 +318,7 @@ impl FusionState {
 
     pub fn record_delegation(&mut self) {
         self.delegation_count = self.delegation_count.saturating_add(1);
-        self.lane = FusionLane::Lead;
+        // fusion_delegate runs as an isolated subagent; main lane stays Lead.
     }
 
     pub fn record_sidekick_failure(&mut self) {
@@ -403,6 +434,42 @@ impl FusionState {
     }
 }
 
+/// Returns whether a brief contains work reserved for the lead lane.
+#[must_use]
+pub fn contains_lead_only_signal(prompt: &str) -> bool {
+    const LEAD_SIGNALS: &[&str] = &[
+        "ambiguous",
+        "unclear",
+        "trade-off",
+        "tradeoff",
+        "architect",
+        "design",
+        "plan",
+        "review",
+        "approve",
+        "decide",
+        "judgment",
+        "security",
+        "vulnerab",
+        "credential",
+        "permission",
+        "production",
+        "delete",
+        "database",
+        "root cause",
+        "serial debug",
+        "debug chain",
+        "commit",
+        "merge",
+        "definition of done",
+        "constraints",
+        "edge case",
+        "interpret",
+    ];
+    let prompt = prompt.to_ascii_lowercase();
+    LEAD_SIGNALS.iter().any(|signal| prompt.contains(signal))
+}
+
 /// Lexical classifier aligned with Cognition's delegation guidance: lead owns plan,
 /// ambiguity, and final review; sidekick handles exploration, broad edits, tests, lint.
 #[must_use]
@@ -502,27 +569,17 @@ pub fn route_after_compact(
 
     let summary_kind = classify_delegation(compact_summary);
     let summary = compact_summary.to_ascii_lowercase();
-    let requests_mutation = [
-        "implement",
-        "write test",
-        "add test",
-        "fix lint",
-        "format",
-        "rename",
-        "boilerplate",
-        "update doc",
-        "apply patch",
-    ]
-    .iter()
-    .any(|signal| summary.contains(signal));
+    let requests_mutation = MUTATION_SIGNALS
+        .iter()
+        .any(|signal| summary.contains(signal));
 
     match (state.lane, summary_kind) {
-        (FusionLane::Lead, DelegationKind::Delegate) if requests_mutation => {
+        (FusionLane::Lead, DelegationKind::Delegate)
+            if state.delegation_count < MAX_DELEGATIONS_BEFORE_LEAD_LOCK =>
+        {
             FusionRoute::Switch(FusionLane::Sidekick)
         }
-        (FusionLane::Sidekick, DelegationKind::LeadOnly | DelegationKind::Bypass) => {
-            FusionRoute::Switch(FusionLane::Lead)
-        }
+        (FusionLane::Sidekick, DelegationKind::LeadOnly) => FusionRoute::Switch(FusionLane::Lead),
         (lane, _) => FusionRoute::Stay(lane),
     }
 }

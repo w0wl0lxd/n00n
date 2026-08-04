@@ -110,7 +110,7 @@ local function handler(input, ctx)
   })
 
   if err then
-    return { llm_output = err, is_error = true, cost = cost, usage = usage, model = model_spec }
+    return { llm_output = sanitize_error(err), is_error = true, cost = cost, usage = usage, model = model_spec }
   end
 
   local footer = ""
@@ -127,7 +127,14 @@ local function handler(input, ctx)
 end
 
 local function header(input)
-  return "Executing: " .. (input.description or ""):sub(1, 40)
+  local label = input.description or ""
+  if utf8 and utf8.len(label) > 40 then
+    local offset = utf8.offset(label, 41)
+    if offset then
+      label = string.sub(label, 1, offset - 1)
+    end
+  end
+  return "Executing: " .. label
 end
 
 n00n.api.register_tool({

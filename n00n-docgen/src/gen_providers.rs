@@ -5,6 +5,8 @@ use std::fmt::Write;
 use strum::IntoEnumIterator;
 use thiserror::Error;
 
+const GPT_5_5_PRO: &str = "gpt-5.5-pro";
+const GPT_5_6_ALIAS: &str = "gpt-5.6";
 const FRONT_MATTER: &str = r#"+++
 title = "Providers"
 weight = 5
@@ -95,7 +97,23 @@ If your provider serves models not in the base catalog, add a `models` subcomman
 [{{"id": "my-model-v2", "tier": "strong", "context_window": 200000, "max_output_tokens": 16384}}]
 ```
 
-Only `id` is required. Optional fields: `tier` (default `medium`), `context_window` (128K), `max_output_tokens` (16K), `pricing` (`{{input, output, cache_write, cache_read}}`, all per 1M tokens), `supports_tool_examples` (defaults to the base provider's setting), `supports_thinking` (defaults to the base provider's setting), `supports_vision` (defaults to the base provider's setting; when false, image input and the `view_image` tool are disabled). The first model listed per tier is used for sub-agents. Without this subcommand, the base provider's models are used.
+Only `id` is required. Optional fields: `tier` (default `medium`), `context_window` (128K), `max_output_tokens` (16K), `pricing` (`{{input, output, cache_write, cache_read}}`, all per 1M tokens), `supports_tool_examples` (defaults to the base provider's setting), `supports_thinking` (defaults to the base provider's setting), `supports_vision` (defaults to the base provider's setting; when false, image input and the `view_image` tool are disabled), `thinking_dialect` (overrides the base provider's effort level mapping; one of `standard`, `openai-extended`, `prefer-high`, `high-only`, `glm`, `deep-seek`, `anthropic-adaptive`, `tensor-x`), `thinking_fields` (overrides where thinking values go in the body), `body_override` (per-model body manipulation). The first model listed per tier is used for sub-agents. Without this subcommand, the base provider's models are used.
+
+`thinking_fields` controls where thinking values land: `effort_path` (dot-path for the effort string), `budget_path` (dot-path for a budget integer), `budget_max` (cap), and `toggles` (objects with `path`, `on`, `off`, `adaptive`, and `budget_key`). Fields left unset fall back to the base provider's layout.
+
+`body_override` is the escape hatch for a field the base provider does not set, or one it always sets that this model rejects. Its three operations run after the typed thinking setup: `defaults` fills absent keys, `replace` overwrites existing ones, and `filter` strips keys. Each provider guards its conversation field (`messages`, `input`, or `contents`) from all three.
+
+```json
+[{{"id": "my-model", "tier": "strong", "body_override": {{"defaults": {{"chat_template_kwargs": {{"enable_thinking": true}}}}, "filter": ["some_base_key"]}}}}]
+```
+
+Provider-wide shaping goes in the `info` subcommand as `model_filters`, where each entry applies its `body_override` to every model id matching its `match` glob (`*` and `?`). A model's own `body_override` wins on conflicting keys.
+
+```json
+{{"display_name": "My Proxy", "base": "openai", "has_auth": true, "model_filters": [{{"match": "gpt-*", "body_override": {{"filter": ["context_management"]}}}}]}}
+```
+
+The same three fields are accepted per model in `providers.toml` for custom providers.
 
 Dynamic provider models are namespaced as `{{slug}}/{{model_id}}` (e.g. `myproxy/claude-sonnet-4-6`).
 
@@ -231,6 +249,49 @@ fn build_sections() -> Result<Vec<ProviderSection>, GenerateError> {
     Ok(sections)
 }
 
+fn format_model_names(entry: &ModelEntry) -> String {
+    if entry.default && entry.prefixes.contains(&GPT_5_6_ALIAS) {
+        return entry
+            .prefixes
+            .iter()
+            .map(|name| {
+                if *name == GPT_5_6_ALIAS {
+                    format!("**{name}** (default)")
+                } else {
+                    (*name).to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+    }
+
+    let names = entry.prefixes.join(", ");
+    if entry.default {
+        format!("**{names}** (default)")
+    } else {
+        names
+    }
+}
+
+fn write_model_row(out: &mut String, tier: ModelTier, entries: &[&ModelEntry]) {
+    let models = entries
+        .iter()
+        .map(|entry| format_model_names(entry))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let Some(first) = entries.first() else {
+        return;
+    };
+    let _ = writeln!(
+        out,
+        "| {} | {} | {} | {} |",
+        tier_label(tier),
+        models,
+        format_pricing(first),
+        format_context(first),
+    );
+}
+
 fn write_model_table(out: &mut String, entries: &[ModelEntry]) {
     let _ = writeln!(
         out,
@@ -247,35 +308,13 @@ fn write_model_table(out: &mut String, entries: &[ModelEntry]) {
             continue;
         }
 
-        let models: Vec<String> = tier_entries
-            .iter()
-            .map(|e| {
-                let names = e.prefixes.join(", ");
-                if e.default {
-                    format!("**{names}** (default)")
-                } else {
-                    names
-                }
-            })
-            .collect();
-
-        let pricing = tier_entries
-            .first()
-            .map(|e| format_pricing(e))
-            .unwrap_or_default();
-        let context = tier_entries
-            .first()
-            .map(|e| format_context(e))
-            .unwrap_or_default();
-
-        let _ = writeln!(
-            out,
-            "| {} | {} | {} | {} |",
-            tier_label(tier),
-            models.join(", "),
-            pricing,
-            context,
-        );
+        let (separate_entries, grouped_entries): (Vec<_>, Vec<_>) = tier_entries
+            .into_iter()
+            .partition(|entry| entry.prefixes.contains(&GPT_5_5_PRO));
+        write_model_row(out, tier, &grouped_entries);
+        for entry in separate_entries {
+            write_model_row(out, tier, &[entry]);
+        }
     }
 
     let defaults: Vec<String> = entries
@@ -284,7 +323,11 @@ fn write_model_table(out: &mut String, entries: &[ModelEntry]) {
         .map(|e| {
             format!(
                 "{} ({})",
-                e.prefixes.first().unwrap_or(&"?"),
+                if e.prefixes.contains(&GPT_5_6_ALIAS) {
+                    GPT_5_6_ALIAS
+                } else {
+                    e.prefixes.first().unwrap_or(&"?")
+                },
                 tier_label(e.tier).to_lowercase(),
             )
         })
@@ -388,6 +431,23 @@ pub fn generate() -> Result<String, GenerateError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn openai_docs_show_alias_default_and_distinct_pro_metadata() {
+        let generated = generate().unwrap();
+        assert!(generated.contains("gpt-5.6-sol, **gpt-5.6** (default)"));
+        assert!(
+            generated.contains(
+                "Defaults: gpt-5.6-luna (weak), gpt-5.6-terra (medium), gpt-5.6 (strong)"
+            )
+        );
+        assert!(
+            generated.contains("| Strong | gpt-5.5-pro | $7.50 / $45.00 | 1050K ctx / 128K out |")
+        );
+        assert!(
+            generated.contains("| Strong | gpt-5.5-pro | $7.50 / $45.00 | 272K ctx / 128K out |")
+        );
+    }
 
     #[test]
     fn missing_manifest_returns_typed_error() {
