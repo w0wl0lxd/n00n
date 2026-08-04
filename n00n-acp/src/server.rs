@@ -606,6 +606,7 @@ mod tests {
         assert!(request_id(&json!({})).is_err());
         assert!(request_id(&json!([])).is_err());
         assert!(request_id(&json!(true)).is_err());
-        assert!(request_id(&json!(99999999999999999999999999999999_u64)).is_err());
+        // Use a valid u64 value that serde_json will reject as a RequestId
+        assert!(request_id(&json!(18446744073709551615_u64)).is_err());
     }
 }
