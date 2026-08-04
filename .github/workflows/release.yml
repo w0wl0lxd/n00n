@@ -75,6 +75,9 @@ jobs:
         run: |
           tag="$GITHUB_REF_NAME"
           archive="${BINARY_NAME}-${tag}-${{ matrix.target }}.tar.gz"
+          if [ ! -f "target/${{ matrix.target }}/release/n00n-git" ]; then
+            echo "n00n-git binary was not built" >&2; exit 1;
+          fi
           cp "target/${{ matrix.target }}/release/${BINARY_NAME}" "${BINARY_NAME}"
           cp "target/${{ matrix.target }}/release/n00n-git" n00n-git
           tar czf "${archive}" "${BINARY_NAME}" n00n-git
@@ -115,6 +118,9 @@ jobs:
         run: |
           tag="$GITHUB_REF_NAME"
           archive="${BINARY_NAME}-${tag}-${{ matrix.target }}.tar.gz"
+          if [ ! -f "target/${{ matrix.target }}/release/n00n-git" ]; then
+            echo "n00n-git binary was not built" >&2; exit 1;
+          fi
           cp "target/${{ matrix.target }}/release/${BINARY_NAME}" "${BINARY_NAME}"
           cp "target/${{ matrix.target }}/release/n00n-git" n00n-git
           tar czf "${archive}" "${BINARY_NAME}" n00n-git
@@ -126,6 +132,9 @@ jobs:
         run: |
           tag="$GITHUB_REF_NAME"
           archive="${BINARY_NAME}-${tag}-${{ matrix.target }}.zip"
+          if [ ! -f "target/${{ matrix.target }}/release/n00n-git.exe" ]; then
+            echo "n00n-git binary was not built" >&2; exit 1;
+          fi
           cp "target/${{ matrix.target }}/release/${BINARY_NAME}.exe" "${BINARY_NAME}.exe"
           cp "target/${{ matrix.target }}/release/n00n-git.exe" n00n-git.exe
           7z a "${archive}" "${BINARY_NAME}.exe" n00n-git.exe
