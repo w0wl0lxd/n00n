@@ -7,6 +7,7 @@ useDefault = true
 
 [[allowlists]]
 description = "Known false positives in removed subprojects"
+condition = "AND"
 paths = ['''maki-agent/''', '''maki-providers/''']
 regexes = [
   # Feature/version date identifiers, e.g. "oauth-2025-04-20" or

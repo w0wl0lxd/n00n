@@ -3,7 +3,7 @@
 //! its output stays byte-identical; `sanitize_text` just adds the caller's
 //! character cap on top.
 
-const REDACTED: &str = "[REDACTED]";
+use crate::REDACTED;
 
 /// Minimum length for a bare `Basic` or `Bearer` value before it is treated as
 /// an HTTP authentication credential. Shorter or non-base64-ish values are
@@ -44,7 +44,7 @@ pub(crate) const SECRET_TOKEN_PREFIXES: &[&str] = &[
 
 /// Sanitizes a free-text string: `Bearer <token>`, `key=value` / `key:value`
 /// with sensitive keys, and token-shaped values are replaced with
-/// `[REDACTED]`, then the result is capped at `max_chars` characters.
+/// `[redacted]`, then the result is capped at `max_chars` characters.
 /// Whitespace is collapsed to single spaces, so this is suitable for
 /// one-line activity messages and compact log previews.
 #[must_use]
@@ -362,26 +362,26 @@ mod tests {
         );
         assert_eq!(
             sanitized,
-            "API_KEY=[REDACTED] Authorization:[REDACTED] --password=[REDACTED] foo=[REDACTED]"
+            "API_KEY=[redacted] Authorization:[redacted] --password=[redacted] foo=[redacted]"
         );
     }
 
     #[test]
     fn redacts_adjacent_bearer_scheme_and_token() {
         let sanitized = sanitize_text("Authorization:Bearer visible-token trailing", 80);
-        assert_eq!(sanitized, "Authorization:[REDACTED] trailing");
+        assert_eq!(sanitized, "Authorization:[redacted] trailing");
     }
 
     #[test]
     fn redacts_basic_auth_credentials_completely() {
         let sanitized = sanitize_text("Authorization: Basic dXNlcjpwYXNz trailing", 80);
-        assert_eq!(sanitized, "Authorization:[REDACTED] trailing");
+        assert_eq!(sanitized, "Authorization:[redacted] trailing");
     }
 
     #[test]
     fn redacts_standalone_basic_auth_credentials() {
         let sanitized = sanitize_text("value Basic dXNlcjpwYXNz trailing", 80);
-        assert_eq!(sanitized, "value Basic [REDACTED] trailing");
+        assert_eq!(sanitized, "value Basic [redacted] trailing");
     }
 
     #[test]
@@ -390,13 +390,13 @@ mod tests {
             "https://host.test/path?api_key=visible glpat-visible prefix-ghp_visible",
             80,
         );
-        assert_eq!(sanitized, "https:[REDACTED] [REDACTED] [REDACTED]");
+        assert_eq!(sanitized, "https:[redacted] [redacted] [redacted]");
     }
 
     #[test]
     fn redacts_complete_multi_word_quoted_value_in_malformed_json() {
         let sanitized = sanitize_text(r#"{"password":"two words"#, 80);
-        assert_eq!(sanitized, r#"{"password":[REDACTED]"#);
+        assert_eq!(sanitized, r#"{"password":[redacted]"#);
         assert!(!sanitized.contains("two"));
         assert!(!sanitized.contains("words"));
     }
@@ -404,7 +404,7 @@ mod tests {
     #[test]
     fn redacts_complete_multi_word_quoted_value_after_spaced_separator() {
         let sanitized = sanitize_text(r#"{"password": "two words""#, 80);
-        assert_eq!(sanitized, r#"{"password":[REDACTED]"#);
+        assert_eq!(sanitized, r#"{"password":[redacted]"#);
         assert!(!sanitized.contains("two"));
         assert!(!sanitized.contains("words"));
     }
@@ -419,13 +419,13 @@ mod tests {
     #[test]
     fn preserves_word_after_bare_sensitive_term() {
         let sanitized = sanitize_text("check authorization header format", 80);
-        assert_eq!(sanitized, "check authorization=[REDACTED] header format");
+        assert_eq!(sanitized, "check authorization=[redacted] header format");
     }
 
     #[test]
     fn short_secret_prefix_requires_word_boundary() {
         let sanitized = sanitize_text("desk-top risk-taking sk-visible", 80);
-        assert_eq!(sanitized, "desk-top risk-taking [REDACTED]");
+        assert_eq!(sanitized, "desk-top risk-taking [redacted]");
     }
 
     #[test]
@@ -482,7 +482,7 @@ mod tests {
     fn redacts_sensitive_key_value_split_across_lines() {
         let input = "password:\nplain-value";
         let sanitized = sanitize_text_preserve_newlines(input, 200);
-        assert!(sanitized.contains("[REDACTED]"));
+        assert!(sanitized.contains("[redacted]"));
         assert!(!sanitized.contains("plain-value"));
     }
 
@@ -490,7 +490,7 @@ mod tests {
     fn redacts_sensitive_key_value_split_across_lines_with_colon() {
         let input = "password:\nplain-value";
         let sanitized = sanitize_text_preserve_newlines(input, 200);
-        assert!(sanitized.contains("[REDACTED]"));
+        assert!(sanitized.contains("[redacted]"));
         assert!(!sanitized.contains("plain-value"));
     }
 
@@ -547,7 +547,7 @@ mod tests {
     fn redacts_key_value_across_crlf() {
         let input = "password:\r\nsecret123";
         let sanitized = sanitize_text_preserve_newlines(input, 200);
-        assert!(sanitized.contains("[REDACTED]"));
+        assert!(sanitized.contains("[redacted]"));
         assert!(!sanitized.contains("secret123"));
         assert!(sanitized.contains("\r\n"));
     }
@@ -556,7 +556,7 @@ mod tests {
     fn redacts_key_value_across_cr() {
         let input = "password:\rsecret123";
         let sanitized = sanitize_text_preserve_newlines(input, 200);
-        assert!(sanitized.contains("[REDACTED]"));
+        assert!(sanitized.contains("[redacted]"));
         assert!(!sanitized.contains("secret123"));
         assert!(sanitized.contains('\r'));
     }
@@ -579,7 +579,7 @@ mod tests {
     fn redacts_bearer_token_across_line_break() {
         let input = "Authorization:\nBearer sk-secret";
         let sanitized = sanitize_text_preserve_newlines(input, 200);
-        assert!(sanitized.contains("[REDACTED]"));
+        assert!(sanitized.contains("[redacted]"));
         assert!(!sanitized.contains("sk-secret"));
     }
 }
