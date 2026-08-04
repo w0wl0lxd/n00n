@@ -2,7 +2,7 @@
   {"query": "src/main.rs", "intent": "file"},
   {"query": "how does auth work", "intent": "cross_file"},
   {"query": "callers of restore_item", "intent": "relations"},
-  {"query": "agent loop", "intent": "cross_file"},
+  {"query": "agent loop", "intent": "search"},
   {"query": "main.rs skeleton", "intent": "skeleton"},
   {"query": "AuthService symbol", "intent": "symbol"},
   {"query": "impact of changing restore_item", "intent": "impact"},
@@ -26,7 +26,7 @@
   {"query": "callers of handle_request", "intent": "relations"},
   {"query": "callees of process_data", "intent": "relations"},
   {"query": "who calls validate", "intent": "relations"},
-  {"query": "what does init do", "intent": "cross_file"},
+  {"query": "what does init do", "intent": "relations"},
   {"query": "impact of changing Config", "intent": "impact"},
   {"query": "search for middleware", "intent": "search"}
 ]
