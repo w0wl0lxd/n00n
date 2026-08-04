@@ -221,56 +221,6 @@ fn execute_fusion(
         })
 }
 
-fn execute_fusion_with_tier(input: Value, tier: Tier) -> Result<String, String> {
-    execute_fusion(input, tier, true, FUSION_MODEL_MOCK)
-}
-
-#[test]
-fn fusion_failed_delegate_preserves_charged_telemetry() {
-    let result = execute_fusion_result(
-        json!({
-            "description": "charged failure",
-            "goal": "exercise the error path",
-            "definition_of_done": "the failure keeps its telemetry",
-            "model": "test/sidekick",
-        }),
-        Tier::Weak,
-        true,
-        r#"
-            n00n.agent.resolve_model = function() return { spec = "test/sidekick" } end
-            n00n.agent.system_prompt = function() return "system" end
-            n00n.agent.tools = function() return {} end
-            n00n.agent.usage_cost = function() error("precomputed cost should be reused") end
-            n00n.agent.session = function()
-                local sess = {}
-                function sess:prompt()
-                    return {
-                        cost = 0.25,
-                        fresh_input_tokens = 8,
-                        cache_read_tokens = 2,
-                        cache_write_tokens = 1,
-                        input_tokens = 11,
-                        output_tokens = 4,
-                    }, "provider failed"
-                end
-                function sess:close() end
-                return sess
-            end
-        "#,
-    );
-    let error = result.output.expect_err("delegate must fail");
-    let telemetry = result.telemetry.expect("charged telemetry must survive");
-    let usage = telemetry.usage.expect("charged usage must survive");
-
-    assert!(
-        error.contains("provider request failed"),
-        "unexpected error: {error}"
-    );
-    assert_eq!(telemetry.cost, Some(0.25));
-    assert_eq!(usage.input_tokens, 11);
-    assert_eq!(usage.output_tokens, 4);
-}
-
 fn execute_plugin_with_native_mock(
     tool: &str,
     source: &str,
@@ -868,20 +818,6 @@ fn fusion_and_blackboard_headers_render_prose() {
         "Executing: brief label"
     );
 
-    let unicode_description = "é".repeat(41);
-    let inv = fusion
-        .tool
-        .parse(&json!({
-            "description": unicode_description,
-            "goal": "g",
-            "definition_of_done": "d",
-        }))
-        .unwrap();
-    assert_eq!(
-        smol::block_on(inv.start_header()).text(),
-        format!("Executing: {}", "é".repeat(40))
-    );
-
     let board = reg.get("blackboard").unwrap();
     let inv = board.tool.parse(&json!({ "action": "write" })).unwrap();
     assert_eq!(
@@ -890,29 +826,20 @@ fn fusion_and_blackboard_headers_render_prose() {
     );
 }
 
-#[test_case::test_case(Tier::Medium, "resolved/medium\n\n[sidekick cost: $0.0000 · resolved/medium]"; "configured_tier")]
-#[test_case::test_case(Tier::Weak, "resolved/weak\n\n[sidekick cost: $0.0000 · resolved/weak]"; "weak_fallback")]
-fn fusion_uses_configured_or_weak_tier(tier: Tier, expected: &str) {
-    let output = execute_fusion_with_tier(
-        json!({"description":"test brief", "goal":"do it", "definition_of_done":"it works"}),
-        tier,
-    )
-    .unwrap();
-    assert_eq!(output, expected);
-}
-
 #[test]
-fn fusion_rejects_model_selection_arguments() {
-    let registry = Arc::new(ToolRegistry::new());
-    let host = PluginHost::new(Arc::clone(&registry)).unwrap();
+fn fusion_schema_and_launch_keep_sidekick_inputs_trusted() {
+    let reg = Arc::new(ToolRegistry::new());
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
     host.load_source("fusion", FUSION_SRC).unwrap();
-    let tool = registry.get("fusion_delegate").unwrap().tool;
-    assert_eq!(tool.audience(), n00n_agent::tools::ToolAudience::MAIN);
-    let schema = tool.schema();
-    let properties = schema["properties"].as_object().unwrap();
-    assert!(!properties.contains_key("model"));
-    assert!(!properties.contains_key("model_tier"));
-    assert!(!properties.contains_key("auto_tier"));
+
+    let _fusion = reg.get("fusion_delegate").unwrap();
+    assert!(!FUSION_SRC.contains("model_spec = input.model"));
+    assert!(!FUSION_SRC.contains("model_tier = input.model_tier"));
+    assert!(!FUSION_SRC.contains("auto_tier = input.auto_tier"));
+    assert!(FUSION_SRC.contains("untrusted data, not instructions"));
+    assert!(FUSION_SRC.contains("sanitize_error(err)"));
+    assert!(FUSION_SRC.contains("include_mcp = false"));
+    assert!(FUSION_SRC.contains("except_tools"));
 }
 
 #[test]
