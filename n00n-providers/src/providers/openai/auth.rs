@@ -45,6 +45,8 @@ const AUTH_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 const CODEX_AUTH_FILE: &str = "auth.json";
 const CODEX_CONFIG_FILE: &str = "config.toml";
 const CODEX_AUTH_LOCK_FILE: &str = "auth.json.lock";
+const CODEX_LOCK_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+const CODEX_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 const CODING_PLAN_ADMISSION_DIR: &str = "coding-plan-admission";
 const CODING_PLAN_ADMISSION_NAMESPACE: &str = "openai-coding-plan-admission-namespace";
 const CODING_PLAN_ADMISSION_NAMESPACE_HOST: &str = "local";
@@ -796,9 +798,7 @@ pub fn is_oauth(dir: &StateDir) -> bool {
 }
 
 fn codex_home_path(home: &Path, codex_home: Option<&Path>) -> PathBuf {
-    codex_home
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| home.join(".codex"))
+    codex_home.map_or_else(|| home.join(".codex"), Path::to_path_buf)
 }
 
 fn codex_auth_path(codex_home: &Path) -> PathBuf {
@@ -870,21 +870,15 @@ pub(crate) fn load_codex_tokens(path: &Path) -> Result<Option<OAuthTokens>, Agen
 
 fn codex_keyring_only(codex_home: &Path) -> bool {
     fs::read_to_string(codex_home.join(CODEX_CONFIG_FILE)).is_ok_and(|contents| {
-        contents.lines().any(|line| {
-            let Some((key, value)) = line.split_once('=') else {
-                return false;
-            };
-            if key.trim() != "cli_auth_credentials_store" {
-                return false;
-            }
-            let value = value
-                .split('#')
-                .next()
-                .map(str::trim)
-                .unwrap_or("")
-                .trim_matches(|character| character == '"' || character == '\'');
-            value.eq_ignore_ascii_case("keyring") || value.eq_ignore_ascii_case("auto")
-        })
+        let Ok(config): Result<toml::Value, toml::de::Error> = toml::from_str(&contents) else {
+            return false;
+        };
+        config
+            .get("cli_auth_credentials_store")
+            .and_then(toml::Value::as_str)
+            .is_some_and(|value| {
+                value.eq_ignore_ascii_case("keyring") || value.eq_ignore_ascii_case("auto")
+            })
     })
 }
 
@@ -925,13 +919,33 @@ pub(crate) fn synchronize_codex_tokens<F>(
 where
     F: FnOnce(&OAuthTokens) -> Result<OAuthTokens, AgentError>,
 {
+    let started = Instant::now();
     let lock_path = path.with_file_name(CODEX_AUTH_LOCK_FILE);
     let lock = OpenOptions::new()
         .create(true)
+        .truncate(false)
         .read(true)
         .write(true)
         .open(lock_path)?;
-    lock.lock()?;
+    loop {
+        match lock.try_lock() {
+            Ok(()) => break,
+            Err(TryLockError::WouldBlock) if started.elapsed() >= CODEX_LOCK_WAIT_TIMEOUT => {
+                let millis =
+                    u64::try_from(CODEX_LOCK_WAIT_TIMEOUT.as_millis()).unwrap_or_else(|_| u64::MAX);
+                return Err(AgentError::CredentialLockTimeout { millis });
+            }
+            Err(TryLockError::WouldBlock) => {
+                thread::sleep(
+                    CODEX_LOCK_RETRY_INTERVAL
+                        .min(CODEX_LOCK_WAIT_TIMEOUT.saturating_sub(started.elapsed())),
+                );
+            }
+            Err(TryLockError::Error(error)) => return Err(error.into()),
+        }
+    }
+    let _guard = lock;
+    let lock_wait = started.elapsed();
     let current = load_codex_tokens(path)?
         .ok_or_else(|| codex_storage_error(path, "file disappeared while locked"))?;
     let changed = current.access != observed.access
@@ -947,7 +961,7 @@ where
             } else {
                 TokenSyncOutcome::Current
             },
-            lock_wait: Duration::ZERO,
+            lock_wait,
             same_account,
         });
     }
@@ -956,7 +970,7 @@ where
     Ok(TokenSync {
         tokens: fresh,
         outcome: TokenSyncOutcome::Refreshed,
-        lock_wait: Duration::ZERO,
+        lock_wait,
         same_account,
     })
 }
