@@ -54,7 +54,7 @@ local description = [[Run sandboxed Lua workflow for multi-stage agent orchestra
 
 Start with meta({ name, description, phases }). Globals: agent({ prompt, subagent_type?, model_tier?, label?, output_schema? }) returns agent result; parallel(fns, { concurrency? }) runs branches; pipeline(items, stages, { concurrency? }) runs stages per item; phase(name, fn), log(...), inputs.
 
-No n00n, os, io, require, print, or load. Scripts must be deterministic for resume replay, must return the final string, and are capped by max_agents_per_run (default 24, no hard maximum) with a runaway guard for repeated prompts and consecutive errors. Use task for one agent.]]
+`inputs` is `{}` when omitted. Lua tables have no `.map`; use `pipeline(items, stages)` or `ipairs`. No n00n, os, io, require, print, or load. Scripts must be deterministic for resume replay, must return the final string, and are capped by max_agents_per_run (default 24, no hard maximum) with a runaway guard for repeated prompts and consecutive errors. Use task for one agent.]]
 
 local schema = {
   type = "object",
@@ -63,10 +63,10 @@ local schema = {
   properties = {
     script = {
       type = "string",
-      description = "Lua script. Start with meta({...}). Use agent/parallel/pipeline/phase/log. Return final string.",
+      description = "Lua script. Start with meta({...}). Use agent/parallel/pipeline/phase/log. Return final string. Lua tables have no `.map`; use pipeline or ipairs.",
     },
     inputs = {
-      description = "Free-form object exposed as global `inputs`.",
+      description = "Free-form object exposed as global `inputs`; defaults to `{}` when omitted.",
     },
     resume = {
       type = "string",
