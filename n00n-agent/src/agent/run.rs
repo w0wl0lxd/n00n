@@ -850,20 +850,24 @@ impl<'h> Agent<'h> {
     }
 
     fn effective_tool_filter(&self) -> ToolFilter {
-        if !self.allow_dynamic_mcp_tools
-            || !self.tool_filter.matches(crate::mcp::TOOL_SEARCH_TOOL_NAME)
-        {
-            return self.tool_filter.clone();
-        }
         let Some(mcp) = self.mcp.as_ref() else {
             return self.tool_filter.clone();
         };
+        // Always include tool_search when MCP is present so agents with
+        // ToolFilter::Only can still discover and run MCP tools via search.
+        let mut filter = self.tool_filter.clone();
+        if !filter.matches(crate::mcp::TOOL_SEARCH_TOOL_NAME) {
+            filter = filter.including([crate::mcp::TOOL_SEARCH_TOOL_NAME.to_string()]);
+        }
+        if !self.allow_dynamic_mcp_tools {
+            return filter;
+        }
         let capability_exclusions = crate::tools::capability_exclusions(&self.model);
         let names = mcp.loaded_tool_names().into_iter().filter(|name| {
             crate::tools::is_tool_enabled(&self.config.disabled_tools, name)
                 && !capability_exclusions.contains(&name.as_str())
         });
-        self.tool_filter.clone().including(names)
+        filter.including(names)
     }
 
     fn tool_context(&self) -> ToolContext {
@@ -1442,33 +1446,22 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_mcp_filter_preserves_only_without_tool_search() {
+    fn dynamic_mcp_filter_includes_tool_search_with_mcp() {
         let mut history = History::new(Vec::new());
         let (mut agent, _) = make_agent(MockProvider::new(Vec::new()), &mut history);
         let mcp = crate::mcp::stub_session(&[("srv.fetch_issue", "Fetch a GitHub issue")]);
         agent.tool_filter = ToolFilter::Only(vec!["read".into()]);
         agent = agent
             .with_mcp(Some(mcp.clone()))
-            .with_dynamic_mcp_tools(true);
+            .with_dynamic_mcp_tools(false);
 
-        mcp.search_tools("issue").unwrap();
+        // tool_search is always included when MCP is present, even with
+        // ToolFilter::Only and allow_dynamic_mcp_tools=false
         let effective_filter = agent.effective_tool_filter();
-        assert!(!effective_filter.matches("tool_search"));
+        assert!(effective_filter.matches("tool_search"));
+        assert!(effective_filter.matches("read"));
+        assert!(!effective_filter.matches("write"));
         assert!(!effective_filter.matches("srv__fetch_issue"));
-        let mut definitions = json!([
-            {"name": "read"},
-            {"name": "write"},
-        ]);
-        mcp.extend_tools(&mut definitions);
-        filter_provider_tools(&mut definitions, &effective_filter, &AgentMode::Build);
-        let names = definitions
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|definition| definition["name"].as_str())
-            .collect::<Vec<_>>();
-
-        assert_eq!(names, ["read"]);
     }
 
     #[test]
@@ -1489,6 +1482,26 @@ mod tests {
         mcp.search_tools("issue").unwrap();
 
         assert!(!agent.effective_tool_filter().matches(DISABLED_MCP_TOOL));
+    }
+
+    #[test]
+    fn dynamic_mcp_filter_includes_loaded_tools_with_flag() {
+        let mut history = History::new(Vec::new());
+        let (mut agent, _) = make_agent(MockProvider::new(Vec::new()), &mut history);
+        let mcp = crate::mcp::stub_session(&[("srv.fetch_issue", "Fetch a GitHub issue")]);
+        agent.tool_filter = ToolFilter::Only(vec!["read".into()]);
+        agent = agent
+            .with_mcp(Some(mcp.clone()))
+            .with_dynamic_mcp_tools(true);
+
+        mcp.search_tools("issue").unwrap();
+        let effective_filter = agent.effective_tool_filter();
+        // tool_search is always included when MCP is present
+        assert!(effective_filter.matches("tool_search"));
+        // Loaded MCP tools are included when allow_dynamic_mcp_tools=true
+        assert!(effective_filter.matches("srv__fetch_issue"));
+        assert!(effective_filter.matches("read"));
+        assert!(!effective_filter.matches("write"));
     }
 
     #[test]
