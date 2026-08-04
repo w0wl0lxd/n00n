@@ -1910,20 +1910,6 @@ mod tests {
             )
         }
 
-        fn recording_tools(responses: Vec<StreamResponse>) -> (Self, Arc<Mutex<Vec<Value>>>) {
-            let tool_requests = Arc::new(Mutex::new(Vec::new()));
-            (
-                Self {
-                    responses: Mutex::new(responses),
-                    requests: Arc::new(Mutex::new(Vec::new())),
-                    tool_requests: Arc::clone(&tool_requests),
-                    cancel_on_request: None,
-                    calls: AtomicUsize::new(0),
-                },
-                tool_requests,
-            )
-        }
-
         fn cancel_on_request(responses: Vec<StreamResponse>, request: usize) -> Self {
             Self {
                 responses: Mutex::new(responses),
