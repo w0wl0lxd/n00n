@@ -5,8 +5,8 @@ use tracing::{error, info, warn};
 
 use n00n_providers::provider::Provider;
 use n00n_providers::{
-    ContentBlock, HistoryReplayReason, Message, Model, ModelTier, OpenAiOptions, RequestOptions,
-    Role, StopReason, StreamResponse, System, TokenUsage,
+    ContentBlock, HistoryReplayReason, Message, Model, OpenAiOptions, RequestDeliveryMetadata,
+    RequestDeliveryPhase, RequestOptions, Role, StopReason, StreamResponse, System, TokenUsage,
 };
 
 use super::compaction::{self, CONTINUE_AFTER_COMPACT};
@@ -19,16 +19,16 @@ use crate::cancel::{CancelMap, CancelToken, PreDispatchGate};
 use crate::mcp::McpSession;
 use crate::permissions::{PermissionAnswer, PermissionManager};
 use crate::tools::{
-    ActiveTools, Deadline, FileReadTracker, LocalTools, ToolAudience, ToolContext, ToolFilter,
-    ToolRegistry,
+    ActiveTools, Deadline, FileReadTracker, LocalTools, SessionIdentity, ToolAudience, ToolContext,
+    ToolFilter, ToolRegistry,
 };
 use crate::{
     AgentConfig, AgentError, AgentEvent, AgentInput, AgentMode, EventSender, ExtractedCommand,
-    FusionLane, FusionRoute, FusionState, InterruptPoint, InterruptSource, ToolDoneEvent,
-    TurnCompleteEvent,
+    FusionFailure, FusionLane, FusionPhase, FusionRoute, FusionState, InterruptPoint,
+    InterruptSource, ToolDoneEvent, TurnCompleteEvent,
 };
-use n00n_config::providers::Tier;
 use n00n_config::{ToolKey, ToolOutputLines};
+#[cfg(test)]
 use n00n_storage::id::SessionRef;
 
 use crate::tokenize::{
@@ -42,6 +42,13 @@ const MAX_TOKENS_CONTINUE_PROMPT: &str = "Continue exactly where you stopped.";
 const IMAGE_TOKEN_ESTIMATE: usize = 2_048;
 const HISTORY_REPLAY_PERMISSION_ID: &str = "history-replay";
 const HISTORY_REPLAY_TOOL: &str = "history_replay";
+const AMBIGUOUS_REPLAY_PERMISSION_ID: &str = "ambiguous-request-replay";
+const AMBIGUOUS_REPLAY_TOOL: &str = "ambiguous_request_replay";
+const AMBIGUOUS_REPLAY_RESET_MESSAGE: &str = "Resetting partial output before approved replay";
+const HISTORY_REPLAY_CHANNEL_CLOSED_MESSAGE: &str = "History replay approval channel closed";
+const AMBIGUOUS_REPLAY_CHANNEL_CLOSED_MESSAGE: &str = "Ambiguous replay approval channel closed";
+const FUSION_REVIEW_PROMPT: &str = "Review the sidekick result above, verify it against the task, and produce the final lead response.";
+const FUSION_FALLBACK_PROMPT: &str = "The sidekick delegation failed. Continue with exactly one lead fallback attempt and produce the final response without delegating again.";
 
 const CACHE_BREAKPOINT_LONG_SESSION: usize = 60;
 const CACHE_BREAKPOINT_MEDIUM_SESSION: usize = 30;
@@ -52,13 +59,9 @@ const CACHE_BREAKPOINTS_MEDIUM: usize = 3;
 const CACHE_BREAKPOINTS_SHORT: usize = 2;
 const CACHE_BREAKPOINTS_MIN: usize = 1;
 
-fn tier_to_model_tier(tier: Tier) -> ModelTier {
-    match tier {
-        Tier::Weak => ModelTier::Weak,
-        Tier::Medium => ModelTier::Medium,
-        Tier::Strong => ModelTier::Strong,
-        Tier::Compaction => ModelTier::Compaction,
-    }
+fn filter_provider_tools(tools: &mut Value, filter: &ToolFilter, mode: &AgentMode) {
+    crate::tools::filter_definitions(tools, filter);
+    filter_tools_for_mode(tools, mode);
 }
 
 fn filter_tools_for_mode(tools: &mut Value, mode: &AgentMode) {
@@ -146,7 +149,7 @@ pub struct AgentParams {
     pub config: Arc<AgentConfig>,
     pub tool_output_lines: ToolOutputLines,
     pub permissions: Arc<PermissionManager>,
-    pub session_id: Option<SessionRef>,
+    pub identity: Option<SessionIdentity>,
     pub timeouts: n00n_providers::Timeouts,
     pub openai_options: OpenAiOptions,
     pub file_tracker: Arc<FileReadTracker>,
@@ -193,7 +196,7 @@ pub struct Agent<'h> {
     thinking_empty_retried: bool,
     permissions: Arc<PermissionManager>,
     opts: RequestOptions,
-    session_id: Option<SessionRef>,
+    identity: Option<SessionIdentity>,
     timeouts: n00n_providers::Timeouts,
     openai_options: OpenAiOptions,
     file_tracker: Arc<FileReadTracker>,
@@ -205,10 +208,9 @@ pub struct Agent<'h> {
     local_tools: LocalTools,
     active_skill_policy: Option<crate::skill_policy::ActiveSkillPolicy>,
     tool_filter: ToolFilter,
+    allow_dynamic_mcp_tools: bool,
     active_tools: ActiveTools,
     supports_tool_examples: bool,
-    lead_model: Option<Arc<Model>>,
-    lead_provider: Option<Arc<dyn Provider>>,
     fusion_state: Option<FusionState>,
 }
 
@@ -217,16 +219,6 @@ impl<'h> Agent<'h> {
     pub fn new(params: AgentParams, run: AgentRunParams<'h>) -> Self {
         let supports_tool_examples = params.model.supports_tool_examples();
         let fusion_enabled = params.config.fusion.enabled;
-        let lead_model = if fusion_enabled {
-            Some(Arc::new(params.model.clone()))
-        } else {
-            None
-        };
-        let lead_provider = if fusion_enabled {
-            Some(Arc::clone(&params.provider))
-        } else {
-            None
-        };
         let fusion_state = if fusion_enabled {
             Some(FusionState::new_lead())
         } else {
@@ -263,7 +255,7 @@ impl<'h> Agent<'h> {
             post_tool_empty_retried: false,
             thinking_empty_retried: false,
             opts: RequestOptions::default(),
-            session_id: params.session_id,
+            identity: params.identity,
             file_tracker: params.file_tracker,
             prompt_slots: params.prompt_slots,
             subagent_cancels: params.subagent_cancels,
@@ -273,10 +265,9 @@ impl<'h> Agent<'h> {
             local_tools: LocalTools::default(),
             active_skill_policy: None,
             tool_filter: run.tool_filter,
+            allow_dynamic_mcp_tools: false,
             active_tools: ActiveTools::default(),
             supports_tool_examples,
-            lead_model,
-            lead_provider,
             fusion_state,
         };
         if fusion_enabled {
@@ -291,6 +282,12 @@ impl<'h> Agent<'h> {
     #[must_use]
     pub fn with_mcp(mut self, mcp: Option<McpSession>) -> Self {
         self.mcp = mcp;
+        self
+    }
+
+    #[must_use]
+    pub fn with_dynamic_mcp_tools(mut self, enabled: bool) -> Self {
+        self.allow_dynamic_mcp_tools = enabled;
         self
     }
 
@@ -356,6 +353,9 @@ impl<'h> Agent<'h> {
     /// tool execution failures, or cancellation.
     pub async fn run(&mut self, input: AgentInput) -> Result<(), AgentError> {
         let protect_history_replay = !self.history.is_empty();
+        if self.config.fusion.enabled {
+            self.fusion_state = Some(FusionState::new_lead());
+        }
         let rollback_len = self.rollback_len.unwrap_or_else(|| self.history.len());
         self.rollback_len = Some(rollback_len);
         let pre_dispatch_rollback_len = self
@@ -375,7 +375,8 @@ impl<'h> Agent<'h> {
         if let Some(mcp) = self.mcp.as_ref() {
             mcp.extend_tools(&mut self.tools);
         }
-        filter_tools_for_mode(&mut self.tools, &self.mode);
+        let tool_filter = self.effective_tool_filter();
+        filter_provider_tools(&mut self.tools, &tool_filter, &self.mode);
         self.context_size = estimate_message_tokens(self.history.as_slice(), &self.model.id)
             .saturating_add(estimate_tool_tokens(&self.tools, &self.model.id));
         let user_message_count = self
@@ -390,6 +391,8 @@ impl<'h> Agent<'h> {
             message_cache_breakpoints: adaptive_cache_breakpoints(user_message_count),
             protect_history_replay,
             allow_history_replay: self.permissions.is_yolo(),
+            safety_identifier: None,
+            moderation: false,
         };
 
         info!(
@@ -398,12 +401,37 @@ impl<'h> Agent<'h> {
             message_len = input.message.len(),
             "agent run started"
         );
+        if let Some(state) = self.fusion_state.as_mut() {
+            state.set_request_kind(crate::fusion::classify_delegation(&input.message));
+            self.emit_fusion_phase(FusionPhase::Planning)?;
+        }
 
         let result = async {
             self.try_auto_compact().await?;
             self.run_loop().await
         }
         .await;
+
+        if let Some(state) = self.fusion_state.as_mut() {
+            match &result {
+                Err(AgentError::Cancelled) => {
+                    if let Err(error) = state.cancel() {
+                        warn!(?error, "fusion: failed to mark run cancelled");
+                    }
+                }
+                Err(_) => {
+                    if let Err(error) = state.fail() {
+                        warn!(?error, "fusion: failed to mark run failed");
+                    }
+                }
+                Ok(()) => {}
+            }
+            if matches!(&result, Err(AgentError::Cancelled)) && self.fusion_state.is_some() {
+                self.emit_fusion_phase(FusionPhase::Cancelled)?;
+            } else if result.is_err() && self.fusion_state.is_some() {
+                self.emit_fusion_phase(FusionPhase::Failed)?;
+            }
+        }
 
         if matches!(result, Err(AgentError::Cancelled)) {
             if self
@@ -426,12 +454,14 @@ impl<'h> Agent<'h> {
             if let Some(max) = self.config.max_turns
                 && self.num_turns >= max
             {
+                self.complete_fusion_phase()?;
                 self.emit_done(None)?;
                 return Ok(());
             }
             match self.turn().await? {
                 TurnOutcome::Continue => {}
                 TurnOutcome::Done(stop_reason) => {
+                    self.complete_fusion_phase()?;
                     self.emit_done(stop_reason)?;
                     return Ok(());
                 }
@@ -455,7 +485,7 @@ impl<'h> Agent<'h> {
             event_tx: &self.event_tx,
             cancel: &self.cancel,
             opts,
-            session_id: self.session_id.as_ref(),
+            session_id: self.identity.as_ref().map(SessionIdentity::session_id),
         })
         .await
     }
@@ -483,13 +513,16 @@ impl<'h> Agent<'h> {
             tool: ToolKey::native(HISTORY_REPLAY_TOOL),
             scopes: vec![scope.clone()],
         })?;
-        let response = self.cancel.race(response_rx.recv_async()).await;
+        let response = self
+            .cancel
+            .race(response_rx.recv_async())
+            .await
+            .map_err(|_| AgentError::Cancelled)?;
         drop(response_rx);
-        let approved = response
-            .ok()
-            .and_then(Result::ok)
-            .and_then(|answer| PermissionAnswer::decode(&answer))
-            .is_some_and(|answer| answer.is_allow());
+        let answer = response.map_err(|error| AgentError::Config {
+            message: format!("{HISTORY_REPLAY_CHANNEL_CLOSED_MESSAGE}: {error}"),
+        })?;
+        let approved = PermissionAnswer::decode(&answer).is_some_and(|answer| answer.is_allow());
         if approved {
             Ok(())
         } else {
@@ -499,19 +532,71 @@ impl<'h> Agent<'h> {
         }
     }
 
+    async fn approve_ambiguous_request_replay(
+        &self,
+        metadata: Option<&RequestDeliveryMetadata>,
+    ) -> Result<bool, AgentError> {
+        if self.permissions.is_yolo() {
+            return Ok(true);
+        }
+        let Some(response_rx) = self.user_response_rx.as_deref() else {
+            return Ok(false);
+        };
+        let response_rx = response_rx.lock().await;
+        self.event_tx.send(AgentEvent::PermissionRequest {
+            id: AMBIGUOUS_REPLAY_PERMISSION_ID.to_string(),
+            tool: ToolKey::native(AMBIGUOUS_REPLAY_TOOL),
+            scopes: vec![ambiguous_request_replay_scope(metadata)],
+        })?;
+        let response = self
+            .cancel
+            .race(response_rx.recv_async())
+            .await
+            .map_err(|_| AgentError::Cancelled)?;
+        drop(response_rx);
+        let answer = response.map_err(|error| AgentError::Config {
+            message: format!("{AMBIGUOUS_REPLAY_CHANNEL_CLOSED_MESSAGE}: {error}"),
+        })?;
+        Ok(PermissionAnswer::decode(&answer).is_some_and(|answer| answer.is_allow()))
+    }
+
     async fn turn(&mut self) -> Result<TurnOutcome, AgentError> {
         if self.cancel.is_cancelled() || !self.commit_pre_dispatch() {
             return Err(AgentError::Cancelled);
         }
-        let initial = self.stream_response(self.opts).await;
-        let response = match initial {
-            Err(AgentError::HistoryReplayRequired { reason }) => {
-                self.approve_history_replay(reason).await?;
-                let mut approved_opts = self.opts;
-                approved_opts.allow_history_replay = true;
-                self.stream_response(approved_opts).await
+        let mut opts = self.opts.clone();
+        let mut approved_history_replay = false;
+        let mut approved_ambiguous_replay = false;
+        let response = loop {
+            match self.stream_response(opts.clone()).await {
+                Err(AgentError::HistoryReplayRequired { reason }) if !approved_history_replay => {
+                    self.approve_history_replay(reason).await?;
+                    approved_history_replay = true;
+                    opts.allow_history_replay = true;
+                }
+                Err(error @ AgentError::RequestSent { .. }) if !approved_ambiguous_replay => {
+                    let metadata = match &error {
+                        AgentError::RequestSent { metadata, .. } => metadata.as_ref(),
+                        _ => None,
+                    };
+                    if !self.approve_ambiguous_request_replay(metadata).await? {
+                        break Err(error);
+                    }
+                    self.event_tx.send(AgentEvent::Retry {
+                        attempt: 1,
+                        message: AMBIGUOUS_REPLAY_RESET_MESSAGE.into(),
+                        delay_ms: 0,
+                    })?;
+                    warn!(
+                        delivery_phase = ?metadata.map(|metadata| metadata.phase),
+                        response_id_present = metadata.is_some_and(|metadata| metadata.response_id.is_some()),
+                        output_emitted = metadata.is_some_and(|metadata| metadata.emitted_event),
+                        "replaying ambiguous provider request after approval"
+                    );
+                    approved_ambiguous_replay = true;
+                }
+                result => break result,
             }
-            result => result,
         };
         let response = match response {
             Ok(r) => {
@@ -565,6 +650,7 @@ impl<'h> Agent<'h> {
             {
                 state.observe_tool_results(&tool_results);
             }
+            self.handle_fusion_results(&tool_results)?;
             self.apply_skill_policy_from_results(&tool_results);
             if self.apply_tool_search_results(&tool_results) {
                 self.rebuild_tools();
@@ -652,6 +738,12 @@ impl<'h> Agent<'h> {
         if has_tools {
             Ok(TurnOutcome::Continue)
         } else {
+            if let Some(state) = self.fusion_state.as_mut()
+                && !state.phase().is_terminal()
+                && let Err(error) = state.transition(FusionPhase::Complete)
+            {
+                warn!(?error, "fusion: failed to mark run complete");
+            }
             Ok(TurnOutcome::Done(stop_reason))
         }
     }
@@ -687,7 +779,9 @@ impl<'h> Agent<'h> {
         if self.config.fusion.enabled
             && let Some(state) = self.fusion_state.as_mut()
         {
-            state.record_lane_usage(state.lane, usage, cost);
+            // The main agent always runs the lead wire model/provider; sidekick
+            // costs are recorded from fusion_delegate telemetry instead.
+            state.record_lane_usage(FusionLane::Lead, usage, cost);
         }
         self.total_usage += usage;
         self.total_cost += cost;
@@ -729,6 +823,14 @@ impl<'h> Agent<'h> {
         self.post_tool_empty_retried = false;
         self.thinking_empty_retried = false;
         let ctx = self.tool_context();
+        let fusion = self
+            .fusion_state
+            .as_ref()
+            .map(|state| tool_dispatch::FusionDispatchAuth {
+                phase: state.phase(),
+                lane: state.lane(),
+                classification: state.request_kind(),
+            });
         tool_dispatch::process_tool_calls(
             response,
             &mut self.recent_calls,
@@ -736,8 +838,99 @@ impl<'h> Agent<'h> {
             self.history,
             &self.event_tx,
             &ctx,
+            fusion,
         )
         .await
+    }
+
+    fn emit_fusion_phase(&self, phase: FusionPhase) -> Result<(), AgentError> {
+        self.event_tx
+            .send(AgentEvent::FusionPhase { phase, label: None })
+    }
+
+    fn complete_fusion_phase(&mut self) -> Result<(), AgentError> {
+        let Some(state) = self.fusion_state.as_mut() else {
+            return Ok(());
+        };
+        if !state.phase().is_terminal()
+            && let Err(error) = state.transition(FusionPhase::Complete)
+        {
+            warn!(?error, "fusion: failed to mark run complete");
+        }
+        self.emit_fusion_phase(FusionPhase::Complete)
+    }
+
+    fn handle_fusion_results(&mut self, results: &[ToolDoneEvent]) -> Result<(), AgentError> {
+        let Some(result) = results.iter().find(|result| {
+            &*result.tool == crate::fusion::FUSION_DELEGATE_TOOL
+                && result.output.as_text() != crate::fusion::FUSION_DELEGATE_BLOCKED
+        }) else {
+            return Ok(());
+        };
+        let Some(state) = self.fusion_state.as_mut() else {
+            return Ok(());
+        };
+        if let Err(error) = state.transition(FusionPhase::Executing) {
+            warn!(?error, "fusion: rejected delegation transition");
+            return Ok(());
+        }
+        self.emit_fusion_phase(FusionPhase::Executing)?;
+
+        if result.is_error {
+            let failure = fusion_failure_from_result(result);
+            if let Some(state) = self.fusion_state.as_mut()
+                && let Err(error) = state.delegate_failed(failure)
+            {
+                warn!(?error, ?failure, "fusion: rejected fallback transition");
+                return Ok(());
+            }
+            self.history
+                .push(Message::synthetic(FUSION_FALLBACK_PROMPT.into()));
+            self.emit_fusion_phase(FusionPhase::LeadFallback)?;
+        } else {
+            if let Some(state) = self.fusion_state.as_mut()
+                && let Err(error) = state.transition(FusionPhase::Reviewing)
+            {
+                warn!(?error, "fusion: rejected review transition");
+                return Ok(());
+            }
+            self.history
+                .push(Message::synthetic(FUSION_REVIEW_PROMPT.into()));
+            self.emit_fusion_phase(FusionPhase::Reviewing)?;
+        }
+        Ok(())
+    }
+
+    fn effective_tool_filter(&self) -> ToolFilter {
+        let Some(mcp) = self.mcp.as_ref() else {
+            return self.tool_filter.clone();
+        };
+        let mut filter = self.tool_filter.clone();
+        let tool_search = crate::mcp::TOOL_SEARCH_TOOL_NAME;
+        if crate::tools::is_tool_enabled(&self.config.disabled_tools, tool_search) {
+            if !filter.matches(tool_search) {
+                filter = filter.including([tool_search.to_owned()]);
+            }
+        } else {
+            filter = filter.excluding(&[tool_search]);
+        }
+        if !self.allow_dynamic_mcp_tools {
+            return filter;
+        }
+        let capability_exclusions = crate::tools::capability_exclusions(&self.model);
+        let mut definitions = Value::Array(Vec::new());
+        mcp.extend_tools(&mut definitions);
+        let names = definitions
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|definition| definition.get("name").and_then(Value::as_str))
+            .filter(|name| {
+                crate::tools::is_tool_enabled(&self.config.disabled_tools, name)
+                    && !capability_exclusions.contains(name)
+            })
+            .map(str::to_owned);
+        filter.including(names)
     }
 
     fn tool_context(&self) -> ToolContext {
@@ -759,13 +952,15 @@ impl<'h> Agent<'h> {
             openai_options: self.openai_options,
             file_tracker: Arc::clone(&self.file_tracker),
             prompt_slots: Arc::clone(&self.prompt_slots),
-            opts: self.opts,
+            opts: self.opts.clone(),
             subagent_cancels: Arc::clone(&self.subagent_cancels),
+            identity: self.identity.clone(),
             registry: Arc::clone(&self.registry),
             workflow: self.workflow,
             audience: self.audience,
             local_tools: Arc::clone(&self.local_tools),
             active_skill_policy: self.active_skill_policy.clone(),
+            tool_filter: self.effective_tool_filter(),
             live_sink: None,
         }
     }
@@ -783,8 +978,9 @@ impl<'h> Agent<'h> {
 
     fn rebuild_tools(&mut self) {
         let vars = crate::template::env_vars();
+        let effective_filter = self.effective_tool_filter();
         let ctx = crate::tools::DescriptionContext {
-            filter: &self.tool_filter,
+            filter: &effective_filter,
             audience: self.audience,
             workflow: self.workflow,
         };
@@ -797,7 +993,7 @@ impl<'h> Agent<'h> {
         if let Some(mcp) = &self.mcp {
             mcp.extend_tools(&mut tools);
         }
-        filter_tools_for_mode(&mut tools, &self.mode);
+        filter_provider_tools(&mut tools, &effective_filter, &self.mode);
         self.tools = tools;
     }
 
@@ -876,100 +1072,17 @@ impl<'h> Agent<'h> {
     }
 
     fn apply_fusion_route(&mut self, route: FusionRoute) {
-        let Some(lead) = self.lead_model.as_ref() else {
+        if self.fusion_state.is_none() {
             return;
-        };
-        match route {
-            FusionRoute::Stay(_) => {}
-            FusionRoute::EscalateToLead | FusionRoute::Switch(FusionLane::Lead) => {
-                if let Some(provider) = self.lead_provider.as_ref() {
-                    self.provider = Arc::clone(provider);
-                    self.model = Arc::clone(lead);
-                } else {
-                    let spec = lead.spec();
-                    let mut model = match Model::from_spec(&spec) {
-                        Ok(model) => model,
-                        Err(e) => {
-                            warn!(
-                                error = %e,
-                                spec = %spec,
-                                "fusion: failed to resolve lead model spec, keeping current provider/model"
-                            );
-                            return;
-                        }
-                    };
-                    let provider = match n00n_providers::provider::from_model_with_openai_options(
-                        &mut model,
-                        self.timeouts,
-                        self.openai_options,
-                    ) {
-                        Ok(provider) => provider,
-                        Err(e) => {
-                            warn!(
-                                error = %e,
-                                spec = %spec,
-                                "fusion: failed to build provider for lead model, keeping current provider/model"
-                            );
-                            return;
-                        }
-                    };
-                    self.provider = Arc::from(provider);
-                    self.model = Arc::new(model);
-                }
-                if let Some(state) = self.fusion_state.as_mut() {
-                    state.lane = FusionLane::Lead;
-                }
-                self.apply_fusion_lane_context(FusionLane::Lead);
-                info!(model = %self.model.id, "fusion: escalated to lead lane");
-            }
-            FusionRoute::Switch(FusionLane::Sidekick) => {
-                let tier = tier_to_model_tier(self.config.fusion.sidekick_tier);
-                let spec = match n00n_providers::model_registry::model_registry().read() {
-                    Ok(registry) => registry.spec_for_tier_any(tier),
-                    Err(e) => {
-                        warn!(
-                            error = ?e,
-                            ?tier,
-                            "fusion: model registry lock poisoned, cannot resolve sidekick"
-                        );
-                        return;
-                    }
-                };
-                let Some(spec) = spec else {
-                    warn!(?tier, "fusion: no model for sidekick tier");
-                    return;
-                };
-                let mut model = match Model::from_spec(&spec) {
-                    Ok(model) => model,
-                    Err(e) => {
-                        warn!(error = %e, spec = %spec, "fusion: invalid sidekick model spec");
-                        return;
-                    }
-                };
-                let provider = match n00n_providers::provider::from_model_with_openai_options(
-                    &mut model,
-                    self.timeouts,
-                    self.openai_options,
-                ) {
-                    Ok(provider) => provider,
-                    Err(e) => {
-                        warn!(
-                            error = %e,
-                            spec = %spec,
-                            "fusion: failed to build provider for sidekick model, keeping current provider/model"
-                        );
-                        return;
-                    }
-                };
-                self.provider = Arc::from(provider);
-                self.model = Arc::new(model);
-                if let Some(state) = self.fusion_state.as_mut() {
-                    state.record_delegation();
-                }
-                self.apply_fusion_lane_context(FusionLane::Sidekick);
-                info!(model = %self.model.id, "fusion: switched to sidekick lane");
-            }
         }
+        let lane = match route {
+            FusionRoute::EscalateToLead => FusionLane::Lead,
+            FusionRoute::Stay(lane) | FusionRoute::Switch(lane) => lane,
+        };
+        if let Some(state) = self.fusion_state.as_mut() {
+            state.set_lane(lane);
+        }
+        self.apply_fusion_lane_context(lane);
     }
 
     fn apply_fusion_lane_context(&mut self, lane: FusionLane) {
@@ -1004,7 +1117,7 @@ impl<'h> Agent<'h> {
             &self.event_tx,
             &self.cancel,
             CompactionTrigger::Auto,
-            self.session_id.as_ref(),
+            self.identity.as_ref().map(SessionIdentity::session_id),
             &cwd,
             None,
         )
@@ -1024,11 +1137,18 @@ impl<'h> Agent<'h> {
             }
         }
         self.rollback_len = Some(self.history.len());
-        self.event_tx.send(AgentEvent::CompactionDone)?;
         self.history
             .push(Message::synthetic(CONTINUE_AFTER_COMPACT.into()));
         self.context_size = estimate_message_tokens(self.history.as_slice(), &self.model.id)
             .saturating_add(estimate_tool_tokens(&self.tools, &self.model.id));
+        self.event_tx
+            .send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
+                message: Message::assistant(summary),
+                usage,
+                model: self.model.id.clone(),
+                context_size: Some(self.context_size),
+            })))?;
+        self.event_tx.send(AgentEvent::CompactionDone)?;
         Ok(())
     }
 
@@ -1052,6 +1172,9 @@ impl<'h> Agent<'h> {
                         self.history.push(msg);
                     }
                     self.mode = Arc::new(input.mode);
+                    if let Some(state) = self.fusion_state.as_mut() {
+                        state.set_request_kind(crate::fusion::classify_delegation(&input.message));
+                    }
                     let display = input.message;
                     if input.control {
                         let wrapped = format!(
@@ -1075,6 +1198,19 @@ impl<'h> Agent<'h> {
     }
 }
 
+fn fusion_failure_from_result(result: &ToolDoneEvent) -> FusionFailure {
+    let message = result.output.as_text().to_ascii_lowercase();
+    if message.contains("timeout") || message.contains("timed out") {
+        FusionFailure::Timeout
+    } else if message.contains("model unavailable") {
+        FusionFailure::ModelUnavailable
+    } else if message.contains("cancel") {
+        FusionFailure::DelegateCancelled
+    } else {
+        FusionFailure::ToolError
+    }
+}
+
 fn validate_input_message(input: &AgentInput) -> Result<(), AgentError> {
     if input.message.trim().is_empty() && input.images.is_empty() {
         return Err(AgentError::Config {
@@ -1082,6 +1218,28 @@ fn validate_input_message(input: &AgentInput) -> Result<(), AgentError> {
         });
     }
     Ok(())
+}
+
+fn ambiguous_request_replay_scope(metadata: Option<&RequestDeliveryMetadata>) -> String {
+    let phase = match metadata.map(|metadata| metadata.phase) {
+        Some(RequestDeliveryPhase::NotSent) => "not sent",
+        Some(RequestDeliveryPhase::SentAwaitingAcceptance) => "sent; acceptance unknown",
+        Some(RequestDeliveryPhase::Accepted) => "accepted",
+        None => "delivery unknown",
+    };
+    let response_id = metadata
+        .and_then(|metadata| metadata.response_id.as_deref())
+        .map_or("unknown", |_| "known");
+    let output = metadata.map_or("unknown", |metadata| {
+        if metadata.emitted_event {
+            "already emitted"
+        } else {
+            "not observed"
+        }
+    });
+    format!(
+        "Replay one provider request ({phase}; response ID {response_id}; output {output}). This may duplicate output or charges"
+    )
 }
 
 fn history_replay_scope(
@@ -1149,6 +1307,12 @@ pub fn estimate_message_tokens(messages: &[Message], model_id: &str) -> u32 {
             }
             ContentBlock::ToolUse { input, .. } => count_json_with_tokenizer(tokenizer, input),
             ContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE,
+            ContentBlock::File { source } => source
+                .file_data
+                .as_ref()
+                .map_or(IMAGE_TOKEN_ESTIMATE, |data| {
+                    count_tokens_with_tokenizer(tokenizer, data)
+                }),
         })
         .sum();
     u32_from_usize_saturating(total)
@@ -1173,6 +1337,7 @@ mod tests {
         ContentBlock, ImageMediaType, ImageSource, Message, Model, ProviderEvent, RequestOptions,
         Role, StopReason, StreamResponse, TokenUsage,
     };
+
     use n00n_storage::sessions::TranscriptEntry;
     use serde_json::Value;
     use test_case::test_case;
@@ -1199,6 +1364,74 @@ mod tests {
             .filter_map(|definition| definition["name"].as_str())
             .collect();
         assert_eq!(names, ["codegraph", "server__search"]);
+    }
+
+    #[test]
+    fn dynamic_mcp_filter_includes_tool_search_with_mcp() {
+        let mut history = History::new(Vec::new());
+        let (mut agent, _) = make_agent(MockProvider::new(Vec::new()), &mut history);
+        let mcp = crate::mcp::stub_session(&[("srv.fetch_issue", "Fetch a GitHub issue")]);
+        agent.tool_filter = ToolFilter::Only(vec!["read".into()]);
+        agent = agent.with_mcp(Some(mcp)).with_dynamic_mcp_tools(false);
+
+        let effective_filter = agent.effective_tool_filter();
+        assert!(effective_filter.matches("tool_search"));
+        assert!(effective_filter.matches("read"));
+        assert!(!effective_filter.matches("write"));
+        assert!(!effective_filter.matches("srv__fetch_issue"));
+    }
+
+    #[test]
+    fn dynamic_mcp_filter_keeps_disabled_tool_search_blocked() {
+        let mut history = History::new(Vec::new());
+        let (mut agent, _) = make_agent(MockProvider::new(Vec::new()), &mut history);
+        let mcp = crate::mcp::stub_session(&[("srv.fetch_issue", "Fetch a GitHub issue")]);
+        let mut config = (*agent.config).clone();
+        config
+            .disabled_tools
+            .push(crate::mcp::TOOL_SEARCH_TOOL_NAME.into());
+        agent.config = Arc::new(config);
+        agent = agent.with_mcp(Some(mcp)).with_dynamic_mcp_tools(true);
+
+        assert!(!agent.effective_tool_filter().matches("tool_search"));
+    }
+
+    #[test]
+    fn dynamic_mcp_filter_keeps_disabled_tools_blocked() {
+        const DISABLED_MCP_TOOL: &str = "srv__fetch_issue";
+
+        let mut history = History::new(Vec::new());
+        let (mut agent, _) = make_agent(MockProvider::new(Vec::new()), &mut history);
+        let mcp = crate::mcp::stub_session(&[("srv.fetch_issue", "Fetch a GitHub issue")]);
+        let mut config = (*agent.config).clone();
+        config.disabled_tools.push(DISABLED_MCP_TOOL.into());
+        agent.config = Arc::new(config);
+        agent.tool_filter = ToolFilter::Only(vec![crate::mcp::TOOL_SEARCH_TOOL_NAME.into()]);
+        agent = agent
+            .with_mcp(Some(mcp.clone()))
+            .with_dynamic_mcp_tools(true);
+
+        mcp.search_tools("issue").unwrap();
+
+        assert!(!agent.effective_tool_filter().matches(DISABLED_MCP_TOOL));
+    }
+
+    #[test]
+    fn dynamic_mcp_filter_includes_loaded_tools_with_flag() {
+        let mut history = History::new(Vec::new());
+        let (mut agent, _) = make_agent(MockProvider::new(Vec::new()), &mut history);
+        let mcp = crate::mcp::stub_session(&[("srv.fetch_issue", "Fetch a GitHub issue")]);
+        agent.tool_filter = ToolFilter::Only(vec!["read".into()]);
+        agent = agent
+            .with_mcp(Some(mcp.clone()))
+            .with_dynamic_mcp_tools(true);
+
+        mcp.search_tools("issue").unwrap();
+        let effective_filter = agent.effective_tool_filter();
+        assert!(effective_filter.matches("tool_search"));
+        assert!(effective_filter.matches("srv__fetch_issue"));
+        assert!(effective_filter.matches("read"));
+        assert!(!effective_filter.matches("write"));
     }
 
     #[test]
@@ -1269,6 +1502,16 @@ mod tests {
     }
 
     #[test]
+    fn ambiguous_replay_cancellation_is_not_a_denial() {
+        smol::block_on(async {
+            let (trigger, cancel) = CancelToken::new();
+            trigger.cancel();
+            let result = cancel.race(async { Ok::<_, ()>(()) }).await;
+            assert_eq!(result, Err("cancelled".into()));
+        });
+    }
+
+    #[test]
     fn history_replay_accepts_explicit_user_approval() {
         smol::block_on(async {
             let mut history = History::new(vec![Message::user("restored".into())]);
@@ -1295,6 +1538,211 @@ mod tests {
     }
 
     #[test]
+    fn history_replay_propagates_closed_approval_channel() {
+        smol::block_on(async {
+            let mut history = History::new(vec![Message::user("restored".into())]);
+            let (agent, _event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
+            let (response_tx, response_rx) = flume::unbounded::<String>();
+            drop(response_tx);
+            let agent = agent.with_user_response_rx(Arc::new(async_lock::Mutex::new(response_rx)));
+
+            let error = agent
+                .approve_history_replay(HistoryReplayReason::ContinuationNotFound)
+                .await
+                .unwrap_err();
+
+            assert!(matches!(
+                error,
+                AgentError::Config { message }
+                    if message.contains(HISTORY_REPLAY_CHANNEL_CLOSED_MESSAGE)
+            ));
+        });
+    }
+
+    #[test]
+    fn ambiguous_request_replay_requires_an_interactive_approval_channel() {
+        smol::block_on(async {
+            let mut history = History::new(Vec::new());
+            let (agent, _) = make_agent(MockProvider::new(Vec::new()), &mut history);
+            let metadata = RequestDeliveryMetadata {
+                phase: RequestDeliveryPhase::SentAwaitingAcceptance,
+                response_id: None,
+                idempotency_key: None,
+                close_code: None,
+                close_reason: None,
+                emitted_event: false,
+            };
+
+            assert!(
+                !agent
+                    .approve_ambiguous_request_replay(Some(&metadata))
+                    .await
+                    .unwrap()
+            );
+        });
+    }
+
+    #[test]
+    fn ambiguous_request_replay_propagates_closed_approval_channel() {
+        smol::block_on(async {
+            let mut history = History::new(Vec::new());
+            let (agent, _event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
+            let (response_tx, response_rx) = flume::unbounded::<String>();
+            drop(response_tx);
+            let agent = agent.with_user_response_rx(Arc::new(async_lock::Mutex::new(response_rx)));
+
+            let error = agent
+                .approve_ambiguous_request_replay(None)
+                .await
+                .unwrap_err();
+
+            assert!(matches!(
+                error,
+                AgentError::Config { message }
+                    if message.contains(AMBIGUOUS_REPLAY_CHANNEL_CLOSED_MESSAGE)
+            ));
+        });
+    }
+
+    #[test]
+    fn ambiguous_request_replay_accepts_explicit_user_approval() {
+        smol::block_on(async {
+            let mut history = History::new(Vec::new());
+            let (agent, event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
+            let (response_tx, response_rx) = flume::unbounded();
+            let agent = agent.with_user_response_rx(Arc::new(async_lock::Mutex::new(response_rx)));
+            response_tx
+                .send(PermissionAnswer::AllowOnce.encode())
+                .unwrap();
+            let metadata = RequestDeliveryMetadata {
+                phase: RequestDeliveryPhase::SentAwaitingAcceptance,
+                response_id: None,
+                idempotency_key: None,
+                close_code: None,
+                close_reason: None,
+                emitted_event: false,
+            };
+
+            assert!(
+                agent
+                    .approve_ambiguous_request_replay(Some(&metadata))
+                    .await
+                    .unwrap()
+            );
+
+            let event = event_rx.recv().unwrap();
+            assert!(matches!(
+                event.event,
+                AgentEvent::PermissionRequest { tool, scopes, .. }
+                    if tool == ToolKey::native(AMBIGUOUS_REPLAY_TOOL)
+                        && scopes[0].contains("duplicate output or charges")
+            ));
+        });
+    }
+
+    #[test]
+    fn approved_ambiguous_request_is_replayed_once() {
+        smol::block_on(async {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let provider = AmbiguousProvider {
+                calls: Arc::clone(&calls),
+                failures: 1,
+            };
+            let mut history = History::new(Vec::new());
+            let (mut agent, event_rx) = make_agent_with_registry(
+                provider,
+                &mut history,
+                AgentConfig::default(),
+                Arc::new(ToolRegistry::new()),
+            );
+            let (response_tx, response_rx) = flume::unbounded();
+            response_tx
+                .send(PermissionAnswer::AllowOnce.encode())
+                .unwrap();
+            agent = agent.with_user_response_rx(Arc::new(async_lock::Mutex::new(response_rx)));
+
+            agent.run(default_input()).await.unwrap();
+
+            assert_eq!(calls.load(Ordering::Relaxed), 2);
+            let events = drain_events(&event_rx);
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(
+                        event.event,
+                        AgentEvent::PermissionRequest { ref tool, .. }
+                            if *tool == ToolKey::native(AMBIGUOUS_REPLAY_TOOL)
+                    ))
+                    .count(),
+                1
+            );
+            let stale_index = events
+                .iter()
+                .position(|event| {
+                    matches!(
+                        &event.event,
+                        AgentEvent::TextDelta { text } if text == "stale"
+                    )
+                })
+                .unwrap();
+            let reset_index = events
+                .iter()
+                .position(|event| {
+                    matches!(
+                        &event.event,
+                        AgentEvent::Retry {
+                            attempt: 1,
+                            message,
+                            delay_ms: 0,
+                        } if message == AMBIGUOUS_REPLAY_RESET_MESSAGE
+                    )
+                })
+                .unwrap();
+            assert!(stale_index < reset_index);
+        });
+    }
+
+    #[test]
+    fn ambiguous_request_is_not_replayed_twice() {
+        smol::block_on(async {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let provider = AmbiguousProvider {
+                calls: Arc::clone(&calls),
+                failures: 2,
+            };
+            let mut history = History::new(Vec::new());
+            let (mut agent, event_rx) = make_agent_with_registry(
+                provider,
+                &mut history,
+                AgentConfig::default(),
+                Arc::new(ToolRegistry::new()),
+            );
+            let (response_tx, response_rx) = flume::unbounded();
+            response_tx
+                .send(PermissionAnswer::AllowOnce.encode())
+                .unwrap();
+            agent = agent.with_user_response_rx(Arc::new(async_lock::Mutex::new(response_rx)));
+
+            let error = agent.run(default_input()).await.unwrap_err();
+
+            assert!(matches!(error, AgentError::RequestSent { .. }));
+            assert_eq!(calls.load(Ordering::Relaxed), 2);
+            let events = drain_events(&event_rx);
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(
+                        event.event,
+                        AgentEvent::PermissionRequest { ref tool, .. }
+                            if *tool == ToolKey::native(AMBIGUOUS_REPLAY_TOOL)
+                    ))
+                    .count(),
+                1
+            );
+        });
+    }
+
+    #[test]
     fn context_size_additions_use_saturating_add() {
         let context_size: u32 = u32::MAX - 100;
         let additional: u32 = 200;
@@ -1312,6 +1760,9 @@ mod tests {
                     source: ImageSource {
                         media_type: ImageMediaType::Png,
                         data: Arc::from("data"),
+                        detail: None,
+                        file_id: None,
+                        url: None,
                     },
                 },
             ],
@@ -1322,6 +1773,67 @@ mod tests {
             tokens >= u32_from_usize_saturating(IMAGE_TOKEN_ESTIMATE),
             "image blocks should add {IMAGE_TOKEN_ESTIMATE} tokens"
         );
+    }
+
+    #[test]
+    fn estimate_message_tokens_counts_inline_file_data() {
+        let messages = vec![Message {
+            role: Role::User,
+            content: vec![ContentBlock::File {
+                source: n00n_providers::FileSource {
+                    file_data: Some("large inline attachment ".repeat(500)),
+                    ..Default::default()
+                },
+            }],
+            ..Default::default()
+        }];
+        let tokens = estimate_message_tokens(&messages, "");
+        assert!(tokens > u32_from_usize_saturating(IMAGE_TOKEN_ESTIMATE));
+    }
+
+    struct AmbiguousProvider {
+        calls: Arc<AtomicUsize>,
+        failures: usize,
+    }
+
+    impl Provider for AmbiguousProvider {
+        fn stream_message<'a>(
+            &'a self,
+            _: &'a Model,
+            _: &'a [Message],
+            _: &'a System,
+            _: &'a Value,
+            event_tx: &'a flume::Sender<ProviderEvent>,
+            _: RequestOptions,
+            _: Option<&'a SessionRef>,
+        ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
+            Box::pin(async {
+                let call = self.calls.fetch_add(1, Ordering::Relaxed);
+                if call < self.failures {
+                    event_tx
+                        .send(ProviderEvent::TextDelta {
+                            text: "stale".into(),
+                        })
+                        .unwrap();
+                    return Err(AgentError::RequestSent {
+                        message: "WebSocket connection reset".into(),
+                        metadata: Some(RequestDeliveryMetadata {
+                            phase: RequestDeliveryPhase::SentAwaitingAcceptance,
+                            response_id: None,
+                            idempotency_key: None,
+                            close_code: None,
+                            close_reason: None,
+                            emitted_event: true,
+                        }),
+                    });
+                }
+                Ok(text_response(StopReason::EndTurn))
+            })
+        }
+
+        fn list_models(&self) -> BoxFuture<'_, Result<Vec<n00n_providers::ModelInfo>, AgentError>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
     }
 
     #[test]
@@ -1486,12 +1998,21 @@ mod tests {
         provider: MockProvider,
         history: &mut History,
     ) -> (Agent<'_>, flume::Receiver<Envelope>) {
+        make_agent_with_config(provider, history, AgentConfig::default())
+    }
+
+    fn make_agent_with_registry<P: Provider + 'static>(
+        provider: P,
+        history: &mut History,
+        config: AgentConfig,
+        registry: Arc<crate::tools::ToolRegistry>,
+    ) -> (Agent<'_>, flume::Receiver<Envelope>) {
         let (raw_tx, event_rx) = flume::unbounded();
         let agent = Agent::new(
             AgentParams {
                 provider: Arc::new(provider),
                 model: default_model(),
-                config: Arc::new(AgentConfig::default()),
+                config: Arc::new(config),
                 tool_output_lines: ToolOutputLines::default(),
                 permissions: Arc::new(PermissionManager::new(
                     n00n_config::PermissionsConfig {
@@ -1501,13 +2022,14 @@ mod tests {
                     },
                     std::path::PathBuf::from("/tmp"),
                 )),
-                session_id: None,
+                identity: None,
                 timeouts: n00n_providers::Timeouts::default(),
                 openai_options: OpenAiOptions::default(),
                 file_tracker: FileReadTracker::fresh(),
                 prompt_slots: Arc::new(crate::prompt::ResolvedSlots::default()),
+
                 subagent_cancels: Arc::new(crate::cancel::CancelMap::new()),
-                registry: Arc::new(crate::tools::ToolRegistry::new()),
+                registry,
                 audience: ToolAudience::MAIN,
             },
             AgentRunParams {
@@ -1519,6 +2041,19 @@ mod tests {
             },
         );
         (agent, event_rx)
+    }
+
+    fn make_agent_with_config(
+        provider: MockProvider,
+        history: &mut History,
+        config: AgentConfig,
+    ) -> (Agent<'_>, flume::Receiver<Envelope>) {
+        make_agent_with_registry(
+            provider,
+            history,
+            config,
+            Arc::new(crate::tools::ToolRegistry::new()),
+        )
     }
 
     fn default_input() -> AgentInput {
@@ -1574,6 +2109,40 @@ mod tests {
         });
     }
 
+    #[test]
+    fn explicit_base_filter_allows_mcp_tools_loaded_after_search() {
+        let mut history = History::new(Vec::new());
+        let (mut agent, _) = make_agent(MockProvider::new(Vec::new()), &mut history);
+        let mcp = crate::mcp::stub_session(&[("srv.fetch_issue", "Fetch a GitHub issue")]);
+        agent.tool_filter = ToolFilter::Only(vec![
+            "read".into(),
+            crate::mcp::TOOL_SEARCH_TOOL_NAME.into(),
+        ]);
+        agent = agent
+            .with_mcp(Some(mcp.clone()))
+            .with_dynamic_mcp_tools(true);
+
+        assert!(agent.effective_tool_filter().matches("tool_search"));
+        assert!(!agent.effective_tool_filter().matches("write"));
+        assert!(!agent.effective_tool_filter().matches("srv__fetch_issue"));
+
+        mcp.search_tools("issue").unwrap();
+        let effective_filter = agent.effective_tool_filter();
+        let mut definitions = serde_json::json!([
+            {"name": "read"},
+            {"name": "write"},
+            {"name": "srv__fetch_issue"}
+        ]);
+        filter_provider_tools(&mut definitions, &effective_filter, &AgentMode::Build);
+
+        let names: Vec<_> = definitions
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|definition| definition["name"].as_str())
+            .collect();
+        assert_eq!(names, ["read", "srv__fetch_issue"]);
+    }
     fn drain_events(rx: &flume::Receiver<Envelope>) -> Vec<Envelope> {
         let mut events = Vec::new();
         while let Ok(e) = rx.try_recv() {
@@ -1618,7 +2187,16 @@ mod tests {
                 content: vec![ContentBlock::ToolUse {
                     id: tool_id.into(),
                     name: tool_name.into(),
-                    input: serde_json::json!({"pattern": "*.nonexistent_test_xyz", "path": "/tmp"}),
+                    input: if tool_name == "fusion_delegate" {
+                        serde_json::json!({
+                            "description": "Implement parser fix",
+                            "goal": "Implement the parser fix and add focused tests",
+                            "constraints": "Keep the change scoped to parser code",
+                            "definition_of_done": "Run cargo test",
+                        })
+                    } else {
+                        serde_json::json!({"pattern": "*.nonexistent_test_xyz", "path": "/tmp"})
+                    },
                 }],
                 ..Default::default()
             },
@@ -1678,6 +2256,281 @@ mod tests {
         });
     }
 
+    #[test]
+    fn fusion_disabled_preserves_baseline_run_identity_output_and_cost() {
+        smol::block_on(async {
+            let charged = TokenUsage {
+                input: 100,
+                output: 25,
+                cache_creation: 10,
+                cache_read: 5,
+            };
+            let mut response = text_response(StopReason::EndTurn);
+            response.usage = charged;
+            let (provider, requests) = MockProvider::recording(vec![response]);
+            let mut history = History::new(Vec::new());
+            let (mut agent, event_rx) = make_agent(provider, &mut history);
+            let provider_before = Arc::clone(&agent.provider);
+            let model_before = agent.model.id.clone();
+
+            assert!(agent.fusion_state.is_none());
+            assert!(
+                !agent.tools.as_array().unwrap().iter().any(|tool| {
+                    tool.get("name").and_then(Value::as_str) == Some("fusion_delegate")
+                }),
+                "disabled Fusion must not advertise fusion_delegate"
+            );
+
+            agent.run(default_input()).await.unwrap();
+            let expected_cost = charged.cost(&default_model().pricing, false);
+            assert_eq!(requests.lock().unwrap().len(), 1);
+            assert_eq!(agent.model.id, model_before);
+            assert!(Arc::ptr_eq(&agent.provider, &provider_before));
+            assert_eq!(agent.total_usage(), charged);
+            assert!((agent.total_cost() - expected_cost).abs() < COST_EPSILON);
+            assert_eq!(history.len(), 2);
+            assert_eq!(history.as_slice()[1].first_text_content(), Some("response"));
+
+            let events = drain_events(&event_rx);
+            assert!(events.iter().all(|envelope| {
+                !serde_json::to_string(&envelope.event)
+                    .unwrap()
+                    .contains("fusion_phase")
+            }));
+            let done = events
+                .into_iter()
+                .find_map(|envelope| match envelope.event {
+                    AgentEvent::Done { fusion, .. } => Some(fusion),
+                    _ => None,
+                });
+            assert!(matches!(done, Some(None)));
+        });
+    }
+
+    #[test]
+    fn disabled_hallucinated_delegate_is_denied_without_subagent_launch() {
+        smol::block_on(async {
+            let (provider, requests) = MockProvider::recording(vec![
+                tool_call_response("fusion_delegate", "delegate-1"),
+                text_response(StopReason::EndTurn),
+            ]);
+            let mut history = History::new(Vec::new());
+            let (mut agent, _event_rx) = make_agent(provider, &mut history);
+
+            agent.run(default_input()).await.unwrap();
+
+            assert_eq!(requests.lock().unwrap().len(), 2, "lead continues normally");
+            assert!(agent.fusion_state.is_none());
+            drop(agent);
+            let tool_result = history
+                .as_slice()
+                .iter()
+                .flat_map(|message| &message.content)
+                .find_map(|block| match block {
+                    ContentBlock::ToolResult {
+                        content, is_error, ..
+                    } => Some((content, is_error)),
+                    _ => None,
+                })
+                .expect("denial is returned to the lead as a tool result");
+            assert!(*tool_result.1);
+            assert!(
+                tool_result.0.contains("unknown tool")
+                    || tool_result.0.contains("not available")
+                    || tool_result.0.contains("unavailable")
+                    || tool_result.0.contains("disabled"),
+                "unexpected denial: {}",
+                tool_result.0
+            );
+        });
+    }
+
+    fn fusion_enabled_config() -> AgentConfig {
+        let mut config = AgentConfig::default();
+        config.fusion.enabled = true;
+        config
+    }
+
+    fn message_text(messages: &[Message]) -> String {
+        messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } | ContentBlock::ToolResult { content: text, .. } => {
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn fusion_routing_switches_lane_without_replacing_lead_model_or_provider() {
+        let mut history = History::new(Vec::new());
+        let (mut agent, _event_rx) = make_agent_with_config(
+            MockProvider::new(Vec::new()),
+            &mut history,
+            fusion_enabled_config(),
+        );
+        let model_before = agent.model.id.clone();
+        let provider_before = Arc::clone(&agent.provider);
+
+        agent.apply_fusion_route(FusionRoute::Switch(FusionLane::Sidekick));
+
+        assert_eq!(agent.model.id, model_before);
+        assert!(Arc::ptr_eq(&agent.provider, &provider_before));
+        assert_eq!(
+            agent.fusion_state.as_ref().unwrap().lane(),
+            FusionLane::Sidekick
+        );
+    }
+
+    #[test]
+    fn main_agent_usage_is_always_charged_to_lead_lane() {
+        let mut history = History::new(Vec::new());
+        let (mut agent, _event_rx) = make_agent_with_config(
+            MockProvider::new(Vec::new()),
+            &mut history,
+            fusion_enabled_config(),
+        );
+        agent.apply_fusion_route(FusionRoute::Switch(FusionLane::Sidekick));
+        let usage = TokenUsage {
+            input: 10,
+            output: 2,
+            ..Default::default()
+        };
+        agent.record_usage(usage, 0.25);
+        let state = agent.fusion_state.as_ref().unwrap();
+        assert_eq!(state.lead_usage, usage);
+        assert!((state.lead_cost - 0.25).abs() < COST_EPSILON);
+        assert_eq!(state.sidekick_usage, TokenUsage::default());
+        assert!(state.sidekick_cost.abs() < COST_EPSILON);
+    }
+
+    #[test]
+    fn successful_delegate_is_followed_by_exactly_one_lead_review_turn() {
+        smol::block_on(async {
+            let (provider, requests) = MockProvider::recording(vec![
+                tool_call_response("fusion_delegate", "delegate-1"),
+                text_response(StopReason::EndTurn),
+            ]);
+            let calls = Arc::new(AtomicUsize::new(0));
+            let call_counter = Arc::clone(&calls);
+            let mut local = std::collections::HashMap::new();
+            local.insert(
+                "fusion_delegate".to_owned(),
+                Arc::new(move |_: &Value| {
+                    call_counter.fetch_add(1, Ordering::Relaxed);
+                    Ok("sidekick completed".to_owned())
+                }) as crate::tools::LocalToolFn,
+            );
+            let mut history = History::new(Vec::new());
+            let (agent, event_rx) =
+                make_agent_with_config(provider, &mut history, fusion_enabled_config());
+            let mut agent = agent.with_local_tools(Arc::new(local));
+            let mut input = default_input();
+            input.message = "grep for TODO markers".into();
+
+            agent.run(input).await.unwrap();
+
+            assert_eq!(calls.load(Ordering::Relaxed), 1);
+            let requests = requests.lock().unwrap();
+            assert_eq!(requests.len(), 2, "one delegation turn and one review turn");
+            assert!(
+                message_text(&requests[1])
+                    .to_ascii_lowercase()
+                    .contains("review"),
+                "next lead request must contain review instruction: {}",
+                message_text(&requests[1])
+            );
+            assert_eq!(
+                agent.model.id,
+                default_model().id,
+                "lead produces final response"
+            );
+
+            let phases: Vec<_> = drain_events(&event_rx)
+                .into_iter()
+                .filter_map(|envelope| match envelope.event {
+                    AgentEvent::FusionPhase { phase, .. } => Some(phase),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                phases,
+                [
+                    crate::fusion::FusionPhase::Planning,
+                    crate::fusion::FusionPhase::Executing,
+                    crate::fusion::FusionPhase::Reviewing,
+                    crate::fusion::FusionPhase::Complete
+                ]
+            );
+        });
+    }
+
+    #[test_case("generic tool error" ; "generic error")]
+    #[test_case("delegate timed out" ; "timeout")]
+    #[test_case("model unavailable" ; "model unavailable")]
+    #[test_case("delegate cancelled" ; "delegate cancellation")]
+    fn delegate_failure_is_followed_by_exactly_one_lead_fallback(error: &str) {
+        smol::block_on(async {
+            let (provider, requests) = MockProvider::recording(vec![
+                tool_call_response("fusion_delegate", "delegate-1"),
+                text_response(StopReason::EndTurn),
+            ]);
+            let calls = Arc::new(AtomicUsize::new(0));
+            let call_counter = Arc::clone(&calls);
+            let error = error.to_owned();
+            let mut local = std::collections::HashMap::new();
+            local.insert(
+                "fusion_delegate".to_owned(),
+                Arc::new(move |_: &Value| {
+                    call_counter.fetch_add(1, Ordering::Relaxed);
+                    Err(error.clone())
+                }) as crate::tools::LocalToolFn,
+            );
+            let mut history = History::new(Vec::new());
+            let (agent, event_rx) =
+                make_agent_with_config(provider, &mut history, fusion_enabled_config());
+            let mut agent = agent.with_local_tools(Arc::new(local));
+            let mut input = default_input();
+            input.message = "run cargo test".into();
+
+            agent.run(input).await.unwrap();
+
+            assert_eq!(
+                calls.load(Ordering::Relaxed),
+                1,
+                "delegate is never retried"
+            );
+            let requests = requests.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            assert!(
+                message_text(&requests[1])
+                    .to_ascii_lowercase()
+                    .contains("fallback"),
+                "next lead request must contain fallback instruction: {}",
+                message_text(&requests[1])
+            );
+            let phases: Vec<_> = drain_events(&event_rx)
+                .into_iter()
+                .filter_map(|envelope| match envelope.event {
+                    AgentEvent::FusionPhase { phase, .. } => Some(phase),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                phases,
+                [
+                    crate::fusion::FusionPhase::Planning,
+                    crate::fusion::FusionPhase::Executing,
+                    crate::fusion::FusionPhase::LeadFallback,
+                    crate::fusion::FusionPhase::Complete
+                ]
+            );
+        });
+    }
     #[test]
     fn charged_usage_survives_event_delivery_failure() {
         smol::block_on(async {
@@ -1935,7 +2788,7 @@ mod tests {
                         },
                         std::path::PathBuf::from("/tmp"),
                     )),
-                    session_id: None,
+                    identity: None,
                     timeouts: n00n_providers::Timeouts::default(),
                     openai_options: OpenAiOptions::default(),
                     file_tracker: FileReadTracker::fresh(),

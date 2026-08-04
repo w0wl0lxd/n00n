@@ -305,11 +305,17 @@ impl Provider for Zai {
                 session_id.map(n00n_storage::id::SessionRef::as_str),
                 self.system_prefix.as_deref(),
                 opts.message_cache_breakpoints,
+                opts.fast,
             );
             if model.supports_thinking() {
-                opts.thinking
-                    .apply_reasoning_effort(&mut body, &dialect::GLM, model);
+                opts.thinking.apply_thinking(
+                    &mut body,
+                    model,
+                    &dialect::GLM,
+                    &super::reasoning_effort_fields(),
+                );
             }
+            super::apply_body_overrides(&mut body, model, &[super::MESSAGES_FIELD]);
             match self
                 .compat
                 .do_stream(model, &[], &body, event_tx, &auth)

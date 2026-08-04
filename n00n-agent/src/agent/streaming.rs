@@ -3,7 +3,7 @@ use n00n_providers::retry::{MAX_RETRIES, RetryState};
 use n00n_providers::{Message, Model, ProviderEvent, RequestOptions, StreamResponse, System};
 use n00n_storage::id::SessionRef;
 use serde_json::Value;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::cancel::CancelToken;
 use crate::{AgentError, AgentEvent, EventSender};
@@ -59,6 +59,7 @@ pub(crate) async fn stream_with_retry(
 ) -> Result<StreamResponse, AgentError> {
     let opts = ctx.opts.clamped(ctx.model);
     let messages = n00n_providers::adapt_images_for_model(ctx.model, ctx.messages);
+    let messages = n00n_providers::adapt_files_for_model(ctx.model, &messages);
     let messages = &*messages;
     let mut retry = RetryState::new();
     loop {
@@ -74,7 +75,7 @@ pub(crate) async fn stream_with_retry(
                 ctx.system,
                 ctx.tools,
                 &ptx,
-                opts,
+                opts.clone(),
                 ctx.session_id,
             ),
             async {
@@ -99,7 +100,7 @@ pub(crate) async fn stream_with_retry(
                     return Err(e);
                 }
                 let delay_ms = u64::try_from(delay.as_millis()).unwrap_or_else(|_| u64::MAX);
-                warn!(attempt, delay_ms, error = %e, "retryable, will retry");
+                info!(attempt, delay_ms, error = %e, "retryable, will retry");
                 ctx.event_tx.send(AgentEvent::Retry {
                     attempt,
                     message: e.retry_message(),
