@@ -1359,6 +1359,9 @@ pass an array to run the program directly with preserved argument quoting:
   - `on_stdout` (`function?`) called with `(job_id, line)` for each stdout line.
   - `on_stderr` (`function?`) called with `(job_id, line)` for each stderr line.
   - `on_exit` (`function?`) called with `(job_id, code)` when the process finishes.
+  - `owner` (`string?`) job lifetime. `"task"` (default) ends the job with
+    the current call. `"plugin"` keeps it alive until the plugin unloads
+    or reloads.
 
 **Returns:** (`integer`) Job id.
 

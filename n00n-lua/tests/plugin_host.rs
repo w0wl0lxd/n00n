@@ -2072,6 +2072,103 @@ fn jobstop_kills_running_job() {
 }
 
 #[test]
+fn plugin_owned_job_outlives_its_starting_tool() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"
+local output = "pending"
+local exit_code = "pending"
+n00n.api.register_tool({{
+    name = "start_plugin_job",
+    description = "starts a plugin-owned job",
+    schema = {MINIMAL_SCHEMA},
+    audiences = {{ "main" }},
+    handler = function()
+        local id = n00n.fn.jobstart("sleep 0.1; printf plugin-output; exit 7", {{
+            owner = "plugin",
+            on_stdout = function(_, line) output = line end,
+            on_exit = function(_, code) exit_code = tostring(code) end,
+        }})
+        return n00n.fn.jobwait(id, 1) == nil and "started" or "did not time out"
+    end,
+}})
+n00n.api.register_tool({{
+    name = "plugin_job_state",
+    description = "reports plugin-owned job callbacks",
+    schema = {MINIMAL_SCHEMA},
+    audiences = {{ "main" }},
+    handler = function()
+        return output .. "/" .. exit_code
+    end,
+}})
+"#
+    );
+    host.load_source("plugin_job", &src).unwrap();
+    assert_eq!(
+        exec_tool(&reg, "start_plugin_job", serde_json::json!({})).unwrap(),
+        "started"
+    );
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let state = exec_tool(&reg, "plugin_job_state", serde_json::json!({})).unwrap();
+        if state == "plugin-output/7" {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "plugin-owned callbacks did not run: {state}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn unloading_plugin_kills_its_jobs() {
+    use rustix::process::{Pid, test_kill_process_group};
+
+    let host = PluginHost::new(fresh_registry()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let pid_path = dir.path().join("job.pid");
+    let src = format!(
+        r#"n00n.fn.jobstart("printf %s $$ > '{}'; exec sleep 30", {{
+            owner = "plugin",
+        }})"#,
+        pid_path.display()
+    );
+    host.load_source("plugin_job", &src).unwrap();
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !pid_path.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "plugin job did not publish its process id"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let pid = std::fs::read_to_string(&pid_path)
+        .unwrap()
+        .trim()
+        .parse::<i32>()
+        .unwrap();
+    let pid = Pid::from_raw(pid).unwrap();
+    assert!(test_kill_process_group(pid).is_ok());
+
+    host.unload("plugin_job").unwrap();
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while test_kill_process_group(pid).is_ok() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "plugin process group survived unload"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
 fn vm_recovers_after_async_job_tool() {
     let reg = fresh_registry();
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
