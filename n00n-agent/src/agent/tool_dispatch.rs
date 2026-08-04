@@ -99,13 +99,7 @@ fn redact_sensitive_values(s: &str) -> String {
                 cursor += lower[cursor..].len() - lower[cursor..].trim_start().len();
             }
             let delimiter = lower[cursor..].chars().next();
-            if whitespace_separated
-                && !matches!(delimiter, Some('=' | ':'))
-                && matches!(
-                    marker,
-                    "api_key" | "api-key" | "api key" | "token" | "password" | "secret" | "bearer"
-                )
-            {
+            if whitespace_separated && !matches!(delimiter, Some('=' | ':')) {
                 let value_start = cursor;
                 let value_end = lower[value_start..]
                     .find(char::is_whitespace)
