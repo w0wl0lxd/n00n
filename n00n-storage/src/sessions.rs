@@ -51,7 +51,7 @@ const MAX_FIRST_MESSAGE_BYTES: usize = 256 * 1024;
 pub const SESSION_STATE_SCHEMA_VERSION: u32 = 1;
 const MAX_PLUGIN_STATE_ENTRIES: usize = 64;
 const MAX_PLUGIN_STATE_NAME_BYTES: usize = 128;
-const MAX_PLUGIN_STATE_BYTES: usize = 256 * 1024;
+pub const MAX_PLUGIN_STATE_BYTES: usize = 256 * 1024;
 const MAX_SESSION_STATE_BYTES: usize = 1024 * 1024;
 const META_RECORD_PREFIX: &str = r#"{"t":"meta""#;
 const MSG_RECORD_PREFIX: &str = r#"{"t":"msg""#;
@@ -277,11 +277,38 @@ impl Default for StoredPluginScopes {
 }
 
 impl StoredPluginScopes {
-    fn insert(&mut self, scope: StoredStateScope, state: StoredPluginState) {
-        self.scopes
-            .get_or_insert_with(BTreeMap::new)
-            .insert(scope.as_str().to_owned(), state);
-        self.malformed = None;
+    fn set(
+        &mut self,
+        plugin: &str,
+        scope: StoredStateScope,
+        schema_version: u32,
+        payload: serde_json::Value,
+    ) -> Result<(), SessionStateError> {
+        let Some(scopes) = self.scopes.as_mut() else {
+            return Err(SessionStateError::InvalidPluginContainer {
+                plugin: plugin.to_owned(),
+            });
+        };
+        if let Some(state) = scopes.get_mut(scope.as_str()) {
+            let serde_json::Value::Object(fields) = &mut state.raw else {
+                return Err(SessionStateError::InvalidPluginState {
+                    plugin: plugin.to_owned(),
+                    scope,
+                });
+            };
+            fields.insert(
+                "schema_version".to_owned(),
+                serde_json::Value::from(schema_version),
+            );
+            fields.insert("payload".to_owned(), payload);
+            state.schema_version = Some(u64::from(schema_version));
+        } else {
+            scopes.insert(
+                scope.as_str().to_owned(),
+                StoredPluginState::new(schema_version, payload),
+            );
+        }
+        Ok(())
     }
 }
 
@@ -338,11 +365,21 @@ enum StoredSessionStateSnapshotInner {
         schema_version: u64,
         raw: serde_json::Value,
     },
+    Malformed {
+        raw: serde_json::Value,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct StoredSessionStateSnapshot {
     inner: StoredSessionStateSnapshotInner,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredPluginStateEntry<'a> {
+    pub plugin: &'a str,
+    pub scope: StoredStateScope,
+    pub payload: &'a serde_json::Value,
 }
 
 impl Default for StoredSessionStateSnapshot {
@@ -358,7 +395,8 @@ impl Serialize for StoredSessionStateSnapshot {
     {
         match &self.inner {
             StoredSessionStateSnapshotInner::Supported(snapshot) => snapshot.serialize(serializer),
-            StoredSessionStateSnapshotInner::Unsupported { raw, .. } => raw.serialize(serializer),
+            StoredSessionStateSnapshotInner::Unsupported { raw, .. }
+            | StoredSessionStateSnapshotInner::Malformed { raw } => raw.serialize(serializer),
         }
     }
 }
@@ -405,6 +443,8 @@ impl<'de> Deserialize<'de> for StoredSessionStateSnapshot {
 pub enum SessionStateError {
     #[error("unsupported session-state schema version {found} (expected {expected})")]
     UnsupportedSchemaVersion { found: u64, expected: u32 },
+    #[error("session-state snapshot envelope is malformed")]
+    InvalidEnvelope,
     #[error("session state has {found} plugin entries (maximum {maximum})")]
     TooManyPlugins { found: usize, maximum: usize },
     #[error("invalid session-state plugin name {plugin:?}")]
@@ -434,12 +474,8 @@ pub enum SessionStateError {
         found: u64,
         expected: u32,
     },
-    #[error("state scope mismatch for plugin {plugin:?}: found {found:?}, expected {expected:?}")]
-    ScopeMismatch {
-        plugin: String,
-        found: StoredStateScope,
-        expected: StoredStateScope,
-    },
+    #[error("session-state revision cannot regress from {current} to {requested}")]
+    StateRevisionRegression { current: u64, requested: u64 },
     #[error("failed to measure serialized session state: {0}")]
     Serialize(#[from] serde_json::Error),
 }
@@ -461,15 +497,43 @@ impl StoredSessionStateSnapshot {
     pub fn state_revision(&self) -> Option<u64> {
         match &self.inner {
             StoredSessionStateSnapshotInner::Supported(snapshot) => Some(snapshot.state_revision),
-            StoredSessionStateSnapshotInner::Unsupported { .. } => None,
+            StoredSessionStateSnapshotInner::Unsupported { .. }
+            | StoredSessionStateSnapshotInner::Malformed { .. } => None,
         }
     }
 
-    /// Adds or replaces one scope of a plugin's state after enforcing snapshot bounds.
+    /// Advances the state revision without allowing regression.
     ///
     /// # Errors
-    /// Returns a typed error for invalid names or exceeded bounds.
-    pub fn insert_plugin_state(
+    /// Returns a typed error for unsupported envelopes, revision regression, or exceeded bounds.
+    pub fn set_state_revision(&mut self, state_revision: u64) -> Result<(), SessionStateError> {
+        let StoredSessionStateSnapshotInner::Supported(snapshot) = &self.inner else {
+            return Err(self.unsupported_schema_error());
+        };
+        if state_revision < snapshot.state_revision {
+            return Err(SessionStateError::StateRevisionRegression {
+                current: snapshot.state_revision,
+                requested: state_revision,
+            });
+        }
+        let current_size = serde_json::to_vec(snapshot).map(|v| v.len()).ok();
+        let mut candidate = snapshot.clone();
+        candidate.state_revision = state_revision;
+        let new_size = serde_json::to_vec(&candidate).map(|v| v.len()).ok();
+        if new_size.is_some_and(|new| current_size.is_some_and(|cur| new <= cur)) {
+            self.inner = StoredSessionStateSnapshotInner::Supported(candidate);
+            return Ok(());
+        }
+        validate_supported_snapshot(&candidate)?;
+        self.inner = StoredSessionStateSnapshotInner::Supported(candidate);
+        Ok(())
+    }
+
+    /// Adds or replaces one exact plugin scope after enforcing snapshot bounds.
+    ///
+    /// # Errors
+    /// Returns a typed error for unsupported envelopes, invalid names, or exceeded bounds.
+    pub fn set_plugin_state(
         &mut self,
         plugin: &str,
         schema_version: u32,
@@ -480,14 +544,116 @@ impl StoredSessionStateSnapshot {
             return Err(self.unsupported_schema_error());
         };
         let mut candidate = snapshot.clone();
+        validate_plugin_name(plugin)?;
         candidate
             .plugins
             .entry(plugin.to_owned())
             .or_default()
-            .insert(scope, StoredPluginState::new(schema_version, payload));
+            .set(plugin, scope, schema_version, payload)?;
         validate_supported_snapshot(&candidate)?;
         self.inner = StoredSessionStateSnapshotInner::Supported(candidate);
         Ok(())
+    }
+
+    /// Removes one exact plugin scope while preserving every sibling entry.
+    ///
+    /// # Errors
+    /// Returns a typed error for unsupported envelopes, invalid names, or exceeded bounds.
+    pub fn remove_plugin_state(
+        &mut self,
+        plugin: &str,
+        scope: StoredStateScope,
+    ) -> Result<(), SessionStateError> {
+        let StoredSessionStateSnapshotInner::Supported(snapshot) = &self.inner else {
+            return Err(self.unsupported_schema_error());
+        };
+        validate_plugin_name(plugin)?;
+        let mut candidate = snapshot.clone();
+        if candidate
+            .plugins
+            .get(plugin)
+            .is_some_and(|stored_scopes| stored_scopes.scopes.is_none())
+        {
+            return Err(SessionStateError::InvalidPluginContainer {
+                plugin: plugin.to_owned(),
+            });
+        }
+        let remove_plugin = candidate
+            .plugins
+            .get_mut(plugin)
+            .and_then(|stored_scopes| stored_scopes.scopes.as_mut())
+            .is_some_and(|scopes| {
+                scopes.remove(scope.as_str());
+                scopes.is_empty()
+            });
+        if remove_plugin {
+            candidate.plugins.remove(plugin);
+        }
+        validate_supported_snapshot(&candidate)?;
+        self.inner = StoredSessionStateSnapshotInner::Supported(candidate);
+        Ok(())
+    }
+
+    /// Returns plugin names that contain the exact stored scope, including opaque state versions.
+    ///
+    /// # Errors
+    /// Returns a typed error when the snapshot envelope version is unsupported.
+    pub fn plugin_names_with_scope(
+        &self,
+        scope: StoredStateScope,
+    ) -> Result<Vec<&str>, SessionStateError> {
+        let StoredSessionStateSnapshotInner::Supported(snapshot) = &self.inner else {
+            return Err(self.unsupported_schema_error());
+        };
+        Ok(snapshot
+            .plugins
+            .iter()
+            .filter_map(|(plugin, stored_scopes)| {
+                stored_scopes
+                    .scopes
+                    .as_ref()
+                    .is_some_and(|scopes| scopes.contains_key(scope.as_str()))
+                    .then_some(plugin.as_str())
+            })
+            .collect())
+    }
+
+    /// Enumerates well-formed entries matching a supported plugin state version.
+    ///
+    /// Malformed entries, unknown scopes, and other plugin state versions remain preserved but are
+    /// omitted from the result.
+    ///
+    /// # Errors
+    /// Returns a typed error when the snapshot envelope version is unsupported.
+    pub fn plugin_entries_for_apply(
+        &self,
+        schema_version: u32,
+    ) -> Result<Vec<StoredPluginStateEntry<'_>>, SessionStateError> {
+        let StoredSessionStateSnapshotInner::Supported(snapshot) = &self.inner else {
+            return Err(self.unsupported_schema_error());
+        };
+        let mut entries = Vec::new();
+        for (plugin, stored_scopes) in &snapshot.plugins {
+            let Some(scopes) = stored_scopes.scopes.as_ref() else {
+                continue;
+            };
+            for (scope_name, state) in scopes {
+                let Some(scope) = StoredStateScope::from_stored(scope_name) else {
+                    continue;
+                };
+                let (Some(found), Some(payload)) = (state.schema_version, state.payload()) else {
+                    continue;
+                };
+                if found == u64::from(schema_version) {
+                    entries.push(StoredPluginStateEntry {
+                        plugin,
+                        scope,
+                        payload,
+                    });
+                }
+            }
+        }
+        Ok(entries)
     }
 
     /// Validates persisted state before any plugin can apply it.
@@ -502,7 +668,8 @@ impl StoredSessionStateSnapshot {
             StoredSessionStateSnapshotInner::Supported(snapshot) => {
                 validate_supported_snapshot(snapshot)
             }
-            StoredSessionStateSnapshotInner::Unsupported { .. } => {
+            StoredSessionStateSnapshotInner::Unsupported { .. }
+            | StoredSessionStateSnapshotInner::Malformed { .. } => {
                 Err(self.unsupported_schema_error())
             }
         }
@@ -531,29 +698,10 @@ impl StoredSessionStateSnapshot {
             });
         };
         let Some(state) = scopes.get(scope.as_str()) else {
-            let Some(stored_scope) = scopes.keys().next() else {
-                return Err(SessionStateError::MissingPluginState {
-                    plugin: plugin.to_owned(),
-                });
-            };
-            let Some(found) = StoredStateScope::from_stored(stored_scope) else {
-                return Err(SessionStateError::InvalidStoredScope {
-                    plugin: plugin.to_owned(),
-                    scope: stored_scope.clone(),
-                });
-            };
-            return Err(SessionStateError::ScopeMismatch {
-                plugin: plugin.to_owned(),
-                found,
-                expected: scope,
-            });
+            return Ok(None);
         };
+        validate_stored_plugin_state_size(plugin, state)?;
         let payload = state.payload();
-        let measured = match payload {
-            Some(payload) => payload,
-            None => &state.raw,
-        };
-        validate_plugin_state_size(plugin, measured)?;
         let (Some(found), Some(payload)) = (state.schema_version, payload) else {
             return Err(SessionStateError::InvalidPluginState {
                 plugin: plugin.to_owned(),
@@ -576,6 +724,9 @@ impl StoredSessionStateSnapshot {
                 u64::from(snapshot.schema_version)
             }
             StoredSessionStateSnapshotInner::Unsupported { schema_version, .. } => *schema_version,
+            StoredSessionStateSnapshotInner::Malformed { .. } => {
+                return SessionStateError::InvalidEnvelope;
+            }
         };
         SessionStateError::UnsupportedSchemaVersion {
             found,
@@ -613,11 +764,7 @@ fn validate_supported_snapshot(
             continue;
         };
         for state in scopes.values() {
-            let measured = match state.payload() {
-                Some(payload) => payload,
-                None => &state.raw,
-            };
-            validate_plugin_state_size(plugin, measured)?;
+            validate_stored_plugin_state_size(plugin, state)?;
         }
     }
     let bytes = serde_json::to_vec(snapshot)?.len();
@@ -648,7 +795,37 @@ fn validate_plugin_state_size(
     plugin: &str,
     value: &serde_json::Value,
 ) -> Result<(), SessionStateError> {
-    let bytes = serde_json::to_vec(value)?.len();
+    validate_plugin_state_bytes(plugin, serde_json::to_vec(value)?.len())
+}
+
+fn validate_stored_plugin_state_size(
+    plugin: &str,
+    state: &StoredPluginState,
+) -> Result<(), SessionStateError> {
+    let serde_json::Value::Object(fields) = &state.raw else {
+        return validate_plugin_state_size(plugin, &state.raw);
+    };
+    let Some(payload) = fields.get("payload") else {
+        return validate_plugin_state_size(plugin, &state.raw);
+    };
+    let payload_bytes = serde_json::to_vec(payload)?.len();
+    let opaque = fields
+        .iter()
+        .filter(|(name, _)| {
+            name.as_str() != "payload"
+                && (name.as_str() != "schema_version" || state.schema_version.is_none())
+        })
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect::<serde_json::Map<_, _>>();
+    let opaque_bytes = if opaque.is_empty() {
+        0
+    } else {
+        serde_json::to_vec(&opaque)?.len()
+    };
+    validate_plugin_state_bytes(plugin, payload_bytes.saturating_add(opaque_bytes))
+}
+
+fn validate_plugin_state_bytes(plugin: &str, bytes: usize) -> Result<(), SessionStateError> {
     if bytes > MAX_PLUGIN_STATE_BYTES {
         return Err(SessionStateError::PluginStateTooLarge {
             plugin: plugin.to_owned(),
@@ -669,14 +846,27 @@ where
     let Some(raw) = raw else {
         return Ok(None);
     };
-    match serde_json::from_value(raw) {
+    let bytes = serde_json::to_vec(&raw)
+        .map_err(serde::de::Error::custom)?
+        .len();
+    if bytes > MAX_SESSION_STATE_BYTES {
+        return Err(serde::de::Error::custom(
+            SessionStateError::SnapshotTooLarge {
+                bytes,
+                maximum: MAX_SESSION_STATE_BYTES,
+            },
+        ));
+    }
+    match serde_json::from_value(raw.clone()) {
         Ok(snapshot) => Ok(Some(snapshot)),
         Err(error) => {
             warn!(
                 category = ?error.classify(),
-                "ignoring malformed session-state snapshot"
+                "quarantining malformed session-state snapshot"
             );
-            Ok(None)
+            Ok(Some(StoredSessionStateSnapshot {
+                inner: StoredSessionStateSnapshotInner::Malformed { raw },
+            }))
         }
     }
 }
@@ -4565,7 +4755,7 @@ mod tests {
     fn session_state_snapshot_round_trips_unknown_plugin_entries() {
         let mut snapshot = super::StoredSessionStateSnapshot::new(7);
         snapshot
-            .insert_plugin_state(
+            .set_plugin_state(
                 "future_plugin",
                 99,
                 super::StoredStateScope::Root,
@@ -4668,7 +4858,7 @@ mod tests {
         let mut session: TestSession = Session::new("model", "/project");
         let mut snapshot = super::StoredSessionStateSnapshot::new(4);
         snapshot
-            .insert_plugin_state(
+            .set_plugin_state(
                 "todo_write",
                 1,
                 super::StoredStateScope::Root,
@@ -4686,7 +4876,7 @@ mod tests {
     fn session_state_snapshot_supports_both_scopes_for_one_plugin() {
         let mut snapshot = super::StoredSessionStateSnapshot::new(1);
         snapshot
-            .insert_plugin_state(
+            .set_plugin_state(
                 "plugin",
                 1,
                 super::StoredStateScope::Root,
@@ -4694,7 +4884,7 @@ mod tests {
             )
             .unwrap();
         snapshot
-            .insert_plugin_state(
+            .set_plugin_state(
                 "plugin",
                 2,
                 super::StoredStateScope::Session,
@@ -4717,36 +4907,270 @@ mod tests {
     }
 
     #[test]
-    fn session_state_snapshot_rejects_scope_mismatch() {
+    fn session_state_snapshot_absent_requested_scope_is_none() {
         let mut snapshot = super::StoredSessionStateSnapshot::new(1);
         snapshot
-            .insert_plugin_state(
+            .set_plugin_state(
                 "todo_write",
                 1,
                 super::StoredStateScope::Root,
                 serde_json::json!({ "todos": [] }),
             )
             .unwrap();
+        assert_eq!(
+            snapshot
+                .plugin_payload_for_apply("todo_write", 1, super::StoredStateScope::Session)
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn session_state_snapshot_enumerates_only_valid_supported_entries() {
+        let snapshot: super::StoredSessionStateSnapshot =
+            serde_json::from_value(serde_json::json!({
+                "schema_version": 1,
+                "state_revision": 3,
+                "plugins": {
+                    "plugin": {
+                        "root": { "schema_version": 1, "payload": { "valid": true } },
+                        "session": { "schema_version": 2, "payload": { "future": true } },
+                        "future_scope": { "schema_version": 1, "payload": { "opaque": true } }
+                    },
+                    "malformed": {
+                        "root": { "schema_version": "invalid", "payload": null }
+                    },
+                    "malformed_container": null
+                }
+            }))
+            .unwrap();
+
+        let entries = snapshot.plugin_entries_for_apply(1).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].plugin, "plugin");
+        assert_eq!(entries[0].scope, super::StoredStateScope::Root);
+        assert_eq!(entries[0].payload, &serde_json::json!({ "valid": true }));
+    }
+
+    #[test]
+    fn session_state_snapshot_mutations_preserve_opaque_data() {
+        let raw = serde_json::json!({
+            "schema_version": 1,
+            "state_revision": 3,
+            "future_envelope": { "kept": true },
+            "plugins": {
+                "target": {
+                    "root": { "schema_version": 1, "payload": "old", "state_extra": 7 },
+                    "future_scope": { "opaque": true },
+                    "session": { "malformed": true }
+                },
+                "malformed_sibling": null,
+                "unknown_sibling": { "other": [1, 2, 3] }
+            }
+        });
+        let mut snapshot: super::StoredSessionStateSnapshot =
+            serde_json::from_value(raw.clone()).unwrap();
+
+        snapshot.set_state_revision(4).unwrap();
+        snapshot
+            .set_plugin_state(
+                "target",
+                1,
+                super::StoredStateScope::Root,
+                serde_json::json!("new"),
+            )
+            .unwrap();
+        let after_set = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(after_set["state_revision"], 4);
+        assert_eq!(
+            after_set["plugins"]["target"]["root"]["state_extra"],
+            raw["plugins"]["target"]["root"]["state_extra"]
+        );
+        assert_eq!(after_set["future_envelope"], raw["future_envelope"]);
+        assert_eq!(
+            after_set["plugins"]["target"]["future_scope"],
+            raw["plugins"]["target"]["future_scope"]
+        );
+        assert_eq!(
+            after_set["plugins"]["target"]["session"],
+            raw["plugins"]["target"]["session"]
+        );
+        assert_eq!(
+            after_set["plugins"]["malformed_sibling"],
+            raw["plugins"]["malformed_sibling"]
+        );
+        assert_eq!(
+            after_set["plugins"]["unknown_sibling"],
+            raw["plugins"]["unknown_sibling"]
+        );
+
+        snapshot
+            .remove_plugin_state("target", super::StoredStateScope::Root)
+            .unwrap();
+        let after_remove = serde_json::to_value(snapshot).unwrap();
+        assert!(after_remove["plugins"]["target"].get("root").is_none());
+        assert_eq!(
+            after_remove["plugins"]["target"]["future_scope"],
+            raw["plugins"]["target"]["future_scope"]
+        );
+        assert_eq!(
+            after_remove["plugins"]["target"]["session"],
+            raw["plugins"]["target"]["session"]
+        );
+    }
+
+    #[test]
+    fn session_state_snapshot_rejects_mutating_malformed_plugin_container() {
+        let raw = serde_json::json!({
+            "schema_version": 1,
+            "state_revision": 3,
+            "plugins": {"target": null}
+        });
+        let mut snapshot: super::StoredSessionStateSnapshot =
+            serde_json::from_value(raw.clone()).unwrap();
+
         assert!(matches!(
-            snapshot.plugin_payload_for_apply("todo_write", 1, super::StoredStateScope::Session),
-            Err(super::SessionStateError::ScopeMismatch { .. })
+            snapshot.set_plugin_state(
+                "target",
+                1,
+                super::StoredStateScope::Root,
+                serde_json::json!({"new": true}),
+            ),
+            Err(super::SessionStateError::InvalidPluginContainer { .. })
         ));
+        assert_eq!(serde_json::to_value(snapshot).unwrap(), raw);
+    }
+
+    #[test]
+    fn session_state_snapshot_counts_opaque_state_fields_toward_entry_limit() {
+        let raw = serde_json::json!({
+            "schema_version": 1,
+            "state_revision": 3,
+            "plugins": {
+                "target": {
+                    "root": {
+                        "schema_version": 1,
+                        "payload": null,
+                        "opaque": "x".repeat(super::MAX_PLUGIN_STATE_BYTES)
+                    }
+                }
+            }
+        });
+
+        assert!(serde_json::from_value::<super::StoredSessionStateSnapshot>(raw).is_err());
+    }
+
+    #[test]
+    fn session_state_snapshot_counts_malformed_version_as_opaque_state() {
+        let raw = serde_json::json!({
+            "schema_version": 1,
+            "state_revision": 3,
+            "plugins": {
+                "target": {
+                    "root": {
+                        "schema_version": "x".repeat(super::MAX_PLUGIN_STATE_BYTES),
+                        "payload": null
+                    }
+                }
+            }
+        });
+
+        assert!(serde_json::from_value::<super::StoredSessionStateSnapshot>(raw).is_err());
+    }
+
+    #[test]
+    fn session_state_snapshot_mutations_are_atomic() {
+        let mut snapshot = super::StoredSessionStateSnapshot::new(5);
+        snapshot
+            .set_plugin_state(
+                "kept",
+                1,
+                super::StoredStateScope::Root,
+                serde_json::json!({ "value": true }),
+            )
+            .unwrap();
+        let before = serde_json::to_value(&snapshot).unwrap();
+
+        assert!(matches!(
+            snapshot.set_state_revision(4),
+            Err(super::SessionStateError::StateRevisionRegression { .. })
+        ));
+        assert_eq!(serde_json::to_value(&snapshot).unwrap(), before);
+
+        assert!(matches!(
+            snapshot.set_plugin_state(
+                "oversized",
+                1,
+                super::StoredStateScope::Session,
+                Value::String("x".repeat(super::MAX_PLUGIN_STATE_BYTES)),
+            ),
+            Err(super::SessionStateError::PluginStateTooLarge { .. })
+        ));
+        assert_eq!(serde_json::to_value(&snapshot).unwrap(), before);
+
+        assert!(matches!(
+            snapshot.remove_plugin_state("bad/name", super::StoredStateScope::Root),
+            Err(super::SessionStateError::InvalidPluginName { .. })
+        ));
+        assert_eq!(serde_json::to_value(snapshot).unwrap(), before);
+    }
+
+    #[test]
+    fn session_state_snapshot_unsupported_envelope_mutations_fail_unchanged() {
+        let raw = serde_json::json!({
+            "schema_version": 2,
+            "state_revision": 9,
+            "opaque": { "kept": true }
+        });
+        let mut snapshot: super::StoredSessionStateSnapshot =
+            serde_json::from_value(raw.clone()).unwrap();
+
+        assert!(matches!(
+            snapshot.plugin_entries_for_apply(1),
+            Err(super::SessionStateError::UnsupportedSchemaVersion { found: 2, .. })
+        ));
+        assert!(matches!(
+            snapshot.set_state_revision(10),
+            Err(super::SessionStateError::UnsupportedSchemaVersion { found: 2, .. })
+        ));
+        assert!(matches!(
+            snapshot.set_plugin_state(
+                "plugin",
+                1,
+                super::StoredStateScope::Root,
+                serde_json::json!(null),
+            ),
+            Err(super::SessionStateError::UnsupportedSchemaVersion { found: 2, .. })
+        ));
+        assert!(matches!(
+            snapshot.remove_plugin_state("plugin", super::StoredStateScope::Root),
+            Err(super::SessionStateError::UnsupportedSchemaVersion { found: 2, .. })
+        ));
+        assert_eq!(serde_json::to_value(snapshot).unwrap(), raw);
     }
 
     #[test]
     fn malformed_session_state_does_not_invalidate_session_meta() {
-        let json = r#"{
-            "mode":"plan",
-            "plan_written":true,
-            "state_snapshot":{
-                "schema_version":1,
-                "plugins":{"todo_write":{"root":{"schema_version":1}}}
+        let raw = serde_json::json!({
+            "mode": "plan",
+            "plan_written": true,
+            "state_snapshot": {
+                "schema_version": 1,
+                "plugins": {"todo_write": {"root": {"schema_version": 1}}}
             }
-        }"#;
-        let meta: super::SessionMeta = serde_json::from_str(json).unwrap();
+        });
+        let meta: super::SessionMeta = serde_json::from_value(raw.clone()).unwrap();
         assert_eq!(meta.mode, Some(super::StoredMode::Plan));
         assert!(meta.plan_written);
-        assert!(meta.state_snapshot.is_none());
+        let snapshot = meta.state_snapshot.as_ref().unwrap();
+        assert!(matches!(
+            snapshot.validate_for_apply(),
+            Err(super::SessionStateError::InvalidEnvelope)
+        ));
+        assert_eq!(
+            serde_json::to_value(meta).unwrap()["state_snapshot"],
+            raw["state_snapshot"]
+        );
     }
 
     #[test]
@@ -4767,13 +5191,15 @@ mod tests {
     }
 
     #[test]
-    fn session_state_snapshot_quarantines_missing_plugin_scope() {
+    fn session_state_snapshot_empty_plugin_scope_is_absent() {
         let json = r#"{"schema_version":1,"state_revision":1,"plugins":{"p":{}}}"#;
         let snapshot: super::StoredSessionStateSnapshot = serde_json::from_str(json).unwrap();
-        assert!(matches!(
-            snapshot.plugin_payload_for_apply("p", 1, super::StoredStateScope::Root),
-            Err(super::SessionStateError::MissingPluginState { .. })
-        ));
+        assert_eq!(
+            snapshot
+                .plugin_payload_for_apply("p", 1, super::StoredStateScope::Root)
+                .unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -4781,7 +5207,7 @@ mod tests {
         let mut snapshot = super::StoredSessionStateSnapshot::new(1);
         let maximum_name = "x".repeat(super::MAX_PLUGIN_STATE_NAME_BYTES);
         snapshot
-            .insert_plugin_state(
+            .set_plugin_state(
                 &maximum_name,
                 1,
                 super::StoredStateScope::Root,
@@ -4789,7 +5215,7 @@ mod tests {
             )
             .unwrap();
         assert!(matches!(
-            snapshot.insert_plugin_state(
+            snapshot.set_plugin_state(
                 &"x".repeat(super::MAX_PLUGIN_STATE_NAME_BYTES + 1),
                 1,
                 super::StoredStateScope::Root,
@@ -4801,7 +5227,7 @@ mod tests {
         let mut entries = super::StoredSessionStateSnapshot::new(1);
         for index in 0..super::MAX_PLUGIN_STATE_ENTRIES {
             entries
-                .insert_plugin_state(
+                .set_plugin_state(
                     &format!("plugin_{index}"),
                     1,
                     super::StoredStateScope::Root,
@@ -4810,7 +5236,7 @@ mod tests {
                 .unwrap();
         }
         assert!(matches!(
-            entries.insert_plugin_state(
+            entries.set_plugin_state(
                 "one_too_many",
                 1,
                 super::StoredStateScope::Root,
@@ -4828,7 +5254,7 @@ mod tests {
     fn session_state_snapshot_rejects_unsafe_plugin_names(plugin: &str) {
         let mut snapshot = super::StoredSessionStateSnapshot::new(1);
         assert!(matches!(
-            snapshot.insert_plugin_state(
+            snapshot.set_plugin_state(
                 plugin,
                 1,
                 super::StoredStateScope::Root,
@@ -4852,7 +5278,7 @@ mod tests {
             }))
             .unwrap();
         snapshot
-            .insert_plugin_state(
+            .set_plugin_state(
                 "usable",
                 1,
                 super::StoredStateScope::Root,
@@ -4871,7 +5297,7 @@ mod tests {
     fn session_state_snapshot_enforces_payload_and_aggregate_boundaries() {
         let mut payload = super::StoredSessionStateSnapshot::new(1);
         payload
-            .insert_plugin_state(
+            .set_plugin_state(
                 "maximum",
                 1,
                 super::StoredStateScope::Root,
@@ -4879,7 +5305,7 @@ mod tests {
             )
             .unwrap();
         assert!(matches!(
-            payload.insert_plugin_state(
+            payload.set_plugin_state(
                 "oversized",
                 1,
                 super::StoredStateScope::Root,
@@ -4891,7 +5317,7 @@ mod tests {
         let mut aggregate = super::StoredSessionStateSnapshot::new(1);
         for index in 0..4 {
             aggregate
-                .insert_plugin_state(
+                .set_plugin_state(
                     &format!("large_{index}"),
                     1,
                     super::StoredStateScope::Root,
@@ -4900,7 +5326,7 @@ mod tests {
                 .unwrap();
         }
         assert!(matches!(
-            aggregate.insert_plugin_state(
+            aggregate.set_plugin_state(
                 "aggregate_overflow",
                 1,
                 super::StoredStateScope::Root,
