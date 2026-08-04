@@ -754,10 +754,6 @@ fn validate_object(
         for (extra_key, extra_val) in map {
             out.insert(extra_key, extra_val);
         }
-    } else {
-        for (extra_key, _) in map {
-            warn!(path = %path, key = %extra_key, "dropped unknown tool parameter");
-        }
     }
     Ok(Value::Object(out))
 }
@@ -1537,6 +1533,25 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn nullable_primitive_roundtrips_through_json_schema() {
+        const NULLABLE_STRING: ParamSchema = ParamSchema::Union {
+            variants: &[
+                &STR_PRIM,
+                &ParamSchema::Primitive {
+                    kind: ParamKind::Null,
+                    description: "",
+                },
+            ],
+            description: "",
+        };
+        let json = to_json_schema(&NULLABLE_STRING);
+        assert_eq!(json["type"], json!(["string", "null"]));
+        let parsed = try_from_json(&json).expect("nullable schema should parse");
+        let roundtrip = to_json_schema(parsed);
+        assert_eq!(json, roundtrip);
     }
 
     const ALIAS_SCHEMA: ParamSchema = ParamSchema::Object {
