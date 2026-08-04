@@ -127,6 +127,10 @@ static BUNDLED_PLUGINS: &[BundledPlugin] = &[
         dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/team"),
     },
     BundledPlugin {
+        name: "tmux",
+        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/tmux"),
+    },
+    BundledPlugin {
         name: "code_execution",
         dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/code_execution"),
     },
