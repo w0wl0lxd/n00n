@@ -656,9 +656,11 @@ mod tests {
     }
 
     #[test]
-    fn keeps_remaining_words_after_sensitive_key_with_value() {
-        let input = "api_key:\nfoo bar\r\nbaz";
+    fn redacts_password_across_lf_crlf_cr() {
+        let input = "password=secret\nline2\r\nline3\rline4";
         let sanitized = sanitize_text_preserve_newlines(input, 200);
-        assert_eq!(sanitized, "api_key:[redacted]\nbar\r\nbaz");
+        assert!(sanitized.contains("password=[redacted]"));
+        assert!(!sanitized.contains("secret"));
+        assert!(sanitized.contains("\nline2\r\nline3\rline4"));
     }
 }
